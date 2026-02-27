@@ -2,6 +2,23 @@
 
 A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use (which would require persistent storage, distributed transactions, etc.).
 
+## Table of Contents
+
+- [Core Banking Concepts](#core-banking-concepts)
+- [Double-Entry Bookkeeping](#double-entry-bookkeeping)
+- [Chart of Accounts](#chart-of-accounts)
+- [Ledger and Subledger Hierarchy](#ledger-and-subledger-hierarchy)
+- [Booking Date vs. Value Date](#booking-date-vs-value-date)
+- [Holds (Authorization / Pending Transactions)](#holds-authorization--pending-transactions)
+- [Multi-Currency](#multi-currency)
+- [Multi-Legged Transactions](#multi-legged-transactions)
+- [Idempotency](#idempotency)
+- [Transaction Reversal](#transaction-reversal)
+- [End-of-Day Snapshots](#end-of-day-snapshots)
+- [Audit Trail](#audit-trail)
+- [Amounts and Precision](#amounts-and-precision)
+- [Usage Example](#usage-example)
+
 ## Core Banking Concepts
 
 A core banking system is the backbone of a financial institution. It is the "system of record" for all financial activity — every deposit, withdrawal, transfer, loan disbursement, and fee charge flows through it. The concepts below explain how this system models real-world banking.
