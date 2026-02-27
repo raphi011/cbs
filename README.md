@@ -21,6 +21,9 @@ A simplified but functionally complete Go library modeling the core accounting e
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
   - [Audit Trail](#audit-trail)
+- [Statements](#statements)
+  - [What Appears on a Statement](#what-appears-on-a-statement)
+  - [Why Transactions and Balances May Not Reconcile](#why-transactions-and-balances-may-not-reconcile)
 - [Usage Example](#usage-example)
 
 ## Core Banking Concepts
@@ -148,19 +151,6 @@ The value date is not set by a single actor — it depends on the transaction ty
 
 In practice, most core banking systems have a rules engine upstream of the ledger that determines the value date automatically before posting the transaction.
 
-#### How Statements Use Both Dates
-
-Customer statements use both dates for different purposes:
-
-- **Transaction listing** is ordered by **booking date** — it reflects when each transaction was recorded, matching the chronological order the customer sees activity appear. When a customer requests their February statement, the transaction list shows all transactions with a booking date in February.
-- **Balance calculations** (opening balance, closing balance, interest accrual) are based on **value date** — this determines the economic effect. The opening and closing balances on the February statement reflect all transactions with a value date in February.
-
-Because the two dates can differ, there can be subtle mismatches on a statement — the listed transactions may not perfectly "add up" to the balance change. For example, a transaction booked on February 25 with a value date of March 1 would appear in February's transaction listing but would not affect February's closing balance. Conversely, a transaction booked on January 31 with a value date of February 1 would not appear in February's transaction listing but would affect February's opening balance.
-
-Most retail bank statements show both dates per transaction when they differ, so the customer can see why the figures may not seem to reconcile at first glance. The statement *period* itself (e.g., "January 1–31") and the running daily balances are driven by value date.
-
-This is why end-of-day snapshots use value date — they are the foundation for interest accrual and statement generation.
-
 ### Balance Types
 
 A single account carries three distinct balances at any point in time:
@@ -276,6 +266,30 @@ The audit trail provides:
 - Forensic investigation capability
 - System debugging and incident response
 - Independent balance verification (replay events to recompute balances)
+
+## Statements
+
+A bank statement is a periodic report (typically monthly) summarizing all activity and balances on a customer's account. Statements rely on both the booking date and value date of each transaction.
+
+### What Appears on a Statement
+
+- **Transaction listing:** All transactions with a **booking date** within the statement period, ordered chronologically. This is what the customer recognizes as their activity — "I made this payment on Feb 3rd, I got paid on Feb 15th."
+
+- **Opening and closing balances:** Calculated using the **value date**. The opening balance is the end-of-day value-date balance from the last day of the prior period. The closing balance reflects all transactions whose value date falls within the statement period.
+
+- **Daily balances:** The value-date balance at the end of each day, used for interest accrual and regulatory purposes.
+
+### Why Transactions and Balances May Not Reconcile
+
+Because booking dates and value dates can differ, the listed transactions may not perfectly "add up" to the balance change shown on the statement:
+
+- A transaction **booked on February 25** with a **value date of March 1** would appear in February's transaction listing but would not affect February's closing balance.
+
+- A transaction **booked on January 31** with a **value date of February 1** would not appear in February's transaction listing but would affect February's opening balance.
+
+Most retail bank statements show both dates per transaction when they differ, so the customer can see why the figures may not seem to reconcile at first glance.
+
+End-of-day snapshots use value date for this reason — they are the foundation for the balance figures that appear on statements and for interest accrual.
 
 ## Usage Example
 
