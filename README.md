@@ -195,6 +195,14 @@ Available Balance = Book Balance - Active Holds
 
 Holds typically have an expiration time. If not captured within that window, they automatically stop affecting the available balance.
 
+#### Holds Are Off-Ledger
+
+Unsettled holds do not exist as ledger entries. The ledger only records posted transactions — actual debits and credits that have settled. A hold is an operational concept tracked separately; it doesn't move money and doesn't appear in the general ledger or trial balance.
+
+A hold only touches the ledger when it is **captured** — at that point a real transaction is posted with proper debits and credits. If the hold is **released**, nothing ever hits the ledger; from an accounting perspective it's as if it never happened.
+
+This is why `Hold` is a separate type from `Transaction` in the codebase — holds are stored in their own collection, not in the transaction journal. The ledger is only involved when `CaptureHold` converts a hold into a real `Transaction`.
+
 ### Idempotency
 
 In distributed systems, clients may retry requests due to timeouts or network failures. Without idempotency, a retry could cause the same transaction to be posted twice.
