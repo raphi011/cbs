@@ -63,6 +63,44 @@ The chart of accounts organizes all accounts into five fundamental types, derive
 Assets = Liabilities + Equity + (Revenue - Expenses)
 ```
 
+The five types split into two groups: three permanent accounts on the **balance sheet** (a snapshot of the bank's financial position at a point in time) and two temporary accounts on the **income statement** (activity over a period). At year-end, net income flows into equity, connecting the two:
+
+```
+                         THE ACCOUNTING EQUATION
+    ─────────────────────────────────────────────────────────────
+
+    BALANCE SHEET (permanent)          INCOME STATEMENT (temporary)
+    what the bank has & owes           how the bank performed
+    ┌─────────────────────────┐        ┌─────────────────────────┐
+    │                         │        │                         │
+    │   ┌───────────────┐     │        │   ┌───────────────┐     │
+    │   │    ASSETS      │     │        │   │   REVENUE      │     │
+    │   │               │     │        │   │               │     │
+    │   │  Cash, Loans, │     │        │   │  Interest on  │     │
+    │   │  Securities   │     │        │   │  loans, Fees  │     │
+    │   └───────────────┘     │        │   └───────┬───────┘     │
+    │          =              │        │           │             │
+    │   ┌───────────────┐     │        │           │ minus       │
+    │   │  LIABILITIES   │     │        │           │             │
+    │   │               │     │        │   ┌───────┴───────┐     │
+    │   │  Deposits,    │     │        │   │   EXPENSES     │     │
+    │   │  Borrowings   │     │        │   │               │     │
+    │   └───────────────┘     │        │   │  Interest on  │     │
+    │          +              │        │   │  deposits,    │     │
+    │   ┌───────────────┐     │        │   │  Salaries     │     │
+    │   │    EQUITY ◄────────────────────── └───────────────┘     │
+    │   │               │     │  net   │         equals           │
+    │   │  Capital,     │     │ income │     NET INCOME           │
+    │   │  Retained     │     │ flows  │  (rolled into Equity     │
+    │   │  Earnings     │     │  in    │   at year-end)           │
+    │   └───────────────┘     │        │                         │
+    └─────────────────────────┘        └─────────────────────────┘
+
+    Debit-normal: Assets, Expenses     Credit-normal: Liabilities,
+    (debits increase these)              Equity, Revenue
+                                         (credits increase these)
+```
+
 Each type has a "normal balance" — the direction that increases it:
 
 | Type | Normal Balance | Description | Examples |
