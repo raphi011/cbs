@@ -64,6 +64,10 @@ var (
 	// (debit/credit) determines the sign of the balance impact.
 	ErrInvalidAmount = errors.New("amount must be positive")
 
+	// ErrSnapshotNotFound is returned when no end-of-day snapshot
+	// exists for the given account and date.
+	ErrSnapshotNotFound = errors.New("snapshot not found")
+
 	// ErrInsufficientBalance is returned when a hold or transaction
 	// would cause the available balance to go below zero for account
 	// types where that is not permitted. Note: this is only enforced

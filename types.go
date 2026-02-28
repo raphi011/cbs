@@ -2,6 +2,18 @@ package ledger
 
 import "time"
 
+// ID types for each entity. These are defined types (not aliases) so the
+// compiler prevents accidentally passing e.g. a HoldID where an AccountID
+// is expected.
+type (
+	LedgerID      string
+	SubledgerID   string
+	AccountID     string
+	TransactionID string
+	EntryID       string
+	HoldID        string
+)
+
 // Amount represents a monetary value in the smallest unit of the currency
 // (e.g., cents for USD, pence for GBP). This is the standard approach
 // used by most payment systems and banks.
@@ -70,23 +82,23 @@ func (d Direction) Opposite() Direction {
 
 // Ledger is a top-level grouping for accounts (e.g., "General Ledger").
 type Ledger struct {
-	ID        string
+	ID        LedgerID
 	Name      string
 	CreatedAt time.Time
 }
 
 // Subledger is a subdivision of a ledger (e.g., "Accounts Receivable").
 type Subledger struct {
-	ID        string
-	LedgerID  string
+	ID        SubledgerID
+	LedgerID  LedgerID
 	Name      string
 	CreatedAt time.Time
 }
 
 // Account is a financial account within a subledger.
 type Account struct {
-	ID          string
-	SubledgerID string
+	ID          AccountID
+	SubledgerID SubledgerID
 	Name        string
 	Type        AccountType
 	CreatedAt   time.Time
@@ -95,8 +107,8 @@ type Account struct {
 // Entry is a single leg of a transaction, representing a debit or credit
 // to an account.
 type Entry struct {
-	ID        string
-	AccountID string
+	ID        EntryID
+	AccountID AccountID
 	Amount    Amount
 	Direction Direction
 }
@@ -119,7 +131,7 @@ func (s TransactionStatus) String() string {
 // Transaction is a multi-legged accounting entry. All entries within a
 // transaction must balance (total debits = total credits).
 type Transaction struct {
-	ID             string
+	ID             TransactionID
 	IdempotencyKey string
 	Entries        []Entry
 	BookingDate    time.Time // When the transaction was recorded in the system
@@ -130,7 +142,7 @@ type Transaction struct {
 	CreatedAt      time.Time
 
 	// ReversalOf is set when this transaction is a reversal of another.
-	ReversalOf string
+	ReversalOf TransactionID
 }
 
 // HoldStatus tracks the lifecycle of a hold.
@@ -158,8 +170,8 @@ func (s HoldStatus) String() string {
 // Hold represents a pending authorization that reduces the available
 // balance of an account without affecting the book balance.
 type Hold struct {
-	ID          string
-	AccountID   string
+	ID          HoldID
+	AccountID   AccountID
 	Amount      Amount
 	ExpiresAt   time.Time
 	Description string
@@ -177,7 +189,7 @@ type Balance struct {
 // BalanceSnapshot is a point-in-time record of an account's balance,
 // taken at end-of-day for a given value date.
 type BalanceSnapshot struct {
-	AccountID string
+	AccountID AccountID
 	Date      time.Time // The business day this snapshot represents
 	Balance   Balance
 	TakenAt   time.Time // When the snapshot was actually taken

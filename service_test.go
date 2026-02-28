@@ -30,7 +30,7 @@ func testService(t *testing.T) *Service {
 //	  │     └── Cash           (Asset)
 //	  └── Revenue (subledger)
 //	        └── Fee Income     (Revenue)
-func setupChartOfAccounts(t *testing.T, svc *Service) (alice, bob, cash, feeIncome *Account) {
+func setupChartOfAccounts(t *testing.T, svc *Service) (alice, bob, cash, feeIncome Account) {
 	t.Helper()
 
 	gl, err := svc.CreateLedger("General Ledger")
@@ -822,13 +822,10 @@ func TestEndOfDaySnapshot(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "retrieved book", got.Balance.Book, Amount(10000))
 
-	// Non-existent snapshot returns nil.
+	// Non-existent snapshot returns ErrSnapshotNotFound.
 	otherDate := time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC)
-	missing, err := svc.GetSnapshot(alice.ID, otherDate)
-	assertNoError(t, err)
-	if missing != nil {
-		t.Fatal("expected nil snapshot for non-existent date")
-	}
+	_, err = svc.GetSnapshot(alice.ID, otherDate)
+	assertError(t, err, ErrSnapshotNotFound)
 }
 
 func TestEndOfDaySnapshot_AccountNotFound(t *testing.T) {
@@ -923,12 +920,12 @@ func TestAuditLogForEntity(t *testing.T) {
 	})
 
 	// Get events for Alice's account.
-	aliceEvents := svc.GetAuditLogForEntity(alice.ID)
+	aliceEvents := svc.GetAuditLogForEntity(string(alice.ID))
 	assertEqual(t, "alice events", len(aliceEvents), 1)
 	assertEqual(t, "event type", aliceEvents[0].Type, EventAccountCreated)
 
 	// Get events for the transaction.
-	txEvents := svc.GetAuditLogForEntity(tx.ID)
+	txEvents := svc.GetAuditLogForEntity(string(tx.ID))
 	assertEqual(t, "tx events", len(txEvents), 1)
 	assertEqual(t, "event type", txEvents[0].Type, EventTransactionPosted)
 }
@@ -941,8 +938,8 @@ func TestAuditLog_ImmutableCopy(t *testing.T) {
 	log2 := svc.GetAuditLog()
 
 	// Modifying the returned slice should not affect the internal log.
-	log1[0] = nil
-	if log2[0] == nil {
+	log1[0].Type = "tampered"
+	if log2[0].Type == "tampered" {
 		t.Fatal("audit log returned mutable reference")
 	}
 }
@@ -986,7 +983,7 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	revenue, _ := svc.CreateAccount(sl.ID, "Revenue", Revenue)
 	expense, _ := svc.CreateAccount(sl.ID, "Expense", Expense)
 
-	accounts := []*Account{asset, liability, equity, revenue, expense}
+	accounts := []Account{asset, liability, equity, revenue, expense}
 
 	// Post a debit of 100 and credit of 100 between pairs.
 	// Debit asset, credit liability.
@@ -1162,13 +1159,13 @@ func TestFullBankingWorkflow(t *testing.T) {
 // Helper functions for tests
 // ---------------------------------------------------------------------------
 
-func findAccountByName(t *testing.T, svc *Service, name string) *Account {
+func findAccountByName(t *testing.T, svc *Service, name string) Account {
 	t.Helper()
 	for _, acct := range svc.accounts {
 		if acct.Name == name {
-			return acct
+			return *acct
 		}
 	}
 	t.Fatalf("account %q not found", name)
-	return nil
+	return Account{}
 }
