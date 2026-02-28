@@ -246,7 +246,7 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	_, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Initial deposit",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 	// This should fail — unbalanced (only one leg).
@@ -257,8 +257,8 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	_, err = svc.PostTransaction(PostTransactionRequest{
 		Description: "Alice deposits $100",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -268,8 +268,8 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 		IdempotencyKey: "transfer-001",
 		Description:    "Alice sends $50 to Bob",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 5000, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 5000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
+			{AccountID: bob.ID, Amount: 5000, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -280,12 +280,12 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	// Alice: credited 10000, debited 5000 -> net credit of 5000.
 	// For Liability (normal=Credit): credit adds, debit subtracts.
 	// Balance = +10000 - 5000 = 5000
-	aliceBal, err := svc.GetBalance(alice.ID, "USD")
+	aliceBal, err := svc.GetBalance(alice.ID)
 	assertNoError(t, err)
 	assertEqual(t, "alice book balance", aliceBal.Book, Amount(5000))
 
 	// Bob: credited 5000 -> net credit of 5000.
-	bobBal, err := svc.GetBalance(bob.ID, "USD")
+	bobBal, err := svc.GetBalance(bob.ID)
 	assertNoError(t, err)
 	assertEqual(t, "bob book balance", bobBal.Book, Amount(5000))
 }
@@ -306,8 +306,8 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	_, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Alice deposits $200",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 20000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 20000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 20000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 20000, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -316,62 +316,25 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	tx, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer with fee",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 10200, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 10000, Currency: "USD", Direction: Credit},
-			{AccountID: feeIncome.ID, Amount: 200, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 10200, Direction: Debit},
+			{AccountID: bob.ID, Amount: 10000, Direction: Credit},
+			{AccountID: feeIncome.ID, Amount: 200, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
 	assertEqual(t, "entries count", len(tx.Entries), 3)
 
 	// Alice: +20000 (credit) - 10200 (debit) = 9800
-	aliceBal, _ := svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "alice balance", aliceBal.Book, Amount(9800))
 
 	// Bob: +10000 (credit)
-	bobBal, _ := svc.GetBalance(bob.ID, "USD")
+	bobBal, _ := svc.GetBalance(bob.ID)
 	assertEqual(t, "bob balance", bobBal.Book, Amount(10000))
 
 	// Fee Income: +200 (credit). Revenue normal = Credit, so +200.
-	feeBal, _ := svc.GetBalance(feeIncome.ID, "USD")
+	feeBal, _ := svc.GetBalance(feeIncome.ID)
 	assertEqual(t, "fee income balance", feeBal.Book, Amount(200))
-}
-
-// TestPostTransaction_MultiCurrency tests that a single account can
-// hold balances in multiple currencies simultaneously.
-func TestPostTransaction_MultiCurrency(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Deposit $100 USD.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "USD deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
-		},
-	})
-
-	// Deposit €50 EUR.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "EUR deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 5000, Currency: "EUR", Direction: Debit},
-			{AccountID: alice.ID, Amount: 5000, Currency: "EUR", Direction: Credit},
-		},
-	})
-
-	// Check individual currency balances.
-	usdBal, _ := svc.GetBalance(alice.ID, "USD")
-	assertEqual(t, "USD balance", usdBal.Book, Amount(10000))
-
-	eurBal, _ := svc.GetBalance(alice.ID, "EUR")
-	assertEqual(t, "EUR balance", eurBal.Book, Amount(5000))
-
-	// Check GetAllBalances returns both currencies.
-	allBal, err := svc.GetAllBalances(alice.ID)
-	assertNoError(t, err)
-	assertEqual(t, "number of currencies", len(allBal), 2)
 }
 
 // TestPostTransaction_BookingAndValueDate tests that booking date and
@@ -388,8 +351,8 @@ func TestPostTransaction_BookingAndValueDate(t *testing.T) {
 		BookingDate: bookingDate,
 		ValueDate:   valueDate,
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 1000, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 1000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 1000, Direction: Debit},
+			{AccountID: bob.ID, Amount: 1000, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -406,8 +369,8 @@ func TestPostTransaction_DefaultDates(t *testing.T) {
 	tx, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer with default dates",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 1000, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 1000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 1000, Direction: Debit},
+			{AccountID: bob.ID, Amount: 1000, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -439,8 +402,8 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 	_, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Zero amount",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 0, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 0, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 0, Direction: Debit},
+			{AccountID: bob.ID, Amount: 0, Direction: Credit},
 		},
 	})
 	assertError(t, err, ErrInvalidAmount)
@@ -448,25 +411,11 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 	_, err = svc.PostTransaction(PostTransactionRequest{
 		Description: "Negative amount",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: -100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: -100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: -100, Direction: Debit},
+			{AccountID: bob.ID, Amount: -100, Direction: Credit},
 		},
 	})
 	assertError(t, err, ErrInvalidAmount)
-}
-
-func TestPostTransaction_EmptyCurrency(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
-
-	_, err := svc.PostTransaction(PostTransactionRequest{
-		Description: "No currency",
-		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "", Direction: Credit},
-		},
-	})
-	assertError(t, err, ErrEmptyCurrency)
 }
 
 func TestPostTransaction_AccountNotFound(t *testing.T) {
@@ -476,8 +425,8 @@ func TestPostTransaction_AccountNotFound(t *testing.T) {
 	_, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Bad account",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: "nonexistent", Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: "nonexistent", Amount: 100, Direction: Credit},
 		},
 	})
 	assertError(t, err, ErrAccountNotFound)
@@ -490,23 +439,8 @@ func TestPostTransaction_Unbalanced(t *testing.T) {
 	_, err := svc.PostTransaction(PostTransactionRequest{
 		Description: "Unbalanced",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 200, Currency: "USD", Direction: Credit},
-		},
-	})
-	assertError(t, err, ErrUnbalancedTransaction)
-}
-
-func TestPostTransaction_UnbalancedMultiCurrency(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
-
-	// Each currency must balance independently.
-	_, err := svc.PostTransaction(PostTransactionRequest{
-		Description: "Cross-currency imbalance",
-		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "EUR", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 200, Direction: Credit},
 		},
 	})
 	assertError(t, err, ErrUnbalancedTransaction)
@@ -525,8 +459,8 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 		IdempotencyKey: "key-1",
 		Description:    "Transfer",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 	assertNoError(t, err)
@@ -536,8 +470,8 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 		IdempotencyKey: "key-1",
 		Description:    "Duplicate",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 	assertError(t, err, ErrDuplicateIdempotencyKey)
@@ -563,8 +497,8 @@ func TestGetTransaction(t *testing.T) {
 	tx, _ := svc.PostTransaction(PostTransactionRequest{
 		Description: "Test",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 
@@ -594,8 +528,8 @@ func TestReverseTransaction(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
@@ -603,8 +537,8 @@ func TestReverseTransaction(t *testing.T) {
 	tx, _ := svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 5000, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 5000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
+			{AccountID: bob.ID, Amount: 5000, Direction: Credit},
 		},
 	})
 
@@ -620,11 +554,11 @@ func TestReverseTransaction(t *testing.T) {
 	assertEqual(t, "original status", original.Status, Reversed)
 
 	// Alice's balance should be back to 10000.
-	aliceBal, _ := svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "alice balance after reversal", aliceBal.Book, Amount(10000))
 
 	// Bob's balance should be back to 0.
-	bobBal, _ := svc.GetBalance(bob.ID, "USD")
+	bobBal, _ := svc.GetBalance(bob.ID)
 	assertEqual(t, "bob balance after reversal", bobBal.Book, Amount(0))
 }
 
@@ -642,8 +576,8 @@ func TestReverseTransaction_AlreadyReversed(t *testing.T) {
 	tx, _ := svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 
@@ -673,8 +607,8 @@ func TestHold_FullLifecycle(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
@@ -682,14 +616,13 @@ func TestHold_FullLifecycle(t *testing.T) {
 	hold, err := svc.CreateHold(CreateHoldRequest{
 		AccountID:   alice.ID,
 		Amount:      3000,
-		Currency:    "USD",
-		Description: "Gas pump authorization",
+				Description: "Gas pump authorization",
 	})
 	assertNoError(t, err)
 	assertEqual(t, "hold status", hold.Status, HoldActive)
 
 	// Check balance: book=10000, holds=3000, available=7000.
-	bal, _ := svc.GetBalance(alice.ID, "USD")
+	bal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "book with hold", bal.Book, Amount(10000))
 	assertEqual(t, "holds amount", bal.Holds, Amount(3000))
 	assertEqual(t, "available with hold", bal.Available, Amount(7000))
@@ -704,7 +637,7 @@ func TestHold_FullLifecycle(t *testing.T) {
 	assertEqual(t, "hold captured", h.Status, HoldCaptured)
 
 	// Balance: book=10000-2500=7500, holds=0, available=7500.
-	bal, _ = svc.GetBalance(alice.ID, "USD")
+	bal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "book after capture", bal.Book, Amount(7500))
 	assertEqual(t, "holds after capture", bal.Holds, Amount(0))
 	assertEqual(t, "available after capture", bal.Available, Amount(7500))
@@ -719,8 +652,8 @@ func TestHold_Release(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
@@ -728,15 +661,14 @@ func TestHold_Release(t *testing.T) {
 	hold, _ := svc.CreateHold(CreateHoldRequest{
 		AccountID: alice.ID,
 		Amount:    3000,
-		Currency:  "USD",
-	})
+			})
 
 	// Release hold.
 	err := svc.ReleaseHold(hold.ID)
 	assertNoError(t, err)
 
 	// Available should be fully restored.
-	bal, _ := svc.GetBalance(alice.ID, "USD")
+	bal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "book", bal.Book, Amount(10000))
 	assertEqual(t, "holds", bal.Holds, Amount(0))
 	assertEqual(t, "available", bal.Available, Amount(10000))
@@ -752,8 +684,8 @@ func TestHold_Expiration(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
@@ -761,12 +693,11 @@ func TestHold_Expiration(t *testing.T) {
 	svc.CreateHold(CreateHoldRequest{
 		AccountID: alice.ID,
 		Amount:    3000,
-		Currency:  "USD",
-		ExpiresAt: time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC), // yesterday
+				ExpiresAt: time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC), // yesterday
 	})
 
 	// Expired hold should not affect available balance.
-	bal, _ := svc.GetBalance(alice.ID, "USD")
+	bal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "holds", bal.Holds, Amount(0))
 	assertEqual(t, "available", bal.Available, Amount(10000))
 }
@@ -778,8 +709,7 @@ func TestCreateHold_Validation(t *testing.T) {
 	_, err := svc.CreateHold(CreateHoldRequest{
 		AccountID: "nonexistent",
 		Amount:    100,
-		Currency:  "USD",
-	})
+			})
 	assertError(t, err, ErrAccountNotFound)
 
 	alice, _, _, _ := setupChartOfAccounts(t, svc)
@@ -788,17 +718,8 @@ func TestCreateHold_Validation(t *testing.T) {
 	_, err = svc.CreateHold(CreateHoldRequest{
 		AccountID: alice.ID,
 		Amount:    0,
-		Currency:  "USD",
-	})
+			})
 	assertError(t, err, ErrInvalidAmount)
-
-	// Empty currency.
-	_, err = svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    100,
-		Currency:  "",
-	})
-	assertError(t, err, ErrEmptyCurrency)
 }
 
 func TestReleaseHold_NotFound(t *testing.T) {
@@ -815,8 +736,7 @@ func TestReleaseHold_NotActive(t *testing.T) {
 	hold, _ := svc.CreateHold(CreateHoldRequest{
 		AccountID: alice.ID,
 		Amount:    100,
-		Currency:  "USD",
-	})
+			})
 
 	// Release it.
 	svc.ReleaseHold(hold.ID)
@@ -837,8 +757,7 @@ func TestCaptureHold_Validation(t *testing.T) {
 	hold, _ := svc.CreateHold(CreateHoldRequest{
 		AccountID: alice.ID,
 		Amount:    100,
-		Currency:  "USD",
-	})
+			})
 
 	// Counterparty not found.
 	_, err = svc.CaptureHold(hold.ID, "nonexistent", 100, "")
@@ -860,17 +779,17 @@ func TestHold_MultipleHolds(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
 	// Place two holds.
-	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 2000, Currency: "USD"})
-	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 3000, Currency: "USD"})
+	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 2000})
+	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
 
 	// Available = 10000 - 2000 - 3000 = 5000.
-	bal, _ := svc.GetBalance(alice.ID, "USD")
+	bal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "available", bal.Available, Amount(5000))
 	assertEqual(t, "holds", bal.Holds, Amount(5000))
 }
@@ -887,26 +806,25 @@ func TestEndOfDaySnapshot(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
 		},
 	})
 
 	// Take snapshot.
 	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	snap, err := svc.TakeEndOfDaySnapshot(alice.ID, "USD", date)
+	snap, err := svc.TakeEndOfDaySnapshot(alice.ID, date)
 	assertNoError(t, err)
 	assertEqual(t, "snapshot book", snap.Balance.Book, Amount(10000))
-	assertEqual(t, "snapshot currency", snap.Currency, Currency("USD"))
 
 	// Retrieve snapshot.
-	got, err := svc.GetSnapshot(alice.ID, "USD", date)
+	got, err := svc.GetSnapshot(alice.ID, date)
 	assertNoError(t, err)
 	assertEqual(t, "retrieved book", got.Balance.Book, Amount(10000))
 
 	// Non-existent snapshot returns nil.
 	otherDate := time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC)
-	missing, err := svc.GetSnapshot(alice.ID, "USD", otherDate)
+	missing, err := svc.GetSnapshot(alice.ID, otherDate)
 	assertNoError(t, err)
 	if missing != nil {
 		t.Fatal("expected nil snapshot for non-existent date")
@@ -917,7 +835,7 @@ func TestEndOfDaySnapshot_AccountNotFound(t *testing.T) {
 	svc := testService(t)
 
 	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	_, err := svc.TakeEndOfDaySnapshot("nonexistent", "USD", date)
+	_, err := svc.TakeEndOfDaySnapshot("nonexistent", date)
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -925,12 +843,12 @@ func TestGetSnapshot_AccountNotFound(t *testing.T) {
 	svc := testService(t)
 
 	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	_, err := svc.GetSnapshot("nonexistent", "USD", date)
+	_, err := svc.GetSnapshot("nonexistent", date)
 	assertError(t, err, ErrAccountNotFound)
 }
 
 // TestEndOfDaySnapshot_Overwrite tests that taking a snapshot for the
-// same account/currency/date overwrites the previous one.
+// same account/date overwrites the previous one.
 func TestEndOfDaySnapshot_Overwrite(t *testing.T) {
 	svc := testService(t)
 	alice, _, cash, _ := setupChartOfAccounts(t, svc)
@@ -941,21 +859,21 @@ func TestEndOfDaySnapshot_Overwrite(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "First deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 5000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 5000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 5000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 5000, Direction: Credit},
 		},
 	})
-	svc.TakeEndOfDaySnapshot(alice.ID, "USD", date)
+	svc.TakeEndOfDaySnapshot(alice.ID, date)
 
 	// Post another transaction and retake snapshot.
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Second deposit",
 		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 3000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 3000, Currency: "USD", Direction: Credit},
+			{AccountID: cash.ID, Amount: 3000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 3000, Direction: Credit},
 		},
 	})
-	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, "USD", date)
+	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, date)
 	assertEqual(t, "overwritten snapshot", snap.Balance.Book, Amount(8000))
 }
 
@@ -971,8 +889,8 @@ func TestAuditLog(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 
@@ -999,8 +917,8 @@ func TestAuditLogForEntity(t *testing.T) {
 	tx, _ := svc.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 100, Currency: "USD", Direction: Debit},
-			{AccountID: bob.ID, Amount: 100, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
 		},
 	})
 
@@ -1036,24 +954,17 @@ func TestAuditLog_ImmutableCopy(t *testing.T) {
 func TestGetBalance_AccountNotFound(t *testing.T) {
 	svc := testService(t)
 
-	_, err := svc.GetBalance("nonexistent", "USD")
-	assertError(t, err, ErrAccountNotFound)
-}
-
-func TestGetAllBalances_AccountNotFound(t *testing.T) {
-	svc := testService(t)
-
-	_, err := svc.GetAllBalances("nonexistent")
+	_, err := svc.GetBalance("nonexistent")
 	assertError(t, err, ErrAccountNotFound)
 }
 
 // TestGetBalance_ZeroForNewAccount tests that a new account has zero
-// balance in any currency.
+// balance.
 func TestGetBalance_ZeroForNewAccount(t *testing.T) {
 	svc := testService(t)
 	alice, _, _, _ := setupChartOfAccounts(t, svc)
 
-	bal, err := svc.GetBalance(alice.ID, "USD")
+	bal, err := svc.GetBalance(alice.ID)
 	assertNoError(t, err)
 	assertEqual(t, "book", bal.Book, Amount(0))
 	assertEqual(t, "holds", bal.Holds, Amount(0))
@@ -1082,8 +993,8 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "D asset, C liability",
 		Entries: []Entry{
-			{AccountID: asset.ID, Amount: 1000, Currency: "USD", Direction: Debit},
-			{AccountID: liability.ID, Amount: 1000, Currency: "USD", Direction: Credit},
+			{AccountID: asset.ID, Amount: 1000, Direction: Debit},
+			{AccountID: liability.ID, Amount: 1000, Direction: Credit},
 		},
 	})
 
@@ -1091,8 +1002,8 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "D expense, C revenue",
 		Entries: []Entry{
-			{AccountID: expense.ID, Amount: 500, Currency: "USD", Direction: Debit},
-			{AccountID: revenue.ID, Amount: 500, Currency: "USD", Direction: Credit},
+			{AccountID: expense.ID, Amount: 500, Direction: Debit},
+			{AccountID: revenue.ID, Amount: 500, Direction: Credit},
 		},
 	})
 
@@ -1100,8 +1011,8 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	svc.PostTransaction(PostTransactionRequest{
 		Description: "D asset, C equity",
 		Entries: []Entry{
-			{AccountID: asset.ID, Amount: 2000, Currency: "USD", Direction: Debit},
-			{AccountID: equity.ID, Amount: 2000, Currency: "USD", Direction: Credit},
+			{AccountID: asset.ID, Amount: 2000, Direction: Debit},
+			{AccountID: equity.ID, Amount: 2000, Direction: Credit},
 		},
 	})
 
@@ -1114,7 +1025,7 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	expected := []Amount{3000, 1000, 2000, 500, 500}
 
 	for i, acct := range accounts {
-		bal, _ := svc.GetBalance(acct.ID, "USD")
+		bal, _ := svc.GetBalance(acct.ID)
 		assertEqual(t, acct.Name+" balance", bal.Book, expected[i])
 	}
 }
@@ -1153,31 +1064,30 @@ func TestFullBankingWorkflow(t *testing.T) {
 		IdempotencyKey: "deposit-001",
 		Description:    "Cash deposit at branch",
 		Entries: []Entry{
-			{AccountID: cashAccount.ID, Amount: 50000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 50000, Currency: "USD", Direction: Credit},
+			{AccountID: cashAccount.ID, Amount: 50000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 50000, Direction: Credit},
 		},
 	})
 
-	aliceBal, _ := svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ := svc.GetBalance(alice.ID)
 	assertEqual(t, "after deposit", aliceBal.Book, Amount(50000))
 
 	// Step 3: Alice swipes her card at a restaurant ($80 auth).
 	hold, _ := svc.CreateHold(CreateHoldRequest{
 		AccountID:   alice.ID,
 		Amount:      8000,
-		Currency:    "USD",
-		Description: "Card auth: Restaurant",
+				Description: "Card auth: Restaurant",
 		ExpiresAt:   time.Date(2025, 1, 22, 0, 0, 0, 0, time.UTC),
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "book with hold", aliceBal.Book, Amount(50000))
 	assertEqual(t, "available with hold", aliceBal.Available, Amount(42000))
 
 	// Restaurant captures for $75 (tip adjusted).
 	svc.CaptureHold(hold.ID, merchant.ID, 7500, "Restaurant bill")
 
-	aliceBal, _ = svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "book after capture", aliceBal.Book, Amount(42500))
 	assertEqual(t, "available after capture", aliceBal.Available, Amount(42500))
 
@@ -1188,12 +1098,12 @@ func TestFullBankingWorkflow(t *testing.T) {
 		BookingDate:    time.Date(2025, 1, 15, 14, 30, 0, 0, time.UTC),
 		ValueDate:      time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC),
 		Entries: []Entry{
-			{AccountID: nostro.ID, Amount: 20000, Currency: "USD", Direction: Debit},
-			{AccountID: alice.ID, Amount: 20000, Currency: "USD", Direction: Credit},
+			{AccountID: nostro.ID, Amount: 20000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 20000, Direction: Credit},
 		},
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "after wire", aliceBal.Book, Amount(62500))
 
 	// Step 5: Erroneous $10 fee, then reversal.
@@ -1201,22 +1111,22 @@ func TestFullBankingWorkflow(t *testing.T) {
 		IdempotencyKey: "fee-001",
 		Description:    "Monthly maintenance fee (error)",
 		Entries: []Entry{
-			{AccountID: alice.ID, Amount: 1000, Currency: "USD", Direction: Debit},
-			{AccountID: feeIncome.ID, Amount: 1000, Currency: "USD", Direction: Credit},
+			{AccountID: alice.ID, Amount: 1000, Direction: Debit},
+			{AccountID: feeIncome.ID, Amount: 1000, Direction: Credit},
 		},
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "after fee", aliceBal.Book, Amount(61500))
 
 	svc.ReverseTransaction(errTx.ID, "Reverse erroneous fee")
 
-	aliceBal, _ = svc.GetBalance(alice.ID, "USD")
+	aliceBal, _ = svc.GetBalance(alice.ID)
 	assertEqual(t, "after fee reversal", aliceBal.Book, Amount(62500))
 
 	// Step 6: End-of-day snapshot.
 	eod := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, "USD", eod)
+	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, eod)
 	assertEqual(t, "eod snapshot", snap.Balance.Book, Amount(62500))
 
 	// Step 7: Audit trail should contain all operations.
