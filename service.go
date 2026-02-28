@@ -18,8 +18,7 @@ import (
 // # Double-Entry Bookkeeping
 //
 // Every transaction posted through this service enforces the fundamental
-// accounting equation: for each currency in the transaction, total debits
-// must equal total credits. This guarantee is checked before any entries
+// accounting equation: total debits must equal total credits. This guarantee is checked before any entries
 // are applied to account balances.
 //
 // # ID Generation
@@ -46,8 +45,8 @@ type Service struct {
 	accountHolds map[string][]string
 
 	// snapshots stores end-of-day balance snapshots.
-	// Structure: accountID -> currency -> dateKey -> snapshot.
-	snapshots map[string]map[Currency]map[string]*BalanceSnapshot
+	// Structure: accountID -> dateKey -> snapshot.
+	snapshots map[string]map[string]*BalanceSnapshot
 
 	// auditLog is an append-only log of all mutations. Once appended,
 	// entries are never modified or removed.
@@ -77,7 +76,7 @@ func NewService() *Service {
 		holds:            make(map[string]*Hold),
 		idempotencyIndex: make(map[string]string),
 		accountHolds:     make(map[string][]string),
-		snapshots:        make(map[string]map[Currency]map[string]*BalanceSnapshot),
+		snapshots:        make(map[string]map[string]*BalanceSnapshot),
 		clock:            time.Now,
 	}
 }
@@ -188,8 +187,7 @@ func (s *Service) GetSubledger(id string) (*Subledger, error) {
 //   - Asset and Expense accounts have a normal debit balance (debits increase them)
 //   - Liability, Equity, and Revenue accounts have a normal credit balance (credits increase them)
 //
-// The account starts with a zero balance in all currencies. Balances are
-// implicitly created when the first transaction involving a currency is posted.
+// The account starts with a zero balance.
 //
 // Returns ErrSubledgerNotFound if the parent subledger does not exist.
 func (s *Service) CreateAccount(subledgerID, name string, accountType AccountType) (*Account, error) {
@@ -240,13 +238,12 @@ type PostTransactionRequest struct {
 	IdempotencyKey string
 
 	// Entries is the set of debit and credit legs that make up this
-	// transaction. For each currency present in the entries, the total
-	// debit amounts must equal the total credit amounts.
+	// transaction. The total debit amounts must equal the total credit
+	// amounts.
 	//
 	// Each entry specifies:
 	//   - AccountID: which account to debit or credit
 	//   - Amount: the positive amount in minor currency units
-	//   - Currency: the ISO 4217 currency code
 	//   - Direction: Debit or Credit
 	Entries []Entry
 
@@ -276,7 +273,7 @@ type PostTransactionRequest struct {
 //  2. All entry amounts must be positive (direction determines sign).
 //  3. All referenced accounts must exist.
 //  4. If an idempotency key is provided, it must not already be used.
-//  5. For each currency, total debits must equal total credits.
+//  5. Total debits must equal total credits.
 //
 // If all validations pass, the entries are atomically applied to the
 // account balances and the transaction is recorded.
@@ -302,13 +299,10 @@ func (s *Service) PostTransaction(req PostTransactionRequest) (*Transaction, err
 		return nil, ErrEmptyTransaction
 	}
 
-	// Validate: amounts and currencies.
+	// Validate: amounts.
 	for _, e := range req.Entries {
 		if e.Amount <= 0 {
 			return nil, ErrInvalidAmount
-		}
-		if e.Currency == "" {
-			return nil, ErrEmptyCurrency
 		}
 	}
 
@@ -326,7 +320,7 @@ func (s *Service) PostTransaction(req PostTransactionRequest) (*Transaction, err
 		}
 	}
 
-	// Validate: balanced per currency.
+	// Validate: balanced.
 	if err := validateBalance(req.Entries); err != nil {
 		return nil, err
 	}
@@ -370,33 +364,21 @@ func (s *Service) PostTransaction(req PostTransactionRequest) (*Transaction, err
 	return tx, nil
 }
 
-// validateBalance checks that total debits equal total credits for each
-// currency. This is the core invariant of double-entry bookkeeping.
+// validateBalance checks that total debits equal total credits.
+// This is the core invariant of double-entry bookkeeping.
 func validateBalance(entries []Entry) error {
-	// Sum debits and credits per currency.
-	type sums struct {
-		debits  Amount
-		credits Amount
-	}
-	byCurrency := make(map[Currency]*sums)
+	var debits, credits Amount
 
 	for _, e := range entries {
-		s, ok := byCurrency[e.Currency]
-		if !ok {
-			s = &sums{}
-			byCurrency[e.Currency] = s
-		}
 		if e.Direction == Debit {
-			s.debits += e.Amount
+			debits += e.Amount
 		} else {
-			s.credits += e.Amount
+			credits += e.Amount
 		}
 	}
 
-	for _, s := range byCurrency {
-		if s.debits != s.credits {
-			return ErrUnbalancedTransaction
-		}
+	if debits != credits {
+		return ErrUnbalancedTransaction
 	}
 
 	return nil
@@ -470,7 +452,6 @@ func (s *Service) ReverseTransaction(txID, description string) (*Transaction, er
 			ID:        s.nextID("ent"),
 			AccountID: e.AccountID,
 			Amount:    e.Amount,
-			Currency:  e.Currency,
 			Direction: e.Direction.Opposite(),
 		}
 	}
@@ -509,9 +490,6 @@ type CreateHoldRequest struct {
 	// Amount is the positive hold amount in minor currency units.
 	Amount Amount
 
-	// Currency is the ISO 4217 currency code of the hold.
-	Currency Currency
-
 	// ExpiresAt is when the hold automatically becomes void. Expired
 	// holds no longer affect the available balance. If zero, the hold
 	// does not expire automatically.
@@ -534,7 +512,6 @@ type CreateHoldRequest struct {
 // Returns:
 //   - ErrAccountNotFound if the account does not exist.
 //   - ErrInvalidAmount if the amount is not positive.
-//   - ErrEmptyCurrency if the currency is empty.
 func (s *Service) CreateHold(req CreateHoldRequest) (*Hold, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -545,16 +522,12 @@ func (s *Service) CreateHold(req CreateHoldRequest) (*Hold, error) {
 	if req.Amount <= 0 {
 		return nil, ErrInvalidAmount
 	}
-	if req.Currency == "" {
-		return nil, ErrEmptyCurrency
-	}
 
 	now := s.now()
 	h := &Hold{
 		ID:          s.nextID("hld"),
 		AccountID:   req.AccountID,
 		Amount:      req.Amount,
-		Currency:    req.Currency,
 		ExpiresAt:   req.ExpiresAt,
 		Description: req.Description,
 		Status:      HoldActive,
@@ -650,14 +623,12 @@ func (s *Service) CaptureHold(holdID, counterpartyAccountID string, captureAmoun
 			ID:        s.nextID("ent"),
 			AccountID: h.AccountID,
 			Amount:    captureAmount,
-			Currency:  h.Currency,
 			Direction: holdDirection,
 		},
 		{
 			ID:        s.nextID("ent"),
 			AccountID: counterpartyAccountID,
 			Amount:    captureAmount,
-			Currency:  h.Currency,
 			Direction: counterDirection,
 		},
 	}
@@ -701,23 +672,22 @@ func (s *Service) GetHold(id string) (*Hold, error) {
 // Balance Queries
 // ---------------------------------------------------------------------------
 
-// GetBalance computes the current balance of an account in a specific currency.
+// GetBalance computes the current balance of an account.
 //
 // The balance has three components:
 //
 //   - Book Balance: The net effect of all posted transactions on this
-//     account in this currency. Calculated by replaying all entries.
+//     account. Calculated by replaying all entries.
 //     For Asset/Expense accounts, debits increase and credits decrease.
 //     For Liability/Equity/Revenue accounts, credits increase and debits decrease.
 //
-//   - Holds: The sum of all active (non-expired) holds on this account
-//     in this currency.
+//   - Holds: The sum of all active (non-expired) holds on this account.
 //
 //   - Available Balance: Book Balance minus Holds. This represents
 //     the amount that can actually be used for new transactions.
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetBalance(accountID string, currency Currency) (*Balance, error) {
+func (s *Service) GetBalance(accountID string) (*Balance, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -726,50 +696,18 @@ func (s *Service) GetBalance(accountID string, currency Currency) (*Balance, err
 		return nil, ErrAccountNotFound
 	}
 
-	book := s.computeBookBalance(accountID, currency, acct.Type)
-	holds := s.computeActiveHolds(accountID, currency)
+	book := s.computeBookBalance(accountID, acct.Type)
+	holds := s.computeActiveHolds(accountID)
 
 	return &Balance{
-		Currency:  currency,
 		Book:      book,
 		Holds:     holds,
 		Available: book - holds,
 	}, nil
 }
 
-// GetAllBalances returns balances for an account across all currencies
-// that have been used in transactions involving this account.
-//
-// Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetAllBalances(accountID string) ([]Balance, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	acct, ok := s.accounts[accountID]
-	if !ok {
-		return nil, ErrAccountNotFound
-	}
-
-	// Discover all currencies used in this account's entries.
-	currencies := s.discoverCurrencies(accountID)
-
-	var balances []Balance
-	for _, cur := range currencies {
-		book := s.computeBookBalance(accountID, cur, acct.Type)
-		holds := s.computeActiveHolds(accountID, cur)
-		balances = append(balances, Balance{
-			Currency:  cur,
-			Book:      book,
-			Holds:     holds,
-			Available: book - holds,
-		})
-	}
-
-	return balances, nil
-}
-
-// computeBookBalance calculates the net book balance for an account in a
-// given currency by replaying all posted transaction entries.
+// computeBookBalance calculates the net book balance for an account by
+// replaying all posted transaction entries.
 //
 // The sign convention:
 //   - Entries in the account's normal direction add to the balance.
@@ -784,13 +722,13 @@ func (s *Service) GetAllBalances(accountID string) ([]Balance, error) {
 // The Reversed status is informational — the corresponding reversal
 // transaction's entries are what actually cancel out the original's
 // balance impact. This preserves the full audit trail.
-func (s *Service) computeBookBalance(accountID string, currency Currency, accountType AccountType) Amount {
+func (s *Service) computeBookBalance(accountID string, accountType AccountType) Amount {
 	var balance Amount
 	normal := accountType.NormalBalance()
 
 	for _, tx := range s.transactions {
 		for _, e := range tx.Entries {
-			if e.AccountID != accountID || e.Currency != currency {
+			if e.AccountID != accountID {
 				continue
 			}
 			if e.Direction == normal {
@@ -804,9 +742,8 @@ func (s *Service) computeBookBalance(accountID string, currency Currency, accoun
 	return balance
 }
 
-// computeActiveHolds sums all active, non-expired holds for an account
-// in a given currency.
-func (s *Service) computeActiveHolds(accountID string, currency Currency) Amount {
+// computeActiveHolds sums all active, non-expired holds for an account.
+func (s *Service) computeActiveHolds(accountID string) Amount {
 	var total Amount
 	now := s.now()
 
@@ -818,31 +755,10 @@ func (s *Service) computeActiveHolds(accountID string, currency Currency) Amount
 		if !h.ExpiresAt.IsZero() && h.ExpiresAt.Before(now) {
 			continue
 		}
-		if h.Currency != currency {
-			continue
-		}
 		total += h.Amount
 	}
 
 	return total
-}
-
-// discoverCurrencies finds all currencies used in entries for a given account.
-func (s *Service) discoverCurrencies(accountID string) []Currency {
-	seen := make(map[Currency]bool)
-	for _, tx := range s.transactions {
-		for _, e := range tx.Entries {
-			if e.AccountID == accountID && !seen[e.Currency] {
-				seen[e.Currency] = true
-			}
-		}
-	}
-
-	currencies := make([]Currency, 0, len(seen))
-	for c := range seen {
-		currencies = append(currencies, c)
-	}
-	return currencies
 }
 
 // ---------------------------------------------------------------------------
@@ -850,7 +766,7 @@ func (s *Service) discoverCurrencies(accountID string) []Currency {
 // ---------------------------------------------------------------------------
 
 // TakeEndOfDaySnapshot computes and stores the balance snapshot for an
-// account/currency pair on a given business date.
+// account on a given business date.
 //
 // End-of-day snapshots serve several purposes in banking:
 //
@@ -866,11 +782,11 @@ func (s *Service) discoverCurrencies(accountID string) []Currency {
 //   - Performance: Instead of replaying all entries from the beginning of
 //     time, balance queries for historical dates can use snapshots.
 //
-// If a snapshot already exists for the same account/currency/date, it is
+// If a snapshot already exists for the same account/date, it is
 // overwritten (useful for end-of-day recalculation after late postings).
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) TakeEndOfDaySnapshot(accountID string, currency Currency, date time.Time) (*BalanceSnapshot, error) {
+func (s *Service) TakeEndOfDaySnapshot(accountID string, date time.Time) (*BalanceSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -879,15 +795,13 @@ func (s *Service) TakeEndOfDaySnapshot(accountID string, currency Currency, date
 		return nil, ErrAccountNotFound
 	}
 
-	book := s.computeBookBalance(accountID, currency, acct.Type)
-	holds := s.computeActiveHolds(accountID, currency)
+	book := s.computeBookBalance(accountID, acct.Type)
+	holds := s.computeActiveHolds(accountID)
 
 	snap := &BalanceSnapshot{
 		AccountID: accountID,
-		Currency:  currency,
 		Date:      date,
 		Balance: Balance{
-			Currency:  currency,
 			Book:      book,
 			Holds:     holds,
 			Available: book - holds,
@@ -897,24 +811,21 @@ func (s *Service) TakeEndOfDaySnapshot(accountID string, currency Currency, date
 
 	// Store in nested map structure.
 	if s.snapshots[accountID] == nil {
-		s.snapshots[accountID] = make(map[Currency]map[string]*BalanceSnapshot)
-	}
-	if s.snapshots[accountID][currency] == nil {
-		s.snapshots[accountID][currency] = make(map[string]*BalanceSnapshot)
+		s.snapshots[accountID] = make(map[string]*BalanceSnapshot)
 	}
 	dateKey := date.Format("2006-01-02")
-	s.snapshots[accountID][currency][dateKey] = snap
+	s.snapshots[accountID][dateKey] = snap
 
 	s.appendAudit(EventSnapshotTaken, accountID, snap)
 	return snap, nil
 }
 
-// GetSnapshot retrieves an end-of-day balance snapshot for an account,
-// currency, and business date.
+// GetSnapshot retrieves an end-of-day balance snapshot for an account
+// and business date.
 //
 // Returns nil if no snapshot exists for the given parameters.
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetSnapshot(accountID string, currency Currency, date time.Time) (*BalanceSnapshot, error) {
+func (s *Service) GetSnapshot(accountID string, date time.Time) (*BalanceSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -924,10 +835,8 @@ func (s *Service) GetSnapshot(accountID string, currency Currency, date time.Tim
 
 	dateKey := date.Format("2006-01-02")
 	if byAccount, ok := s.snapshots[accountID]; ok {
-		if byCurrency, ok := byAccount[currency]; ok {
-			if snap, ok := byCurrency[dateKey]; ok {
-				return snap, nil
-			}
+		if snap, ok := byAccount[dateKey]; ok {
+			return snap, nil
 		}
 	}
 

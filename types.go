@@ -2,13 +2,10 @@ package ledger
 
 import "time"
 
-// Amount represents a monetary value in the smallest unit of a currency
+// Amount represents a monetary value in the smallest unit of the currency
 // (e.g., cents for USD, pence for GBP). This is the standard approach
 // used by most payment systems and banks.
 type Amount = int64
-
-// Currency is an ISO 4217 currency code (e.g., "USD", "EUR", "JPY").
-type Currency = string
 
 // AccountType classifies accounts in the chart of accounts.
 type AccountType int
@@ -96,12 +93,11 @@ type Account struct {
 }
 
 // Entry is a single leg of a transaction, representing a debit or credit
-// to an account in a specific currency.
+// to an account.
 type Entry struct {
 	ID        string
 	AccountID string
 	Amount    Amount
-	Currency  Currency
 	Direction Direction
 }
 
@@ -121,7 +117,7 @@ func (s TransactionStatus) String() string {
 }
 
 // Transaction is a multi-legged accounting entry. All entries within a
-// transaction must balance (total debits = total credits) per currency.
+// transaction must balance (total debits = total credits).
 type Transaction struct {
 	ID             string
 	IdempotencyKey string
@@ -165,16 +161,14 @@ type Hold struct {
 	ID          string
 	AccountID   string
 	Amount      Amount
-	Currency    Currency
 	ExpiresAt   time.Time
 	Description string
 	Status      HoldStatus
 	CreatedAt   time.Time
 }
 
-// Balance represents the balances of an account in a single currency.
+// Balance represents the balances of an account.
 type Balance struct {
-	Currency  Currency
 	Book      Amount // Sum of all posted entries (considering account normal)
 	Holds     Amount // Sum of active holds
 	Available Amount // Book minus holds
@@ -184,7 +178,6 @@ type Balance struct {
 // taken at end-of-day for a given value date.
 type BalanceSnapshot struct {
 	AccountID string
-	Currency  Currency
 	Date      time.Time // The business day this snapshot represents
 	Balance   Balance
 	TakenAt   time.Time // When the snapshot was actually taken

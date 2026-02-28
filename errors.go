@@ -32,11 +32,10 @@ var (
 	ErrHoldNotFound = errors.New("hold not found")
 
 	// ErrUnbalancedTransaction is returned when the total debits do not
-	// equal the total credits for one or more currencies in a transaction.
-	// In double-entry bookkeeping, every transaction must balance: the sum
-	// of debit amounts must equal the sum of credit amounts for each
-	// currency involved.
-	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits per currency")
+	// equal the total credits in a transaction. In double-entry
+	// bookkeeping, every transaction must balance: the sum of debit
+	// amounts must equal the sum of credit amounts.
+	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits")
 
 	// ErrEmptyTransaction is returned when a transaction is submitted
 	// with no entries. A valid transaction requires at least two entries
@@ -64,10 +63,6 @@ var (
 	// negative. All entry amounts must be positive; the direction
 	// (debit/credit) determines the sign of the balance impact.
 	ErrInvalidAmount = errors.New("amount must be positive")
-
-	// ErrEmptyCurrency is returned when a currency code is empty.
-	// Every entry and hold must specify a valid currency code.
-	ErrEmptyCurrency = errors.New("currency must not be empty")
 
 	// ErrInsufficientBalance is returned when a hold or transaction
 	// would cause the available balance to go below zero for account

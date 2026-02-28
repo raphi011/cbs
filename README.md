@@ -19,10 +19,17 @@ A simplified but functionally complete Go library modeling the core accounting e
   - [Booking Date vs. Value Date](#booking-date-vs-value-date)
   - [Balance Types](#balance-types)
   - [Multi-Legged Transactions](#multi-legged-transactions)
-  - [Multi-Currency](#multi-currency)
   - [Holds (Authorization / Pending Transactions)](#holds-authorization--pending-transactions)
   - [Idempotency](#idempotency)
   - [Transaction Reversal](#transaction-reversal)
+- [Account Lifecycle](#account-lifecycle)
+  - [Account States](#account-states)
+  - [State Transitions](#state-transitions)
+  - [Overdraft](#overdraft)
+- [Settlement Cycles](#settlement-cycles)
+  - [What Is Settlement](#what-is-settlement)
+  - [Common Settlement Cycles](#common-settlement-cycles)
+  - [Settlement and the Ledger](#settlement-and-the-ledger)
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
   - [Audit Trail](#audit-trail)
@@ -185,17 +192,17 @@ In practice, the General Ledger might show one line item for "Total Customer Dep
 
 ### Amounts and Precision
 
-All monetary amounts are represented as integer values in the smallest unit of the currency (e.g., cents for USD, pence for GBP, yen for JPY). This is the same approach used by Stripe, most banks, and payment processors.
+All monetary amounts are represented as integer values in the smallest unit of the currency (e.g., cents for USD). This is the same approach used by Stripe, most banks, and payment processors.
 
 This avoids floating-point precision issues entirely. For example:
 
 | Display | Internal | Unit |
 |---------|----------|------|
-| $100.50 USD | 10050 | cents |
-| EUR 1,234.56 | 123456 | cents |
-| JPY 10,000 | 10000 | yen (no minor units) |
+| $100.50 | 10050 | cents |
+| $1,234.56 | 123456 | cents |
+| $10,000.00 | 1000000 | cents |
 
-The caller is responsible for knowing the minor unit convention of each currency and converting to/from display format.
+The caller is responsible for converting to/from display format.
 
 ## Transactions
 
@@ -219,9 +226,7 @@ In many real-world scenarios the two dates can diverge by days or even weeks:
 
 - **Forward-dated standing orders:** A customer schedules a rent payment for the 1st of next month. The bank may book the instruction today (Booking Date: January 20) but assign a value date of February 1, when the money actually moves and interest implications begin.
 
-- **International transfers:** Cross-border payments routed through correspondent banks can take 2–3 business days to settle. The sending bank books the debit immediately, but the receiving bank's credit may carry a value date days later once the nostro/vostro accounts are reconciled.
-
-- **Securities settlement:** A stock trade executed on Monday (trade date T) typically settles on Wednesday (T+2). The cash leg is booked on Monday but value-dated to Wednesday when ownership and funds actually transfer.
+- **Securities settlement:** A stock trade executed on Monday (trade date T) typically settles on the next business day (T+1). The cash leg is booked on Monday but value-dated to Tuesday when ownership and funds actually transfer.
 
 Interest is calculated based on value dates, not booking dates. This distinction is critical for accurate financial calculations — using the wrong date can mean customers earn too much or too little interest, and regulatory balance reports would be incorrect.
 
@@ -267,17 +272,11 @@ While simple transfers involve two entries (one debit, one credit), real-world t
 
 - **Fee split:** A $100 payment might be split into $97 to the merchant and $3 to the fee income account.
 
-- **FX transaction:** Buying EUR 100 for $110 involves debiting a EUR asset account, crediting a USD asset account, and potentially posting the FX margin to a revenue account.
-
 - **Loan disbursement:** Disbursing a $10,000 loan might involve crediting the customer's deposit account, debiting the loan receivable account, and debiting an origination fee from the deposit account with a corresponding credit to fee revenue.
 
-In all cases, the invariant holds: **total debits = total credits per currency**.
+- **Interest accrual:** Posting monthly interest on a savings account involves debiting the bank's interest expense account and crediting the customer's deposit account, possibly with a separate leg for tax withholding going to a liability account.
 
-### Multi-Currency
-
-Accounts can participate in transactions in any currency. Balances are tracked independently per currency — there is no automatic FX conversion at the ledger level. This means an account can have balances in multiple currencies simultaneously (e.g., $1000 USD, EUR 800, JPY 50000).
-
-This is the native-currency model. If reporting in a base currency is needed (e.g., for consolidated financial statements), that conversion happens at the reporting layer, not in the ledger.
+In all cases, the invariant holds: **total debits = total credits**.
 
 ### Holds (Authorization / Pending Transactions)
 
@@ -325,6 +324,126 @@ In banking, posted transactions are never deleted. The ledger is an immutable re
 - The net effect on all accounts is zero.
 
 The original transaction is marked as "Reversed" for reporting purposes, and the reversal transaction carries a reference to the original.
+
+## Account Lifecycle
+
+In a real banking system, accounts are not simply created and then used forever. They go through a series of states that govern what operations are permitted.
+
+### Account States
+
+| State | Description | Allowed Operations |
+|-------|-------------|-------------------|
+| **Active** | Normal operating state. The account is open and fully functional. | All: debits, credits, holds, statements |
+| **Dormant** | No customer-initiated activity for an extended period (typically 12–24 months, varies by jurisdiction). The bank may charge dormancy fees. | Credits only (incoming payments reactivate the account). Debits and new holds blocked until reactivated. |
+| **Frozen** | Temporarily restricted, usually due to a court order, fraud investigation, or regulatory action. | View balance only. All debits, credits, and holds blocked. The freeze may be partial (e.g., allowing credits but blocking debits). |
+| **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for audit and regulatory purposes. |
+
+### State Transitions
+
+```
+                  ┌─────────────────────────────────┐
+                  │                                 │
+                  ▼                                 │
+  ┌──────────┐  inactivity  ┌──────────┐  customer  │
+  │  Active  │ ──────────▶  │ Dormant  │ ──request──┘
+  │          │ ◀──────────  │          │
+  └──────────┘  reactivate  └──────────┘
+       │                         │
+       │ freeze                  │ freeze
+       ▼                         ▼
+  ┌──────────┐              ┌──────────┐
+  │  Frozen  │              │  Frozen  │
+  └──────────┘              └──────────┘
+       │                         │
+       │ unfreeze                │ unfreeze
+       ▼                         ▼
+  ┌──────────┐              ┌──────────┐
+  │  Active  │              │ Dormant  │
+  └──────────┘              └──────────┘
+       │
+       │ close (balance = 0)
+       ▼
+  ┌──────────┐
+  │  Closed  │  (terminal state)
+  └──────────┘
+```
+
+Key rules:
+
+- **Active → Dormant:** Triggered automatically after a configurable inactivity period. The bank must typically notify the customer before the transition.
+- **Dormant → Active:** Any customer-initiated transaction or explicit reactivation request returns the account to Active.
+- **Any → Frozen:** Can happen at any time due to legal or fraud reasons. The previous state is preserved so the account returns to it when unfrozen.
+- **Active → Closed:** Only permitted when the balance is zero. Requires all pending holds to be resolved and all scheduled payments to be cancelled.
+- **Closed is terminal:** A closed account cannot be reopened. If the customer wants to bank again, a new account must be created.
+
+### Overdraft
+
+An overdraft occurs when a transaction would cause an account's available balance to go below zero. Banks handle this in several ways:
+
+- **Hard decline:** The transaction is rejected outright. This is the simplest model and is what this implementation uses for Asset and Expense accounts — the system returns `ErrInsufficientBalance` if a debit would push the available balance negative.
+
+- **Arranged overdraft (credit facility):** The customer has a pre-agreed overdraft limit. Transactions are permitted as long as the negative balance does not exceed this limit. For example, an account with a $0 balance and a $500 overdraft limit can process debits up to $500. Interest is typically charged on the overdrawn amount at a higher rate than standard lending.
+
+- **Unarranged overdraft:** The bank may choose to honor a transaction that exceeds the arranged limit (or where no arrangement exists) as a courtesy, but at significantly higher fees. Regulations in many jurisdictions cap these fees.
+
+From a ledger perspective, overdraft is straightforward: the book balance of a liability account goes negative (from the bank's perspective, the customer now owes the bank rather than the bank owing the customer). The overdraft limit is a business rule enforced *before* posting to the ledger — the ledger itself is simply recording the economic reality.
+
+```
+Account balance:        $200   (bank owes customer $200)
+Overdraft limit:        $500
+Transaction:           -$600   (debit of $600)
+New balance:           -$400   (customer owes bank $400)
+Available for further: $100    (limit $500, used $400)
+```
+
+The available balance calculation with overdraft becomes:
+
+```
+Available Balance = Book Balance + Overdraft Limit - Active Holds
+```
+
+## Settlement Cycles
+
+### What Is Settlement
+
+Settlement is the process by which a transaction becomes final and irrevocable — when ownership of funds actually transfers between parties. The distinction between *executing* a transaction and *settling* it is fundamental to banking.
+
+When Alice sends Bob $100 via bank transfer, several things happen in sequence:
+
+1. **Initiation:** Alice's bank debits her account and sends a payment instruction.
+2. **Clearing:** The payment networks validate, match, and route the instruction. Net positions between banks are calculated.
+3. **Settlement:** The actual movement of funds between banks occurs, typically through central bank accounts. The transaction is now final.
+
+The time between initiation and settlement is the **settlement cycle**.
+
+### Common Settlement Cycles
+
+| Payment Type | Typical Cycle | Details |
+|-------------|--------------|---------|
+| **Card payments** | T+1 to T+2 | The merchant's bank receives funds 1–2 business days after the transaction. The cardholder sees an immediate hold, then a posted transaction after settlement. |
+| **ACH / Direct Debit** | T+1 to T+2 | Batched and settled through the Automated Clearing House. Same-day ACH is available but not universal. |
+| **Wire transfers (domestic)** | T+0 (same day) | Settled in real-time or near-real-time through systems like Fedwire (US) or CHAPS (UK). Irrevocable once sent. |
+| **Wire transfers (international)** | T+1 to T+3 | Routed through correspondent banks via SWIFT. Each intermediary adds latency. |
+| **Check deposits** | T+1 to T+5 | Varies significantly. Reg CC (US) sets maximum hold periods. The bank may grant provisional credit before final settlement. |
+| **Securities (stocks, bonds)** | T+1 | Most equity markets settled T+2 historically but moved to T+1 in 2024. |
+| **Real-time payments** | Instant | Systems like FedNow (US), Faster Payments (UK), and SEPA Instant (EU) settle in seconds, 24/7. |
+
+### Settlement and the Ledger
+
+Settlement cycles directly affect the booking date vs. value date distinction described earlier:
+
+- **Booking date** is typically when the bank initiates or receives the payment instruction.
+- **Value date** is when settlement occurs and funds become economically available.
+
+During the settlement window, the transaction exists in a **pending** state. The bank has recorded the intent (booking) but the funds have not yet moved (settlement). This gap creates several practical considerations:
+
+- **Interest accrual** starts on the value date, not the booking date. A check deposited on Friday does not earn interest over the weekend if the value date is Monday.
+
+- **Counterparty risk** exists during the settlement window. If the sending bank fails between initiation and settlement, the funds may not arrive. This is why settlement finality matters — it marks the point at which the transaction can no longer be unwound.
+
+- **Holds bridge the gap** between initiation and settlement. When a customer deposits a check, the bank may place a hold that expires once settlement is confirmed, preventing the customer from spending funds that have not yet arrived.
+
+- **Reconciliation** of nostro/vostro accounts (the accounts banks maintain with each other) happens as part of the settlement process. Discrepancies between expected and actual settlements must be investigated and resolved.
 
 ## Reporting and Compliance
 
@@ -401,9 +520,9 @@ svc.PostTransaction(ledger.PostTransactionRequest{
     IdempotencyKey: "transfer-001",
     Description:    "Transfer from Alice to Bob",
     Entries: []ledger.Entry{
-        {AccountID: alice.ID, Amount: 10200, Currency: "USD", Direction: ledger.Debit},
-        {AccountID: bob.ID, Amount: 10000, Currency: "USD", Direction: ledger.Credit},
-        {AccountID: fees.ID, Amount: 200, Currency: "USD", Direction: ledger.Credit},
+        {AccountID: alice.ID, Amount: 10200, Direction: ledger.Debit},
+        {AccountID: bob.ID, Amount: 10000, Direction: ledger.Credit},
+        {AccountID: fees.ID, Amount: 200, Direction: ledger.Credit},
     },
 })
 ```
