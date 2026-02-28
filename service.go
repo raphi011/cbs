@@ -274,6 +274,7 @@ type PostTransactionRequest struct {
 //  3. All referenced accounts must exist.
 //  4. If an idempotency key is provided, it must not already be used.
 //  5. Total debits must equal total credits.
+//  6. Asset and Expense accounts must have sufficient available balance.
 //
 // If all validations pass, the entries are atomically applied to the
 // account balances and the transaction is recorded.
@@ -322,6 +323,11 @@ func (s *Service) PostTransaction(req PostTransactionRequest) (Transaction, erro
 
 	// Validate: balanced.
 	if err := validateBalance(req.Entries); err != nil {
+		return Transaction{}, err
+	}
+
+	// Validate: sufficient balance for Asset and Expense accounts.
+	if err := s.checkSufficientBalance(req.Entries); err != nil {
 		return Transaction{}, err
 	}
 
@@ -396,6 +402,40 @@ func validateBalance(entries []Entry) error {
 		return ErrUnbalancedTransaction
 	}
 
+	return nil
+}
+
+// checkSufficientBalance verifies that the entries would not cause any
+// Asset or Expense account's available balance to go below zero.
+// Liability, Equity, and Revenue accounts are not checked.
+func (s *Service) checkSufficientBalance(entries []Entry) error {
+	// Compute the net balance impact per account.
+	impact := make(map[AccountID]Amount)
+	for _, e := range entries {
+		acct := s.accounts[e.AccountID]
+		if e.Direction == acct.Type.NormalBalance() {
+			impact[e.AccountID] += e.Amount
+		} else {
+			impact[e.AccountID] -= e.Amount
+		}
+	}
+
+	for accountID, delta := range impact {
+		acct := s.accounts[accountID]
+		if acct.Type != Asset && acct.Type != Expense {
+			continue
+		}
+		// Only check when the transaction decreases the balance.
+		if delta >= 0 {
+			continue
+		}
+		book := s.computeBookBalance(accountID, acct.Type)
+		holds := s.computeActiveHolds(accountID)
+		available := book - holds
+		if available+delta < 0 {
+			return ErrInsufficientBalance
+		}
+	}
 	return nil
 }
 
@@ -527,15 +567,27 @@ type CreateHoldRequest struct {
 // Returns:
 //   - ErrAccountNotFound if the account does not exist.
 //   - ErrInvalidAmount if the amount is not positive.
+//   - ErrInsufficientBalance if the hold would overdraw an Asset or Expense account.
 func (s *Service) CreateHold(req CreateHoldRequest) (Hold, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.accounts[req.AccountID]; !ok {
+	acct, ok := s.accounts[req.AccountID]
+	if !ok {
 		return Hold{}, ErrAccountNotFound
 	}
 	if req.Amount <= 0 {
 		return Hold{}, ErrInvalidAmount
+	}
+
+	// Check sufficient balance for Asset and Expense accounts.
+	if acct.Type == Asset || acct.Type == Expense {
+		book := s.computeBookBalance(req.AccountID, acct.Type)
+		holds := s.computeActiveHolds(req.AccountID)
+		available := book - holds
+		if available-req.Amount < 0 {
+			return Hold{}, ErrInsufficientBalance
+		}
 	}
 
 	now := s.now()

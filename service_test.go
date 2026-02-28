@@ -945,6 +945,169 @@ func TestAuditLog_ImmutableCopy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Insufficient Balance Tests
+// ---------------------------------------------------------------------------
+
+// TestPostTransaction_InsufficientBalance_Asset tests that a transaction
+// is rejected when it would cause an Asset account's available balance
+// to go below zero.
+func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
+	svc := testService(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, svc)
+
+	// Fund cash account with $100.
+	svc.PostTransaction(PostTransactionRequest{
+		Description: "Initial deposit",
+		Entries: []Entry{
+			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
+		},
+	})
+
+	// Try to withdraw more cash than available (credit cash $150).
+	_, err := svc.PostTransaction(PostTransactionRequest{
+		Description: "Overdraw cash",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 15000, Direction: Debit},
+			{AccountID: cash.ID, Amount: 15000, Direction: Credit},
+		},
+	})
+	assertError(t, err, ErrInsufficientBalance)
+
+	// Cash balance should be unchanged.
+	bal, _ := svc.GetBalance(cash.ID)
+	assertEqual(t, "cash balance unchanged", bal.Book, Amount(10000))
+}
+
+// TestPostTransaction_InsufficientBalance_WithHolds tests that holds
+// are considered when checking available balance for transactions.
+func TestPostTransaction_InsufficientBalance_WithHolds(t *testing.T) {
+	svc := testService(t)
+	alice, _, _, _ := setupChartOfAccounts(t, svc)
+
+	l, _ := svc.CreateLedger("Test")
+	sl, _ := svc.CreateSubledger(l.ID, "Test")
+	assetAcct, _ := svc.CreateAccount(sl.ID, "Test Asset", Asset)
+
+	// Fund asset account with $100 using a Liability counterparty.
+	svc.PostTransaction(PostTransactionRequest{
+		Description: "Fund",
+		Entries: []Entry{
+			{AccountID: assetAcct.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
+		},
+	})
+
+	// Place hold for $60.
+	svc.CreateHold(CreateHoldRequest{
+		AccountID: assetAcct.ID,
+		Amount:    6000,
+	})
+
+	// Try to withdraw $50 — book is $100, holds $60, available $40.
+	_, err := svc.PostTransaction(PostTransactionRequest{
+		Description: "Exceeds available",
+		Entries: []Entry{
+			{AccountID: assetAcct.ID, Amount: 5000, Direction: Credit},
+			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
+		},
+	})
+	assertError(t, err, ErrInsufficientBalance)
+
+	// A smaller withdrawal should succeed.
+	_, err = svc.PostTransaction(PostTransactionRequest{
+		Description: "Within available",
+		Entries: []Entry{
+			{AccountID: assetAcct.ID, Amount: 4000, Direction: Credit},
+			{AccountID: alice.ID, Amount: 4000, Direction: Debit},
+		},
+	})
+	assertNoError(t, err)
+}
+
+// TestPostTransaction_InsufficientBalance_LiabilityNotChecked tests that
+// Liability accounts are not subject to balance checking.
+func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
+	svc := testService(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, svc)
+
+	// Debit Alice (Liability) without any prior credit — this should succeed
+	// because Liability accounts are not checked for insufficient balance.
+	_, err := svc.PostTransaction(PostTransactionRequest{
+		Description: "Debit unfunded liability",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
+			{AccountID: cash.ID, Amount: 5000, Direction: Debit},
+		},
+	})
+	// This will fail with ErrUnbalancedTransaction since both are debits,
+	// but let's do a proper balanced test.
+	assertError(t, err, ErrUnbalancedTransaction)
+
+	// Proper test: debit a Liability with no prior balance.
+	l, _ := svc.CreateLedger("Test")
+	sl, _ := svc.CreateSubledger(l.ID, "Test")
+	liab, _ := svc.CreateAccount(sl.ID, "Test Liability", Liability)
+
+	_, err = svc.PostTransaction(PostTransactionRequest{
+		Description: "Debit unfunded liability",
+		Entries: []Entry{
+			{AccountID: liab.ID, Amount: 5000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 5000, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+}
+
+// TestCreateHold_InsufficientBalance tests that a hold is rejected when
+// it would cause an Asset account's available balance to go below zero.
+func TestCreateHold_InsufficientBalance(t *testing.T) {
+	svc := testService(t)
+	alice, _, _, _ := setupChartOfAccounts(t, svc)
+
+	l, _ := svc.CreateLedger("Test")
+	sl, _ := svc.CreateSubledger(l.ID, "Test")
+	assetAcct, _ := svc.CreateAccount(sl.ID, "Test Asset", Asset)
+
+	// Fund asset account with $100 using a Liability counterparty.
+	svc.PostTransaction(PostTransactionRequest{
+		Description: "Fund",
+		Entries: []Entry{
+			{AccountID: assetAcct.ID, Amount: 10000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
+		},
+	})
+
+	// Hold for $100 should succeed (exactly available).
+	_, err := svc.CreateHold(CreateHoldRequest{
+		AccountID: assetAcct.ID,
+		Amount:    10000,
+	})
+	assertNoError(t, err)
+
+	// Another hold should fail — available is now $0.
+	_, err = svc.CreateHold(CreateHoldRequest{
+		AccountID: assetAcct.ID,
+		Amount:    1,
+	})
+	assertError(t, err, ErrInsufficientBalance)
+}
+
+// TestCreateHold_LiabilityNotChecked tests that holds on Liability
+// accounts are not subject to balance checking.
+func TestCreateHold_LiabilityNotChecked(t *testing.T) {
+	svc := testService(t)
+	alice, _, _, _ := setupChartOfAccounts(t, svc)
+
+	// Alice (Liability) has $0 balance, but hold should succeed.
+	_, err := svc.CreateHold(CreateHoldRequest{
+		AccountID: alice.ID,
+		Amount:    5000,
+	})
+	assertNoError(t, err)
+}
+
+// ---------------------------------------------------------------------------
 // Balance Edge Cases
 // ---------------------------------------------------------------------------
 
