@@ -6,27 +6,27 @@ import (
 	"time"
 )
 
-// Service is the central component of the in-memory banking system.
+// Book is the central component of the in-memory general ledger.
 // It manages the full lifecycle of ledgers, subledgers, accounts,
-// transactions, holds, balance snapshots, and the audit trail.
+// transactions, and the audit trail.
 //
 // # Thread Safety
 //
-// All public methods on Service are safe for concurrent use.
+// All public methods on Book are safe for concurrent use.
 // Internally, a read-write mutex protects all state mutations.
 //
 // # Double-Entry Bookkeeping
 //
-// Every transaction posted through this service enforces the fundamental
+// Every transaction posted through this book enforces the fundamental
 // accounting equation: total debits must equal total credits. This guarantee is checked before any entries
 // are applied to account balances.
 //
 // # ID Generation
 //
-// The service uses a simple monotonic counter for ID generation. In a
+// The book uses a simple monotonic counter for ID generation. In a
 // production system, you would replace this with UUIDs or another
 // globally unique ID scheme.
-type Service struct {
+type Book struct {
 	mu sync.RWMutex
 
 	// Entity storage, keyed by ID.
@@ -34,19 +34,10 @@ type Service struct {
 	subledgers   map[SubledgerID]*Subledger
 	accounts     map[AccountID]*Account
 	transactions map[TransactionID]*Transaction
-	holds        map[HoldID]*Hold
 
 	// idempotencyIndex maps idempotency keys to transaction IDs.
 	// This allows the system to detect and reject duplicate postings.
 	idempotencyIndex map[string]TransactionID
-
-	// accountHolds maps account IDs to their active hold IDs.
-	// This index enables efficient lookup of holds per account.
-	accountHolds map[AccountID][]HoldID
-
-	// snapshots stores end-of-day balance snapshots.
-	// Structure: accountID -> dateKey -> snapshot.
-	snapshots map[AccountID]map[string]*BalanceSnapshot
 
 	// auditLog is an append-only log of all mutations. Once appended,
 	// entries are never modified or removed.
@@ -59,41 +50,49 @@ type Service struct {
 	clock func() time.Time
 }
 
-// NewService creates a new banking service with empty state.
+// NewBook creates a new general ledger with empty state.
 //
 // Example:
 //
-//	svc := ledger.NewService()
-//	l, _ := svc.CreateLedger("General Ledger")
-//	sl, _ := svc.CreateSubledger(l.ID, "Accounts Receivable")
-//	acct, _ := svc.CreateAccount(sl.ID, "Customer A", ledger.Asset)
-func NewService() *Service {
-	return &Service{
+//	book := ledger.NewBook()
+//	l, _ := book.CreateLedger("General Ledger")
+//	sl, _ := book.CreateSubledger(l.ID, "Accounts Receivable")
+//	acct, _ := book.CreateAccount(sl.ID, "Customer A", ledger.Asset)
+func NewBook() *Book {
+	return NewBookWithClock(time.Now)
+}
+
+// NewBookWithClock creates a new general ledger that reads the current
+// time from the provided clock function instead of time.Now.
+//
+// This is useful when several Books must share a single, deterministic
+// time source — for example, the payment package runs one ledger per bank
+// plus a central-bank ledger and drives them all from one clock so that
+// booking dates, value dates, and audit timestamps line up across ledgers.
+func NewBookWithClock(clock func() time.Time) *Book {
+	return &Book{
 		ledgers:          make(map[LedgerID]*Ledger),
 		subledgers:       make(map[SubledgerID]*Subledger),
 		accounts:         make(map[AccountID]*Account),
 		transactions:     make(map[TransactionID]*Transaction),
-		holds:            make(map[HoldID]*Hold),
 		idempotencyIndex: make(map[string]TransactionID),
-		accountHolds:     make(map[AccountID][]HoldID),
-		snapshots:        make(map[AccountID]map[string]*BalanceSnapshot),
-		clock:            time.Now,
+		clock:            clock,
 	}
 }
 
 // nextID generates a unique ID with the given prefix.
-func (s *Service) nextID(prefix string) string {
+func (s *Book) nextID(prefix string) string {
 	s.idCounter++
 	return fmt.Sprintf("%s_%d", prefix, s.idCounter)
 }
 
-// now returns the current time using the service's clock.
-func (s *Service) now() time.Time {
+// now returns the current time using the book's clock.
+func (s *Book) now() time.Time {
 	return s.clock()
 }
 
 // appendAudit records an event in the immutable audit log.
-func (s *Service) appendAudit(eventType AuditEventType, entityID string, payload any) {
+func (s *Book) appendAudit(eventType AuditEventType, entityID string, payload any) {
 	s.auditLog = append(s.auditLog, &AuditEvent{
 		ID:        s.nextID("evt"),
 		Timestamp: s.now(),
@@ -112,7 +111,7 @@ func (s *Service) appendAudit(eventType AuditEventType, entityID string, payload
 // a book of accounts (e.g., "General Ledger", "Trading Book").
 //
 // Returns the created ledger.
-func (s *Service) CreateLedger(name string) (Ledger, error) {
+func (s *Book) CreateLedger(name string) (Ledger, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -128,7 +127,7 @@ func (s *Service) CreateLedger(name string) (Ledger, error) {
 
 // GetLedger retrieves a ledger by its ID.
 // Returns ErrLedgerNotFound if the ledger does not exist.
-func (s *Service) GetLedger(id LedgerID) (Ledger, error) {
+func (s *Book) GetLedger(id LedgerID) (Ledger, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -144,7 +143,7 @@ func (s *Service) GetLedger(id LedgerID) (Ledger, error) {
 // (e.g., "Accounts Receivable", "Checking Accounts", "Loan Portfolio").
 //
 // Returns ErrLedgerNotFound if the parent ledger does not exist.
-func (s *Service) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error) {
+func (s *Book) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -165,7 +164,7 @@ func (s *Service) CreateSubledger(ledgerID LedgerID, name string) (Subledger, er
 
 // GetSubledger retrieves a subledger by its ID.
 // Returns ErrSubledgerNotFound if the subledger does not exist.
-func (s *Service) GetSubledger(id SubledgerID) (Subledger, error) {
+func (s *Book) GetSubledger(id SubledgerID) (Subledger, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -190,7 +189,7 @@ func (s *Service) GetSubledger(id SubledgerID) (Subledger, error) {
 // The account starts with a zero balance.
 //
 // Returns ErrSubledgerNotFound if the parent subledger does not exist.
-func (s *Service) CreateAccount(subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+func (s *Book) CreateAccount(subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -212,7 +211,7 @@ func (s *Service) CreateAccount(subledgerID SubledgerID, name string, accountTyp
 
 // GetAccount retrieves an account by its ID.
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetAccount(id AccountID) (Account, error) {
+func (s *Book) GetAccount(id AccountID) (Account, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -274,7 +273,7 @@ type PostTransactionRequest struct {
 //  3. All referenced accounts must exist.
 //  4. If an idempotency key is provided, it must not already be used.
 //  5. Total debits must equal total credits.
-//  6. Asset and Expense accounts must have sufficient available balance.
+//  6. Asset and Expense accounts must have sufficient book balance.
 //
 // If all validations pass, the entries are atomically applied to the
 // account balances and the transaction is recorded.
@@ -291,7 +290,7 @@ type PostTransactionRequest struct {
 //
 // Internally, balances are stored as signed values where positive means
 // a balance in the account's normal direction.
-func (s *Service) PostTransaction(req PostTransactionRequest) (Transaction, error) {
+func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -406,9 +405,9 @@ func validateBalance(entries []Entry) error {
 }
 
 // checkSufficientBalance verifies that the entries would not cause any
-// Asset or Expense account's available balance to go below zero.
+// Asset or Expense account's book balance to go below zero.
 // Liability, Equity, and Revenue accounts are not checked.
-func (s *Service) checkSufficientBalance(entries []Entry) error {
+func (s *Book) checkSufficientBalance(entries []Entry) error {
 	// Compute the net balance impact per account.
 	impact := make(map[AccountID]Amount)
 	for _, e := range entries {
@@ -429,9 +428,7 @@ func (s *Service) checkSufficientBalance(entries []Entry) error {
 		if delta >= 0 {
 			continue
 		}
-		book := s.computeBookBalance(accountID, acct.Type)
-		holds := s.computeActiveHolds(accountID)
-		available := book - holds
+		available := s.computeBookBalance(accountID, acct.Type)
 		if available+delta < 0 {
 			return ErrInsufficientBalance
 		}
@@ -441,7 +438,7 @@ func (s *Service) checkSufficientBalance(entries []Entry) error {
 
 // GetTransaction retrieves a transaction by its ID.
 // Returns ErrTransactionNotFound if the transaction does not exist.
-func (s *Service) GetTransaction(id TransactionID) (Transaction, error) {
+func (s *Book) GetTransaction(id TransactionID) (Transaction, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -454,7 +451,7 @@ func (s *Service) GetTransaction(id TransactionID) (Transaction, error) {
 
 // GetTransactionByIdempotencyKey retrieves a transaction by its idempotency key.
 // Returns ErrTransactionNotFound if no transaction with that key exists.
-func (s *Service) GetTransactionByIdempotencyKey(key string) (Transaction, error) {
+func (s *Book) GetTransactionByIdempotencyKey(key string) (Transaction, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -487,7 +484,7 @@ func (s *Service) GetTransactionByIdempotencyKey(key string) (Transaction, error
 // Returns:
 //   - ErrTransactionNotFound if the original does not exist.
 //   - ErrTransactionAlreadyReversed if the original was already reversed.
-func (s *Service) ReverseTransaction(txID TransactionID, description string) (Transaction, error) {
+func (s *Book) ReverseTransaction(txID TransactionID, description string) (Transaction, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -534,243 +531,28 @@ func (s *Service) ReverseTransaction(txID TransactionID, description string) (Tr
 }
 
 // ---------------------------------------------------------------------------
-// Holds (Pending Authorizations)
-// ---------------------------------------------------------------------------
-
-// CreateHoldRequest contains all the parameters needed to create a hold.
-type CreateHoldRequest struct {
-	// AccountID is the account whose available balance will be reduced.
-	AccountID AccountID
-
-	// Amount is the positive hold amount in minor currency units.
-	Amount Amount
-
-	// ExpiresAt is when the hold automatically becomes void. Expired
-	// holds no longer affect the available balance. If zero, the hold
-	// does not expire automatically.
-	ExpiresAt time.Time
-
-	// Description is a human-readable description of the hold.
-	Description string
-}
-
-// CreateHold places an authorization hold on an account.
-//
-// A hold reduces the account's available balance without affecting the
-// book balance. This is commonly used in payment processing:
-//
-//  1. A card authorization creates a hold for the transaction amount.
-//  2. The available balance is reduced immediately.
-//  3. Later, the hold is either captured (converted to a posted transaction)
-//     or released (cancelled, restoring the available balance).
-//
-// Returns:
-//   - ErrAccountNotFound if the account does not exist.
-//   - ErrInvalidAmount if the amount is not positive.
-//   - ErrInsufficientBalance if the hold would overdraw an Asset or Expense account.
-func (s *Service) CreateHold(req CreateHoldRequest) (Hold, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	acct, ok := s.accounts[req.AccountID]
-	if !ok {
-		return Hold{}, ErrAccountNotFound
-	}
-	if req.Amount <= 0 {
-		return Hold{}, ErrInvalidAmount
-	}
-
-	// Check sufficient balance for Asset and Expense accounts.
-	if acct.Type == Asset || acct.Type == Expense {
-		book := s.computeBookBalance(req.AccountID, acct.Type)
-		holds := s.computeActiveHolds(req.AccountID)
-		available := book - holds
-		if available-req.Amount < 0 {
-			return Hold{}, ErrInsufficientBalance
-		}
-	}
-
-	now := s.now()
-	h := &Hold{
-		ID:          HoldID(s.nextID("hld")),
-		AccountID:   req.AccountID,
-		Amount:      req.Amount,
-		ExpiresAt:   req.ExpiresAt,
-		Description: req.Description,
-		Status:      HoldActive,
-		CreatedAt:   now,
-	}
-
-	s.holds[h.ID] = h
-	s.accountHolds[req.AccountID] = append(s.accountHolds[req.AccountID], h.ID)
-	s.appendAudit(EventHoldCreated, string(h.ID), h)
-	return *h, nil
-}
-
-// ReleaseHold cancels an active hold, restoring the available balance.
-//
-// This is used when an authorization is voided — for example, when a
-// customer cancels a pending payment or when a hold expires and is
-// manually cleaned up.
-//
-// Returns:
-//   - ErrHoldNotFound if the hold does not exist.
-//   - ErrHoldNotActive if the hold has already been released or captured.
-func (s *Service) ReleaseHold(holdID HoldID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	h, ok := s.holds[holdID]
-	if !ok {
-		return ErrHoldNotFound
-	}
-	if h.Status != HoldActive {
-		return ErrHoldNotActive
-	}
-
-	h.Status = HoldReleased
-	s.appendAudit(EventHoldReleased, string(h.ID), h)
-	return nil
-}
-
-// CaptureHold converts an active hold into a posted transaction.
-//
-// This is the final step in the authorization-capture flow:
-//
-//  1. Authorization: CreateHold reduces the available balance.
-//  2. Capture: CaptureHold converts the hold into a real transaction,
-//     moving the amount from available to the book balance.
-//
-// The captureAmount may differ from the original hold amount (partial
-// capture). The hold is marked as Captured regardless of the amount.
-//
-// Parameters:
-//   - holdID: the hold to capture.
-//   - counterpartyAccountID: the other side of the double-entry.
-//   - captureAmount: the final amount to post (may be <= hold amount).
-//   - description: description for the resulting transaction.
-//
-// Returns the posted transaction and any error. The hold is marked as
-// Captured. If captureAmount is 0, the hold amount is used.
-//
-// Returns:
-//   - ErrHoldNotFound if the hold does not exist.
-//   - ErrHoldNotActive if the hold has already been released or captured.
-//   - ErrAccountNotFound if the counterparty account does not exist.
-func (s *Service) CaptureHold(holdID HoldID, counterpartyAccountID AccountID, captureAmount Amount, description string) (Transaction, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	h, ok := s.holds[holdID]
-	if !ok {
-		return Transaction{}, ErrHoldNotFound
-	}
-	if h.Status != HoldActive {
-		return Transaction{}, ErrHoldNotActive
-	}
-
-	if _, ok := s.accounts[counterpartyAccountID]; !ok {
-		return Transaction{}, ErrAccountNotFound
-	}
-
-	if captureAmount <= 0 {
-		captureAmount = h.Amount
-	}
-
-	// Determine debit/credit based on the account type of the hold account.
-	// For an Asset account (e.g., checking), a capture means money leaves,
-	// so we credit the held account and debit the counterparty.
-	acct := s.accounts[h.AccountID]
-	holdDirection := acct.Type.NormalBalance().Opposite()
-	counterDirection := holdDirection.Opposite()
-
-	now := s.now()
-	entries := []Entry{
-		{
-			ID:        EntryID(s.nextID("ent")),
-			AccountID: h.AccountID,
-			Amount:    captureAmount,
-			Direction: holdDirection,
-		},
-		{
-			ID:        EntryID(s.nextID("ent")),
-			AccountID: counterpartyAccountID,
-			Amount:    captureAmount,
-			Direction: counterDirection,
-		},
-	}
-
-	tx := &Transaction{
-		ID:          TransactionID(s.nextID("tx")),
-		Entries:     entries,
-		BookingDate: now,
-		ValueDate:   now,
-		Status:      Posted,
-		Description: description,
-		CreatedAt:   now,
-	}
-
-	h.Status = HoldCaptured
-	s.transactions[tx.ID] = tx
-
-	s.appendAudit(EventHoldCaptured, string(h.ID), map[string]string{
-		"hold_id":        string(h.ID),
-		"transaction_id": string(tx.ID),
-	})
-	s.appendAudit(EventTransactionPosted, string(tx.ID), tx)
-
-	return copyTransaction(tx), nil
-}
-
-// GetHold retrieves a hold by its ID.
-// Returns ErrHoldNotFound if the hold does not exist.
-func (s *Service) GetHold(id HoldID) (Hold, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	h, ok := s.holds[id]
-	if !ok {
-		return Hold{}, ErrHoldNotFound
-	}
-	return *h, nil
-}
-
-// ---------------------------------------------------------------------------
 // Balance Queries
 // ---------------------------------------------------------------------------
 
-// GetBalance computes the current balance of an account.
+// BookBalance computes the current book balance of an account.
 //
-// The balance has three components:
+// The book balance is the net effect of all posted transactions on this
+// account, calculated by replaying all entries:
 //
-//   - Book Balance: The net effect of all posted transactions on this
-//     account. Calculated by replaying all entries.
-//     For Asset/Expense accounts, debits increase and credits decrease.
-//     For Liability/Equity/Revenue accounts, credits increase and debits decrease.
-//
-//   - Holds: The sum of all active (non-expired) holds on this account.
-//
-//   - Available Balance: Book Balance minus Holds. This represents
-//     the amount that can actually be used for new transactions.
+//   - For Asset/Expense accounts, debits increase and credits decrease.
+//   - For Liability/Equity/Revenue accounts, credits increase and debits decrease.
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetBalance(accountID AccountID) (Balance, error) {
+func (s *Book) BookBalance(accountID AccountID) (Amount, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	acct, ok := s.accounts[accountID]
 	if !ok {
-		return Balance{}, ErrAccountNotFound
+		return 0, ErrAccountNotFound
 	}
 
-	book := s.computeBookBalance(accountID, acct.Type)
-	holds := s.computeActiveHolds(accountID)
-
-	return Balance{
-		Book:      book,
-		Holds:     holds,
-		Available: book - holds,
-	}, nil
+	return s.computeBookBalance(accountID, acct.Type), nil
 }
 
 // computeBookBalance calculates the net book balance for an account by
@@ -789,7 +571,7 @@ func (s *Service) GetBalance(accountID AccountID) (Balance, error) {
 // The Reversed status is informational — the corresponding reversal
 // transaction's entries are what actually cancel out the original's
 // balance impact. This preserves the full audit trail.
-func (s *Service) computeBookBalance(accountID AccountID, accountType AccountType) Amount {
+func (s *Book) computeBookBalance(accountID AccountID, accountType AccountType) Amount {
 	var balance Amount
 	normal := accountType.NormalBalance()
 
@@ -809,107 +591,6 @@ func (s *Service) computeBookBalance(accountID AccountID, accountType AccountTyp
 	return balance
 }
 
-// computeActiveHolds sums all active, non-expired holds for an account.
-func (s *Service) computeActiveHolds(accountID AccountID) Amount {
-	var total Amount
-	now := s.now()
-
-	for _, holdID := range s.accountHolds[accountID] {
-		h := s.holds[holdID]
-		if h.Status != HoldActive {
-			continue
-		}
-		if !h.ExpiresAt.IsZero() && h.ExpiresAt.Before(now) {
-			continue
-		}
-		total += h.Amount
-	}
-
-	return total
-}
-
-// ---------------------------------------------------------------------------
-// End-of-Day Balance Snapshots
-// ---------------------------------------------------------------------------
-
-// TakeEndOfDaySnapshot computes and stores the balance snapshot for an
-// account on a given business date.
-//
-// End-of-day snapshots serve several purposes in banking:
-//
-//   - Interest Calculation: Interest is typically accrued on the end-of-day
-//     balance. Snapshots provide the authoritative balance for this.
-//
-//   - Statement Generation: Monthly/quarterly statements are built from
-//     end-of-day snapshots rather than replaying all transactions.
-//
-//   - Regulatory Reporting: Many regulatory reports require end-of-day
-//     position data.
-//
-//   - Performance: Instead of replaying all entries from the beginning of
-//     time, balance queries for historical dates can use snapshots.
-//
-// If a snapshot already exists for the same account/date, it is
-// overwritten (useful for end-of-day recalculation after late postings).
-//
-// Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) TakeEndOfDaySnapshot(accountID AccountID, date time.Time) (BalanceSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	acct, ok := s.accounts[accountID]
-	if !ok {
-		return BalanceSnapshot{}, ErrAccountNotFound
-	}
-
-	book := s.computeBookBalance(accountID, acct.Type)
-	holds := s.computeActiveHolds(accountID)
-
-	snap := &BalanceSnapshot{
-		AccountID: accountID,
-		Date:      date,
-		Balance: Balance{
-			Book:      book,
-			Holds:     holds,
-			Available: book - holds,
-		},
-		TakenAt: s.now(),
-	}
-
-	// Store in nested map structure.
-	if s.snapshots[accountID] == nil {
-		s.snapshots[accountID] = make(map[string]*BalanceSnapshot)
-	}
-	dateKey := date.Format("2006-01-02")
-	s.snapshots[accountID][dateKey] = snap
-
-	s.appendAudit(EventSnapshotTaken, string(accountID), snap)
-	return *snap, nil
-}
-
-// GetSnapshot retrieves an end-of-day balance snapshot for an account
-// and business date.
-//
-// Returns ErrSnapshotNotFound if no snapshot exists for the given parameters.
-// Returns ErrAccountNotFound if the account does not exist.
-func (s *Service) GetSnapshot(accountID AccountID, date time.Time) (BalanceSnapshot, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if _, ok := s.accounts[accountID]; !ok {
-		return BalanceSnapshot{}, ErrAccountNotFound
-	}
-
-	dateKey := date.Format("2006-01-02")
-	if byAccount, ok := s.snapshots[accountID]; ok {
-		if snap, ok := byAccount[dateKey]; ok {
-			return *snap, nil
-		}
-	}
-
-	return BalanceSnapshot{}, ErrSnapshotNotFound
-}
-
 // ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------
@@ -926,7 +607,7 @@ func (s *Service) GetSnapshot(accountID AccountID, date time.Time) (BalanceSnaps
 //
 // In a production system, the audit log would typically be stored in a
 // separate, write-once data store with strict access controls.
-func (s *Service) GetAuditLog() []AuditEvent {
+func (s *Book) GetAuditLog() []AuditEvent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -940,7 +621,7 @@ func (s *Service) GetAuditLog() []AuditEvent {
 
 // GetAuditLogForEntity returns all audit events related to a specific
 // entity, identified by its ID.
-func (s *Service) GetAuditLogForEntity(entityID string) []AuditEvent {
+func (s *Book) GetAuditLogForEntity(entityID string) []AuditEvent {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

@@ -3,15 +3,14 @@ package ledger
 import "time"
 
 // ID types for each entity. These are defined types (not aliases) so the
-// compiler prevents accidentally passing e.g. a HoldID where an AccountID
-// is expected.
+// compiler prevents accidentally passing e.g. a SubledgerID where an
+// AccountID is expected.
 type (
 	LedgerID      string
 	SubledgerID   string
 	AccountID     string
 	TransactionID string
 	EntryID       string
-	HoldID        string
 )
 
 // Amount represents a monetary value in the smallest unit of the currency
@@ -145,56 +144,6 @@ type Transaction struct {
 	ReversalOf TransactionID
 }
 
-// HoldStatus tracks the lifecycle of a hold.
-type HoldStatus int
-
-const (
-	HoldActive   HoldStatus = iota
-	HoldReleased HoldStatus = iota
-	HoldCaptured HoldStatus = iota
-)
-
-func (s HoldStatus) String() string {
-	switch s {
-	case HoldActive:
-		return "Active"
-	case HoldReleased:
-		return "Released"
-	case HoldCaptured:
-		return "Captured"
-	default:
-		return "Unknown"
-	}
-}
-
-// Hold represents a pending authorization that reduces the available
-// balance of an account without affecting the book balance.
-type Hold struct {
-	ID          HoldID
-	AccountID   AccountID
-	Amount      Amount
-	ExpiresAt   time.Time
-	Description string
-	Status      HoldStatus
-	CreatedAt   time.Time
-}
-
-// Balance represents the balances of an account.
-type Balance struct {
-	Book      Amount // Sum of all posted entries (considering account normal)
-	Holds     Amount // Sum of active holds
-	Available Amount // Book minus holds
-}
-
-// BalanceSnapshot is a point-in-time record of an account's balance,
-// taken at end-of-day for a given value date.
-type BalanceSnapshot struct {
-	AccountID AccountID
-	Date      time.Time // The business day this snapshot represents
-	Balance   Balance
-	TakenAt   time.Time // When the snapshot was actually taken
-}
-
 // AuditEventType categorizes audit log entries.
 type AuditEventType string
 
@@ -202,10 +151,6 @@ const (
 	EventAccountCreated      AuditEventType = "account.created"
 	EventTransactionPosted   AuditEventType = "transaction.posted"
 	EventTransactionReversed AuditEventType = "transaction.reversed"
-	EventHoldCreated         AuditEventType = "hold.created"
-	EventHoldReleased        AuditEventType = "hold.released"
-	EventHoldCaptured        AuditEventType = "hold.captured"
-	EventSnapshotTaken       AuditEventType = "snapshot.taken"
 	EventLedgerCreated       AuditEventType = "ledger.created"
 	EventSubledgerCreated    AuditEventType = "subledger.created"
 )
@@ -215,7 +160,7 @@ type AuditEvent struct {
 	ID        string
 	Timestamp time.Time
 	Type      AuditEventType
-	EntityID  string         // ID of the affected entity
-	Payload   any            // Event-specific data
+	EntityID  string // ID of the affected entity
+	Payload   any    // Event-specific data
 	Metadata  map[string]string
 }
