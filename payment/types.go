@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/raphi011/ledger"
+	"github.com/raphi011/ledger/deposit"
 )
 
 // ID types for each entity in the payment domain. Like the ledger package,
@@ -157,12 +158,12 @@ func (s CycleStatus) String() string {
 	}
 }
 
-// PartyRef identifies one side of a payment: a customer account at a
+// PartyRef identifies one side of a payment: a customer deposit account at a
 // specific participant bank.
 type PartyRef struct {
 	Participant ParticipantID
-	Account     ledger.AccountID // the customer account within that bank's ledger
-	IBAN        string           // free-form label; no validation in this model
+	Account     deposit.AccountID // the customer deposit account within that bank
+	IBAN        string            // free-form label; no validation in this model
 }
 
 // Payment is a scheme-agnostic instruction to move funds from a debtor to a

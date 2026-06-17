@@ -4,10 +4,11 @@
 //
 // # The model
 //
-// Several participant banks each keep their own ledger.Service (their general
-// ledger). A separate central-bank ledger.Service holds a reserve account for
-// every participant. Banks only meet at the central bank — which is exactly
-// what makes the distinction between clearing and settlement real:
+// Several participant banks each keep their own ledger.Book (their general
+// ledger) with a deposit.Register layered on top for their customer accounts.
+// A separate central-bank ledger.Book holds a reserve account for every
+// participant. Banks only meet at the central bank — which is exactly what
+// makes the distinction between clearing and settlement real:
 //
 //   - Clearing is the exchange and netting of payment instructions. No central
 //     bank money moves; banks just agree on who owes whom.
@@ -27,7 +28,7 @@
 // SEPA Credit Transfer (SCT, a push payment) and SEPA Direct Debit (SDD, a
 // pull payment requiring a mandate). Both are net-settled. The abstraction is
 // deliberately ready for real-time gross settlement (instant payments) and
-// card schemes (authorise/capture then clear) without changes to the System
+// card schemes (authorise/capture then clear) without changes to the Network
 // orchestrator — adding a scheme means implementing Scheme and registering it.
 //
 // # Deliberate simplifications
@@ -40,8 +41,8 @@
 //   - No IBAN or BIC validation; routing is by explicit ParticipantID.
 //   - A single currency, using ledger.Amount (integer minor units).
 //   - Postings across the per-bank and central-bank ledgers are NOT atomic;
-//     the System serializes whole operations under one lock. A real RTGS uses
-//     a locked settlement window. See System for details.
+//     the Network serializes whole operations under one lock. A real RTGS uses
+//     a locked settlement window. See Network for details.
 //   - Returns settle immediately rather than through a later R-cycle.
 //
 // See README.md for worked examples of the SCT and SDD posting choreography.

@@ -1,18 +1,14 @@
 package payment
 
-import (
-	"time"
-
-	"github.com/raphi011/ledger"
-)
+import "time"
 
 // Scheme is the generic abstraction over a payment scheme. Concrete schemes
 // (SEPA Credit Transfer, SEPA Direct Debit, and later instant or card
-// schemes) implement this interface, so the System orchestrator can drive
+// schemes) implement this interface, so the Network orchestrator can drive
 // any of them without knowing their specifics.
 //
 // Adding a new scheme means writing one type that implements this interface
-// and registering it with the System — no changes to the orchestrator.
+// and registering it with the Network — no changes to the orchestrator.
 type Scheme interface {
 	// ID is the scheme's unique identifier, e.g. "sepa.ct".
 	ID() SchemeID
@@ -41,29 +37,27 @@ type Scheme interface {
 	Validate(p *Payment, ctx SchemeContext) error
 }
 
-// SchemeContext gives a scheme read access to the rest of the system during
-// validation. It is constructed by the System while it holds its own lock,
-// so schemes must not call back into mutating System methods.
+// SchemeContext gives a scheme read access to the rest of the network during
+// validation. It is constructed by the Network while it holds its own lock,
+// so schemes must not call back into mutating Network methods.
 type SchemeContext struct {
-	System *System
-	Now    time.Time
+	Network *Network
+	Now     time.Time
 }
 
 // validateFunds is shared by the SEPA schemes: it confirms the debtor's
-// account exists in its bank and holds enough available balance.
+// deposit account exists at its bank and is permitted to withdraw the payment
+// amount. The deposit layer is the authority for the funds/status check; a
+// shortfall surfaces as deposit.ErrInsufficientAvailable.
 func validateFunds(p *Payment, ctx SchemeContext) error {
-	part, ok := ctx.System.participants[p.Debtor.Participant]
+	part, ok := ctx.Network.participants[p.Debtor.Participant]
 	if !ok {
 		return ErrParticipantNotFound
 	}
-	bal, err := part.Ledger.GetBalance(p.Debtor.Account)
-	if err != nil {
+	if _, err := part.Deposit.GetAccount(p.Debtor.Account); err != nil {
 		return ErrAccountNotInParticipant
 	}
-	if bal.Available < p.Amount {
-		return ledger.ErrInsufficientBalance
-	}
-	return nil
+	return part.Deposit.CheckWithdrawal(p.Debtor.Account, p.Amount)
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +104,7 @@ func (SDD) Validate(p *Payment, ctx SchemeContext) error {
 	if p.MandateID == "" {
 		return ErrMandateRequired
 	}
-	m, ok := ctx.System.mandates[p.MandateID]
+	m, ok := ctx.Network.mandates[p.MandateID]
 	if !ok {
 		return ErrMandateNotFound
 	}

@@ -2,7 +2,7 @@ package ledger
 
 import "errors"
 
-// Sentinel errors returned by the Service. Callers can use errors.Is()
+// Sentinel errors returned by the Book. Callers can use errors.Is()
 // to check for specific failure conditions.
 //
 // These errors cover the main categories of failures:
@@ -27,10 +27,6 @@ var (
 	// match any existing transaction in the system.
 	ErrTransactionNotFound = errors.New("transaction not found")
 
-	// ErrHoldNotFound is returned when a hold ID does not match any
-	// existing hold in the system.
-	ErrHoldNotFound = errors.New("hold not found")
-
 	// ErrUnbalancedTransaction is returned when the total debits do not
 	// equal the total credits in a transaction. In double-entry
 	// bookkeeping, every transaction must balance: the sum of debit
@@ -54,23 +50,14 @@ var (
 	// can only be reversed once.
 	ErrTransactionAlreadyReversed = errors.New("transaction already reversed")
 
-	// ErrHoldNotActive is returned when attempting to release or capture
-	// a hold that is no longer in the Active state. Holds can only be
-	// released or captured while they are active.
-	ErrHoldNotActive = errors.New("hold is not active")
-
 	// ErrInvalidAmount is returned when an entry amount is zero or
 	// negative. All entry amounts must be positive; the direction
 	// (debit/credit) determines the sign of the balance impact.
 	ErrInvalidAmount = errors.New("amount must be positive")
 
-	// ErrSnapshotNotFound is returned when no end-of-day snapshot
-	// exists for the given account and date.
-	ErrSnapshotNotFound = errors.New("snapshot not found")
-
-	// ErrInsufficientBalance is returned when a hold or transaction
-	// would cause the available balance to go below zero for account
-	// types where that is not permitted. Note: this is only enforced
-	// for Asset and Expense accounts.
+	// ErrInsufficientBalance is returned when a transaction would cause
+	// the book balance to go below zero for account types where that is
+	// not permitted. Note: this is only enforced for Asset and Expense
+	// accounts.
 	ErrInsufficientBalance = errors.New("insufficient available balance")
 )

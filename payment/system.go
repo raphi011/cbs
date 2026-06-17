@@ -6,26 +6,27 @@ import (
 	"time"
 
 	"github.com/raphi011/ledger"
+	"github.com/raphi011/ledger/deposit"
 )
 
-// System is the payment processor. It owns one ledger per participant bank
+// Network is the payment processor. It owns one ledger per participant bank
 // plus a central-bank ledger, and orchestrates payments through their full
 // lifecycle: initiation, clearing (netting), and settlement.
 //
 // # Multiple ledgers, no cross-ledger atomicity
 //
-// Each participant bank and the central bank keep separate ledger.Service
+// Each participant bank and the central bank keep separate ledger.Book
 // instances, each with its own lock. A single payment therefore touches
 // several ledgers, and those postings cannot be one atomic transaction the
 // way a real RTGS would guarantee with a locked settlement window. The
-// System serializes whole operations under its own mutex and always posts
+// Network serializes whole operations under its own mutex and always posts
 // the debit side before the credit side; this is a deliberate simplification
 // for a single-process learning model.
 //
 // # Thread safety
 //
 // All public methods are safe for concurrent use.
-type System struct {
+type Network struct {
 	mu    sync.RWMutex
 	clock func() time.Time
 
@@ -43,24 +44,24 @@ type System struct {
 	endToEndIndex map[string]PaymentID
 
 	// centralBank holds the participants' reserve accounts.
-	centralBank        *ledger.Service
+	centralBank        *ledger.Book
 	cbReserveSubledger ledger.SubledgerID
 	cbAssets           ledger.AccountID // balancing asset for reserve issuance
 
 	idCounter int64
 }
 
-// NewSystem creates a payment system with the SEPA Credit Transfer and SEPA
+// NewNetwork creates a payment network with the SEPA Credit Transfer and SEPA
 // Direct Debit schemes registered. It uses time.Now as its clock; tests set
 // the clock field directly for determinism.
-func NewSystem() *System {
-	return NewSystemWithClock(time.Now)
+func NewNetwork() *Network {
+	return NewNetworkWithClock(time.Now)
 }
 
-// NewSystemWithClock is like NewSystem but reads time from the provided
-// clock. Every ledger the system creates shares this clock.
-func NewSystemWithClock(clock func() time.Time) *System {
-	s := &System{
+// NewNetworkWithClock is like NewNetwork but reads time from the provided
+// clock. Every ledger the network creates shares this clock.
+func NewNetworkWithClock(clock func() time.Time) *Network {
+	s := &Network{
 		clock:         clock,
 		schemes:       make(map[SchemeID]Scheme),
 		participants:  make(map[ParticipantID]*Participant),
@@ -70,7 +71,7 @@ func NewSystemWithClock(clock func() time.Time) *System {
 		settlements:   make(map[SettlementID]*Settlement),
 		openCycle:     make(map[SchemeID]CycleID),
 		endToEndIndex: make(map[string]PaymentID),
-		centralBank:   ledger.NewServiceWithClock(clock),
+		centralBank:   ledger.NewBookWithClock(clock),
 	}
 
 	// Build the central bank's chart of accounts.
@@ -86,9 +87,9 @@ func NewSystemWithClock(clock func() time.Time) *System {
 	return s
 }
 
-func (s *System) now() time.Time { return s.clock() }
+func (s *Network) now() time.Time { return s.clock() }
 
-func (s *System) nextID(prefix string) string {
+func (s *Network) nextID(prefix string) string {
 	s.idCounter++
 	return fmt.Sprintf("%s_%d", prefix, s.idCounter)
 }
@@ -96,7 +97,7 @@ func (s *System) nextID(prefix string) string {
 // RegisterScheme adds (or replaces) a scheme. Adding support for instant or
 // card payments is just a matter of registering a type that implements
 // Scheme — the orchestration below is scheme-agnostic.
-func (s *System) RegisterScheme(sc Scheme) {
+func (s *Network) RegisterScheme(sc Scheme) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.schemes[sc.ID()] = sc
@@ -104,7 +105,7 @@ func (s *System) RegisterScheme(sc Scheme) {
 
 // CentralBank exposes the central-bank ledger for inspection (balances,
 // audit trail). Treat it as read-only.
-func (s *System) CentralBank() *ledger.Service { return s.centralBank }
+func (s *Network) CentralBank() *ledger.Book { return s.centralBank }
 
 // ---------------------------------------------------------------------------
 // Participants
@@ -114,11 +115,11 @@ func (s *System) CentralBank() *ledger.Service { return s.centralBank }
 // chart of accounts and opens a reserve account for it at the central bank.
 //
 // The new bank starts with zero reserves; fund it with Deposit.
-func (s *System) AddParticipant(name string) (*Participant, error) {
+func (s *Network) AddParticipant(name string) (*Participant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bank := ledger.NewServiceWithClock(s.clock)
+	bank := ledger.NewBookWithClock(s.clock)
 
 	gl, err := bank.CreateLedger(name + " GL")
 	if err != nil {
@@ -147,10 +148,15 @@ func (s *System) AddParticipant(name string) (*Participant, error) {
 		return nil, err
 	}
 
+	// The bank's deposit layer manages its customer demand-deposit accounts on
+	// top of its own ledger, sharing the network's clock.
+	register := deposit.NewRegisterWithClock(bank, s.clock)
+
 	p := &Participant{
 		ID:                ParticipantID(s.nextID("bank")),
 		Name:              name,
 		Ledger:            bank,
+		Deposit:           register,
 		CustomerSubledger: customers.ID,
 		SuspenseAccount:   suspense.ID,
 		ReserveAccount:    reserve.ID,
@@ -160,14 +166,14 @@ func (s *System) AddParticipant(name string) (*Participant, error) {
 	return p, nil
 }
 
-// Deposit funds a customer account with cash, modelled as the bank placing
-// the cash on reserve at the central bank.
+// Deposit funds a customer deposit account with cash, modelled as the bank
+// placing the cash on reserve at the central bank.
 //
 // Two ledgers move in step, keeping the reserve mirror intact:
 //
 //	bank ledger:    Debit  Reserve at Central Bank (asset)  / Credit customer (liability)
 //	central bank:   Debit  Settlement Assets (asset)        / Credit Reserve: <bank> (liability)
-func (s *System) Deposit(participant ParticipantID, account ledger.AccountID, amount ledger.Amount, description string) error {
+func (s *Network) Deposit(participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -178,21 +184,22 @@ func (s *System) Deposit(participant ParticipantID, account ledger.AccountID, am
 	if !ok {
 		return ErrParticipantNotFound
 	}
-	if _, err := p.Ledger.GetAccount(account); err != nil {
-		return ErrAccountNotInParticipant
+	gl, err := p.glAccount(account)
+	if err != nil {
+		return err
 	}
 
 	if _, err := p.Ledger.PostTransaction(ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
 			{AccountID: p.ReserveAccount, Amount: amount, Direction: ledger.Debit},
-			{AccountID: account, Amount: amount, Direction: ledger.Credit},
+			{AccountID: gl, Amount: amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return err
 	}
 
-	_, err := s.centralBank.PostTransaction(ledger.PostTransactionRequest{
+	_, err = s.centralBank.PostTransaction(ledger.PostTransactionRequest{
 		Description: "Reserve credit: " + p.Name,
 		Entries: []ledger.Entry{
 			{AccountID: s.cbAssets, Amount: amount, Direction: ledger.Debit},
@@ -208,7 +215,7 @@ func (s *System) Deposit(participant ParticipantID, account ledger.AccountID, am
 
 // CreateMandate records a debtor's authorization for a creditor to collect
 // funds via direct debit. A MaxAmount of 0 means unlimited.
-func (s *System) CreateMandate(debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
+func (s *Network) CreateMandate(debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -233,7 +240,7 @@ func (s *System) CreateMandate(debtor, creditor PartyRef, maxAmount ledger.Amoun
 
 // RevokeMandate marks a mandate as revoked. Future direct debits referencing
 // it will be rejected.
-func (s *System) RevokeMandate(id MandateID) error {
+func (s *Network) RevokeMandate(id MandateID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -251,7 +258,7 @@ func (s *System) RevokeMandate(id MandateID) error {
 
 // OpenCycle opens a clearing cycle for a scheme. Payments submitted while it
 // is open accumulate in it until CloseCycle computes their net positions.
-func (s *System) OpenCycle(scheme SchemeID) (ClearingCycle, error) {
+func (s *Network) OpenCycle(scheme SchemeID) (ClearingCycle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -277,7 +284,7 @@ func (s *System) OpenCycle(scheme SchemeID) (ClearingCycle, error) {
 // CloseCycle reaches the cut-off: it computes each participant's net position
 // across the cycle's payments and marks the payments Cleared. No money moves
 // yet — that happens at SettleCycle.
-func (s *System) CloseCycle(id CycleID) (ClearingCycle, error) {
+func (s *Network) CloseCycle(id CycleID) (ClearingCycle, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -311,7 +318,7 @@ func (s *System) CloseCycle(id CycleID) (ClearingCycle, error) {
 // position across reserve accounts at the central bank, mirrors that movement
 // in each bank's own reserve account (clearing its suspense to zero), and
 // posts the creditor leg of every payment so the payees receive their funds.
-func (s *System) SettleCycle(id CycleID) (Settlement, error) {
+func (s *Network) SettleCycle(id CycleID) (Settlement, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -385,6 +392,10 @@ func (s *System) SettleCycle(id CycleID) (Settlement, error) {
 	for _, pid := range c.PaymentIDs {
 		p := s.payments[pid]
 		creditor := s.participants[p.Creditor.Participant]
+		creditorGL, err := creditor.glAccount(p.Creditor.Account)
+		if err != nil {
+			return Settlement{}, err
+		}
 		tx, err := creditor.Ledger.PostTransaction(ledger.PostTransactionRequest{
 			IdempotencyKey: string(p.ID) + ":credit",
 			Description:    p.Description,
@@ -392,7 +403,7 @@ func (s *System) SettleCycle(id CycleID) (Settlement, error) {
 			Metadata:       paymentMetadata(p),
 			Entries: []ledger.Entry{
 				{AccountID: creditor.SuspenseAccount, Amount: p.Amount, Direction: ledger.Debit},
-				{AccountID: p.Creditor.Account, Amount: p.Amount, Direction: ledger.Credit},
+				{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Credit},
 			},
 		})
 		if err != nil {
@@ -438,7 +449,7 @@ type InitiatePaymentRequest struct {
 // cycle for its scheme. It immediately posts the debtor leg — the payer's
 // money leaves their account into the bank's clearing suspense — value-dated
 // to the scheme's settlement date. The creditor is paid later, at settlement.
-func (s *System) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
+func (s *Network) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -484,12 +495,19 @@ func (s *System) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
 		CreatedAt:   now,
 	}
 
-	if err := scheme.Validate(p, SchemeContext{System: s, Now: now}); err != nil {
+	if err := scheme.Validate(p, SchemeContext{Network: s, Now: now}); err != nil {
 		return Payment{}, err
 	}
 
 	// Debtor leg: money leaves the payer into the bank's clearing suspense.
+	// The deposit layer is the authority for the funds/status check (run in
+	// Validate above); the GL posting here references the deposit account's
+	// backing GL account.
 	debtor := s.participants[p.Debtor.Participant]
+	debtorGL, err := debtor.glAccount(p.Debtor.Account)
+	if err != nil {
+		return Payment{}, err
+	}
 	tx, err := debtor.Ledger.PostTransaction(ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":debit",
 		Description:    p.Description,
@@ -497,7 +515,7 @@ func (s *System) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
 		ValueDate:      p.ValueDate,
 		Metadata:       paymentMetadata(p),
 		Entries: []ledger.Entry{
-			{AccountID: p.Debtor.Account, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: debtor.SuspenseAccount, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
@@ -521,7 +539,7 @@ func (s *System) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
 
 // RejectPayment rejects a payment before it has cleared, reversing the debtor
 // leg if one was posted and removing it from its clearing cycle.
-func (s *System) RejectPayment(id PaymentID, reason string) (Payment, error) {
+func (s *Network) RejectPayment(id PaymentID, reason string) (Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -551,7 +569,7 @@ func (s *System) RejectPayment(id PaymentID, reason string) (Payment, error) {
 // ReturnPayment returns a settled payment (a SEPA R-transaction). It posts
 // compensating transactions that move the funds back from the creditor to the
 // debtor across the central bank, undoing the original flow.
-func (s *System) ReturnPayment(id PaymentID, reason string) (Payment, error) {
+func (s *Network) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -569,6 +587,14 @@ func (s *System) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 
 	debtor := s.participants[p.Debtor.Participant]
 	creditor := s.participants[p.Creditor.Participant]
+	debtorGL, err := debtor.glAccount(p.Debtor.Account)
+	if err != nil {
+		return Payment{}, err
+	}
+	creditorGL, err := creditor.glAccount(p.Creditor.Account)
+	if err != nil {
+		return Payment{}, err
+	}
 
 	// Debtor's bank refunds the payer, funded by reserves coming back in.
 	if _, err := debtor.Ledger.PostTransaction(ledger.PostTransactionRequest{
@@ -576,7 +602,7 @@ func (s *System) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
 			{AccountID: debtor.ReserveAccount, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: p.Debtor.Account, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return Payment{}, err
@@ -587,7 +613,7 @@ func (s *System) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 		IdempotencyKey: string(p.ID) + ":return-credit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
-			{AccountID: p.Creditor.Account, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: creditor.ReserveAccount, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
@@ -618,7 +644,7 @@ func (s *System) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 // ---------------------------------------------------------------------------
 
 // GetPayment returns a payment by ID.
-func (s *System) GetPayment(id PaymentID) (Payment, error) {
+func (s *Network) GetPayment(id PaymentID) (Payment, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.payments[id]
@@ -629,7 +655,7 @@ func (s *System) GetPayment(id PaymentID) (Payment, error) {
 }
 
 // GetCycle returns a clearing cycle by ID.
-func (s *System) GetCycle(id CycleID) (ClearingCycle, error) {
+func (s *Network) GetCycle(id CycleID) (ClearingCycle, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	c, ok := s.cycles[id]
@@ -640,7 +666,7 @@ func (s *System) GetCycle(id CycleID) (ClearingCycle, error) {
 }
 
 // GetMandate returns a mandate by ID.
-func (s *System) GetMandate(id MandateID) (Mandate, error) {
+func (s *Network) GetMandate(id MandateID) (Mandate, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	m, ok := s.mandates[id]
@@ -650,16 +676,17 @@ func (s *System) GetMandate(id MandateID) (Mandate, error) {
 	return *m, nil
 }
 
-// ReserveBalance returns a participant's reserve balance as held at the
-// central bank.
-func (s *System) ReserveBalance(id ParticipantID) (ledger.Balance, error) {
+// ReserveBalance returns a participant's reserve book balance as held at the
+// central bank. Central-bank settlement accounts are plain GL accounts with no
+// deposit layer, so this is just the GL book balance.
+func (s *Network) ReserveBalance(id ParticipantID) (ledger.Amount, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	p, ok := s.participants[id]
 	if !ok {
-		return ledger.Balance{}, ErrParticipantNotFound
+		return 0, ErrParticipantNotFound
 	}
-	return s.centralBank.GetBalance(p.SettlementAccount)
+	return s.centralBank.BookBalance(p.SettlementAccount)
 }
 
 // ---------------------------------------------------------------------------
@@ -667,7 +694,7 @@ func (s *System) ReserveBalance(id ParticipantID) (ledger.Balance, error) {
 // ---------------------------------------------------------------------------
 
 // transition moves a payment to a new status if the edge is legal.
-func (s *System) transition(p *Payment, to PaymentStatus) error {
+func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	allowed := map[PaymentStatus][]PaymentStatus{
 		Initiated: {Accepted, Rejected},
 		Accepted:  {Cleared, Rejected},
@@ -683,21 +710,21 @@ func (s *System) transition(p *Payment, to PaymentStatus) error {
 	return ErrInvalidStateTransition
 }
 
-// checkParty verifies that a party's participant exists and its account
-// exists within that participant's ledger.
-func (s *System) checkParty(ref PartyRef) error {
+// checkParty verifies that a party's participant exists and its deposit
+// account exists within that participant.
+func (s *Network) checkParty(ref PartyRef) error {
 	p, ok := s.participants[ref.Participant]
 	if !ok {
 		return ErrParticipantNotFound
 	}
-	if _, err := p.Ledger.GetAccount(ref.Account); err != nil {
+	if _, err := p.Deposit.GetAccount(ref.Account); err != nil {
 		return ErrAccountNotInParticipant
 	}
 	return nil
 }
 
 // removeFromCycle drops a payment from its (open) clearing cycle.
-func (s *System) removeFromCycle(p *Payment) {
+func (s *Network) removeFromCycle(p *Payment) {
 	c, ok := s.cycles[p.CycleID]
 	if !ok {
 		return

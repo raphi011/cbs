@@ -10,14 +10,14 @@ import (
 // Test Helpers
 // ---------------------------------------------------------------------------
 
-// testService creates a new Service with a fixed clock for deterministic tests.
-func testService(t *testing.T) *Service {
+// testBook creates a new Book with a fixed clock for deterministic tests.
+func testBook(t *testing.T) *Book {
 	t.Helper()
-	svc := NewService()
-	svc.clock = func() time.Time {
+	book := NewBook()
+	book.clock = func() time.Time {
 		return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	}
-	return svc
+	return book
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:
@@ -30,31 +30,31 @@ func testService(t *testing.T) *Service {
 //	  │     └── Cash           (Asset)
 //	  └── Revenue (subledger)
 //	        └── Fee Income     (Revenue)
-func setupChartOfAccounts(t *testing.T, svc *Service) (alice, bob, cash, feeIncome Account) {
+func setupChartOfAccounts(t *testing.T, book *Book) (alice, bob, cash, feeIncome Account) {
 	t.Helper()
 
-	gl, err := svc.CreateLedger("General Ledger")
+	gl, err := book.CreateLedger("General Ledger")
 	assertNoError(t, err)
 
-	deposits, err := svc.CreateSubledger(gl.ID, "Customer Deposits")
+	deposits, err := book.CreateSubledger(gl.ID, "Customer Deposits")
 	assertNoError(t, err)
 
-	assets, err := svc.CreateSubledger(gl.ID, "Bank Assets")
+	assets, err := book.CreateSubledger(gl.ID, "Bank Assets")
 	assertNoError(t, err)
 
-	rev, err := svc.CreateSubledger(gl.ID, "Revenue")
+	rev, err := book.CreateSubledger(gl.ID, "Revenue")
 	assertNoError(t, err)
 
-	alice, err = svc.CreateAccount(deposits.ID, "Alice Checking", Liability)
+	alice, err = book.CreateAccount(deposits.ID, "Alice Checking", Liability)
 	assertNoError(t, err)
 
-	bob, err = svc.CreateAccount(deposits.ID, "Bob Checking", Liability)
+	bob, err = book.CreateAccount(deposits.ID, "Bob Checking", Liability)
 	assertNoError(t, err)
 
-	cash, err = svc.CreateAccount(assets.ID, "Cash", Asset)
+	cash, err = book.CreateAccount(assets.ID, "Cash", Asset)
 	assertNoError(t, err)
 
-	feeIncome, err = svc.CreateAccount(rev.ID, "Fee Income", Revenue)
+	feeIncome, err = book.CreateAccount(rev.ID, "Fee Income", Revenue)
 	assertNoError(t, err)
 
 	return alice, bob, cash, feeIncome
@@ -86,53 +86,53 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateLedger(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	l, err := svc.CreateLedger("General Ledger")
+	l, err := book.CreateLedger("General Ledger")
 	assertNoError(t, err)
 	assertEqual(t, "name", l.Name, "General Ledger")
 
 	// Verify it can be retrieved.
-	got, err := svc.GetLedger(l.ID)
+	got, err := book.GetLedger(l.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, l.ID)
 }
 
 func TestGetLedger_NotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.GetLedger("nonexistent")
+	_, err := book.GetLedger("nonexistent")
 	assertError(t, err, ErrLedgerNotFound)
 }
 
 func TestCreateSubledger(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	l, err := svc.CreateLedger("GL")
+	l, err := book.CreateLedger("GL")
 	assertNoError(t, err)
 
-	sl, err := svc.CreateSubledger(l.ID, "Deposits")
+	sl, err := book.CreateSubledger(l.ID, "Deposits")
 	assertNoError(t, err)
 	assertEqual(t, "name", sl.Name, "Deposits")
 	assertEqual(t, "ledgerID", sl.LedgerID, l.ID)
 
 	// Verify retrieval.
-	got, err := svc.GetSubledger(sl.ID)
+	got, err := book.GetSubledger(sl.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, sl.ID)
 }
 
 func TestCreateSubledger_LedgerNotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.CreateSubledger("bad_ledger", "Deposits")
+	_, err := book.CreateSubledger("bad_ledger", "Deposits")
 	assertError(t, err, ErrLedgerNotFound)
 }
 
 func TestGetSubledger_NotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.GetSubledger("nonexistent")
+	_, err := book.GetSubledger("nonexistent")
 	assertError(t, err, ErrSubledgerNotFound)
 }
 
@@ -141,34 +141,34 @@ func TestGetSubledger_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateAccount(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	l, _ := svc.CreateLedger("GL")
-	sl, _ := svc.CreateSubledger(l.ID, "Deposits")
+	l, _ := book.CreateLedger("GL")
+	sl, _ := book.CreateSubledger(l.ID, "Deposits")
 
-	acct, err := svc.CreateAccount(sl.ID, "Alice", Liability)
+	acct, err := book.CreateAccount(sl.ID, "Alice", Liability)
 	assertNoError(t, err)
 	assertEqual(t, "name", acct.Name, "Alice")
 	assertEqual(t, "type", acct.Type, Liability)
 	assertEqual(t, "subledgerID", acct.SubledgerID, sl.ID)
 
 	// Verify retrieval.
-	got, err := svc.GetAccount(acct.ID)
+	got, err := book.GetAccount(acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, acct.ID)
 }
 
 func TestCreateAccount_SubledgerNotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.CreateAccount("bad_sub", "Alice", Liability)
+	_, err := book.CreateAccount("bad_sub", "Alice", Liability)
 	assertError(t, err, ErrSubledgerNotFound)
 }
 
 func TestGetAccount_NotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.GetAccount("nonexistent")
+	_, err := book.GetAccount("nonexistent")
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -219,13 +219,6 @@ func TestTransactionStatus_String(t *testing.T) {
 	assertEqual(t, "Reversed", Reversed.String(), "Reversed")
 }
 
-func TestHoldStatus_String(t *testing.T) {
-	assertEqual(t, "Active", HoldActive.String(), "Active")
-	assertEqual(t, "Released", HoldReleased.String(), "Released")
-	assertEqual(t, "Captured", HoldCaptured.String(), "Captured")
-	assertEqual(t, "Unknown", HoldStatus(99).String(), "Unknown")
-}
-
 // ---------------------------------------------------------------------------
 // Transaction Posting Tests
 // ---------------------------------------------------------------------------
@@ -238,12 +231,12 @@ func TestHoldStatus_String(t *testing.T) {
 //	Debit Alice  $50 (liability decreases — Alice has less)
 //	Credit Bob   $50 (liability increases — Bob has more)
 func TestPostTransaction_SimpleTransfer(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	// First, fund Alice's account: bank receives cash from Alice.
 	// Credit Alice (liability up) + Debit Cash (asset up).
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Initial deposit",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
@@ -253,8 +246,8 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	assertError(t, err, ErrUnbalancedTransaction)
 
 	// Properly balanced initial deposit.
-	cash := findAccountByName(t, svc, "Cash")
-	_, err = svc.PostTransaction(PostTransactionRequest{
+	cash := findAccountByName(t, book, "Cash")
+	_, err = book.PostTransaction(PostTransactionRequest{
 		Description: "Alice deposits $100",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -264,7 +257,7 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	assertNoError(t, err)
 
 	// Now transfer $50 from Alice to Bob.
-	tx, err := svc.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "transfer-001",
 		Description:    "Alice sends $50 to Bob",
 		Entries: []Entry{
@@ -280,14 +273,14 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	// Alice: credited 10000, debited 5000 -> net credit of 5000.
 	// For Liability (normal=Credit): credit adds, debit subtracts.
 	// Balance = +10000 - 5000 = 5000
-	aliceBal, err := svc.GetBalance(alice.ID)
+	aliceBal, err := book.BookBalance(alice.ID)
 	assertNoError(t, err)
-	assertEqual(t, "alice book balance", aliceBal.Book, Amount(5000))
+	assertEqual(t, "alice book balance", aliceBal, Amount(5000))
 
 	// Bob: credited 5000 -> net credit of 5000.
-	bobBal, err := svc.GetBalance(bob.ID)
+	bobBal, err := book.BookBalance(bob.ID)
 	assertNoError(t, err)
-	assertEqual(t, "bob book balance", bobBal.Book, Amount(5000))
+	assertEqual(t, "bob book balance", bobBal, Amount(5000))
 }
 
 // TestPostTransaction_MultiLeg tests a three-legged transaction that
@@ -299,11 +292,11 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 //	Credit Bob    $100 (he receives the principal)
 //	Credit Fees   $2   (bank earns the fee)
 func TestPostTransaction_MultiLeg(t *testing.T) {
-	svc := testService(t)
-	alice, bob, cash, feeIncome := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, cash, feeIncome := setupChartOfAccounts(t, book)
 
 	// Fund Alice with $200.
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Alice deposits $200",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 20000, Direction: Debit},
@@ -313,7 +306,7 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	assertNoError(t, err)
 
 	// Transfer $100 to Bob with $2 fee.
-	tx, err := svc.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer with fee",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 10200, Direction: Debit},
@@ -325,28 +318,28 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	assertEqual(t, "entries count", len(tx.Entries), 3)
 
 	// Alice: +20000 (credit) - 10200 (debit) = 9800
-	aliceBal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "alice balance", aliceBal.Book, Amount(9800))
+	aliceBal, _ := book.BookBalance(alice.ID)
+	assertEqual(t, "alice balance", aliceBal, Amount(9800))
 
 	// Bob: +10000 (credit)
-	bobBal, _ := svc.GetBalance(bob.ID)
-	assertEqual(t, "bob balance", bobBal.Book, Amount(10000))
+	bobBal, _ := book.BookBalance(bob.ID)
+	assertEqual(t, "bob balance", bobBal, Amount(10000))
 
 	// Fee Income: +200 (credit). Revenue normal = Credit, so +200.
-	feeBal, _ := svc.GetBalance(feeIncome.ID)
-	assertEqual(t, "fee income balance", feeBal.Book, Amount(200))
+	feeBal, _ := book.BookBalance(feeIncome.ID)
+	assertEqual(t, "fee income balance", feeBal, Amount(200))
 }
 
 // TestPostTransaction_BookingAndValueDate tests that booking date and
 // value date are correctly stored.
 func TestPostTransaction_BookingAndValueDate(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	bookingDate := time.Date(2025, 1, 15, 14, 30, 0, 0, time.UTC)
 	valueDate := time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC)
 
-	tx, err := svc.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Forward-dated transfer",
 		BookingDate: bookingDate,
 		ValueDate:   valueDate,
@@ -363,10 +356,10 @@ func TestPostTransaction_BookingAndValueDate(t *testing.T) {
 // TestPostTransaction_DefaultDates tests that dates default correctly
 // when not provided.
 func TestPostTransaction_DefaultDates(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, err := svc.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer with default dates",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 1000, Direction: Debit},
@@ -375,7 +368,7 @@ func TestPostTransaction_DefaultDates(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	// Both should default to the service clock time.
+	// Both should default to the book clock time.
 	expectedTime := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 	assertEqual(t, "booking date", tx.BookingDate, expectedTime)
 	assertEqual(t, "value date", tx.ValueDate, expectedTime)
@@ -386,9 +379,9 @@ func TestPostTransaction_DefaultDates(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPostTransaction_EmptyEntries(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Empty",
 		Entries:     []Entry{},
 	})
@@ -396,10 +389,10 @@ func TestPostTransaction_EmptyEntries(t *testing.T) {
 }
 
 func TestPostTransaction_InvalidAmount(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Zero amount",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 0, Direction: Debit},
@@ -408,7 +401,7 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 	})
 	assertError(t, err, ErrInvalidAmount)
 
-	_, err = svc.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(PostTransactionRequest{
 		Description: "Negative amount",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: -100, Direction: Debit},
@@ -419,10 +412,10 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 }
 
 func TestPostTransaction_AccountNotFound(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, _, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Bad account",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -433,10 +426,10 @@ func TestPostTransaction_AccountNotFound(t *testing.T) {
 }
 
 func TestPostTransaction_Unbalanced(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Unbalanced",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -451,11 +444,11 @@ func TestPostTransaction_Unbalanced(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPostTransaction_Idempotency(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	// First post succeeds.
-	tx1, err := svc.PostTransaction(PostTransactionRequest{
+	tx1, err := book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "key-1",
 		Description:    "Transfer",
 		Entries: []Entry{
@@ -466,7 +459,7 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 	assertNoError(t, err)
 
 	// Second post with same key fails.
-	_, err = svc.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "key-1",
 		Description:    "Duplicate",
 		Entries: []Entry{
@@ -477,12 +470,12 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 	assertError(t, err, ErrDuplicateIdempotencyKey)
 
 	// Can retrieve original by idempotency key.
-	got, err := svc.GetTransactionByIdempotencyKey("key-1")
+	got, err := book.GetTransactionByIdempotencyKey("key-1")
 	assertNoError(t, err)
 	assertEqual(t, "tx id", got.ID, tx1.ID)
 
 	// Non-existent idempotency key.
-	_, err = svc.GetTransactionByIdempotencyKey("no-such-key")
+	_, err = book.GetTransactionByIdempotencyKey("no-such-key")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
@@ -491,10 +484,10 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetTransaction(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, _ := svc.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(PostTransactionRequest{
 		Description: "Test",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -502,15 +495,15 @@ func TestGetTransaction(t *testing.T) {
 		},
 	})
 
-	got, err := svc.GetTransaction(tx.ID)
+	got, err := book.GetTransaction(tx.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, tx.ID)
 }
 
 func TestGetTransaction_NotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.GetTransaction("nonexistent")
+	_, err := book.GetTransaction("nonexistent")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
@@ -521,11 +514,11 @@ func TestGetTransaction_NotFound(t *testing.T) {
 // TestReverseTransaction tests that reversing a transaction exactly
 // offsets its balance impact.
 func TestReverseTransaction(t *testing.T) {
-	svc := testService(t)
-	alice, bob, cash, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, cash, _ := setupChartOfAccounts(t, book)
 
 	// Fund Alice.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -534,7 +527,7 @@ func TestReverseTransaction(t *testing.T) {
 	})
 
 	// Transfer $50 from Alice to Bob.
-	tx, _ := svc.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
@@ -543,37 +536,37 @@ func TestReverseTransaction(t *testing.T) {
 	})
 
 	// Reverse the transfer.
-	reversal, err := svc.ReverseTransaction(tx.ID, "Reversal of erroneous transfer")
+	reversal, err := book.ReverseTransaction(tx.ID, "Reversal of erroneous transfer")
 	assertNoError(t, err)
 	assertEqual(t, "reversal status", reversal.Status, Posted)
 	assertEqual(t, "reversalOf", reversal.ReversalOf, tx.ID)
 	assertEqual(t, "entries count", len(reversal.Entries), 2)
 
 	// Original should be marked as Reversed.
-	original, _ := svc.GetTransaction(tx.ID)
+	original, _ := book.GetTransaction(tx.ID)
 	assertEqual(t, "original status", original.Status, Reversed)
 
 	// Alice's balance should be back to 10000.
-	aliceBal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "alice balance after reversal", aliceBal.Book, Amount(10000))
+	aliceBal, _ := book.BookBalance(alice.ID)
+	assertEqual(t, "alice balance after reversal", aliceBal, Amount(10000))
 
 	// Bob's balance should be back to 0.
-	bobBal, _ := svc.GetBalance(bob.ID)
-	assertEqual(t, "bob balance after reversal", bobBal.Book, Amount(0))
+	bobBal, _ := book.BookBalance(bob.ID)
+	assertEqual(t, "bob balance after reversal", bobBal, Amount(0))
 }
 
 func TestReverseTransaction_NotFound(t *testing.T) {
-	svc := testService(t)
+	book := testBook(t)
 
-	_, err := svc.ReverseTransaction("nonexistent", "")
+	_, err := book.ReverseTransaction("nonexistent", "")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
 func TestReverseTransaction_AlreadyReversed(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, _ := svc.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -582,296 +575,12 @@ func TestReverseTransaction_AlreadyReversed(t *testing.T) {
 	})
 
 	// First reversal succeeds.
-	_, err := svc.ReverseTransaction(tx.ID, "First reversal")
+	_, err := book.ReverseTransaction(tx.ID, "First reversal")
 	assertNoError(t, err)
 
 	// Second reversal fails.
-	_, err = svc.ReverseTransaction(tx.ID, "Second reversal")
+	_, err = book.ReverseTransaction(tx.ID, "Second reversal")
 	assertError(t, err, ErrTransactionAlreadyReversed)
-}
-
-// ---------------------------------------------------------------------------
-// Hold Tests
-// ---------------------------------------------------------------------------
-
-// TestHold_FullLifecycle tests the authorization-capture flow.
-//
-// Scenario: Alice has $100. A $30 hold is placed (card auth at gas pump).
-// Available drops to $70, book stays at $100. Then the hold is captured
-// for $25 (actual gas pumped).
-func TestHold_FullLifecycle(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Fund Alice.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Place hold.
-	hold, err := svc.CreateHold(CreateHoldRequest{
-		AccountID:   alice.ID,
-		Amount:      3000,
-				Description: "Gas pump authorization",
-	})
-	assertNoError(t, err)
-	assertEqual(t, "hold status", hold.Status, HoldActive)
-
-	// Check balance: book=10000, holds=3000, available=7000.
-	bal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "book with hold", bal.Book, Amount(10000))
-	assertEqual(t, "holds amount", bal.Holds, Amount(3000))
-	assertEqual(t, "available with hold", bal.Available, Amount(7000))
-
-	// Capture for actual amount ($25).
-	tx, err := svc.CaptureHold(hold.ID, cash.ID, 2500, "Gas purchase")
-	assertNoError(t, err)
-	assertEqual(t, "tx status", tx.Status, Posted)
-
-	// Hold should be captured.
-	h, _ := svc.GetHold(hold.ID)
-	assertEqual(t, "hold captured", h.Status, HoldCaptured)
-
-	// Balance: book=10000-2500=7500, holds=0, available=7500.
-	bal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "book after capture", bal.Book, Amount(7500))
-	assertEqual(t, "holds after capture", bal.Holds, Amount(0))
-	assertEqual(t, "available after capture", bal.Available, Amount(7500))
-}
-
-// TestHold_Release tests that releasing a hold restores available balance.
-func TestHold_Release(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Fund Alice.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Place hold.
-	hold, _ := svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    3000,
-			})
-
-	// Release hold.
-	err := svc.ReleaseHold(hold.ID)
-	assertNoError(t, err)
-
-	// Available should be fully restored.
-	bal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "book", bal.Book, Amount(10000))
-	assertEqual(t, "holds", bal.Holds, Amount(0))
-	assertEqual(t, "available", bal.Available, Amount(10000))
-}
-
-// TestHold_Expiration tests that expired holds are excluded from
-// available balance calculation.
-func TestHold_Expiration(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Fund Alice.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Place hold that expires in the past.
-	svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    3000,
-				ExpiresAt: time.Date(2025, 1, 14, 0, 0, 0, 0, time.UTC), // yesterday
-	})
-
-	// Expired hold should not affect available balance.
-	bal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "holds", bal.Holds, Amount(0))
-	assertEqual(t, "available", bal.Available, Amount(10000))
-}
-
-func TestCreateHold_Validation(t *testing.T) {
-	svc := testService(t)
-
-	// Account not found.
-	_, err := svc.CreateHold(CreateHoldRequest{
-		AccountID: "nonexistent",
-		Amount:    100,
-			})
-	assertError(t, err, ErrAccountNotFound)
-
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	// Invalid amount.
-	_, err = svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    0,
-			})
-	assertError(t, err, ErrInvalidAmount)
-}
-
-func TestReleaseHold_NotFound(t *testing.T) {
-	svc := testService(t)
-
-	err := svc.ReleaseHold("nonexistent")
-	assertError(t, err, ErrHoldNotFound)
-}
-
-func TestReleaseHold_NotActive(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	hold, _ := svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    100,
-			})
-
-	// Release it.
-	svc.ReleaseHold(hold.ID)
-
-	// Try to release again.
-	err := svc.ReleaseHold(hold.ID)
-	assertError(t, err, ErrHoldNotActive)
-}
-
-func TestCaptureHold_Validation(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	// Hold not found.
-	_, err := svc.CaptureHold("nonexistent", alice.ID, 100, "")
-	assertError(t, err, ErrHoldNotFound)
-
-	hold, _ := svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    100,
-			})
-
-	// Counterparty not found.
-	_, err = svc.CaptureHold(hold.ID, "nonexistent", 100, "")
-	assertError(t, err, ErrAccountNotFound)
-
-	// Release hold, then try to capture.
-	svc.ReleaseHold(hold.ID)
-	_, err = svc.CaptureHold(hold.ID, alice.ID, 100, "")
-	assertError(t, err, ErrHoldNotActive)
-}
-
-// TestHold_MultipleHolds tests that multiple holds on the same account
-// correctly stack.
-func TestHold_MultipleHolds(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Fund Alice with $100.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Place two holds.
-	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 2000})
-	svc.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 3000})
-
-	// Available = 10000 - 2000 - 3000 = 5000.
-	bal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "available", bal.Available, Amount(5000))
-	assertEqual(t, "holds", bal.Holds, Amount(5000))
-}
-
-// ---------------------------------------------------------------------------
-// End-of-Day Snapshot Tests
-// ---------------------------------------------------------------------------
-
-func TestEndOfDaySnapshot(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	// Fund Alice.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Take snapshot.
-	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	snap, err := svc.TakeEndOfDaySnapshot(alice.ID, date)
-	assertNoError(t, err)
-	assertEqual(t, "snapshot book", snap.Balance.Book, Amount(10000))
-
-	// Retrieve snapshot.
-	got, err := svc.GetSnapshot(alice.ID, date)
-	assertNoError(t, err)
-	assertEqual(t, "retrieved book", got.Balance.Book, Amount(10000))
-
-	// Non-existent snapshot returns ErrSnapshotNotFound.
-	otherDate := time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC)
-	_, err = svc.GetSnapshot(alice.ID, otherDate)
-	assertError(t, err, ErrSnapshotNotFound)
-}
-
-func TestEndOfDaySnapshot_AccountNotFound(t *testing.T) {
-	svc := testService(t)
-
-	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	_, err := svc.TakeEndOfDaySnapshot("nonexistent", date)
-	assertError(t, err, ErrAccountNotFound)
-}
-
-func TestGetSnapshot_AccountNotFound(t *testing.T) {
-	svc := testService(t)
-
-	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	_, err := svc.GetSnapshot("nonexistent", date)
-	assertError(t, err, ErrAccountNotFound)
-}
-
-// TestEndOfDaySnapshot_Overwrite tests that taking a snapshot for the
-// same account/date overwrites the previous one.
-func TestEndOfDaySnapshot_Overwrite(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
-
-	date := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-
-	// Fund Alice and take snapshot.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "First deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 5000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 5000, Direction: Credit},
-		},
-	})
-	svc.TakeEndOfDaySnapshot(alice.ID, date)
-
-	// Post another transaction and retake snapshot.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Second deposit",
-		Entries: []Entry{
-			{AccountID: cash.ID, Amount: 3000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 3000, Direction: Credit},
-		},
-	})
-	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, date)
-	assertEqual(t, "overwritten snapshot", snap.Balance.Book, Amount(8000))
 }
 
 // ---------------------------------------------------------------------------
@@ -879,11 +588,11 @@ func TestEndOfDaySnapshot_Overwrite(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuditLog(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	// Post a transaction.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -891,7 +600,7 @@ func TestAuditLog(t *testing.T) {
 		},
 	})
 
-	log := svc.GetAuditLog()
+	log := book.GetAuditLog()
 
 	// Should have: ledger created, 3x subledger created, 4x account created,
 	// 1x transaction posted = 9 events.
@@ -908,10 +617,10 @@ func TestAuditLog(t *testing.T) {
 }
 
 func TestAuditLogForEntity(t *testing.T) {
-	svc := testService(t)
-	alice, bob, _, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, _ := svc.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -920,22 +629,22 @@ func TestAuditLogForEntity(t *testing.T) {
 	})
 
 	// Get events for Alice's account.
-	aliceEvents := svc.GetAuditLogForEntity(string(alice.ID))
+	aliceEvents := book.GetAuditLogForEntity(string(alice.ID))
 	assertEqual(t, "alice events", len(aliceEvents), 1)
 	assertEqual(t, "event type", aliceEvents[0].Type, EventAccountCreated)
 
 	// Get events for the transaction.
-	txEvents := svc.GetAuditLogForEntity(string(tx.ID))
+	txEvents := book.GetAuditLogForEntity(string(tx.ID))
 	assertEqual(t, "tx events", len(txEvents), 1)
 	assertEqual(t, "event type", txEvents[0].Type, EventTransactionPosted)
 }
 
 func TestAuditLog_ImmutableCopy(t *testing.T) {
-	svc := testService(t)
-	svc.CreateLedger("GL")
+	book := testBook(t)
+	book.CreateLedger("GL")
 
-	log1 := svc.GetAuditLog()
-	log2 := svc.GetAuditLog()
+	log1 := book.GetAuditLog()
+	log2 := book.GetAuditLog()
 
 	// Modifying the returned slice should not affect the internal log.
 	log1[0].Type = "tampered"
@@ -949,14 +658,14 @@ func TestAuditLog_ImmutableCopy(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestPostTransaction_InsufficientBalance_Asset tests that a transaction
-// is rejected when it would cause an Asset account's available balance
+// is rejected when it would cause an Asset account's book balance
 // to go below zero.
 func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, book)
 
 	// Fund cash account with $100.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "Initial deposit",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -965,7 +674,7 @@ func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
 	})
 
 	// Try to withdraw more cash than available (credit cash $150).
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Overdraw cash",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 15000, Direction: Debit},
@@ -975,65 +684,19 @@ func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
 	assertError(t, err, ErrInsufficientBalance)
 
 	// Cash balance should be unchanged.
-	bal, _ := svc.GetBalance(cash.ID)
-	assertEqual(t, "cash balance unchanged", bal.Book, Amount(10000))
-}
-
-// TestPostTransaction_InsufficientBalance_WithHolds tests that holds
-// are considered when checking available balance for transactions.
-func TestPostTransaction_InsufficientBalance_WithHolds(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	l, _ := svc.CreateLedger("Test")
-	sl, _ := svc.CreateSubledger(l.ID, "Test")
-	assetAcct, _ := svc.CreateAccount(sl.ID, "Test Asset", Asset)
-
-	// Fund asset account with $100 using a Liability counterparty.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Fund",
-		Entries: []Entry{
-			{AccountID: assetAcct.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Place hold for $60.
-	svc.CreateHold(CreateHoldRequest{
-		AccountID: assetAcct.ID,
-		Amount:    6000,
-	})
-
-	// Try to withdraw $50 — book is $100, holds $60, available $40.
-	_, err := svc.PostTransaction(PostTransactionRequest{
-		Description: "Exceeds available",
-		Entries: []Entry{
-			{AccountID: assetAcct.ID, Amount: 5000, Direction: Credit},
-			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
-		},
-	})
-	assertError(t, err, ErrInsufficientBalance)
-
-	// A smaller withdrawal should succeed.
-	_, err = svc.PostTransaction(PostTransactionRequest{
-		Description: "Within available",
-		Entries: []Entry{
-			{AccountID: assetAcct.ID, Amount: 4000, Direction: Credit},
-			{AccountID: alice.ID, Amount: 4000, Direction: Debit},
-		},
-	})
-	assertNoError(t, err)
+	bal, _ := book.BookBalance(cash.ID)
+	assertEqual(t, "cash balance unchanged", bal, Amount(10000))
 }
 
 // TestPostTransaction_InsufficientBalance_LiabilityNotChecked tests that
 // Liability accounts are not subject to balance checking.
 func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
-	svc := testService(t)
-	alice, _, cash, _ := setupChartOfAccounts(t, svc)
+	book := testBook(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, book)
 
 	// Debit Alice (Liability) without any prior credit — this should succeed
 	// because Liability accounts are not checked for insufficient balance.
-	_, err := svc.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(PostTransactionRequest{
 		Description: "Debit unfunded liability",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
@@ -1045,11 +708,11 @@ func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
 	assertError(t, err, ErrUnbalancedTransaction)
 
 	// Proper test: debit a Liability with no prior balance.
-	l, _ := svc.CreateLedger("Test")
-	sl, _ := svc.CreateSubledger(l.ID, "Test")
-	liab, _ := svc.CreateAccount(sl.ID, "Test Liability", Liability)
+	l, _ := book.CreateLedger("Test")
+	sl, _ := book.CreateSubledger(l.ID, "Test")
+	liab, _ := book.CreateAccount(sl.ID, "Test Liability", Liability)
 
-	_, err = svc.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(PostTransactionRequest{
 		Description: "Debit unfunded liability",
 		Entries: []Entry{
 			{AccountID: liab.ID, Amount: 5000, Direction: Debit},
@@ -1059,98 +722,48 @@ func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
 	assertNoError(t, err)
 }
 
-// TestCreateHold_InsufficientBalance tests that a hold is rejected when
-// it would cause an Asset account's available balance to go below zero.
-func TestCreateHold_InsufficientBalance(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	l, _ := svc.CreateLedger("Test")
-	sl, _ := svc.CreateSubledger(l.ID, "Test")
-	assetAcct, _ := svc.CreateAccount(sl.ID, "Test Asset", Asset)
-
-	// Fund asset account with $100 using a Liability counterparty.
-	svc.PostTransaction(PostTransactionRequest{
-		Description: "Fund",
-		Entries: []Entry{
-			{AccountID: assetAcct.ID, Amount: 10000, Direction: Debit},
-			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
-		},
-	})
-
-	// Hold for $100 should succeed (exactly available).
-	_, err := svc.CreateHold(CreateHoldRequest{
-		AccountID: assetAcct.ID,
-		Amount:    10000,
-	})
-	assertNoError(t, err)
-
-	// Another hold should fail — available is now $0.
-	_, err = svc.CreateHold(CreateHoldRequest{
-		AccountID: assetAcct.ID,
-		Amount:    1,
-	})
-	assertError(t, err, ErrInsufficientBalance)
-}
-
-// TestCreateHold_LiabilityNotChecked tests that holds on Liability
-// accounts are not subject to balance checking.
-func TestCreateHold_LiabilityNotChecked(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
-
-	// Alice (Liability) has $0 balance, but hold should succeed.
-	_, err := svc.CreateHold(CreateHoldRequest{
-		AccountID: alice.ID,
-		Amount:    5000,
-	})
-	assertNoError(t, err)
-}
-
 // ---------------------------------------------------------------------------
 // Balance Edge Cases
 // ---------------------------------------------------------------------------
 
-func TestGetBalance_AccountNotFound(t *testing.T) {
-	svc := testService(t)
+func TestBookBalance_AccountNotFound(t *testing.T) {
+	book := testBook(t)
 
-	_, err := svc.GetBalance("nonexistent")
+	_, err := book.BookBalance("nonexistent")
 	assertError(t, err, ErrAccountNotFound)
 }
 
-// TestGetBalance_ZeroForNewAccount tests that a new account has zero
+// TestBookBalance_ZeroForNewAccount tests that a new account has zero
 // balance.
-func TestGetBalance_ZeroForNewAccount(t *testing.T) {
-	svc := testService(t)
-	alice, _, _, _ := setupChartOfAccounts(t, svc)
+func TestBookBalance_ZeroForNewAccount(t *testing.T) {
+	book := testBook(t)
+	alice, _, _, _ := setupChartOfAccounts(t, book)
 
-	bal, err := svc.GetBalance(alice.ID)
+	bal, err := book.BookBalance(alice.ID)
 	assertNoError(t, err)
-	assertEqual(t, "book", bal.Book, Amount(0))
-	assertEqual(t, "holds", bal.Holds, Amount(0))
-	assertEqual(t, "available", bal.Available, Amount(0))
+	assertEqual(t, "book", bal, Amount(0))
 }
 
-// TestGetBalance_AllAccountTypes tests that balance calculations work
+// TestBookBalance_AllAccountTypes tests that balance calculations work
 // correctly for every account type.
-func TestGetBalance_AllAccountTypes(t *testing.T) {
-	svc := testService(t)
+func TestBookBalance_AllAccountTypes(t *testing.T) {
+	book := testBook(t)
 
-	l, _ := svc.CreateLedger("GL")
-	sl, _ := svc.CreateSubledger(l.ID, "Test")
+	l, _ := book.CreateLedger("GL")
+	sl, _ := book.CreateSubledger(l.ID, "Test")
 
 	// Create one account of each type.
-	asset, _ := svc.CreateAccount(sl.ID, "Asset", Asset)
-	liability, _ := svc.CreateAccount(sl.ID, "Liability", Liability)
-	equity, _ := svc.CreateAccount(sl.ID, "Equity", Equity)
-	revenue, _ := svc.CreateAccount(sl.ID, "Revenue", Revenue)
-	expense, _ := svc.CreateAccount(sl.ID, "Expense", Expense)
+	asset, _ := book.CreateAccount(sl.ID, "Asset", Asset)
+	liability, _ := book.CreateAccount(sl.ID, "Liability", Liability)
+	equity, _ := book.CreateAccount(sl.ID, "Equity", Equity)
+	revenue, _ := book.CreateAccount(sl.ID, "Revenue", Revenue)
+	expense, _ := book.CreateAccount(sl.ID, "Expense", Expense)
 
 	accounts := []Account{asset, liability, equity, revenue, expense}
 
 	// Post a debit of 100 and credit of 100 between pairs.
 	// Debit asset, credit liability.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "D asset, C liability",
 		Entries: []Entry{
 			{AccountID: asset.ID, Amount: 1000, Direction: Debit},
@@ -1159,7 +772,7 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	})
 
 	// Debit expense, credit revenue.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "D expense, C revenue",
 		Entries: []Entry{
 			{AccountID: expense.ID, Amount: 500, Direction: Debit},
@@ -1168,7 +781,7 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	})
 
 	// Credit equity, debit asset.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		Description: "D asset, C equity",
 		Entries: []Entry{
 			{AccountID: asset.ID, Amount: 2000, Direction: Debit},
@@ -1185,42 +798,40 @@ func TestGetBalance_AllAccountTypes(t *testing.T) {
 	expected := []Amount{3000, 1000, 2000, 500, 500}
 
 	for i, acct := range accounts {
-		bal, _ := svc.GetBalance(acct.ID)
-		assertEqual(t, acct.Name+" balance", bal.Book, expected[i])
+		bal, _ := book.BookBalance(acct.ID)
+		assertEqual(t, acct.Name+" balance", bal, expected[i])
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Integration Test: Full Banking Workflow
+// Integration Test: Full Ledger Workflow
 // ---------------------------------------------------------------------------
 
-// TestFullBankingWorkflow simulates a realistic banking day:
+// TestFullLedgerWorkflow simulates a realistic banking day at the general
+// ledger level:
 //
 //  1. Set up chart of accounts.
 //  2. Customer deposits cash.
-//  3. Customer makes a card payment (hold -> capture).
+//  3. Customer makes a card payment.
 //  4. Customer receives a wire transfer.
 //  5. An erroneous fee is posted and then reversed.
-//  6. End-of-day snapshots are taken.
-//  7. Audit trail is verified.
-func TestFullBankingWorkflow(t *testing.T) {
-	svc := testService(t)
+//  6. Audit trail is verified.
+func TestFullLedgerWorkflow(t *testing.T) {
+	book := testBook(t)
 
 	// Step 1: Chart of accounts.
-	gl, _ := svc.CreateLedger("General Ledger")
-	customerDeposits, _ := svc.CreateSubledger(gl.ID, "Customer Deposits")
-	bankAssets, _ := svc.CreateSubledger(gl.ID, "Bank Assets")
-	rev, _ := svc.CreateSubledger(gl.ID, "Revenue")
-	exp, _ := svc.CreateSubledger(gl.ID, "Expenses")
+	gl, _ := book.CreateLedger("General Ledger")
+	customerDeposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits")
+	bankAssets, _ := book.CreateSubledger(gl.ID, "Bank Assets")
+	rev, _ := book.CreateSubledger(gl.ID, "Revenue")
 
-	alice, _ := svc.CreateAccount(customerDeposits.ID, "Alice Checking", Liability)
-	nostro, _ := svc.CreateAccount(bankAssets.ID, "Nostro USD", Asset)
-	cashAccount, _ := svc.CreateAccount(bankAssets.ID, "Cash Vault", Asset)
-	feeIncome, _ := svc.CreateAccount(rev.ID, "Fee Income", Revenue)
-	merchant, _ := svc.CreateAccount(exp.ID, "Merchant Payable", Expense)
+	alice, _ := book.CreateAccount(customerDeposits.ID, "Alice Checking", Liability)
+	nostro, _ := book.CreateAccount(bankAssets.ID, "Nostro USD", Asset)
+	cashAccount, _ := book.CreateAccount(bankAssets.ID, "Cash Vault", Asset)
+	feeIncome, _ := book.CreateAccount(rev.ID, "Fee Income", Revenue)
 
 	// Step 2: Alice deposits $500 cash at the teller.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "deposit-001",
 		Description:    "Cash deposit at branch",
 		Entries: []Entry{
@@ -1229,30 +840,23 @@ func TestFullBankingWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ := svc.GetBalance(alice.ID)
-	assertEqual(t, "after deposit", aliceBal.Book, Amount(50000))
+	aliceBal, _ := book.BookBalance(alice.ID)
+	assertEqual(t, "after deposit", aliceBal, Amount(50000))
 
-	// Step 3: Alice swipes her card at a restaurant ($80 auth).
-	hold, _ := svc.CreateHold(CreateHoldRequest{
-		AccountID:   alice.ID,
-		Amount:      8000,
-				Description: "Card auth: Restaurant",
-		ExpiresAt:   time.Date(2025, 1, 22, 0, 0, 0, 0, time.UTC),
+	// Step 3: Alice pays a restaurant $75 in cash.
+	book.PostTransaction(PostTransactionRequest{
+		Description: "Restaurant bill",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 7500, Direction: Debit},
+			{AccountID: cashAccount.ID, Amount: 7500, Direction: Credit},
+		},
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "book with hold", aliceBal.Book, Amount(50000))
-	assertEqual(t, "available with hold", aliceBal.Available, Amount(42000))
-
-	// Restaurant captures for $75 (tip adjusted).
-	svc.CaptureHold(hold.ID, merchant.ID, 7500, "Restaurant bill")
-
-	aliceBal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "book after capture", aliceBal.Book, Amount(42500))
-	assertEqual(t, "available after capture", aliceBal.Available, Amount(42500))
+	aliceBal, _ = book.BookBalance(alice.ID)
+	assertEqual(t, "book after payment", aliceBal, Amount(42500))
 
 	// Step 4: Alice receives a $200 wire transfer.
-	svc.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "wire-001",
 		Description:    "Incoming wire transfer",
 		BookingDate:    time.Date(2025, 1, 15, 14, 30, 0, 0, time.UTC),
@@ -1263,11 +867,11 @@ func TestFullBankingWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "after wire", aliceBal.Book, Amount(62500))
+	aliceBal, _ = book.BookBalance(alice.ID)
+	assertEqual(t, "after wire", aliceBal, Amount(62500))
 
 	// Step 5: Erroneous $10 fee, then reversal.
-	errTx, _ := svc.PostTransaction(PostTransactionRequest{
+	errTx, _ := book.PostTransaction(PostTransactionRequest{
 		IdempotencyKey: "fee-001",
 		Description:    "Monthly maintenance fee (error)",
 		Entries: []Entry{
@@ -1276,21 +880,16 @@ func TestFullBankingWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "after fee", aliceBal.Book, Amount(61500))
+	aliceBal, _ = book.BookBalance(alice.ID)
+	assertEqual(t, "after fee", aliceBal, Amount(61500))
 
-	svc.ReverseTransaction(errTx.ID, "Reverse erroneous fee")
+	book.ReverseTransaction(errTx.ID, "Reverse erroneous fee")
 
-	aliceBal, _ = svc.GetBalance(alice.ID)
-	assertEqual(t, "after fee reversal", aliceBal.Book, Amount(62500))
+	aliceBal, _ = book.BookBalance(alice.ID)
+	assertEqual(t, "after fee reversal", aliceBal, Amount(62500))
 
-	// Step 6: End-of-day snapshot.
-	eod := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
-	snap, _ := svc.TakeEndOfDaySnapshot(alice.ID, eod)
-	assertEqual(t, "eod snapshot", snap.Balance.Book, Amount(62500))
-
-	// Step 7: Audit trail should contain all operations.
-	auditLog := svc.GetAuditLog()
+	// Step 6: Audit trail should contain all operations.
+	auditLog := book.GetAuditLog()
 	if len(auditLog) == 0 {
 		t.Fatal("audit log should not be empty")
 	}
@@ -1307,24 +906,15 @@ func TestFullBankingWorkflow(t *testing.T) {
 	if counts[EventTransactionReversed] != 1 {
 		t.Fatalf("expected 1 transaction.reversed event, got %d", counts[EventTransactionReversed])
 	}
-	if counts[EventHoldCreated] != 1 {
-		t.Fatalf("expected 1 hold.created event, got %d", counts[EventHoldCreated])
-	}
-	if counts[EventHoldCaptured] != 1 {
-		t.Fatalf("expected 1 hold.captured event, got %d", counts[EventHoldCaptured])
-	}
-	if counts[EventSnapshotTaken] != 1 {
-		t.Fatalf("expected 1 snapshot.taken event, got %d", counts[EventSnapshotTaken])
-	}
 }
 
 // ---------------------------------------------------------------------------
 // Helper functions for tests
 // ---------------------------------------------------------------------------
 
-func findAccountByName(t *testing.T, svc *Service, name string) Account {
+func findAccountByName(t *testing.T, book *Book, name string) Account {
 	t.Helper()
-	for _, acct := range svc.accounts {
+	for _, acct := range book.accounts {
 		if acct.Name == name {
 			return *acct
 		}

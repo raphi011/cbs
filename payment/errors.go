@@ -2,7 +2,7 @@ package payment
 
 import "errors"
 
-// Sentinel errors returned by the System. Callers can use errors.Is() to
+// Sentinel errors returned by the Network. Callers can use errors.Is() to
 // check for specific failure conditions, the same convention the ledger
 // package uses.
 var (

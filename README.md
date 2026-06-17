@@ -2,6 +2,18 @@
 
 A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use (which would require persistent storage, distributed transactions, etc.).
 
+## Three-Layer Architecture
+
+The system is split into three layers, each in its own package and building on the one below it:
+
+1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, on-demand book balances, and an immutable audit log. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
+
+2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits**, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
+
+3. **`payment` — the interbank payment network.** Each participant bank gets its own `ledger.Book` plus a `deposit.Register` over it; funds and status checks for a payment run through that deposit layer, while the multi-leg GL postings (debtor leg, creditor leg, reserve movements) live in the payment layer. Its top-level type is `payment.Network`.
+
+The sections below are organized around these layers: general-ledger concepts first, then the deposit-layer concepts (holds, available balance, account lifecycle, snapshots), then the payment network.
+
 ## Table of Contents
 
 - [Core Banking Concepts](#core-banking-concepts)
@@ -289,6 +301,8 @@ In all cases, the invariant holds: **total debits = total credits**.
 
 ### Holds (Authorization / Pending Transactions)
 
+> Holds, the available balance, account status, and snapshots all live in the **`deposit`** package (`deposit.Register`), not in the general ledger. The pure `ledger.Book` only knows about posted transactions and book balances. This section describes deposit-layer behavior.
+
 Holds model the "auth-capture" flow common in card payments and other scenarios where funds must be reserved before a final amount is known:
 
 1. **Authorization:** When a customer swipes their debit card at a gas pump, the bank places a hold (e.g., $100) on the account. The book balance is unchanged, but the available balance drops by $100.
@@ -297,22 +311,22 @@ Holds model the "auth-capture" flow common in card payments and other scenarios 
 
 3. **Release:** If the transaction is cancelled (e.g., the customer drives away without pumping), the hold is released and the available balance is restored.
 
-The difference between book balance and available balance is significant:
+The difference between book balance and available balance is significant. In the deposit layer a customer's money is the book balance of the backing Liability GL account, and the available balance accounts for both active holds and any overdraft limit:
 
 ```
-Book Balance      = sum of all posted transactions
-Available Balance = Book Balance - Active Holds
+Book Balance      = book balance of the backing GL account
+Available Balance = Book Balance - Active Holds + Overdraft Limit
 ```
 
 Holds typically have an expiration time. If not captured within that window, they automatically stop affecting the available balance.
 
 #### Holds Are Off-Ledger
 
-Unsettled holds do not exist as ledger entries. The ledger only records posted transactions — actual debits and credits that have settled. A hold is an operational concept tracked separately; it doesn't move money and doesn't appear in the general ledger or trial balance.
+Unsettled holds do not exist as ledger entries. The general ledger only records posted transactions — actual debits and credits that have settled. A hold is an operational concept tracked by the `deposit` layer alone; it doesn't move money and doesn't appear in the general ledger or trial balance.
 
-A hold only touches the ledger when it is **captured** — at that point a real transaction is posted with proper debits and credits. If the hold is **released**, nothing ever hits the ledger; from an accounting perspective it's as if it never happened.
+A hold only touches the ledger when it is **captured** — at that point `deposit.Register` posts a real transaction into the underlying `ledger.Book` with proper debits and credits (debiting the customer's Liability GL account, crediting the counterparty). If the hold is **released**, nothing ever hits the ledger; from an accounting perspective it's as if it never happened.
 
-In a typical core banking architecture, holds are stored separately from the transaction journal. The ledger is only involved when a hold is captured and converted into a real transaction.
+This is exactly why holds live one layer up from the ledger: the ledger stays a pure record of settled value, and the deposit layer owns the operational state. The ledger is only involved when a hold is captured and converted into a real transaction.
 
 ### Idempotency
 
@@ -335,6 +349,8 @@ In banking, posted transactions are never deleted. The ledger is an immutable re
 The original transaction is marked as "Reversed" for reporting purposes, and the reversal transaction carries a reference to the original.
 
 ## Account Lifecycle
+
+> Account status and its lifecycle are a **`deposit`**-package concern (`deposit.Account` and `deposit.Register`), not a general-ledger one. The `ledger.Book` does not track account status; a GL account simply exists. The `deposit.Register` adds the status machine (`Active`, `Dormant`, `Frozen`, `Closed`) and enforces the transitions below via `Freeze`, `Unfreeze`, `MarkDormant`, `Reactivate`, and `Close`.
 
 In a real banking system, accounts are not simply created and then used forever. They go through a series of states that govern what operations are permitted.
 
@@ -464,7 +480,7 @@ A payment system is not the same thing as a general ledger. The ledger answers "
 
 ### The Multi-Bank Model
 
-The key design choice is that **each participant bank keeps its own `ledger.Service`**, and there is **one more `ledger.Service` for the central bank**. Banks never write into each other's books — they only meet at the central bank, where each holds a **reserve account**. This is what makes the difference between clearing and settlement real rather than abstract:
+The key design choice is that **each participant bank keeps its own `ledger.Book`** (with a `deposit.Register` over it for its customer accounts), and there is **one more `ledger.Book` for the central bank**. Banks never write into each other's books — they only meet at the central bank, where each holds a **reserve account**. This is what makes the difference between clearing and settlement real rather than abstract:
 
 - **Clearing** is the exchange and *netting* of payment instructions. The banks agree on who owes whom. No central-bank money moves.
 - **Settlement** is the movement of reserves between banks at the central bank. This is the moment of *finality*.
@@ -585,6 +601,8 @@ This is a learning model, not a production processor. The simplifications are in
 
 ### End-of-Day Snapshots
 
+> Snapshots are captured by the **`deposit`** layer (`deposit.Register.TakeEndOfDaySnapshot` / `GetSnapshot`), since they record the three-part deposit balance (book, holds, available). The pure `ledger.Book` computes book balances on demand and does not store snapshots.
+
 At the end of each business day, the system captures a snapshot of each account's balance. These snapshots serve multiple purposes:
 
 - **Interest accrual:** Daily interest is calculated on the end-of-day balance. For a savings account earning 4% APR, the daily interest on a $10,000 balance is: $10,000 * 0.04 / 365 = $1.10.
@@ -638,21 +656,23 @@ End-of-day snapshots use value date for this reason — they are the foundation 
 
 ## Usage Example
 
+Working directly with the general ledger:
+
 ```go
-svc := ledger.NewService()
+book := ledger.NewBook()
 
 // Set up the chart of accounts
-gl, _ := svc.CreateLedger("General Ledger")
-deposits, _ := svc.CreateSubledger(gl.ID, "Customer Deposits")
-revenue, _ := svc.CreateSubledger(gl.ID, "Revenue")
+gl, _ := book.CreateLedger("General Ledger")
+deposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits")
+revenue, _ := book.CreateSubledger(gl.ID, "Revenue")
 
 // Create accounts
-alice, _ := svc.CreateAccount(deposits.ID, "Alice Checking", ledger.Liability)
-bob, _ := svc.CreateAccount(deposits.ID, "Bob Checking", ledger.Liability)
-fees, _ := svc.CreateAccount(revenue.ID, "Transfer Fees", ledger.Revenue)
+alice, _ := book.CreateAccount(deposits.ID, "Alice Checking", ledger.Liability)
+bob, _ := book.CreateAccount(deposits.ID, "Bob Checking", ledger.Liability)
+fees, _ := book.CreateAccount(revenue.ID, "Transfer Fees", ledger.Revenue)
 
 // Transfer $100 from Alice to Bob with a $2 fee
-svc.PostTransaction(ledger.PostTransactionRequest{
+book.PostTransaction(ledger.PostTransactionRequest{
     IdempotencyKey: "transfer-001",
     Description:    "Transfer from Alice to Bob",
     Entries: []ledger.Entry{
@@ -661,6 +681,24 @@ svc.PostTransaction(ledger.PostTransactionRequest{
         {AccountID: fees.ID, Amount: 200, Direction: ledger.Credit},
     },
 })
+
+// Read a book balance on demand
+aliceBal, _ := book.BookBalance(alice.ID)
 ```
 
 Note that customer deposit accounts are **Liability** accounts (the bank owes the customer). Debiting Alice's Liability account decreases it (she has less money), and crediting Bob's increases it (he has more money).
+
+Adding the deposit layer for status, holds, and available balance:
+
+```go
+reg := deposit.NewRegister(book)
+
+// Open a customer deposit account (creates a backing Liability GL account)
+acct, _ := reg.OpenAccount(deposits.ID, "Carol Checking", 0 /* no overdraft */)
+
+// Place and then capture a $30 authorization hold
+hold, _ := reg.CreateHold(deposit.CreateHoldRequest{AccountID: acct.ID, Amount: 3000})
+reg.CaptureHold(hold.ID, fees.ID, 2500, "Card capture")
+
+bal, _ := reg.GetBalance(acct.ID) // bal.Book, bal.Holds, bal.Available
+```

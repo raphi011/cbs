@@ -6,20 +6,23 @@ import (
 	"time"
 
 	"github.com/raphi011/ledger"
+	"github.com/raphi011/ledger/deposit"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger
 // package's own test clock.
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
-func testSystem(t *testing.T) *System {
+func testNetwork(t *testing.T) *Network {
 	t.Helper()
-	return NewSystemWithClock(func() time.Time { return fixedTime })
+	return NewNetworkWithClock(func() time.Time { return fixedTime })
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
-// each (Alice at Bank A, Bob at Bank B), and funds Alice with 100000.
-func setupTwoBanks(t *testing.T, sys *System) (a, b *Participant, alice, bob ledger.AccountID) {
+// each (Alice at Bank A, Bob at Bank B), and funds Alice with 100000. The
+// returned account IDs are deposit account IDs; their backing GL account IDs
+// are resolved when checking book balances.
+func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob deposit.AccountID) {
 	t.Helper()
 
 	a, err := sys.AddParticipant("Bank A")
@@ -38,7 +41,7 @@ func setupTwoBanks(t *testing.T, sys *System) (a, b *Participant, alice, bob led
 
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
 // the settled settlement.
-func runCycle(t *testing.T, sys *System, scheme SchemeID, submit func()) Settlement {
+func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settlement {
 	t.Helper()
 	cyc, err := sys.OpenCycle(scheme)
 	assertNoError(t, err)
@@ -50,21 +53,31 @@ func runCycle(t *testing.T, sys *System, scheme SchemeID, submit func()) Settlem
 	return st
 }
 
-func bookBalance(t *testing.T, l *ledger.Service, acct ledger.AccountID) ledger.Amount {
+// bookBalance returns the GL book balance of an arbitrary ledger account.
+func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amount {
 	t.Helper()
-	bal, err := l.GetBalance(acct)
+	bal, err := l.BookBalance(acct)
+	assertNoError(t, err)
+	return bal
+}
+
+// customerBalance returns the book balance of a customer deposit account at a
+// participant, resolved through the participant's deposit layer.
+func customerBalance(t *testing.T, p *Participant, acct deposit.AccountID) ledger.Amount {
+	t.Helper()
+	bal, err := p.Deposit.GetBalance(acct)
 	assertNoError(t, err)
 	return bal.Book
 }
 
 // assertReserveMirror checks that a bank's own reserve asset equals the
 // central bank's view of that bank's reserve.
-func assertReserveMirror(t *testing.T, sys *System, p *Participant) {
+func assertReserveMirror(t *testing.T, sys *Network, p *Participant) {
 	t.Helper()
 	own := bookBalance(t, p.Ledger, p.ReserveAccount)
 	cb, err := sys.ReserveBalance(p.ID)
 	assertNoError(t, err)
-	assertEqual(t, "reserve mirror for "+p.Name, own, cb.Book)
+	assertEqual(t, "reserve mirror for "+p.Name, own, cb)
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +85,7 @@ func assertReserveMirror(t *testing.T, sys *System, p *Participant) {
 // ---------------------------------------------------------------------------
 
 func TestSCT_HappyPath(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	var pay Payment
@@ -90,13 +103,13 @@ func TestSCT_HappyPath(t *testing.T) {
 		// Debtor leg is value-dated to settlement (T+1).
 		assertEqual(t, "value date", pay.ValueDate, fixedTime.Add(24*time.Hour))
 		// Alice paid immediately; Bob not yet credited.
-		assertEqual(t, "alice after init", bookBalance(t, a.Ledger, alice), 70000)
-		assertEqual(t, "bob after init", bookBalance(t, b.Ledger, bob), 0)
+		assertEqual(t, "alice after init", customerBalance(t, a, alice), 70000)
+		assertEqual(t, "bob after init", customerBalance(t, b, bob), 0)
 	})
 
 	// After settlement the money has arrived and suspense is flat.
-	assertEqual(t, "alice final", bookBalance(t, a.Ledger, alice), 70000)
-	assertEqual(t, "bob final", bookBalance(t, b.Ledger, bob), 30000)
+	assertEqual(t, "alice final", customerBalance(t, a, alice), 70000)
+	assertEqual(t, "bob final", customerBalance(t, b, bob), 30000)
 	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, a.SuspenseAccount), 0)
 	assertEqual(t, "bank B suspense", bookBalance(t, b.Ledger, b.SuspenseAccount), 0)
 	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, a.ReserveAccount), 70000)
@@ -110,7 +123,7 @@ func TestSCT_HappyPath(t *testing.T) {
 }
 
 func TestSCT_Netting(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	// Fund Bob so Bank B can also be a payer.
 	assertNoError(t, sys.Deposit(b.ID, bob, 50000, "Bob opening deposit"))
@@ -133,8 +146,8 @@ func TestSCT_Netting(t *testing.T) {
 	assertEqual(t, "net B", st.NetPositions[b.ID], 20000)
 
 	// Gross customer movements still apply: Alice -30000 +10000, Bob -10000 +30000.
-	assertEqual(t, "alice", bookBalance(t, a.Ledger, alice), 80000)
-	assertEqual(t, "bob", bookBalance(t, b.Ledger, bob), 70000)
+	assertEqual(t, "alice", customerBalance(t, a, alice), 80000)
+	assertEqual(t, "bob", customerBalance(t, b, bob), 70000)
 	// Reserves moved only by the net.
 	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, a.ReserveAccount), 80000)
 	assertEqual(t, "bank B reserve", bookBalance(t, b.Ledger, b.ReserveAccount), 70000)
@@ -143,7 +156,7 @@ func TestSCT_Netting(t *testing.T) {
 }
 
 func TestSCT_InsufficientFunds(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	_, err := sys.OpenCycle(SchemeSEPACT)
@@ -152,7 +165,7 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
-	assertError(t, err, ledger.ErrInsufficientBalance)
+	assertError(t, err, deposit.ErrInsufficientAvailable)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +173,7 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSDD_HappyPath(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 
 	debtor := PartyRef{Participant: a.ID, Account: alice}
@@ -178,14 +191,14 @@ func TestSDD_HappyPath(t *testing.T) {
 		assertEqual(t, "value date T+2", pay.ValueDate, fixedTime.Add(48*time.Hour))
 	})
 
-	assertEqual(t, "alice", bookBalance(t, a.Ledger, alice), 75000)
-	assertEqual(t, "biller", bookBalance(t, b.Ledger, biller), 25000)
+	assertEqual(t, "alice", customerBalance(t, a, alice), 75000)
+	assertEqual(t, "biller", customerBalance(t, b, biller), 25000)
 	assertReserveMirror(t, sys, a)
 	assertReserveMirror(t, sys, b)
 }
 
 func TestSDD_MandateValidation(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
@@ -224,7 +237,7 @@ func TestSDD_MandateValidation(t *testing.T) {
 }
 
 func TestSDD_Return(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
@@ -239,15 +252,15 @@ func TestSDD_Return(t *testing.T) {
 		})
 		assertNoError(t, err)
 	})
-	assertEqual(t, "alice after collection", bookBalance(t, a.Ledger, alice), 75000)
+	assertEqual(t, "alice after collection", customerBalance(t, a, alice), 75000)
 
 	returned, err := sys.ReturnPayment(pay.ID, "insufficient funds at debtor")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 
 	// Money fully unwound across all three ledgers.
-	assertEqual(t, "alice refunded", bookBalance(t, a.Ledger, alice), 100000)
-	assertEqual(t, "biller clawed back", bookBalance(t, b.Ledger, biller), 0)
+	assertEqual(t, "alice refunded", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "biller clawed back", customerBalance(t, b, biller), 0)
 	assertReserveMirror(t, sys, a)
 	assertReserveMirror(t, sys, b)
 }
@@ -257,7 +270,7 @@ func TestSDD_Return(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestStateMachineGuards(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	mkPayment := func() (Payment, CycleID) {
 		cyc, err := sys.OpenCycle(SchemeSEPACT)
@@ -308,7 +321,7 @@ func TestStateMachineGuards(t *testing.T) {
 }
 
 func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	_, err := sys.OpenCycle(SchemeSEPACT)
@@ -318,17 +331,17 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
 	assertNoError(t, err)
-	assertEqual(t, "alice debited", bookBalance(t, a.Ledger, alice), 60000)
+	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
 
 	rejected, err := sys.RejectPayment(p.ID, "operator cancelled")
 	assertNoError(t, err)
 	assertEqual(t, "status", rejected.Status, Rejected)
-	assertEqual(t, "alice restored", bookBalance(t, a.Ledger, alice), 100000)
+	assertEqual(t, "alice restored", customerBalance(t, a, alice), 100000)
 	assertEqual(t, "suspense flat", bookBalance(t, a.Ledger, a.SuspenseAccount), 0)
 }
 
 func TestDuplicateEndToEndID(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	_, err := sys.OpenCycle(SchemeSEPACT)
 	assertNoError(t, err)
@@ -343,7 +356,7 @@ func TestDuplicateEndToEndID(t *testing.T) {
 }
 
 func TestInitiatePayment_Validation(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	_, err := sys.OpenCycle(SchemeSEPACT)
 	assertNoError(t, err)
@@ -379,7 +392,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 }
 
 func TestOpenCycle_AlreadyOpen(t *testing.T) {
-	sys := testSystem(t)
+	sys := testNetwork(t)
 	_, err := sys.OpenCycle(SchemeSEPACT)
 	assertNoError(t, err)
 	_, err = sys.OpenCycle(SchemeSEPACT)

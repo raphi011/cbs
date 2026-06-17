@@ -1,20 +1,24 @@
 package payment
 
-import "github.com/raphi011/ledger"
+import (
+	"github.com/raphi011/ledger"
+	"github.com/raphi011/ledger/deposit"
+)
 
 // Participant is a bank (or payment service provider) that takes part in the
 // clearing and settlement system.
 //
-// Each participant keeps its OWN ledger — its general ledger / balance sheet.
-// Banks only meet at the central bank, where each holds a reserve account.
-// This mirrors reality and is what makes the distinction between clearing
-// (exchanging instructions) and settlement (moving central-bank reserves)
-// concrete.
+// Each participant keeps its OWN general ledger (Ledger) and a deposit layer
+// (Deposit) over it. Banks only meet at the central bank, where each holds a
+// reserve account. This mirrors reality and is what makes the distinction
+// between clearing (exchanging instructions) and settlement (moving
+// central-bank reserves) concrete.
 //
 // The internal accounts each participant needs:
 //
-//   - Customer deposit accounts (Liability): what the bank owes its
-//     customers. Created via OpenCustomerAccount.
+//   - Customer deposit accounts: demand-deposit accounts managed by the
+//     Deposit register, each backed by a Liability GL account. Opened via
+//     OpenCustomerAccount.
 //   - Clearing Suspense (Liability): an in-transit account holding funds
 //     that have left a customer but not yet settled between banks. It
 //     returns to zero once a cycle settles.
@@ -22,9 +26,10 @@ import "github.com/raphi011/ledger"
 //     It mirrors the bank's reserve account in the central-bank ledger and
 //     moves only at settlement.
 type Participant struct {
-	ID     ParticipantID
-	Name   string
-	Ledger *ledger.Service
+	ID      ParticipantID
+	Name    string
+	Ledger  *ledger.Book
+	Deposit *deposit.Register
 
 	CustomerSubledger ledger.SubledgerID
 	SuspenseAccount   ledger.AccountID // "Clearing Suspense" (Liability)
@@ -37,8 +42,21 @@ type Participant struct {
 
 // OpenCustomerAccount opens a new customer deposit account at the bank.
 //
-// Customer deposits are Liability accounts: the money belongs to the
-// customer, so the bank owes it to them.
-func (p *Participant) OpenCustomerAccount(name string) (ledger.Account, error) {
-	return p.Ledger.CreateAccount(p.CustomerSubledger, name, ledger.Liability)
+// Customer deposits are demand-deposit accounts managed by the bank's deposit
+// layer; each is backed by a Liability GL account, since the money belongs to
+// the customer and the bank owes it to them. The account is opened with no
+// overdraft.
+func (p *Participant) OpenCustomerAccount(name string) (deposit.Account, error) {
+	return p.Deposit.OpenAccount(p.CustomerSubledger, name, 0)
+}
+
+// glAccount resolves a customer deposit account ID to the backing GL account
+// ID used for ledger postings. It returns ErrAccountNotInParticipant if the
+// deposit account does not exist at this participant.
+func (p *Participant) glAccount(id deposit.AccountID) (ledger.AccountID, error) {
+	acct, err := p.Deposit.GetAccount(id)
+	if err != nil {
+		return "", ErrAccountNotInParticipant
+	}
+	return acct.GLAccount, nil
 }
