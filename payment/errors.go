@@ -63,6 +63,10 @@ var (
 	// ErrCycleNotFound is returned when a cycle ID does not match any cycle.
 	ErrCycleNotFound = errors.New("clearing cycle not found")
 
+	// ErrSettlementNotFound is returned when a settlement ID does not match
+	// any settlement.
+	ErrSettlementNotFound = errors.New("settlement not found")
+
 	// ErrSchemeUnsupportedReturn is returned when a return is attempted on a
 	// payment whose scheme does not support returns.
 	ErrSchemeUnsupportedReturn = errors.New("scheme does not support returns")

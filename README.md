@@ -717,3 +717,51 @@ reg.CaptureHold(hold.ID, fees.ID, 2500, "Card capture")
 
 bal, _ := reg.GetBalance(acct.ID) // bal.Book, bal.Holds, bal.Available
 ```
+
+## REST API
+
+A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only, keeping the module dependency-free.
+
+```bash
+go run ./cmd/server            # listens on :8080 (override with PORT env or -addr flag)
+```
+
+The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`) while keeping amounts as integer minor units.
+
+Representative endpoints:
+
+| Method & path | Operation |
+|---|---|
+| `POST` / `GET /participants`, `GET /participants/{id}` | create / list / get a bank |
+| `POST /participants/{id}/deposits` | fund a customer account |
+| `POST` / `GET /participants/{id}/deposit-accounts` | open / list customer accounts |
+| `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
+| `POST /participants/{id}/deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
+| `POST` / `GET .../holds`, `POST .../holds/{hid}/release\|capture` | authorization holds |
+| `POST` / `GET /participants/{id}/transactions`, `.../{tid}/reversal` | general-ledger postings |
+| `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
+| `POST` / `GET /cycles`, `POST /cycles/{id}/close\|settle` | clearing & settlement |
+| `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
+| `GET /central-bank/reserves`, `GET /schemes` | central-bank reserves, registered schemes |
+
+Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` conflict/duplicate, `422` business-state violation, `400` malformed input) and returned as `{"error": "..."}`.
+
+Example — a SEPA credit transfer end to end:
+
+```bash
+BASE=http://localhost:8080; H='-H Content-Type:application/json'
+A=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank A"}' | jq -r .id)
+B=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank B"}' | jq -r .id)
+ALICE=$(curl -s $H -X POST $BASE/participants/$A/deposit-accounts -d '{"name":"Alice"}' | jq -r .id)
+BOB=$(curl -s $H -X POST $BASE/participants/$B/deposit-accounts -d '{"name":"Bob"}' | jq -r .id)
+curl -s $H -X POST $BASE/participants/$A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
+CYC=$(curl -s $H -X POST $BASE/cycles -d '{"scheme":"sepa.ct"}' | jq -r .id)
+curl -s $H -X POST $BASE/payments -d "{\"scheme\":\"sepa.ct\",
+  \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
+  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}"
+curl -s $H -X POST $BASE/cycles/$CYC/close && curl -s $H -X POST $BASE/cycles/$CYC/settle
+curl -s $BASE/participants/$A/deposit-accounts/$ALICE/balance   # book 75000
+curl -s $BASE/participants/$B/deposit-accounts/$BOB/balance     # book 25000
+```
+
+> Like the library, the server is **in-memory**: all state resets on restart. It is a learning and prototyping tool, not a production service.
