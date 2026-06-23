@@ -2,6 +2,18 @@
 
 A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use (which would require persistent storage, distributed transactions, etc.).
 
+## Three-Layer Architecture
+
+The system is split into three layers, each in its own package and building on the one below it:
+
+1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, on-demand book balances, and an immutable audit log. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
+
+2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits**, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
+
+3. **`payment` — the interbank payment network.** Each participant bank gets its own `ledger.Book` plus a `deposit.Register` over it; funds and status checks for a payment run through that deposit layer, while the multi-leg GL postings (debtor leg, creditor leg, reserve movements) live in the payment layer. Its top-level type is `payment.Network`.
+
+The sections below are organized around these layers: general-ledger concepts first, then the deposit-layer concepts (holds, available balance, account lifecycle, snapshots), then the payment network.
+
 ## Table of Contents
 
 - [Core Banking Concepts](#core-banking-concepts)
@@ -16,6 +28,7 @@ A simplified but functionally complete Go library modeling the core accounting e
   - [Ledger and Subledger Hierarchy](#ledger-and-subledger-hierarchy)
   - [Amounts and Precision](#amounts-and-precision)
 - [Transactions](#transactions)
+  - [Entries, Legs, and Postings](#entries-legs-and-postings)
   - [Booking Date vs. Value Date](#booking-date-vs-value-date)
   - [Balance Types](#balance-types)
   - [Multi-Legged Transactions](#multi-legged-transactions)
@@ -30,6 +43,16 @@ A simplified but functionally complete Go library modeling the core accounting e
   - [What Is Settlement](#what-is-settlement)
   - [Common Settlement Cycles](#common-settlement-cycles)
   - [Settlement and the Ledger](#settlement-and-the-ledger)
+- [Payments, Clearing, and Settlement (the `payment` package)](#payments-clearing-and-settlement-the-payment-package)
+  - [Why a Separate Package](#why-a-separate-package)
+  - [The Multi-Bank Model](#the-multi-bank-model)
+  - [Payment Schemes](#payment-schemes)
+  - [The Payment Lifecycle](#the-payment-lifecycle)
+  - [Posting Choreography: SEPA Credit Transfer](#posting-choreography-sepa-credit-transfer)
+  - [Netting: A Worked Example](#netting-a-worked-example)
+  - [SEPA Direct Debit and Returns](#sepa-direct-debit-and-returns)
+  - [Deliberate Simplifications](#deliberate-simplifications)
+  - [Next Work](#next-work)
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
   - [Audit Trail](#audit-trail)
@@ -206,6 +229,22 @@ The caller is responsible for converting to/from display format.
 
 ## Transactions
 
+### Entries, Legs, and Postings
+
+A few words are used interchangeably throughout this document and the code, so it is worth pinning them down up front:
+
+- **Entry:** A single debit or credit to one account. This is the `ledger.Entry` type — it carries an account, an amount, and a `Direction` (`Debit` or `Credit`). It is the smallest unit of bookkeeping.
+
+- **Leg:** A synonym for *entry*. The word is used when emphasizing that a transaction has several sides — a "two-legged" transfer has one debit entry and one credit entry, while a "multi-legged" transaction has three or more. "Leg" and "entry" refer to exactly the same thing; there is no separate `Leg` type.
+
+- **Posting:** The act of recording a transaction in the ledger (the verb, as in "to post a transaction" via `PostTransaction`). Loosely, "a posting" is also used to mean an entry that has been recorded. Posted transactions are immutable — they are never edited or deleted, only reversed (see [Transaction Reversal](#transaction-reversal)).
+
+- **Transaction:** A balanced set of entries (legs) that are posted together as one atomic unit. Within any transaction, **total debits = total credits** (see [Multi-Legged Transactions](#multi-legged-transactions)).
+
+In the `payment` layer two specific legs get their own names: the **debtor leg** is the entry that moves money out of the payer's account (posted at initiation), and the **creditor leg** is the entry that delivers money into the payee's account (posted at settlement). Both are ordinary ledger entries — the names just identify which side of a cross-bank payment they represent. See [The Payment Lifecycle](#the-payment-lifecycle).
+
+> **Trial balance:** Referenced in a few places below, this is the list of every account's balance at a point in time. Because every transaction balances, the sum of all debit balances must equal the sum of all credit balances — a trial balance that does not sum to zero signals a bookkeeping error.
+
 ### Booking Date vs. Value Date
 
 Every transaction carries two dates:
@@ -280,6 +319,8 @@ In all cases, the invariant holds: **total debits = total credits**.
 
 ### Holds (Authorization / Pending Transactions)
 
+> Holds, the available balance, account status, and snapshots all live in the **`deposit`** package (`deposit.Register`), not in the general ledger. The pure `ledger.Book` only knows about posted transactions and book balances. This section describes deposit-layer behavior.
+
 Holds model the "auth-capture" flow common in card payments and other scenarios where funds must be reserved before a final amount is known:
 
 1. **Authorization:** When a customer swipes their debit card at a gas pump, the bank places a hold (e.g., $100) on the account. The book balance is unchanged, but the available balance drops by $100.
@@ -288,22 +329,22 @@ Holds model the "auth-capture" flow common in card payments and other scenarios 
 
 3. **Release:** If the transaction is cancelled (e.g., the customer drives away without pumping), the hold is released and the available balance is restored.
 
-The difference between book balance and available balance is significant:
+The difference between book balance and available balance is significant. In the deposit layer a customer's money is the book balance of the backing Liability GL account, and the available balance accounts for both active holds and any overdraft limit:
 
 ```
-Book Balance      = sum of all posted transactions
-Available Balance = Book Balance - Active Holds
+Book Balance      = book balance of the backing GL account
+Available Balance = Book Balance - Active Holds + Overdraft Limit
 ```
 
 Holds typically have an expiration time. If not captured within that window, they automatically stop affecting the available balance.
 
 #### Holds Are Off-Ledger
 
-Unsettled holds do not exist as ledger entries. The ledger only records posted transactions — actual debits and credits that have settled. A hold is an operational concept tracked separately; it doesn't move money and doesn't appear in the general ledger or trial balance.
+Unsettled holds do not exist as ledger entries. The general ledger only records posted transactions — actual debits and credits that have settled. A hold is an operational concept tracked by the `deposit` layer alone; it doesn't move money and doesn't appear in the general ledger or trial balance.
 
-A hold only touches the ledger when it is **captured** — at that point a real transaction is posted with proper debits and credits. If the hold is **released**, nothing ever hits the ledger; from an accounting perspective it's as if it never happened.
+A hold only touches the ledger when it is **captured** — at that point `deposit.Register` posts a real transaction into the underlying `ledger.Book` with proper debits and credits (debiting the customer's Liability GL account, crediting the counterparty). If the hold is **released**, nothing ever hits the ledger; from an accounting perspective it's as if it never happened.
 
-In a typical core banking architecture, holds are stored separately from the transaction journal. The ledger is only involved when a hold is captured and converted into a real transaction.
+This is exactly why holds live one layer up from the ledger: the ledger stays a pure record of settled value, and the deposit layer owns the operational state. The ledger is only involved when a hold is captured and converted into a real transaction.
 
 ### Idempotency
 
@@ -326,6 +367,8 @@ In banking, posted transactions are never deleted. The ledger is an immutable re
 The original transaction is marked as "Reversed" for reporting purposes, and the reversal transaction carries a reference to the original.
 
 ## Account Lifecycle
+
+> Account status and its lifecycle are a **`deposit`**-package concern (`deposit.Account` and `deposit.Register`), not a general-ledger one. The `ledger.Book` does not track account status; a GL account simply exists. The `deposit.Register` adds the status machine (`Active`, `Dormant`, `Frozen`, `Closed`) and enforces the transitions below via `Freeze`, `Unfreeze`, `MarkDormant`, `Reactivate`, and `Close`.
 
 In a real banking system, accounts are not simply created and then used forever. They go through a series of states that govern what operations are permitted.
 
@@ -445,9 +488,152 @@ During the settlement window, the transaction exists in a **pending** state. The
 
 - **Reconciliation** of nostro/vostro accounts (the accounts banks maintain with each other) happens as part of the settlement process. Discrepancies between expected and actual settlements must be investigated and resolved.
 
+## Payments, Clearing, and Settlement (the `payment` package)
+
+The `ledger` package described above is a single bank's book of record. But a *payment* — sending money from one person's account to another's — usually crosses a boundary between two banks, and that is where clearing and settlement live. The `payment` package builds that world on top of the ledger so the mechanics are concrete and testable.
+
+### Why a Separate Package
+
+A payment system is not the same thing as a general ledger. The ledger answers "what does this bank owe and own?"; the payment system answers "how does money actually move between banks?". Keeping them in separate packages mirrors how real institutions are organised — the payment rails (SEPA, card networks, RTGS) sit *above* each bank's accounting system and instruct it. The `payment` package depends on `ledger` and orchestrates postings into it; the ledger has no knowledge of payments.
+
+### The Multi-Bank Model
+
+The key design choice is that **each participant bank keeps its own `ledger.Book`** (with a `deposit.Register` over it for its customer accounts), and there is **one more `ledger.Book` for the central bank**. Banks never write into each other's books — they only meet at the central bank, where each holds a **reserve account**. This is what makes the difference between clearing and settlement real rather than abstract:
+
+- **Clearing** is the exchange and *netting* of payment instructions. The banks agree on who owes whom. No central-bank money moves.
+- **Settlement** is the movement of reserves between banks at the central bank. This is the moment of *finality*.
+
+Each participant's chart of accounts holds:
+
+| Account | Type | Purpose |
+|---|---|---|
+| Customer deposits | Liability | What the bank owes each customer. |
+| Clearing Suspense | Liability | In-transit funds that have left a customer but not yet settled between banks. Returns to zero once a cycle settles. |
+| Reserve at Central Bank | Asset | The bank's claim on the central bank. Moves only at settlement and **mirrors** the bank's reserve account in the central-bank ledger (the classic nostro/vostro reconciliation). |
+
+The central-bank ledger holds one **Reserve: \<Bank\>** liability account per participant (the central bank owes each member its reserves) plus a balancing **Settlement Assets** account used when reserves are funded.
+
+### Payment Schemes
+
+Different payment products behave differently, so the package abstracts them behind a `Scheme` interface:
+
+```go
+type Scheme interface {
+    ID() SchemeID
+    Direction() SchemeDirection      // Push (payer initiates) | Pull (payee initiates)
+    SettlementModel() SettlementModel // Net (batched) | Gross (instant, per-payment)
+    RequiresMandate() bool
+    AllowsReturn() bool
+    SettlementDelay() time.Duration   // determines the value date
+    Validate(p *Payment, ctx SchemeContext) error
+}
+```
+
+Two schemes ship today, both net-settled:
+
+- **SEPA Credit Transfer (`SCT`)** — a **push** payment: the payer's bank initiates and sends the funds (T+1). Maps to the ISO 20022 `pacs.008` message.
+- **SEPA Direct Debit (`SDD`)** — a **pull** payment: the payee's bank collects funds from the payer under a previously signed **mandate** (T+2), and the payer may demand a **return**. Maps to `pacs.003`.
+
+Crucially, money always flows **debtor → creditor** regardless of who *initiates* — `Direction` only governs initiation and whether a mandate is required. This is why the same posting machinery serves both schemes. Other **net-settled** schemes drop in by implementing `Scheme` and registering it — the orchestrator does not change. **Instant** and **card** schemes need a little more wiring; see [Next Work](#next-work).
+
+### The Payment Lifecycle
+
+Every payment travels through an explicit state machine:
+
+```
+Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
+                  │                        │
+                  ▼                        ▼
+              Rejected                  Returned
+```
+
+- **Initiated → Accepted**: the scheme validates the payment (funds available, mandate valid) and the **debtor leg** is posted — the payer's money leaves their account into the bank's clearing suspense, value-dated to the settlement date.
+- **Accepted → Cleared**: the clearing cycle reaches its cut-off and net positions are computed.
+- **Cleared → Settled**: reserves move at the central bank and the **creditor leg** is posted, paying the payee.
+- **Rejected**: before clearing, the debtor leg is reversed.
+- **Returned**: after settlement, a SEPA R-transaction unwinds the flow.
+
+### Posting Choreography: SEPA Credit Transfer
+
+Alice (at Bank A) pays Bob (at Bank B) €30.00 (`3000` cents).
+
+**1. Initiation** — in Bank A's ledger, value-dated to settlement:
+
+```
+Bank A:  Debit  Alice (Liability)            3000     // Alice's deposit falls
+         Credit Clearing Suspense (Liability) 3000    // Bank A now owes the network
+```
+
+**2. Clearing (cut-off)** — net positions computed; no money moves. Here `net[A] = -3000`, `net[B] = +3000`.
+
+**3. Settlement** — three postings make the money final:
+
+```
+Central Bank:  Debit  Reserve: Bank A (Liability) 3000   // A's reserves fall
+               Credit Reserve: Bank B (Liability) 3000   // B's reserves rise
+
+Bank A:        Debit  Clearing Suspense 3000             // suspense clears to zero
+               Credit Reserve at CB     3000             // A's reserve asset falls in step
+
+Bank B:        Debit  Clearing Suspense 3000             // creditor leg: release...
+               Credit Bob (Liability)   3000             // ...funds to Bob
+               Debit  Reserve at CB     3000             // B's reserve asset rises
+               Credit Clearing Suspense 3000             // and its suspense clears
+```
+
+Afterwards both banks' suspense accounts are back to zero, and each bank's **Reserve at Central Bank** asset equals the central bank's **Reserve: \<Bank\>** liability — the books reconcile.
+
+### Netting: A Worked Example
+
+Netting is the whole point of clearing. Suppose in one cycle:
+
+- Alice (Bank A) → Bob (Bank B): `30000`
+- Bob (Bank B) → Alice (Bank A): `10000`
+
+The **customers** move by the gross amounts (Alice −30000 +10000, Bob −10000 +30000), but the **banks settle only the net**:
+
+```
+net[A] = -30000 + 10000 = -20000   // Bank A pays 20000 net
+net[B] = +30000 - 10000 = +20000   // Bank B receives 20000 net
+```
+
+Only `20000` of central-bank reserves moves, not `40000`. Net positions always sum to zero, which is exactly why the central-bank settlement transaction balances.
+
+### SEPA Direct Debit and Returns
+
+A direct debit is a **pull**: the creditor (e.g. a utility) collects from the debtor. Before any collection, the debtor signs a **mandate** authorising that specific creditor. At initiation the package checks the mandate exists, is active, matches both parties, and stays within its amount limit — otherwise the payment is rejected (`ErrMandateRequired`, `ErrMandateRevoked`, `ErrMandateExceeded`, …). Mechanically the postings are identical to a credit transfer (debtor → creditor), because the money flows the same way.
+
+Direct debits can be **returned** (a SEPA R-transaction) — for example when the debtor disputes the collection or lacks funds. `ReturnPayment` posts compensating transactions that move the funds back from the creditor to the debtor across the central bank, fully unwinding the original flow and restoring both customers' balances.
+
+### Deliberate Simplifications
+
+This is a learning model, not a production processor. The simplifications are intentional:
+
+- **No ISO 20022 message parsing.** The `Payment` struct stands in for `pain.001`/`pacs.008`/`pacs.003`; the schemes only *name* the messages they correspond to.
+- **No IBAN or BIC validation.** Routing is by explicit `ParticipantID`; IBANs are free-form labels.
+- **A single currency**, using `ledger.Amount` (integer minor units). No FX.
+- **Cross-ledger postings are not atomic.** Each bank and the central bank have separate locks, so a payment touches several ledgers sequentially. The `Network` serialises whole operations under one lock; a real RTGS uses a locked settlement window or two-phase commit.
+- **Returns settle immediately** rather than being batched into a later R-cycle.
+
+### Next Work
+
+Two schemes are designed for but not yet implemented. They are the reason the `Scheme` interface carries a `SettlementModel` (Net/Gross) and the reason authorise/capture now lives in the `deposit` layer — the abstraction is in place; what remains is the wiring noted below.
+
+- **Instant payments** (SEPA Inst, FedNow, Faster Payments) — real-time **gross** settlement, 24/7. Each payment settles individually and immediately instead of being batched into a clearing cycle. This needs:
+  - a `Scheme` returning `SettlementModel() == Gross` with a near-zero `SettlementDelay`; and
+  - a settlement path that branches on `SettlementModel()` — for `Gross`, post the debtor leg, the central-bank reserve move, and the creditor leg in one shot per payment, with no netting and no cut-off.
+
+  This is the one place the orchestrator genuinely has to grow: today `SettleCycle` only implements the netted path, so a `Gross` scheme would need a `SettleNow`-style sibling (or a branch inside settlement).
+
+- **Card transactions** — an **authorise → capture → clear → settle** flow. The authorisation is a `deposit` **hold** (`CreateHold`) that reserves the cardholder's available balance; capture (`CaptureHold`) turns it into the debtor leg; clearing and settlement then reuse the existing net machinery, since card networks net much like SEPA. This slots in cleanly now that holds live in the `deposit` layer: a card scheme drives `deposit` holds while the `payment` network clears and settles the captured amounts.
+
+Both motivate two natural follow-ons: enforcing **account status** on the debit path (a `Frozen` deposit account should block a card authorisation), and **reserve-adequacy** checks before a bank's net settlement is allowed to post.
+
 ## Reporting and Compliance
 
 ### End-of-Day Snapshots
+
+> Snapshots are captured by the **`deposit`** layer (`deposit.Register.TakeEndOfDaySnapshot` / `GetSnapshot`), since they record the three-part deposit balance (book, holds, available). The pure `ledger.Book` computes book balances on demand and does not store snapshots.
 
 At the end of each business day, the system captures a snapshot of each account's balance. These snapshots serve multiple purposes:
 
@@ -502,21 +688,23 @@ End-of-day snapshots use value date for this reason — they are the foundation 
 
 ## Usage Example
 
+Working directly with the general ledger:
+
 ```go
-svc := ledger.NewService()
+book := ledger.NewBook()
 
 // Set up the chart of accounts
-gl, _ := svc.CreateLedger("General Ledger")
-deposits, _ := svc.CreateSubledger(gl.ID, "Customer Deposits")
-revenue, _ := svc.CreateSubledger(gl.ID, "Revenue")
+gl, _ := book.CreateLedger("General Ledger")
+deposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits")
+revenue, _ := book.CreateSubledger(gl.ID, "Revenue")
 
 // Create accounts
-alice, _ := svc.CreateAccount(deposits.ID, "Alice Checking", ledger.Liability)
-bob, _ := svc.CreateAccount(deposits.ID, "Bob Checking", ledger.Liability)
-fees, _ := svc.CreateAccount(revenue.ID, "Transfer Fees", ledger.Revenue)
+alice, _ := book.CreateAccount(deposits.ID, "Alice Checking", ledger.Liability)
+bob, _ := book.CreateAccount(deposits.ID, "Bob Checking", ledger.Liability)
+fees, _ := book.CreateAccount(revenue.ID, "Transfer Fees", ledger.Revenue)
 
 // Transfer $100 from Alice to Bob with a $2 fee
-svc.PostTransaction(ledger.PostTransactionRequest{
+book.PostTransaction(ledger.PostTransactionRequest{
     IdempotencyKey: "transfer-001",
     Description:    "Transfer from Alice to Bob",
     Entries: []ledger.Entry{
@@ -525,6 +713,72 @@ svc.PostTransaction(ledger.PostTransactionRequest{
         {AccountID: fees.ID, Amount: 200, Direction: ledger.Credit},
     },
 })
+
+// Read a book balance on demand
+aliceBal, _ := book.BookBalance(alice.ID)
 ```
 
 Note that customer deposit accounts are **Liability** accounts (the bank owes the customer). Debiting Alice's Liability account decreases it (she has less money), and crediting Bob's increases it (he has more money).
+
+Adding the deposit layer for status, holds, and available balance:
+
+```go
+reg := deposit.NewRegister(book)
+
+// Open a customer deposit account (creates a backing Liability GL account)
+acct, _ := reg.OpenAccount(deposits.ID, "Carol Checking", 0 /* no overdraft */)
+
+// Place and then capture a $30 authorization hold
+hold, _ := reg.CreateHold(deposit.CreateHoldRequest{AccountID: acct.ID, Amount: 3000})
+reg.CaptureHold(hold.ID, fees.ID, 2500, "Card capture")
+
+bal, _ := reg.GetBalance(acct.ID) // bal.Book, bal.Holds, bal.Available
+```
+
+## REST API
+
+A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only, keeping the module dependency-free.
+
+```bash
+go run ./cmd/server            # listens on :8080 (override with PORT env or -addr flag)
+```
+
+The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`) while keeping amounts as integer minor units.
+
+Representative endpoints:
+
+| Method & path | Operation |
+|---|---|
+| `POST` / `GET /participants`, `GET /participants/{id}` | create / list / get a bank |
+| `POST /participants/{id}/deposits` | fund a customer account |
+| `POST` / `GET /participants/{id}/deposit-accounts` | open / list customer accounts |
+| `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
+| `POST /participants/{id}/deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
+| `POST` / `GET .../holds`, `POST .../holds/{hid}/release\|capture` | authorization holds |
+| `POST` / `GET /participants/{id}/transactions`, `.../{tid}/reversal` | general-ledger postings |
+| `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
+| `POST` / `GET /cycles`, `POST /cycles/{id}/close\|settle` | clearing & settlement |
+| `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
+| `GET /central-bank/reserves`, `GET /schemes` | central-bank reserves, registered schemes |
+
+Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` conflict/duplicate, `422` business-state violation, `400` malformed input) and returned as `{"error": "..."}`.
+
+Example — a SEPA credit transfer end to end:
+
+```bash
+BASE=http://localhost:8080; H='-H Content-Type:application/json'
+A=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank A"}' | jq -r .id)
+B=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank B"}' | jq -r .id)
+ALICE=$(curl -s $H -X POST $BASE/participants/$A/deposit-accounts -d '{"name":"Alice"}' | jq -r .id)
+BOB=$(curl -s $H -X POST $BASE/participants/$B/deposit-accounts -d '{"name":"Bob"}' | jq -r .id)
+curl -s $H -X POST $BASE/participants/$A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
+CYC=$(curl -s $H -X POST $BASE/cycles -d '{"scheme":"sepa.ct"}' | jq -r .id)
+curl -s $H -X POST $BASE/payments -d "{\"scheme\":\"sepa.ct\",
+  \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
+  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}"
+curl -s $H -X POST $BASE/cycles/$CYC/close && curl -s $H -X POST $BASE/cycles/$CYC/settle
+curl -s $BASE/participants/$A/deposit-accounts/$ALICE/balance   # book 75000
+curl -s $BASE/participants/$B/deposit-accounts/$BOB/balance     # book 25000
+```
+
+> Like the library, the server is **in-memory**: all state resets on restart. It is a learning and prototyping tool, not a production service.
