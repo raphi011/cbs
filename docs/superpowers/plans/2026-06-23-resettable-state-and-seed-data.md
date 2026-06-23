@@ -205,8 +205,12 @@ func TestNetworkShape(t *testing.T) {
 
 func TestPaymentStatusCoverage(t *testing.T) {
 	net := Network()
+	payments := net.ListPayments()
+	if got := len(payments); got != 10 {
+		t.Fatalf("total payments = %d, want 10", got)
+	}
 	byStatus := map[payment.PaymentStatus]int{}
-	for _, p := range net.ListPayments() {
+	for _, p := range payments {
 		byStatus[p.Status]++
 	}
 	want := map[payment.PaymentStatus]int{
@@ -547,7 +551,9 @@ func (b *builder) build() {
 }
 
 // glShowcase exercises the raw general-ledger primitives on one bank so that all
-// five account types and a manual transaction + reversal appear in the data.
+// five account types (Asset, Liability, Equity, Revenue, Expense) and a manual
+// transaction + reversal appear in the data. Liability is already present via the
+// bank's customer-deposit and suspense GL accounts; this adds the other four.
 func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	glID := must(p.Ledger.GetSubledger(p.CustomerSubledger)).LedgerID
 
@@ -557,6 +563,8 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	vault := must(p.Ledger.CreateAccount(treasurySub.ID, "Vault Cash", ledger.Asset))
 	incomeSub := must(p.Ledger.CreateSubledger(glID, "Income"))
 	feeIncome := must(p.Ledger.CreateAccount(incomeSub.ID, "Fee Income", ledger.Revenue))
+	expenseSub := must(p.Ledger.CreateSubledger(glID, "Expenses"))
+	opex := must(p.Ledger.CreateAccount(expenseSub.ID, "Operating Expenses", ledger.Expense))
 
 	// Capitalisation: Vault Cash (asset) up, Share Capital (equity) up.
 	must(p.Ledger.PostTransaction(ledger.PostTransactionRequest{
@@ -564,6 +572,15 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 		Entries: []ledger.Entry{
 			{AccountID: vault.ID, Amount: 100_000, Direction: ledger.Debit},
 			{AccountID: shareCapital.ID, Amount: 100_000, Direction: ledger.Credit},
+		},
+	}))
+
+	// Operating expense: Operating Expenses (expense) up, Vault Cash (asset) down.
+	must(p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+		Description: "Office rent",
+		Entries: []ledger.Entry{
+			{AccountID: opex.ID, Amount: 2_000, Direction: ledger.Debit},
+			{AccountID: vault.ID, Amount: 2_000, Direction: ledger.Credit},
 		},
 	}))
 
