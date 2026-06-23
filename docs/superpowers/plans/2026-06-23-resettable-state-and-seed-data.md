@@ -353,7 +353,7 @@ var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 func Network() *payment.Network {
 	c := newClock(baseDate)
 	net := payment.NewNetworkWithClock(c.now)
-	b := &builder{net: net, clock: c}
+	b := &builder{net: net, clock: c, ibans: map[deposit.AccountID]string{}}
 	b.build()
 	c.goLive()
 	return net
@@ -362,6 +362,11 @@ func Network() *payment.Network {
 type builder struct {
 	net   *payment.Network
 	clock *clock
+	// ibans assigns one canonical IBAN per deposit account so a PartyRef for an
+	// account is identical wherever it appears. The SDD scheme matches a payment
+	// to its mandate by PartyRef equality, and PartyRef includes the IBAN field —
+	// so a mandate and its direct debits must reference the account the same way.
+	ibans map[deposit.AccountID]string
 }
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
@@ -380,15 +385,25 @@ func check(err error) {
 	}
 }
 
-// party builds a PartyRef for a customer deposit account at a participant.
-func party(p *payment.Participant, acct deposit.Account, iban string) payment.PartyRef {
-	return payment.PartyRef{Participant: p.ID, Account: acct.ID, IBAN: iban}
+// open opens a customer account, records its canonical IBAN, and returns it.
+func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
+	a := must(p.OpenCustomerAccount(name))
+	b.ibans[a.ID] = iban
+	return a
 }
 
 // openOverdraft opens a customer account with an overdraft limit (the
-// participant helper only opens with zero overdraft).
-func (b *builder) openOverdraft(p *payment.Participant, name string, limit ledger.Amount) deposit.Account {
-	return must(p.Deposit.OpenAccount(p.CustomerSubledger, name, limit))
+// participant helper only opens with zero overdraft) and records its IBAN.
+func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
+	a := must(p.Deposit.OpenAccount(p.CustomerSubledger, name, limit))
+	b.ibans[a.ID] = iban
+	return a
+}
+
+// ref builds a PartyRef for a customer deposit account using its canonical IBAN,
+// so the same account always produces an identical PartyRef.
+func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.PartyRef {
+	return payment.PartyRef{Participant: p.ID, Account: acct.ID, IBAN: b.ibans[acct.ID]}
 }
 
 // fund credits a deposit account with cash and raises the bank's reserve.
@@ -399,8 +414,8 @@ func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledg
 func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return must(b.net.InitiatePayment(payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
-		Debtor:      party(dp, d, ""),
-		Creditor:    party(cp, c, ""),
+		Debtor:      b.ref(dp, d),
+		Creditor:    b.ref(cp, c),
 		Amount:      amount,
 		EndToEndID:  e2e,
 		Description: desc,
@@ -410,8 +425,8 @@ func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *paymen
 func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return must(b.net.InitiatePayment(payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
-		Debtor:      party(dp, d, ""),
-		Creditor:    party(cp, c, ""),
+		Debtor:      b.ref(dp, d),
+		Creditor:    b.ref(cp, c),
 		Amount:      amount,
 		MandateID:   mandate,
 		EndToEndID:  e2e,
@@ -426,22 +441,22 @@ func (b *builder) build() {
 	nord := must(b.net.AddParticipant("Nordhaven Bank"))
 	soleil := must(b.net.AddParticipant("Crédit Soleil"))
 
-	// --- Customer accounts -------------------------------------------------
-	alice := must(aurora.OpenCustomerAccount("Alice Andersson"))
-	aaron := must(aurora.OpenCustomerAccount("Aaron Apstorp"))
-	annie := must(aurora.OpenCustomerAccount("Annie Ahlberg"))      // -> Dormant
-	merchant := must(aurora.OpenCustomerAccount("Aurora Merchant")) // hold-capture counterparty
-	oldAcct := must(aurora.OpenCustomerAccount("Closed Account"))   // -> Closed
+	// --- Customer accounts (each gets a canonical IBAN) --------------------
+	alice := b.open(aurora, "Alice Andersson", "SE89-AURORA-1001")
+	aaron := b.open(aurora, "Aaron Apstorp", "SE89-AURORA-1002")
+	annie := b.open(aurora, "Annie Ahlberg", "SE89-AURORA-1003")    // -> Dormant
+	merchant := b.open(aurora, "Aurora Merchant", "SE89-AURORA-1004") // hold-capture counterparty
+	oldAcct := b.open(aurora, "Closed Account", "SE89-AURORA-1005")  // -> Closed
 
-	bruno := b.openOverdraft(verde, "Bruno Bianchi", 50_000) // 500.00 overdraft
-	bella := must(verde.OpenCustomerAccount("Bella Bruno"))
-	bianca := must(verde.OpenCustomerAccount("Bianca Belli")) // -> Frozen
+	bruno := b.openOverdraft(verde, "Bruno Bianchi", "IT60-VERDE-2001", 50_000) // 500.00 overdraft
+	bella := b.open(verde, "Bella Bruno", "IT60-VERDE-2002")
+	bianca := b.open(verde, "Bianca Belli", "IT60-VERDE-2003") // -> Frozen
 
-	nora := must(nord.OpenCustomerAccount("Nora Nilsson"))
-	niklas := must(nord.OpenCustomerAccount("Niklas Nyborg"))
+	nora := b.open(nord, "Nora Nilsson", "NO93-NORD-3001")
+	niklas := b.open(nord, "Niklas Nyborg", "NO93-NORD-3002")
 
-	chloe := must(soleil.OpenCustomerAccount("Chloé Caron"))
-	claude := must(soleil.OpenCustomerAccount("Claude Clément"))
+	chloe := b.open(soleil, "Chloé Caron", "FR76-SOLEIL-4001")
+	claude := b.open(soleil, "Claude Clément", "FR76-SOLEIL-4002")
 
 	// --- Funding (also raises each bank's central-bank reserve) ------------
 	b.fund(aurora, alice, 200_000)
@@ -482,9 +497,9 @@ func (b *builder) build() {
 	check(verde.Deposit.Freeze(bianca.ID))      // Active -> Frozen
 
 	// --- Mandates for SEPA Direct Debit ------------------------------------
-	m1 := must(b.net.CreateMandate(party(soleil, chloe, "FR76-CHLOE"), party(nord, nora, "SE35-NORA"), 100_000))
-	m2 := must(b.net.CreateMandate(party(verde, bruno, "IT60-BRUNO"), party(aurora, aaron, "SE12-AARON"), 0))
-	m3 := must(b.net.CreateMandate(party(nord, niklas, "SE99-NIKLAS"), party(soleil, claude, "FR14-CLAUDE"), 25_000))
+	m1 := must(b.net.CreateMandate(b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
+	m2 := must(b.net.CreateMandate(b.ref(verde, bruno), b.ref(aurora, aaron), 0))
+	m3 := must(b.net.CreateMandate(b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
 	check(b.net.RevokeMandate(m3.ID)) // revoked, for display
 
 	b.clock.advance(1 * time.Hour)
@@ -955,7 +970,7 @@ git commit -m "Add reset-data button to the frontend"
 
 **Placeholder scan:** No TBD/TODO; every code step shows full code; the one conditional fallback (describeError) gives an explicit alternative.
 
-**Type consistency:** `newState func() *payment.Network` matches `NewServer` and `seed.Network`'s signature (`func() *payment.Network`). `network()`/`Reset()` names used consistently. Frontend `resetState`/`useResetState`/`ResetButton` names match across files. `must`/`check`/`party`/`fund`/`initSCT`/`initSDD`/`glShowcase`/`openOverdraft` are all defined in Task 2 and used only there.
+**Type consistency:** `newState func() *payment.Network` matches `NewServer` and `seed.Network`'s signature (`func() *payment.Network`). `network()`/`Reset()` names used consistently. Frontend `resetState`/`useResetState`/`ResetButton` names match across files. `must`/`check`/`open`/`openOverdraft`/`ref`/`fund`/`initSCT`/`initSDD`/`glShowcase` are all defined in Task 2 and used only there. Every account is referenced via `b.ref(...)` so a `PartyRef` (including its IBAN) is identical wherever an account appears — required for SDD mandate matching.
 
 **Known assumptions to validate during execution:**
 - `describeError` export in `web/src/lib/api/errors.ts` (fallback provided).
