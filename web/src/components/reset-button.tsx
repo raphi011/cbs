@@ -3,17 +3,19 @@
 import { RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { useResetState } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
 // Sidebar action: confirm, then reset the backend to the sample dataset. The
-// in-memory backend has no undo, so this is a destructive confirm.
-export function ResetButton() {
+// in-memory backend has no undo, so this is a destructive confirm. When the nav
+// rail is collapsed it renders icon-only with a native tooltip.
+export function ResetButton({ collapsed }: { collapsed?: boolean }) {
   const reset = useResetState();
   return (
-    <div className="px-3">
+    <div className={cn("flex", collapsed ? "justify-center px-2" : "px-3")}>
       <ConfirmAction
         destructive
         title="Reset all data?"
@@ -30,10 +32,21 @@ export function ResetButton() {
           }
         }}
         trigger={
-          <Button variant="outline" size="sm" className="w-full justify-start gap-2">
-            <RotateCcw className="size-4" />
-            Reset data
-          </Button>
+          collapsed ? (
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Reset data"
+              title="Reset data"
+            >
+              <RotateCcw className="size-4" />
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" className="w-full justify-start gap-2">
+              <RotateCcw className="size-4" />
+              Reset data
+            </Button>
+          )
         }
       />
     </div>
