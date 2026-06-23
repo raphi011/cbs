@@ -700,29 +700,36 @@ func newTestServer(t *testing.T) http.Handler {
 
 Append:
 
+`/participants` returns a JSON array, so assert on the raw body via the `do`
+helper (not `doJSON`, which decodes a JSON object).
+
 ```go
 func TestAdminReset(t *testing.T) {
 	h := newTestServer(t)
 
-	// Create state, confirm it's there, reset, confirm it's gone.
-	doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)
-	if got := doJSON(t, h, "GET", "/participants", "", http.StatusOK); got != nil {
-		// /participants returns a JSON array; doJSON decodes objects, so assert
-		// via a raw request instead.
-	}
-	rec := do(t, h, "GET", "/participants", "")
-	if rec.Body.String() == "[]\n" || rec.Body.String() == "[]" {
-		t.Fatalf("expected one participant before reset, got %s", rec.Body.String())
+	// emptyList reports whether the /participants body is the empty array.
+	emptyList := func() bool {
+		b := strings.TrimSpace(do(t, h, "GET", "/participants", "").Body.String())
+		return b == "[]"
 	}
 
+	// Create a participant, confirm it's present.
+	doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)
+	if emptyList() {
+		t.Fatal("expected one participant before reset, got empty list")
+	}
+
+	// Reset rebuilds state from the factory (empty in tests).
 	doJSON(t, h, "POST", "/admin/reset", "", http.StatusOK)
 
-	rec = do(t, h, "GET", "/participants", "")
-	if got := rec.Body.String(); got != "[]\n" && got != "[]" {
-		t.Fatalf("expected empty participants after reset, got %s", got)
+	if !emptyList() {
+		t.Fatal("expected empty participants after reset")
 	}
 }
 ```
+
+This test uses `strings`; add `"strings"` to the test file's import block if it
+isn't already imported.
 
 - [ ] **Step 7: Run the api test suite**
 
