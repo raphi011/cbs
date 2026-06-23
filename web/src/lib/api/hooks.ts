@@ -478,3 +478,13 @@ export function useSettlement(sid: string) {
     enabled: sid !== "",
   });
 }
+
+// Reset the whole backend to the sample dataset, then invalidate every query so
+// the UI refetches the fresh state.
+export function useResetState() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: api.resetState,
+    onSuccess: () => qc.invalidateQueries(),
+  });
+}

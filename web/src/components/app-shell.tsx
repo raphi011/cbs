@@ -27,6 +27,7 @@ import {
   useConceptPanel,
 } from "./concept-panel-provider";
 import { ConceptPanelBody } from "./concept-panel";
+import { ResetButton } from "./reset-button";
 
 interface NavItem {
   href: string;
@@ -81,14 +82,6 @@ function Brand() {
         Core banking explorer
       </span>
     </Link>
-  );
-}
-
-function ResetNote() {
-  return (
-    <p className="px-3 text-xs leading-relaxed text-muted-foreground">
-      Data lives in memory and resets when the backend restarts.
-    </p>
   );
 }
 
@@ -161,7 +154,7 @@ function Shell({ children }: { children: React.ReactNode }) {
           <NavLinks />
         </div>
         <div className="border-t py-3">
-          <ResetNote />
+          <ResetButton />
         </div>
       </aside>
 
@@ -187,7 +180,7 @@ function Shell({ children }: { children: React.ReactNode }) {
                 <NavLinks />
               </div>
               <div className="border-t py-3">
-                <ResetNote />
+                <ResetButton />
               </div>
             </SheetContent>
           </Sheet>

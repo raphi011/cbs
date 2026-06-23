@@ -392,3 +392,11 @@ export function listSettlements(): Promise<Settlement[]> {
 export function getSettlement(sid: string): Promise<Settlement> {
   return request("GET", `/settlements/${sid}`);
 }
+
+// --- Admin ----------------------------------------------------------------
+
+// resetState wipes the in-memory backend and reloads the built-in sample
+// dataset. The request has no body and returns {status:"reset"} (ignored).
+export function resetState(): Promise<void> {
+  return request<void>("POST", "/admin/reset");
+}
