@@ -1,9 +1,10 @@
 // Command server runs the core-banking REST API.
 //
-// It builds a single in-memory payment.Network (with the SEPA Credit Transfer
-// and SEPA Direct Debit schemes pre-registered) and serves it over HTTP. State
-// lives only in memory, so it resets on restart — this is a learning and
-// prototyping tool, not a production service.
+// It builds a single in-memory payment.Network seeded with a comprehensive
+// sample dataset (multiple banks, accounts, payments, clearing cycles and
+// settlements) and serves it over HTTP. State lives only in memory and can be
+// reset to the sample dataset at runtime via POST /admin/reset; it also resets on
+// restart. This is a learning and prototyping tool, not a production service.
 package main
 
 import (
@@ -18,7 +19,7 @@ import (
 	"time"
 
 	"github.com/raphi011/ledger/api"
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/ledger/seed"
 )
 
 func main() {
@@ -27,8 +28,7 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	net := payment.NewNetwork()
-	srv := api.NewServer(net, log)
+	srv := api.NewServer(seed.Network, log)
 
 	httpServer := &http.Server{
 		Addr:              *addr,
