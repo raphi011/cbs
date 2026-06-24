@@ -1,6 +1,6 @@
 import { cn } from "@/lib/utils";
 
-// Renders an opaque backend ID (bank_1, acct_9, …) in monospace. IDs are
+// Renders a backend ID (bank_1, 200.100.001, …) in monospace. IDs are
 // everywhere in this system, so showing them consistently helps users follow
 // how money moves between participants and accounts.
 export function IdText({

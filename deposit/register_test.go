@@ -379,33 +379,3 @@ func TestStringers(t *testing.T) {
 	assertEqual(t, "hold captured", HoldCaptured.String(), "Captured")
 	assertEqual(t, "hold unknown", HoldStatus(99).String(), "Unknown")
 }
-
-// mustCash returns the cash account created by testRegister by name, for tests
-// that do not capture the third return value.
-func mustCash(t *testing.T, reg *Register) ledger.AccountID {
-	t.Helper()
-	// Cash is the only Asset account in the test fixture.
-	for id := 1; id <= 100; id++ {
-		acct, err := reg.book.GetAccount(ledger.AccountID("acct_" + itoa(id)))
-		if err != nil {
-			continue
-		}
-		if acct.Type == ledger.Asset {
-			return acct.ID
-		}
-	}
-	t.Fatal("cash account not found")
-	return ""
-}
-
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	var b []byte
-	for i > 0 {
-		b = append([]byte{byte('0' + i%10)}, b...)
-		i /= 10
-	}
-	return string(b)
-}

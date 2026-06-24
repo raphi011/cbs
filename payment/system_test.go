@@ -378,7 +378,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 	t.Run("account not in participant", func(t *testing.T) {
 		_, err := sys.InitiatePayment(InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
-			Debtor: PartyRef{Participant: a.ID, Account: "acct_999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
