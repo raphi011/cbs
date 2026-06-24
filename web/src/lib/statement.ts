@@ -73,6 +73,10 @@ export function projectStatement(
       txId: t.id,
       date: t.valueDate,
       description: t.description,
+      // A deposit account touches a transaction with exactly one leg in
+      // practice, so this is that leg's direction. `delta` (above) sums all
+      // `mine` legs and is what the signed amount renders from, so the running
+      // balance stays correct even in the exotic multi-leg-same-account case.
       direction: mine[0].direction,
       delta,
       runningBalance: running,

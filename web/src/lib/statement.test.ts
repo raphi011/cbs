@@ -49,6 +49,10 @@ describe("projectStatement", () => {
     expect(rows[2]).toMatchObject({ delta: 50000, direction: "Credit", runningBalance: 50000 });
   });
 
+  it("returns an empty statement for no transactions", () => {
+    expect(projectStatement([], A)).toEqual({ rows: [], finalBalance: 0 });
+  });
+
   it("orders by valueDate then createdAt", () => {
     const txs = [
       tx({ id: "late", valueDate: "2026-06-10", createdAt: "2026-06-10T09:00:00.000Z", entries: [leg(A, 100, "Credit"), leg("acct_02", 100, "Debit")] }),
