@@ -83,9 +83,18 @@ unambiguous, accepted as the chosen aesthetic.
 
 ### Sequence scoping
 
-`seq` is per **(typeBlock, subledgerBlock)** pair, each starting at `001`. So in
-Interbank, Clearing Suspense (Liability) is `200.200.001` and Reserve (Asset) is
-`100.200.001` — both `001`, disambiguated by the type block.
+`seq` is per **(typeBlock, subledgerBlock)** pair, each starting at `001` — the
+real-world chart-of-accounts convention. A CoA is **type-first**: the leading
+block places the account in its class, and the trailing running number identifies
+it *within that classification branch*, each branch numbered independently. A
+single sequence running across types within a subledger would be non-standard —
+it would let the counter cross a type boundary, which never happens in a real CoA
+where an asset and a liability live in different branches of the tree.
+
+So in Interbank, Clearing Suspense (Liability) is `200.200.001` and Reserve
+(Asset) is `100.200.001` — both `001`, each the first account in its own type
+branch. (A single per-subledger sequence would wrongly number Reserve `…002`
+merely because a liability was added to the group first.)
 
 `seq` is zero-padded to 3 digits (supports 999 accounts per type per subledger —
 ample for this model). Subledger blocks step by 100 with no fixed cap (the 10th
@@ -153,7 +162,11 @@ stable and readable than before (the old shared counter interleaved
 `evt_`/`ldg_`/`sub_`/`acct_`, so account numbers jumped). Removing accounts and
 subledgers from the shared `nextID` counter will shift the numeric suffixes of
 the *other* `nextID`-based IDs (`evt_`, `txn_`, `ldg_`); this is cosmetic and
-only affects tests/seed output that assert those exact strings.
+only affects tests/seed output that assert those exact strings. **Decision:**
+accept the drift — `evt_`/`txn_` are internal surrogate IDs whose exact digits
+carry no meaning (only uniqueness matters), so there is no reason to preserve
+specific values. (A future cleanup could give each entity type its own counter
+for independent, stable sequences; out of scope here.)
 
 ## Impact / affected areas
 
