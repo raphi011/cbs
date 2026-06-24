@@ -243,7 +243,7 @@ export function useStatement(pid: string, did: string, glAccount: string) {
 
   const known = useMemo(() => buildKnownAccounts(partq.data), [partq.data]);
   const { rows, finalBalance } = useMemo(
-    () => projectStatement(txq.data ?? [], glAccount, known),
+    () => projectStatement(txq.data ?? [], glAccount, { type: "Liability", knownAccounts: known }),
     [txq.data, glAccount, known],
   );
 

@@ -82,11 +82,32 @@ describe("projectStatement", () => {
     expect(rev.reversalOf).toBe("orig");
   });
 
+  it("signs by the account's normal balance — an asset rises on a Debit", () => {
+    const R = "acct_reserve"; // an asset (normal balance = Debit)
+    const txs = [
+      tx({ id: "f1", valueDate: "2026-06-01", entries: [leg(R, 50000, "Debit"), leg("acct_11", 50000, "Credit")] }),
+      tx({ id: "f2", valueDate: "2026-06-05", entries: [leg(R, 20000, "Credit"), leg("acct_11", 20000, "Debit")] }),
+    ];
+
+    const { rows, finalBalance } = projectStatement(txs, R, { type: "Asset" });
+
+    // Asset: Debit +, Credit − (the opposite of the liability convention)
+    expect(finalBalance).toBe(30000);
+    expect(rows.map((r) => r.txId)).toEqual(["f2", "f1"]); // newest first
+    expect(rows[0]).toMatchObject({ delta: -20000, direction: "Credit", runningBalance: 30000 });
+    expect(rows[1]).toMatchObject({ delta: 50000, direction: "Debit", runningBalance: 50000 });
+  });
+
+  it("defaults to the liability convention when no type is given", () => {
+    const txs = [tx({ id: "t1", entries: [leg(A, 100, "Credit"), leg("acct_02", 100, "Debit")] })];
+    expect(projectStatement(txs, A).rows[0].delta).toBe(100); // Credit increases a liability
+  });
+
   it("labels a single contra leg and collapses multi-leg contras to a split", () => {
     const single = tx({ id: "s", entries: [leg(A, 100, "Credit"), leg("acct_03", 100, "Debit")] });
     const split = tx({ id: "m", entries: [leg(A, 100, "Credit"), leg("acct_03", 60, "Debit"), leg("acct_07", 40, "Debit")] });
 
-    const { rows } = projectStatement([single, split], A, { acct_03: "suspense" });
+    const { rows } = projectStatement([single, split], A, { knownAccounts: { acct_03: "suspense" } });
     const sRow = rows.find((r) => r.txId === "s")!;
     const mRow = rows.find((r) => r.txId === "m")!;
 

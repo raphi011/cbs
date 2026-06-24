@@ -1,4 +1,6 @@
 import type { Direction, TransactionStatus } from "@/lib/enums";
+import { NORMAL_BALANCE } from "@/lib/enums";
+import type { AccountType } from "@/lib/enums";
 import type { Participant, Transaction } from "@/lib/types";
 
 // One statement line is one leg of a GL transaction, projected onto the backing
@@ -15,7 +17,7 @@ export type StatementRow = {
   description?: string;
   direction: Direction;
   delta: number; // signed cents: Credit +amount, Debit −amount
-  runningBalance: number; // cents after this row, liability convention
+  runningBalance: number; // cents after this row, signed by the account's normal balance
   contra: ContraRef;
   status: TransactionStatus;
   isReversed: boolean;
@@ -39,12 +41,17 @@ export function buildKnownAccounts(participant?: Participant): Record<string, st
 // Project the General Ledger onto a single backing account. Rows are returned
 // newest-first; the running balance is accumulated over the FULL ordered history
 // (oldest→newest) so the newest row reconciles to the account's book balance.
+// Amounts are signed by the account's normal balance (Debit+ for Asset/Expense,
+// Credit+ for Liability/Equity/Revenue); `type` defaults to "Liability".
 export function projectStatement(
   txs: Transaction[],
-  glAccount: string,
-  knownAccounts: Record<string, string> = {},
+  accountId: string,
+  opts: { type?: AccountType; knownAccounts?: Record<string, string> } = {},
 ): Statement {
-  const touching = txs.filter((t) => t.entries.some((e) => e.accountId === glAccount));
+  const { type = "Liability", knownAccounts = {} } = opts;
+  const increases = NORMAL_BALANCE[type]; // the direction that increases this account
+
+  const touching = txs.filter((t) => t.entries.some((e) => e.accountId === accountId));
 
   const ordered = [...touching].sort((a, b) => {
     if (a.valueDate !== b.valueDate) return a.valueDate < b.valueDate ? -1 : 1;
@@ -54,11 +61,11 @@ export function projectStatement(
 
   let running = 0;
   const rows: StatementRow[] = ordered.map((t) => {
-    const mine = t.entries.filter((e) => e.accountId === glAccount);
-    const others = t.entries.filter((e) => e.accountId !== glAccount);
+    const mine = t.entries.filter((e) => e.accountId === accountId);
+    const others = t.entries.filter((e) => e.accountId !== accountId);
 
     const delta = mine.reduce(
-      (sum, e) => sum + (e.direction === "Credit" ? e.amount : -e.amount),
+      (sum, e) => sum + (e.direction === increases ? e.amount : -e.amount),
       0,
     );
     running += delta;
