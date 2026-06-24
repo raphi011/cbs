@@ -1,7 +1,18 @@
+import { defaultUrlTransform } from "react-markdown";
+
 import { hintContent, type HintKey } from "./hint-content";
 
 // Matches [[key]] and [[key|custom label]].
 const LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+// react-markdown sanitizes every href through `defaultUrlTransform`, whose
+// allow-list (http(s)/irc(s)/mailto/xmpp) rewrites our custom `concept:` scheme
+// to "" — leaving the panel's wiki-links pointing at the current page. Let
+// `concept:` through untouched; defer everything else so XSS protection (e.g.
+// stripping `javascript:`) stays intact. Used as ReactMarkdown's `urlTransform`.
+export function conceptUrlTransform(url: string): string {
+  return url.startsWith("concept:") ? url : defaultUrlTransform(url);
+}
 
 // Rewrite wiki-links to standard markdown links with a `concept:` scheme so
 // react-markdown renders them and our custom <a> can intercept them. The label

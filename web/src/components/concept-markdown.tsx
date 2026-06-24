@@ -6,7 +6,7 @@ import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/utils";
 import { useConceptPanel } from "./concept-panel-provider";
-import { preprocessConceptMarkdown } from "./concept-links";
+import { conceptUrlTransform, preprocessConceptMarkdown } from "./concept-links";
 import { hintContent, type HintKey } from "./hint-content";
 
 // Renders a concept body as markdown. `concept:` links swap the panel; internal
@@ -29,6 +29,7 @@ export function ConceptMarkdown({ body }: { body: string }) {
     >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        urlTransform={conceptUrlTransform}
         components={{
           a({ href, children }) {
             if (href?.startsWith("concept:")) {
