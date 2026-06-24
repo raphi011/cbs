@@ -4,8 +4,10 @@ We now have the stage — independent bank ledgers meeting at a central bank —
 the cast of accounts that money moves through. This final chapter of Part IV brings
 on the actual choreography. We'll see why banks settle the *net* of their payments
 rather than each one individually, follow a real payment posting by posting, and
-then meet the different *schemes* — credit transfers, direct debits, and the
-instant and card flows on the horizon — that all reuse the same underlying machinery.
+then meet the abstract *scheme model* — the small set of axes along which any
+payment product differs — that the named schemes in the chapters to follow all
+share. SEPA's credit transfer and direct debit come first, in Chapter 12; card
+transactions get their own treatment in Chapter 13.
 
 ## Netting: the whole point of clearing
 
@@ -114,57 +116,8 @@ share the same posting machinery we just traced. The axes that matter:
 In our reference library, these axes are literally an interface that each scheme
 implements; the network orchestrator drives any scheme without knowing its
 specifics, and adding a new product means describing it along these axes rather than
-rewriting the engine. The two schemes that ship today are both net-settled and worth
-meeting by name.
-
-## SEPA Credit Transfer — a push
-
-A **credit transfer** is the salary-and-invoice workhorse: the payer's bank
-initiates and *pushes* funds to the payee. No mandate is needed — you're sending
-your own money. In the European SEPA system this is the *SEPA Credit Transfer*
-(SCT), settling at T+1, and it corresponds to the ISO 20022 `pacs.008` interbank
-message. The worked example above *was* a credit transfer; there is nothing more to
-it mechanically.
-
-(The mention of `pacs.008` points at a real-world detail worth noting: actual
-interbank payments are carried as standardized ISO 20022 XML messages with codes
-like `pacs.008` for a credit transfer and `pacs.003` for a direct debit. A learning
-model can stand in a simple payment record for those messages and just *name* the
-message each scheme corresponds to, without parsing real ISO 20022.)
-
-## SEPA Direct Debit — a pull, with a mandate
-
-A **direct debit** runs the other way. The payee — a utility, a gym, a streaming
-service — *pulls* funds from the payer's account. Since someone reaching into your
-account is obviously dangerous, a direct debit requires a **mandate**: a standing
-authorization you sign in advance, naming the specific creditor allowed to collect
-and often capping the amount.
-
-Before any collection, the scheme checks that mandate: that it exists, is still
-active (not revoked), matches both the payer and the named payee, and stays within
-its amount limit. Fail any check and the payment is rejected outright — with
-specific reasons like "mandate required," "mandate revoked," or "amount exceeds the
-mandate." In SEPA this is the *SEPA Direct Debit* (SDD), settling at T+2, mapping to
-the ISO 20022 `pacs.003` message.
-
-Here's the payoff of the shared-machinery design: once the mandate checks pass, the
-*postings for a direct debit are identical to a credit transfer* — debtor →
-creditor, through clearing suspense and central-bank reserves, exactly as above. The
-money flows the same way; only the rules about *who may initiate* and *what
-authorization is required* differ. That's the whole reason schemes can be an
-abstraction over one posting engine rather than separate systems.
-
-## Returns: unwinding a settled payment
-
-Direct debits introduce a wrinkle the credit transfer didn't have: they can be
-**returned**. If the payer disputes a collection or turns out to have lacked funds,
-a *return* (in SEPA, an "R-transaction") reverses the flow even after settlement. It
-posts compensating transactions that move the funds back from creditor to debtor
-across the central bank, fully unwinding the original and restoring both customers'
-balances — the cross-bank cousin of the reversal from Chapter 5. Where an ordinary
-reversal undoes a posting in one ledger, a return has to undo a flow that crossed
-several ledgers and the central bank, but the principle is the same: you don't erase
-history, you post a new, balancing transaction that cancels it.
+rewriting the engine. The named schemes that follow — SEPA in Chapter 12, card flows
+in Chapter 13 — each slot into this model rather than standing apart from it.
 
 ## What's deliberately left out, and what comes next
 
@@ -178,7 +131,7 @@ settlement windows or two-phase commit a real real-time gross settlement system
 would demand. None of these change the *concepts* in this chapter; they just keep the
 model small enough to read in an afternoon.
 
-Two further schemes show where the same foundation naturally extends:
+One further scheme shows where the same foundation naturally extends:
 
 - **Instant payments** (SEPA Instant, FedNow, Faster Payments) are real-time *gross*
   settlement, 24/7. Each payment settles individually and immediately rather than
@@ -187,21 +140,16 @@ Two further schemes show where the same foundation naturally extends:
   a gross scheme, posts the debtor leg, the central-bank reserve move, and the
   creditor leg in one shot per payment, with no netting and no cut-off.
 
-- **Card transactions** are an *authorize → capture → clear → settle* flow — and we
-  already have its first two steps. The authorization is exactly the *hold* of
-  Chapter 7: it reserves the cardholder's available balance. The capture turns that
-  hold into the debtor leg of a payment, and from there clearing and settlement
-  reuse the very same net machinery, because card networks net much like SEPA does.
+Card transactions get their own chapter next (Chapter 13).
 
 Both extensions also motivate enforcing the account *states* of Chapter 8 on the
-debit path — a frozen account should block a card authorization — and checking that a
-bank actually holds enough reserves before its net settlement is allowed to post.
-The themes of the whole book, in other words, converge here: the balance rule, the
-two clocks, holds, account states, and immutable correction all reappear in the
-machinery that moves money between banks.
+debit path — an account in a restricted state should block payment initiation — and
+checking that a bank actually holds enough reserves before its net settlement is
+allowed to post. The themes of the whole book, in other words, converge here: the
+balance rule, the two clocks, holds, account states, and immutable correction all
+reappear in the machinery that moves money between banks.
 
-With that, we've followed money from a single entry in one bank's book all the way
-to final settlement across an interbank network. The last part of the book steps
-back from movement to *records*: how a bank captures, audits, and reports on
-everything we've watched happen.
+With that, the scheme model is in place. Chapter 12 puts it to work on the two SEPA
+products — the credit transfer push and the direct debit pull — and Chapter 13
+extends it to card flows.
 
