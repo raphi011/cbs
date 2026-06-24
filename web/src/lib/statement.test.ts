@@ -129,4 +129,18 @@ describe("buildKnownAccounts", () => {
     expect(buildKnownAccounts(p)).toEqual({ acct_03: "suspense", acct_02: "reserve", acct_09: "settlement" });
     expect(buildKnownAccounts(undefined)).toEqual({});
   });
+
+  it("combines roles when one account serves several (reserve === settlement)", () => {
+    const p: Participant = {
+      id: "bank_1",
+      name: "Bank",
+      customerSubledger: "sub_1",
+      suspenseAccount: "acct_07",
+      reserveAccount: "acct_09",
+      settlementAccount: "acct_09",
+    };
+    // acct_09 is both reserve and settlement — the label must keep both, not
+    // silently drop one (an object literal would clobber to just "settlement").
+    expect(buildKnownAccounts(p)).toEqual({ acct_07: "suspense", acct_09: "reserve / settlement" });
+  });
 });

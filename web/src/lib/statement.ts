@@ -29,13 +29,23 @@ export type Statement = { rows: StatementRow[]; finalBalance: number };
 
 // Map a participant's well-known accounts to friendly contra labels, so a
 // suspense/reserve/settlement leg reads as a word instead of an opaque ID.
+// One account can hold more than one role (e.g. reserve and settlement may be
+// the same account), so roles are accumulated per id and joined ("reserve /
+// settlement") rather than clobbering to whichever role is listed last.
 export function buildKnownAccounts(participant?: Participant): Record<string, string> {
   if (!participant) return {};
-  return {
-    [participant.suspenseAccount]: "suspense",
-    [participant.reserveAccount]: "reserve",
-    [participant.settlementAccount]: "settlement",
-  };
+  const roles: [string, string][] = [
+    [participant.suspenseAccount, "suspense"],
+    [participant.reserveAccount, "reserve"],
+    [participant.settlementAccount, "settlement"],
+  ];
+  const byAccount: Record<string, string[]> = {};
+  for (const [accountId, role] of roles) {
+    (byAccount[accountId] ??= []).push(role);
+  }
+  return Object.fromEntries(
+    Object.entries(byAccount).map(([accountId, rs]) => [accountId, rs.join(" / ")]),
+  );
 }
 
 // Project the General Ledger onto a single backing account. Rows are returned
