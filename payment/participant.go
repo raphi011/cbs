@@ -1,8 +1,8 @@
 package payment
 
 import (
-	"github.com/raphi011/cbs"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // Participant is a bank (or payment service provider) that takes part in the

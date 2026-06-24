@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raphi011/cbs"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 

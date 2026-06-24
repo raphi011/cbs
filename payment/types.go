@@ -3,8 +3,8 @@ package payment
 import (
 	"time"
 
-	"github.com/raphi011/cbs"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // ID types for each entity in the payment domain. Like the ledger package,

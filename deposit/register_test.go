@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger

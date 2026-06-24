@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/raphi011/cbs"
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // Network is the payment processor. It owns one ledger per participant bank

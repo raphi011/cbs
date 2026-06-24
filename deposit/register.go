@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // Register is the demand-deposit layer over a general ledger. It manages
