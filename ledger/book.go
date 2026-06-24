@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -46,6 +47,15 @@ type Book struct {
 	// idCounter is a simple monotonic counter for generating unique IDs.
 	idCounter int64
 
+	// subledgerSeq is the last chart-of-accounts block issued to a subledger
+	// (100, 200, …). Subledgers are identified by their block, book-wide.
+	subledgerSeq int
+
+	// accountSeq is the next account sequence within each
+	// "<typeBlock>.<subledgerID>" branch. Account numbers reset per
+	// (type, subledger) — the type-first chart-of-accounts convention.
+	accountSeq map[string]int
+
 	// clock is the time source. Override in tests to control time.
 	clock func() time.Time
 }
@@ -76,6 +86,7 @@ func NewBookWithClock(clock func() time.Time) *Book {
 		accounts:         make(map[AccountID]*Account),
 		transactions:     make(map[TransactionID]*Transaction),
 		idempotencyIndex: make(map[string]TransactionID),
+		accountSeq:       make(map[string]int),
 		clock:            clock,
 	}
 }
@@ -151,8 +162,9 @@ func (s *Book) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error
 		return Subledger{}, ErrLedgerNotFound
 	}
 
+	s.subledgerSeq += 100
 	sl := &Subledger{
-		ID:        SubledgerID(s.nextID("sub")),
+		ID:        SubledgerID(strconv.Itoa(s.subledgerSeq)),
 		LedgerID:  ledgerID,
 		Name:      name,
 		CreatedAt: s.now(),
@@ -197,8 +209,11 @@ func (s *Book) CreateAccount(subledgerID SubledgerID, name string, accountType A
 		return Account{}, ErrSubledgerNotFound
 	}
 
+	block := accountType.codeBlock()
+	key := fmt.Sprintf("%d.%s", block, subledgerID)
+	s.accountSeq[key]++
 	acct := &Account{
-		ID:          AccountID(s.nextID("acct")),
+		ID:          AccountID(fmt.Sprintf("%d.%s.%03d", block, subledgerID, s.accountSeq[key])),
 		SubledgerID: subledgerID,
 		Name:        name,
 		Type:        accountType,

@@ -56,6 +56,25 @@ func (t AccountType) NormalBalance() Direction {
 	}
 }
 
+// codeBlock returns the leading chart-of-accounts block for the type:
+// 100 Asset, 200 Liability, 300 Equity, 400 Revenue, 500 Expense.
+func (t AccountType) codeBlock() int {
+	switch t {
+	case Asset:
+		return 100
+	case Liability:
+		return 200
+	case Equity:
+		return 300
+	case Revenue:
+		return 400
+	case Expense:
+		return 500
+	default:
+		return 0
+	}
+}
+
 // Direction indicates whether an entry is a debit or credit.
 type Direction int
 
