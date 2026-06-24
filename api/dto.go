@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raphi011/ledger"
-	"github.com/raphi011/ledger/deposit"
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/payment"
 )
 
 // This file defines the JSON wire format for the API. The domain packages use

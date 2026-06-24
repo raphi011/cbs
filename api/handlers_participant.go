@@ -3,8 +3,8 @@ package api
 import (
 	"net/http"
 
-	"github.com/raphi011/ledger/deposit"
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/payment"
 )
 
 func (s *Server) registerParticipantRoutes(mux *http.ServeMux) {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs/payment"
 )
 
 // Server holds the application state behind an atomic pointer so the whole state

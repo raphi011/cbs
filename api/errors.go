@@ -4,9 +4,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/raphi011/ledger"
-	"github.com/raphi011/ledger/deposit"
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/payment"
 )
 
 // errorStatus maps a domain sentinel error to an HTTP status code. Unknown

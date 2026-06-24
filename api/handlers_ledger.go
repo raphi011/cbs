@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"github.com/raphi011/ledger"
+	"github.com/raphi011/cbs"
 )
 
 func (s *Server) registerLedgerRoutes(mux *http.ServeMux) {

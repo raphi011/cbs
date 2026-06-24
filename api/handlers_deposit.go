@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/raphi011/ledger"
-	"github.com/raphi011/ledger/deposit"
+	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/deposit"
 )
 
 func (s *Server) registerDepositRoutes(mux *http.ServeMux) {

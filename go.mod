@@ -1,3 +1,3 @@
-module github.com/raphi011/ledger
+module github.com/raphi011/cbs
 
 go 1.24.7

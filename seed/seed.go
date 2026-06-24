@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/raphi011/ledger"
-	"github.com/raphi011/ledger/deposit"
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs"
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/payment"
 )
 
 // baseDate anchors the deterministic seed timeline. Everything built before the

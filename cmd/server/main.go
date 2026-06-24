@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/raphi011/ledger/api"
-	"github.com/raphi011/ledger/seed"
+	"github.com/raphi011/cbs/api"
+	"github.com/raphi011/cbs/seed"
 )
 
 func main() {

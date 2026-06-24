@@ -3,7 +3,7 @@ package deposit
 import (
 	"time"
 
-	"github.com/raphi011/ledger"
+	"github.com/raphi011/cbs"
 )
 
 // ID types for each entity in the deposit domain. Like the ledger package,

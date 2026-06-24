@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/raphi011/ledger/payment"
+	"github.com/raphi011/cbs/payment"
 )
 
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
