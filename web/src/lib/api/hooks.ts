@@ -1,11 +1,16 @@
 // TanStack Query hooks wrapping the endpoint functions. Queries use the key
 // factory; mutations invalidate affected keys. Grows per milestone.
 
+import { useMemo } from "react";
+
 import {
   useMutation,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+
+import { buildKnownAccounts, projectStatement } from "@/lib/statement";
+import type { StatementRow } from "@/lib/statement";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -226,6 +231,30 @@ export function useDepositBalance(pid: string, did: string) {
     queryFn: () => api.getDepositBalance(pid, did),
     enabled: pid !== "" && did !== "",
   });
+}
+
+// Composes the GL transactions, the deposit balance, and the participant's
+// well-known accounts into a ready-to-render statement. `glAccount` must be a
+// real account id — call this only once the deposit account has loaded.
+export function useStatement(pid: string, did: string, glAccount: string) {
+  const txq = useTransactions(pid, glAccount);
+  const balq = useDepositBalance(pid, did);
+  const partq = useParticipant(pid);
+
+  const known = useMemo(() => buildKnownAccounts(partq.data), [partq.data]);
+  const { rows, finalBalance } = useMemo(
+    () => projectStatement(txq.data ?? [], glAccount, known),
+    [txq.data, glAccount, known],
+  );
+
+  return {
+    rows: rows as StatementRow[],
+    finalBalance,
+    book: balq.data?.book,
+    isLoading: txq.isLoading || balq.isLoading,
+    error: txq.error ?? balq.error,
+    refetch: () => txq.refetch(),
+  };
 }
 
 export function useOpenDepositAccount(pid: string) {
