@@ -133,9 +133,11 @@ model small enough to read in an afternoon.
 
 One further scheme shows where the same foundation naturally extends:
 
-- **Instant payments** (SEPA Instant, FedNow, Faster Payments) are real-time *gross*
+- **Instant payments** (SEPA Instant, FedNow) are real-time *gross*
   settlement, 24/7. Each payment settles individually and immediately rather than
-  waiting for a clearing cycle — the "gross" settlement model named above. The
+  waiting for a clearing cycle — the "gross" settlement model named above. (One trap:
+  not every *instant* scheme is gross — UK Faster Payments feels instant to customers
+  but settles on a deferred *net* basis behind the scenes.) The
   abstraction already anticipates this; what it needs is a settlement path that, for
   a gross scheme, posts the debtor leg, the central-bank reserve move, and the
   creditor leg in one shot per payment, with no netting and no cut-off.

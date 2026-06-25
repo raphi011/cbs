@@ -96,7 +96,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 2],
       explanation:
-        "[[clearing-vs-settlement|Clearing]] covers information exchange (option 0) and [[netting|net position calculation]] (option 2). Reserve movement and finality happen at [[clearing-vs-settlement|settlement]] (options 1 and 4). The customer debit happens at initiation (option 3), before clearing even begins.",
+        "[[clearing-vs-settlement|Clearing]] covers exchanging payment instructions and calculating [[netting|net positions]]. Reserve movement and payment finality happen at [[clearing-vs-settlement|settlement]], not during clearing. The customer's account is debited at initiation, before clearing even begins.",
       explore: { label: "View settlement cycles", href: "/cycles" },
     },
     {

@@ -35,7 +35,7 @@ you know they're synonyms but bewildering until then. Here is the precise set.
 One more term you'll meet throughout the book: a **trial balance** is the list of
 every account's balance at a moment in time. Because every transaction balances,
 the debit balances across all accounts must equal the credit balances. A trial
-balance that doesn't sum to zero is a proof that a bookkeeping error exists
+balance whose debit total doesn't equal its credit total is proof that a bookkeeping error exists
 somewhere — the self-checking property from Chapter 2, applied to the whole book.
 
 ## Transactions can have many legs

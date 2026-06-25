@@ -89,5 +89,30 @@ From the repository root the same builds are available as `make book`,
 
 The build takes the chapters in this directory, adds a cover/title and the
 preface, and produces a validated EPUB3 and PDF with a working table of contents
-and one navigable chapter per file. See [`PLAN-epub.md`](PLAN-epub.md) for the
-design notes behind it.
+and one navigable chapter per file.
+
+### Design notes
+
+- **Markdown is canonical.** The `.md` chapters are the source of truth; the EPUB
+  and PDF are generated artifacts. The reading order lives in exactly one place —
+  the `CHAPTERS` list in [`build.sh`](build.sh) — so reordering or inserting a
+  chapter is a one-line change.
+- **Diagrams are ASCII**, kept in fenced code blocks so they render as-is in a
+  monospace block on any e-reader — no pre-processing needed. There is no Mermaid
+  in the book; if a future chapter adds some, it must be pre-rendered to SVG/PNG
+  at build time, because e-readers and the LaTeX PDF path can't run it.
+
+### Verifying a build
+
+After building, confirm the EPUB is well-formed:
+
+```bash
+unzip -l how-money-moves.epub   # mimetype must be the first entry...
+unzip -v how-money-moves.epub   # ...and Stored (0% compression)
+epubcheck how-money-moves.epub  # should report zero errors
+```
+
+Pandoc's EPUB output passes `epubcheck` out of the box. For a final render check,
+open either edition in Calibre or Apple Books and confirm the table of contents
+lists all fourteen chapters, chapter-to-chapter navigation works, tables render,
+and the ASCII diagrams stay aligned.

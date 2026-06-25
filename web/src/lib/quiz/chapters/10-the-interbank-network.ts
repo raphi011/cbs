@@ -125,7 +125,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2, 3],
       explanation:
-        "Settlement involves three ledgers: (1) The **Central Bank** debits Bank A's reserve and credits Bank B's reserve. (2) **Bank A** closes clearing suspense against its reserve asset. (3) **Bank B** records the incoming reserve and credits Bob. Option 4 is the *initiation* step (already done before clearing).",
+        "Settlement involves three ledgers: (1) The **Central Bank** debits Bank A's reserve and credits Bank B's reserve. (2) **Bank A** closes clearing suspense against its reserve asset. (3) **Bank B** records the incoming reserve and credits Bob. The Debit-Alice's-Deposit / Credit-Clearing-Suspense entry is the *initiation* step (already done before clearing).",
       explore: { label: "See settlement cycles", href: "/cycles" },
     },
     {

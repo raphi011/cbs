@@ -116,7 +116,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch14-q8",
       difficulty: "challenge",
-      concept: "reversal",
+      concept: "snapshot",
       prompt:
         "An auditor wants to verify that the current account balance is correct. What is the strongest correctness check available?",
       options: [
@@ -127,7 +127,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "Recomputing balances by replaying the immutable [[reversal]]-friendly append-only audit log from scratch is the **strongest form of correctness check** — it independently derives what the balance must be from first principles, without trusting any cached or snapshotted figure.",
+        "Recomputing balances by replaying the immutable, append-only audit log from scratch is the **strongest form of correctness check** — it independently derives what the balance must be from first principles, without trusting any cached or [[snapshot|snapshotted]] figure.",
     },
     {
       kind: "multi",

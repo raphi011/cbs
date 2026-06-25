@@ -147,6 +147,8 @@ The API always sends and receives integer cents. The frontend is responsible for
     title: "Idempotency key",
     body: `An **idempotency key** is a unique identifier (UUID) attached to each logical posting request. If the same key arrives twice — say due to a network timeout and retry — the backend rejects the duplicate instead of posting the transaction twice.
 
+(Design note: the industry-standard idempotency contract *replays the original response* on a repeat key, making the retry transparent. This codebase instead **rejects** the duplicate with an error and exposes a separate lookup-by-key — simpler, and enough to teach the invariant.)
+
 In distributed systems, clients cannot always tell whether a request succeeded (the response may be lost in transit). Without idempotency, every retry risks creating duplicate transactions:
 
 \`\`\`
@@ -183,7 +185,7 @@ The original is marked **Reversed** for reporting; the reversal carries a refere
 
 Booking date and [[value-date]] can differ by days or even weeks in real-world scenarios. A wire transfer received Friday evening may be **booked immediately** (booking date: Friday 7 PM) but the funds become available only on Monday — that is the value date.
 
-The booking date defaults to "now" if you leave the field blank. Back-dating or forward-dating the booking date itself is unusual; it is more common to leave booking date as the current time and adjust only the [[value-date]]. Interest accrual and regulatory balance reports use value date, not booking date.`,
+The booking date defaults to "now" if you leave the field blank. Back-dating or forward-dating the booking date itself is unusual; it is more common to leave booking date as the current time and adjust only the [[value-date]]. Interest accrual uses value date, not booking date.`,
   },
   "value-date": {
     title: "Value date",
@@ -381,7 +383,9 @@ Payment: Alice→Bob €300
   → No waiting for cycle cut-off
 \`\`\`
 
-Examples: SEPA Instant, FedNow, Faster Payments. Gross settlement offers **instant finality** but requires each bank to maintain sufficient reserves for every individual payment — unlike net settlement where offsetting payments cancel out.
+Examples: FedNow and SEPA Instant (via TIPS) settle each payment individually in central-bank money. Gross settlement offers **instant finality** but requires each bank to maintain sufficient reserves for every individual payment — unlike net settlement where offsetting payments cancel out.
+
+Mind the difference between *speed* and *settlement model*: UK Faster Payments feels instant to customers yet settles on a deferred **net** basis behind the scenes — instant for the customer does not imply gross settlement.
 
 This codebase has the \`Scheme\` interface wired for \`SettlementModel() == Gross\`, but the gross settlement path in the orchestrator is not yet implemented. Net schemes ([[settlement-model-net]]) are fully operational.`,
   },
@@ -429,6 +433,8 @@ SEPA Credit Transfer does **not** allow returns in this model — once a push pa
 | SEPA Credit Transfer | T+1 | next business day |
 | SEPA Direct Debit | T+2 | two business days out |
 | Instant payments (Gross) | ~0 | same day |
+
+These are the model's fixed delays. SEPA Credit Transfer really does settle by T+1; the **SDD T+2 is a simplification** — real SDD Core settles on the collection's *due date*, presented at least one business day ahead.
 
 \`\`\`
 Payment initiated today (T):

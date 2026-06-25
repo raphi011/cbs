@@ -36,8 +36,10 @@ Before any collection, the scheme checks that mandate: that it exists, is still
 active (not revoked), matches both the payer and the named payee, and stays within
 its amount limit. Fail any check and the payment is rejected outright — with
 specific reasons like "mandate required," "mandate revoked," or "amount exceeds the
-mandate." In SEPA this is the *SEPA Direct Debit* (SDD), settling at T+2, mapping to
-the ISO 20022 `pacs.003` message.
+mandate." In SEPA this is the *SEPA Direct Debit* (SDD), mapping to
+the ISO 20022 `pacs.003` message. This model settles it at a flat T+2; real SDD Core
+instead settles on the collection's *due date* (presented at least one business day
+ahead), but the fixed delay keeps the model simple.
 
 Here's the payoff of the shared-machinery design: once the mandate checks pass, the
 *postings for a direct debit are identical to a credit transfer* — debtor →
@@ -50,7 +52,9 @@ abstraction over one posting engine rather than separate systems.
 
 Direct debits introduce a wrinkle the credit transfer didn't have: they can be
 **returned**. If the payer disputes a collection or turns out to have lacked funds,
-a *return* (in SEPA, an "R-transaction") reverses the flow even after settlement. It
+a *return* — one of SEPA's several "R-transactions" (the family also includes
+*refunds*, which a debtor can claim no-questions-asked within 8 weeks, and bank-initiated
+*reversals*) — reverses the flow even after settlement. It
 posts compensating transactions that move the funds back from creditor to debtor
 across the central bank, fully unwinding the original and restoring both customers'
 balances — the cross-bank cousin of the reversal from Chapter 5. Where an ordinary

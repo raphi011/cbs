@@ -86,7 +86,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "[[allows-return]]: SDD supports R-transactions (returns) because a pull debit can be disputed. SCT does **not** allow returns in this model — once a credit transfer is settled it is final from the scheme perspective.",
+        "[[allows-return]]: SDD supports R-transactions (returns) because a pull debit can be disputed. SCT does **not** allow returns *in this model* — here a settled credit transfer is treated as final. (Real SEPA does define SCT returns and recalls; this teaching model simply omits them.)",
       explore: { label: "View payments", href: "/payments" },
     },
     {
@@ -114,7 +114,7 @@ export const chapter: Chapter = {
       prompt: "SEPA Direct Debit settles faster than SEPA Credit Transfer.",
       answer: false,
       explanation:
-        "[[settlement-delay]]: SCT settles T+1, SDD settles **T+2**. SDD is slower because the payee's bank must collect the debit and allow a return window before finality.",
+        "[[settlement-delay]]: SCT settles T+1, SDD settles **T+2** in this model. SDD is the slower of the two — a pull collection is tied to its mandate's due date, whereas a credit transfer is pushed straight through.",
       explore: { label: "Browse payment schemes", href: "/schemes" },
     },
     {

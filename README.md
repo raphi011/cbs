@@ -69,7 +69,7 @@ A core banking system is the backbone of a financial institution. It is the "sys
 
 ### Double-Entry Bookkeeping
 
-The most fundamental principle in banking is double-entry bookkeeping, invented in 15th century Italy and still the foundation of all modern accounting. The rule is simple:
+The most fundamental principle in banking is double-entry bookkeeping, codified in 15th-century Italy (by Luca Pacioli in 1494, though Italian merchants had practised it since the 13th–14th centuries) and still the foundation of all modern accounting. The rule is simple:
 
 > Every transaction must have equal debits and credits.
 
@@ -581,6 +581,8 @@ Bank B:        Debit  Clearing Suspense 3000             // creditor leg: releas
                Credit Clearing Suspense 3000             // and its suspense clears
 ```
 
+(For this single inbound payment Bank B's two Clearing Suspense legs net to zero — B never posted a debtor leg here. They are shown because across a full netted cycle Bank B's *own* outgoing payments would have credited its suspense, so clearing it at settlement is what actually happens; in isolation it is just bookkeeping symmetry.)
+
 Afterwards both banks' suspense accounts are back to zero, and each bank's **Reserve at Central Bank** asset equals the central bank's **Reserve: \<Bank\>** liability — the books reconcile.
 
 ### Netting: A Worked Example
@@ -619,7 +621,7 @@ This is a learning model, not a production processor. The simplifications are in
 
 Two schemes are designed for but not yet implemented. They are the reason the `Scheme` interface carries a `SettlementModel` (Net/Gross) and the reason authorise/capture now lives in the `deposit` layer — the abstraction is in place; what remains is the wiring noted below.
 
-- **Instant payments** (SEPA Inst, FedNow, Faster Payments) — real-time **gross** settlement, 24/7. Each payment settles individually and immediately instead of being batched into a clearing cycle. This needs:
+- **Instant payments** (SEPA Inst, FedNow) — real-time **gross** settlement, 24/7. Each payment settles individually and immediately instead of being batched into a clearing cycle. (*Instant* and *gross* are independent properties: UK Faster Payments feels instant to customers but actually settles on a deferred **net** basis, so it is not a gross-settlement example.) This needs:
   - a `Scheme` returning `SettlementModel() == Gross` with a near-zero `SettlementDelay`; and
   - a settlement path that branches on `SettlementModel()` — for `Gross`, post the debtor leg, the central-bank reserve move, and the creditor leg in one shot per payment, with no netting and no cut-off.
 
