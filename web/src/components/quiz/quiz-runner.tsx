@@ -26,7 +26,7 @@ export function QuizRunner({
   questions: Question[];
 }) {
   const router = useRouter();
-  const { setDefaultConcept } = useConceptPanel();
+  const { setDefaultConcept, togglePanel } = useConceptPanel();
 
   const [seed, setSeed] = useState(() => Date.now());
   const [pool, setPool] = useState<Question[]>(questions);
@@ -38,6 +38,8 @@ export function QuizRunner({
   const [finished, setFinished] = useState(false);
   const [streak, setStreak] = useState(0);
   const [recorded, setRecorded] = useState<{ bestPct: number; isNewBest: boolean } | null>(null);
+  // Whether the reader has chosen to reveal the current question's concept early.
+  const [conceptRevealed, setConceptRevealed] = useState(false);
 
   // A new session (retry / retry-missed) resets all per-session state.
   useEffect(() => {
@@ -48,16 +50,20 @@ export function QuizRunner({
     setFinished(false);
     setStreak(0);
     setRecorded(null);
+    setConceptRevealed(false);
     /* eslint-enable react-hooks/set-state-in-effect */
   }, [session]);
 
   const current = session[index];
 
-  // Mirror PageHeader: drive the right sidebar with the current concept.
+  // Drive the right sidebar with the current concept — but withhold it while the
+  // reader is still answering (it often gives the answer away). It appears once
+  // the answer is submitted, or earlier if the reader taps "Show the concept".
   useEffect(() => {
-    setDefaultConcept(current?.question.concept ?? null);
+    const show = phase === "answered" || conceptRevealed;
+    setDefaultConcept(show ? (current?.question.concept ?? null) : null);
     return () => setDefaultConcept(null);
-  }, [current, setDefaultConcept]);
+  }, [current, phase, conceptRevealed, setDefaultConcept]);
 
   if (session.length === 0) {
     return (
@@ -120,7 +126,14 @@ export function QuizRunner({
     } else {
       setIndex((i) => i + 1);
       setPhase("answering");
+      setConceptRevealed(false);
     }
+  }
+
+  // Reveal the current concept early (a deliberate hint) and open the panel.
+  function revealConcept() {
+    setConceptRevealed(true);
+    togglePanel();
   }
 
   return (
@@ -143,7 +156,9 @@ export function QuizRunner({
         item={current}
         response={responses[index] ?? null}
         phase={phase}
+        conceptRevealed={conceptRevealed}
         onResponse={setResponse}
+        onRevealConcept={revealConcept}
         onCheck={check}
         onNext={next}
         isLast={index + 1 >= session.length}

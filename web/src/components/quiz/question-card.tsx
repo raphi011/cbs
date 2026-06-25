@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Lightbulb } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,7 +26,9 @@ export function QuestionCard({
   item,
   response,
   phase,
+  conceptRevealed,
   onResponse,
+  onRevealConcept,
   onCheck,
   onNext,
   isLast,
@@ -33,7 +36,9 @@ export function QuestionCard({
   item: SessionItem;
   response: Response | null;
   phase: "answering" | "answered";
+  conceptRevealed: boolean;
   onResponse: (r: Response) => void;
+  onRevealConcept: () => void;
   onCheck: () => void;
   onNext: () => void;
   isLast: boolean;
@@ -91,7 +96,23 @@ export function QuestionCard({
         </div>
       )}
 
-      <div className="mt-5 flex justify-end">
+      <div className="mt-5 flex items-center justify-between gap-2">
+        <div>
+          {!answered && q.concept && !conceptRevealed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRevealConcept}
+              className="gap-1.5 text-muted-foreground"
+            >
+              <Lightbulb className="size-3.5" />
+              Show the concept
+            </Button>
+          )}
+          {!answered && q.concept && conceptRevealed && (
+            <span className="text-xs text-muted-foreground">Concept shown in the sidebar →</span>
+          )}
+        </div>
         {answered ? (
           <Button onClick={onNext}>{isLast ? "See results →" : "Next question →"}</Button>
         ) : (
