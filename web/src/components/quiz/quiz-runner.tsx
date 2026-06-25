@@ -95,7 +95,7 @@ export function QuizRunner({
     (n, item, i) => n + (isCorrect(item.question, responses[i] ?? null) ? 1 : 0),
     0,
   );
-  const progressPct = Math.round((index / session.length) * 100);
+  const progressPct = Math.round(((index + 1) / session.length) * 100);
 
   function setResponse(r: Response) {
     setResponses((prev) => {
