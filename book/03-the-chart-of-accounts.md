@@ -47,15 +47,15 @@ the next period afresh. That closing step is the hinge connecting the two report
 ```
             BALANCE SHEET (permanent, a snapshot)
             ┌───────────────────────────────────────────┐
-            │  ASSETS  =  LIABILITIES  +  EQUITY         │
-            │  (owned)    (owed)          (owners' stake) │
+            │  ASSETS  =  LIABILITIES  + EQUITY         │
+            │  (owned)    (owed)         (owners' stake)│
             └───────────────────────────────▲───────────┘
                                             │ net income
                                             │ rolled in at year-end
             INCOME STATEMENT (temporary)    │
             ┌───────────────────────────────┴───────────┐
-            │  REVENUE  −  EXPENSES  =  profit            │
-            │  (earned)    (spent)                        │
+            │  REVENUE  −  EXPENSES  =  profit          │
+            │  (earned)    (spent)                      │
             └───────────────────────────────────────────┘
 ```
 

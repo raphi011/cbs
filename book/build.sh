@@ -85,6 +85,7 @@ build_pdf() {
     --metadata-file=metadata.yaml \
     --toc --toc-depth=1 \
     --top-level-division=chapter \
+    --lua-filter=table-fit.lua \
     --include-in-header=pdf-header.tex \
     -V documentclass=book \
     -V classoption=oneside \
