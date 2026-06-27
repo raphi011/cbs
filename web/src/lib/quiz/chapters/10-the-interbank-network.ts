@@ -61,12 +61,12 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch10-q4",
       difficulty: "intro",
-      concept: "account-type-liability",
+      concept: "account-type-asset",
       prompt:
-        "From the central bank's perspective, the reserves it holds for Bank A are a liability.",
+        "When Bank A deposits reserves at the central bank, it is Bank A — not the central bank — that records those reserves as an asset on its own books.",
       answer: true,
       explanation:
-        "Reserves a bank parks at the central bank are, in effect, the bank's deposit at the central bank. A deposit is always an [[account-type-liability]] of the institution holding it — the central bank owes those reserves back to Bank A on demand.",
+        "The deposit creates a mirror pair: Bank A records 'Reserve at Central Bank' as an [[account-type-asset]] — its claim on the central bank. The central bank simultaneously records a liability ('Reserve: Bank A') — what it owes back to Bank A. Both ledgers capture the same pile of reserves, but as opposite account types.",
       explore: { label: "View central bank reserves", href: "/central-bank" },
     },
     {

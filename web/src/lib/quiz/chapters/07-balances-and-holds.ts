@@ -38,6 +38,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch7-q3",
       difficulty: "intro",
+      concept: "balance-available",
       prompt:
         "Which formula correctly expresses the available balance, ignoring any overdraft facility?",
       options: [
@@ -119,7 +120,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch7-q8",
       difficulty: "core",
-      concept: "balance-available",
+      concept: "balance-holds",
       prompt:
         "When an ATM or point-of-sale terminal decides whether to approve a transaction, which balance does it check?",
       options: [
@@ -136,11 +137,12 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch7-q9",
       difficulty: "core",
-      concept: "balance-book",
-      prompt: "Placing a hold on an account reduces the book (ledger) balance immediately.",
-      answer: false,
+      concept: "value-date",
+      prompt:
+        "The value-date balance can sometimes be higher than the book balance.",
+      answer: true,
       explanation:
-        "The [[balance-book]] is computed from posted ledger entries only. Because a [[holds|hold]] is an off-ledger reservation — not a posting — the book balance is completely unaffected when a hold is placed. Only the [[balance-available|available balance]] drops.",
+        "The [[value-date]] balance includes only transactions whose value date has already passed. A back-dated correction — one booked today but assigned a past value date — increases the value-date balance without yet changing the [[balance-book|book balance]]. In that case the value-date balance sits *above* the book balance, the opposite of the more common forward-dated scenario.",
     },
     {
       kind: "mc",
@@ -241,7 +243,7 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "overdraft",
       prompt:
-        "An account has a book balance of $1,000, two active holds of $150 and $75, and an arranged overdraft limit of $200. What is the available balance in dollars?",
+        "An account has a book balance of $1,000, two active holds of $150 and $75, and an arranged overdraft limit of $200. Using the full available-balance formula including an arranged overdraft facility, what is the available balance in dollars?",
       answer: 975,
       unit: "dollars",
       tolerance: 0,
@@ -287,7 +289,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch7-q19",
       difficulty: "challenge",
-      concept: "balance-holds",
+      concept: "double-entry",
       prompt:
         "The chapter describes holds as 'off-ledger' reservations. What is the most significant consequence of this design for accounting integrity?",
       options: [

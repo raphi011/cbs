@@ -136,12 +136,12 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch3-q9",
       difficulty: "core",
-      concept: "normal-balance",
+      concept: "account-type-asset",
       prompt:
-        "When a bank records cash received from any source, it debits its Cash account. This debit increases Cash because Cash is an asset with a debit normal balance.",
+        "When a bank issues a $200,000 mortgage, the Loans Receivable account is debited to record the new asset. If the borrower later repays $50,000, Loans Receivable is credited to decrease it.",
       answer: true,
       explanation:
-        "Assets have a **debit [[normal-balance]]**: a debit increases the balance, a credit decreases it. Receiving cash means the bank holds more of a valuable asset, so it records a debit to the Cash account. This is the mirror of the credit normal balance for liability accounts — the two sides of the normal-balance table always move in opposite directions.",
+        "Loans Receivable is an [[account-type-asset]] with a debit normal balance: it increases on debits (new loans issued) and decreases on credits (repayments received). Issuing the mortgage is a debit to Loans Receivable / credit to Cash — converting one asset into another. A repayment reverses the direction: credit to Loans Receivable, debit to Cash.",
     },
     {
       kind: "mc",
@@ -181,6 +181,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch3-q12",
       difficulty: "core",
+      concept: "account-type-liability",
       prompt:
         "A bank pays $10 monthly interest to a saver. Which pair of entries correctly records this transaction?",
       options: [
@@ -197,17 +198,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch3-q13",
       difficulty: "core",
+      concept: "account-type-equity",
       prompt:
-        "The balance sheet and income statement report different sets of account types. Which two account types appear on the income statement but are NOT carried forward on the year-end balance sheet?",
+        "At the start of a new fiscal year, which of the following accounts opens with the same closing balance it carried on December 31 of the prior year?",
       options: [
-        "Assets and Liabilities",
-        "Equity and Assets",
-        "Revenue and Expenses",
-        "Liabilities and Equity",
+        "Retained Earnings — a permanent equity account that accumulates over the bank's lifetime",
+        "Interest Income — a revenue account reset to zero after year-end closing",
+        "Salaries Expense — an expense account reset to zero after year-end closing",
+        "Net Income — a derived figure calculated fresh each period from revenue and expenses",
       ],
-      answer: 2,
+      answer: 0,
       explanation:
-        "Revenue and Expense accounts are **temporary** — they measure activity over a period and feed the income statement. At year-end they are closed (zeroed out) and their net result rolls into retained earnings on the **balance sheet**. Assets, Liabilities, and Equity are **permanent** accounts that carry their balances forward year after year.",
+        "Retained Earnings is a permanent [[account-type-equity]] account — it carries its balance forward indefinitely, growing with each year's profit and shrinking with dividends paid. Revenue (Interest Income) and Expense (Salaries Expense) accounts are temporary: after closing entries move their net balance into Retained Earnings, both reset to zero so the new period starts with a clean slate.",
     },
     {
       kind: "numeric",
@@ -261,6 +263,7 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch3-q17",
       difficulty: "challenge",
+      concept: "normal-balance",
       prompt:
         "A bank records $200 of fee income by debiting a Fee Revenue account, because debiting increases that account's balance.",
       answer: false,
@@ -271,6 +274,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch3-q18",
       difficulty: "challenge",
+      concept: "account-type-equity",
       prompt:
         "A bank pays salaries of $5,000 in cash: 'Debit Salaries Expense $5,000 / Credit Cash $5,000.' What is the net long-term effect on the bank's equity?",
       options: [

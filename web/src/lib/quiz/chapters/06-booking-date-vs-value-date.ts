@@ -43,7 +43,7 @@ export const chapter: Chapter = {
       id: "ch6-q3",
       difficulty: "intro",
       prompt:
-        "For a simple cash deposit made in a branch, the booking date and value date always coincide.",
+        "For a simple cash deposit made in a branch, the booking date and value date coincide.",
       answer: true,
       explanation:
         "Cash deposits are the textbook case where the two dates are identical — funds are immediately available and interest begins the same moment they are recorded. Divergence arises only when clearing delays, settlement lags, or explicit back-dating is involved.",
@@ -81,16 +81,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "booking-date",
       prompt:
-        "A customer deposits a check on Monday (booking date). The bank sets the value date to Wednesday. What is true on Tuesday?",
+        "An operations team needs to produce an audit trail listing every transaction entered in the system during March. Which date field should they filter on?",
       options: [
-        "The customer can withdraw the funds because the booking has been processed",
-        "Interest has been accruing since Monday when the bank recorded the check",
-        "The funds are not yet available and no interest has accrued",
-        "The check is considered dishonored until the value date passes",
+        "Value date — because it governs when each transaction took economic effect",
+        "Booking date — because it records when each transaction was entered in the system",
+        "Either date — the two are always identical for audit purposes",
+        "Settlement date — the date each transaction became irrevocable",
       ],
-      answer: 2,
+      answer: 1,
       explanation:
-        "Availability and interest both follow the [[value-date]] (Wednesday). On Tuesday the transaction carries a [[booking-date]] of Monday — it is recorded — but it has not yet taken economic effect.",
+        "Audit trails and operational reports are ordered by [[booking-date]] — the timestamp recording when the system captured each entry. The [[value-date]] governs interest accrual, fund availability, and period-end balance calculations, not system-entry ordering. Because the two dates can diverge by days or weeks (e.g. a standing order booked today but value-dated next month), filtering on value date would misclassify transactions that were entered in March but take economic effect later.",
     },
     {
       kind: "truefalse",
@@ -206,7 +206,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "A [[reversal]] must mirror the original transaction's [[value-date]] (February 3) so that interest accrued from February 3 onward is correctly unwound. Using February 10 as the value date would leave the account with incorrect interest for the intervening seven days.",
+        "A [[reversal]] must mirror the original transaction's [[value-date]] (February 3) so that interest accrued from February 3 onward is correctly unwound. This follows directly from the core [[value-date]] principle: because interest accrual is governed entirely by value date, restoring the ledger to its pre-error state requires the reversal to carry the same value date as the original entry — not the date the error was discovered. Using February 10 as the value date would leave the account with incorrect interest for the intervening seven days.",
     },
     {
       kind: "multi",
@@ -287,9 +287,9 @@ export const chapter: Chapter = {
         "They include forward-value-dated transactions not yet in economic effect",
         "They determine the opening balance for the following statement period",
       ],
-      answers: [0, 1, 3],
+      answers: [1, 2, 3],
       explanation:
-        "[[snapshot|End-of-day snapshots]] capture the value-date balance: only transactions whose [[value-date]] has passed. This makes them the authoritative basis for interest and for the opening and closing balances shown on customer statements. Forward-value-dated transactions appear in the [[balance-book]] but are not yet in the snapshot.",
+        "[[snapshot|End-of-day snapshots]] capture three balances at the close of each business day — [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]]. The book balance is computed from all posted transactions ordered by booking date, so it includes forward-value-dated entries not yet in economic effect (option 2). Snapshots are the authoritative basis for daily interest accrual (option 1) and provide the opening and closing figures used in customer statements (option 3). Option 0 is wrong: snapshots are not limited to value-date-passed transactions — the book balance they record follows booking dates and captures all posted entries regardless of value date.",
     },
     {
       kind: "numeric",

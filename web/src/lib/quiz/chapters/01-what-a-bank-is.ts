@@ -251,7 +251,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "The bank gains a loan receivable (a new [[account-type-asset]] +$10,000) and simultaneously creates a deposit for the borrower (a new [[account-type-liability]] +$10,000). Both sides of Assets = Liabilities + Equity expand equally; equity is unchanged. This is how banks extend credit: the loan and the matching deposit appear together on the balance sheet.",
+        "The bank gains a loan receivable (a new [[account-type-asset]] +$10,000) and books a matching deposit the borrower can spend (a new [[account-type-liability]] +$10,000). Both sides of Assets = Liabilities + Equity expand equally, so equity is unchanged.",
     },
     {
       kind: "multi",

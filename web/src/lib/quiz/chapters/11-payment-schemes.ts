@@ -48,10 +48,10 @@ export const chapter: Chapter = {
       difficulty: "intro",
       concept: "requires-mandate",
       prompt:
-        "A pull payment scheme requires the payer to have signed a standing authorization (a mandate) before the payee's bank may collect funds.",
+        "In a pull scheme like SEPA Direct Debit, the payer must have signed a standing authorization (a mandate) before the payee's bank may collect funds.",
       answer: true,
       explanation:
-        "Because a pull scheme lets the payee's bank initiate a debit on the payer's account, [[requires-mandate]] schemes demand that the payer pre-authorize the relationship. Without an active [[mandate]], the payment is rejected before it ever reaches the clearing step.",
+        "Some pull schemes — including SEPA Direct Debit — make [[requires-mandate]] a hard rule: the payer must pre-authorize the relationship before the payee's bank may initiate a debit. Without an active mandate, the scheme rejects the payment before it ever reaches the clearing step.",
     },
     {
       kind: "mc",
@@ -278,7 +278,7 @@ export const chapter: Chapter = {
       options: [
         "The payment proceeds but is flagged for manual review",
         "The payment is rejected before the debtor leg is posted",
-        "The payment settles, but the customer can return it within 8 weeks",
+        "The payment settles, but the customer can demand a return",
         "The payment clears normally because the bank can waive the mandate requirement",
       ],
       answer: 1,
@@ -308,14 +308,15 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch11-q20",
       difficulty: "challenge",
-      concept: "netting",
+      concept: "settlement-model-gross",
       prompt:
-        "Bank A sends Bank C $150 and receives $80 from Bank C in one clearing cycle. How many dollars of reserves move between them at settlement?",
-      answer: 70,
+        "Bank A sends Bank B $300 and Bank B sends Bank A $100 in one clearing cycle. How many dollars of reserves would move if these payments settled gross (individually) instead of net?",
+      answer: 400,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[netting]] computes Bank A's net position against Bank C: $150 outgoing − $80 incoming = **$70 net outflow**. Only $70 of central-bank reserves moves from Bank A's reserve account to Bank C's. The two net positions sum to zero: Bank A is −$70, Bank C is +$70.",
+        "Under [[settlement-model-gross]] every payment settles individually: $300 moves one way and $100 moves the other — **$400** of reserves in total. Netting collapses this to just $200, which is exactly why clearing exists as a step before settlement: it converts a large gross flow into a small net one.",
+      explore: { label: "See settlement cycles", href: "/cycles" },
     },
   ],
 };

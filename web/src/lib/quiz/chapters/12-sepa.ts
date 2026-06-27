@@ -55,7 +55,7 @@ export const chapter: Chapter = {
       ],
       answer: 3,
       explanation:
-        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. `pain.001` is a customer-to-bank initiation message; `camt.054` is a bank-to-customer notification, not an interbank instruction.",
+        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. The other two options are distractors; the model identifies only `pacs.008` (SCT) and `pacs.003` (SDD) as the SEPA interbank messages.",
     },
     {
       kind: "mc",
@@ -137,7 +137,7 @@ export const chapter: Chapter = {
       options: [
         "In 'Cleared', the creditor leg has posted; in 'Settled', the debtor leg has also posted",
         "In 'Cleared', net positions are computed but no central-bank reserves have moved; in 'Settled', reserves have moved and the creditor leg has posted",
-        "In 'Cleared', the payment is final and irrevocable; in 'Settled', it can still be returned",
+        "In 'Cleared', the payment is final and irrevocable; in 'Settled', the creditor leg is still pending",
         "In 'Cleared', both banks have confirmed receipt; in 'Settled', the central bank has confirmed",
       ],
       answer: 1,
@@ -286,12 +286,12 @@ export const chapter: Chapter = {
       difficulty: "intro",
       concept: "debtor-leg",
       prompt:
-        "Alice initiates a $75 SEPA Credit Transfer to Bob. The debtor leg posts at initiation. By how many dollars does Alice's book balance decrease? (Enter a number.)",
+        "Alice initiates a €75 SEPA Credit Transfer to Bob. The debtor leg posts at initiation. By how many euros does Alice's book balance decrease? (Enter a number.)",
       answer: 75,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "The [[debtor-leg]] at initiation debits Alice's deposit account (a Liability) by **$75**, reducing her book balance immediately, while crediting the bank's clearing suspense. The full $75 leaves Alice's balance at initiation — before clearing or settlement occur.",
+        "The [[debtor-leg]] at initiation debits Alice's deposit account (a Liability) by **€75**, reducing her book balance immediately, while crediting the bank's clearing suspense. The full €75 leaves Alice's balance at initiation — before clearing or settlement occur.",
     },
     {
       kind: "numeric",

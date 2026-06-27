@@ -140,6 +140,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch8-q9",
       difficulty: "challenge",
+      concept: "balance-available",
       prompt:
         "An account has a book balance of −$400, an arranged overdraft limit of $500, and no active holds. A $200 debit arrives. There is no unarranged overdraft coverage. What is the outcome?",
       options: [
@@ -195,12 +196,12 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch8-q13",
       difficulty: "core",
-      concept: "account-type-asset",
+      concept: "double-entry",
       prompt:
-        "When a deposit account is overdrawn, the outstanding negative balance appears on the bank's balance sheet as an asset.",
+        "From a pure accounting standpoint, an overdraft debit on a deposit account requires a matching credit entry somewhere else in the ledger — the same rule that governs every other posting.",
       answer: true,
       explanation:
-        "A deposit is normally a liability — the bank owes the customer. An overdrawn account inverts that relationship: the customer now owes the bank, making the outstanding balance a receivable — an [[account-type-asset]]. The bank has effectively extended a short-term loan and holds a claim against the customer.",
+        "[[double-entry]] is universal: every debit must be matched by an equal credit elsewhere. An overdraft debit to the deposit account — whether it leaves the balance positive or drives it negative — is always offset by a credit to another account (for example, the payment sent to a counterparty or funds released as cash). Going negative changes the economic relationship between customer and bank, but it does not relax the bookkeeping structure.",
     },
     {
       kind: "truefalse",

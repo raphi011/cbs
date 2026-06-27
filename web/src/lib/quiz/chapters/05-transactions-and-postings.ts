@@ -102,26 +102,27 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "idempotency-key",
       prompt:
-        "A payment request with idempotency key 'pay-xyz-001' is submitted and the transfer is posted successfully. The same request — identical key — is submitted again ten seconds later. What does the server do?",
+        "A developer builds a payment feature that sends two separate $50 transfers to the same recipient on behalf of a customer. The developer reuses the same idempotency key for both requests. What happens when the second request is submitted?",
       options: [
-        "Posts a second transfer and the customer is charged twice",
-        "Rejects the second submission and signals that this key was already used",
-        "Posts a reversal of the original transfer automatically",
-        "Silently discards the retry and returns a blank response",
+        "Both transfers are posted; idempotency deduplication only activates if the amounts and recipients are also identical",
+        "The server rejects the second request as a duplicate, even though it represents a genuinely new logical operation",
+        "The server merges the two requests into a single $100 transfer and posts it once",
+        "The second request is queued and processed after the first transfer is confirmed",
       ],
       answer: 1,
       explanation:
-        "[[idempotency-key]] deduplication: the server stores which keys it has processed. Seeing the same key again, it refuses to create a duplicate and signals that the key was already used — the client can then look up the original transaction by that key rather than guessing whether the first attempt succeeded.",
+        "An [[idempotency-key]] scopes deduplication to a *logical operation*, not to a specific amount or recipient. The server stores which keys it has already processed and refuses any repeat — regardless of whether the intent was genuinely different. Each distinct logical operation must carry a fresh, unique key; reusing a key is the signal that 'this is the same operation, not a new one.'",
     },
     {
       kind: "truefalse",
       id: "ch5-q8",
       difficulty: "core",
+      concept: "reversal",
       prompt:
-        "After a reversal transaction is posted, the original transaction is permanently removed from the ledger.",
-      answer: false,
+        "After a reversal transaction is posted, both the original transaction and the reversal remain permanently visible in the ledger.",
+      answer: true,
       explanation:
-        "The ledger is **append-only**. A reversal posts a *new* transaction that exactly offsets the original — it does not remove anything. The original remains visible, marked as 'reversed,' and the reversal carries a back-reference to it. Both transactions form a permanent, auditable record.",
+        "The ledger is **append-only** — nothing is ever removed. A [[reversal]] is a new transaction that offsets the original; the original is marked 'reversed' and the reversal carries a back-reference to it. Both records coexist permanently in the audit trail. The net economic effect is zero, but both entries remain visible to auditors, regulators, and investigators.",
     },
     {
       kind: "mc",
@@ -144,18 +145,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch5-q10",
       difficulty: "core",
-      concept: "reversal",
+      concept: "balance-book",
       prompt:
-        "A reversal transaction is posted to cancel a mistaken entry. Which statement correctly describes the relationship between the original and the reversal in the ledger?",
+        "A bookkeeper prepares a trial balance and finds total debits of $50,000 and total credits of $47,000. What does this indicate?",
       options: [
-        "The reversal replaces the original; the original record is deleted",
-        "Both transactions exist; the reversal carries a back-reference to the original, and the original is marked 'reversed'",
-        "The reversal and original are merged into a single net-zero transaction",
-        "The original is hidden from reporting but stored in a separate archive",
+        "The ledger is close enough to balance; a $3,000 rounding difference is acceptable in practice",
+        "There is a bookkeeping error somewhere — the double-entry invariant requires total debits to equal total credits exactly",
+        "The $3,000 shortfall represents transactions that are pending posting and will reconcile overnight",
+        "The trial balance is valid; debit-heavy accounts such as assets routinely create small imbalances",
       ],
       answer: 1,
       explanation:
-        "An immutable ledger never deletes or merges entries. A [[reversal]] is a new, independent transaction that references the transaction it undoes. The original is marked 'reversed' for reporting; the reversal shows the correction. Two true facts coexist in the record: the error happened, and it was later corrected.",
+        "A [[balance-book|trial balance]] is a self-checking tool: because every valid transaction has total debits equal total credits, the aggregate totals across all accounts must also be equal. A $3,000 mismatch proves a bookkeeping error exists somewhere — an amount was entered on the wrong side, a leg was omitted, or a transaction was partially posted. There is no acceptable imbalance; the invariant is absolute.",
     },
     {
       kind: "multi",

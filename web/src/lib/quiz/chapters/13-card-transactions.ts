@@ -46,12 +46,12 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch13-q3",
       difficulty: "intro",
-      concept: "scheme-direction-pull",
+      concept: "clearing-vs-settlement",
       prompt:
-        "In a card payment the merchant's acquirer initiates settlement by submitting the presentment claim to the issuer, making cards a pull scheme.",
-      answer: true,
+        "The card network (such as Visa or Mastercard) temporarily holds funds between the issuer and acquirer for the duration of the authorization-to-settlement window.",
+      answer: false,
       explanation:
-        "Cards are a [[scheme-direction-pull|pull scheme]]: the payee side (merchant through acquirer) submits the presentment to collect from the issuer. The payer (cardholder) does not push; the creditor side pulls the funds — the same initiation model as a direct debit.",
+        "The card network carries messages and computes net positions but **never holds funds**. It connects the issuer's side to the acquirer's side — money stays in the participants' bank accounts throughout. At the end of the [[clearing-vs-settlement|clearing cycle]], the network tells each bank its net position and the banks settle through reserve-account moves at the central bank.",
     },
     {
       kind: "mc",
@@ -161,18 +161,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch13-q11",
       difficulty: "core",
-      concept: "reversal",
+      concept: "balance-available",
       prompt:
-        "A cardholder disputes a settled card charge and the merchant agrees to give the money back. How does a card refund differ from a ledger reversal?",
+        "Which balance does an issuer examine when deciding whether to approve a card authorization?",
       options: [
-        "There is no difference — all credits back to a cardholder are called reversals",
-        "A refund is a new credit transaction flowing back through the network; a ledger reversal is an equal-and-opposite correction of an erroneous posting",
-        "A refund voids the original hold before capture; a reversal posts a new debit",
-        "A reversal returns money via the original debit path; a refund creates a new authorization hold",
+        "The book balance, which records every posted transaction",
+        "The available balance, which deducts active holds from the book balance",
+        "The clearing suspense balance, which tracks in-flight payments",
+        "The merchant's acquirer credit limit",
       ],
       answer: 1,
       explanation:
-        "A [[reversal]] corrects an erroneous ledger entry by posting a mirror-image transaction. A card refund is different: it is a new credit transaction initiated by the merchant/acquirer that flows back through the network, crediting the cardholder's account. The original capture remains on the ledger; both the original charge and the refund credit appear as separate entries.",
+        "The issuer checks the [[balance-available|available balance]] — not the book balance — before approving a card authorization. The available balance already deducts all active holds, so a cardholder cannot spend funds that are reserved by another pending authorization. Only if the available balance is sufficient does the issuer approve and place a new hold.",
     },
     {
       kind: "multi",
@@ -262,14 +262,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch13-q17",
       difficulty: "challenge",
-      concept: "balance-available",
+      concept: "hold-release",
       prompt:
-        "An account has a book balance of $1,000 and an existing hold of $400. A new card authorization for $350 is approved. How many dollars of available balance remain after this authorization? (Enter a number of dollars.)",
-      answer: 250,
+        "An account has a book balance of $800 and an existing $100 authorization hold from an earlier transaction. A petrol pump pre-authorizes $150. The customer pumps $120 of fuel; the $120 is captured and the excess hold released. How many dollars of available balance does the account have immediately after the capture? (Enter a number of dollars.)",
+      answer: 580,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[balance-available]] = book balance − all active holds = $1,000 − $400 (existing) − $350 (new) = **$250**. The $350 authorization is approved because $250 ≥ 0. Both holds remain off-ledger; the [[balance-book|book balance]] is still $1,000.",
+        "Before capture: available = $800 book − $100 existing hold − $150 pump hold = **$550**. At capture, the $120 is posted (book falls to $680) and the full $150 pump hold is [[hold-release|released]] — only the $100 existing hold remains. Available = $680 − $100 = **$580**. The $30 excess reservation disappears without a ledger trace.",
     },
     {
       kind: "multi",
@@ -304,18 +304,18 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "[[settlement-delay]] for card transactions is typically T+1 to T+2 — the merchant's bank receives funds one to two business days after the sale. This gap exists because captured items net across a clearing cycle before the interbank settlement move is made at the central bank. The cardholder sees an immediate hold at authorization, then a posted debit after settlement.",
+        "[[settlement-delay]] for card transactions is typically T+1 to T+2 — the merchant's bank receives funds one to two business days after the sale. This gap exists because captured items net across a clearing cycle before the interbank settlement move is made at the central bank. The cardholder sees an immediate hold at authorization, then a posted debit after capture (presentment).",
     },
     {
       kind: "truefalse",
       id: "ch13-q20",
       difficulty: "challenge",
-      concept: "reversal",
+      concept: "clearing-vs-settlement",
       prompt:
-        "When a cardholder receives a refund on a settled card purchase, the original capture posting is reversed and removed from the ledger.",
+        "After card transactions are captured, the card network settles each transaction individually in real time — unlike SEPA, which nets positions across a clearing cycle.",
       answer: false,
       explanation:
-        "Ledger postings are immutable — they are never deleted or removed. A [[reversal]] posts a new, equal-and-opposite transaction to correct an *error*. A card refund is different: it is a new credit transaction initiated by the merchant/acquirer, flowing back through the network to credit the cardholder. Both the original debit and the refund credit appear as separate entries on the ledger.",
+        "Card settlement works the same way as SEPA: the network [[clearing-vs-settlement|computes each bank's net position]] across a clearing cycle and settles the net. Individual card transactions are not settled gross in real time. The clearing-suspense entries from captured transactions drain or fill through the same reserve-movement machinery Chapters 9–11 describe — cards reuse the existing rails rather than inventing new ones.",
     },
   ],
 };

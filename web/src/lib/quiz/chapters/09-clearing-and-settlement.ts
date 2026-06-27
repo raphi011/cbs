@@ -108,13 +108,13 @@ export const chapter: Chapter = {
         "What are nostro/vostro accounts used for in the context of interbank settlement?",
       options: [
         "Holding customer deposits at partner banks",
-        "Tracking net positions and reconciling interbank obligations",
+        "Post-settlement reconciliation — confirming what each bank expected to receive matches what actually arrived",
         "Earning interest on excess reserves at the central bank",
         "Storing failed payment instructions for retry",
       ],
       answer: 1,
       explanation:
-        "Nostro/vostro accounts are mirror accounts that two banks maintain with each other. They allow each bank to track [[net-positions]] and reconcile exactly what one bank owes the other — essential for the post-clearing [[clearing-vs-settlement|settlement]] step.",
+        "Nostro/vostro accounts are mirror accounts that two banks maintain with each other. After [[clearing-vs-settlement|settlement]] completes, each bank checks that what it expected to receive matches what actually arrived — any discrepancy is investigated and resolved. These accounts are a post-settlement reconciliation tool, not the mechanism that computes [[net-positions]].",
       explore: { label: "View settlements", href: "/settlements" },
     },
     {
@@ -167,14 +167,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch9-q11",
       difficulty: "core",
-      concept: "netting",
+      concept: "net-positions",
       prompt:
-        "In a clearing cycle, Bank A pays Bank B $30,000 and Bank B pays Bank A $10,000. By how many dollars does Bank A's reserve account at the central bank decrease at settlement? (Enter a number of dollars.)",
-      answer: 20000,
+        "Three banks settle together. Bank A's net position is −$40,000 and Bank B's net position is +$25,000. Using the zero-sum property of net settlement, what is Bank C's net position in dollars? (Positive means Bank C is a net receiver; enter a positive number if Bank C receives net.)",
+      answer: 15000,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[netting]] offsets the two obligations: Bank A owes $30,000 but is owed $10,000, so the net is $20,000 owed by Bank A to Bank B. Only **$20,000** of [[central-bank-reserves]] moves at settlement — not the $40,000 gross total. [[net-positions]] always sum to zero across all participants.",
+        "[[net-positions]] across all participants in a clearing cycle always sum to zero — every dollar sent by a net payer is received by a net receiver. Bank A (−$40,000) + Bank B (+$25,000) + Bank C = $0, so Bank C = **+$15,000**. Bank C's [[reserve-account]] at the central bank rises by $15,000 at settlement.",
     },
     {
       kind: "truefalse",

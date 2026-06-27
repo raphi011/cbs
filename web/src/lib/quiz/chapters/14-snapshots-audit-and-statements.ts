@@ -136,7 +136,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "The February [[statement]] lists transactions by booking date. This posting was booked January 31, so it does not appear in February's listing. However, its [[value-date]] is February 1, which makes it economically real in February — so it is reflected in the February opening balance (which equals the January 31 end-of-day value-date snapshot).",
+        "The February [[statement]] lists transactions by booking date. This posting was booked January 31, so it does not appear in February's listing. However, its [[value-date]] is February 1, which makes it economically real in February — so it is reflected in the February opening balance. (The January 31 end-of-day snapshot captures only value dates ≤ January 31; this February 1-valued posting falls outside that snapshot and lands in the February 1 daily balance, which is the effective opening of the February period.)",
     },
     {
       kind: "mc",
@@ -174,16 +174,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "booking-date",
       prompt:
-        "Why does a bank statement's transaction listing use booking date rather than value date?",
+        "A salary credit arrives at the bank with a booking date of April 30 and a value date of May 1. On which statement does this credit appear in the transaction listing, and what is the effect on the April closing balance?",
       options: [
-        "Value date is only relevant for regulatory reporting, not customer communications",
-        "Booking date is when the customer recognizes having performed the transaction — it matches lived experience",
-        "Booking date and value date are always the same, so the choice is arbitrary",
-        "Value-date ordering would require including transactions from outside the statement period",
+        "April listing — and it increases the April closing balance",
+        "April listing — but it does NOT affect the April closing balance",
+        "May listing — and it increases the May opening balance instead",
+        "Neither listing — cross-month transactions require manual reconciliation",
       ],
       answer: 1,
       explanation:
-        "[[booking-date]] is the date the entry appears in the ledger — the date a customer associates with making a payment or receiving funds. Using booking date makes the listing match what the customer experienced. Balances, however, use value date for economic and regulatory accuracy, which is why the two may not reconcile.",
+        "The [[booking-date]] (April 30) determines which period's listing includes this transaction — it appears in April. The [[value-date]] (May 1) determines economic effect — the credit becomes real in May, so it does not affect April's closing balance. Instead it contributes to the May opening balance. This is why a statement's transaction listing and its opening-to-closing balance change can diverge.",
     },
     {
       kind: "truefalse",

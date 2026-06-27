@@ -62,7 +62,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "normal-balance",
       prompt:
-        "Which of the five account types increases with a DEBIT entry?",
+        "Which of the following account types increases with a DEBIT entry?",
       options: [
         "Asset",
         "Liability",
@@ -236,7 +236,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "account-type-expense",
       prompt:
-        "The bank records $400 in staff salaries. Which TWO statements correctly describe this transaction? (Select all that apply.)",
+        "The bank pays $400 in staff salaries in cash. Which TWO statements correctly describe this transaction? (Select all that apply.)",
       options: [
         "The Salary Expense account is debited",
         "The Cash account is credited",
