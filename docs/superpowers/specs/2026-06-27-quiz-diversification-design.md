@@ -1,7 +1,7 @@
 # Quiz Diversification — Design
 
 **Date:** 2026-06-27
-**Status:** Pending approval (design); pending implementation plan
+**Status:** Implemented 2026-06-27 (committed on main, 4cd8f9e..d6abc45)
 
 ## Goal
 
