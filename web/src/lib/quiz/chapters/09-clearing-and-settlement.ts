@@ -122,8 +122,7 @@ export const chapter: Chapter = {
       id: "ch9-q8",
       difficulty: "core",
       concept: "settlement-delay",
-      prompt:
-        "Which payment type achieves settlement at T+0 (same day)?",
+      prompt: "Which payment type achieves settlement at T+0 (same day)?",
       options: [
         "Check",
         "ACH / direct debit",
@@ -163,6 +162,157 @@ export const chapter: Chapter = {
       explanation:
         "During the [[settlement-delay|settlement window]], the payment instruction has been sent but reserves have not yet moved. If the sending bank fails or the instruction is recalled (where permitted), the receiving bank may not receive the funds even though it has already credited its customer. This exposure is counterparty risk — eliminated only at [[clearing-vs-settlement|settlement]] finality.",
       explore: { label: "View settlements", href: "/settlements" },
+    },
+    {
+      kind: "numeric",
+      id: "ch9-q11",
+      difficulty: "core",
+      concept: "netting",
+      prompt:
+        "In a clearing cycle, Bank A pays Bank B $30,000 and Bank B pays Bank A $10,000. By how many dollars does Bank A's reserve account at the central bank decrease at settlement? (Enter a number of dollars.)",
+      answer: 20000,
+      unit: "dollars",
+      tolerance: 0,
+      explanation:
+        "[[netting]] offsets the two obligations: Bank A owes $30,000 but is owed $10,000, so the net is $20,000 owed by Bank A to Bank B. Only **$20,000** of [[central-bank-reserves]] moves at settlement — not the $40,000 gross total. [[net-positions]] always sum to zero across all participants.",
+    },
+    {
+      kind: "truefalse",
+      id: "ch9-q12",
+      difficulty: "intro",
+      concept: "clearing-suspense",
+      prompt:
+        "When a bank initiates a payment, the customer's account is debited and an equal amount is credited to a clearing suspense account to hold the funds in transit.",
+      answer: true,
+      explanation:
+        "At initiation the posting is: Debit the customer's deposit account (liability falls) and Credit [[clearing-suspense]] (liability rises). The suspense account holds in-transit funds on the network's behalf. At settlement the suspense is cleared — its balance returns to zero as reserves move and the payee is credited.",
+    },
+    {
+      kind: "mc",
+      id: "ch9-q13",
+      difficulty: "intro",
+      concept: "reserve-account",
+      prompt:
+        "In the multi-bank payment model, where does interbank settlement actually occur?",
+      options: [
+        "At each sending bank's internal general ledger",
+        "At the central bank, via each bank's reserve account",
+        "At a shared clearing house that holds funds independently of the central bank",
+        "Directly between the two banks' nostro/vostro accounts, with no central bank involved",
+      ],
+      answer: 1,
+      explanation:
+        "Each commercial bank holds a [[reserve-account]] at the central bank. Settlement moves reserves from the paying bank's account to the receiving bank's account — the only way two institutions can transfer value without either writing in the other's books. The central bank's ledger is the single authoritative record.",
+      explore: { label: "View central bank", href: "/central-bank" },
+    },
+    {
+      kind: "mc",
+      id: "ch9-q14",
+      difficulty: "core",
+      concept: "settlement-model-net",
+      prompt:
+        "Which correctly describes how net settlement differs from gross settlement?",
+      options: [
+        "Net settlement settles each payment instantly; gross settlement batches them end-of-day",
+        "Net settlement accumulates payments across a cycle and settles only the net difference; gross settlement settles each payment individually and immediately",
+        "Net settlement requires no central bank involvement; gross settlement uses the central bank",
+        "Net settlement is only used for real-time payments; gross settlement is only for ACH",
+      ],
+      answer: 1,
+      explanation:
+        "In [[settlement-model-net|net settlement]], a clearing cycle accumulates all payments, computes net positions at cut-off, and only the net balance moves as central-bank reserves. In [[settlement-model-gross|gross settlement]], each payment triggers an immediate, individual reserve transfer with no netting. Net settlement dramatically reduces the total liquidity each bank needs on hand.",
+    },
+    {
+      kind: "mc",
+      id: "ch9-q15",
+      difficulty: "challenge",
+      concept: "settlement-model-gross",
+      prompt:
+        "UK Faster Payments delivers funds to customers in seconds, 24/7. Which settlement model does it use?",
+      options: [
+        "Gross (RTGS) settlement — because the customer experience is instant",
+        "Deferred net settlement — despite the instant customer experience, payments batch and net before reserves move",
+        "Real-time gross settlement identical to Fedwire",
+        "Clearing without settlement — no reserves move at all",
+      ],
+      answer: 1,
+      explanation:
+        "Customer-perceived speed and the underlying [[settlement-model-gross|settlement model]] are independent. UK Faster Payments feels instant but actually settles on a deferred [[settlement-model-net|net]] basis — it is not a gross-settlement example. True [[settlement-model-gross|gross settlement]] means each payment *individually* moves central-bank reserves, as with Fedwire (US) or CHAPS (UK) for high-value wires.",
+    },
+    {
+      kind: "multi",
+      id: "ch9-q16",
+      difficulty: "core",
+      concept: "clearing-suspense",
+      prompt:
+        "Which of the following correctly describe the clearing suspense account that each bank maintains? (Select all that apply.)",
+      options: [
+        "It is a liability account on the bank's books",
+        "It holds in-transit funds after the customer is debited, until settlement moves reserves",
+        "Its balance returns to zero after each settlement cycle completes",
+        "It holds the bank's reserve balances at the central bank",
+      ],
+      answers: [0, 1, 2],
+      explanation:
+        "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. At settlement, the suspense is unwound: the bank's reserve-at-central-bank asset adjusts, and the suspense balance returns to zero. Option D describes a [[reserve-account]], not a suspense account.",
+      explore: { label: "View settlements", href: "/settlements" },
+    },
+    {
+      kind: "truefalse",
+      id: "ch9-q17",
+      difficulty: "core",
+      concept: "settlement-model-net",
+      prompt:
+        "Both SEPA Credit Transfer and SEPA Direct Debit use the net settlement model in this system.",
+      answer: true,
+      explanation:
+        "Both schemes implement [[settlement-model-net|net settlement]]: payments accumulate during a clearing cycle, net positions are computed at cut-off, and only the net balances settle through reserve movements at the central bank. The direction of initiation differs (push vs pull, mandate required for direct debit), but both schemes settle on the same net basis.",
+      explore: { label: "View schemes", href: "/schemes" },
+    },
+    {
+      kind: "numeric",
+      id: "ch9-q18",
+      difficulty: "challenge",
+      concept: "net-positions",
+      prompt:
+        "In a clearing cycle: Bank A pays Bank B $45,000; Bank B pays Bank A $15,000; Bank B pays Bank C $10,000; Bank C pays Bank A $5,000. What is Bank B's net position in dollars? (Positive means Bank B receives net; enter a positive number if Bank B is a net receiver.)",
+      answer: 20000,
+      unit: "dollars",
+      tolerance: 0,
+      explanation:
+        "Bank B's [[net-positions|net position]] = inflows − outflows = $45,000 − ($15,000 + $10,000) = **+$20,000**. Bank B is a net receiver: its reserve account at the central bank rises by $20,000 at settlement. As a sanity check: Bank A's net is −$25,000, Bank C's is +$5,000; all three sum to zero — the defining property of net positions.",
+    },
+    {
+      kind: "multi",
+      id: "ch9-q19",
+      difficulty: "challenge",
+      concept: "payment-lifecycle",
+      prompt:
+        "Which of the following events happen at the settlement step — not at initiation or clearing? (Select all that apply.)",
+      options: [
+        "The payer's deposit account is debited",
+        "Central-bank reserves move from the paying bank to the receiving bank",
+        "Net positions across participants are computed",
+        "The payee's deposit account is credited (creditor leg posted)",
+        "The payment becomes final and irrevocable",
+      ],
+      answers: [1, 3, 4],
+      explanation:
+        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, the creditor leg delivers funds to the payee, and finality is achieved — the payment can no longer be unwound. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.",
+      explore: { label: "View settlements", href: "/settlements" },
+    },
+    {
+      kind: "numeric",
+      id: "ch9-q20",
+      difficulty: "core",
+      concept: "central-bank-reserves",
+      prompt:
+        "Bank A initiates $80,000 in outbound payments and receives $30,000 in inbound payments during a clearing cycle. After netting, how many dollars of central-bank reserves does Bank A transfer at settlement? (Enter a number of dollars.)",
+      answer: 50000,
+      unit: "dollars",
+      tolerance: 0,
+      explanation:
+        "Bank A's net outflow = $80,000 − $30,000 = **$50,000**. Under [[settlement-model-net|net settlement]], only this net amount moves as [[central-bank-reserves]] — not the $110,000 gross total. This is why netting dramatically reduces the liquidity each participant must hold to cover a full cycle.",
     },
   ],
 };
