@@ -287,9 +287,9 @@ export const chapter: Chapter = {
         "They include forward-value-dated transactions not yet in economic effect",
         "They determine the opening balance for the following statement period",
       ],
-      answers: [1, 2, 3],
+      answers: [0, 1, 3],
       explanation:
-        "[[snapshot|End-of-day snapshots]] capture three balances at the close of each business day — [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]]. The book balance is computed from all posted transactions ordered by booking date, so it includes forward-value-dated entries not yet in economic effect (option 2). Snapshots are the authoritative basis for daily interest accrual (option 1) and provide the opening and closing figures used in customer statements (option 3). Option 0 is wrong: snapshots are not limited to value-date-passed transactions — the book balance they record follows booking dates and captures all posted entries regardless of value date.",
+        "[[snapshot|End-of-day snapshots]] record an account's [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]] balances on a **value-date** basis — the economically real position (option 0). That is why they are the authoritative basis for daily interest accrual (option 1) and supply the opening/closing figures for the next statement period (option 3). Option 2 is wrong: precisely because the snapshot uses the value-date balance, a forward-value-dated transaction is *excluded* until its value date arrives and it becomes economically effective.",
     },
     {
       kind: "numeric",

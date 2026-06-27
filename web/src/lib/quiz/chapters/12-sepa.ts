@@ -297,14 +297,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch12-q19",
       difficulty: "core",
-      concept: "clearing-vs-settlement",
+      concept: "settlement-delay",
       prompt:
-        "In one clearing cycle: Bank A sends $40 to Bank B, and Bank B sends $15 to Bank A. How many dollars of central-bank reserves actually move at settlement? (Enter a number.)",
-      answer: 25,
+        "A bank initiates a €60 SEPA Credit Transfer (SCT) and a €40 SEPA Direct Debit (SDD) collection, both at T=0. SCT settles at T+1 and SDD settles at T+2. How many euros of interbank reserves have settled by the end of T+1?",
+      answer: 60,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[clearing-vs-settlement]] — netting is the whole point of clearing. Bank A's net = −$40 + $15 = −$25; Bank B's net = +$40 − $15 = +$25. Only **$25** of central-bank reserves transfers at settlement, not the gross $55. Net positions always sum to zero, which is exactly why the settlement transaction itself balances.",
+        "[[settlement-delay]] — each SEPA scheme has its own settlement schedule. The SCT (a push) settles at T+1: **€60** of reserves move between banks by end of T+1. The SDD (a pull) doesn't settle until T+2, so its €40 has not yet moved. By T+1, only **€60** of interbank reserves have settled.",
     },
     {
       kind: "numeric",

@@ -105,12 +105,12 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "netting",
       prompt:
-        "In one clearing cycle, Bank A sends Bank B $300 and Bank B sends Bank A $100. How many dollars of central-bank reserves actually move at settlement?",
-      answer: 200,
+        "In one clearing cycle, Bank A submits 4 outgoing payments of $75 each to Bank B, and Bank B submits 3 outgoing payments of $40 each to Bank A. How many dollars of central-bank reserves move at settlement?",
+      answer: 180,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[netting]] computes each bank's net position: Bank A net = −$300 + $100 = −$200; Bank B net = +$300 − $100 = +$200. Only **$200** of reserves transfers — not the $400 gross total. This is precisely why clearing exists as a step before settlement.",
+        "[[netting]] aggregates all payments before computing net positions. Bank A's gross outflow = 4 × $75 = $300; Bank A's gross inflow = 3 × $40 = $120; net[A] = −$300 + $120 = −$180. Bank B's net = +$180. Only **$180** of reserves transfers — netting collapses the $420 gross total into a single $180 net flow.",
       explore: { label: "See settlement cycles", href: "/cycles" },
     },
     {
