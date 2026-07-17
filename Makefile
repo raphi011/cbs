@@ -14,7 +14,6 @@ SHELL := /usr/bin/env bash
 WEB          := web
 APP_URL      ?= http://localhost:3000
 BACKEND_ADDR ?= :8080
-PDF_ENGINE   ?= tectonic
 
 # Pick the OS default-browser opener.
 UNAME := $(shell uname -s)
@@ -24,7 +23,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run dev book epub pdf clean
+.PHONY: help install build run dev clean
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -62,14 +61,5 @@ dev: install ## Run backend + frontend in watch mode, open browser
 	$(open_when_ready)
 	cd $(WEB) && npm run dev
 
-book: ## Build both book editions (EPUB + PDF) into book/
-	PDF_ENGINE="$(PDF_ENGINE)" ./book/build.sh all
-
-epub: ## Build the EPUB edition into book/
-	./book/build.sh epub
-
-pdf: ## Build the PDF edition into book/ (needs a LaTeX engine; see book/build.sh)
-	PDF_ENGINE="$(PDF_ENGINE)" ./book/build.sh pdf
-
-clean: ## Remove build outputs (keeps the committed book editions)
+clean: ## Remove build outputs
 	rm -rf bin $(WEB)/.next
