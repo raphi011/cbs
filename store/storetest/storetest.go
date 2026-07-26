@@ -131,16 +131,101 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "accounts listed for book-a", len(listed), 1)
 	})
 
+	t.Run("GetOnMissingRowsReturnsSentinels", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// A store that reports "not found" as anything other than the domain
+		// sentinel — a wrapped sql.ErrNoRows, say — turns every 404 in the API
+		// into a 500, and turns a typo'd account ID in PostTransaction into an
+		// internal error instead of ledger.ErrAccountNotFound.
+		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if err := tx.PutLedger(ctx, bookA, ledger.Ledger{ID: "ldg_1", Name: "GL", CreatedAt: early}); err != nil {
+				return err
+			}
+			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{ID: "100", LedgerID: "ldg_1", CreatedAt: early}); err != nil {
+				return err
+			}
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{ID: "200.100.001", SubledgerID: "100", Type: ledger.Liability, CreatedAt: early}); err != nil {
+				return err
+			}
+			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
+		})
+
+		// Unknown IDs, in a book that does have rows of every kind.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			_, err := tx.GetLedger(ctx, bookA, "ldg_nope")
+			assertErrorIs(t, "GetLedger on an unknown ledger", err, ledger.ErrLedgerNotFound)
+
+			_, err = tx.GetSubledger(ctx, bookA, "999")
+			assertErrorIs(t, "GetSubledger on an unknown subledger", err, ledger.ErrSubledgerNotFound)
+
+			_, err = tx.GetAccount(ctx, bookA, "999.999.999")
+			assertErrorIs(t, "GetAccount on an unknown account", err, ledger.ErrAccountNotFound)
+
+			_, err = tx.GetTransaction(ctx, bookA, "tx_nope")
+			assertErrorIs(t, "GetTransaction on an unknown transaction", err, ledger.ErrTransactionNotFound)
+
+			_, err = tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-nope")
+			assertErrorIs(t, "GetTransactionByIdempotencyKey on an unused key", err, ledger.ErrTransactionNotFound)
+			return nil
+		})
+
+		// The same IDs in another book are equally not found: a lookup that
+		// forgot to scope by book would return book-a's rows here.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			_, err := tx.GetLedger(ctx, bookB, "ldg_1")
+			assertErrorIs(t, "GetLedger across books", err, ledger.ErrLedgerNotFound)
+
+			_, err = tx.GetSubledger(ctx, bookB, "100")
+			assertErrorIs(t, "GetSubledger across books", err, ledger.ErrSubledgerNotFound)
+
+			_, err = tx.GetAccount(ctx, bookB, "200.100.001")
+			assertErrorIs(t, "GetAccount across books", err, ledger.ErrAccountNotFound)
+
+			_, err = tx.GetTransaction(ctx, bookB, "tx_1")
+			assertErrorIs(t, "GetTransaction across books", err, ledger.ErrTransactionNotFound)
+
+			_, err = tx.GetTransactionByIdempotencyKey(ctx, bookB, "key-1")
+			assertErrorIs(t, "GetTransactionByIdempotencyKey across books", err, ledger.ErrTransactionNotFound)
+			return nil
+		})
+
+		// And in an entirely empty book, where the tables hold nothing at all.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			_, err := tx.GetLedger(ctx, "book-empty", "ldg_1")
+			assertErrorIs(t, "GetLedger in an empty book", err, ledger.ErrLedgerNotFound)
+
+			_, err = tx.GetSubledger(ctx, "book-empty", "100")
+			assertErrorIs(t, "GetSubledger in an empty book", err, ledger.ErrSubledgerNotFound)
+
+			_, err = tx.GetAccount(ctx, "book-empty", "200.100.001")
+			assertErrorIs(t, "GetAccount in an empty book", err, ledger.ErrAccountNotFound)
+
+			_, err = tx.GetTransaction(ctx, "book-empty", "tx_1")
+			assertErrorIs(t, "GetTransaction in an empty book", err, ledger.ErrTransactionNotFound)
+
+			_, err = tx.GetTransactionByIdempotencyKey(ctx, "book-empty", "key-1")
+			assertErrorIs(t, "GetTransactionByIdempotencyKey in an empty book", err, ledger.ErrTransactionNotFound)
+			return nil
+		})
+	})
+
 	t.Run("ListOrderingIsCreatedAtThenID", func(t *testing.T) {
 		s := open(t, newStore)
 
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		late := early.Add(time.Hour)
 
-		// Inserted out of order, and two share a creation instant so the tie
-		// has to be broken by ID.
+		// Every listing is ordered by CreatedAt, ties broken by ID — all five
+		// of them, not just the first. Each fixture below is inserted out of
+		// order, contains a CreatedAt tie that only an ID comparison can
+		// break, and has the row created LAST sorting FIRST by ID, so an
+		// implementation that reaches for a plain ORDER BY id fails here rather
+		// than silently reordering a UI list between backends.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, l := range []ledger.Ledger{
+				{ID: "ldg_0", Name: "latecomer", CreatedAt: late.Add(time.Hour)},
 				{ID: "ldg_3", Name: "third", CreatedAt: late},
 				{ID: "ldg_2", Name: "second", CreatedAt: early},
 				{ID: "ldg_1", Name: "first", CreatedAt: early},
@@ -149,20 +234,94 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 					return err
 				}
 			}
+			// Blocks 100 and 200 are the earlier pair; block "050" is created
+			// last but sorts first by ID.
+			for _, sl := range []ledger.Subledger{
+				{ID: "050", LedgerID: "ldg_1", Name: "latecomer", CreatedAt: late},
+				{ID: "200", LedgerID: "ldg_1", Name: "second", CreatedAt: early},
+				{ID: "100", LedgerID: "ldg_1", Name: "first", CreatedAt: early},
+			} {
+				if err := tx.PutSubledger(ctx, bookA, sl); err != nil {
+					return err
+				}
+			}
+			// The chart-of-accounts trap: 100.200.001 sorts first by ID but was
+			// opened an hour after the two 200.100.xxx accounts.
+			for _, a := range []ledger.Account{
+				{ID: "100.200.001", SubledgerID: "200", Type: ledger.Asset, Name: "latecomer", CreatedAt: late},
+				{ID: "200.100.002", SubledgerID: "100", Type: ledger.Liability, Name: "second", CreatedAt: early},
+				{ID: "200.100.001", SubledgerID: "100", Type: ledger.Liability, Name: "first", CreatedAt: early},
+			} {
+				if err := tx.PutAccount(ctx, bookA, a); err != nil {
+					return err
+				}
+			}
+			// tx_1, tx_2 and tx_z tie on CreatedAt; tx_3 is later; tx_0 is
+			// latest of all yet sorts first by ID. Everything but tx_z touches
+			// the account, so the per-account listing carries the same ID trap
+			// as the full one rather than accidentally being in ID order.
+			for _, txn := range []ledger.Transaction{
+				{ID: "tx_0", Status: ledger.Posted, CreatedAt: late.Add(time.Hour), Entries: []ledger.Entry{
+					{ID: "ent_0", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				}},
+				{ID: "tx_3", Status: ledger.Posted, CreatedAt: late, Entries: []ledger.Entry{
+					{ID: "ent_3", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				}},
+				{ID: "tx_z", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_z", AccountID: "999.999.999", Amount: 100, Direction: ledger.Debit},
+				}},
+				{ID: "tx_2", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_2", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				}},
+				{ID: "tx_1", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_1", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				}},
+			} {
+				if err := tx.PutTransaction(ctx, bookA, txn); err != nil {
+					return err
+				}
+			}
 			return nil
 		})
 
-		var got []ledger.Ledger
+		var ledgers []ledger.Ledger
+		var subledgers []ledger.Subledger
+		var accounts []ledger.Account
+		var transactions, forAccount []ledger.Transaction
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ListLedgers(ctx, bookA)
+			if ledgers, err = tx.ListLedgers(ctx, bookA); err != nil {
+				return err
+			}
+			if subledgers, err = tx.ListSubledgers(ctx, bookA); err != nil {
+				return err
+			}
+			if accounts, err = tx.ListAccounts(ctx, bookA); err != nil {
+				return err
+			}
+			if transactions, err = tx.ListTransactions(ctx, bookA); err != nil {
+				return err
+			}
+			forAccount, err = tx.ListTransactionsForAccount(ctx, bookA, "200.100.001")
 			return err
 		})
 
-		assertEqual(t, "ledger count", len(got), 3)
-		assertEqual(t, "first", string(got[0].ID), "ldg_1")
-		assertEqual(t, "second", string(got[1].ID), "ldg_2")
-		assertEqual(t, "third", string(got[2].ID), "ldg_3")
+		assertOrder(t, "ListLedgers", ids(ledgers, func(l ledger.Ledger) string { return string(l.ID) }),
+			"ldg_1", "ldg_2", "ldg_3", "ldg_0")
+
+		assertOrder(t, "ListSubledgers", ids(subledgers, func(sl ledger.Subledger) string { return string(sl.ID) }),
+			"100", "200", "050")
+
+		assertOrder(t, "ListAccounts", ids(accounts, func(a ledger.Account) string { return string(a.ID) }),
+			"200.100.001", "200.100.002", "100.200.001")
+
+		assertOrder(t, "ListTransactions", ids(transactions, func(txn ledger.Transaction) string { return string(txn.ID) }),
+			"tx_1", "tx_2", "tx_z", "tx_3", "tx_0")
+
+		// The per-account listing is the same order, minus the transaction that
+		// never touches the account.
+		assertOrder(t, "ListTransactionsForAccount", ids(forAccount, func(txn ledger.Transaction) string { return string(txn.ID) }),
+			"tx_1", "tx_2", "tx_3", "tx_0")
 	})
 
 	t.Run("DuplicateIdempotencyKeyRejected", func(t *testing.T) {
@@ -666,6 +825,26 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 
 func sliceString[T any](s []T) string {
 	return fmt.Sprint(s)
+}
+
+// ids projects a listing down to the IDs its order is asserted on.
+func ids[T any](items []T, key func(T) string) []string {
+	out := make([]string, len(items))
+	for i, item := range items {
+		out[i] = key(item)
+	}
+	return out
+}
+
+// assertOrder checks a listing's contents and their order in one shot, so a
+// wrong order reports the whole sequence rather than the first mismatched slot.
+// It reports rather than fails, so one run names every listing that drifted
+// instead of stopping at the first.
+func assertOrder(t *testing.T, label string, got []string, want ...string) {
+	t.Helper()
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("%s order: got %v, want %v", label, got, want)
+	}
 }
 
 func assertEqual[T comparable](t *testing.T, label string, got, want T) {
