@@ -202,7 +202,7 @@ type AuditFilter struct {
 
 - [ ] **Step 2: Write the failing payload-immutability test**
 
-Create `ledger/audit_test.go`:
+Create `ledger/audit_test.go`. It is an **internal** test (`package ledger`, not `ledger_test`), so it can call the unexported `appendAudit` directly and mutate the entity afterwards. Do **not** add a public mutator to `Book` to make this testable — no production code needs one, and the guarantee is provable without it.
 
 ```go
 package ledger
@@ -213,41 +213,32 @@ import (
 )
 
 // The original audit log stored the live entity pointer in Payload, so mutating
-// the entity afterwards rewrote history. Payload must be a snapshot.
+// the entity afterwards rewrote history — an "immutable" log with mutable
+// entries. Payload must be a snapshot taken at append time.
 func TestAuditPayloadIsSnapshotNotReference(t *testing.T) {
 	book := NewBook()
-	gl, err := book.CreateLedger("GL")
-	assertNoError(t, err)
-	sl, err := book.CreateSubledger(gl.ID, "Deposits")
-	assertNoError(t, err)
-	acct, err := book.CreateAccount(sl.ID, "Alice", Liability)
-	assertNoError(t, err)
+	acct := &Account{ID: AccountID("200.100.001"), Name: "Alice", Type: Liability}
+
+	assertNoError(t, book.appendAudit(ScopeLedger, EventAccountCreated, string(acct.ID), acct))
+
+	// Mutate the entity AFTER the event was appended.
+	acct.Name = "Mutated"
 
 	events := book.GetAuditLogForEntity(string(acct.ID))
 	if len(events) != 1 {
 		t.Fatalf("got %d events for %s, want 1", len(events), acct.ID)
 	}
 
-	var before struct{ Name string }
-	assertNoError(t, json.Unmarshal(events[0].Payload, &before))
-	assertEqual(t, "payload name at append time", before.Name, "Alice")
-
-	// Rename the account, then re-read the same audit event.
-	assertNoError(t, book.RenameAccount(acct.ID, "Alice Renamed"))
-
-	events = book.GetAuditLogForEntity(string(acct.ID))
-	var after struct{ Name string }
-	assertNoError(t, json.Unmarshal(events[0].Payload, &after))
-	assertEqual(t, "payload name after mutation", after.Name, "Alice")
+	var got struct{ Name string }
+	assertNoError(t, json.Unmarshal(events[0].Payload, &got))
+	assertEqual(t, "payload name after mutating the entity", got.Name, "Alice")
 }
 ```
-
-Note: `RenameAccount` does not exist. If adding it is undesirable scope, mutate through the store in a later task instead — but for this task, add a minimal `func (s *Book) RenameAccount(id AccountID, name string) error` to `ledger/book.go` that takes the lock, looks up the account, sets `Name`, and returns `ErrAccountNotFound` when missing. It is three lines and it makes the immutability guarantee testable, which is the point.
 
 - [ ] **Step 3: Run the test to verify it fails**
 
 Run: `go test ./ledger/ -run TestAuditPayloadIsSnapshotNotReference -v`
-Expected: FAIL — either "undefined: RenameAccount", or once that exists, `payload name after mutation = "Alice Renamed", want "Alice"`.
+Expected: FAIL — `payload name after mutating the entity = "Mutated", want "Alice"`, because the restored `appendAudit` stores the pointer. (Until Step 4 lands, `appendAudit` has the old 3-argument signature and no error return, so the test will not compile — that also counts as red.)
 
 - [ ] **Step 4: Replace both `appendAudit` implementations**
 
