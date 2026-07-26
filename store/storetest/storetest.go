@@ -77,6 +77,98 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "book-b blocks", sliceString(gotB), "[100]")
 	})
 
+	t.Run("NextIDSharesOneCounterPerBook", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// ONE counter per book, shared by every prefix — not one counter per
+		// prefix. The number doubles as a creation order, which is why ldg_1,
+		// tx_2 and ent_3 interleave rather than each restarting at 1. A store
+		// that keyed its counter by (book, prefix) would still hand out unique
+		// IDs, so nothing else in this suite would notice.
+		var inA, inB []string
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for _, prefix := range []string{"ldg", "tx", "ent", "evt", "tx"} {
+				id, err := tx.NextID(ctx, bookA, prefix)
+				if err != nil {
+					return err
+				}
+				inA = append(inA, id)
+			}
+			// A second book numbers independently, from its own 1.
+			id, err := tx.NextID(ctx, bookB, "tx")
+			if err != nil {
+				return err
+			}
+			inB = append(inB, id)
+			return nil
+		})
+
+		assertEqual(t, "ids from one shared counter", sliceString(inA), "[ldg_1 tx_2 ent_3 evt_4 tx_5]")
+		assertEqual(t, "a second book starts again at 1", sliceString(inB), "[tx_1]")
+	})
+
+	t.Run("TransactionEntriesKeepTheirOrder", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// Transaction.Entries is an ordered slice, and the order is meaningful:
+		// it is the order the legs were written in, and it is what a settlement
+		// transaction's determinism rests on. A store that reconstructs entries
+		// from rows must therefore keep an explicit position — sorting by entry
+		// ID would look right until a counter crossed a power of ten, which is
+		// exactly what this fixture does.
+		want := []ledger.Entry{
+			{ID: "ent_10", AccountID: "100.100.001", Amount: 400, Direction: ledger.Debit},
+			{ID: "ent_8", AccountID: "200.100.001", Amount: 100, Direction: ledger.Credit},
+			{ID: "ent_20", AccountID: "200.100.002", Amount: 250, Direction: ledger.Credit},
+			{ID: "ent_9", AccountID: "200.100.003", Amount: 50, Direction: ledger.Credit},
+		}
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID: "tx_1", Status: ledger.Posted, Entries: want,
+				CreatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
+			})
+		})
+
+		check := func(label string, got []ledger.Entry) {
+			t.Helper()
+			assertOrder(t, label, ids(got, func(e ledger.Entry) string { return string(e.ID) }),
+				"ent_10", "ent_8", "ent_20", "ent_9")
+			for i := range got {
+				if i >= len(want) {
+					return
+				}
+				// The legs travel together: an order that shuffles amounts onto
+				// the wrong accounts is worse than one that merely reorders.
+				assertEqual(t, label+" account "+string(got[i].ID), string(got[i].AccountID), string(want[i].AccountID))
+				assertEqual(t, label+" amount "+string(got[i].ID), got[i].Amount, want[i].Amount)
+			}
+		}
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			one, err := tx.GetTransaction(ctx, bookA, "tx_1")
+			if err != nil {
+				return err
+			}
+			check("GetTransaction entries", one.Entries)
+
+			all, err := tx.ListTransactions(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transactions listed", len(all), 1)
+			check("ListTransactions entries", all[0].Entries)
+
+			forAccount, err := tx.ListTransactionsForAccount(ctx, bookA, "200.100.002")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transactions for the account", len(forAccount), 1)
+			// Every leg comes back, not only the ones naming the account.
+			check("ListTransactionsForAccount entries", forAccount[0].Entries)
+			return nil
+		})
+	})
+
 	t.Run("NextAccountSeqResetsPerTypeAndSubledger", func(t *testing.T) {
 		s := open(t, newStore)
 

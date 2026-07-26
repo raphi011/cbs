@@ -9,7 +9,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger
@@ -19,7 +19,7 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
-	store := mem.New(clock)
+	store := testenv.New(t, clock)
 	return NewNetwork(store.Payment(), clock)
 }
 

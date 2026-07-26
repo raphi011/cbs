@@ -15,7 +15,7 @@ import (
 
 	. "github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger
@@ -38,7 +38,7 @@ func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID
 	t.Helper()
 	ctx := context.Background()
 	clock := func() time.Time { return fixedTime }
-	store := mem.New(clock)
+	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, "bank", clock)
 	reg := NewRegister(store.Deposit(), book, book.ID(), clock)
 

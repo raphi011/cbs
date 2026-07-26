@@ -12,7 +12,7 @@ import (
 	"time"
 
 	. "github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // ---------------------------------------------------------------------------
@@ -25,11 +25,15 @@ func testClock() time.Time {
 	return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 }
 
-// testBook creates a new Book over a fresh in-memory store with a fixed clock
-// for deterministic tests.
+// testBook creates a new Book over a fresh store with a fixed clock for
+// deterministic tests.
+//
+// The store comes from testenv: store/mem by default, store/pg when
+// TEST_DATABASE_URL is set. Every assertion below therefore has to hold on both
+// backends, which is the only way the two are kept honest.
 func testBook(t *testing.T) *Book {
 	t.Helper()
-	return NewBook(mem.New(testClock), "bank", testClock)
+	return NewBook(testenv.New(t, testClock), "bank", testClock)
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:

@@ -9,12 +9,30 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
+
+// testNetwork is seed.Network() with an injectable store: it builds the sample
+// scenario over store/mem by default and over store/pg when TEST_DATABASE_URL is
+// set.
+//
+// Network() itself is hard-wired to store/mem, and has to be — it is ordinary
+// code, and ordinary code may not import testing. Routing the suite through this
+// helper instead is what makes the seed assertions (deterministic IDs, conserved
+// reserves, status coverage) hold on both backends rather than only in memory.
+func testNetwork(t *testing.T) *payment.Network {
+	t.Helper()
+	d := New()
+	net := payment.NewNetwork(testenv.New(t, d.Now).Payment(), d.Now)
+	if err := d.Populate(context.Background(), net); err != nil {
+		t.Fatalf("populate: %v", err)
+	}
+	return net
+}
 
 func TestNetworkShape(t *testing.T) {
 	ctx := context.Background()
-	net := Network()
+	net := testNetwork(t)
 
 	if got := len(listParticipants(t, ctx, net)); got != 4 {
 		t.Fatalf("participants = %d, want 4", got)
@@ -57,7 +75,7 @@ func TestNetworkShape(t *testing.T) {
 
 func TestPaymentStatusCoverage(t *testing.T) {
 	ctx := context.Background()
-	net := Network()
+	net := testNetwork(t)
 	payments, err := net.ListPayments(ctx)
 	if err != nil {
 		t.Fatalf("list payments: %v", err)
@@ -85,7 +103,7 @@ func TestPaymentStatusCoverage(t *testing.T) {
 
 func TestAccountStatusCoverage(t *testing.T) {
 	ctx := context.Background()
-	net := Network()
+	net := testNetwork(t)
 	seen := map[deposit.AccountStatus]bool{}
 	for _, p := range listParticipants(t, ctx, net) {
 		accts, err := p.Deposit.ListAccounts(ctx)
@@ -105,7 +123,7 @@ func TestAccountStatusCoverage(t *testing.T) {
 
 func TestReservesConserved(t *testing.T) {
 	ctx := context.Background()
-	net := Network()
+	net := testNetwork(t)
 	var sum int64
 	for _, p := range listParticipants(t, ctx, net) {
 		bal, err := net.ReserveBalance(ctx, p.ID)
@@ -127,8 +145,8 @@ func TestReservesConserved(t *testing.T) {
 
 func TestDeterministicIDs(t *testing.T) {
 	ctx := context.Background()
-	a := Network()
-	b := Network()
+	a := testNetwork(t)
+	b := testNetwork(t)
 
 	pa, pb := listParticipants(t, ctx, a), listParticipants(t, ctx, b)
 	if len(pa) != len(pb) {
@@ -153,7 +171,7 @@ func TestDeterministicIDs(t *testing.T) {
 
 func TestClockWentLive(t *testing.T) {
 	ctx := context.Background()
-	net := Network()
+	net := testNetwork(t)
 	first := listParticipants(t, ctx, net)[0]
 	accts, err := first.Deposit.ListAccounts(ctx)
 	if err != nil {
@@ -200,7 +218,7 @@ func listPayments(t *testing.T, ctx context.Context, net *payment.Network) []pay
 func TestPopulateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	d := New()
-	store := mem.New(d.Now)
+	store := testenv.New(t, d.Now)
 	net := payment.NewNetwork(store.Payment(), d.Now)
 
 	if err := d.Populate(ctx, net); err != nil {
@@ -324,7 +342,7 @@ func TestMustAndCheckPanicWithSeedErr(t *testing.T) {
 func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	ctx := context.Background()
 	d := New()
-	store := mem.New(d.Now)
+	store := testenv.New(t, d.Now)
 	net := payment.NewNetwork(store.Payment(), d.Now)
 
 	if err := d.Populate(ctx, net); err != nil {

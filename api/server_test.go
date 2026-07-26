@@ -15,7 +15,7 @@ import (
 
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
@@ -32,7 +32,7 @@ func newTestServer(t *testing.T) http.Handler {
 func newServer(t *testing.T, populate func(context.Context, *payment.Network) error) *Server {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
-	store := mem.New(clock)
+	store := testenv.New(t, clock)
 	net := payment.NewNetwork(store.Payment(), clock)
 	if populate != nil {
 		if err := populate(context.Background(), net); err != nil {

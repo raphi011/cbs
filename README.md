@@ -771,7 +771,7 @@ bal, _ := reg.GetBalance(acct.ID) // bal.Book, bal.Holds, bal.Available
 
 ## REST API
 
-A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only, keeping the module dependency-free.
+A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only — the module's single dependency, `jackc/pgx`, is used by the optional Postgres store in `store/pg` and by nothing else, so the default in-memory build still needs no setup at all.
 
 ```bash
 go run ./cmd/server            # listens on :8080 (override with PORT env or -addr flag)
