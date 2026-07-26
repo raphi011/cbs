@@ -9,11 +9,12 @@ import "context"
 // the ledger (for example a UI), since the store is otherwise only queryable by
 // ID. Each runs in a read-only unit of work and returns value copies, never
 // anything the store still owns. The store returns each listing sorted by
-// CreatedAt then ID, so callers see a stable order across calls and across
-// store implementations; the filters below preserve that order.
+// CreatedAt then insertion order, so callers see a stable order across calls
+// and across store implementations; the filters below preserve that order.
 // ---------------------------------------------------------------------------
 
-// ListLedgers returns all ledgers, ordered by creation time then ID.
+// ListLedgers returns all ledgers, ordered by creation time then insertion
+// order.
 func (s *Book) ListLedgers(ctx context.Context) ([]Ledger, error) {
 	var out []Ledger
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -25,7 +26,7 @@ func (s *Book) ListLedgers(ctx context.Context) ([]Ledger, error) {
 }
 
 // ListSubledgers returns the subledgers belonging to the given ledger, ordered
-// by creation time then ID. An unknown ledger yields an empty slice.
+// by creation time then insertion order. An unknown ledger yields an empty slice.
 func (s *Book) ListSubledgers(ctx context.Context, ledgerID LedgerID) ([]Subledger, error) {
 	out := make([]Subledger, 0)
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -44,7 +45,7 @@ func (s *Book) ListSubledgers(ctx context.Context, ledgerID LedgerID) ([]Subledg
 }
 
 // ListAccounts returns the accounts belonging to the given subledger, ordered
-// by creation time then ID. An unknown subledger yields an empty slice.
+// by creation time then insertion order. An unknown subledger yields an empty slice.
 func (s *Book) ListAccounts(ctx context.Context, subledgerID SubledgerID) ([]Account, error) {
 	out := make([]Account, 0)
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -62,7 +63,8 @@ func (s *Book) ListAccounts(ctx context.Context, subledgerID SubledgerID) ([]Acc
 	return out, err
 }
 
-// ListTransactions returns all transactions, ordered by creation time then ID.
+// ListTransactions returns all transactions, ordered by creation time then
+// insertion order.
 func (s *Book) ListTransactions(ctx context.Context) ([]Transaction, error) {
 	var out []Transaction
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -74,7 +76,8 @@ func (s *Book) ListTransactions(ctx context.Context) ([]Transaction, error) {
 }
 
 // ListTransactionsForAccount returns all transactions that have at least one
-// entry referencing the given account, ordered by creation time then ID.
+// entry referencing the given account, ordered by creation time then insertion
+// order.
 func (s *Book) ListTransactionsForAccount(ctx context.Context, accountID AccountID) ([]Transaction, error) {
 	var out []Transaction
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

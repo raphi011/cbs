@@ -62,7 +62,10 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //   - Every method is scoped by book: the same AccountID in two books is two
 //     different accounts, exactly as in ledger.Tx.
 //   - ListDepositAccounts, ListHoldsForAccount: CreatedAt ascending, ties broken
-//     by ID ascending — the same ORDER BY created_at, id as every ledger listing.
+//     by the row's monotonic insertion sequence — ORDER BY created_at, seq, the
+//     same rule every ledger listing follows. Never break ties on the ID: IDs are
+//     counter-derived strings, so "dep_10" sorts before "dep_8" and the list
+//     reorders itself the moment a counter crosses a power of ten.
 //     ListSnapshotsForAccount orders by business date ascending.
 //   - ActiveHoldTotal counts only holds whose Status is HoldActive and whose
 //     ExpiresAt is either zero (never expires) or not before now. It is an

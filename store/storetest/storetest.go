@@ -8,6 +8,19 @@
 // aggregate, the audit log and rollback. Anything the two implementations could
 // plausibly disagree about belongs here, because this suite is the only thing
 // keeping them from drifting apart.
+//
+// # Ordering
+//
+// Every listing is ORDER BY created_at, seq, where seq is a monotonic per-book,
+// per-table sequence assigned when a row is first inserted — a counter in
+// store/mem, a BIGSERIAL column in store/pg. An upsert must not reissue it, or
+// editing a row moves it to the end of the list.
+//
+// The tie-break is never the ID. IDs are counter-derived strings, so "tx_10"
+// sorts before "tx_8" and a listing silently reorders itself the moment a
+// counter crosses a power of ten. It is the same mechanism ledger.AuditEvent.Seq
+// already uses, so the audit log and the entity listings agree on what order
+// means.
 package storetest
 
 import (
@@ -211,70 +224,77 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 	})
 
-	t.Run("ListOrderingIsCreatedAtThenID", func(t *testing.T) {
+	t.Run("ListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
 		s := open(t, newStore)
 
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		late := early.Add(time.Hour)
 
-		// Every listing is ordered by CreatedAt, ties broken by ID — all five
-		// of them, not just the first. Each fixture below is inserted out of
-		// order, contains a CreatedAt tie that only an ID comparison can
-		// break, and has the row created LAST sorting FIRST by ID, so an
-		// implementation that reaches for a plain ORDER BY id fails here rather
-		// than silently reordering a UI list between backends.
+		// Every listing is ordered by CreatedAt, ties broken by the row's
+		// insertion sequence — all five of them, not just the first.
+		//
+		// The tie-break must NOT be the ID. IDs are counter-derived strings, so
+		// "ldg_10" sorts before "ldg_8" and a listing silently reorders itself
+		// the moment a counter crosses a power of ten. Each fixture below is
+		// therefore built to three rules:
+		//
+		//   - a CreatedAt tie that only the tie-break can resolve,
+		//   - IDs spanning the 9 -> 10 boundary, so lexicographic ID order and
+		//     insertion order genuinely disagree, and
+		//   - the row inserted FIRST carrying the LATEST CreatedAt, so an
+		//     implementation that orders by sequence alone fails too.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, l := range []ledger.Ledger{
-				{ID: "ldg_0", Name: "latecomer", CreatedAt: late.Add(time.Hour)},
-				{ID: "ldg_3", Name: "third", CreatedAt: late},
-				{ID: "ldg_2", Name: "second", CreatedAt: early},
-				{ID: "ldg_1", Name: "first", CreatedAt: early},
+				{ID: "ldg_10", Name: "latest, inserted first", CreatedAt: late},
+				{ID: "ldg_8", Name: "first", CreatedAt: early},
+				{ID: "ldg_20", Name: "second", CreatedAt: early},
+				{ID: "ldg_9", Name: "third", CreatedAt: early},
 			} {
 				if err := tx.PutLedger(ctx, bookA, l); err != nil {
 					return err
 				}
 			}
-			// Blocks 100 and 200 are the earlier pair; block "050" is created
-			// last but sorts first by ID.
+			// Chart-of-accounts blocks have the same problem: "100" < "50".
 			for _, sl := range []ledger.Subledger{
-				{ID: "050", LedgerID: "ldg_1", Name: "latecomer", CreatedAt: late},
-				{ID: "200", LedgerID: "ldg_1", Name: "second", CreatedAt: early},
-				{ID: "100", LedgerID: "ldg_1", Name: "first", CreatedAt: early},
+				{ID: "300", LedgerID: "ldg_8", Name: "latest, inserted first", CreatedAt: late},
+				{ID: "100", LedgerID: "ldg_8", Name: "first", CreatedAt: early},
+				{ID: "50", LedgerID: "ldg_8", Name: "second", CreatedAt: early},
+				{ID: "200", LedgerID: "ldg_8", Name: "third", CreatedAt: early},
 			} {
 				if err := tx.PutSubledger(ctx, bookA, sl); err != nil {
 					return err
 				}
 			}
 			// The chart-of-accounts trap: 100.200.001 sorts first by ID but was
-			// opened an hour after the two 200.100.xxx accounts.
+			// opened an hour after the 200.100.xxx accounts, and among those
+			// 200.100.020 was opened before 200.100.009.
 			for _, a := range []ledger.Account{
-				{ID: "100.200.001", SubledgerID: "200", Type: ledger.Asset, Name: "latecomer", CreatedAt: late},
-				{ID: "200.100.002", SubledgerID: "100", Type: ledger.Liability, Name: "second", CreatedAt: early},
-				{ID: "200.100.001", SubledgerID: "100", Type: ledger.Liability, Name: "first", CreatedAt: early},
+				{ID: "100.200.001", SubledgerID: "200", Type: ledger.Asset, Name: "latest, inserted first", CreatedAt: late},
+				{ID: "200.100.008", SubledgerID: "100", Type: ledger.Liability, Name: "first", CreatedAt: early},
+				{ID: "200.100.020", SubledgerID: "100", Type: ledger.Liability, Name: "second", CreatedAt: early},
+				{ID: "200.100.009", SubledgerID: "100", Type: ledger.Liability, Name: "third", CreatedAt: early},
 			} {
 				if err := tx.PutAccount(ctx, bookA, a); err != nil {
 					return err
 				}
 			}
-			// tx_1, tx_2 and tx_z tie on CreatedAt; tx_3 is later; tx_0 is
-			// latest of all yet sorts first by ID. Everything but tx_z touches
-			// the account, so the per-account listing carries the same ID trap
-			// as the full one rather than accidentally being in ID order.
+			// tx_z touches another account, so the per-account listing keeps the
+			// same trap rather than accidentally being in ID order.
 			for _, txn := range []ledger.Transaction{
-				{ID: "tx_0", Status: ledger.Posted, CreatedAt: late.Add(time.Hour), Entries: []ledger.Entry{
-					{ID: "ent_0", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				{ID: "tx_10", Status: ledger.Posted, CreatedAt: late, Entries: []ledger.Entry{
+					{ID: "ent_10", AccountID: "200.100.008", Amount: 100, Direction: ledger.Debit},
 				}},
-				{ID: "tx_3", Status: ledger.Posted, CreatedAt: late, Entries: []ledger.Entry{
-					{ID: "ent_3", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				{ID: "tx_8", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_8", AccountID: "200.100.008", Amount: 100, Direction: ledger.Debit},
 				}},
 				{ID: "tx_z", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
 					{ID: "ent_z", AccountID: "999.999.999", Amount: 100, Direction: ledger.Debit},
 				}},
-				{ID: "tx_2", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
-					{ID: "ent_2", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				{ID: "tx_20", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_20", AccountID: "200.100.008", Amount: 100, Direction: ledger.Debit},
 				}},
-				{ID: "tx_1", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
-					{ID: "ent_1", AccountID: "200.100.001", Amount: 100, Direction: ledger.Debit},
+				{ID: "tx_9", Status: ledger.Posted, CreatedAt: early, Entries: []ledger.Entry{
+					{ID: "ent_9", AccountID: "200.100.008", Amount: 100, Direction: ledger.Debit},
 				}},
 			} {
 				if err := tx.PutTransaction(ctx, bookA, txn); err != nil {
@@ -302,26 +322,43 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			if transactions, err = tx.ListTransactions(ctx, bookA); err != nil {
 				return err
 			}
-			forAccount, err = tx.ListTransactionsForAccount(ctx, bookA, "200.100.001")
+			forAccount, err = tx.ListTransactionsForAccount(ctx, bookA, "200.100.008")
 			return err
 		})
 
 		assertOrder(t, "ListLedgers", ids(ledgers, func(l ledger.Ledger) string { return string(l.ID) }),
-			"ldg_1", "ldg_2", "ldg_3", "ldg_0")
+			"ldg_8", "ldg_20", "ldg_9", "ldg_10")
 
 		assertOrder(t, "ListSubledgers", ids(subledgers, func(sl ledger.Subledger) string { return string(sl.ID) }),
-			"100", "200", "050")
+			"100", "50", "200", "300")
 
 		assertOrder(t, "ListAccounts", ids(accounts, func(a ledger.Account) string { return string(a.ID) }),
-			"200.100.001", "200.100.002", "100.200.001")
+			"200.100.008", "200.100.020", "200.100.009", "100.200.001")
 
 		assertOrder(t, "ListTransactions", ids(transactions, func(txn ledger.Transaction) string { return string(txn.ID) }),
-			"tx_1", "tx_2", "tx_z", "tx_3", "tx_0")
+			"tx_8", "tx_z", "tx_20", "tx_9", "tx_10")
 
 		// The per-account listing is the same order, minus the transaction that
 		// never touches the account.
 		assertOrder(t, "ListTransactionsForAccount", ids(forAccount, func(txn ledger.Transaction) string { return string(txn.ID) }),
-			"tx_1", "tx_2", "tx_3", "tx_0")
+			"tx_8", "tx_20", "tx_9", "tx_10")
+
+		// An upsert keeps a row where it was: marking a transaction reversed, or
+		// re-putting an account with a new status, must not move it to the end.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.100.008", SubledgerID: "100", Type: ledger.Liability, Name: "renamed", CreatedAt: early,
+			})
+		})
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			reordered, err := tx.ListAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListAccounts after an upsert", ids(reordered, func(a ledger.Account) string { return string(a.ID) }),
+				"200.100.008", "200.100.020", "200.100.009", "100.200.001")
+			return nil
+		})
 	})
 
 	t.Run("DuplicateIdempotencyKeyRejected", func(t *testing.T) {

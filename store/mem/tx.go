@@ -78,6 +78,7 @@ func (t *tx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger)
 	if err := t.write(); err != nil {
 		return err
 	}
+	t.state.insertSeq(book, kindLedger, string(l.ID))
 	bucket(t.state.ledgers, book)[l.ID] = l
 	return nil
 }
@@ -95,7 +96,7 @@ func (t *tx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledg
 	for _, l := range t.state.ledgers[book] {
 		out = append(out, l)
 	}
-	sortByCreation(out, func(l ledger.Ledger) (time.Time, string) { return l.CreatedAt, string(l.ID) })
+	sortRows(t.state, out, book, kindLedger, func(l ledger.Ledger) (time.Time, string) { return l.CreatedAt, string(l.ID) })
 	return out, nil
 }
 
@@ -107,6 +108,7 @@ func (t *tx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Sub
 	if err := t.write(); err != nil {
 		return err
 	}
+	t.state.insertSeq(book, kindSubledger, string(sl.ID))
 	bucket(t.state.subledgers, book)[sl.ID] = sl
 	return nil
 }
@@ -124,7 +126,7 @@ func (t *tx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.S
 	for _, sl := range t.state.subledgers[book] {
 		out = append(out, sl)
 	}
-	sortByCreation(out, func(sl ledger.Subledger) (time.Time, string) { return sl.CreatedAt, string(sl.ID) })
+	sortRows(t.state, out, book, kindSubledger, func(sl ledger.Subledger) (time.Time, string) { return sl.CreatedAt, string(sl.ID) })
 	return out, nil
 }
 
@@ -136,6 +138,7 @@ func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Accoun
 	if err := t.write(); err != nil {
 		return err
 	}
+	t.state.insertSeq(book, kindAccount, string(a.ID))
 	bucket(t.state.accounts, book)[a.ID] = a
 	return nil
 }
@@ -153,7 +156,7 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 	for _, a := range t.state.accounts[book] {
 		out = append(out, a)
 	}
-	sortByCreation(out, func(a ledger.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
+	sortRows(t.state, out, book, kindAccount, func(a ledger.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
 	return out, nil
 }
 
@@ -186,6 +189,7 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 			return ledger.ErrDuplicateIdempotencyKey
 		}
 	}
+	t.state.insertSeq(book, kindTransaction, string(txn.ID))
 	bucket(t.state.transactions, book)[txn.ID] = copyTransaction(txn)
 	if txn.IdempotencyKey != "" {
 		bucket(t.state.idempotency, book)[txn.IdempotencyKey] = txn.ID
@@ -217,7 +221,7 @@ func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger
 	for _, txn := range t.state.transactions[book] {
 		out = append(out, copyTransaction(txn))
 	}
-	sortByCreation(out, func(txn ledger.Transaction) (time.Time, string) { return txn.CreatedAt, string(txn.ID) })
+	sortRows(t.state, out, book, kindTransaction, func(txn ledger.Transaction) (time.Time, string) { return txn.CreatedAt, string(txn.ID) })
 	return out, nil
 }
 
@@ -231,7 +235,7 @@ func (t *tx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID,
 			}
 		}
 	}
-	sortByCreation(out, func(txn ledger.Transaction) (time.Time, string) { return txn.CreatedAt, string(txn.ID) })
+	sortRows(t.state, out, book, kindTransaction, func(txn ledger.Transaction) (time.Time, string) { return txn.CreatedAt, string(txn.ID) })
 	return out, nil
 }
 
@@ -368,15 +372,23 @@ func copyAudit(e ledger.AuditEvent) ledger.AuditEvent {
 	return cp
 }
 
-// sortByCreation orders a listing by creation time, breaking ties by ID, so
-// that the unordered maps produce a stable order across calls — and the same
-// order store/pg produces with ORDER BY created_at, id.
-func sortByCreation[T any](items []T, key func(T) (time.Time, string)) {
+// sortRows orders a listing by creation time, breaking ties by the row's
+// insertion sequence, so that the unordered maps produce a stable order across
+// calls — and the same order store/pg produces with ORDER BY created_at, seq.
+//
+// The tie-break is deliberately NOT the ID. IDs are counter-derived strings, so
+// "tx_10" sorts before "tx_8" and a listing silently reorders itself the moment
+// a counter crosses a power of ten; the sequence is monotonic and has no such
+// cliff. See state.rowSeq.
+//
+// It takes the state explicitly because Go methods cannot have type parameters,
+// and looking a sequence up needs the state.
+func sortRows[T any](st *state, items []T, book ledger.BookID, kind rowKind, key func(T) (time.Time, string)) {
 	sort.Slice(items, func(i, j int) bool {
 		ti, idi := key(items[i])
 		tj, idj := key(items[j])
 		if ti.Equal(tj) {
-			return idi < idj
+			return st.seqOf(book, kind, idi) < st.seqOf(book, kind, idj)
 		}
 		return ti.Before(tj)
 	})

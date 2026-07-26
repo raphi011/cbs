@@ -186,12 +186,56 @@ type state struct {
 	// account, so an upsert is a single map assignment — the same identity
 	// store/pg gets from a primary key on (book_id, account_id, date_key).
 	snapshots map[ledger.BookID]map[snapshotKey]deposit.Snapshot
+
+	// rowSeq is the insertion order of every book-scoped row, and the tie-break
+	// every List* uses when two rows share a CreatedAt.
+	//
+	// Ordering must never fall back to the ID: IDs are counter-derived strings,
+	// so "dep_10" sorts before "dep_8" and a chart of accounts or a customer
+	// list silently reorders itself the moment a counter crosses a power of ten.
+	// A monotonic sequence has no such cliff. It is the same mechanism the audit
+	// log already uses for AuditEvent.Seq, so the two agree rather than each
+	// inventing an ordering rule.
+	//
+	// Assigned on first insert only: an upsert (a status change, say) keeps the
+	// row where it was. store/pg gets this from a BIGSERIAL column per table.
+	rowSeq map[rowKey]int64
+
+	// rowSeqCounter is the last sequence issued, one counter per (book, kind) —
+	// mirroring pg, where each table has its own BIGSERIAL.
+	rowSeqCounter map[rowCounterKey]int64
 }
 
 // snapshotKey identifies one end-of-day snapshot within a book.
 type snapshotKey struct {
 	account deposit.AccountID
 	dateKey string
+}
+
+// rowKind names the table a row belongs to, so sequences are per table.
+type rowKind string
+
+const (
+	kindLedger         rowKind = "ledger"
+	kindSubledger      rowKind = "subledger"
+	kindAccount        rowKind = "account"
+	kindTransaction    rowKind = "transaction"
+	kindDepositAccount rowKind = "deposit_account"
+	kindHold           rowKind = "hold"
+	kindSnapshot       rowKind = "snapshot"
+)
+
+// rowKey identifies one row for sequence purposes: its book, its table and its
+// primary key rendered as a string.
+type rowKey struct {
+	book ledger.BookID
+	kind rowKind
+	id   string
+}
+
+type rowCounterKey struct {
+	book ledger.BookID
+	kind rowKind
 }
 
 func newState() *state {
@@ -207,6 +251,8 @@ func newState() *state {
 		depositAccounts: make(map[ledger.BookID]map[deposit.AccountID]deposit.Account),
 		holds:           make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
 		snapshots:       make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
+		rowSeq:          make(map[rowKey]int64),
+		rowSeqCounter:   make(map[rowCounterKey]int64),
 	}
 }
 
@@ -233,7 +279,29 @@ func (s *state) clone() *state {
 		depositAccounts: cloneNested(s.depositAccounts),
 		holds:           cloneNested(s.holds),
 		snapshots:       cloneNested(s.snapshots),
+		rowSeq:          maps.Clone(s.rowSeq),
+		rowSeqCounter:   maps.Clone(s.rowSeqCounter),
 	}
+}
+
+// insertSeq records a row's position in its table's insertion order and returns
+// it. Calling it again for the same row is a no-op: an upsert keeps the position
+// the row was first given, so editing a customer's status does not move them to
+// the bottom of the list.
+func (s *state) insertSeq(book ledger.BookID, kind rowKind, id string) int64 {
+	k := rowKey{book: book, kind: kind, id: id}
+	if seq, ok := s.rowSeq[k]; ok {
+		return seq
+	}
+	counter := rowCounterKey{book: book, kind: kind}
+	s.rowSeqCounter[counter]++
+	s.rowSeq[k] = s.rowSeqCounter[counter]
+	return s.rowSeq[k]
+}
+
+// seqOf returns a row's insertion sequence, or 0 if it has none.
+func (s *state) seqOf(book ledger.BookID, kind rowKind, id string) int64 {
+	return s.rowSeq[rowKey{book: book, kind: kind, id: id}]
 }
 
 func cloneNested[B, K comparable, V any](m map[B]map[K]V) map[B]map[K]V {

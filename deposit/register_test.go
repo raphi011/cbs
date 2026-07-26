@@ -18,26 +18,14 @@ import (
 	"github.com/raphi011/cbs/store/mem"
 )
 
-// fixedTime is the instant the test clock starts at, matching the ledger
+// fixedTime is the instant returned by the test clock, matching the ledger
 // package's own test clock.
-var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
-
-// testClock starts at fixedTime and advances one second per read.
 //
-// It ticks rather than freezing because entities are now ordered by CreatedAt
-// with the ID as tie-break, and IDs are counter-derived strings: with a frozen
-// clock every row ties and "dep_10" sorts ahead of "dep_7". No real system opens
-// two accounts at the same instant, so a ticking clock is the honest fixture —
-// it lets the ordering assertions hold for the right reason instead of by
-// accident of ID width.
-func testClock() func() time.Time {
-	now := fixedTime
-	return func() time.Time {
-		t := now
-		now = now.Add(time.Second)
-		return t
-	}
-}
+// The clock is deliberately frozen: every row then ties on CreatedAt, which is
+// exactly the case the store's ordering tie-break has to get right. A ticking
+// clock would hide a listing that falls back to comparing IDs — where "dep_10"
+// sorts ahead of "dep_8" — so freezing it is the stronger fixture.
+var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 // ---------------------------------------------------------------------------
 // Test Helpers
@@ -49,7 +37,7 @@ func testClock() func() time.Time {
 func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID) {
 	t.Helper()
 	ctx := context.Background()
-	clock := testClock()
+	clock := func() time.Time { return fixedTime }
 	store := mem.New(clock)
 	book := ledger.NewBook(store, "bank", clock)
 	reg := NewRegister(store.Deposit(), book, book.ID(), clock)

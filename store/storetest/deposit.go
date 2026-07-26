@@ -149,34 +149,35 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
-	t.Run("DepositListOrderingIsCreatedAtThenID", func(t *testing.T) {
+	t.Run("DepositListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 
 		late := early.Add(time.Hour)
 
-		// Same shape as the ledger's ordering fixture: every listing is inserted
-		// out of order, contains a CreatedAt tie only an ID comparison can break,
-		// and has the row created LAST sorting FIRST by ID — so a plain
-		// ORDER BY id fails here instead of quietly reordering a UI list.
+		// Same shape and same three rules as the ledger's ordering fixture: a
+		// CreatedAt tie, IDs spanning the 9 -> 10 boundary so lexicographic ID
+		// order disagrees with insertion order, and the row inserted FIRST
+		// carrying the LATEST CreatedAt. Ordering by (CreatedAt, ID) fails here,
+		// and so does ordering by sequence alone.
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			for _, a := range []deposit.Account{
-				{ID: "dep_0", Name: "latecomer", CreatedAt: late.Add(time.Hour)},
-				{ID: "dep_3", Name: "third", CreatedAt: late},
-				{ID: "dep_2", Name: "second", CreatedAt: early},
-				{ID: "dep_1", Name: "first", CreatedAt: early},
+				{ID: "dep_10", Name: "latest, inserted first", CreatedAt: late},
+				{ID: "dep_8", Name: "first", CreatedAt: early},
+				{ID: "dep_20", Name: "second", CreatedAt: early},
+				{ID: "dep_9", Name: "third", CreatedAt: early},
 			} {
 				if err := tx.PutDepositAccount(ctx, bookA, a); err != nil {
 					return err
 				}
 			}
 			// hld_z belongs to another account, so the per-account listing keeps
-			// the same ID trap rather than accidentally being in ID order.
+			// the same trap rather than accidentally being in ID order.
 			for _, h := range []deposit.Hold{
-				{ID: "hld_0", AccountID: "dep_1", Amount: 10, CreatedAt: late.Add(time.Hour)},
-				{ID: "hld_3", AccountID: "dep_1", Amount: 10, CreatedAt: late},
-				{ID: "hld_z", AccountID: "dep_2", Amount: 10, CreatedAt: early},
-				{ID: "hld_2", AccountID: "dep_1", Amount: 10, CreatedAt: early},
-				{ID: "hld_1", AccountID: "dep_1", Amount: 10, CreatedAt: early},
+				{ID: "hld_10", AccountID: "dep_8", Amount: 10, CreatedAt: late},
+				{ID: "hld_8", AccountID: "dep_8", Amount: 10, CreatedAt: early},
+				{ID: "hld_z", AccountID: "dep_20", Amount: 10, CreatedAt: early},
+				{ID: "hld_20", AccountID: "dep_8", Amount: 10, CreatedAt: early},
+				{ID: "hld_9", AccountID: "dep_8", Amount: 10, CreatedAt: early},
 			} {
 				if err := tx.PutHold(ctx, bookA, h); err != nil {
 					return err
@@ -184,11 +185,11 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			// Snapshots order by business date, and are inserted backwards.
 			for _, d := range []int{17, 15, 16} {
-				if err := tx.PutSnapshot(ctx, bookA, snapshot("dep_1", day(d))); err != nil {
+				if err := tx.PutSnapshot(ctx, bookA, snapshot("dep_8", day(d))); err != nil {
 					return err
 				}
 			}
-			return tx.PutSnapshot(ctx, bookA, snapshot("dep_2", day(1)))
+			return tx.PutSnapshot(ctx, bookA, snapshot("dep_20", day(1)))
 		})
 
 		var accounts []deposit.Account
@@ -199,22 +200,39 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if accounts, err = tx.ListDepositAccounts(ctx, bookA); err != nil {
 				return err
 			}
-			if holds, err = tx.ListHoldsForAccount(ctx, bookA, "dep_1"); err != nil {
+			if holds, err = tx.ListHoldsForAccount(ctx, bookA, "dep_8"); err != nil {
 				return err
 			}
-			snaps, err = tx.ListSnapshotsForAccount(ctx, bookA, "dep_1")
+			snaps, err = tx.ListSnapshotsForAccount(ctx, bookA, "dep_8")
 			return err
 		})
 
 		assertOrder(t, "ListDepositAccounts", ids(accounts, func(a deposit.Account) string { return string(a.ID) }),
-			"dep_1", "dep_2", "dep_3", "dep_0")
+			"dep_8", "dep_20", "dep_9", "dep_10")
 
 		assertOrder(t, "ListHoldsForAccount", ids(holds, func(h deposit.Hold) string { return string(h.ID) }),
-			"hld_1", "hld_2", "hld_3", "hld_0")
+			"hld_8", "hld_20", "hld_9", "hld_10")
 
 		assertOrder(t, "ListSnapshotsForAccount", ids(snaps, func(sn deposit.Snapshot) string {
 			return deposit.SnapshotDateKey(sn.Date)
 		}), "2025-01-15", "2025-01-16", "2025-01-17")
+
+		// An upsert keeps a row where it was: freezing a customer's account must
+		// not move them to the bottom of the list.
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_8", Name: "first", Status: deposit.Frozen, CreatedAt: early,
+			})
+		})
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			reordered, err := tx.ListDepositAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListDepositAccounts after an upsert", ids(reordered, func(a deposit.Account) string { return string(a.ID) }),
+				"dep_8", "dep_20", "dep_9", "dep_10")
+			return nil
+		})
 
 		// Unknown accounts enumerate to empty rather than erroring; the deposit
 		// listings are total.

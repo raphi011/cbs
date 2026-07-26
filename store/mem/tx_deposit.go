@@ -26,6 +26,7 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 	if err := t.write(); err != nil {
 		return err
 	}
+	t.state.insertSeq(book, kindDepositAccount, string(a.ID))
 	bucket(t.state.depositAccounts, book)[a.ID] = a
 	return nil
 }
@@ -43,7 +44,7 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 	for _, a := range t.state.depositAccounts[book] {
 		out = append(out, a)
 	}
-	sortByCreation(out, func(a deposit.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
+	sortRows(t.state, out, book, kindDepositAccount, func(a deposit.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
 	return out, nil
 }
 
@@ -55,6 +56,7 @@ func (t *tx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) er
 	if err := t.write(); err != nil {
 		return err
 	}
+	t.state.insertSeq(book, kindHold, string(h.ID))
 	bucket(t.state.holds, book)[h.ID] = h
 	return nil
 }
@@ -78,7 +80,7 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 			out = append(out, h)
 		}
 	}
-	sortByCreation(out, func(h deposit.Hold) (time.Time, string) { return h.CreatedAt, string(h.ID) })
+	sortRows(t.state, out, book, kindHold, func(h deposit.Hold) (time.Time, string) { return h.CreatedAt, string(h.ID) })
 	return out, nil
 }
 
@@ -113,6 +115,7 @@ func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snap
 		return err
 	}
 	key := snapshotKey{account: s.AccountID, dateKey: deposit.SnapshotDateKey(s.Date)}
+	t.state.insertSeq(book, kindSnapshot, snapshotSeqID(key))
 	bucket(t.state.snapshots, book)[key] = s
 	return nil
 }
@@ -132,10 +135,15 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 			out = append(out, s)
 		}
 	}
-	// Snapshots are identified by their business date, so the date is already a
-	// total order within an account; the key is the tie-break only for form.
-	sortByCreation(out, func(s deposit.Snapshot) (time.Time, string) {
-		return s.Date, deposit.SnapshotDateKey(s.Date)
+	// Snapshots are identified by their business date, so within an account the
+	// date is already a total order; the insertion sequence is the tie-break only
+	// for form, and to keep every listing on one rule.
+	sortRows(t.state, out, book, kindSnapshot, func(s deposit.Snapshot) (time.Time, string) {
+		return s.Date, snapshotSeqID(snapshotKey{account: s.AccountID, dateKey: deposit.SnapshotDateKey(s.Date)})
 	})
 	return out, nil
 }
+
+// snapshotSeqID renders a snapshot's composite primary key as the string
+// sortRows and insertSeq identify rows by.
+func snapshotSeqID(k snapshotKey) string { return string(k.account) + "/" + k.dateKey }
