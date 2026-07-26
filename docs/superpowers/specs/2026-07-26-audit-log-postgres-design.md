@@ -201,6 +201,21 @@ Tables: `books`, `ledgers`, `subledgers`, `accounts`, `transactions`, `entries`,
 `entries` needs an explicit `seq` column, because a transaction's legs are an ordered slice
 (`Transaction.Entries`) and row order is not guaranteed.
 
+### Ordering: `CreatedAt` then `seq`, never then `id`
+
+Every book-scoped table carries a monotonic `seq BIGSERIAL`, and every `List*` orders by
+`created_at, seq`. Tie-breaking on `id` is wrong, and not subtly so: IDs embed an unpadded
+counter, so `dep_8` sorts after `dep_20` and `tx_100` sorts between `tx_68` and `tx_72`. The seed
+clock is frozen within each build phase, so every account at a bank shares a `CreatedAt` and the
+tie-break is what actually decides the order — the first customer rendered last in the account
+list. Postgres reproduces this exactly under `ORDER BY created_at, id`, so the fix belongs in the
+contract, not in either implementation.
+
+`seq` is per-book and assigned on insert. It is the same mechanism `audit_events` already uses for
+its total order, so the two agree rather than each inventing an ordering rule. Zero-padding the ID
+counter was the cheaper alternative and is rejected: it changes every visible ID and reintroduces
+the same defect at whatever width is chosen.
+
 ### Migrations
 
 `store/pg/schema/0001_init.sql`, embedded with `go:embed` and applied by a small migrator: a
@@ -410,7 +425,8 @@ Per `CLAUDE.md`, domain facts are mirrored across `README.md` (authoritative),
 
 - **`store/storetest`** — one exported, table-driven conformance suite,
   `storetest.Run(t, func(t *testing.T) store.Store)`, covering every `Tx` method plus the behaviours
-  the domain depends on: `List*` ordering (`CreatedAt` then `ID`), per-book numbering determinism,
+  the domain depends on: `List*` ordering (`CreatedAt` then `Seq` — see *Ordering* below),
+  per-book numbering determinism,
   idempotency uniqueness, balance aggregation including reversed transactions, conditional reversal,
   `Reset`, and audit ordering by `seq`. Run from `store/mem` always and `store/pg` when
   `TEST_DATABASE_URL` is set (`t.Skip` otherwise). This is the main defence against the two

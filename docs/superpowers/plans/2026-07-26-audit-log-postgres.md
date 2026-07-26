@@ -16,6 +16,7 @@
 - **IDs stay exactly as `58f065d` defined them** — subledgers `100`/`200`/`300`, accounts `<block>.<subledger>.<NNN>`, and `ldg_`/`tx_`/`ent_`/`evt_` from a shared counter. Only *where the counters live* changes.
 - **`ledger/numbering_test.go` must pass unedited** except for mechanical `ctx` threading. It is the regression gate for this refactor.
 - **IDs are unique per book, not globally.** Every book-scoped table uses composite `PRIMARY KEY (book_id, id)` and composite FKs. A single-column `id` PK is a bug.
+- **`List*` ordering is `CreatedAt` then `Seq`, never then `ID`.** Every book-scoped row carries a monotonic per-book `seq` (`BIGSERIAL` in pg, a counter in mem), assigned on insert. Tie-breaking on `id` is a bug: IDs embed an unpadded counter, so `dep_8` sorts after `dep_20` and `tx_100` lands between `tx_68` and `tx_72`. The seed clock is frozen within each build phase, so ties are the normal case, not an edge case — this decides the order the UI actually renders. Same mechanism as `audit_events.seq`.
 - **`ctx context.Context` is the first parameter** of every public domain method.
 - Each mutating method has an exported `…Tx(ctx, tx, …)` sibling; the plain method is a thin `Update` wrapper around it.
 - **Test conventions:** the shared `fixedTime` clock, the hand-rolled `assertNoError` / `assertError` / `assertEqual[T comparable]` helpers in `ledger/book_test.go:63-77`, and `httptest` for the API layer. No third-party assertion library, no testcontainers.
@@ -463,7 +464,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	t.Run("NextSubledgerBlockStepsBy100PerBook", func(t *testing.T) { /* 100, 200, 300; independent per book */ })
 	t.Run("NextAccountSeqResetsPerTypeAndSubledger", func(t *testing.T) { /* (100,"100") and (200,"100") count independently */ })
 	t.Run("SameIDsInDifferentBooks", func(t *testing.T) { /* PutAccount("200.100.001") in bookA and bookB both readable */ })
-	t.Run("ListOrderingIsCreatedAtThenID", func(t *testing.T) { /* ties broken by ID */ })
+	t.Run("ListOrderingIsCreatedAtThenSeq", func(t *testing.T) { /* ties broken by monotonic seq, NOT by ID */ })
 	t.Run("DuplicateIdempotencyKeyRejected", func(t *testing.T) { /* second PutTransaction => ledger.ErrDuplicateIdempotencyKey */ })
 	t.Run("EmptyIdempotencyKeyNotDeduplicated", func(t *testing.T) { /* many "" keys all succeed */ })
 	t.Run("BookBalanceIncludesReversedTransactions", func(t *testing.T) { /* reversal entries cancel; status is informational */ })
@@ -614,7 +615,7 @@ The same collision rule applies to `GetHold` versus anything the ledger later ad
 
 - [ ] **Step 2: Extend `store/mem` and `storetest`**
 
-Add the deposit maps to `store/mem` (`accounts`, `holds`, `accountHolds`, `snapshots` from `deposit/register.go:34-45`, each keyed by `BookID` first). Add `storetest.RunDeposit` covering: hold totals exclude released, captured and expired holds; snapshot upsert by `(account, dateKey)` overwrites; deposit accounts list in `CreatedAt` then `ID` order.
+Add the deposit maps to `store/mem` (`accounts`, `holds`, `accountHolds`, `snapshots` from `deposit/register.go:34-45`, each keyed by `BookID` first). Add `storetest.RunDeposit` covering: hold totals exclude released, captured and expired holds; snapshot upsert by `(account, dateKey)` overwrites; deposit accounts list in `CreatedAt` then `Seq` order.
 
 - [ ] **Step 3: Write the failing cross-layer atomicity test**
 
