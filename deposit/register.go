@@ -1,6 +1,7 @@
 package deposit
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -24,7 +25,13 @@ import (
 //
 // All public methods on Register are safe for concurrent use. Internally, a
 // read-write mutex protects the Register's own state; the backing ledger.Book
-// has its own lock.
+// serializes through its store.
+//
+// # Context
+//
+// The Register's own state does not live in the store yet, so its methods take
+// no context and pass context.TODO down into the ledger. Both go away together
+// when the deposit layer moves onto ledger.Store.
 type Register struct {
 	mu sync.RWMutex
 
@@ -127,7 +134,7 @@ func (r *Register) OpenAccount(subledger ledger.SubledgerID, name string, overdr
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	gl, err := r.book.CreateAccount(subledger, name, ledger.Liability)
+	gl, err := r.book.CreateAccount(context.TODO(), subledger, name, ledger.Liability)
 	if err != nil {
 		return Account{}, err
 	}
@@ -263,7 +270,7 @@ func (r *Register) Close(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 
-	book, err := r.book.BookBalance(acct.GLAccount)
+	book, err := r.book.BookBalance(context.TODO(), acct.GLAccount)
 	if err != nil {
 		return err
 	}
@@ -401,7 +408,7 @@ func (r *Register) CaptureHold(id HoldID, counterparty ledger.AccountID, capture
 		captureAmount = h.Amount
 	}
 
-	tx, err := r.book.PostTransaction(ledger.PostTransactionRequest{
+	tx, err := r.book.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
 			{AccountID: acct.GLAccount, Amount: captureAmount, Direction: ledger.Debit},
@@ -457,7 +464,7 @@ func (r *Register) GetBalance(id AccountID) (Balance, error) {
 		return Balance{}, ErrAccountNotFound
 	}
 
-	book, err := r.book.BookBalance(acct.GLAccount)
+	book, err := r.book.BookBalance(context.TODO(), acct.GLAccount)
 	if err != nil {
 		return Balance{}, err
 	}
@@ -519,7 +526,7 @@ func (r *Register) requireActive(acct *Account) error {
 // availableLocked computes the available balance of an account:
 // Book - Holds + OverdraftLimit. The caller must hold r.mu.
 func (r *Register) availableLocked(acct *Account) (ledger.Amount, error) {
-	book, err := r.book.BookBalance(acct.GLAccount)
+	book, err := r.book.BookBalance(context.TODO(), acct.GLAccount)
 	if err != nil {
 		return 0, err
 	}
@@ -570,7 +577,7 @@ func (r *Register) TakeEndOfDaySnapshot(id AccountID, date time.Time) (Snapshot,
 		return Snapshot{}, ErrAccountNotFound
 	}
 
-	book, err := r.book.BookBalance(acct.GLAccount)
+	book, err := r.book.BookBalance(context.TODO(), acct.GLAccount)
 	if err != nil {
 		return Snapshot{}, err
 	}

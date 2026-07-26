@@ -1,23 +1,29 @@
-package ledger
+package ledger_test
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	. "github.com/raphi011/cbs/ledger"
+)
 
 func TestAccountTypeCodeBlock(t *testing.T) {
 	cases := map[AccountType]int{
 		Asset: 100, Liability: 200, Equity: 300, Revenue: 400, Expense: 500,
 	}
 	for typ, want := range cases {
-		if got := typ.codeBlock(); got != want {
+		if got := typ.CodeBlock(); got != want {
 			t.Errorf("%s.codeBlock() = %d, want %d", typ, got, want)
 		}
 	}
 }
 
 func TestSubledgerNumbering(t *testing.T) {
-	book := NewBook()
-	gl, _ := book.CreateLedger("GL")
+	ctx := context.Background()
+	book := testBook(t)
+	gl, _ := book.CreateLedger(ctx, "GL")
 	for i, want := range []string{"100", "200", "300"} {
-		sl, err := book.CreateSubledger(gl.ID, "S")
+		sl, err := book.CreateSubledger(ctx, gl.ID, "S")
 		if err != nil {
 			t.Fatalf("CreateSubledger #%d: %v", i, err)
 		}
@@ -28,15 +34,16 @@ func TestSubledgerNumbering(t *testing.T) {
 }
 
 func TestAccountNumbering(t *testing.T) {
-	book := NewBook()
-	gl, _ := book.CreateLedger("GL")
-	deposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits") // 100
-	interbank, _ := book.CreateSubledger(gl.ID, "Interbank")        // 200
+	ctx := context.Background()
+	book := testBook(t)
+	gl, _ := book.CreateLedger(ctx, "GL")
+	deposits, _ := book.CreateSubledger(ctx, gl.ID, "Customer Deposits") // 100
+	interbank, _ := book.CreateSubledger(ctx, gl.ID, "Interbank")        // 200
 
-	alice, _ := book.CreateAccount(deposits.ID, "Alice", Liability)
-	bob, _ := book.CreateAccount(deposits.ID, "Bob", Liability)
-	suspense, _ := book.CreateAccount(interbank.ID, "Clearing Suspense", Liability)
-	reserve, _ := book.CreateAccount(interbank.ID, "Reserve", Asset)
+	alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice", Liability)
+	bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob", Liability)
+	suspense, _ := book.CreateAccount(ctx, interbank.ID, "Clearing Suspense", Liability)
+	reserve, _ := book.CreateAccount(ctx, interbank.ID, "Reserve", Asset)
 
 	want := map[string]string{
 		"alice": "200.100.001", "bob": "200.100.002",
@@ -54,11 +61,12 @@ func TestAccountNumbering(t *testing.T) {
 }
 
 func TestAccountNumberingDeterministic(t *testing.T) {
+	ctx := context.Background()
 	build := func() AccountID {
-		book := NewBook()
-		gl, _ := book.CreateLedger("GL")
-		sl, _ := book.CreateSubledger(gl.ID, "Deposits")
-		a, _ := book.CreateAccount(sl.ID, "Alice", Liability)
+		book := testBook(t)
+		gl, _ := book.CreateLedger(ctx, "GL")
+		sl, _ := book.CreateSubledger(ctx, gl.ID, "Deposits")
+		a, _ := book.CreateAccount(ctx, sl.ID, "Alice", Liability)
 		return a.ID
 	}
 	if build() != build() {

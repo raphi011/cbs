@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
@@ -19,7 +20,8 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	newState := func() *payment.Network {
-		return payment.NewNetworkWithClock(func() time.Time { return fixedTime })
+		clock := func() time.Time { return fixedTime }
+		return payment.NewNetwork(mem.New(clock), clock)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServer(newState, log).Routes()

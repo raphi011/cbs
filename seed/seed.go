@@ -1,12 +1,14 @@
 package seed
 
 import (
+	"context"
 	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 // baseDate anchors the deterministic seed timeline. Everything built before the
@@ -18,7 +20,7 @@ var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 // clock to real time before returning so later operations are timestamped live.
 func Network() *payment.Network {
 	c := newClock(baseDate)
-	net := payment.NewNetworkWithClock(c.now)
+	net := payment.NewNetwork(mem.New(c.now), c.now)
 	b := &builder{net: net, clock: c, ibans: map[deposit.AccountID]string{}}
 	b.build()
 	c.goLive()
@@ -217,19 +219,20 @@ func (b *builder) build() {
 // transaction + reversal appear in the data. Liability is already present via the
 // bank's customer-deposit and suspense GL accounts; this adds the other four.
 func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
-	glID := must(p.Ledger.GetSubledger(p.CustomerSubledger)).LedgerID
+	ctx := context.Background()
+	glID := must(p.Ledger.GetSubledger(ctx, p.CustomerSubledger)).LedgerID
 
-	equitySub := must(p.Ledger.CreateSubledger(glID, "Equity"))
-	shareCapital := must(p.Ledger.CreateAccount(equitySub.ID, "Share Capital", ledger.Equity))
-	treasurySub := must(p.Ledger.CreateSubledger(glID, "Treasury"))
-	vault := must(p.Ledger.CreateAccount(treasurySub.ID, "Vault Cash", ledger.Asset))
-	incomeSub := must(p.Ledger.CreateSubledger(glID, "Income"))
-	feeIncome := must(p.Ledger.CreateAccount(incomeSub.ID, "Fee Income", ledger.Revenue))
-	expenseSub := must(p.Ledger.CreateSubledger(glID, "Expenses"))
-	opex := must(p.Ledger.CreateAccount(expenseSub.ID, "Operating Expenses", ledger.Expense))
+	equitySub := must(p.Ledger.CreateSubledger(ctx, glID, "Equity"))
+	shareCapital := must(p.Ledger.CreateAccount(ctx, equitySub.ID, "Share Capital", ledger.Equity))
+	treasurySub := must(p.Ledger.CreateSubledger(ctx, glID, "Treasury"))
+	vault := must(p.Ledger.CreateAccount(ctx, treasurySub.ID, "Vault Cash", ledger.Asset))
+	incomeSub := must(p.Ledger.CreateSubledger(ctx, glID, "Income"))
+	feeIncome := must(p.Ledger.CreateAccount(ctx, incomeSub.ID, "Fee Income", ledger.Revenue))
+	expenseSub := must(p.Ledger.CreateSubledger(ctx, glID, "Expenses"))
+	opex := must(p.Ledger.CreateAccount(ctx, expenseSub.ID, "Operating Expenses", ledger.Expense))
 
 	// Capitalisation: Vault Cash (asset) up, Share Capital (equity) up.
-	must(p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Initial share capital",
 		Entries: []ledger.Entry{
 			{AccountID: vault.ID, Amount: 100_000, Direction: ledger.Debit},
@@ -238,7 +241,7 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	}))
 
 	// Operating expense: Operating Expenses (expense) up, Vault Cash (asset) down.
-	must(p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Office rent",
 		Entries: []ledger.Entry{
 			{AccountID: opex.ID, Amount: 2_000, Direction: ledger.Debit},
@@ -248,7 +251,7 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 
 	// Monthly account fee: customer deposit (liability) down, Fee Income (revenue) up.
 	customerGL := must(p.Deposit.GetAccount(customer.ID)).GLAccount
-	fee := must(p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	fee := must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Monthly account fee",
 		Entries: []ledger.Entry{
 			{AccountID: customerGL, Amount: 500, Direction: ledger.Debit},
@@ -257,5 +260,5 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	}))
 
 	// Reverse the fee (goodwill waiver) to demonstrate a reversal.
-	must(p.Ledger.ReverseTransaction(fee.ID, "Fee waived — goodwill"))
+	must(p.Ledger.ReverseTransaction(ctx, fee.ID, "Fee waived — goodwill"))
 }

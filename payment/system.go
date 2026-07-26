@@ -1,6 +1,7 @@
 package payment
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -16,12 +17,18 @@ import (
 // # Multiple ledgers, no cross-ledger atomicity
 //
 // Each participant bank and the central bank keep separate ledger.Book
-// instances, each with its own lock. A single payment therefore touches
-// several ledgers, and those postings cannot be one atomic transaction the
-// way a real RTGS would guarantee with a locked settlement window. The
-// Network serializes whole operations under its own mutex and always posts
-// the debit side before the credit side; this is a deliberate simplification
-// for a single-process learning model.
+// instances, distinguished by their ledger.BookID. A single payment therefore
+// touches several books, and each posting still opens its own unit of work, so
+// they are not one atomic transaction the way a real RTGS would guarantee with
+// a locked settlement window. The Network serializes whole operations under its
+// own mutex and always posts the debit side before the credit side; this is a
+// deliberate simplification for a single-process learning model.
+//
+// # Context
+//
+// The Network's own state does not live in the store yet, so its methods take
+// no context and pass context.TODO down into the ledger. Both go away together
+// when the payment layer moves onto ledger.Store.
 //
 // # Thread safety
 //
@@ -29,6 +36,11 @@ import (
 type Network struct {
 	mu    sync.RWMutex
 	clock func() time.Time
+
+	// store backs every book the network creates: the central bank's and one
+	// per participant. Books are distinguished by BookID, so chart-of-accounts
+	// numbers stay unique per bank rather than globally.
+	store ledger.Store
 
 	schemes      map[SchemeID]Scheme
 	participants map[ParticipantID]*Participant
@@ -51,18 +63,21 @@ type Network struct {
 	idCounter int64
 }
 
-// NewNetwork creates a payment network with the SEPA Credit Transfer and SEPA
-// Direct Debit schemes registered. It uses time.Now as its clock; tests set
-// the clock field directly for determinism.
-func NewNetwork() *Network {
-	return NewNetworkWithClock(time.Now)
-}
+// CentralBankBook is the BookID of the central bank's own book of accounts. It
+// is a real chart of accounts, unlike ledger.NetworkBook, which labels the
+// network-scoped entities that belong to no single bank.
+const CentralBankBook ledger.BookID = "central-bank"
 
-// NewNetworkWithClock is like NewNetwork but reads time from the provided
-// clock. Every ledger the network creates shares this clock.
-func NewNetworkWithClock(clock func() time.Time) *Network {
+// NewNetwork creates a payment network with the SEPA Credit Transfer and SEPA
+// Direct Debit schemes registered.
+//
+// Every book the network creates — the central bank's and one per participant —
+// lives in the given store and reads time from the given clock, so that booking
+// dates, value dates and audit timestamps line up across all of them.
+func NewNetwork(store ledger.Store, clock func() time.Time) *Network {
 	s := &Network{
 		clock:         clock,
+		store:         store,
 		schemes:       make(map[SchemeID]Scheme),
 		participants:  make(map[ParticipantID]*Participant),
 		payments:      make(map[PaymentID]*Payment),
@@ -71,14 +86,15 @@ func NewNetworkWithClock(clock func() time.Time) *Network {
 		settlements:   make(map[SettlementID]*Settlement),
 		openCycle:     make(map[SchemeID]CycleID),
 		endToEndIndex: make(map[string]PaymentID),
-		centralBank:   ledger.NewBookWithClock(clock),
+		centralBank:   ledger.NewBook(store, CentralBankBook, clock),
 	}
 
 	// Build the central bank's chart of accounts.
-	cb, _ := s.centralBank.CreateLedger("Central Bank")
-	reserves, _ := s.centralBank.CreateSubledger(cb.ID, "Member Reserves")
-	capital, _ := s.centralBank.CreateSubledger(cb.ID, "Central Bank Capital")
-	assets, _ := s.centralBank.CreateAccount(capital.ID, "Settlement Assets", ledger.Asset)
+	ctx := context.TODO()
+	cb, _ := s.centralBank.CreateLedger(ctx, "Central Bank")
+	reserves, _ := s.centralBank.CreateSubledger(ctx, cb.ID, "Member Reserves")
+	capital, _ := s.centralBank.CreateSubledger(ctx, cb.ID, "Central Bank Capital")
+	assets, _ := s.centralBank.CreateAccount(ctx, capital.ID, "Settlement Assets", ledger.Asset)
 	s.cbReserveSubledger = reserves.ID
 	s.cbAssets = assets.ID
 
@@ -119,31 +135,37 @@ func (s *Network) AddParticipant(name string) (*Participant, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	bank := ledger.NewBookWithClock(s.clock)
+	ctx := context.TODO()
 
-	gl, err := bank.CreateLedger(name + " GL")
+	// The bank gets its own book within the shared store, identified by its
+	// participant ID, so its chart of accounts is numbered independently of
+	// every other bank's.
+	id := ParticipantID(s.nextID("bank"))
+	bank := ledger.NewBook(s.store, ledger.BookID(id), s.clock)
+
+	gl, err := bank.CreateLedger(ctx, name+" GL")
 	if err != nil {
 		return nil, err
 	}
-	customers, err := bank.CreateSubledger(gl.ID, "Customer Deposits")
+	customers, err := bank.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	if err != nil {
 		return nil, err
 	}
-	interbank, err := bank.CreateSubledger(gl.ID, "Interbank")
+	interbank, err := bank.CreateSubledger(ctx, gl.ID, "Interbank")
 	if err != nil {
 		return nil, err
 	}
-	suspense, err := bank.CreateAccount(interbank.ID, "Clearing Suspense", ledger.Liability)
+	suspense, err := bank.CreateAccount(ctx, interbank.ID, "Clearing Suspense", ledger.Liability)
 	if err != nil {
 		return nil, err
 	}
-	reserve, err := bank.CreateAccount(interbank.ID, "Reserve at Central Bank", ledger.Asset)
+	reserve, err := bank.CreateAccount(ctx, interbank.ID, "Reserve at Central Bank", ledger.Asset)
 	if err != nil {
 		return nil, err
 	}
 
 	// Open the bank's reserve account in the central-bank ledger.
-	cbReserve, err := s.centralBank.CreateAccount(s.cbReserveSubledger, "Reserve: "+name, ledger.Liability)
+	cbReserve, err := s.centralBank.CreateAccount(ctx, s.cbReserveSubledger, "Reserve: "+name, ledger.Liability)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +175,7 @@ func (s *Network) AddParticipant(name string) (*Participant, error) {
 	register := deposit.NewRegisterWithClock(bank, s.clock)
 
 	p := &Participant{
-		ID:                ParticipantID(s.nextID("bank")),
+		ID:                id,
 		Name:              name,
 		Ledger:            bank,
 		Deposit:           register,
@@ -189,7 +211,7 @@ func (s *Network) Deposit(participant ParticipantID, account deposit.AccountID, 
 		return err
 	}
 
-	if _, err := p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	if _, err := p.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
 			{AccountID: p.ReserveAccount, Amount: amount, Direction: ledger.Debit},
@@ -199,7 +221,7 @@ func (s *Network) Deposit(participant ParticipantID, account deposit.AccountID, 
 		return err
 	}
 
-	_, err = s.centralBank.PostTransaction(ledger.PostTransactionRequest{
+	_, err = s.centralBank.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		Description: "Reserve credit: " + p.Name,
 		Entries: []ledger.Entry{
 			{AccountID: s.cbAssets, Amount: amount, Direction: ledger.Debit},
@@ -347,7 +369,7 @@ func (s *Network) SettleCycle(id CycleID) (Settlement, error) {
 
 	var settlementTx ledger.TransactionID
 	if len(cbEntries) > 0 {
-		tx, err := s.centralBank.PostTransaction(ledger.PostTransactionRequest{
+		tx, err := s.centralBank.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 			IdempotencyKey: string(c.ID) + ":settle",
 			Description:    "Settlement of clearing cycle " + string(c.ID),
 			Entries:        cbEntries,
@@ -377,7 +399,7 @@ func (s *Network) SettleCycle(id CycleID) (Settlement, error) {
 					{AccountID: p.ReserveAccount, Amount: -net, Direction: ledger.Credit},
 				}
 			}
-			if _, err := p.Ledger.PostTransaction(ledger.PostTransactionRequest{
+			if _, err := p.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 				IdempotencyKey: string(c.ID) + ":reserve:" + string(pid),
 				Description:    "Net settlement of cycle " + string(c.ID),
 				Entries:        entries,
@@ -396,7 +418,7 @@ func (s *Network) SettleCycle(id CycleID) (Settlement, error) {
 		if err != nil {
 			return Settlement{}, err
 		}
-		tx, err := creditor.Ledger.PostTransaction(ledger.PostTransactionRequest{
+		tx, err := creditor.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 			IdempotencyKey: string(p.ID) + ":credit",
 			Description:    p.Description,
 			ValueDate:      p.ValueDate,
@@ -508,7 +530,7 @@ func (s *Network) InitiatePayment(req InitiatePaymentRequest) (Payment, error) {
 	if err != nil {
 		return Payment{}, err
 	}
-	tx, err := debtor.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	tx, err := debtor.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":debit",
 		Description:    p.Description,
 		BookingDate:    now,
@@ -553,7 +575,7 @@ func (s *Network) RejectPayment(id PaymentID, reason string) (Payment, error) {
 
 	if p.DebtorLegTx != "" {
 		debtor := s.participants[p.Debtor.Participant]
-		if _, err := debtor.Ledger.ReverseTransaction(p.DebtorLegTx, "Reject payment "+string(p.ID)+": "+reason); err != nil {
+		if _, err := debtor.Ledger.ReverseTransaction(context.TODO(), p.DebtorLegTx, "Reject payment "+string(p.ID)+": "+reason); err != nil {
 			return Payment{}, err
 		}
 	}
@@ -597,7 +619,7 @@ func (s *Network) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 	}
 
 	// Debtor's bank refunds the payer, funded by reserves coming back in.
-	if _, err := debtor.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	if _, err := debtor.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-debit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
@@ -609,7 +631,7 @@ func (s *Network) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 	}
 
 	// Creditor's bank claws the funds back from the payee, paying out reserves.
-	if _, err := creditor.Ledger.PostTransaction(ledger.PostTransactionRequest{
+	if _, err := creditor.Ledger.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-credit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
@@ -621,7 +643,7 @@ func (s *Network) ReturnPayment(id PaymentID, reason string) (Payment, error) {
 	}
 
 	// Central bank reverses the reserve movement.
-	if _, err := s.centralBank.PostTransaction(ledger.PostTransactionRequest{
+	if _, err := s.centralBank.PostTransaction(context.TODO(), ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-settle",
 		Description:    "Return settlement for payment " + string(p.ID),
 		Entries: []ledger.Entry{
@@ -686,7 +708,7 @@ func (s *Network) ReserveBalance(id ParticipantID) (ledger.Amount, error) {
 	if !ok {
 		return 0, ErrParticipantNotFound
 	}
-	return s.centralBank.BookBalance(p.SettlementAccount)
+	return s.centralBank.BookBalance(context.TODO(), p.SettlementAccount)
 }
 
 // ---------------------------------------------------------------------------

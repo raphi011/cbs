@@ -38,7 +38,7 @@ func (s *Server) handleCreateLedger(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	l, err := p.Ledger.CreateLedger(req.Name)
+	l, err := p.Ledger.CreateLedger(r.Context(), req.Name)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -51,7 +51,11 @@ func (s *Server) handleListLedgers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ledgers := p.Ledger.ListLedgers()
+	ledgers, err := p.Ledger.ListLedgers(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]ledgerDTO, len(ledgers))
 	for i, l := range ledgers {
 		out[i] = toLedgerDTO(l)
@@ -64,7 +68,7 @@ func (s *Server) handleGetLedger(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	l, err := p.Ledger.GetLedger(ledger.LedgerID(r.PathValue("lid")))
+	l, err := p.Ledger.GetLedger(r.Context(), ledger.LedgerID(r.PathValue("lid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -82,7 +86,7 @@ func (s *Server) handleCreateSubledger(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	sl, err := p.Ledger.CreateSubledger(ledger.LedgerID(r.PathValue("lid")), req.Name)
+	sl, err := p.Ledger.CreateSubledger(r.Context(), ledger.LedgerID(r.PathValue("lid")), req.Name)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -95,7 +99,11 @@ func (s *Server) handleListSubledgers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	subs := p.Ledger.ListSubledgers(ledger.LedgerID(r.PathValue("lid")))
+	subs, err := p.Ledger.ListSubledgers(r.Context(), ledger.LedgerID(r.PathValue("lid")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]subledgerDTO, len(subs))
 	for i, sl := range subs {
 		out[i] = toSubledgerDTO(sl)
@@ -108,7 +116,7 @@ func (s *Server) handleGetSubledger(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	sl, err := p.Ledger.GetSubledger(ledger.SubledgerID(r.PathValue("sid")))
+	sl, err := p.Ledger.GetSubledger(r.Context(), ledger.SubledgerID(r.PathValue("sid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -131,7 +139,7 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	acct, err := p.Ledger.CreateAccount(ledger.SubledgerID(r.PathValue("sid")), req.Name, acctType)
+	acct, err := p.Ledger.CreateAccount(r.Context(), ledger.SubledgerID(r.PathValue("sid")), req.Name, acctType)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -144,7 +152,11 @@ func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	accts := p.Ledger.ListAccounts(ledger.SubledgerID(r.PathValue("sid")))
+	accts, err := p.Ledger.ListAccounts(r.Context(), ledger.SubledgerID(r.PathValue("sid")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]accountDTO, len(accts))
 	for i, a := range accts {
 		out[i] = toAccountDTO(a)
@@ -157,7 +169,7 @@ func (s *Server) handleGetAccount(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	acct, err := p.Ledger.GetAccount(ledger.AccountID(r.PathValue("aid")))
+	acct, err := p.Ledger.GetAccount(r.Context(), ledger.AccountID(r.PathValue("aid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -171,7 +183,7 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aid := ledger.AccountID(r.PathValue("aid"))
-	bal, err := p.Ledger.BookBalance(aid)
+	bal, err := p.Ledger.BookBalance(r.Context(), aid)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -194,7 +206,7 @@ func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	tx, err := p.Ledger.PostTransaction(domainReq)
+	tx, err := p.Ledger.PostTransaction(r.Context(), domainReq)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -208,10 +220,15 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var txs []ledger.Transaction
+	var err error
 	if acct := r.URL.Query().Get("account"); acct != "" {
-		txs = p.Ledger.ListTransactionsForAccount(ledger.AccountID(acct))
+		txs, err = p.Ledger.ListTransactionsForAccount(r.Context(), ledger.AccountID(acct))
 	} else {
-		txs = p.Ledger.ListTransactions()
+		txs, err = p.Ledger.ListTransactions(r.Context())
+	}
+	if err != nil {
+		writeError(w, err)
+		return
 	}
 	out := make([]transactionDTO, len(txs))
 	for i, tx := range txs {
@@ -225,7 +242,7 @@ func (s *Server) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	tx, err := p.Ledger.GetTransaction(ledger.TransactionID(r.PathValue("tid")))
+	tx, err := p.Ledger.GetTransaction(r.Context(), ledger.TransactionID(r.PathValue("tid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -243,7 +260,7 @@ func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, err.Error())
 		return
 	}
-	tx, err := p.Ledger.ReverseTransaction(ledger.TransactionID(r.PathValue("tid")), req.Description)
+	tx, err := p.Ledger.ReverseTransaction(r.Context(), ledger.TransactionID(r.PathValue("tid")), req.Description)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -257,10 +274,15 @@ func (s *Server) handleLedgerAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var events []ledger.AuditEvent
+	var err error
 	if entity := r.URL.Query().Get("entity"); entity != "" {
-		events = p.Ledger.GetAuditLogForEntity(entity)
+		events, err = p.Ledger.GetAuditLogForEntity(r.Context(), entity)
 	} else {
-		events = p.Ledger.GetAuditLog()
+		events, err = p.Ledger.GetAuditLog(r.Context())
+	}
+	if err != nil {
+		writeError(w, err)
+		return
 	}
 	out := make([]auditEventDTO, len(events))
 	for i, e := range events {

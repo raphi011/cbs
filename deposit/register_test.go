@@ -1,11 +1,13 @@
 package deposit
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger
@@ -21,17 +23,18 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 // Asset account (cash) for capture postings.
 func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID) {
 	t.Helper()
+	ctx := context.Background()
 	clock := func() time.Time { return fixedTime }
-	book := ledger.NewBookWithClock(clock)
+	book := ledger.NewBook(mem.New(clock), "bank", clock)
 	reg := NewRegisterWithClock(book, clock)
 
-	gl, err := book.CreateLedger("General Ledger")
+	gl, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)
-	deposits, err := book.CreateSubledger(gl.ID, "Customer Deposits")
+	deposits, err := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	assertNoError(t, err)
-	assets, err := book.CreateSubledger(gl.ID, "Bank Assets")
+	assets, err := book.CreateSubledger(ctx, gl.ID, "Bank Assets")
 	assertNoError(t, err)
-	cash, err := book.CreateAccount(assets.ID, "Cash", ledger.Asset)
+	cash, err := book.CreateAccount(ctx, assets.ID, "Cash", ledger.Asset)
 	assertNoError(t, err)
 
 	return reg, deposits.ID, cash.ID
@@ -41,7 +44,7 @@ func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID
 // simulating a customer deposit so the customer has spendable funds.
 func fund(t *testing.T, reg *Register, cash ledger.AccountID, acct Account, amount ledger.Amount) {
 	t.Helper()
-	_, err := reg.book.PostTransaction(ledger.PostTransactionRequest{
+	_, err := reg.book.PostTransaction(context.Background(), ledger.PostTransactionRequest{
 		Description: "Funding",
 		Entries: []ledger.Entry{
 			{AccountID: cash, Amount: amount, Direction: ledger.Debit},
@@ -84,7 +87,7 @@ func TestOpenAccount_CreatesBackingGLAccount(t *testing.T) {
 	assertEqual(t, "status", acct.Status, Active)
 
 	// The backing GL account exists and is a Liability.
-	gl, err := reg.book.GetAccount(acct.GLAccount)
+	gl, err := reg.book.GetAccount(context.Background(), acct.GLAccount)
 	assertNoError(t, err)
 	assertEqual(t, "gl type", gl.Type, ledger.Liability)
 	assertEqual(t, "gl name", gl.Name, "Alice")

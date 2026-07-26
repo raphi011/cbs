@@ -68,6 +68,14 @@ type AuditEvent struct {
 }
 
 // AuditFilter narrows an audit log listing. Zero values mean "no filter".
+//
+// A listing is always returned in ascending Seq order, whatever the filter.
+// Before and Limit together form a backwards pager: Before is the exclusive
+// upper cursor and Limit keeps the Limit events with the HIGHEST Seq below it,
+// still handed back oldest-first. Paging therefore walks backwards through the
+// log by passing the lowest Seq of the previous page as the next Before, while
+// each page still reads in chronological order. Every Store implementation must
+// behave this way; storetest pins it.
 type AuditFilter struct {
 	BookID   BookID
 	Scope    Scope

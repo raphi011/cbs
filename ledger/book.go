@@ -1,127 +1,112 @@
 package ledger
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
-	"sync"
 	"time"
 )
 
-// Book is the central component of the in-memory general ledger.
-// It manages the full lifecycle of ledgers, subledgers, accounts,
-// transactions, and the audit trail.
+// Book is the central component of the general ledger. It manages the full
+// lifecycle of ledgers, subledgers, accounts, transactions, and the audit
+// trail.
+//
+// # Where the state lives
+//
+// A Book owns no state of its own. Every entity, every counter and the audit
+// log live in a Store (store/mem in-process, store/pg on Postgres); the Book
+// keeps only the store handle, its BookID and its clock. All it contributes is
+// validation and orchestration — which is exactly the part that must not differ
+// between the two backends.
+//
+// # Units of work
+//
+// Every mutating method comes in two forms. The plain form (PostTransaction)
+// wraps a single Store.Update, so the whole operation — the entity writes, the
+// counters it burned and the audit event it emitted — commits or rolls back
+// together. The exported …Tx form (PostTransactionTx) takes a caller-supplied
+// Tx instead, so the deposit and payment layers can compose several operations
+// across layers into one atomic unit of work.
+//
+// Because Update is exclusive, a …Tx method must never be handed a Tx and then
+// call a plain method: that would open a second unit of work inside the first
+// and, on store/mem, deadlock on the store's write lock.
 //
 // # Thread Safety
 //
-// All public methods on Book are safe for concurrent use.
-// Internally, a read-write mutex protects all state mutations.
+// All public methods on Book are safe for concurrent use; the Store provides
+// the isolation.
 //
 // # Double-Entry Bookkeeping
 //
 // Every transaction posted through this book enforces the fundamental
-// accounting equation: total debits must equal total credits. This guarantee is checked before any entries
-// are applied to account balances.
+// accounting equation: total debits must equal total credits. This guarantee is
+// checked before any entries are applied to account balances.
 //
 // # ID Generation
 //
-// The book uses a simple monotonic counter for ID generation. In a
-// production system, you would replace this with UUIDs or another
-// globally unique ID scheme.
+// The book uses simple monotonic counters, allocated by the store and scoped to
+// the BookID, for ID generation. In a production system, you would replace this
+// with UUIDs or another globally unique ID scheme.
 type Book struct {
-	mu sync.RWMutex
+	// store owns all persistent state.
+	store Store
 
-	// Entity storage, keyed by ID.
-	ledgers      map[LedgerID]*Ledger
-	subledgers   map[SubledgerID]*Subledger
-	accounts     map[AccountID]*Account
-	transactions map[TransactionID]*Transaction
-
-	// idempotencyIndex maps idempotency keys to transaction IDs.
-	// This allows the system to detect and reject duplicate postings.
-	idempotencyIndex map[string]TransactionID
-
-	// auditLog is an append-only log of all mutations. Once appended,
-	// entries are never modified or removed.
-	auditLog []*AuditEvent
-
-	// auditSeq is the monotonic sequence counter for audit events.
-	auditSeq int64
-
-	// id is this book's identity within the network. It is a placeholder
-	// until Task 5 populates it with real per-participant book identity;
-	// until then it stays the zero value.
+	// id is this book's identity. Chart-of-accounts IDs are unique within a
+	// book, not globally, so every store call is scoped by it.
 	id BookID
-
-	// idCounter is a simple monotonic counter for generating unique IDs.
-	idCounter int64
-
-	// subledgerSeq is the last chart-of-accounts block issued to a subledger
-	// (100, 200, …). Subledgers are identified by their block, book-wide.
-	subledgerSeq int
-
-	// accountSeq is the next account sequence within each
-	// "<typeBlock>.<subledgerID>" branch. Account numbers reset per
-	// (type, subledger) — the type-first chart-of-accounts convention.
-	accountSeq map[string]int
 
 	// clock is the time source. Override in tests to control time.
 	clock func() time.Time
 }
 
-// NewBook creates a new general ledger with empty state.
+// NewBook creates a general ledger over the given store, identified by id.
+//
+// The clock is injected rather than read from time.Now so that several Books
+// can share a single deterministic time source — for example, the payment
+// package runs one ledger per bank plus a central-bank ledger and drives them
+// all from one clock so that booking dates, value dates, and audit timestamps
+// line up across ledgers.
 //
 // Example:
 //
-//	book := ledger.NewBook()
-//	l, _ := book.CreateLedger("General Ledger")
-//	sl, _ := book.CreateSubledger(l.ID, "Accounts Receivable")
-//	acct, _ := book.CreateAccount(sl.ID, "Customer A", ledger.Asset)
-func NewBook() *Book {
-	return NewBookWithClock(time.Now)
+//	book := ledger.NewBook(mem.New(time.Now), "bank", time.Now)
+//	l, _ := book.CreateLedger(ctx, "General Ledger")
+//	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
+//	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset)
+func NewBook(store Store, id BookID, clock func() time.Time) *Book {
+	return &Book{store: store, id: id, clock: clock}
 }
 
-// NewBookWithClock creates a new general ledger that reads the current
-// time from the provided clock function instead of time.Now.
-//
-// This is useful when several Books must share a single, deterministic
-// time source — for example, the payment package runs one ledger per bank
-// plus a central-bank ledger and drives them all from one clock so that
-// booking dates, value dates, and audit timestamps line up across ledgers.
-func NewBookWithClock(clock func() time.Time) *Book {
-	return &Book{
-		ledgers:          make(map[LedgerID]*Ledger),
-		subledgers:       make(map[SubledgerID]*Subledger),
-		accounts:         make(map[AccountID]*Account),
-		transactions:     make(map[TransactionID]*Transaction),
-		idempotencyIndex: make(map[string]TransactionID),
-		accountSeq:       make(map[string]int),
-		clock:            clock,
-	}
-}
+// ID returns this book's identity within the store.
+func (s *Book) ID() BookID { return s.id }
 
-// nextID generates a unique ID with the given prefix.
-func (s *Book) nextID(prefix string) string {
-	s.idCounter++
-	return fmt.Sprintf("%s_%d", prefix, s.idCounter)
-}
+// Store returns the underlying store, so a caller that needs to span several
+// layers in one unit of work can open the Update itself and then drive the
+// …Tx methods of each layer with the resulting Tx.
+func (s *Book) Store() Store { return s.store }
 
 // now returns the current time using the book's clock.
-func (s *Book) now() time.Time {
-	return s.clock()
-}
+func (s *Book) now() time.Time { return s.clock() }
 
-// appendAudit records an immutable event. payload is marshalled now, not held
-// by reference, so later mutation of the entity cannot rewrite history.
-func (s *Book) appendAudit(scope Scope, eventType, entityID string, payload any) error {
+// appendAuditTx records an immutable event through the transaction, so an audit
+// event never outlives an operation that rolled back.
+//
+// payload is marshalled now, not held by reference, so later mutation of the
+// entity cannot rewrite history. The event's Seq is assigned by the store.
+func (s *Book) appendAuditTx(ctx context.Context, tx Tx, scope Scope, eventType, entityID string, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
 	}
-	s.auditSeq++
-	s.auditLog = append(s.auditLog, &AuditEvent{
-		Seq:        s.auditSeq,
-		ID:         s.nextID("evt"),
+	id, err := tx.NextID(ctx, s.id, "evt")
+	if err != nil {
+		return err
+	}
+	return tx.AppendAudit(ctx, AuditEvent{
+		ID:         id,
 		BookID:     s.id,
 		Scope:      scope,
 		Type:       eventType,
@@ -129,7 +114,6 @@ func (s *Book) appendAudit(scope Scope, eventType, entityID string, payload any)
 		Payload:    raw,
 		OccurredAt: s.now(),
 	})
-	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -141,33 +125,47 @@ func (s *Book) appendAudit(scope Scope, eventType, entityID string, payload any)
 // a book of accounts (e.g., "General Ledger", "Trading Book").
 //
 // Returns the created ledger.
-func (s *Book) CreateLedger(name string) (Ledger, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Book) CreateLedger(ctx context.Context, name string) (Ledger, error) {
+	var out Ledger
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.CreateLedgerTx(ctx, tx, name)
+		return err
+	})
+	return out, err
+}
 
-	l := &Ledger{
-		ID:        LedgerID(s.nextID("ldg")),
+// CreateLedgerTx is CreateLedger within a caller-supplied unit of work.
+func (s *Book) CreateLedgerTx(ctx context.Context, tx Tx, name string) (Ledger, error) {
+	id, err := tx.NextID(ctx, s.id, "ldg")
+	if err != nil {
+		return Ledger{}, err
+	}
+
+	l := Ledger{
+		ID:        LedgerID(id),
 		Name:      name,
 		CreatedAt: s.now(),
 	}
-	s.ledgers[l.ID] = l
-	if err := s.appendAudit(ScopeLedger, EventLedgerCreated, string(l.ID), l); err != nil {
+	if err := tx.PutLedger(ctx, s.id, l); err != nil {
 		return Ledger{}, err
 	}
-	return *l, nil
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventLedgerCreated, string(l.ID), l); err != nil {
+		return Ledger{}, err
+	}
+	return l, nil
 }
 
 // GetLedger retrieves a ledger by its ID.
 // Returns ErrLedgerNotFound if the ledger does not exist.
-func (s *Book) GetLedger(id LedgerID) (Ledger, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	l, ok := s.ledgers[id]
-	if !ok {
-		return Ledger{}, ErrLedgerNotFound
-	}
-	return *l, nil
+func (s *Book) GetLedger(ctx context.Context, id LedgerID) (Ledger, error) {
+	var out Ledger
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetLedger(ctx, s.id, id)
+		return err
+	})
+	return out, err
 }
 
 // CreateSubledger creates a new subledger under an existing ledger.
@@ -175,39 +173,54 @@ func (s *Book) GetLedger(id LedgerID) (Ledger, error) {
 // (e.g., "Accounts Receivable", "Checking Accounts", "Loan Portfolio").
 //
 // Returns ErrLedgerNotFound if the parent ledger does not exist.
-func (s *Book) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Book) CreateSubledger(ctx context.Context, ledgerID LedgerID, name string) (Subledger, error) {
+	var out Subledger
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.CreateSubledgerTx(ctx, tx, ledgerID, name)
+		return err
+	})
+	return out, err
+}
 
-	if _, ok := s.ledgers[ledgerID]; !ok {
-		return Subledger{}, ErrLedgerNotFound
+// CreateSubledgerTx is CreateSubledger within a caller-supplied unit of work.
+func (s *Book) CreateSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
+	if _, err := tx.GetLedger(ctx, s.id, ledgerID); err != nil {
+		return Subledger{}, err
 	}
 
-	s.subledgerSeq += 100
-	sl := &Subledger{
-		ID:        SubledgerID(strconv.Itoa(s.subledgerSeq)),
+	// Subledgers are identified by their chart-of-accounts block (100, 200, …),
+	// issued book-wide.
+	block, err := tx.NextSubledgerBlock(ctx, s.id)
+	if err != nil {
+		return Subledger{}, err
+	}
+
+	sl := Subledger{
+		ID:        SubledgerID(strconv.Itoa(block)),
 		LedgerID:  ledgerID,
 		Name:      name,
 		CreatedAt: s.now(),
 	}
-	s.subledgers[sl.ID] = sl
-	if err := s.appendAudit(ScopeLedger, EventSubledgerCreated, string(sl.ID), sl); err != nil {
+	if err := tx.PutSubledger(ctx, s.id, sl); err != nil {
 		return Subledger{}, err
 	}
-	return *sl, nil
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventSubledgerCreated, string(sl.ID), sl); err != nil {
+		return Subledger{}, err
+	}
+	return sl, nil
 }
 
 // GetSubledger retrieves a subledger by its ID.
 // Returns ErrSubledgerNotFound if the subledger does not exist.
-func (s *Book) GetSubledger(id SubledgerID) (Subledger, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	sl, ok := s.subledgers[id]
-	if !ok {
-		return Subledger{}, ErrSubledgerNotFound
-	}
-	return *sl, nil
+func (s *Book) GetSubledger(ctx context.Context, id SubledgerID) (Subledger, error) {
+	var out Subledger
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetSubledger(ctx, s.id, id)
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -224,42 +237,56 @@ func (s *Book) GetSubledger(id SubledgerID) (Subledger, error) {
 // The account starts with a zero balance.
 //
 // Returns ErrSubledgerNotFound if the parent subledger does not exist.
-func (s *Book) CreateAccount(subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+	var out Account
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.CreateAccountTx(ctx, tx, subledgerID, name, accountType)
+		return err
+	})
+	return out, err
+}
 
-	if _, ok := s.subledgers[subledgerID]; !ok {
-		return Account{}, ErrSubledgerNotFound
+// CreateAccountTx is CreateAccount within a caller-supplied unit of work.
+func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+	if _, err := tx.GetSubledger(ctx, s.id, subledgerID); err != nil {
+		return Account{}, err
 	}
 
+	// Account numbers reset per (type, subledger) — the type-first
+	// chart-of-accounts convention: <typeBlock>.<subledgerID>.<NNN>.
 	block := accountType.codeBlock()
-	key := fmt.Sprintf("%d.%s", block, subledgerID)
-	s.accountSeq[key]++
-	acct := &Account{
-		ID:          AccountID(fmt.Sprintf("%d.%s.%03d", block, subledgerID, s.accountSeq[key])),
+	seq, err := tx.NextAccountSeq(ctx, s.id, block, subledgerID)
+	if err != nil {
+		return Account{}, err
+	}
+
+	acct := Account{
+		ID:          AccountID(fmt.Sprintf("%d.%s.%03d", block, subledgerID, seq)),
 		SubledgerID: subledgerID,
 		Name:        name,
 		Type:        accountType,
 		CreatedAt:   s.now(),
 	}
-	s.accounts[acct.ID] = acct
-	if err := s.appendAudit(ScopeLedger, EventAccountCreated, string(acct.ID), acct); err != nil {
+	if err := tx.PutAccount(ctx, s.id, acct); err != nil {
 		return Account{}, err
 	}
-	return *acct, nil
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventAccountCreated, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
+	return acct, nil
 }
 
 // GetAccount retrieves an account by its ID.
 // Returns ErrAccountNotFound if the account does not exist.
-func (s *Book) GetAccount(id AccountID) (Account, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	acct, ok := s.accounts[id]
-	if !ok {
-		return Account{}, ErrAccountNotFound
-	}
-	return *acct, nil
+func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {
+	var out Account
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetAccount(ctx, s.id, id)
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -330,10 +357,21 @@ type PostTransactionRequest struct {
 //
 // Internally, balances are stored as signed values where positive means
 // a balance in the account's normal direction.
-func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Book) PostTransaction(ctx context.Context, req PostTransactionRequest) (Transaction, error) {
+	var out Transaction
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostTransactionTx(ctx, tx, req)
+		return err
+	})
+	return out, err
+}
 
+// PostTransactionTx is PostTransaction within a caller-supplied unit of work.
+// It is the composition point for the layers above: a deposit capture or a
+// payment leg posts through this method with the same Tx it uses for its own
+// state, so the GL posting and the layer's own bookkeeping commit together.
+func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransactionRequest) (Transaction, error) {
 	// Validate: non-empty entries.
 	if len(req.Entries) == 0 {
 		return Transaction{}, ErrEmptyTransaction
@@ -346,17 +384,31 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 		}
 	}
 
-	// Validate: all referenced accounts exist.
+	// Validate: all referenced accounts exist. The accounts are kept because
+	// the sufficient-balance check below needs each one's type, and the
+	// distinct IDs because LockAccounts needs them.
+	accounts := make(map[AccountID]Account, len(req.Entries))
+	ids := make([]AccountID, 0, len(req.Entries))
 	for _, e := range req.Entries {
-		if _, ok := s.accounts[e.AccountID]; !ok {
-			return Transaction{}, ErrAccountNotFound
+		if _, seen := accounts[e.AccountID]; seen {
+			continue
 		}
+		acct, err := tx.GetAccount(ctx, s.id, e.AccountID)
+		if err != nil {
+			return Transaction{}, err
+		}
+		accounts[e.AccountID] = acct
+		ids = append(ids, e.AccountID)
 	}
 
 	// Validate: idempotency key.
 	if req.IdempotencyKey != "" {
-		if _, ok := s.idempotencyIndex[req.IdempotencyKey]; ok {
+		_, err := tx.GetTransactionByIdempotencyKey(ctx, s.id, req.IdempotencyKey)
+		switch {
+		case err == nil:
 			return Transaction{}, ErrDuplicateIdempotencyKey
+		case !errors.Is(err, ErrTransactionNotFound):
+			return Transaction{}, err
 		}
 	}
 
@@ -365,8 +417,15 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 		return Transaction{}, err
 	}
 
+	// Take the write locks before reading balances, so the check and the
+	// posting that depends on it are one serialized step: without this, two
+	// concurrent transactions could each see enough funds and both post.
+	if err := tx.LockAccounts(ctx, s.id, ids); err != nil {
+		return Transaction{}, err
+	}
+
 	// Validate: sufficient balance for Asset and Expense accounts.
-	if err := s.checkSufficientBalance(req.Entries); err != nil {
+	if err := s.checkSufficientBalance(ctx, tx, accounts, req.Entries); err != nil {
 		return Transaction{}, err
 	}
 
@@ -384,12 +443,21 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 	// Assign IDs to entries.
 	entries := make([]Entry, len(req.Entries))
 	for i, e := range req.Entries {
-		e.ID = EntryID(s.nextID("ent"))
+		id, err := tx.NextID(ctx, s.id, "ent")
+		if err != nil {
+			return Transaction{}, err
+		}
+		e.ID = EntryID(id)
 		entries[i] = e
 	}
 
-	tx := &Transaction{
-		ID:             TransactionID(s.nextID("tx")),
+	txID, err := tx.NextID(ctx, s.id, "tx")
+	if err != nil {
+		return Transaction{}, err
+	}
+
+	posted := Transaction{
+		ID:             TransactionID(txID),
 		IdempotencyKey: req.IdempotencyKey,
 		Entries:        entries,
 		BookingDate:    bookingDate,
@@ -400,30 +468,13 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 		CreatedAt:      now,
 	}
 
-	s.transactions[tx.ID] = tx
-	if req.IdempotencyKey != "" {
-		s.idempotencyIndex[req.IdempotencyKey] = tx.ID
-	}
-
-	if err := s.appendAudit(ScopeLedger, EventTransactionPosted, string(tx.ID), tx); err != nil {
+	if err := tx.PutTransaction(ctx, s.id, posted); err != nil {
 		return Transaction{}, err
 	}
-	return copyTransaction(tx), nil
-}
-
-// copyTransaction returns a deep copy of a Transaction, including its
-// Entries slice and Metadata map.
-func copyTransaction(tx *Transaction) Transaction {
-	cp := *tx
-	cp.Entries = make([]Entry, len(tx.Entries))
-	copy(cp.Entries, tx.Entries)
-	if tx.Metadata != nil {
-		cp.Metadata = make(map[string]string, len(tx.Metadata))
-		for k, v := range tx.Metadata {
-			cp.Metadata[k] = v
-		}
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventTransactionPosted, string(posted.ID), posted); err != nil {
+		return Transaction{}, err
 	}
-	return cp
+	return posted, nil
 }
 
 // validateBalance checks that total debits equal total credits.
@@ -449,11 +500,14 @@ func validateBalance(entries []Entry) error {
 // checkSufficientBalance verifies that the entries would not cause any
 // Asset or Expense account's book balance to go below zero.
 // Liability, Equity, and Revenue accounts are not checked.
-func (s *Book) checkSufficientBalance(entries []Entry) error {
+//
+// accounts must hold every account referenced by entries; the caller has
+// already loaded and locked them.
+func (s *Book) checkSufficientBalance(ctx context.Context, tx Tx, accounts map[AccountID]Account, entries []Entry) error {
 	// Compute the net balance impact per account.
 	impact := make(map[AccountID]Amount)
 	for _, e := range entries {
-		acct := s.accounts[e.AccountID]
+		acct := accounts[e.AccountID]
 		if e.Direction == acct.Type.NormalBalance() {
 			impact[e.AccountID] += e.Amount
 		} else {
@@ -462,7 +516,7 @@ func (s *Book) checkSufficientBalance(entries []Entry) error {
 	}
 
 	for accountID, delta := range impact {
-		acct := s.accounts[accountID]
+		acct := accounts[accountID]
 		if acct.Type != Asset && acct.Type != Expense {
 			continue
 		}
@@ -470,7 +524,10 @@ func (s *Book) checkSufficientBalance(entries []Entry) error {
 		if delta >= 0 {
 			continue
 		}
-		available := s.computeBookBalance(accountID, acct.Type)
+		available, err := tx.BookBalance(ctx, s.id, accountID, acct.Type.NormalBalance())
+		if err != nil {
+			return err
+		}
 		if available+delta < 0 {
 			return ErrInsufficientBalance
 		}
@@ -480,28 +537,26 @@ func (s *Book) checkSufficientBalance(entries []Entry) error {
 
 // GetTransaction retrieves a transaction by its ID.
 // Returns ErrTransactionNotFound if the transaction does not exist.
-func (s *Book) GetTransaction(id TransactionID) (Transaction, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	tx, ok := s.transactions[id]
-	if !ok {
-		return Transaction{}, ErrTransactionNotFound
-	}
-	return copyTransaction(tx), nil
+func (s *Book) GetTransaction(ctx context.Context, id TransactionID) (Transaction, error) {
+	var out Transaction
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetTransaction(ctx, s.id, id)
+		return err
+	})
+	return out, err
 }
 
 // GetTransactionByIdempotencyKey retrieves a transaction by its idempotency key.
 // Returns ErrTransactionNotFound if no transaction with that key exists.
-func (s *Book) GetTransactionByIdempotencyKey(key string) (Transaction, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	txID, ok := s.idempotencyIndex[key]
-	if !ok {
-		return Transaction{}, ErrTransactionNotFound
-	}
-	return copyTransaction(s.transactions[txID]), nil
+func (s *Book) GetTransactionByIdempotencyKey(ctx context.Context, key string) (Transaction, error) {
+	var out Transaction
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetTransactionByIdempotencyKey(ctx, s.id, key)
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -526,13 +581,22 @@ func (s *Book) GetTransactionByIdempotencyKey(key string) (Transaction, error) {
 // Returns:
 //   - ErrTransactionNotFound if the original does not exist.
 //   - ErrTransactionAlreadyReversed if the original was already reversed.
-func (s *Book) ReverseTransaction(txID TransactionID, description string) (Transaction, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Book) ReverseTransaction(ctx context.Context, txID TransactionID, description string) (Transaction, error) {
+	var out Transaction
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ReverseTransactionTx(ctx, tx, txID, description)
+		return err
+	})
+	return out, err
+}
 
-	original, ok := s.transactions[txID]
-	if !ok {
-		return Transaction{}, ErrTransactionNotFound
+// ReverseTransactionTx is ReverseTransaction within a caller-supplied unit of
+// work.
+func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID TransactionID, description string) (Transaction, error) {
+	original, err := tx.GetTransaction(ctx, s.id, txID)
+	if err != nil {
+		return Transaction{}, err
 	}
 	if original.Status == Reversed {
 		return Transaction{}, ErrTransactionAlreadyReversed
@@ -542,16 +606,25 @@ func (s *Book) ReverseTransaction(txID TransactionID, description string) (Trans
 	now := s.now()
 	entries := make([]Entry, len(original.Entries))
 	for i, e := range original.Entries {
+		id, err := tx.NextID(ctx, s.id, "ent")
+		if err != nil {
+			return Transaction{}, err
+		}
 		entries[i] = Entry{
-			ID:        EntryID(s.nextID("ent")),
+			ID:        EntryID(id),
 			AccountID: e.AccountID,
 			Amount:    e.Amount,
 			Direction: e.Direction.Opposite(),
 		}
 	}
 
-	reversal := &Transaction{
-		ID:          TransactionID(s.nextID("tx")),
+	reversalID, err := tx.NextID(ctx, s.id, "tx")
+	if err != nil {
+		return Transaction{}, err
+	}
+
+	reversal := Transaction{
+		ID:          TransactionID(reversalID),
 		Entries:     entries,
 		BookingDate: now,
 		ValueDate:   original.ValueDate,
@@ -561,17 +634,23 @@ func (s *Book) ReverseTransaction(txID TransactionID, description string) (Trans
 		CreatedAt:   now,
 	}
 
-	original.Status = Reversed
-	s.transactions[reversal.ID] = reversal
+	// Conditional in the store: it flips Posted -> Reversed or fails, so two
+	// concurrent reversals cannot both succeed.
+	if err := tx.MarkReversed(ctx, s.id, original.ID); err != nil {
+		return Transaction{}, err
+	}
+	if err := tx.PutTransaction(ctx, s.id, reversal); err != nil {
+		return Transaction{}, err
+	}
 
-	if err := s.appendAudit(ScopeLedger, EventTransactionReversed, string(original.ID), map[string]string{
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventTransactionReversed, string(original.ID), map[string]string{
 		"original_id": string(original.ID),
 		"reversal_id": string(reversal.ID),
 	}); err != nil {
 		return Transaction{}, err
 	}
 
-	return copyTransaction(reversal), nil
+	return reversal, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -581,65 +660,36 @@ func (s *Book) ReverseTransaction(txID TransactionID, description string) (Trans
 // BookBalance computes the current book balance of an account.
 //
 // The book balance is the net effect of all posted transactions on this
-// account, calculated by replaying all entries:
+// account, aggregated by the store from its entries:
 //
 //   - For Asset/Expense accounts, debits increase and credits decrease.
 //   - For Liability/Equity/Revenue accounts, credits increase and debits decrease.
 //
-// Returns ErrAccountNotFound if the account does not exist.
-func (s *Book) BookBalance(accountID AccountID) (Amount, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	acct, ok := s.accounts[accountID]
-	if !ok {
-		return 0, ErrAccountNotFound
-	}
-
-	return s.computeBookBalance(accountID, acct.Type), nil
-}
-
-// computeBookBalance calculates the net book balance for an account by
-// replaying all posted transaction entries.
-//
-// The sign convention:
-//   - Entries in the account's normal direction add to the balance.
-//   - Entries opposite to the normal direction subtract from the balance.
-//
-// For example, for an Asset account (normal = Debit):
-//   - Debit entry of 100 -> balance += 100
-//   - Credit entry of 30  -> balance -= 30
-//   - Net: 70
-//
 // Note: ALL transactions are included, including those marked as Reversed.
 // The Reversed status is informational — the corresponding reversal
-// transaction's entries are what actually cancel out the original's
-// balance impact. This preserves the full audit trail.
-func (s *Book) computeBookBalance(accountID AccountID, accountType AccountType) Amount {
-	var balance Amount
-	normal := accountType.NormalBalance()
-
-	for _, tx := range s.transactions {
-		for _, e := range tx.Entries {
-			if e.AccountID != accountID {
-				continue
-			}
-			if e.Direction == normal {
-				balance += e.Amount
-			} else {
-				balance -= e.Amount
-			}
+// transaction's entries are what actually cancel out the original's balance
+// impact. This preserves the full audit trail, and every Store implementation
+// must aggregate the same way.
+//
+// Returns ErrAccountNotFound if the account does not exist.
+func (s *Book) BookBalance(ctx context.Context, accountID AccountID) (Amount, error) {
+	var out Amount
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		acct, err := tx.GetAccount(ctx, s.id, accountID)
+		if err != nil {
+			return err
 		}
-	}
-
-	return balance
+		out, err = tx.BookBalance(ctx, s.id, accountID, acct.Type.NormalBalance())
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------
 
-// GetAuditLog returns all audit events, ordered chronologically.
+// GetAuditLog returns this book's ledger-scope audit events, ordered by Seq.
 //
 // The audit log is an append-only, immutable record of every mutation
 // that has occurred in the system. It provides:
@@ -649,31 +699,25 @@ func (s *Book) computeBookBalance(accountID AccountID, accountType AccountType) 
 //   - Reconciliation: Independent verification of account balances
 //     by replaying events.
 //
-// In a production system, the audit log would typically be stored in a
-// separate, write-once data store with strict access controls.
-func (s *Book) GetAuditLog() []AuditEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Return copies to prevent external mutation.
-	result := make([]AuditEvent, len(s.auditLog))
-	for i, e := range s.auditLog {
-		result[i] = *e
-	}
-	return result
+// The deposit and payment layers write into the same log under their own
+// Scope; this method deliberately narrows to ScopeLedger so a Book reports
+// only the mutations it made.
+func (s *Book) GetAuditLog(ctx context.Context) ([]AuditEvent, error) {
+	return s.listAudit(ctx, AuditFilter{BookID: s.id, Scope: ScopeLedger})
 }
 
-// GetAuditLogForEntity returns all audit events related to a specific
-// entity, identified by its ID.
-func (s *Book) GetAuditLogForEntity(entityID string) []AuditEvent {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+// GetAuditLogForEntity returns this book's ledger-scope audit events related to
+// a specific entity, identified by its ID.
+func (s *Book) GetAuditLogForEntity(ctx context.Context, entityID string) ([]AuditEvent, error) {
+	return s.listAudit(ctx, AuditFilter{BookID: s.id, Scope: ScopeLedger, EntityID: entityID})
+}
 
-	var result []AuditEvent
-	for _, e := range s.auditLog {
-		if e.EntityID == entityID {
-			result = append(result, *e)
-		}
-	}
-	return result
+func (s *Book) listAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error) {
+	var out []AuditEvent
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListAudit(ctx, f)
+		return err
+	})
+	return out, err
 }

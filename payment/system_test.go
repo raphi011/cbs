@@ -1,12 +1,14 @@
 package payment
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 // fixedTime is the instant returned by the test clock, matching the ledger
@@ -15,7 +17,8 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
-	return NewNetworkWithClock(func() time.Time { return fixedTime })
+	clock := func() time.Time { return fixedTime }
+	return NewNetwork(mem.New(clock), clock)
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
@@ -56,7 +59,7 @@ func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settle
 // bookBalance returns the GL book balance of an arbitrary ledger account.
 func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amount {
 	t.Helper()
-	bal, err := l.BookBalance(acct)
+	bal, err := l.BookBalance(context.Background(), acct)
 	assertNoError(t, err)
 	return bal
 }
