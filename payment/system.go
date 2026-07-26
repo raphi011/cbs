@@ -308,6 +308,9 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Pa
 	if err := tx.PutParticipant(ctx, p); err != nil {
 		return nil, err
 	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventParticipantAdded, string(p.ID), p); err != nil {
+		return nil, err
+	}
 	return s.bind(p), nil
 }
 
@@ -404,6 +407,9 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor P
 	if err := tx.PutMandate(ctx, m); err != nil {
 		return Mandate{}, err
 	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventMandateCreated, string(m.ID), m); err != nil {
+		return Mandate{}, err
+	}
 	return m, nil
 }
 
@@ -422,7 +428,10 @@ func (s *Network) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) erro
 		return err
 	}
 	m.Status = MandateRevoked
-	return tx.PutMandate(ctx, m)
+	if err := tx.PutMandate(ctx, m); err != nil {
+		return err
+	}
+	return s.appendAuditTx(ctx, tx, ledger.EventMandateRevoked, string(m.ID), m)
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +478,9 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 	if err := tx.PutCycle(ctx, c); err != nil {
 		return ClearingCycle{}, err
 	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleOpened, string(c.ID), c); err != nil {
+		return ClearingCycle{}, err
+	}
 	return c, nil
 }
 
@@ -510,12 +522,21 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 		if err := tx.PutPayment(ctx, p); err != nil {
 			return ClearingCycle{}, err
 		}
+		if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentCleared, string(p.ID), p); err != nil {
+			return ClearingCycle{}, err
+		}
 	}
 
 	c.NetPositions = net
 	c.Status = CycleClosed
 	c.ClosedAt = s.now()
 	if err := tx.PutCycle(ctx, c); err != nil {
+		return ClearingCycle{}, err
+	}
+	// The per-payment events come first and cycle.closed last, so the log reads
+	// in the order the work happened; all of them share this transaction, so a
+	// cut-off that fails leaves none of them behind.
+	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleClosed, string(c.ID), c); err != nil {
 		return ClearingCycle{}, err
 	}
 	return c, nil
@@ -656,6 +677,9 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		if err := tx.PutPayment(ctx, p); err != nil {
 			return Settlement{}, err
 		}
+		if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentSettled, string(p.ID), p); err != nil {
+			return Settlement{}, err
+		}
 	}
 
 	settlementID, err := tx.NextID(ctx, ledger.NetworkBook, "set")
@@ -677,6 +701,11 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	c.Status = CycleSettled
 	c.SettlementID = st.ID
 	if err := tx.PutCycle(ctx, c); err != nil {
+		return Settlement{}, err
+	}
+	// One payment.settled per payment (above) plus one cycle.settled, all on
+	// this transaction — the batch is atomic, so its audit trail is too.
+	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleSettled, string(c.ID), st); err != nil {
 		return Settlement{}, err
 	}
 	return st, nil
@@ -813,6 +842,14 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if err := scheme.Validate(ctx, &p, SchemeContext{Network: s, Tx: tx, Now: now}); err != nil {
 		return Payment{}, err
 	}
+	// Two events, because initiation and acceptance are two different facts: the
+	// instruction arrived and passed scheme validation, and — below, once the
+	// payer's funds are in suspense and the payment has joined a cycle — the
+	// network took responsibility for it. A rejected instruction rolls back with
+	// the transaction, so neither event is ever recorded for one.
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
 
 	// Debtor leg: money leaves the payer into the bank's clearing suspense.
 	// The deposit layer is the authority for the funds/status check (run in
@@ -851,6 +888,9 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 
 	cycle.PaymentIDs = append(cycle.PaymentIDs, p.ID)
 	if err := tx.PutCycle(ctx, cycle); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentAccepted, string(p.ID), p); err != nil {
 		return Payment{}, err
 	}
 	return p, nil
@@ -896,6 +936,9 @@ func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	}
 	p.RejectReason = reason
 	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentRejected, string(p.ID), p); err != nil {
 		return Payment{}, err
 	}
 	return p, nil
@@ -988,6 +1031,9 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	}
 	p.RejectReason = reason
 	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentReturned, string(p.ID), p); err != nil {
 		return Payment{}, err
 	}
 	return p, nil

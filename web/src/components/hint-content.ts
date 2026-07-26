@@ -624,7 +624,13 @@ The suspense balance at any point equals the total value of in-flight payments t
     title: "Audit trail",
     body: `The **audit trail** is an **immutable, append-only log** of every mutation in the system. Nothing is ever deleted. Every event carries a unique ID, timestamp, event type, and the full payload of the affected entity.
 
-Events recorded: account creation, transaction posting, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[reversal]], and [[snapshot|end-of-day snapshot]].
+Events recorded, grouped by the layer (**scope**) that produced them:
+
+- **ledger** — ledger/subledger/account creation, transaction posting, [[reversal]]
+- **deposit** — account opened/frozen/closed, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[snapshot|end-of-day snapshot]]
+- **payment** — participant added, [[mandate]] created/revoked, and every payment and [[clearing-cycle|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
+
+Each event is written **inside the transaction of the operation it describes**, so an operation that rolls back leaves no record claiming it happened. The log is unbounded, so the API pages it: **limit** (default 100, max 1000) and **before**, an exclusive cursor on the event's sequence number.
 
 \`\`\`
 Example audit events (most recent first):

@@ -619,6 +619,76 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "oversized limit", len(audit(t, s, ledger.AuditFilter{Limit: 99})), 5)
 	})
 
+	t.Run("AuditPagingIsScopedToItsFilter", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// Seq is a store-GLOBAL total order, not per book or per scope, so a
+		// scope's events are separated by gaps that belong to other scopes. A
+		// pager that treated Before as "the previous few sequence numbers"
+		// instead of as one predicate among the rest would return other layers'
+		// events — or nothing at all.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for round := range 3 {
+				for _, e := range []ledger.AuditEvent{
+					{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
+					{BookID: bookA, Scope: ledger.ScopeDeposit, Type: ledger.EventAccountOpened},
+					{BookID: bookB, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
+					{BookID: ledger.NetworkBook, Scope: ledger.ScopePayment, Type: ledger.EventPaymentAccepted},
+				} {
+					e.ID = fmt.Sprintf("evt_%s_%d", e.Type, round)
+					e.EntityID = fmt.Sprintf("ent_%d", round)
+					if err := tx.AppendAudit(ctx, e); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
+		})
+
+		filter := ledger.AuditFilter{BookID: ledger.NetworkBook, Scope: ledger.ScopePayment}
+		all := audit(t, s, filter)
+		assertEqual(t, "payment events", len(all), 3)
+
+		// Limit is applied LAST, after every other predicate: two payment
+		// events, not "the newest two rows, of which some are payment events".
+		paged := filter
+		paged.Limit = 2
+		page1 := audit(t, s, paged)
+		assertEqual(t, "page 1 size", len(page1), 2)
+		assertEqual(t, "page 1 first", page1[0].Seq, all[1].Seq)
+		assertEqual(t, "page 1 second", page1[1].Seq, all[2].Seq)
+
+		// The cursor is the page's OLDEST Seq, and there are other scopes'
+		// events immediately below it.
+		paged.Before = page1[0].Seq
+		page2 := audit(t, s, paged)
+		assertEqual(t, "page 2 size", len(page2), 1)
+		assertEqual(t, "page 2 first", page2[0].Seq, all[0].Seq)
+		assertEqual(t, "page 2 scope", string(page2[0].Scope), string(ledger.ScopePayment))
+
+		// Below the oldest match is an empty page, even though lower sequence
+		// numbers exist in other scopes.
+		paged.Before = all[0].Seq
+		assertEqual(t, "page below the oldest match", len(audit(t, s, paged)), 0)
+
+		// Before composes with Scope and EntityID together. The two matches are
+		// in different books and are separated by a deposit-scope event, so
+		// paging between them only works if Before is one predicate among the
+		// rest rather than a slice of the global sequence.
+		byEntity := ledger.AuditFilter{Scope: ledger.ScopeLedger, EntityID: "ent_1"}
+		ent1 := audit(t, s, byEntity)
+		assertEqual(t, "ledger events for ent_1", len(ent1), 2)
+		byEntity.Before = ent1[1].Seq
+		assertEqual(t, "ledger events for ent_1 below the newer one", len(audit(t, s, byEntity)), 1)
+		byEntity.Before = ent1[0].Seq
+		assertEqual(t, "ledger events for ent_1 below the older one", len(audit(t, s, byEntity)), 0)
+
+		// A Type filter narrows within a scope and still pages.
+		byType := ledger.AuditFilter{Type: ledger.EventPaymentAccepted, Limit: 1}
+		assertEqual(t, "newest payment.accepted", len(audit(t, s, byType)), 1)
+		assertEqual(t, "newest payment.accepted seq", audit(t, s, byType)[0].Seq, all[2].Seq)
+	})
+
 	t.Run("ResetClearsEverything", func(t *testing.T) {
 		s := open(t, newStore)
 

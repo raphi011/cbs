@@ -2,6 +2,17 @@
 // consistent (e.g. funding a participant invalidates that participant's
 // balances). Keys grow as milestones add screens.
 
+import type { AuditQuery } from "../types";
+
+// auditKey appends the filter to an audit key only when there is one, so the
+// unfiltered key stays a prefix of every filtered one and a single
+// invalidateQueries refreshes every page of a log.
+function auditKey(base: readonly string[], q?: AuditQuery) {
+  return q && Object.values(q).some((v) => v !== undefined)
+    ? ([...base, q] as const)
+    : (base as readonly string[]);
+}
+
 export const qk = {
   participants: () => ["participants"] as const,
   participant: (pid: string) => ["participants", pid] as const,
@@ -10,7 +21,8 @@ export const qk = {
 
   reserves: () => ["central-bank", "reserves"] as const,
   reserve: (pid: string) => ["central-bank", "reserves", pid] as const,
-  centralBankAudit: () => ["central-bank", "audit"] as const,
+  centralBankAudit: (q?: AuditQuery) =>
+    auditKey(["central-bank", "audit"], q),
 
   // Ledger layer (all nested under the participant so a post can invalidate
   // a whole subtree at once).
@@ -31,10 +43,8 @@ export const qk = {
       : (["participants", pid, "transactions"] as const),
   transaction: (pid: string, tid: string) =>
     ["participants", pid, "transaction", tid] as const,
-  ledgerAudit: (pid: string, entity?: string) =>
-    entity
-      ? (["participants", pid, "audit", { entity }] as const)
-      : (["participants", pid, "audit"] as const),
+  ledgerAudit: (pid: string, q?: AuditQuery) =>
+    auditKey(["participants", pid, "audit"], q),
 
   // Deposit layer. Balances, holds and snapshots nest under the account so a
   // single invalidate of ["participants", pid, "deposit-accounts"] refreshes
@@ -51,8 +61,8 @@ export const qk = {
     ["participants", pid, "holds", hid] as const,
   snapshots: (pid: string, did: string) =>
     ["participants", pid, "deposit-accounts", did, "snapshots"] as const,
-  depositAudit: (pid: string) =>
-    ["participants", pid, "deposit-audit"] as const,
+  depositAudit: (pid: string, q?: AuditQuery) =>
+    auditKey(["participants", pid, "deposit-audit"], q),
 
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,
@@ -61,6 +71,7 @@ export const qk = {
   payment: (payid: string) => ["payments", payid] as const,
   cycles: () => ["cycles"] as const,
   cycle: (cid: string) => ["cycles", cid] as const,
+  paymentAudit: (q?: AuditQuery) => auditKey(["payments", "audit"], q),
   settlements: () => ["settlements"] as const,
   settlement: (sid: string) => ["settlements", sid] as const,
 };

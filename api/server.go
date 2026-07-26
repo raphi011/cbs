@@ -66,6 +66,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)
 	s.registerPaymentRoutes(mux)
+	s.registerAuditRoutes(mux)
 	s.registerAdminRoutes(mux)
 	return s.withMiddleware(mux)
 }

@@ -12,6 +12,7 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
+import type { AuditQuery } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -39,6 +40,8 @@ export function useAddParticipant() {
     mutationFn: api.addParticipant,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.participants() });
+      // participant.added is a network-scope audit event.
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
     },
   });
 }
@@ -63,10 +66,10 @@ export function useReserve(pid: string) {
   });
 }
 
-export function useCentralBankAudit() {
+export function useCentralBankAudit(q: AuditQuery = {}) {
   return useQuery({
-    queryKey: qk.centralBankAudit(),
-    queryFn: api.centralBankAudit,
+    queryKey: qk.centralBankAudit(q),
+    queryFn: () => api.centralBankAudit(q),
   });
 }
 
@@ -227,10 +230,10 @@ export function useReverseTransaction(pid: string) {
   });
 }
 
-export function useLedgerAudit(pid: string, entity?: string) {
+export function useLedgerAudit(pid: string, q: AuditQuery = {}) {
   return useQuery({
-    queryKey: qk.ledgerAudit(pid, entity),
-    queryFn: () => api.ledgerAudit(pid, entity),
+    queryKey: qk.ledgerAudit(pid, q),
+    queryFn: () => api.ledgerAudit(pid, q),
     enabled: pid !== "",
   });
 }
@@ -406,11 +409,20 @@ export function useTakeSnapshot(pid: string, did: string) {
 
 // --- Deposit: audit -------------------------------------------------------
 
-export function useDepositAudit(pid: string) {
+export function useDepositAudit(pid: string, q: AuditQuery = {}) {
   return useQuery({
-    queryKey: qk.depositAudit(pid),
-    queryFn: () => api.depositAudit(pid),
+    queryKey: qk.depositAudit(pid, q),
+    queryFn: () => api.depositAudit(pid, q),
     enabled: pid !== "",
+  });
+}
+
+// --- Payment: audit -------------------------------------------------------
+
+export function usePaymentAudit(q: AuditQuery = {}) {
+  return useQuery({
+    queryKey: qk.paymentAudit(q),
+    queryFn: () => api.paymentAudit(q),
   });
 }
 
@@ -432,7 +444,10 @@ export function useCreateMandate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.createMandate,
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.mandates() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+    },
   });
 }
 
@@ -440,7 +455,10 @@ export function useRevokeMandate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (mid: string) => api.revokeMandate(mid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.mandates() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+    },
   });
 }
 
@@ -451,6 +469,8 @@ export function useRevokeMandate() {
 // every affected id, invalidate the whole network plus all participant-scoped
 // data — the in-memory dataset is tiny and this is always correct.
 function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
+  // qk.payments() is a prefix of qk.paymentAudit(), so the network's own audit
+  // trail is refreshed by the first line here.
   qc.invalidateQueries({ queryKey: qk.payments() });
   qc.invalidateQueries({ queryKey: qk.cycles() });
   qc.invalidateQueries({ queryKey: qk.settlements() });

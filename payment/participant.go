@@ -56,8 +56,12 @@ type Participant struct {
 	// Participant with both nil, and the Network binds them on the way out (see
 	// Network.bind). Treat them as derived, exactly like a database row's
 	// association objects.
-	Ledger  *ledger.Book
-	Deposit *deposit.Register
+	//
+	// json:"-" for the same reason: the participant.added audit payload is a
+	// snapshot of the stored row, and a handle is neither data nor meaningful
+	// once serialized.
+	Ledger  *ledger.Book      `json:"-"`
+	Deposit *deposit.Register `json:"-"`
 }
 
 // OpenCustomerAccount opens a new customer deposit account at the bank.

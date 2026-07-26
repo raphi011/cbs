@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/mem"
 )
@@ -83,6 +85,13 @@ func getJSON(t *testing.T, h http.Handler, path string, out any) {
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
 		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+	}
+}
+
+func assertEqual[T comparable](t *testing.T, what string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Fatalf("%s: got %v, want %v", what, got, want)
 	}
 }
 
@@ -316,5 +325,323 @@ func TestResetEmptiesState(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "Baseline" {
 		t.Fatalf("accounts after reset = %v, want [Baseline]", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Audit endpoints
+// ---------------------------------------------------------------------------
+
+// auditFixture runs one payment end to end, so the log holds every scope: the
+// network's own payment-scope events, both banks' ledger-scope events, their
+// deposit-scope events and the central bank's. It returns the two participant
+// IDs and the payment ID.
+func auditFixture(t *testing.T, h http.Handler) (bankA, bankB, payID string) {
+	t.Helper()
+	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
+		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	cyc := doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+	pay := doJSON(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":25000
+	}`, http.StatusCreated)["id"].(string)
+	assertStatus(t, h, "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	assertStatus(t, h, "POST", "/cycles/"+cyc+"/settle", "", http.StatusOK)
+	return a, b, pay
+}
+
+func auditTypes(events []auditEventDTO) []string {
+	out := make([]string, len(events))
+	for i, e := range events {
+		out[i] = e.Type
+	}
+	return out
+}
+
+// TestAuditFilterParsesAndCapsLimits pins the query-parameter contract at the
+// one place it is implemented. The cap matters: a durable log is unbounded, so
+// an unbounded ?limit= is a way to ask the server to read the whole table.
+func TestAuditFilterParsesAndCapsLimits(t *testing.T) {
+	filterFor := func(query string) ledger.AuditFilter {
+		r := httptest.NewRequest("GET", "/payments/audit"+query, nil)
+		return auditFilter(r, ledger.NetworkBook, ledger.ScopePayment)
+	}
+
+	// The route decides the book and the scope; the client never can.
+	base := filterFor("")
+	assertEqual(t, "book", base.BookID, ledger.NetworkBook)
+	assertEqual(t, "scope", base.Scope, ledger.ScopePayment)
+	assertEqual(t, "default limit", base.Limit, 100)
+	assertEqual(t, "default before", base.Before, int64(0))
+	assertEqual(t, "default type", base.Type, "")
+	assertEqual(t, "default entity", base.EntityID, "")
+
+	assertEqual(t, "explicit limit", filterFor("?limit=7").Limit, 7)
+	assertEqual(t, "limit at the cap", filterFor("?limit=1000").Limit, 1000)
+	assertEqual(t, "limit above the cap", filterFor("?limit=1001").Limit, 1000)
+	assertEqual(t, "absurd limit", filterFor("?limit=99999").Limit, 1000)
+
+	// Anything that is not a positive integer falls back to the default rather
+	// than becoming an unbounded read.
+	assertEqual(t, "zero limit", filterFor("?limit=0").Limit, 100)
+	assertEqual(t, "negative limit", filterFor("?limit=-5").Limit, 100)
+	assertEqual(t, "garbage limit", filterFor("?limit=lots").Limit, 100)
+	assertEqual(t, "empty limit", filterFor("?limit=").Limit, 100)
+
+	assertEqual(t, "before", filterFor("?before=42").Before, int64(42))
+	assertEqual(t, "negative before", filterFor("?before=-1").Before, int64(0))
+	assertEqual(t, "garbage before", filterFor("?before=soon").Before, int64(0))
+
+	assertEqual(t, "type", filterFor("?type=cycle.closed").Type, ledger.EventCycleClosed)
+	assertEqual(t, "entity", filterFor("?entity=pay_1").EntityID, "pay_1")
+}
+
+// TestPaymentAuditRecordsTheLifecycle pins the payment layer's event stream:
+// the layer had no audit trail at all, so this is the whole of it.
+func TestPaymentAuditRecordsTheLifecycle(t *testing.T) {
+	h := newTestServer(t)
+	_, _, payID := auditFixture(t, h)
+
+	var events []auditEventDTO
+	getJSON(t, h, "/payments/audit?limit=1000", &events)
+
+	want := []string{
+		ledger.EventParticipantAdded, // Bank A
+		ledger.EventParticipantAdded, // Bank B
+		ledger.EventCycleOpened,
+		ledger.EventPaymentInitiated,
+		ledger.EventPaymentAccepted,
+		ledger.EventPaymentCleared, // one per payment in the cycle
+		ledger.EventCycleClosed,
+		ledger.EventPaymentSettled, // one per payment in the cycle
+		ledger.EventCycleSettled,
+	}
+	got := auditTypes(events)
+	assertEqual(t, "event stream", strings.Join(got, " "), strings.Join(want, " "))
+
+	// Every event is network-scoped and carries a payload and a Seq.
+	for _, e := range events {
+		assertEqual(t, "scope of "+e.Type, e.Scope, string(ledger.ScopePayment))
+		if e.Seq == 0 {
+			t.Fatalf("%s has no seq", e.Type)
+		}
+		if len(e.Payload) == 0 {
+			t.Fatalf("%s has no payload", e.Type)
+		}
+	}
+
+	// Entity IDs point at the thing that changed, so ?entity= works.
+	var forPayment []auditEventDTO
+	getJSON(t, h, "/payments/audit?entity="+payID, &forPayment)
+	assertEqual(t, "events for the payment", strings.Join(auditTypes(forPayment), " "),
+		strings.Join([]string{
+			ledger.EventPaymentInitiated,
+			ledger.EventPaymentAccepted,
+			ledger.EventPaymentCleared,
+			ledger.EventPaymentSettled,
+		}, " "))
+
+	// ?type= narrows to one event type.
+	var cleared []auditEventDTO
+	getJSON(t, h, "/payments/audit?type="+ledger.EventPaymentCleared, &cleared)
+	assertEqual(t, "cleared events", len(cleared), 1)
+	assertEqual(t, "cleared entity", cleared[0].EntityID, payID)
+}
+
+// TestAuditRejectedAndReturnedPayments covers the two lifecycle branches the
+// happy path never reaches.
+func TestAuditRejectedAndReturnedPayments(t *testing.T) {
+	h := newTestServer(t)
+	a, b, payID := auditFixture(t, h)
+
+	// A settled payment can be returned.
+	doJSON(t, h, "POST", "/payments/"+payID+"/return", `{"reason":"AC04"}`, http.StatusOK)
+
+	// A fresh payment in a fresh cycle can be rejected before it clears.
+	var aAccounts, bAccounts []depositAccountDTO
+	getJSON(t, h, "/participants/"+a+"/deposit-accounts", &aAccounts)
+	getJSON(t, h, "/participants/"+b+"/deposit-accounts", &bAccounts)
+	doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	second := doJSON(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"amount":1000
+	}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/payments/"+second+"/reject", `{"reason":"AM05"}`, http.StatusOK)
+
+	var returned []auditEventDTO
+	getJSON(t, h, "/payments/audit?type="+ledger.EventPaymentReturned, &returned)
+	assertEqual(t, "returned events", len(returned), 1)
+	assertEqual(t, "returned entity", returned[0].EntityID, payID)
+
+	var rejected []auditEventDTO
+	getJSON(t, h, "/payments/audit?type="+ledger.EventPaymentRejected, &rejected)
+	assertEqual(t, "rejected events", len(rejected), 1)
+	assertEqual(t, "rejected entity", rejected[0].EntityID, second)
+}
+
+// TestAuditMandateEvents covers the two mandate events, which no payment flow
+// emits on its own.
+func TestAuditMandateEvents(t *testing.T) {
+	h := newTestServer(t)
+	a, b, _ := auditFixture(t, h)
+
+	var aAccounts, bAccounts []depositAccountDTO
+	getJSON(t, h, "/participants/"+a+"/deposit-accounts", &aAccounts)
+	getJSON(t, h, "/participants/"+b+"/deposit-accounts", &bAccounts)
+
+	mid := doJSON(t, h, "POST", "/mandates", `{
+		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"maxAmount":50000
+	}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
+
+	var events []auditEventDTO
+	getJSON(t, h, "/payments/audit?entity="+mid, &events)
+	assertEqual(t, "mandate events", strings.Join(auditTypes(events), " "),
+		strings.Join([]string{ledger.EventMandateCreated, ledger.EventMandateRevoked}, " "))
+}
+
+// TestAuditRoutesAreScoped pins that the four endpoints are four filters over
+// one log: each returns its own scope and its own book, and nothing else.
+func TestAuditRoutesAreScoped(t *testing.T) {
+	h := newTestServer(t)
+	a, b, _ := auditFixture(t, h)
+
+	cases := []struct {
+		path      string
+		wantScope string
+	}{
+		{"/participants/" + a + "/audit", string(ledger.ScopeLedger)},
+		{"/participants/" + a + "/deposit-audit", string(ledger.ScopeDeposit)},
+		{"/central-bank/audit", string(ledger.ScopeLedger)},
+		{"/payments/audit", string(ledger.ScopePayment)},
+	}
+	for _, c := range cases {
+		var events []auditEventDTO
+		getJSON(t, h, c.path+"?limit=1000", &events)
+		if len(events) == 0 {
+			t.Fatalf("%s returned no events", c.path)
+		}
+		for _, e := range events {
+			assertEqual(t, c.path+" scope", e.Scope, c.wantScope)
+		}
+	}
+
+	// Two banks share a store; a bank's log must not leak the other's. Bank B
+	// opened no customer account beyond the fixture's, so compare entity sets.
+	var aLedger, bLedger []auditEventDTO
+	getJSON(t, h, "/participants/"+a+"/audit?limit=1000", &aLedger)
+	getJSON(t, h, "/participants/"+b+"/audit?limit=1000", &bLedger)
+	seen := map[int64]bool{}
+	for _, e := range aLedger {
+		seen[e.Seq] = true
+	}
+	for _, e := range bLedger {
+		if seen[e.Seq] {
+			t.Fatalf("seq %d appears in both banks' ledger logs", e.Seq)
+		}
+	}
+}
+
+// TestAuditPaginationByCursor pins the backwards pager.
+//
+// Seq is a store-GLOBAL total order, not per book or per scope, so this is the
+// case that matters: the payment-scope events are interleaved with hundreds of
+// ledger- and deposit-scope ones, and ?before= must mean "the next page of THIS
+// filter", not "the next few sequence numbers".
+func TestAuditPaginationByCursor(t *testing.T) {
+	h := newTestServer(t)
+	auditFixture(t, h)
+
+	var all []auditEventDTO
+	getJSON(t, h, "/payments/audit?limit=1000", &all)
+	if len(all) < 5 {
+		t.Fatalf("fixture produced %d payment events, want at least 5", len(all))
+	}
+
+	// Walk the whole log backwards two at a time and reassemble it.
+	var walked []auditEventDTO
+	cursor := ""
+	for range len(all) {
+		var page []auditEventDTO
+		getJSON(t, h, "/payments/audit?limit=2"+cursor, &page)
+		if len(page) == 0 {
+			break
+		}
+		for _, e := range page {
+			assertEqual(t, "page scope", e.Scope, string(ledger.ScopePayment))
+		}
+		for _, w := range walked {
+			for _, e := range page {
+				if e.Seq == w.Seq {
+					t.Fatalf("seq %d appears on two pages", e.Seq)
+				}
+			}
+		}
+		walked = append(page, walked...)
+		// Page backwards from the OLDEST event on the page: a page is handed
+		// back oldest-first, and Before is an exclusive upper bound.
+		cursor = fmt.Sprintf("&before=%d", page[0].Seq)
+	}
+
+	assertEqual(t, "walked count", len(walked), len(all))
+	for i := range all {
+		assertEqual(t, fmt.Sprintf("walked event %d", i), walked[i].Seq, all[i].Seq)
+	}
+
+	// A cursor below every match is an empty page, not an error and not a
+	// wraparound to the newest events.
+	var empty []auditEventDTO
+	getJSON(t, h, fmt.Sprintf("/payments/audit?limit=2&before=%d", all[0].Seq), &empty)
+	assertEqual(t, "page below the oldest event", len(empty), 0)
+}
+
+// TestAuditDefaultLimitApplies pins that a log longer than one page is
+// truncated to the newest 100 events rather than returned whole.
+func TestAuditDefaultLimitApplies(t *testing.T) {
+	h := newTestServer(t)
+
+	// Each open/close pair is two payment-scope events; 51 pairs clears 100.
+	for range 51 {
+		cyc := doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+		assertStatus(t, h, "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	}
+
+	var full []auditEventDTO
+	getJSON(t, h, "/payments/audit?limit=1000", &full)
+	assertEqual(t, "events in the log", len(full), 102)
+
+	var page []auditEventDTO
+	getJSON(t, h, "/payments/audit", &page)
+	assertEqual(t, "default page size", len(page), 100)
+	// The default page is the NEWEST 100, still oldest-first.
+	assertEqual(t, "default page ends at the newest event", page[99].Seq, full[101].Seq)
+	assertEqual(t, "default page starts 100 back", page[0].Seq, full[2].Seq)
+}
+
+// TestAuditLimitIsCapped pins that an oversized ?limit= is bounded rather than
+// honoured. The cap itself is asserted exactly in
+// TestAuditFilterParsesAndCapsLimits; this is the end-to-end half.
+func TestAuditLimitIsCapped(t *testing.T) {
+	h := newTestServer(t)
+	auditFixture(t, h)
+
+	var events []auditEventDTO
+	getJSON(t, h, "/payments/audit?limit=99999", &events)
+	if len(events) == 0 {
+		t.Fatal("no events returned")
+	}
+	if len(events) > 1000 {
+		t.Fatalf("returned %d events, want <= 1000", len(events))
 	}
 }

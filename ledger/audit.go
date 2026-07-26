@@ -43,6 +43,21 @@ const (
 	EventHoldReleased       = "hold.released"
 	EventHoldCaptured       = "hold.captured"
 	EventSnapshotTaken      = "snapshot.taken"
+
+	// ScopePayment. These are network-scoped: they describe entities that
+	// belong to no single bank, so they are recorded under NetworkBook.
+	EventParticipantAdded = "participant.added"
+	EventMandateCreated   = "mandate.created"
+	EventMandateRevoked   = "mandate.revoked"
+	EventPaymentInitiated = "payment.initiated"
+	EventPaymentAccepted  = "payment.accepted"
+	EventPaymentRejected  = "payment.rejected"
+	EventPaymentCleared   = "payment.cleared"
+	EventPaymentSettled   = "payment.settled"
+	EventPaymentReturned  = "payment.returned"
+	EventCycleOpened      = "cycle.opened"
+	EventCycleClosed      = "cycle.closed"
+	EventCycleSettled     = "cycle.settled"
 )
 
 // AuditEvent is an immutable record of one mutation.

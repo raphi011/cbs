@@ -650,13 +650,28 @@ At the end of each business day, the system captures a snapshot of each account'
 
 ### Audit Trail
 
-The audit trail is an immutable, append-only log of every mutation in the system. Nothing is ever deleted from the audit trail. Every account creation, transaction posting, hold creation, hold release, reversal, and snapshot is recorded with:
+The audit trail is an immutable, append-only log of every mutation in the system. Nothing is ever deleted from the audit trail. Every event is recorded with:
 
+- A monotonic sequence number, assigned by the store
 - A unique event ID
 - A timestamp
+- The scope — which layer produced the event
+- The book it belongs to
 - The event type
 - The entity affected
-- The full event payload
+- The full event payload, as it was at the time
+
+All three layers write to the same log, told apart by **scope**:
+
+| Scope | Book | Events |
+| --- | --- | --- |
+| `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
+| `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
+| `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+
+An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes neither `cycle.settled` nor any of its `payment.settled` events.
+
+Because the log is append-only and unbounded, every audit endpoint is **paged**: `?limit=` (default 100, capped at 1000) and `?before=<seq>`, which is an exclusive upper cursor on the sequence number, plus `?type=` and `?entity=` to narrow. A page is the newest events below the cursor, handed back oldest-first, so paging walks backwards while each page still reads chronologically. The sequence number is a store-global total order rather than a per-book counter, so a cursor is only meaningful when replayed against the same filter that produced it.
 
 The audit trail provides:
 

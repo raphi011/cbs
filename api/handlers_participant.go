@@ -17,7 +17,6 @@ func (s *Server) registerParticipantRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /central-bank/reserves", s.handleListReserves)
 	mux.HandleFunc("GET /central-bank/reserves/{pid}", s.handleGetReserve)
-	mux.HandleFunc("GET /central-bank/audit", s.handleCentralBankAudit)
 }
 
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
@@ -112,17 +111,4 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, reserveDTO{Participant: string(pid), Reserve: bal})
-}
-
-func (s *Server) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) {
-	events, err := s.network().CentralBank().GetAuditLog(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	out := make([]auditEventDTO, len(events))
-	for i, e := range events {
-		out[i] = toAuditDTO(e)
-	}
-	writeJSON(w, http.StatusOK, out)
 }

@@ -1,16 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
 
 import { Input } from "@/components/ui/input";
 import { AuditTable, useAuditPager } from "@/components/audit-table";
-import { Hint } from "@/components/hint";
-import { useLedgerAudit } from "@/lib/api/hooks";
+import { PageHeader } from "@/components/page-header";
+import { usePaymentAudit } from "@/lib/api/hooks";
 
-export default function AuditPage() {
-  const params = useParams();
-  const pid = typeof params.pid === "string" ? params.pid : "";
+export default function PaymentAuditPage() {
   const [entity, setEntity] = useState("");
   const pager = useAuditPager();
   const { reset } = pager;
@@ -21,18 +18,20 @@ export default function AuditPage() {
     reset();
   }, [entity, reset]);
 
-  const { data, isLoading, error, refetch } = useLedgerAudit(pid, {
+  const { data, isLoading, error, refetch } = usePaymentAudit({
     ...pager.query,
     entity: entity.trim() || undefined,
   });
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
-          Audit trail
-          <Hint id="audit-trail" />
-        </h2>
+    <div className="space-y-6">
+      <PageHeader
+        title="Network audit trail"
+        hint="audit-trail"
+        description="What the network itself did: participants joining, mandates given and revoked, and every payment and clearing cycle as it moved through its lifecycle. A bank's own books keep separate ledger and deposit trails."
+      />
+
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <Input
           value={entity}
           onChange={(e) => setEntity(e.target.value)}
@@ -50,7 +49,7 @@ export default function AuditPage() {
         empty={
           entity
             ? "No events for that entity."
-            : "No activity yet. Create accounts or post transactions to populate the log."
+            : "No network activity yet. Add a participant, open a cycle, or initiate a payment to populate the log."
         }
       />
     </div>

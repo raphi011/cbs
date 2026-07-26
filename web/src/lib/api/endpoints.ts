@@ -5,6 +5,7 @@ import { request, qs } from "./client";
 import type {
   Account,
   AuditEvent,
+  AuditQuery,
   Balance,
   BookBalance,
   CaptureHoldRequest,
@@ -72,8 +73,8 @@ export function getReserve(pid: string): Promise<Reserve> {
   return request("GET", `/central-bank/reserves/${pid}`);
 }
 
-export function centralBankAudit(): Promise<AuditEvent[]> {
-  return request("GET", "/central-bank/audit");
+export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
+  return request("GET", `/central-bank/audit${qs({ ...q })}`);
 }
 
 // --- Ledger: ledgers / subledgers / accounts -----------------------------
@@ -191,9 +192,9 @@ export function reverseTransaction(
 
 export function ledgerAudit(
   pid: string,
-  entity?: string,
+  q: AuditQuery = {},
 ): Promise<AuditEvent[]> {
-  return request("GET", `/participants/${pid}/audit${qs({ entity })}`);
+  return request("GET", `/participants/${pid}/audit${qs({ ...q })}`);
 }
 
 // --- Deposit: accounts ----------------------------------------------------
@@ -303,8 +304,11 @@ export function takeSnapshot(
 
 // --- Deposit: audit -------------------------------------------------------
 
-export function depositAudit(pid: string): Promise<AuditEvent[]> {
-  return request("GET", `/participants/${pid}/deposit-audit`);
+export function depositAudit(
+  pid: string,
+  q: AuditQuery = {},
+): Promise<AuditEvent[]> {
+  return request("GET", `/participants/${pid}/deposit-audit${qs({ ...q })}`);
 }
 
 // --- Payment: mandates ----------------------------------------------------
@@ -356,6 +360,15 @@ export function returnPayment(
   body: ReasonRequest,
 ): Promise<Payment> {
   return request("POST", `/payments/${payid}/return`, body);
+}
+
+// --- Payment: audit -------------------------------------------------------
+
+// The network's own audit trail: participants, mandates, payments and clearing
+// cycles. It is network-scoped rather than per-bank, which is why it hangs off
+// /payments rather than /participants/{pid}.
+export function paymentAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
+  return request("GET", `/payments/audit${qs({ ...q })}`);
 }
 
 // --- Payment: clearing cycles ---------------------------------------------
