@@ -1,6 +1,8 @@
 package payment
 
 import (
+	"context"
+
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -47,14 +49,14 @@ type Participant struct {
 // the customer and the bank owes it to them. The account is opened with no
 // overdraft.
 func (p *Participant) OpenCustomerAccount(name string) (deposit.Account, error) {
-	return p.Deposit.OpenAccount(p.CustomerSubledger, name, 0)
+	return p.Deposit.OpenAccount(context.TODO(), p.CustomerSubledger, name, 0)
 }
 
 // glAccount resolves a customer deposit account ID to the backing GL account
 // ID used for ledger postings. It returns ErrAccountNotInParticipant if the
 // deposit account does not exist at this participant.
 func (p *Participant) glAccount(id deposit.AccountID) (ledger.AccountID, error) {
-	acct, err := p.Deposit.GetAccount(id)
+	acct, err := p.Deposit.GetAccount(context.TODO(), id)
 	if err != nil {
 		return "", ErrAccountNotInParticipant
 	}

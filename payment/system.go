@@ -27,8 +27,8 @@ import (
 // # Context
 //
 // The Network's own state does not live in the store yet, so its methods take
-// no context and pass context.TODO down into the ledger. Both go away together
-// when the payment layer moves onto ledger.Store.
+// no context and pass context.TODO down into the ledger and deposit layers.
+// Both go away together when the payment layer moves onto the store.
 //
 // # Thread safety
 //
@@ -41,6 +41,14 @@ type Network struct {
 	// per participant. Books are distinguished by BookID, so chart-of-accounts
 	// numbers stay unique per bank rather than globally.
 	store ledger.Store
+
+	// deposits is the same store seen through the deposit layer's interface,
+	// which each participant's Register is built over. Two handles rather than
+	// one because ledger.Store and deposit.Store declare Update with different
+	// callback types; they must address the same underlying store, or a capture
+	// would no longer be one unit of work. Task 5 collapses both into a single
+	// payment.Store when the network's own state moves behind it.
+	deposits deposit.Store
 
 	schemes      map[SchemeID]Scheme
 	participants map[ParticipantID]*Participant
@@ -74,10 +82,15 @@ const CentralBankBook ledger.BookID = "central-bank"
 // Every book the network creates — the central bank's and one per participant —
 // lives in the given store and reads time from the given clock, so that booking
 // dates, value dates and audit timestamps line up across all of them.
-func NewNetwork(store ledger.Store, clock func() time.Time) *Network {
+//
+// deposits must be the same store as store, seen through deposit.Store (for
+// store/mem, mem.Store.Deposit): a participant's deposit register and its
+// ledger share one unit of work, and would not if they were handed two stores.
+func NewNetwork(store ledger.Store, deposits deposit.Store, clock func() time.Time) *Network {
 	s := &Network{
 		clock:         clock,
 		store:         store,
+		deposits:      deposits,
 		schemes:       make(map[SchemeID]Scheme),
 		participants:  make(map[ParticipantID]*Participant),
 		payments:      make(map[PaymentID]*Payment),
@@ -172,7 +185,7 @@ func (s *Network) AddParticipant(name string) (*Participant, error) {
 
 	// The bank's deposit layer manages its customer demand-deposit accounts on
 	// top of its own ledger, sharing the network's clock.
-	register := deposit.NewRegisterWithClock(bank, s.clock)
+	register := deposit.NewRegister(s.deposits, bank, bank.ID(), s.clock)
 
 	p := &Participant{
 		ID:                id,
@@ -739,7 +752,7 @@ func (s *Network) checkParty(ref PartyRef) error {
 	if !ok {
 		return ErrParticipantNotFound
 	}
-	if _, err := p.Deposit.GetAccount(ref.Account); err != nil {
+	if _, err := p.Deposit.GetAccount(context.TODO(), ref.Account); err != nil {
 		return ErrAccountNotInParticipant
 	}
 	return nil

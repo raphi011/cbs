@@ -1,6 +1,9 @@
 package payment
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Scheme is the generic abstraction over a payment scheme. Concrete schemes
 // (SEPA Credit Transfer, SEPA Direct Debit, and later instant or card
@@ -54,10 +57,10 @@ func validateFunds(p *Payment, ctx SchemeContext) error {
 	if !ok {
 		return ErrParticipantNotFound
 	}
-	if _, err := part.Deposit.GetAccount(p.Debtor.Account); err != nil {
+	if _, err := part.Deposit.GetAccount(context.TODO(), p.Debtor.Account); err != nil {
 		return ErrAccountNotInParticipant
 	}
-	return part.Deposit.CheckWithdrawal(p.Debtor.Account, p.Amount)
+	return part.Deposit.CheckWithdrawal(context.TODO(), p.Debtor.Account, p.Amount)
 }
 
 // ---------------------------------------------------------------------------

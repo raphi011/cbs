@@ -18,7 +18,8 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
-	return NewNetwork(mem.New(clock), clock)
+	store := mem.New(clock)
+	return NewNetwork(store, store.Deposit(), clock)
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
@@ -68,7 +69,7 @@ func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amo
 // participant, resolved through the participant's deposit layer.
 func customerBalance(t *testing.T, p *Participant, acct deposit.AccountID) ledger.Amount {
 	t.Helper()
-	bal, err := p.Deposit.GetBalance(acct)
+	bal, err := p.Deposit.GetBalance(context.Background(), acct)
 	assertNoError(t, err)
 	return bal.Book
 }

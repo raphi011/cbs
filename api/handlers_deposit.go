@@ -38,7 +38,7 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, err.Error())
 		return
 	}
-	acct, err := p.Deposit.OpenAccount(p.CustomerSubledger, req.Name, req.OverdraftLimit)
+	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, req.OverdraftLimit)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -51,7 +51,11 @@ func (s *Server) handleListDepositAccounts(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	accts := p.Deposit.ListAccounts()
+	accts, err := p.Deposit.ListAccounts(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]depositAccountDTO, len(accts))
 	for i, a := range accts {
 		out[i] = toDepositAccountDTO(a)
@@ -64,7 +68,7 @@ func (s *Server) handleGetDepositAccount(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	acct, err := p.Deposit.GetAccount(deposit.AccountID(r.PathValue("did")))
+	acct, err := p.Deposit.GetAccount(r.Context(), deposit.AccountID(r.PathValue("did")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -77,7 +81,7 @@ func (s *Server) handleDepositBalance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bal, err := p.Deposit.GetBalance(deposit.AccountID(r.PathValue("did")))
+	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(r.PathValue("did")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -102,13 +106,13 @@ func (s *Server) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch req.Action {
 	case "freeze":
-		err = p.Deposit.Freeze(did)
+		err = p.Deposit.Freeze(r.Context(), did)
 	case "unfreeze":
-		err = p.Deposit.Unfreeze(did)
+		err = p.Deposit.Unfreeze(r.Context(), did)
 	case "markDormant":
-		err = p.Deposit.MarkDormant(did)
+		err = p.Deposit.MarkDormant(r.Context(), did)
 	case "reactivate":
-		err = p.Deposit.Reactivate(did)
+		err = p.Deposit.Reactivate(r.Context(), did)
 	default:
 		writeBadRequest(w, "invalid action (want freeze, unfreeze, markDormant, or reactivate)")
 		return
@@ -117,7 +121,7 @@ func (s *Server) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	acct, err := p.Deposit.GetAccount(did)
+	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -130,7 +134,7 @@ func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := p.Deposit.Close(deposit.AccountID(r.PathValue("did"))); err != nil {
+	if err := p.Deposit.Close(r.Context(), deposit.AccountID(r.PathValue("did"))); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -155,7 +159,7 @@ func (s *Server) handleCreateHold(w http.ResponseWriter, r *http.Request) {
 	if req.ExpiresAt != nil {
 		holdReq.ExpiresAt = *req.ExpiresAt
 	}
-	hold, err := p.Deposit.CreateHold(holdReq)
+	hold, err := p.Deposit.CreateHold(r.Context(), holdReq)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -168,7 +172,11 @@ func (s *Server) handleListHolds(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	holds := p.Deposit.ListHolds(deposit.AccountID(r.PathValue("did")))
+	holds, err := p.Deposit.ListHolds(r.Context(), deposit.AccountID(r.PathValue("did")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]holdDTO, len(holds))
 	for i, h := range holds {
 		out[i] = toHoldDTO(h)
@@ -181,7 +189,7 @@ func (s *Server) handleGetHold(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	hold, err := p.Deposit.GetHold(deposit.HoldID(r.PathValue("hid")))
+	hold, err := p.Deposit.GetHold(r.Context(), deposit.HoldID(r.PathValue("hid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -194,7 +202,7 @@ func (s *Server) handleReleaseHold(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := p.Deposit.ReleaseHold(deposit.HoldID(r.PathValue("hid"))); err != nil {
+	if err := p.Deposit.ReleaseHold(r.Context(), deposit.HoldID(r.PathValue("hid"))); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -212,6 +220,7 @@ func (s *Server) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tx, err := p.Deposit.CaptureHold(
+		r.Context(),
 		deposit.HoldID(r.PathValue("hid")),
 		ledger.AccountID(req.Counterparty),
 		req.Amount,
@@ -239,7 +248,7 @@ func (s *Server) handleTakeSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid date (want YYYY-MM-DD)")
 		return
 	}
-	snap, err := p.Deposit.TakeEndOfDaySnapshot(deposit.AccountID(r.PathValue("did")), date)
+	snap, err := p.Deposit.TakeEndOfDaySnapshot(r.Context(), deposit.AccountID(r.PathValue("did")), date)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -261,7 +270,7 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 			writeBadRequest(w, "invalid date (want YYYY-MM-DD)")
 			return
 		}
-		snap, err := p.Deposit.GetSnapshot(did, date)
+		snap, err := p.Deposit.GetSnapshot(r.Context(), did, date)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -269,7 +278,11 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, toSnapshotDTO(snap))
 		return
 	}
-	snaps := p.Deposit.ListSnapshots(did)
+	snaps, err := p.Deposit.ListSnapshots(r.Context(), did)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]snapshotDTO, len(snaps))
 	for i, snap := range snaps {
 		out[i] = toSnapshotDTO(snap)
@@ -282,7 +295,11 @@ func (s *Server) handleDepositAudit(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	events := p.Deposit.GetAuditLog()
+	events, err := p.Deposit.GetAuditLog(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]auditEventDTO, len(events))
 	for i, e := range events {
 		out[i] = toAuditDTO(e)

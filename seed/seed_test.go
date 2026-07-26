@@ -1,6 +1,7 @@
 package seed
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -27,7 +28,11 @@ func TestNetworkShape(t *testing.T) {
 	// Deposit accounts: 5 + 3 + 2 + 2 = 12 across the four banks.
 	total := 0
 	for _, p := range net.ListParticipants() {
-		total += len(p.Deposit.ListAccounts())
+		accts, err := p.Deposit.ListAccounts(context.Background())
+		if err != nil {
+			t.Fatalf("list deposit accounts: %v", err)
+		}
+		total += len(accts)
 	}
 	if total != 12 {
 		t.Fatalf("deposit accounts = %d, want 12", total)
@@ -62,7 +67,11 @@ func TestAccountStatusCoverage(t *testing.T) {
 	net := Network()
 	seen := map[deposit.AccountStatus]bool{}
 	for _, p := range net.ListParticipants() {
-		for _, a := range p.Deposit.ListAccounts() {
+		accts, err := p.Deposit.ListAccounts(context.Background())
+		if err != nil {
+			t.Fatalf("list deposit accounts: %v", err)
+		}
+		for _, a := range accts {
 			seen[a.Status] = true
 		}
 	}
@@ -121,7 +130,10 @@ func TestDeterministicIDs(t *testing.T) {
 
 func TestClockWentLive(t *testing.T) {
 	net := Network()
-	accts := net.ListParticipants()[0].Deposit.ListAccounts()
+	accts, err := net.ListParticipants()[0].Deposit.ListAccounts(context.Background())
+	if err != nil {
+		t.Fatalf("list deposit accounts: %v", err)
+	}
 	if len(accts) == 0 {
 		t.Fatal("first participant has no accounts")
 	}

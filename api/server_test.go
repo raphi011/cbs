@@ -21,7 +21,8 @@ func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
 	newState := func() *payment.Network {
 		clock := func() time.Time { return fixedTime }
-		return payment.NewNetwork(mem.New(clock), clock)
+		store := mem.New(clock)
+		return payment.NewNetwork(store, store.Deposit(), clock)
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	return NewServer(newState, log).Routes()

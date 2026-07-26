@@ -65,7 +65,7 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	bal, err := p.Deposit.GetBalance(deposit.AccountID(req.Account))
+	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(req.Account))
 	if err != nil {
 		writeError(w, err)
 		return

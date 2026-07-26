@@ -20,7 +20,8 @@ var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 // clock to real time before returning so later operations are timestamped live.
 func Network() *payment.Network {
 	c := newClock(baseDate)
-	net := payment.NewNetwork(mem.New(c.now), c.now)
+	store := mem.New(c.now)
+	net := payment.NewNetwork(store, store.Deposit(), c.now)
 	b := &builder{net: net, clock: c, ibans: map[deposit.AccountID]string{}}
 	b.build()
 	c.goLive()
@@ -63,7 +64,7 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // openOverdraft opens a customer account with an overdraft limit (the
 // participant helper only opens with zero overdraft) and records its IBAN.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(p.CustomerSubledger, name, limit))
+	a := must(p.Deposit.OpenAccount(context.TODO(), p.CustomerSubledger, name, limit))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -141,28 +142,29 @@ func (b *builder) build() {
 	b.clock.advance(2 * time.Hour)
 
 	// --- Holds on Alice: active / released / captured ----------------------
-	must(aurora.Deposit.CreateHold(deposit.CreateHoldRequest{
+	ctx := context.TODO()
+	must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
 		AccountID: alice.ID, Amount: 10_000, Description: "Card pre-authorisation (hotel)",
 	}))
-	released := must(aurora.Deposit.CreateHold(deposit.CreateHoldRequest{
+	released := must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
 		AccountID: alice.ID, Amount: 5_000, Description: "Cancelled online order",
 	}))
-	check(aurora.Deposit.ReleaseHold(released.ID))
-	captured := must(aurora.Deposit.CreateHold(deposit.CreateHoldRequest{
+	check(aurora.Deposit.ReleaseHold(ctx, released.ID))
+	captured := must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
 		AccountID: alice.ID, Amount: 15_000, Description: "Card payment at Aurora Merchant",
 	}))
-	merchantGL := must(aurora.Deposit.GetAccount(merchant.ID)).GLAccount
-	must(aurora.Deposit.CaptureHold(captured.ID, merchantGL, 0, "Captured: card payment"))
+	merchantGL := must(aurora.Deposit.GetAccount(ctx, merchant.ID)).GLAccount
+	must(aurora.Deposit.CaptureHold(ctx, captured.ID, merchantGL, 0, "Captured: card payment"))
 
 	// --- End-of-day snapshots for Alice across two business days -----------
-	must(aurora.Deposit.TakeEndOfDaySnapshot(alice.ID, b.clock.now()))
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
 	b.clock.advance(24 * time.Hour)
-	must(aurora.Deposit.TakeEndOfDaySnapshot(alice.ID, b.clock.now()))
+	must(aurora.Deposit.TakeEndOfDaySnapshot(ctx, alice.ID, b.clock.now()))
 
 	// --- Account status lifecycle ------------------------------------------
-	check(aurora.Deposit.MarkDormant(annie.ID)) // Active -> Dormant
-	check(aurora.Deposit.Close(oldAcct.ID))     // zero balance -> Closed
-	check(verde.Deposit.Freeze(bianca.ID))      // Active -> Frozen
+	check(aurora.Deposit.MarkDormant(ctx, annie.ID)) // Active -> Dormant
+	check(aurora.Deposit.Close(ctx, oldAcct.ID))     // zero balance -> Closed
+	check(verde.Deposit.Freeze(ctx, bianca.ID))      // Active -> Frozen
 
 	// --- Mandates for SEPA Direct Debit ------------------------------------
 	m1 := must(b.net.CreateMandate(b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
@@ -250,7 +252,7 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	}))
 
 	// Monthly account fee: customer deposit (liability) down, Fee Income (revenue) up.
-	customerGL := must(p.Deposit.GetAccount(customer.ID)).GLAccount
+	customerGL := must(p.Deposit.GetAccount(ctx, customer.ID)).GLAccount
 	fee := must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "Monthly account fee",
 		Entries: []ledger.Entry{
