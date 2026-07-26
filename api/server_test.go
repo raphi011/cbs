@@ -537,18 +537,55 @@ func TestAuditRoutesAreScoped(t *testing.T) {
 		}
 	}
 
-	// Two banks share a store; a bank's log must not leak the other's. Bank B
-	// opened no customer account beyond the fixture's, so compare entity sets.
-	var aLedger, bLedger []auditEventDTO
-	getJSON(t, h, "/participants/"+a+"/audit?limit=1000", &aLedger)
-	getJSON(t, h, "/participants/"+b+"/audit?limit=1000", &bLedger)
-	seen := map[int64]bool{}
-	for _, e := range aLedger {
-		seen[e.Seq] = true
+	// Scope alone does not identify a route: bank A's log, bank B's log and the
+	// central bank's are all ledger-scoped, so a route that served the wrong
+	// BOOK would still pass the loop above. Every pair of logs must be disjoint.
+	logs := map[string][]auditEventDTO{}
+	for _, path := range []string{
+		"/participants/" + a + "/audit",
+		"/participants/" + a + "/deposit-audit",
+		"/participants/" + b + "/audit",
+		"/central-bank/audit",
+		"/payments/audit",
+	} {
+		var events []auditEventDTO
+		getJSON(t, h, path+"?limit=1000", &events)
+		if len(events) == 0 {
+			t.Fatalf("%s returned no events", path)
+		}
+		logs[path] = events
 	}
-	for _, e := range bLedger {
-		if seen[e.Seq] {
-			t.Fatalf("seq %d appears in both banks' ledger logs", e.Seq)
+	for lhs, left := range logs {
+		seen := map[int64]bool{}
+		for _, e := range left {
+			seen[e.Seq] = true
+		}
+		for rhs, right := range logs {
+			if lhs == rhs {
+				continue
+			}
+			for _, e := range right {
+				if seen[e.Seq] {
+					t.Fatalf("seq %d (%s) appears in both %s and %s", e.Seq, e.Type, lhs, rhs)
+				}
+			}
+		}
+	}
+
+	// A positive identification of the central bank's book, so the disjointness
+	// above cannot be satisfied by serving some other log that merely happens
+	// not to overlap: the cycle's settlement transaction is posted in the
+	// central bank's book and nowhere else, so exactly one log may contain it.
+	const settlementMarker = "Settlement of clearing cycle"
+	for path, events := range logs {
+		found := false
+		for _, e := range events {
+			if strings.Contains(string(e.Payload), settlementMarker) {
+				found = true
+			}
+		}
+		if want := path == "/central-bank/audit"; found != want {
+			t.Fatalf("%s contains the settlement transaction: got %v, want %v", path, found, want)
 		}
 	}
 }

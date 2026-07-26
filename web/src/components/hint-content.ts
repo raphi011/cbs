@@ -628,16 +628,17 @@ Events recorded, grouped by the layer (**scope**) that produced them:
 
 - **ledger** — ledger/subledger/account creation, transaction posting, [[reversal]]
 - **deposit** — account opened/frozen/closed, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[snapshot|end-of-day snapshot]]
-- **payment** — participant added, [[mandate]] created/revoked, and every payment and [[clearing-cycle|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
+- **payment** — participant added, [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
 
 Each event is written **inside the transaction of the operation it describes**, so an operation that rolls back leaves no record claiming it happened. The log is unbounded, so the API pages it: **limit** (default 100, max 1000) and **before**, an exclusive cursor on the event's sequence number.
 
 \`\`\`
-Example audit events (most recent first):
-  [2024-03-01T14:32:01Z] transaction_posted  txn-abc123  Alice −€300
-  [2024-03-01T14:32:00Z] hold_captured       hold-xyz789 Alice −€300
-  [2024-03-01T09:00:00Z] snapshot_taken      acct-001    book=€1000
-  [2024-03-01T08:55:00Z] hold_created        hold-xyz789 Alice −€300
+Example audit events (oldest first, as the API returns them):
+  seq  when                  type                 entity      scope
+  118  2024-03-01T08:55:00Z  hold.created         hold-xyz789  deposit
+  119  2024-03-01T09:00:00Z  snapshot.taken       acct-001     deposit
+  124  2024-03-01T14:32:00Z  hold.captured        hold-xyz789  deposit
+  125  2024-03-01T14:32:01Z  transaction.posted   txn-abc123   ledger
 \`\`\`
 
 The trail enables: regulatory compliance (banks must maintain complete records), forensic investigation, incident response, and **independent balance verification** — you can replay all events to recompute any balance from scratch, cross-checking against [[snapshot|snapshots]].`,
