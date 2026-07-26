@@ -145,10 +145,6 @@ func createSchema(ctx context.Context, cfg *pgx.ConnConfig, schema string) error
 	return nil
 }
 
-// Pool exposes the underlying connection pool, for the schema bookkeeping a
-// test harness has to do around a store it did not create.
-func (s *Store) Pool() *pgxpool.Pool { return s.pool }
-
 // Update runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
 // fn returns an error.
 //

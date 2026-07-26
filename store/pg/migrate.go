@@ -29,6 +29,20 @@ const migrationLockID = 0x63627300 // "cbs\0"
 // This is deliberately about forty lines rather than a migration-tool
 // dependency: applied-set, sorted files, one transaction each, and a lock. The
 // interesting part of a schema is the schema.
+//
+// # Known limitation: the applied-set keys on filename, with no checksum
+//
+// A file whose name is already in schema_migrations is skipped without being
+// read, so editing a shipped .sql file in place changes nothing on a database
+// that has already run it — and the two silently disagree from then on. A real
+// migration tool stores a hash of each file and refuses to start when one no
+// longer matches.
+//
+// It is left as-is because this repository has no deployed databases: every
+// Postgres it meets is a throwaway container or a per-test schema, both of
+// which migrate from empty. The rule that keeps it harmless is the ordinary
+// one — a shipped migration is immutable; a schema change is a new file with
+// the next number, never an edit to an old one.
 func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	entries, err := fs.ReadDir(schemaFS, "schema")
 	if err != nil {

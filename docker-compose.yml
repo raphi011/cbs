@@ -1,0 +1,31 @@
+# A throwaway Postgres for the optional store/pg backend.
+#
+#     make db-up            # start it
+#     DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable make dev
+#     make test-pg          # run the whole suite against it
+#     make db-down          # stop it and delete the data
+#
+# Nothing here is required: with no DATABASE_URL the server runs on store/mem,
+# and `go test ./...` runs the same suites against store/mem with zero setup.
+#
+# The credentials are hardcoded on purpose. This container binds to localhost,
+# holds nothing but seeded sample data, and is deleted by `make db-down` —
+# putting it behind a secret would teach the wrong lesson about what a secret
+# is for.
+services:
+  postgres:
+    image: postgres:16
+    container_name: cbs-pg
+    environment:
+      POSTGRES_USER: cbs
+      POSTGRES_PASSWORD: cbs
+      POSTGRES_DB: cbs
+    ports:
+      - "5432:5432"
+    # No named volume: the data is meant to be disposable. `make db-down`
+    # removes the container and the state goes with it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cbs -d cbs"]
+      interval: 1s
+      timeout: 5s
+      retries: 30

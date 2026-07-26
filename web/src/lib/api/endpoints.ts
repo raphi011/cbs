@@ -1,5 +1,6 @@
-// One typed function per backend route. Each returns the parsed DTO(s). Grows
-// as milestones add coverage; see PLAN.md for the full endpoint → screen map.
+// One typed function per backend route. Each returns the parsed DTO(s). This
+// file is the first of the three the data layer grows in — endpoints.ts →
+// query-keys.ts → hooks.ts — one section per backend area; see web/CLAUDE.md.
 
 import { request, qs } from "./client";
 import type {

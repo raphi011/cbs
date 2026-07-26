@@ -18,12 +18,13 @@ const BOOK_SLUGS = [
   "12-sepa",
   "13-card-transactions",
   "14-snapshots-audit-and-statements",
+  "15-persistence-and-durability",
 ];
 
 describe("quiz bank", () => {
-  it("has the 14 book chapters, in order, with unique known slugs", () => {
-    expect(chapters).toHaveLength(14);
-    expect(chapters.map((c) => c.number)).toEqual(Array.from({ length: 14 }, (_, i) => i + 1));
+  it("has the 15 chapters, in order, with unique known slugs", () => {
+    expect(chapters).toHaveLength(15);
+    expect(chapters.map((c) => c.number)).toEqual(Array.from({ length: 15 }, (_, i) => i + 1));
     const slugs = chapters.map((c) => c.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
     for (const s of slugs) expect(BOOK_SLUGS).toContain(s);
@@ -36,7 +37,7 @@ describe("quiz bank", () => {
 
   it("groups every chapter under exactly one part", () => {
     const grouped = chaptersByPart().flatMap((p) => p.chapters);
-    expect(grouped).toHaveLength(14);
+    expect(grouped).toHaveLength(15);
   });
 
   it("has globally unique question ids", () => {
@@ -68,6 +69,23 @@ describe("quiz bank", () => {
       if (q.concept) expect(q.concept in hintContent).toBe(true);
       if (q.explore) expect(EXPLORE_ROUTES).toContain(q.explore.href);
     }
+  });
+
+  // A dangling [[link]] in a hint body throws at runtime and takes every route
+  // in the dev app with it; one in a *question explanation* is quieter but just
+  // as wrong — the link renders with the raw key as its label and opens a panel
+  // for a concept that does not exist. Neither is caught by typecheck, lint or
+  // `next build`, so it is caught here.
+  it("resolves every [[wiki-link]] in a question explanation", () => {
+    const LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+    const broken: string[] = [];
+    for (const q of allQuestions()) {
+      for (const m of q.explanation.matchAll(LINK_RE)) {
+        const key = m[1].trim();
+        if (!(key in hintContent)) broken.push(`${q.id} → [[${key}]]`);
+      }
+    }
+    expect(broken).toEqual([]);
   });
 
   it("ships at least the Chapter 2 exemplar", () => {

@@ -13,14 +13,17 @@ Self-contained, educational Next.js frontend (in `web/`, own `package.json`, npm
 ```bash
 # Backend (from repo root): :8080, in-memory, resets on restart
 go run ./cmd/server
+# ...or on Postgres, where state survives a restart (see the root README)
+DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 # Frontend (from web/)
 npm run dev          # http://localhost:3000
 npm run typecheck    # tsc --noEmit — must be clean
 npm run lint         # eslint — must be clean
+npm run test         # vitest — quiz bank, statement projection, concept links
 npm run build        # production build; final gate before committing
 ```
 
-There is no frontend test runner. Verify changes by driving the app in a browser (Playwright) against a running backend — the in-memory backend has no auth and is seeded via the API.
+`npm run test` is a vitest suite over the pure logic only (`src/lib/**`, `src/components/concept-links.ts`); there is no component or E2E runner. It is not optional: a `[[wiki-link]]` pointing at a key that is not in `hint-content.ts` throws under `RootLayout` and takes **every** route down in dev, and because that guard is skipped when `NODE_ENV === "production"`, `npm run build` stays green while the dev app is dead. Verify UI changes by driving the app in a browser against a running backend — the backend has no auth and is seeded via the API.
 
 Stack: Next.js 16 (App Router) · React 19 · Tailwind v4 (no config file; tokens in `globals.css`) · shadcn/ui on Radix (imported from the unified `radix-ui` package) · TanStack Query · sonner · next-themes.
 

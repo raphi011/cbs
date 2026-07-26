@@ -676,6 +676,110 @@ The running balance reconciles to the account's **book** balance: a built-in cor
 
 Expand a row to see the full balanced transaction: your line is one leg; the contra account is where the money came from or went to — often the [[clearing-suspense]] account while a payment is in flight.`,
   },
+  "relational-mapping": {
+    title: "The ledger as relational tables",
+    body: `The whole accounting model is six tables, and the shape of the [[double-entry]] rule is visible in them: a transaction is a **parent row** and its legs are **child rows**, so "a posting has two or more balanced entries" is a one-to-many relationship rather than two columns.
+
+\`\`\`
+ledgers ─┬─▶ subledgers ─┬─▶ accounts
+         │               │
+transactions ─▶ entries ─┘   (entry.account_id points at an account)
+\`\`\`
+
+Two details are easy to get wrong. \`entries\` needs an explicit **position** column, because \`Transaction.Entries\` is an ordered slice and a table has no order. And listings are ordered by \`(created_at, seq)\`, never by id — IDs are counter-derived strings, so \`dep_10\` sorts before \`dep_8\` and a customer list would silently reorder itself the first time a counter crossed a power of ten.
+
+What is *not* a column is the balance — see [[derived-balance]]. What is not a single column is the primary key — see [[book-scoped-id]].`,
+  },
+  "derived-balance": {
+    title: "A balance is an aggregate, not a column",
+    body: `There is no \`balance\` column anywhere. A book balance is computed on demand by summing the account's entries, signed by [[normal-balance]]:
+
+\`\`\`sql
+SELECT COALESCE(SUM(CASE WHEN direction = debit THEN amount ELSE -amount END), 0)
+FROM entries WHERE book_id = $1 AND account_id = $2;
+\`\`\`
+
+A stored balance is a **cache of a derivable fact**, and caches go stale: any bug, crash or concurrent write that updates one of the two without the other leaves a number no one can reconcile. Deriving it means the [[audit-trail|append-only history]] is the single source of truth and the balance cannot disagree with it.
+
+The cost is that reading a balance is an aggregate over every entry ever posted. The standard answer is not to add the column back but to checkpoint: the [[snapshot|end-of-day snapshot]] records a day's figure so a query starts from the nearest checkpoint and replays only what came after.
+
+Note also that a reversal is a *new, opposite* posting ([[reversal]]), so the sum still includes both — which is why the balance of a reversed transaction's account nets out rather than the row disappearing.`,
+  },
+  "unit-of-work": {
+    title: "Unit of work",
+    body: `A **unit of work** is one atomic scope — \`BEGIN\`, do everything, \`COMMIT\`, or \`ROLLBACK\` and it is as if nothing happened. Every mutation in this system runs inside one, and the [[audit-trail|audit event]] is written inside the *same* one, so a rolled-back operation leaves no record claiming it happened.
+
+It has to span all three layers, because the operations do. Settling a [[clearing-vs-settlement|clearing cycle]] posts a [[creditor-leg]] in each member's book, moves [[central-bank-reserves|reserves]] in the central bank's book, and updates the payment and cycle rows — a partial success there would leave money that had left one bank without arriving at another.
+
+\`\`\`
+SettleCycle:
+  BEGIN
+    creditor legs in Bank A, Bank B, Bank C   (ledger layer)
+    deposit balances updated                  (deposit layer)
+    reserves moved at the central bank        (ledger layer)
+    cycle + payments marked Settled           (payment layer)
+    audit events appended
+  COMMIT   ← all of it, or none of it
+\`\`\`
+
+Nesting one unit of work inside another is refused rather than allowed: the inner scope would be a *separate* transaction that commits even when the outer one rolls back. Methods come in pairs for this reason — the plain one opens a unit of work, the \`…Tx\` one joins the caller's.`,
+  },
+  "row-locking": {
+    title: "Locking a row before you decide on it",
+    body: `Checking a balance and then posting against it is two steps, and between them another transaction can post too — so both see enough money and together they overdraw the account. The check has to be locked to the write that depends on it:
+
+\`\`\`sql
+SELECT id FROM accounts
+ WHERE book_id = $1 AND id = ANY($2)
+ ORDER BY id
+   FOR UPDATE;     -- held until COMMIT
+\`\`\`
+
+\`ORDER BY id\` is not cosmetic. Two transactions touching overlapping accounts in *different* orders would each hold a row the other wants — a deadlock. Taking locks in one agreed order means the second one simply waits.
+
+This is exactly what a single process-wide mutex was doing for free in the in-memory store, which is why the hazard only becomes visible when the state moves into a database. See [[idempotency-race]] for the second race it was hiding, and [[unit-of-work]] for the scope the locks are held over.`,
+  },
+  "idempotency-race": {
+    title: "Idempotency under concurrency",
+    body: `An [[idempotency-key]] check written as *look, then insert* is not a check at all: two concurrent retries both look, both find nothing, and both insert.
+
+The fix is to make the check and the write **one statement**, and let the database's own uniqueness rule decide:
+
+\`\`\`sql
+CREATE UNIQUE INDEX transactions_idempotency_key_idx
+    ON transactions (book_id, idempotency_key)
+    WHERE idempotency_key <> '';
+\`\`\`
+
+The insert is attempted; the loser gets a unique-violation error, which is translated back into the domain's "idempotency key already used". No window exists between deciding and acting, because there is no separate decision.
+
+A reversal is closed the same way, with a **conditional update** whose row count is the answer:
+
+\`\`\`sql
+UPDATE transactions SET status = 'Reversed'
+ WHERE book_id = $1 AND id = $2 AND status = 'Posted';
+-- 0 rows → someone else already reversed it
+\`\`\`
+
+Both are instances of one rule: never read a value, decide, and write the decision — make the write itself the decision. Where that is impossible, lock first ([[row-locking]]).`,
+  },
+  "book-scoped-id": {
+    title: "IDs are book-scoped",
+    body: `Every bank in the network keeps its **own** book, and a chart-of-accounts number is unique *within* a book, not globally. Two participants both holding account \`200.100.001\` is normal, not a collision — so the primary key is the pair:
+
+\`\`\`sql
+CREATE TABLE accounts (
+    book_id TEXT NOT NULL,
+    id      TEXT NOT NULL,
+    ...
+    PRIMARY KEY (book_id, id)
+);
+\`\`\`
+
+A single-column key would force globally unique numbering and destroy the [[ledger-vs-subledger|chart of accounts]] as a readable, per-bank structure. Every query is scoped the same way: a missing \`WHERE book_id = $1\` does not error, it quietly returns another bank's rows.
+
+The [[payment-lifecycle|payment layer]]'s own entities — participants, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.`,
+  },
 } satisfies Record<string, HintEntry>;
 
 export type HintKey = keyof typeof hintContent;
