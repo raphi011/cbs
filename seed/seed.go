@@ -15,20 +15,74 @@ import (
 // clock goes live is dated relative to this instant.
 var baseDate = time.Date(2025, 9, 15, 9, 0, 0, 0, time.UTC)
 
-// Network builds a fresh payment.Network populated with the full sample scenario
-// (see the package doc) on a frozen, deterministic clock, then switches the
-// clock to real time before returning so later operations are timestamped live.
-func Network() *payment.Network {
-	c := newClock(baseDate)
-	store := mem.New(c.now)
-	net := payment.NewNetwork(store, store.Deposit(), c.now)
-	b := &builder{net: net, clock: c, ibans: map[deposit.AccountID]string{}}
+// Dataset is the sample scenario together with the deterministic clock it is
+// built on.
+//
+// The clock has to be owned here rather than passed in, because seeding
+// controls it: it is frozen at baseDate and advanced step by step while the
+// scenario is built, then switched to real time so that anything done
+// afterwards — through the API, say — is timestamped live. Rebuilding after a
+// store reset rewinds it, so a reset restores the dataset rather than a version
+// of it shifted forward in time.
+type Dataset struct{ clock *clock }
+
+// New returns a Dataset with its clock frozen at baseDate.
+func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
+
+// Now is the time source every layer built over the dataset's store must read.
+// Hand it to the store and to payment.NewNetwork so that booking dates, value
+// dates and audit timestamps all come from the same clock.
+func (d *Dataset) Now() time.Time { return d.clock.now() }
+
+// Populate builds the full sample scenario (see the package doc) into the
+// network's store.
+//
+// It is idempotent: a store that already holds participants is left alone. That
+// is what makes it safe to call on every boot — against a database that
+// outlives the process, seeding unconditionally would stack a second copy of
+// the scenario on top of the first at every restart.
+//
+// The scenario is hardcoded, so a failure while building it is a programming
+// bug rather than a runtime condition, and the builder says so by panicking.
+// Populate turns that back into an error at the package boundary, since its
+// caller — the server's reset handler — has an error to report and a request to
+// answer.
+func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error) {
+	existing, err := net.ListParticipants(ctx)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("seed: %v", r)
+		}
+	}()
+
+	d.clock.rewind(baseDate)
+	b := &builder{ctx: ctx, net: net, clock: d.clock, ibans: map[deposit.AccountID]string{}}
 	b.build()
-	c.goLive()
+	d.clock.goLive()
+	return nil
+}
+
+// Network builds a fresh in-memory payment.Network populated with the sample
+// scenario. It is the convenience form of New plus Populate, for tests and
+// examples; the server wires the two together itself, because it needs to
+// repopulate the same network after a reset.
+func Network() *payment.Network {
+	d := New()
+	store := mem.New(d.Now)
+	net := payment.NewNetwork(store.Payment(), d.Now)
+	check(d.Populate(context.Background(), net))
 	return net
 }
 
 type builder struct {
+	ctx   context.Context
 	net   *payment.Network
 	clock *clock
 	// ibans assigns one canonical IBAN per deposit account so a PartyRef for an
@@ -56,7 +110,7 @@ func check(err error) {
 
 // open opens a customer account, records its canonical IBAN, and returns it.
 func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
-	a := must(p.OpenCustomerAccount(name))
+	a := must(p.OpenCustomerAccount(b.ctx, name))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -64,7 +118,7 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // openOverdraft opens a customer account with an overdraft limit (the
 // participant helper only opens with zero overdraft) and records its IBAN.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(context.TODO(), p.CustomerSubledger, name, limit))
+	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, limit))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -77,11 +131,11 @@ func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.Part
 
 // fund credits a deposit account with cash and raises the bank's reserve.
 func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledger.Amount) {
-	check(b.net.Deposit(p.ID, acct.ID, amount, "Opening deposit"))
+	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
 func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
-	return must(b.net.InitiatePayment(payment.InitiatePaymentRequest{
+	return must(b.net.InitiatePayment(b.ctx, payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
 		Debtor:      b.ref(dp, d),
 		Creditor:    b.ref(cp, c),
@@ -92,7 +146,7 @@ func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *paymen
 }
 
 func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
-	return must(b.net.InitiatePayment(payment.InitiatePaymentRequest{
+	return must(b.net.InitiatePayment(b.ctx, payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
 		Debtor:      b.ref(dp, d),
 		Creditor:    b.ref(cp, c),
@@ -105,10 +159,10 @@ func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *paymen
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	aurora := must(b.net.AddParticipant("Aurora Bank"))
-	verde := must(b.net.AddParticipant("Banca Verde"))
-	nord := must(b.net.AddParticipant("Nordhaven Bank"))
-	soleil := must(b.net.AddParticipant("Crédit Soleil"))
+	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank"))
+	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde"))
+	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank"))
+	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil"))
 
 	// --- Customer accounts (each gets a canonical IBAN) --------------------
 	alice := b.open(aurora, "Alice Andersson", "SE89-AURORA-1001")
@@ -142,7 +196,7 @@ func (b *builder) build() {
 	b.clock.advance(2 * time.Hour)
 
 	// --- Holds on Alice: active / released / captured ----------------------
-	ctx := context.TODO()
+	ctx := b.ctx
 	must(aurora.Deposit.CreateHold(ctx, deposit.CreateHoldRequest{
 		AccountID: alice.ID, Amount: 10_000, Description: "Card pre-authorisation (hotel)",
 	}))
@@ -167,49 +221,49 @@ func (b *builder) build() {
 	check(verde.Deposit.Freeze(ctx, bianca.ID))      // Active -> Frozen
 
 	// --- Mandates for SEPA Direct Debit ------------------------------------
-	m1 := must(b.net.CreateMandate(b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
-	m2 := must(b.net.CreateMandate(b.ref(verde, bruno), b.ref(aurora, aaron), 0))
-	m3 := must(b.net.CreateMandate(b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
-	check(b.net.RevokeMandate(m3.ID)) // revoked, for display
+	m1 := must(b.net.CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
+	m2 := must(b.net.CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
+	m3 := must(b.net.CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
+	check(b.net.RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
 	b.clock.advance(1 * time.Hour)
 
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
-	sct1 := must(b.net.OpenCycle(payment.SchemeSEPACT))
+	sct1 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, nord, niklas, 25_000, "SCT-001", "Rent to N. Nyborg")
 	b.initSCT(nord, nora, verde, bella, 40_000, "SCT-002", "Invoice 2025-77")
 	b.initSCT(verde, bruno, soleil, chloe, 30_000, "SCT-003", "Consulting fee")
-	must(b.net.CloseCycle(sct1.ID))
-	must(b.net.SettleCycle(sct1.ID))
+	must(b.net.CloseCycle(b.ctx, sct1.ID))
+	must(b.net.SettleCycle(b.ctx, sct1.ID))
 
 	b.clock.advance(24 * time.Hour)
 
 	// --- Phase B: a settled SEPA Direct Debit cycle (one will be returned) --
-	sdd1 := must(b.net.OpenCycle(payment.SchemeSEPADD))
+	sdd1 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 20_000, m1.ID, "SDD-001", "Utility direct debit")
 	returned := b.initSDD(verde, bruno, aurora, aaron, 12_000, m2.ID, "SDD-002", "Gym membership")
-	must(b.net.CloseCycle(sdd1.ID))
-	must(b.net.SettleCycle(sdd1.ID))
+	must(b.net.CloseCycle(b.ctx, sdd1.ID))
+	must(b.net.SettleCycle(b.ctx, sdd1.ID))
 
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
-	must(b.net.ReturnPayment(returned.ID, "Debtor dispute — unauthorised collection"))
+	must(b.net.ReturnPayment(b.ctx, returned.ID, "Debtor dispute — unauthorised collection"))
 
 	b.clock.advance(24 * time.Hour)
 
 	// --- Phase D: a closed-but-not-settled SCT cycle (payments stay Cleared) -
-	sct2 := must(b.net.OpenCycle(payment.SchemeSEPACT))
+	sct2 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, aaron, soleil, claude, 8_000, "SCT-010", "Book order")
 	b.initSCT(verde, bella, nord, niklas, 6_000, "SCT-011", "Shared dinner")
-	must(b.net.CloseCycle(sct2.ID))
+	must(b.net.CloseCycle(b.ctx, sct2.ID))
 
 	// --- Phase E: an open SDD cycle with an accepted and a rejected payment --
-	must(b.net.OpenCycle(payment.SchemeSEPADD))
+	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription")
 	reject := b.initSDD(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Disputed charge")
-	must(b.net.RejectPayment(reject.ID, "Insufficient mandate coverage"))
+	must(b.net.RejectPayment(b.ctx, reject.ID, "Insufficient mandate coverage"))
 
 	// --- Phase F: an open SCT cycle with an accepted payment ----------------
-	must(b.net.OpenCycle(payment.SchemeSEPACT))
+	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift")
 
 	// --- General-ledger primitives showcase on Aurora ----------------------
@@ -221,7 +275,7 @@ func (b *builder) build() {
 // transaction + reversal appear in the data. Liability is already present via the
 // bank's customer-deposit and suspense GL accounts; this adds the other four.
 func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
-	ctx := context.Background()
+	ctx := b.ctx
 	glID := must(p.Ledger.GetSubledger(ctx, p.CustomerSubledger)).LedgerID
 
 	equitySub := must(p.Ledger.CreateSubledger(ctx, glID, "Equity"))

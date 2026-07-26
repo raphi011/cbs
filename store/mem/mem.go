@@ -1,5 +1,5 @@
-// Package mem is the in-process implementation of ledger.Store and
-// deposit.Store.
+// Package mem is the in-process implementation of ledger.Store, deposit.Store
+// and payment.Store.
 //
 // It is the reference implementation: everything the system does works here
 // first, with maps and a mutex, and store/pg then has to match it — a match the
@@ -15,11 +15,14 @@
 //
 // # One transaction, several layers
 //
-// A single *tx implements ledger.Tx and deposit.Tx, so a unit of work spans both
-// layers and a deposit capture commits its hold write together with its GL
-// posting. Because Go cannot give one Store two Update methods with different
-// callback types, the deposit-shaped view of the store is a thin adapter,
-// (*Store).Deposit; both views share the same state and the same lock.
+// A single *tx implements ledger.Tx, deposit.Tx and payment.Tx, so a unit of
+// work spans all three layers: a deposit capture commits its hold write
+// together with its GL posting, and a settlement commits postings across every
+// participant's book, the central bank's, and its own record of the settlement.
+// Because Go cannot give one Store three Update methods with different callback
+// types, the deposit- and payment-shaped views of the store are thin adapters,
+// (*Store).Deposit and (*Store).Payment; all three views share the same state
+// and the same lock.
 package mem
 
 import (
@@ -31,6 +34,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
 )
 
 // ErrReadOnly is returned when a write is attempted inside View. Update is the
@@ -187,6 +191,20 @@ type state struct {
 	// store/pg gets from a primary key on (book_id, account_id, date_key).
 	snapshots map[ledger.BookID]map[snapshotKey]deposit.Snapshot
 
+	// The payment layer's state. These maps are NOT nested per book: the
+	// entities are network-scoped — a payment belongs to no single bank — so
+	// they are sequenced under ledger.NetworkBook and keyed by their ID alone.
+	participants map[payment.ParticipantID]payment.Participant
+	payments     map[payment.PaymentID]payment.Payment
+	mandates     map[payment.MandateID]payment.Mandate
+	cycles       map[payment.CycleID]payment.ClearingCycle
+	settlements  map[payment.SettlementID]payment.Settlement
+
+	// endToEnd maps end-to-end ids to payment IDs, the payment layer's
+	// equivalent of the ledger's idempotency index. It is what lets the store
+	// reject a duplicate client reference.
+	endToEnd map[string]payment.PaymentID
+
 	// rowSeq is the insertion order of every book-scoped row, and the tie-break
 	// every List* uses when two rows share a CreatedAt.
 	//
@@ -223,6 +241,11 @@ const (
 	kindDepositAccount rowKind = "deposit_account"
 	kindHold           rowKind = "hold"
 	kindSnapshot       rowKind = "snapshot"
+	kindParticipant    rowKind = "participant"
+	kindPayment        rowKind = "payment"
+	kindMandate        rowKind = "mandate"
+	kindCycle          rowKind = "cycle"
+	kindSettlement     rowKind = "settlement"
 )
 
 // rowKey identifies one row for sequence purposes: its book, its table and its
@@ -251,6 +274,12 @@ func newState() *state {
 		depositAccounts: make(map[ledger.BookID]map[deposit.AccountID]deposit.Account),
 		holds:           make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
 		snapshots:       make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
+		participants:    make(map[payment.ParticipantID]payment.Participant),
+		payments:        make(map[payment.PaymentID]payment.Payment),
+		mandates:        make(map[payment.MandateID]payment.Mandate),
+		cycles:          make(map[payment.CycleID]payment.ClearingCycle),
+		settlements:     make(map[payment.SettlementID]payment.Settlement),
+		endToEnd:        make(map[string]payment.PaymentID),
 		rowSeq:          make(map[rowKey]int64),
 		rowSeqCounter:   make(map[rowCounterKey]int64),
 	}
@@ -279,6 +308,12 @@ func (s *state) clone() *state {
 		depositAccounts: cloneNested(s.depositAccounts),
 		holds:           cloneNested(s.holds),
 		snapshots:       cloneNested(s.snapshots),
+		participants:    maps.Clone(s.participants),
+		payments:        maps.Clone(s.payments),
+		mandates:        maps.Clone(s.mandates),
+		cycles:          maps.Clone(s.cycles),
+		settlements:     maps.Clone(s.settlements),
+		endToEnd:        maps.Clone(s.endToEnd),
 		rowSeq:          maps.Clone(s.rowSeq),
 		rowSeqCounter:   maps.Clone(s.rowSeqCounter),
 	}
@@ -343,6 +378,37 @@ func (d depositStore) Update(ctx context.Context, fn func(context.Context, depos
 func (d depositStore) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
 	return d.Store.View(ctx, func(ctx context.Context, t ledger.Tx) error {
 		return fn(ctx, t.(deposit.Tx))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// The payment-shaped view of the same store
+// ---------------------------------------------------------------------------
+
+// Payment returns this store as a payment.Store.
+//
+// It is the store handle a payment.Network takes, and the only one it needs:
+// the Network derives its own ledger.Store and deposit.Store views from it, so
+// there is no way to hand it two stores that disagree. Like Deposit, this is an
+// adapter over the same state, the same lock and the same *tx.
+func (s *Store) Payment() payment.Store { return paymentStore{s} }
+
+// paymentStore re-types Store's Update and View; Reset and Close are promoted
+// unchanged from the embedded *Store.
+type paymentStore struct{ *Store }
+
+// compile-time check that the adapter satisfies the interface it exists for.
+var _ payment.Store = paymentStore{}
+
+func (p paymentStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	return p.Store.Update(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(payment.Tx))
+	})
+}
+
+func (p paymentStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	return p.Store.View(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(payment.Tx))
 	})
 }
 

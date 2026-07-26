@@ -1,14 +1,22 @@
-// Package payment implements a small, in-memory interbank payment system on
-// top of the ledger package. It exists to make the mechanics of payment
+// Package payment implements a small interbank payment system on top of the
+// deposit and ledger packages. It exists to make the mechanics of payment
 // clearing and settlement concrete and testable.
+//
+// Like the layers below it, the package holds no state of its own: participants,
+// payments, mandates, clearing cycles and settlements all live in a Store
+// (store/mem in-process, store/pg on Postgres) behind the payment.Store and
+// payment.Tx interfaces declared here.
 //
 // # The model
 //
-// Several participant banks each keep their own ledger.Book (their general
-// ledger) with a deposit.Register layered on top for their customer accounts.
-// A separate central-bank ledger.Book holds a reserve account for every
-// participant. Banks only meet at the central bank — which is exactly what
-// makes the distinction between clearing and settlement real:
+// Several participant banks each keep their own book of accounts (a
+// ledger.Book, their general ledger) with a deposit.Register layered on top for
+// their customer accounts. A separate central-bank book holds a reserve account
+// for every participant. The books all live in one Store and are told apart by
+// their ledger.BookID, so chart-of-accounts numbers and ID counters stay per
+// bank while a single transaction can still span several of them. Banks only
+// meet at the central bank — which is exactly what makes the distinction
+// between clearing and settlement real:
 //
 //   - Clearing is the exchange and netting of payment instructions. No central
 //     bank money moves; banks just agree on who owes whom.
@@ -55,9 +63,19 @@
 //     messages they correspond to.
 //   - No IBAN or BIC validation; routing is by explicit ParticipantID.
 //   - A single currency, using ledger.Amount (integer minor units).
-//   - Postings across the per-bank and central-bank ledgers are NOT atomic;
-//     the Network serializes whole operations under one lock. A real RTGS uses
-//     a locked settlement window. See Network for details.
+//   - One database transaction stands in for a settlement window. Every book —
+//     each participant's and the central bank's — lives in the same Store, told
+//     apart by its ledger.BookID, and payment.Tx embeds deposit.Tx embeds
+//     ledger.Tx, so a single transaction reaches all three layers. SettleCycle
+//     moves the netted reserves, mirrors them in each bank's own books and pays
+//     out every creditor inside one Store.Update, so a net payer that cannot
+//     cover its position aborts the whole batch. That is the essence of a real
+//     RTGS settlement window: the settlement agent holds the participants'
+//     accounts, checks that every payer can cover, and posts all of it or none.
+//     What a real system adds is what happens next — queueing the batch,
+//     running a liquidity-saving optimisation, unwinding the defaulter, or
+//     extending intraday credit. Here the batch simply fails and can be retried
+//     once the member is funded. See Network for details.
 //   - Returns settle immediately rather than through a later R-cycle.
 //
 // See README.md for worked examples of the SCT and SDD posting choreography.

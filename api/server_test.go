@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -19,13 +20,25 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
-	newState := func() *payment.Network {
-		clock := func() time.Time { return fixedTime }
-		store := mem.New(clock)
-		return payment.NewNetwork(store, store.Deposit(), clock)
+	return newServer(t, nil).Routes()
+}
+
+// newServer builds a Server over an empty in-memory store. populate is the
+// reseed function — the tests' stand-in for the sample dataset — and is called
+// once now, as the process would at boot, and again on every reset. Pass nil
+// for a server that resets to an empty system.
+func newServer(t *testing.T, populate func(context.Context, *payment.Network) error) *Server {
+	t.Helper()
+	clock := func() time.Time { return fixedTime }
+	store := mem.New(clock)
+	net := payment.NewNetwork(store.Payment(), clock)
+	if populate != nil {
+		if err := populate(context.Background(), net); err != nil {
+			t.Fatalf("populate: %v", err)
+		}
 	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewServer(newState, log).Routes()
+	return NewServer(net, populate, log)
 }
 
 // do runs a request through the handler and returns the recorder.
@@ -58,6 +71,19 @@ func doJSON(t *testing.T, h http.Handler, method, path, body string, wantStatus 
 		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
 	}
 	return out
+}
+
+// getJSON runs a GET, asserts 200, and decodes the body into out — which may be
+// a slice, unlike doJSON's map.
+func getJSON(t *testing.T, h http.Handler, path string, out any) {
+	t.Helper()
+	rec := do(t, h, "GET", path, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: got status %d, want 200 (body: %s)", path, rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+	}
 }
 
 func assertStatus(t *testing.T, h http.Handler, method, path, body string, want int) {
@@ -230,5 +256,65 @@ func TestAdminReset(t *testing.T) {
 
 	if !emptyList() {
 		t.Fatal("expected empty participants after reset")
+	}
+}
+
+// TestResetEmptiesState pins that POST /admin/reset clears the store rather
+// than replacing an in-memory object graph.
+//
+// The distinction is invisible with an empty reseed — everything is gone either
+// way — so the server here reseeds a known baseline. A reset that only swapped
+// the network would leave "Temp" in the store and the test would see it.
+func TestResetEmptiesState(t *testing.T) {
+	// The tests' sample dataset: one bank with one customer. Idempotent, like
+	// the real one, so booting and resetting are the same call.
+	baseline := func(ctx context.Context, net *payment.Network) error {
+		existing, err := net.ListParticipants(ctx)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			return nil
+		}
+		p, err := net.AddParticipant(ctx, "Bank A")
+		if err != nil {
+			return err
+		}
+		_, err = p.OpenCustomerAccount(ctx, "Baseline")
+		return err
+	}
+
+	srv := newServer(t, baseline).Routes()
+
+	names := func() []string {
+		var accounts []depositAccountDTO
+		getJSON(t, srv, "/participants/bank_1/deposit-accounts", &accounts)
+		out := make([]string, len(accounts))
+		for i, a := range accounts {
+			out[i] = a.Name
+		}
+		return out
+	}
+
+	if got := names(); len(got) != 1 || got[0] != "Baseline" {
+		t.Fatalf("accounts before the mutation = %v, want [Baseline]", got)
+	}
+
+	// Mutate, reset, then assert the mutation is gone and the seed is back.
+	doJSON(t, srv, "POST", "/participants/bank_1/deposit-accounts", `{"name":"Temp","overdraftLimit":0}`, http.StatusCreated)
+	if got := names(); len(got) != 2 {
+		t.Fatalf("accounts after the mutation = %v, want two", got)
+	}
+
+	doJSON(t, srv, "POST", "/admin/reset", "", http.StatusOK)
+
+	got := names()
+	for _, name := range got {
+		if name == "Temp" {
+			t.Fatal("account survived reset")
+		}
+	}
+	if len(got) != 1 || got[0] != "Baseline" {
+		t.Fatalf("accounts after reset = %v, want [Baseline]", got)
 	}
 }

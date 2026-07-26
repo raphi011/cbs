@@ -8,6 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/storetest"
 )
@@ -35,6 +36,17 @@ func TestDepositConformance(t *testing.T) {
 	})
 }
 
+// TestPaymentConformance runs the payment half of the suite against the same
+// implementation, through the payment.Store view. It is the same underlying
+// *mem.Store and the same *tx as the ledger and deposit views — which is what
+// lets a settlement post across every participant's book, the central bank's
+// and its own record in one unit of work.
+func TestPaymentConformance(t *testing.T) {
+	storetest.RunPayment(t, func(t *testing.T) payment.Store {
+		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Payment()
+	})
+}
+
 // A deposit unit of work must never be opened inside another one on the same
 // store: mem's mutex is not reentrant, so it would deadlock without a word.
 // Implementation-specific, hence tested here rather than in storetest.
@@ -55,6 +67,12 @@ func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 		},
 		"DepositUpdateInUpdate": func(ctx context.Context) error {
 			return s.Deposit().Update(ctx, func(ctx context.Context, _ deposit.Tx) error { return nil })
+		},
+		"PaymentUpdateInUpdate": func(ctx context.Context) error {
+			return s.Payment().Update(ctx, func(ctx context.Context, _ payment.Tx) error { return nil })
+		},
+		"PaymentViewInUpdate": func(ctx context.Context) error {
+			return s.Payment().View(ctx, func(ctx context.Context, _ payment.Tx) error { return nil })
 		},
 	}
 

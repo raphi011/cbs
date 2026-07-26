@@ -7,28 +7,42 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 func TestNetworkShape(t *testing.T) {
+	ctx := context.Background()
 	net := Network()
 
-	if got := len(net.ListParticipants()); got != 4 {
+	if got := len(listParticipants(t, ctx, net)); got != 4 {
 		t.Fatalf("participants = %d, want 4", got)
 	}
-	if got := len(net.ListMandates()); got != 3 {
+	mandates, err := net.ListMandates(ctx)
+	if err != nil {
+		t.Fatalf("list mandates: %v", err)
+	}
+	if got := len(mandates); got != 3 {
 		t.Fatalf("mandates = %d, want 3", got)
 	}
-	if got := len(net.ListCycles()); got != 5 {
+	cycles, err := net.ListCycles(ctx)
+	if err != nil {
+		t.Fatalf("list cycles: %v", err)
+	}
+	if got := len(cycles); got != 5 {
 		t.Fatalf("cycles = %d, want 5", got)
 	}
-	if got := len(net.ListSettlements()); got != 2 {
+	settlements, err := net.ListSettlements(ctx)
+	if err != nil {
+		t.Fatalf("list settlements: %v", err)
+	}
+	if got := len(settlements); got != 2 {
 		t.Fatalf("settlements = %d, want 2", got)
 	}
 
 	// Deposit accounts: 5 + 3 + 2 + 2 = 12 across the four banks.
 	total := 0
-	for _, p := range net.ListParticipants() {
-		accts, err := p.Deposit.ListAccounts(context.Background())
+	for _, p := range listParticipants(t, ctx, net) {
+		accts, err := p.Deposit.ListAccounts(ctx)
 		if err != nil {
 			t.Fatalf("list deposit accounts: %v", err)
 		}
@@ -40,8 +54,12 @@ func TestNetworkShape(t *testing.T) {
 }
 
 func TestPaymentStatusCoverage(t *testing.T) {
+	ctx := context.Background()
 	net := Network()
-	payments := net.ListPayments()
+	payments, err := net.ListPayments(ctx)
+	if err != nil {
+		t.Fatalf("list payments: %v", err)
+	}
 	if got := len(payments); got != 10 {
 		t.Fatalf("total payments = %d, want 10", got)
 	}
@@ -64,10 +82,11 @@ func TestPaymentStatusCoverage(t *testing.T) {
 }
 
 func TestAccountStatusCoverage(t *testing.T) {
+	ctx := context.Background()
 	net := Network()
 	seen := map[deposit.AccountStatus]bool{}
-	for _, p := range net.ListParticipants() {
-		accts, err := p.Deposit.ListAccounts(context.Background())
+	for _, p := range listParticipants(t, ctx, net) {
+		accts, err := p.Deposit.ListAccounts(ctx)
 		if err != nil {
 			t.Fatalf("list deposit accounts: %v", err)
 		}
@@ -83,10 +102,11 @@ func TestAccountStatusCoverage(t *testing.T) {
 }
 
 func TestReservesConserved(t *testing.T) {
+	ctx := context.Background()
 	net := Network()
 	var sum int64
-	for _, p := range net.ListParticipants() {
-		bal, err := net.ReserveBalance(p.ID)
+	for _, p := range listParticipants(t, ctx, net) {
+		bal, err := net.ReserveBalance(ctx, p.ID)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,10 +124,11 @@ func TestReservesConserved(t *testing.T) {
 }
 
 func TestDeterministicIDs(t *testing.T) {
+	ctx := context.Background()
 	a := Network()
 	b := Network()
 
-	pa, pb := a.ListParticipants(), b.ListParticipants()
+	pa, pb := listParticipants(t, ctx, a), listParticipants(t, ctx, b)
 	if len(pa) != len(pb) {
 		t.Fatalf("participant counts differ: %d vs %d", len(pa), len(pb))
 	}
@@ -117,7 +138,7 @@ func TestDeterministicIDs(t *testing.T) {
 		}
 	}
 
-	xa, xb := a.ListPayments(), b.ListPayments()
+	xa, xb := listPayments(t, ctx, a), listPayments(t, ctx, b)
 	if len(xa) != len(xb) {
 		t.Fatalf("payment counts differ: %d vs %d", len(xa), len(xb))
 	}
@@ -129,22 +150,106 @@ func TestDeterministicIDs(t *testing.T) {
 }
 
 func TestClockWentLive(t *testing.T) {
+	ctx := context.Background()
 	net := Network()
-	accts, err := net.ListParticipants()[0].Deposit.ListAccounts(context.Background())
+	first := listParticipants(t, ctx, net)[0]
+	accts, err := first.Deposit.ListAccounts(ctx)
 	if err != nil {
 		t.Fatalf("list deposit accounts: %v", err)
 	}
 	if len(accts) == 0 {
 		t.Fatal("first participant has no accounts")
 	}
-	ref := payment.PartyRef{Participant: net.ListParticipants()[0].ID, Account: accts[0].ID}
+	ref := payment.PartyRef{Participant: first.ID, Account: accts[0].ID}
 
 	// A mutation after build must be timestamped in real time, not at baseDate.
-	m, err := net.CreateMandate(ref, ref, 0)
+	m, err := net.CreateMandate(ctx, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if time.Since(m.CreatedAt) > time.Minute {
 		t.Fatalf("mandate CreatedAt = %v, expected ~now (clock did not go live)", m.CreatedAt)
+	}
+}
+
+// listParticipants and listPayments keep the ctx/error plumbing out of the
+// assertions above.
+func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Participant {
+	t.Helper()
+	parts, err := net.ListParticipants(ctx)
+	if err != nil {
+		t.Fatalf("list participants: %v", err)
+	}
+	return parts
+}
+
+func listPayments(t *testing.T, ctx context.Context, net *payment.Network) []payment.Payment {
+	t.Helper()
+	payments, err := net.ListPayments(ctx)
+	if err != nil {
+		t.Fatalf("list payments: %v", err)
+	}
+	return payments
+}
+
+// Populate must be safe to call again. The server calls it on every boot, and
+// against a store that outlives the process an unconditional seed would stack a
+// second copy of the scenario on top of the first.
+func TestPopulateIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	d := New()
+	store := mem.New(d.Now)
+	net := payment.NewNetwork(store.Payment(), d.Now)
+
+	if err := d.Populate(ctx, net); err != nil {
+		t.Fatalf("first Populate: %v", err)
+	}
+	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
+
+	if err := d.Populate(ctx, net); err != nil {
+		t.Fatalf("second Populate: %v", err)
+	}
+	if got := len(listParticipants(t, ctx, net)); got != len(participants) {
+		t.Fatalf("participants after reseeding = %d, want %d", got, len(participants))
+	}
+	if got := len(listPayments(t, ctx, net)); got != len(payments) {
+		t.Fatalf("payments after reseeding = %d, want %d", got, len(payments))
+	}
+}
+
+// A reset must restore the dataset, not a version of it shifted forward in
+// time. Populate rewinds its clock, so the second build reproduces the first
+// exactly — IDs, statuses, amounts and booking dates.
+func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
+	ctx := context.Background()
+	d := New()
+	store := mem.New(d.Now)
+	net := payment.NewNetwork(store.Payment(), d.Now)
+
+	if err := d.Populate(ctx, net); err != nil {
+		t.Fatalf("Populate: %v", err)
+	}
+	before := listPayments(t, ctx, net)
+
+	if err := store.Reset(ctx); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if got := len(listParticipants(t, ctx, net)); got != 0 {
+		t.Fatalf("participants after reset = %d, want 0", got)
+	}
+
+	if err := d.Populate(ctx, net); err != nil {
+		t.Fatalf("Populate after reset: %v", err)
+	}
+	after := listPayments(t, ctx, net)
+
+	if len(after) != len(before) {
+		t.Fatalf("payments after reset = %d, want %d", len(after), len(before))
+	}
+	for i := range before {
+		if after[i].ID != before[i].ID || after[i].Status != before[i].Status ||
+			after[i].Amount != before[i].Amount || !after[i].BookingDate.Equal(before[i].BookingDate) {
+			t.Fatalf("payment %d differs after a reset: %+v vs %+v", i, after[i], before[i])
+		}
 	}
 }

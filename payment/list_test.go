@@ -1,32 +1,40 @@
-package payment
+package payment_test
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	. "github.com/raphi011/cbs/payment"
+)
 
 func TestListParticipantsAndLookup(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, _, _ := setupTwoBanks(t, sys)
 
-	parts := sys.ListParticipants()
+	parts, err := sys.ListParticipants(ctx)
+	assertNoError(t, err)
 	assertEqual(t, "participant count", len(parts), 2)
 
-	got, err := sys.GetParticipant(a.ID)
+	got, err := sys.GetParticipant(ctx, a.ID)
 	assertNoError(t, err)
 	assertEqual(t, "lookup returns Bank A", got.ID, a.ID)
-	// GetParticipant returns the live pointer, so its Ledger is usable.
+	// GetParticipant returns a bound participant, so its Ledger is usable.
 	assertEqual(t, "live ledger reachable", got.ReserveAccount, a.ReserveAccount)
 
-	_, err = sys.GetParticipant("nope")
+	_, err = sys.GetParticipant(ctx, "nope")
 	assertError(t, err, ErrParticipantNotFound)
 
 	_ = b
 }
 
 func TestListPaymentsCyclesSettlements(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	st := runCycle(t, sys, SchemeSEPACT, func() {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme:   SchemeSEPACT,
 			Debtor:   PartyRef{Participant: a.ID, Account: alice},
 			Creditor: PartyRef{Participant: b.ID, Account: bob},
@@ -35,18 +43,24 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 		assertNoError(t, err)
 	})
 
-	assertEqual(t, "payment count", len(sys.ListPayments()), 1)
-	assertEqual(t, "cycle count", len(sys.ListCycles()), 1)
+	payments, err := sys.ListPayments(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "payment count", len(payments), 1)
 
-	settlements := sys.ListSettlements()
+	cycles, err := sys.ListCycles(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "cycle count", len(cycles), 1)
+
+	settlements, err := sys.ListSettlements(ctx)
+	assertNoError(t, err)
 	assertEqual(t, "settlement count", len(settlements), 1)
 	assertEqual(t, "settlement id matches", settlements[0].ID, st.ID)
 
-	gotSt, err := sys.GetSettlement(st.ID)
+	gotSt, err := sys.GetSettlement(ctx, st.ID)
 	assertNoError(t, err)
 	assertEqual(t, "get settlement id", gotSt.ID, st.ID)
 
-	_, err = sys.GetSettlement("nope")
+	_, err = sys.GetSettlement(ctx, "nope")
 	assertError(t, err, ErrSettlementNotFound)
 
 	// Both SEPA schemes are registered.
@@ -54,15 +68,18 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 }
 
 func TestListMandates(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	_, err := sys.CreateMandate(
+	_, err := sys.CreateMandate(ctx,
 		PartyRef{Participant: a.ID, Account: alice},
 		PartyRef{Participant: b.ID, Account: bob},
 		50000,
 	)
 	assertNoError(t, err)
 
-	assertEqual(t, "mandate count", len(sys.ListMandates()), 1)
+	mandates, err := sys.ListMandates(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "mandate count", len(mandates), 1)
 }

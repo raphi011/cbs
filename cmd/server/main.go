@@ -1,10 +1,14 @@
 // Command server runs the core-banking REST API.
 //
-// It builds a single in-memory payment.Network seeded with a comprehensive
-// sample dataset (multiple banks, accounts, payments, clearing cycles and
-// settlements) and serves it over HTTP. State lives only in memory and can be
-// reset to the sample dataset at runtime via POST /admin/reset; it also resets on
-// restart. This is a learning and prototyping tool, not a production service.
+// It opens a store, builds a payment.Network over it, seeds it with a
+// comprehensive sample dataset (multiple banks, accounts, payments, clearing
+// cycles and settlements) and serves it over HTTP. The store is store/mem, so
+// state lives only in memory and is rebuilt on restart; it can also be reset to
+// the sample dataset at runtime via POST /admin/reset. This is a learning and
+// prototyping tool, not a production service.
+//
+// Seeding is idempotent, so the same wiring works against a store that outlives
+// the process: a restart against a populated store leaves the data alone.
 package main
 
 import (
@@ -19,7 +23,9 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/api"
+	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
+	"github.com/raphi011/cbs/store/mem"
 )
 
 func main() {
@@ -28,7 +34,24 @@ func main() {
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	srv := api.NewServer(seed.Network, log)
+	// One store backs every layer: the network takes a payment.Store and
+	// derives the ledger and deposit views from it, so the three cannot end up
+	// addressing different data.
+	data := seed.New()
+	store := mem.New(data.Now)
+	defer func() {
+		if err := store.Close(); err != nil {
+			log.Error("closing the store", "error", err)
+		}
+	}()
+
+	net := payment.NewNetwork(store.Payment(), data.Now)
+	if err := data.Populate(context.Background(), net); err != nil {
+		log.Error("seeding the sample dataset", "error", err)
+		os.Exit(1)
+	}
+
+	srv := api.NewServer(net, data.Populate, log)
 
 	httpServer := &http.Server{
 		Addr:              *addr,

@@ -1,4 +1,4 @@
-package payment
+package payment_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	. "github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/mem"
 )
 
@@ -19,7 +20,7 @@ func testNetwork(t *testing.T) *Network {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
 	store := mem.New(clock)
-	return NewNetwork(store, store.Deposit(), clock)
+	return NewNetwork(store.Payment(), clock)
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
@@ -28,18 +29,19 @@ func testNetwork(t *testing.T) *Network {
 // are resolved when checking book balances.
 func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob deposit.AccountID) {
 	t.Helper()
+	ctx := context.Background()
 
-	a, err := sys.AddParticipant("Bank A")
+	a, err := sys.AddParticipant(ctx, "Bank A")
 	assertNoError(t, err)
-	b, err = sys.AddParticipant("Bank B")
-	assertNoError(t, err)
-
-	aliceAcct, err := a.OpenCustomerAccount("Alice")
-	assertNoError(t, err)
-	bobAcct, err := b.OpenCustomerAccount("Bob")
+	b, err = sys.AddParticipant(ctx, "Bank B")
 	assertNoError(t, err)
 
-	assertNoError(t, sys.Deposit(a.ID, aliceAcct.ID, 100000, "Alice opening deposit"))
+	aliceAcct, err := a.OpenCustomerAccount(ctx, "Alice")
+	assertNoError(t, err)
+	bobAcct, err := b.OpenCustomerAccount(ctx, "Bob")
+	assertNoError(t, err)
+
+	assertNoError(t, sys.Deposit(ctx, a.ID, aliceAcct.ID, 100000, "Alice opening deposit"))
 	return a, b, aliceAcct.ID, bobAcct.ID
 }
 
@@ -47,12 +49,13 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 // the settled settlement.
 func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settlement {
 	t.Helper()
-	cyc, err := sys.OpenCycle(scheme)
+	ctx := context.Background()
+	cyc, err := sys.OpenCycle(ctx, scheme)
 	assertNoError(t, err)
 	submit()
-	_, err = sys.CloseCycle(cyc.ID)
+	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	st, err := sys.SettleCycle(cyc.ID)
+	st, err := sys.SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	return st
 }
@@ -79,7 +82,7 @@ func customerBalance(t *testing.T, p *Participant, acct deposit.AccountID) ledge
 func assertReserveMirror(t *testing.T, sys *Network, p *Participant) {
 	t.Helper()
 	own := bookBalance(t, p.Ledger, p.ReserveAccount)
-	cb, err := sys.ReserveBalance(p.ID)
+	cb, err := sys.ReserveBalance(context.Background(), p.ID)
 	assertNoError(t, err)
 	assertEqual(t, "reserve mirror for "+p.Name, own, cb)
 }
@@ -89,13 +92,14 @@ func assertReserveMirror(t *testing.T, sys *Network, p *Participant) {
 // ---------------------------------------------------------------------------
 
 func TestSCT_HappyPath(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPACT, func() {
 		var err error
-		pay, err = sys.InitiatePayment(InitiatePaymentRequest{
+		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme:      SchemeSEPACT,
 			Debtor:      PartyRef{Participant: a.ID, Account: alice},
 			Creditor:    PartyRef{Participant: b.ID, Account: bob},
@@ -121,24 +125,25 @@ func TestSCT_HappyPath(t *testing.T) {
 	assertReserveMirror(t, sys, a)
 	assertReserveMirror(t, sys, b)
 
-	got, err := sys.GetPayment(pay.ID)
+	got, err := sys.GetPayment(ctx, pay.ID)
 	assertNoError(t, err)
 	assertEqual(t, "status settled", got.Status, Settled)
 }
 
 func TestSCT_Netting(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	// Fund Bob so Bank B can also be a payer.
-	assertNoError(t, sys.Deposit(b.ID, bob, 50000, "Bob opening deposit"))
+	assertNoError(t, sys.Deposit(ctx, b.ID, bob, 50000, "Bob opening deposit"))
 
 	st := runCycle(t, sys, SchemeSEPACT, func() {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertNoError(t, err)
-		_, err = sys.InitiatePayment(InitiatePaymentRequest{
+		_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
 		})
@@ -160,12 +165,13 @@ func TestSCT_Netting(t *testing.T) {
 }
 
 func TestSCT_InsufficientFunds(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	_, err := sys.OpenCycle(SchemeSEPACT)
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	_, err = sys.InitiatePayment(InitiatePaymentRequest{
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -177,17 +183,18 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSDD_HappyPath(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(debtor, creditor, 0)
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
-		pay, err = sys.InitiatePayment(InitiatePaymentRequest{
+		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
 		})
@@ -202,16 +209,17 @@ func TestSDD_HappyPath(t *testing.T) {
 }
 
 func TestSDD_MandateValidation(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
 
-	limited, err := sys.CreateMandate(debtor, creditor, 5000)
+	limited, err := sys.CreateMandate(ctx, debtor, creditor, 5000)
 	assertNoError(t, err)
-	revoked, err := sys.CreateMandate(debtor, creditor, 0)
+	revoked, err := sys.CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
-	assertNoError(t, sys.RevokeMandate(revoked.ID))
+	assertNoError(t, sys.RevokeMandate(ctx, revoked.ID))
 
 	cases := []struct {
 		name      string
@@ -226,31 +234,33 @@ func TestSDD_MandateValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := sys.OpenCycle(SchemeSEPADD)
+			_, err := sys.OpenCycle(ctx, SchemeSEPADD)
 			assertNoError(t, err)
-			_, err = sys.InitiatePayment(InitiatePaymentRequest{
+			_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 				Scheme: SchemeSEPADD, Amount: tc.amount, MandateID: tc.mandateID,
 				Debtor: debtor, Creditor: creditor,
 			})
 			assertError(t, err, tc.want)
 			// Tidy up the open cycle for the next sub-test.
-			cyc := sys.openCycle[SchemeSEPADD]
-			_, _ = sys.CloseCycle(cyc)
+			cyc, err := sys.OpenCycleID(ctx, SchemeSEPADD)
+			assertNoError(t, err)
+			_, _ = sys.CloseCycle(ctx, cyc)
 		})
 	}
 }
 
 func TestSDD_Return(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(debtor, creditor, 0)
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
-		pay, err = sys.InitiatePayment(InitiatePaymentRequest{
+		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor,
 		})
@@ -258,7 +268,7 @@ func TestSDD_Return(t *testing.T) {
 	})
 	assertEqual(t, "alice after collection", customerBalance(t, a, alice), 75000)
 
-	returned, err := sys.ReturnPayment(pay.ID, "insufficient funds at debtor")
+	returned, err := sys.ReturnPayment(ctx, pay.ID, "insufficient funds at debtor")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 
@@ -270,16 +280,232 @@ func TestSDD_Return(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Settlement atomicity
+// ---------------------------------------------------------------------------
+
+// SettleCycle posts across every participant's book and the central bank's. One
+// store means one transaction: a failure partway must leave no postings at all.
+func TestSettleCycleIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	net, cycleID := newClosedCycleWithUnderfundedMember(t) // one member lacks reserves
+
+	before := reserveBalances(t, ctx, net)
+
+	_, err := net.SettleCycle(ctx, cycleID)
+	if err == nil {
+		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
+	}
+
+	after := reserveBalances(t, ctx, net)
+	for id, want := range before {
+		assertEqual(t, "reserve balance for "+string(id), after[id], want)
+	}
+}
+
+// TestSettleCycleRollsBackEveryLayer is the assertion the reserve balances
+// above cannot make on their own.
+//
+// Reserve balances are read at the central bank, so they catch a committed
+// central-bank settlement transaction — which is exactly what the old
+// implementation left behind — but they say nothing about the participants'
+// own books, the payments' statuses or the settlement record. A two-transaction
+// implementation that happened to post the participant legs first would slip
+// past the test above; it cannot slip past this one.
+func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
+	ctx := context.Background()
+	net, cycleID := newClosedCycleWithUnderfundedMember(t)
+
+	cycle, err := net.GetCycle(ctx, cycleID)
+	assertNoError(t, err)
+
+	participants, err := net.ListParticipants(ctx)
+	assertNoError(t, err)
+
+	// Snapshot every layer the settlement would touch.
+	suspenseBefore := map[ParticipantID]ledger.Amount{}
+	reserveBefore := map[ParticipantID]ledger.Amount{}
+	txCountBefore := map[ParticipantID]int{}
+	for _, p := range participants {
+		suspenseBefore[p.ID] = bookBalance(t, p.Ledger, p.SuspenseAccount)
+		reserveBefore[p.ID] = bookBalance(t, p.Ledger, p.ReserveAccount)
+		txs, err := p.Ledger.ListTransactions(ctx)
+		assertNoError(t, err)
+		txCountBefore[p.ID] = len(txs)
+	}
+	cbTxBefore, err := net.CentralBank().ListTransactions(ctx)
+	assertNoError(t, err)
+
+	_, err = net.SettleCycle(ctx, cycleID)
+	if err == nil {
+		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
+	}
+
+	// No participant's own book moved, and none of them gained a transaction.
+	for _, p := range participants {
+		assertEqual(t, "suspense at "+p.Name, bookBalance(t, p.Ledger, p.SuspenseAccount), suspenseBefore[p.ID])
+		assertEqual(t, "reserve at "+p.Name, bookBalance(t, p.Ledger, p.ReserveAccount), reserveBefore[p.ID])
+		txs, err := p.Ledger.ListTransactions(ctx)
+		assertNoError(t, err)
+		assertEqual(t, "transaction count at "+p.Name, len(txs), txCountBefore[p.ID])
+	}
+
+	// The central bank did not gain the settlement transaction.
+	cbTxAfter, err := net.CentralBank().ListTransactions(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "central bank transaction count", len(cbTxAfter), len(cbTxBefore))
+
+	// No settlement was recorded, and the cycle is still Closed rather than
+	// Settled, so the operation can be retried once the member is funded.
+	settlements, err := net.ListSettlements(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "settlements recorded", len(settlements), 0)
+
+	after, err := net.GetCycle(ctx, cycleID)
+	assertNoError(t, err)
+	assertEqual(t, "cycle status", after.Status, CycleClosed)
+
+	// The payments are still Cleared: none of them was marked Settled.
+	for _, pid := range cycle.PaymentIDs {
+		p, err := net.GetPayment(ctx, pid)
+		assertNoError(t, err)
+		assertEqual(t, "status of "+string(pid), p.Status, Cleared)
+	}
+}
+
+// newClosedCycleWithUnderfundedMember builds a closed cycle in which one net
+// payer cannot cover its position at the central bank.
+//
+// The gap is opened with an overdraft: Carol's account at Bank C may go
+// negative, so her payment passes the deposit layer's funds check, but Bank C's
+// reserve at the central bank is a plain asset with no overdraft — so the
+// mirror posting that draws it down fails. That is the real shape of the
+// failure a settlement window exists to contain: the instruction is valid, the
+// member's liquidity is not.
+func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
+	t.Helper()
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	a, err := sys.AddParticipant(ctx, "Bank A") // net receiver
+	assertNoError(t, err)
+	b, err := sys.AddParticipant(ctx, "Bank B") // solvent net payer
+	assertNoError(t, err)
+	c, err := sys.AddParticipant(ctx, "Bank C") // underfunded net payer
+	assertNoError(t, err)
+
+	alice, err := a.OpenCustomerAccount(ctx, "Alice")
+	assertNoError(t, err)
+	bob, err := b.OpenCustomerAccount(ctx, "Bob")
+	assertNoError(t, err)
+	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", 100000)
+	assertNoError(t, err)
+
+	assertNoError(t, sys.Deposit(ctx, a.ID, alice.ID, 100000, "Alice opening deposit"))
+	assertNoError(t, sys.Deposit(ctx, b.ID, bob.ID, 100000, "Bob opening deposit"))
+	assertNoError(t, sys.Deposit(ctx, c.ID, carol.ID, 10000, "Carol opening deposit"))
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+
+	// Bank B pays 20000 it has the reserves for.
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 20000,
+		Debtor: PartyRef{Participant: b.ID, Account: bob.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+	})
+	assertNoError(t, err)
+	// Bank C pays 60000 its customer can afford on overdraft and it cannot.
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 60000,
+		Debtor: PartyRef{Participant: c.ID, Account: carol.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+	})
+	assertNoError(t, err)
+
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	return sys, cyc.ID
+}
+
+// reserveBalances reads every participant's reserve as held at the central bank.
+func reserveBalances(t *testing.T, ctx context.Context, sys *Network) map[ParticipantID]ledger.Amount {
+	t.Helper()
+	participants, err := sys.ListParticipants(ctx)
+	assertNoError(t, err)
+
+	out := make(map[ParticipantID]ledger.Amount, len(participants))
+	for _, p := range participants {
+		bal, err := sys.ReserveBalance(ctx, p.ID)
+		assertNoError(t, err)
+		out[p.ID] = bal
+	}
+	return out
+}
+
+// SettleCycle writes the central bank's settlement entries in the order the
+// participants were registered. Go randomises map iteration, so a settlement
+// built by ranging over the net positions produced a different entry order on
+// every run — and that order is persisted.
+func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
+	ctx := context.Background()
+
+	order := func() string {
+		sys := testNetwork(t)
+		var banks []*Participant
+		var accounts []deposit.Account
+		for _, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
+			p, err := sys.AddParticipant(ctx, name)
+			assertNoError(t, err)
+			acct, err := p.OpenCustomerAccount(ctx, "Customer at "+name)
+			assertNoError(t, err)
+			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
+			banks = append(banks, p)
+			accounts = append(accounts, acct)
+		}
+
+		// Every bank ends up with a non-zero net position, so every one of them
+		// contributes an entry to the settlement transaction.
+		st := runCycle(t, sys, SchemeSEPACT, func() {
+			for i := range banks {
+				j := (i + 1) % len(banks)
+				_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+					Scheme: SchemeSEPACT, Amount: ledger.Amount(1000 * (i + 1)),
+					Debtor:   PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
+					Creditor: PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+				})
+				assertNoError(t, err)
+			}
+		})
+
+		tx, err := sys.CentralBank().GetTransaction(ctx, st.SettlementTx)
+		assertNoError(t, err)
+		assertEqual(t, "settlement entry count", len(tx.Entries), 4)
+
+		var s string
+		for _, e := range tx.Entries {
+			s += string(e.AccountID) + " "
+		}
+		return s
+	}
+
+	// Five runs, because a map with four keys iterated in a random order
+	// repeats itself only about one time in twenty-four.
+	want := order()
+	for range 5 {
+		assertEqual(t, "settlement entry order", order(), want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // State machine, idempotency, and validation guards
 // ---------------------------------------------------------------------------
 
 func TestStateMachineGuards(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 	mkPayment := func() (Payment, CycleID) {
-		cyc, err := sys.OpenCycle(SchemeSEPACT)
+		cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
 		assertNoError(t, err)
-		p, err := sys.InitiatePayment(InitiatePaymentRequest{
+		p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
@@ -289,55 +515,56 @@ func TestStateMachineGuards(t *testing.T) {
 
 	t.Run("settle before close", func(t *testing.T) {
 		_, cyc := mkPayment()
-		_, err := sys.SettleCycle(cyc)
+		_, err := sys.SettleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
-		_, _ = sys.CloseCycle(cyc)
-		_, _ = sys.SettleCycle(cyc)
+		_, _ = sys.CloseCycle(ctx, cyc)
+		_, _ = sys.SettleCycle(ctx, cyc)
 	})
 
 	t.Run("double settle", func(t *testing.T) {
 		_, cyc := mkPayment()
-		_, err := sys.CloseCycle(cyc)
+		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(cyc)
+		_, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(cyc)
+		_, err = sys.SettleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
 	})
 
 	t.Run("return before settle", func(t *testing.T) {
 		p, cyc := mkPayment()
-		_, err := sys.ReturnPayment(p.ID, "too early")
+		_, err := sys.ReturnPayment(ctx, p.ID, "too early")
 		assertError(t, err, ErrInvalidStateTransition)
-		_, _ = sys.CloseCycle(cyc)
-		_, _ = sys.SettleCycle(cyc)
+		_, _ = sys.CloseCycle(ctx, cyc)
+		_, _ = sys.SettleCycle(ctx, cyc)
 	})
 
 	t.Run("reject after settle", func(t *testing.T) {
 		p, cyc := mkPayment()
-		_, err := sys.CloseCycle(cyc)
+		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(cyc)
+		_, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.RejectPayment(p.ID, "too late")
+		_, err = sys.RejectPayment(ctx, p.ID, "too late")
 		assertError(t, err, ErrInvalidStateTransition)
 	})
 }
 
 func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	_, err := sys.OpenCycle(SchemeSEPACT)
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	p, err := sys.InitiatePayment(InitiatePaymentRequest{
+	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 40000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
 
-	rejected, err := sys.RejectPayment(p.ID, "operator cancelled")
+	rejected, err := sys.RejectPayment(ctx, p.ID, "operator cancelled")
 	assertNoError(t, err)
 	assertEqual(t, "status", rejected.Status, Rejected)
 	assertEqual(t, "alice restored", customerBalance(t, a, alice), 100000)
@@ -345,49 +572,51 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 }
 
 func TestDuplicateEndToEndID(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
-	_, err := sys.OpenCycle(SchemeSEPACT)
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 	req := InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000, EndToEndID: "e2e-1",
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	}
-	_, err = sys.InitiatePayment(req)
+	_, err = sys.InitiatePayment(ctx, req)
 	assertNoError(t, err)
-	_, err = sys.InitiatePayment(req)
+	_, err = sys.InitiatePayment(ctx, req)
 	assertError(t, err, ErrDuplicateEndToEndID)
 }
 
 func TestInitiatePayment_Validation(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
-	_, err := sys.OpenCycle(SchemeSEPACT)
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 
 	t.Run("unknown scheme", func(t *testing.T) {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: "nope", Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrSchemeNotFound)
 	})
 	t.Run("non-positive amount", func(t *testing.T) {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 0,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrInvalidPaymentAmount)
 	})
 	t.Run("account not in participant", func(t *testing.T) {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
 	t.Run("no open cycle", func(t *testing.T) {
-		_, err := sys.InitiatePayment(InitiatePaymentRequest{
+		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 1000, // no SDD cycle open
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
@@ -396,10 +625,11 @@ func TestInitiatePayment_Validation(t *testing.T) {
 }
 
 func TestOpenCycle_AlreadyOpen(t *testing.T) {
+	ctx := context.Background()
 	sys := testNetwork(t)
-	_, err := sys.OpenCycle(SchemeSEPACT)
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	_, err = sys.OpenCycle(SchemeSEPACT)
+	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
 	assertError(t, err, ErrCycleAlreadyOpen)
 }
 

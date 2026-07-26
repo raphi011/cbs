@@ -1,13 +1,14 @@
-// Package storetest is the conformance suite every ledger.Store implementation
-// must pass.
+// Package storetest is the conformance suite every store implementation must
+// pass: RunLedger for the ledger layer, RunDeposit for the deposit layer and
+// RunPayment for the payment layer.
 //
 // It is a normal package rather than a set of _test.go files, because
 // store/mem and store/pg both import it from their own tests. It talks only to
-// ledger.Store and ledger.Tx — never to ledger.Book — so it pins the storage
-// contract itself: identity allocation, ordering, idempotency, the balance
-// aggregate, the audit log and rollback. Anything the two implementations could
-// plausibly disagree about belongs here, because this suite is the only thing
-// keeping them from drifting apart.
+// the Store and Tx interfaces — never to ledger.Book, deposit.Register or
+// payment.Network — so it pins the storage contract itself: identity
+// allocation, ordering, idempotency, the balance aggregate, the audit log and
+// rollback. Anything the implementations could plausibly disagree about belongs
+// here, because this suite is the only thing keeping them from drifting apart.
 //
 // # Ordering
 //
