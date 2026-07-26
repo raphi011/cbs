@@ -2,6 +2,8 @@ package seed
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +216,105 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	}
 	if got := len(listPayments(t, ctx, net)); got != len(payments) {
 		t.Fatalf("payments after reseeding = %d, want %d", got, len(payments))
+	}
+	assertClockIsLive(t, d, "after a second Populate on the same Dataset")
+
+	// The case the idempotent skip exists for: a second process opening a store
+	// that outlived the first. Its Dataset is brand new, so its clock starts
+	// frozen at baseDate and Populate builds nothing — and if the skip returned
+	// without releasing the clock, everything this process went on to write
+	// would be timestamped 2025-09-15.
+	second := New()
+	secondNet := payment.NewNetwork(store.Payment(), second.Now)
+	if err := second.Populate(ctx, secondNet); err != nil {
+		t.Fatalf("Populate from a second process: %v", err)
+	}
+	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
+		t.Fatalf("participants seen by the second process = %d, want %d", got, len(participants))
+	}
+	assertClockIsLive(t, second, "after an idempotent skip in a second process")
+
+	// And the observable consequence, not just the clock reading: a row written
+	// after the skip must carry a live timestamp.
+	acct, err := listParticipants(t, ctx, secondNet)[0].OpenCustomerAccount(ctx, "Opened after the skip")
+	if err != nil {
+		t.Fatalf("open account after the skip: %v", err)
+	}
+	if age := time.Since(acct.CreatedAt); age > time.Minute {
+		t.Fatalf("account opened after the skip is dated %v (%v ago), expected ~now", acct.CreatedAt, age)
+	}
+}
+
+// assertClockIsLive checks that a Dataset's clock has been released to real
+// time rather than left frozen at baseDate.
+func assertClockIsLive(t *testing.T, d *Dataset, when string) {
+	t.Helper()
+	if age := time.Since(d.Now()); age > time.Minute {
+		t.Fatalf("clock %s reads %v (%v ago), expected ~now — the seed clock never went live", when, d.Now(), age)
+	}
+}
+
+// Populate recovers the builder's own must/check panic and nothing else. A nil
+// dereference in payment, deposit, ledger or store/mem is a bug: flattening it
+// into a seed error would return it as a 500 with the stack thrown away.
+func TestRecoverBuildOnlyCatchesSeedErrors(t *testing.T) {
+	if err := recoverBuild(nil); err != nil {
+		t.Fatalf("recoverBuild(nil) = %v, want nil", err)
+	}
+
+	boom := errors.New("boom")
+	err := recoverBuild(seedErr{boom})
+	if err == nil {
+		t.Fatal("recoverBuild did not convert a seedErr into an error")
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("recoverBuild(seedErr) = %v, want it to wrap %v", err, boom)
+	}
+	if !strings.HasPrefix(err.Error(), "seed: ") {
+		t.Fatalf("recoverBuild(seedErr) = %q, want it prefixed with \"seed: \"", err.Error())
+	}
+
+	// Anything else keeps going, with its original value.
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("recoverBuild swallowed a panic that was not the builder's")
+			}
+			if r != "a runtime bug" {
+				t.Fatalf("re-panicked with %v, want the original value", r)
+			}
+		}()
+		_ = recoverBuild("a runtime bug")
+	}()
+}
+
+// must and check are what recoverBuild recognises, so the panic value they
+// raise is part of the contract rather than an implementation detail.
+func TestMustAndCheckPanicWithSeedErr(t *testing.T) {
+	boom := errors.New("boom")
+
+	cases := map[string]func(){
+		"check": func() { check(boom) },
+		"must":  func() { must("", boom) },
+	}
+	for name, fn := range cases {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("%s did not panic", name)
+				}
+				se, ok := r.(seedErr)
+				if !ok {
+					t.Fatalf("%s panicked with %T, want seedErr", name, r)
+				}
+				if !errors.Is(se, boom) {
+					t.Fatalf("%s panicked with %v, want it to wrap %v", name, se, boom)
+				}
+			}()
+			fn()
+		})
 	}
 }
 

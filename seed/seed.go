@@ -42,12 +42,26 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // outlives the process, seeding unconditionally would stack a second copy of
 // the scenario on top of the first at every restart.
 //
+// The clock goes live on every path out of Populate, including the one that
+// built nothing. That is not a detail: the second process to open a store that
+// outlives the first has a Dataset whose clock is still frozen at baseDate, and
+// if the skip returned without releasing it, every payment, account, hold,
+// snapshot and audit event that process went on to write would be timestamped
+// 2025-09-15. Freezing the clock is a property of building the scenario, not of
+// the Dataset.
+//
 // The scenario is hardcoded, so a failure while building it is a programming
 // bug rather than a runtime condition, and the builder says so by panicking.
-// Populate turns that back into an error at the package boundary, since its
-// caller — the server's reset handler — has an error to report and a request to
-// answer.
+// Populate turns the builder's own panic back into an error at the package
+// boundary, since its caller — the server's reset handler — has an error to
+// report and a request to answer. Any other panic is re-raised with its stack
+// intact; see recoverBuild.
 func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error) {
+	// Registered first, so it runs last: whether the scenario was built now,
+	// was already there, or failed halfway, the clock is released before
+	// Populate returns.
+	defer d.clock.goLive()
+
 	existing, err := net.ListParticipants(ctx)
 	if err != nil {
 		return err
@@ -57,16 +71,45 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 	}
 
 	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("seed: %v", r)
+		if e := recoverBuild(recover()); e != nil {
+			err = e
 		}
 	}()
 
 	d.clock.rewind(baseDate)
 	b := &builder{ctx: ctx, net: net, clock: d.clock, ibans: map[deposit.AccountID]string{}}
 	b.build()
-	d.clock.goLive()
 	return nil
+}
+
+// seedErr marks a panic raised by must or check, so it can be told apart from
+// every other panic that might unwind through the builder.
+type seedErr struct{ err error }
+
+func (e seedErr) Error() string { return e.err.Error() }
+func (e seedErr) Unwrap() error { return e.err }
+
+// recoverBuild converts the builder's own must/check panic into an error and
+// re-panics anything else.
+//
+// The distinction matters because the builder drives four packages: a nil map
+// write or a nil dereference in payment, deposit, ledger or store/mem is a bug,
+// and flattening it into "seed: runtime error: invalid memory address" —
+// returned as a 500 from POST /admin/reset with the stack discarded — would
+// hide exactly the failures worth seeing. Only the errors the builder chose to
+// raise are turned into errors.
+//
+// It takes the recovered value rather than calling recover itself, because
+// recover only works when called directly by a deferred function.
+func recoverBuild(r any) error {
+	if r == nil {
+		return nil
+	}
+	se, ok := r.(seedErr)
+	if !ok {
+		panic(r)
+	}
+	return fmt.Errorf("seed: %w", se.err)
 }
 
 // Network builds a fresh in-memory payment.Network populated with the sample
@@ -77,7 +120,9 @@ func Network() *payment.Network {
 	d := New()
 	store := mem.New(d.Now)
 	net := payment.NewNetwork(store.Payment(), d.Now)
-	check(d.Populate(context.Background(), net))
+	if err := d.Populate(context.Background(), net); err != nil {
+		panic(err.Error()) // already prefixed with "seed: "
+	}
 	return net
 }
 
@@ -94,9 +139,12 @@ type builder struct {
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
 // deterministic, so any error is a programming bug that should fail loudly.
+//
+// The panic value is a seedErr rather than a string so that Populate can tell
+// it apart from a genuine runtime panic and leave that one alone.
 func must[T any](v T, err error) T {
 	if err != nil {
-		panic(fmt.Sprintf("seed: %v", err))
+		panic(seedErr{err})
 	}
 	return v
 }
@@ -104,7 +152,7 @@ func must[T any](v T, err error) T {
 // check panics on a non-nil error from a call that returns only an error.
 func check(err error) {
 	if err != nil {
-		panic(fmt.Sprintf("seed: %v", err))
+		panic(seedErr{err})
 	}
 }
 
