@@ -9,7 +9,7 @@ import (
 
 // Book is the central component of the in-memory general ledger.
 // It manages the full lifecycle of ledgers, subledgers, accounts,
-// and transactions.
+// transactions, and the audit trail.
 //
 // # Thread Safety
 //
@@ -39,6 +39,10 @@ type Book struct {
 	// idempotencyIndex maps idempotency keys to transaction IDs.
 	// This allows the system to detect and reject duplicate postings.
 	idempotencyIndex map[string]TransactionID
+
+	// auditLog is an append-only log of all mutations. Once appended,
+	// entries are never modified or removed.
+	auditLog []*AuditEvent
 
 	// idCounter is a simple monotonic counter for generating unique IDs.
 	idCounter int64
@@ -74,7 +78,7 @@ func NewBook() *Book {
 // This is useful when several Books must share a single, deterministic
 // time source — for example, the payment package runs one ledger per bank
 // plus a central-bank ledger and drives them all from one clock so that
-// booking dates and value dates line up across ledgers.
+// booking dates, value dates, and audit timestamps line up across ledgers.
 func NewBookWithClock(clock func() time.Time) *Book {
 	return &Book{
 		ledgers:          make(map[LedgerID]*Ledger),
@@ -98,6 +102,17 @@ func (s *Book) now() time.Time {
 	return s.clock()
 }
 
+// appendAudit records an event in the immutable audit log.
+func (s *Book) appendAudit(eventType AuditEventType, entityID string, payload any) {
+	s.auditLog = append(s.auditLog, &AuditEvent{
+		ID:        s.nextID("evt"),
+		Timestamp: s.now(),
+		Type:      eventType,
+		EntityID:  entityID,
+		Payload:   payload,
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Ledger & Subledger Management
 // ---------------------------------------------------------------------------
@@ -117,6 +132,7 @@ func (s *Book) CreateLedger(name string) (Ledger, error) {
 		CreatedAt: s.now(),
 	}
 	s.ledgers[l.ID] = l
+	s.appendAudit(EventLedgerCreated, string(l.ID), l)
 	return *l, nil
 }
 
@@ -154,6 +170,7 @@ func (s *Book) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error
 		CreatedAt: s.now(),
 	}
 	s.subledgers[sl.ID] = sl
+	s.appendAudit(EventSubledgerCreated, string(sl.ID), sl)
 	return *sl, nil
 }
 
@@ -203,6 +220,7 @@ func (s *Book) CreateAccount(subledgerID SubledgerID, name string, accountType A
 		CreatedAt:   s.now(),
 	}
 	s.accounts[acct.ID] = acct
+	s.appendAudit(EventAccountCreated, string(acct.ID), acct)
 	return *acct, nil
 }
 
@@ -245,7 +263,7 @@ type PostTransactionRequest struct {
 
 	// BookingDate is the date/time when the transaction is recorded in
 	// the system. If zero, the current time is used. This is the date
-	// that appears in system reports.
+	// that appears in system reports and audit trails.
 	BookingDate time.Time
 
 	// ValueDate is the date when the transaction takes economic effect.
@@ -362,6 +380,7 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 		s.idempotencyIndex[req.IdempotencyKey] = tx.ID
 	}
 
+	s.appendAudit(EventTransactionPosted, string(tx.ID), tx)
 	return copyTransaction(tx), nil
 }
 
@@ -472,10 +491,10 @@ func (s *Book) GetTransactionByIdempotencyKey(key string) (Transaction, error) {
 //
 // # When to Use Reversal
 //
-// In banking, transactions are never deleted. Instead, a correction is
-// made by posting a reversal that cancels out the effect of the original.
-// This maintains the integrity of the ledger while allowing errors to be
-// corrected.
+// In banking, transactions are never deleted — the audit trail must be
+// preserved. Instead, a correction is made by posting a reversal that
+// cancels out the effect of the original. This maintains the integrity
+// of the ledger while allowing errors to be corrected.
 //
 // Returns:
 //   - ErrTransactionNotFound if the original does not exist.
@@ -517,6 +536,11 @@ func (s *Book) ReverseTransaction(txID TransactionID, description string) (Trans
 
 	original.Status = Reversed
 	s.transactions[reversal.ID] = reversal
+
+	s.appendAudit(EventTransactionReversed, string(original.ID), map[string]string{
+		"original_id": string(original.ID),
+		"reversal_id": string(reversal.ID),
+	})
 
 	return copyTransaction(reversal), nil
 }
@@ -561,7 +585,7 @@ func (s *Book) BookBalance(accountID AccountID) (Amount, error) {
 // Note: ALL transactions are included, including those marked as Reversed.
 // The Reversed status is informational — the corresponding reversal
 // transaction's entries are what actually cancel out the original's
-// balance impact.
+// balance impact. This preserves the full audit trail.
 func (s *Book) computeBookBalance(accountID AccountID, accountType AccountType) Amount {
 	var balance Amount
 	normal := accountType.NormalBalance()
@@ -580,4 +604,47 @@ func (s *Book) computeBookBalance(accountID AccountID, accountType AccountType) 
 	}
 
 	return balance
+}
+
+// ---------------------------------------------------------------------------
+// Audit Trail
+// ---------------------------------------------------------------------------
+
+// GetAuditLog returns all audit events, ordered chronologically.
+//
+// The audit log is an append-only, immutable record of every mutation
+// that has occurred in the system. It provides:
+//
+//   - Compliance: Full traceability of who did what and when.
+//   - Debugging: Ability to replay the exact sequence of operations.
+//   - Reconciliation: Independent verification of account balances
+//     by replaying events.
+//
+// In a production system, the audit log would typically be stored in a
+// separate, write-once data store with strict access controls.
+func (s *Book) GetAuditLog() []AuditEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	// Return copies to prevent external mutation.
+	result := make([]AuditEvent, len(s.auditLog))
+	for i, e := range s.auditLog {
+		result[i] = *e
+	}
+	return result
+}
+
+// GetAuditLogForEntity returns all audit events related to a specific
+// entity, identified by its ID.
+func (s *Book) GetAuditLogForEntity(entityID string) []AuditEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var result []AuditEvent
+	for _, e := range s.auditLog {
+		if e.EntityID == entityID {
+			result = append(result, *e)
+		}
+	}
+	return result
 }

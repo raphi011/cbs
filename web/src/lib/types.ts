@@ -60,6 +60,13 @@ export interface Transaction {
   createdAt: string;
 }
 
+export interface AuditEvent {
+  id: string;
+  timestamp: string;
+  type: string;
+  entityId: string;
+}
+
 // GET .../accounts/{aid}/balance returns the book balance (integer cents).
 export interface BookBalance {
   accountId: string;

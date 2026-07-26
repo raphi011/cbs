@@ -10,6 +10,7 @@ export const qk = {
 
   reserves: () => ["central-bank", "reserves"] as const,
   reserve: (pid: string) => ["central-bank", "reserves", pid] as const,
+  centralBankAudit: () => ["central-bank", "audit"] as const,
 
   // Ledger layer (all nested under the participant so a post can invalidate
   // a whole subtree at once).
@@ -30,6 +31,10 @@ export const qk = {
       : (["participants", pid, "transactions"] as const),
   transaction: (pid: string, tid: string) =>
     ["participants", pid, "transaction", tid] as const,
+  ledgerAudit: (pid: string, entity?: string) =>
+    entity
+      ? (["participants", pid, "audit", { entity }] as const)
+      : (["participants", pid, "audit"] as const),
 
   // Deposit layer. Balances, holds and snapshots nest under the account so a
   // single invalidate of ["participants", pid, "deposit-accounts"] refreshes
@@ -46,6 +51,8 @@ export const qk = {
     ["participants", pid, "holds", hid] as const,
   snapshots: (pid: string, did: string) =>
     ["participants", pid, "deposit-accounts", did, "snapshots"] as const,
+  depositAudit: (pid: string) =>
+    ["participants", pid, "deposit-audit"] as const,
 
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,

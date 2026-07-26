@@ -24,6 +24,8 @@ func (s *Server) registerLedgerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /participants/{pid}/transactions", s.handleListTransactions)
 	mux.HandleFunc("GET /participants/{pid}/transactions/{tid}", s.handleGetTransaction)
 	mux.HandleFunc("POST /participants/{pid}/transactions/{tid}/reversal", s.handleReverseTransaction)
+
+	mux.HandleFunc("GET /participants/{pid}/audit", s.handleLedgerAudit)
 }
 
 func (s *Server) handleCreateLedger(w http.ResponseWriter, r *http.Request) {
@@ -247,4 +249,22 @@ func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusCreated, toTransactionDTO(tx))
+}
+
+func (s *Server) handleLedgerAudit(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var events []ledger.AuditEvent
+	if entity := r.URL.Query().Get("entity"); entity != "" {
+		events = p.Ledger.GetAuditLogForEntity(entity)
+	} else {
+		events = p.Ledger.GetAuditLog()
+	}
+	out := make([]auditEventDTO, len(events))
+	for i, e := range events {
+		out[i] = toLedgerAuditDTO(e)
+	}
+	writeJSON(w, http.StatusOK, out)
 }

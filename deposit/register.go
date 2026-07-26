@@ -44,6 +44,9 @@ type Register struct {
 	// Structure: accountID -> dateKey -> snapshot.
 	snapshots map[AccountID]map[string]*Snapshot
 
+	// auditLog is an append-only log of all mutations in this layer.
+	auditLog []*AuditEvent
+
 	// idCounter is a simple monotonic counter for generating unique IDs.
 	idCounter int64
 
@@ -59,7 +62,8 @@ func NewRegister(book *ledger.Book) *Register {
 
 // NewRegisterWithClock creates a new deposit register that reads the current
 // time from the provided clock function instead of time.Now. Share the clock
-// with the backing ledger.Book so that snapshot dates line up across layers.
+// with the backing ledger.Book so that audit timestamps and snapshot dates
+// line up across layers.
 func NewRegisterWithClock(book *ledger.Book, clock func() time.Time) *Register {
 	return &Register{
 		book:         book,
@@ -80,6 +84,17 @@ func (r *Register) nextID(prefix string) string {
 // now returns the current time using the register's clock.
 func (r *Register) now() time.Time {
 	return r.clock()
+}
+
+// appendAudit records an event in the immutable audit log.
+func (r *Register) appendAudit(eventType AuditEventType, entityID string, payload any) {
+	r.auditLog = append(r.auditLog, &AuditEvent{
+		ID:        r.nextID("evt"),
+		Timestamp: r.now(),
+		Type:      eventType,
+		EntityID:  entityID,
+		Payload:   payload,
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -113,6 +128,7 @@ func (r *Register) OpenAccount(subledger ledger.SubledgerID, name string, overdr
 		CreatedAt:      r.now(),
 	}
 	r.accounts[acct.ID] = acct
+	r.appendAudit(EventAccountOpened, string(acct.ID), acct)
 	return *acct, nil
 }
 
@@ -150,6 +166,7 @@ func (r *Register) Freeze(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Frozen
+	r.appendAudit(EventAccountFrozen, string(acct.ID), acct)
 	return nil
 }
 
@@ -169,6 +186,7 @@ func (r *Register) Unfreeze(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Active
+	r.appendAudit(EventAccountUnfrozen, string(acct.ID), acct)
 	return nil
 }
 
@@ -189,6 +207,7 @@ func (r *Register) MarkDormant(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Dormant
+	r.appendAudit(EventAccountDormant, string(acct.ID), acct)
 	return nil
 }
 
@@ -208,6 +227,7 @@ func (r *Register) Reactivate(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Active
+	r.appendAudit(EventAccountReactivated, string(acct.ID), acct)
 	return nil
 }
 
@@ -241,6 +261,7 @@ func (r *Register) Close(id AccountID) error {
 	}
 
 	acct.Status = Closed
+	r.appendAudit(EventAccountClosed, string(acct.ID), acct)
 	return nil
 }
 
@@ -310,6 +331,7 @@ func (r *Register) CreateHold(req CreateHoldRequest) (Hold, error) {
 
 	r.holds[h.ID] = h
 	r.accountHolds[req.AccountID] = append(r.accountHolds[req.AccountID], h.ID)
+	r.appendAudit(EventHoldCreated, string(h.ID), h)
 	return *h, nil
 }
 
@@ -331,6 +353,7 @@ func (r *Register) ReleaseHold(id HoldID) error {
 	}
 
 	h.Status = HoldReleased
+	r.appendAudit(EventHoldReleased, string(h.ID), h)
 	return nil
 }
 
@@ -379,6 +402,10 @@ func (r *Register) CaptureHold(id HoldID, counterparty ledger.AccountID, capture
 	}
 
 	h.Status = HoldCaptured
+	r.appendAudit(EventHoldCaptured, string(h.ID), map[string]string{
+		"hold_id":        string(h.ID),
+		"transaction_id": string(tx.ID),
+	})
 	return tx, nil
 }
 
@@ -553,6 +580,7 @@ func (r *Register) TakeEndOfDaySnapshot(id AccountID, date time.Time) (Snapshot,
 	dateKey := date.Format("2006-01-02")
 	r.snapshots[id][dateKey] = snap
 
+	r.appendAudit(EventSnapshotTaken, string(id), snap)
 	return *snap, nil
 }
 
@@ -577,4 +605,21 @@ func (r *Register) GetSnapshot(id AccountID, date time.Time) (Snapshot, error) {
 	}
 
 	return Snapshot{}, ErrSnapshotNotFound
+}
+
+// ---------------------------------------------------------------------------
+// Audit Trail
+// ---------------------------------------------------------------------------
+
+// GetAuditLog returns all audit events in this layer, ordered chronologically.
+// Copies are returned to prevent external mutation.
+func (r *Register) GetAuditLog() []AuditEvent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	result := make([]AuditEvent, len(r.auditLog))
+	for i, e := range r.auditLog {
+		result[i] = *e
+	}
+	return result
 }

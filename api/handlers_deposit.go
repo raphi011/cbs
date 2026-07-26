@@ -24,6 +24,8 @@ func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/snapshots", s.handleTakeSnapshot)
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/snapshots", s.handleGetSnapshots)
+
+	mux.HandleFunc("GET /participants/{pid}/deposit-audit", s.handleDepositAudit)
 }
 
 func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +273,19 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 	out := make([]snapshotDTO, len(snaps))
 	for i, snap := range snaps {
 		out[i] = toSnapshotDTO(snap)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleDepositAudit(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	events := p.Deposit.GetAuditLog()
+	out := make([]auditEventDTO, len(events))
+	for i, e := range events {
+		out[i] = toDepositAuditDTO(e)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

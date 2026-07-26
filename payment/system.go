@@ -103,8 +103,8 @@ func (s *Network) RegisterScheme(sc Scheme) {
 	s.schemes[sc.ID()] = sc
 }
 
-// CentralBank exposes the central-bank ledger for inspection (balances).
-// Treat it as read-only.
+// CentralBank exposes the central-bank ledger for inspection (balances,
+// audit trail). Treat it as read-only.
 func (s *Network) CentralBank() *ledger.Book { return s.centralBank }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ A simplified but functionally complete Go library modeling the core accounting e
 
 The system is split into three layers, each in its own package and building on the one below it:
 
-1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, and on-demand book balances. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
+1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, on-demand book balances, and an immutable audit log. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
 
 2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits**, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
 
@@ -55,6 +55,7 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Next Work](#next-work)
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
+  - [Audit Trail](#audit-trail)
 - [Statements](#statements)
   - [Derived from the Ledger, Not a Separate Account Ledger](#derived-from-the-ledger-not-a-separate-account-ledger)
   - [What Appears on a Statement](#what-appears-on-a-statement)
@@ -249,7 +250,7 @@ In the `payment` layer two specific legs get their own names: the **debtor leg**
 
 Every transaction carries two dates:
 
-- **Booking Date:** The date/time when the transaction was recorded in the system. This is the "system date" or "processing date". It determines when the transaction appears in system reports.
+- **Booking Date:** The date/time when the transaction was recorded in the system. This is the "system date" or "processing date". It determines when the transaction appears in audit trails and system reports.
 
 - **Value Date:** The date when the transaction takes economic effect. This determines when interest starts accruing, when funds become available, and which business day "owns" the transaction. The value date may be in the past (back-dated) or future (forward-dated) relative to the booking date.
 
@@ -379,7 +380,7 @@ In a real banking system, accounts are not simply created and then used forever.
 | **Active** | Normal operating state. The account is open and fully functional. | All: debits, credits, holds, statements |
 | **Dormant** | No customer-initiated activity for an extended period (typically 12–24 months, varies by jurisdiction). The bank may charge dormancy fees. | Credits only (incoming payments reactivate the account). Debits and new holds blocked until reactivated. |
 | **Frozen** | Temporarily restricted, usually due to a court order, fraud investigation, or regulatory action. | View balance only. All debits, credits, and holds blocked. The freeze may be partial (e.g., allowing credits but blocking debits). |
-| **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for regulatory purposes. |
+| **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for audit and regulatory purposes. |
 
 ### State Transitions
 
@@ -646,6 +647,23 @@ At the end of each business day, the system captures a snapshot of each account'
 - **Regulatory reporting:** Banks must report their positions to regulators. End-of-day balances are the standard reporting granularity.
 
 - **Performance optimization:** Instead of replaying all transactions from account creation, balance queries can start from the most recent snapshot and only replay subsequent transactions.
+
+### Audit Trail
+
+The audit trail is an immutable, append-only log of every mutation in the system. Nothing is ever deleted from the audit trail. Every account creation, transaction posting, hold creation, hold release, reversal, and snapshot is recorded with:
+
+- A unique event ID
+- A timestamp
+- The event type
+- The entity affected
+- The full event payload
+
+The audit trail provides:
+
+- Regulatory compliance (banks must maintain complete records)
+- Forensic investigation capability
+- System debugging and incident response
+- Independent balance verification (replay events to recompute balances)
 
 ## Statements
 

@@ -584,6 +584,76 @@ func TestReverseTransaction_AlreadyReversed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Audit Trail Tests
+// ---------------------------------------------------------------------------
+
+func TestAuditLog(t *testing.T) {
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	// Post a transaction.
+	book.PostTransaction(PostTransactionRequest{
+		Description: "Transfer",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
+		},
+	})
+
+	log := book.GetAuditLog()
+
+	// Should have: ledger created, 3x subledger created, 4x account created,
+	// 1x transaction posted = 9 events.
+	if len(log) < 9 {
+		t.Fatalf("expected at least 9 audit events, got %d", len(log))
+	}
+
+	// Verify first event is ledger creation.
+	assertEqual(t, "first event type", log[0].Type, EventLedgerCreated)
+
+	// Verify last event is the transaction.
+	last := log[len(log)-1]
+	assertEqual(t, "last event type", last.Type, EventTransactionPosted)
+}
+
+func TestAuditLogForEntity(t *testing.T) {
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	tx, _ := book.PostTransaction(PostTransactionRequest{
+		Description: "Transfer",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
+		},
+	})
+
+	// Get events for Alice's account.
+	aliceEvents := book.GetAuditLogForEntity(string(alice.ID))
+	assertEqual(t, "alice events", len(aliceEvents), 1)
+	assertEqual(t, "event type", aliceEvents[0].Type, EventAccountCreated)
+
+	// Get events for the transaction.
+	txEvents := book.GetAuditLogForEntity(string(tx.ID))
+	assertEqual(t, "tx events", len(txEvents), 1)
+	assertEqual(t, "event type", txEvents[0].Type, EventTransactionPosted)
+}
+
+func TestAuditLog_ImmutableCopy(t *testing.T) {
+	book := testBook(t)
+	book.CreateLedger("GL")
+
+	log1 := book.GetAuditLog()
+	log2 := book.GetAuditLog()
+
+	// Modifying the returned slice should not affect the internal log.
+	log1[0].Type = "tampered"
+	if log2[0].Type == "tampered" {
+		t.Fatal("audit log returned mutable reference")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Insufficient Balance Tests
 // ---------------------------------------------------------------------------
 
@@ -745,6 +815,7 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 //  3. Customer makes a card payment.
 //  4. Customer receives a wire transfer.
 //  5. An erroneous fee is posted and then reversed.
+//  6. Audit trail is verified.
 func TestFullLedgerWorkflow(t *testing.T) {
 	book := testBook(t)
 
@@ -816,6 +887,25 @@ func TestFullLedgerWorkflow(t *testing.T) {
 
 	aliceBal, _ = book.BookBalance(alice.ID)
 	assertEqual(t, "after fee reversal", aliceBal, Amount(62500))
+
+	// Step 6: Audit trail should contain all operations.
+	auditLog := book.GetAuditLog()
+	if len(auditLog) == 0 {
+		t.Fatal("audit log should not be empty")
+	}
+
+	// Count event types.
+	counts := make(map[AuditEventType]int)
+	for _, e := range auditLog {
+		counts[e.Type]++
+	}
+
+	if counts[EventTransactionPosted] < 3 {
+		t.Fatalf("expected at least 3 transaction.posted events, got %d", counts[EventTransactionPosted])
+	}
+	if counts[EventTransactionReversed] != 1 {
+		t.Fatalf("expected 1 transaction.reversed event, got %d", counts[EventTransactionReversed])
+	}
 }
 
 // ---------------------------------------------------------------------------

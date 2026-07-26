@@ -177,11 +177,11 @@ Reversal (new posting):
   Net effect on both accounts: 0
 \`\`\`
 
-The original is marked **Reversed** for reporting; the reversal carries a reference back to it, so you can always see what happened and why. The [[idempotency-key]] of the reversal must be fresh (not the original's key). Reversals are also how a [[payment-lifecycle|rejected payment]] cleans up its [[debtor-leg]] before clearing.`,
+The original is marked **Reversed** for reporting; the reversal carries a reference back to it. This keeps the [[audit-trail]] intact — you can always see what happened and why. The [[idempotency-key]] of the reversal must be fresh (not the original's key). Reversals are also how a [[payment-lifecycle|rejected payment]] cleans up its [[debtor-leg]] before clearing.`,
   },
   "booking-date": {
     title: "Booking date",
-    body: `The **booking date** is when the transaction was recorded in the system — the "processing date". It drives system reports and the order in which entries appear in the ledger.
+    body: `The **booking date** is when the transaction was recorded in the system — the "processing date". It drives audit trails, system reports, and the order in which entries appear in the ledger.
 
 Booking date and [[value-date]] can differ by days or even weeks in real-world scenarios. A wire transfer received Friday evening may be **booked immediately** (booking date: Friday 7 PM) but the funds become available only on Monday — that is the value date.
 
@@ -618,7 +618,23 @@ Timeline for a SEPA Credit Transfer:
    Credit Reserve at CB (Asset)         300  ← reserve asset falls
 \`\`\`
 
-The suspense balance at any point equals the total value of in-flight payments that have been accepted but not yet settled. If a cycle fails to settle, the suspense remains non-zero — a signal that requires investigation.`,
+The suspense balance at any point equals the total value of in-flight payments that have been accepted but not yet settled. If a cycle fails to settle, the suspense remains non-zero — a signal that requires investigation. The [[audit-trail]] records every posting in/out of suspense for reconciliation.`,
+  },
+  "audit-trail": {
+    title: "Audit trail",
+    body: `The **audit trail** is an **immutable, append-only log** of every mutation in the system. Nothing is ever deleted. Every event carries a unique ID, timestamp, event type, and the full payload of the affected entity.
+
+Events recorded: account creation, transaction posting, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[reversal]], and [[snapshot|end-of-day snapshot]].
+
+\`\`\`
+Example audit events (most recent first):
+  [2024-03-01T14:32:01Z] transaction_posted  txn-abc123  Alice −€300
+  [2024-03-01T14:32:00Z] hold_captured       hold-xyz789 Alice −€300
+  [2024-03-01T09:00:00Z] snapshot_taken      acct-001    book=€1000
+  [2024-03-01T08:55:00Z] hold_created        hold-xyz789 Alice −€300
+\`\`\`
+
+The trail enables: regulatory compliance (banks must maintain complete records), forensic investigation, incident response, and **independent balance verification** — you can replay all events to recompute any balance from scratch, cross-checking against [[snapshot|snapshots]].`,
   },
   snapshot: {
     title: "End-of-day snapshot",
@@ -637,7 +653,9 @@ Snapshot for 2024-03-01:
   book:      €10,000
   holds:     €200
   available: €9,800
-\`\`\``,
+\`\`\`
+
+The [[audit-trail]] records every snapshot event for complete auditability.`,
   },
   statement: {
     title: "Account statement",
