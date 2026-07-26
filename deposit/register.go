@@ -1,6 +1,7 @@
 package deposit
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -45,7 +46,10 @@ type Register struct {
 	snapshots map[AccountID]map[string]*Snapshot
 
 	// auditLog is an append-only log of all mutations in this layer.
-	auditLog []*AuditEvent
+	auditLog []*ledger.AuditEvent
+
+	// auditSeq is the monotonic sequence counter for audit events.
+	auditSeq int64
 
 	// idCounter is a simple monotonic counter for generating unique IDs.
 	idCounter int64
@@ -86,15 +90,24 @@ func (r *Register) now() time.Time {
 	return r.clock()
 }
 
-// appendAudit records an event in the immutable audit log.
-func (r *Register) appendAudit(eventType AuditEventType, entityID string, payload any) {
-	r.auditLog = append(r.auditLog, &AuditEvent{
-		ID:        r.nextID("evt"),
-		Timestamp: r.now(),
-		Type:      eventType,
-		EntityID:  entityID,
-		Payload:   payload,
+// appendAudit records an immutable event. payload is marshalled now, not held
+// by reference, so later mutation of the entity cannot rewrite history.
+func (r *Register) appendAudit(scope ledger.Scope, eventType, entityID string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
+	}
+	r.auditSeq++
+	r.auditLog = append(r.auditLog, &ledger.AuditEvent{
+		Seq:        r.auditSeq,
+		ID:         r.nextID("evt"),
+		Scope:      scope,
+		Type:       eventType,
+		EntityID:   entityID,
+		Payload:    raw,
+		OccurredAt: r.now(),
 	})
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +141,9 @@ func (r *Register) OpenAccount(subledger ledger.SubledgerID, name string, overdr
 		CreatedAt:      r.now(),
 	}
 	r.accounts[acct.ID] = acct
-	r.appendAudit(EventAccountOpened, string(acct.ID), acct)
+	if err := r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountOpened, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
 	return *acct, nil
 }
 
@@ -166,8 +181,7 @@ func (r *Register) Freeze(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Frozen
-	r.appendAudit(EventAccountFrozen, string(acct.ID), acct)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountFrozen, string(acct.ID), acct)
 }
 
 // Unfreeze transitions an account from Frozen back to Active.
@@ -186,8 +200,7 @@ func (r *Register) Unfreeze(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Active
-	r.appendAudit(EventAccountUnfrozen, string(acct.ID), acct)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountUnfrozen, string(acct.ID), acct)
 }
 
 // MarkDormant transitions an account from Active to Dormant, reflecting a
@@ -207,8 +220,7 @@ func (r *Register) MarkDormant(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Dormant
-	r.appendAudit(EventAccountDormant, string(acct.ID), acct)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountDormant, string(acct.ID), acct)
 }
 
 // Reactivate transitions an account from Dormant back to Active.
@@ -227,8 +239,7 @@ func (r *Register) Reactivate(id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 	acct.Status = Active
-	r.appendAudit(EventAccountReactivated, string(acct.ID), acct)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountReactivated, string(acct.ID), acct)
 }
 
 // Close permanently closes an account. Closed is a terminal state.
@@ -261,8 +272,7 @@ func (r *Register) Close(id AccountID) error {
 	}
 
 	acct.Status = Closed
-	r.appendAudit(EventAccountClosed, string(acct.ID), acct)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventAccountClosed, string(acct.ID), acct)
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +341,9 @@ func (r *Register) CreateHold(req CreateHoldRequest) (Hold, error) {
 
 	r.holds[h.ID] = h
 	r.accountHolds[req.AccountID] = append(r.accountHolds[req.AccountID], h.ID)
-	r.appendAudit(EventHoldCreated, string(h.ID), h)
+	if err := r.appendAudit(ledger.ScopeDeposit, ledger.EventHoldCreated, string(h.ID), h); err != nil {
+		return Hold{}, err
+	}
 	return *h, nil
 }
 
@@ -353,8 +365,7 @@ func (r *Register) ReleaseHold(id HoldID) error {
 	}
 
 	h.Status = HoldReleased
-	r.appendAudit(EventHoldReleased, string(h.ID), h)
-	return nil
+	return r.appendAudit(ledger.ScopeDeposit, ledger.EventHoldReleased, string(h.ID), h)
 }
 
 // CaptureHold converts an active hold into a posted general-ledger
@@ -402,10 +413,12 @@ func (r *Register) CaptureHold(id HoldID, counterparty ledger.AccountID, capture
 	}
 
 	h.Status = HoldCaptured
-	r.appendAudit(EventHoldCaptured, string(h.ID), map[string]string{
+	if err := r.appendAudit(ledger.ScopeDeposit, ledger.EventHoldCaptured, string(h.ID), map[string]string{
 		"hold_id":        string(h.ID),
 		"transaction_id": string(tx.ID),
-	})
+	}); err != nil {
+		return ledger.Transaction{}, err
+	}
 	return tx, nil
 }
 
@@ -580,7 +593,9 @@ func (r *Register) TakeEndOfDaySnapshot(id AccountID, date time.Time) (Snapshot,
 	dateKey := date.Format("2006-01-02")
 	r.snapshots[id][dateKey] = snap
 
-	r.appendAudit(EventSnapshotTaken, string(id), snap)
+	if err := r.appendAudit(ledger.ScopeDeposit, ledger.EventSnapshotTaken, string(id), snap); err != nil {
+		return Snapshot{}, err
+	}
 	return *snap, nil
 }
 
@@ -613,11 +628,11 @@ func (r *Register) GetSnapshot(id AccountID, date time.Time) (Snapshot, error) {
 
 // GetAuditLog returns all audit events in this layer, ordered chronologically.
 // Copies are returned to prevent external mutation.
-func (r *Register) GetAuditLog() []AuditEvent {
+func (r *Register) GetAuditLog() []ledger.AuditEvent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	result := make([]AuditEvent, len(r.auditLog))
+	result := make([]ledger.AuditEvent, len(r.auditLog))
 	for i, e := range r.auditLog {
 		result[i] = *e
 	}

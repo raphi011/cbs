@@ -110,7 +110,7 @@ func (s *Server) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) 
 	events := s.network().CentralBank().GetAuditLog()
 	out := make([]auditEventDTO, len(events))
 	for i, e := range events {
-		out[i] = toLedgerAuditDTO(e)
+		out[i] = toAuditDTO(e)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

@@ -72,10 +72,6 @@ func toSnapshotDTO(s deposit.Snapshot) snapshotDTO {
 	return snapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: toBalanceDTO(s.Balance), TakenAt: s.TakenAt}
 }
 
-func toDepositAuditDTO(e deposit.AuditEvent) auditEventDTO {
-	return auditEventDTO{ID: e.ID, Timestamp: e.Timestamp, Type: string(e.Type), EntityID: e.EntityID}
-}
-
 type openDepositAccountRequest struct {
 	Name           string `json:"name"`
 	OverdraftLimit int64  `json:"overdraftLimit"`

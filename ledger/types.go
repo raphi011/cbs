@@ -162,24 +162,3 @@ type Transaction struct {
 	// ReversalOf is set when this transaction is a reversal of another.
 	ReversalOf TransactionID
 }
-
-// AuditEventType categorizes audit log entries.
-type AuditEventType string
-
-const (
-	EventAccountCreated      AuditEventType = "account.created"
-	EventTransactionPosted   AuditEventType = "transaction.posted"
-	EventTransactionReversed AuditEventType = "transaction.reversed"
-	EventLedgerCreated       AuditEventType = "ledger.created"
-	EventSubledgerCreated    AuditEventType = "subledger.created"
-)
-
-// AuditEvent is an immutable record of a mutation in the system.
-type AuditEvent struct {
-	ID        string
-	Timestamp time.Time
-	Type      AuditEventType
-	EntityID  string // ID of the affected entity
-	Payload   any    // Event-specific data
-	Metadata  map[string]string
-}

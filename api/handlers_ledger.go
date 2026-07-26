@@ -264,7 +264,7 @@ func (s *Server) handleLedgerAudit(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]auditEventDTO, len(events))
 	for i, e := range events {
-		out[i] = toLedgerAuditDTO(e)
+		out[i] = toAuditDTO(e)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

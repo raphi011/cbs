@@ -895,7 +895,7 @@ func TestFullLedgerWorkflow(t *testing.T) {
 	}
 
 	// Count event types.
-	counts := make(map[AuditEventType]int)
+	counts := make(map[string]int)
 	for _, e := range auditLog {
 		counts[e.Type]++
 	}

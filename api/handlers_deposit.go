@@ -285,7 +285,7 @@ func (s *Server) handleDepositAudit(w http.ResponseWriter, r *http.Request) {
 	events := p.Deposit.GetAuditLog()
 	out := make([]auditEventDTO, len(events))
 	for i, e := range events {
-		out[i] = toDepositAuditDTO(e)
+		out[i] = toAuditDTO(e)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

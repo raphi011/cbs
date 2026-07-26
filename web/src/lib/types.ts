@@ -61,10 +61,14 @@ export interface Transaction {
 }
 
 export interface AuditEvent {
+  seq: number;
   id: string;
+  scope: string;
   timestamp: string;
   type: string;
   entityId: string;
+  payload?: unknown;
+  metadata?: Record<string, string>;
 }
 
 // GET .../accounts/{aid}/balance returns the book balance (integer cents).

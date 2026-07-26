@@ -112,28 +112,3 @@ type Snapshot struct {
 	Balance   Balance
 	TakenAt   time.Time // when the snapshot was actually taken
 }
-
-// AuditEventType categorizes audit log entries in the deposit layer.
-type AuditEventType string
-
-const (
-	EventAccountOpened      AuditEventType = "account.opened"
-	EventAccountFrozen      AuditEventType = "account.frozen"
-	EventAccountUnfrozen    AuditEventType = "account.unfrozen"
-	EventAccountClosed      AuditEventType = "account.closed"
-	EventAccountDormant     AuditEventType = "account.dormant"
-	EventAccountReactivated AuditEventType = "account.reactivated"
-	EventHoldCreated        AuditEventType = "hold.created"
-	EventHoldReleased       AuditEventType = "hold.released"
-	EventHoldCaptured       AuditEventType = "hold.captured"
-	EventSnapshotTaken      AuditEventType = "snapshot.taken"
-)
-
-// AuditEvent is an immutable record of a mutation in the deposit layer.
-type AuditEvent struct {
-	ID        string
-	Timestamp time.Time
-	Type      AuditEventType
-	EntityID  string // ID of the affected entity
-	Payload   any    // event-specific data
-}

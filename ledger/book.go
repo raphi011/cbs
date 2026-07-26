@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"sync"
@@ -43,6 +44,14 @@ type Book struct {
 	// auditLog is an append-only log of all mutations. Once appended,
 	// entries are never modified or removed.
 	auditLog []*AuditEvent
+
+	// auditSeq is the monotonic sequence counter for audit events.
+	auditSeq int64
+
+	// id is this book's identity within the network. It is a placeholder
+	// until Task 5 populates it with real per-participant book identity;
+	// until then it stays the zero value.
+	id BookID
 
 	// idCounter is a simple monotonic counter for generating unique IDs.
 	idCounter int64
@@ -102,15 +111,25 @@ func (s *Book) now() time.Time {
 	return s.clock()
 }
 
-// appendAudit records an event in the immutable audit log.
-func (s *Book) appendAudit(eventType AuditEventType, entityID string, payload any) {
+// appendAudit records an immutable event. payload is marshalled now, not held
+// by reference, so later mutation of the entity cannot rewrite history.
+func (s *Book) appendAudit(scope Scope, eventType, entityID string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
+	}
+	s.auditSeq++
 	s.auditLog = append(s.auditLog, &AuditEvent{
-		ID:        s.nextID("evt"),
-		Timestamp: s.now(),
-		Type:      eventType,
-		EntityID:  entityID,
-		Payload:   payload,
+		Seq:        s.auditSeq,
+		ID:         s.nextID("evt"),
+		BookID:     s.id,
+		Scope:      scope,
+		Type:       eventType,
+		EntityID:   entityID,
+		Payload:    raw,
+		OccurredAt: s.now(),
 	})
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -132,7 +151,9 @@ func (s *Book) CreateLedger(name string) (Ledger, error) {
 		CreatedAt: s.now(),
 	}
 	s.ledgers[l.ID] = l
-	s.appendAudit(EventLedgerCreated, string(l.ID), l)
+	if err := s.appendAudit(ScopeLedger, EventLedgerCreated, string(l.ID), l); err != nil {
+		return Ledger{}, err
+	}
 	return *l, nil
 }
 
@@ -170,7 +191,9 @@ func (s *Book) CreateSubledger(ledgerID LedgerID, name string) (Subledger, error
 		CreatedAt: s.now(),
 	}
 	s.subledgers[sl.ID] = sl
-	s.appendAudit(EventSubledgerCreated, string(sl.ID), sl)
+	if err := s.appendAudit(ScopeLedger, EventSubledgerCreated, string(sl.ID), sl); err != nil {
+		return Subledger{}, err
+	}
 	return *sl, nil
 }
 
@@ -220,7 +243,9 @@ func (s *Book) CreateAccount(subledgerID SubledgerID, name string, accountType A
 		CreatedAt:   s.now(),
 	}
 	s.accounts[acct.ID] = acct
-	s.appendAudit(EventAccountCreated, string(acct.ID), acct)
+	if err := s.appendAudit(ScopeLedger, EventAccountCreated, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
 	return *acct, nil
 }
 
@@ -380,7 +405,9 @@ func (s *Book) PostTransaction(req PostTransactionRequest) (Transaction, error) 
 		s.idempotencyIndex[req.IdempotencyKey] = tx.ID
 	}
 
-	s.appendAudit(EventTransactionPosted, string(tx.ID), tx)
+	if err := s.appendAudit(ScopeLedger, EventTransactionPosted, string(tx.ID), tx); err != nil {
+		return Transaction{}, err
+	}
 	return copyTransaction(tx), nil
 }
 
@@ -537,10 +564,12 @@ func (s *Book) ReverseTransaction(txID TransactionID, description string) (Trans
 	original.Status = Reversed
 	s.transactions[reversal.ID] = reversal
 
-	s.appendAudit(EventTransactionReversed, string(original.ID), map[string]string{
+	if err := s.appendAudit(ScopeLedger, EventTransactionReversed, string(original.ID), map[string]string{
 		"original_id": string(original.ID),
 		"reversal_id": string(reversal.ID),
-	})
+	}); err != nil {
+		return Transaction{}, err
+	}
 
 	return copyTransaction(reversal), nil
 }

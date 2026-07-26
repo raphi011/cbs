@@ -93,10 +93,6 @@ func toTransactionDTO(tx ledger.Transaction) transactionDTO {
 	}
 }
 
-func toLedgerAuditDTO(e ledger.AuditEvent) auditEventDTO {
-	return auditEventDTO{ID: e.ID, Timestamp: e.Timestamp, Type: string(e.Type), EntityID: e.EntityID}
-}
-
 type createAccountRequest struct {
 	Name string `json:"name"`
 	Type string `json:"type"`

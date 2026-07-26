@@ -174,6 +174,39 @@ func TestErrorMapping(t *testing.T) {
 		`{"name":"Bad","type":"Nonsense"}`, http.StatusBadRequest)
 }
 
+// TestAuditEndpointIncludesPayloadAndSeq guards against the DTO silently
+// dropping fields again: seq, payload and scope must reach the wire.
+func TestAuditEndpointIncludesPayloadAndSeq(t *testing.T) {
+	h := newTestServer(t)
+
+	// AddParticipant posts several ledger audit events as a side effect
+	// (ledger + subledgers + accounts), so no further setup is needed.
+	doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)
+
+	rec := do(t, h, "GET", "/participants/bank_1/audit", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET audit: got status %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var events []auditEventDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &events); err != nil {
+		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+	}
+
+	if len(events) == 0 {
+		t.Fatal("no audit events returned")
+	}
+	if events[0].Seq == 0 {
+		t.Error("seq not populated on the wire")
+	}
+	if len(events[0].Payload) == 0 {
+		t.Error("payload not populated on the wire")
+	}
+	if events[0].Scope == "" {
+		t.Error("scope not populated on the wire")
+	}
+}
+
 func TestAdminReset(t *testing.T) {
 	h := newTestServer(t)
 
