@@ -254,6 +254,10 @@ func (s *Network) AddParticipant(ctx context.Context, name string) (*Participant
 // participant record are all written through the same Tx, so a bank can never
 // exist without the accounts it needs.
 func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Participant, error) {
+	if err := ledger.ValidateText("name", name); err != nil {
+		return nil, err
+	}
+
 	// The bank gets its own book within the shared store, identified by its
 	// participant ID, so its chart of accounts is numbered independently of
 	// every other bank's.
@@ -334,6 +338,12 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
 	}
+	if err := ledger.ValidateText("description", description); err != nil {
+		return err
+	}
+	if err := ledger.ValidateText("account", string(account)); err != nil {
+		return err
+	}
 	p, err := s.participantTx(ctx, tx, participant)
 	if err != nil {
 		return err
@@ -385,10 +395,10 @@ func (s *Network) CreateMandate(ctx context.Context, debtor, creditor PartyRef, 
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
 func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	if err := s.checkPartyTx(ctx, tx, debtor); err != nil {
+	if err := s.checkPartyTx(ctx, tx, "debtor", debtor); err != nil {
 		return Mandate{}, err
 	}
-	if err := s.checkPartyTx(ctx, tx, creditor); err != nil {
+	if err := s.checkPartyTx(ctx, tx, "creditor", creditor); err != nil {
 		return Mandate{}, err
 	}
 
@@ -794,10 +804,22 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if req.Amount <= 0 {
 		return Payment{}, ErrInvalidPaymentAmount
 	}
-	if err := s.checkPartyTx(ctx, tx, req.Debtor); err != nil {
+	if err := s.checkPartyTx(ctx, tx, "debtor", req.Debtor); err != nil {
 		return Payment{}, err
 	}
-	if err := s.checkPartyTx(ctx, tx, req.Creditor); err != nil {
+	if err := s.checkPartyTx(ctx, tx, "creditor", req.Creditor); err != nil {
+		return Payment{}, err
+	}
+	if err := ledger.ValidateText("endToEndId", req.EndToEndID); err != nil {
+		return Payment{}, err
+	}
+	if err := ledger.ValidateText("description", req.Description); err != nil {
+		return Payment{}, err
+	}
+	if err := ledger.ValidateTextMap("metadata", req.Metadata); err != nil {
+		return Payment{}, err
+	}
+	if err := ledger.ValidateText("mandateId", string(req.MandateID)); err != nil {
 		return Payment{}, err
 	}
 	if req.EndToEndID != "" {
@@ -910,6 +932,9 @@ func (s *Network) RejectPayment(ctx context.Context, id PaymentID, reason string
 
 // RejectPaymentTx is RejectPayment within a caller-supplied unit of work.
 func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
+	if err := ledger.ValidateText("reason", reason); err != nil {
+		return Payment{}, err
+	}
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return Payment{}, err
@@ -961,6 +986,9 @@ func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string
 // three compensating postings — debtor's bank, creditor's bank, central bank —
 // commit together or not at all.
 func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
+	if err := ledger.ValidateText("reason", reason); err != nil {
+		return Payment{}, err
+	}
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return Payment{}, err
@@ -1117,9 +1145,26 @@ func transition(p *Payment, to PaymentStatus) error {
 	return ErrInvalidStateTransition
 }
 
+// validateParty checks a party reference's text before anything is looked up
+// with it. The IBAN is stored on the payment; the two ids are used as lookup
+// keys, and a key that reaches store/pg with a control character in it raises a
+// SQLSTATE rather than answering "no such row". See ledger.ValidateText.
+func validateParty(field string, ref PartyRef) error {
+	if err := ledger.ValidateText(field+".participant", string(ref.Participant)); err != nil {
+		return err
+	}
+	if err := ledger.ValidateText(field+".account", string(ref.Account)); err != nil {
+		return err
+	}
+	return ledger.ValidateText(field+".iban", ref.IBAN)
+}
+
 // checkPartyTx verifies that a party's participant exists and its deposit
 // account exists within that participant.
-func (s *Network) checkPartyTx(ctx context.Context, tx Tx, ref PartyRef) error {
+func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) error {
+	if err := validateParty(field, ref); err != nil {
+		return err
+	}
 	p, err := tx.GetParticipant(ctx, ref.Participant)
 	if err != nil {
 		return ErrParticipantNotFound

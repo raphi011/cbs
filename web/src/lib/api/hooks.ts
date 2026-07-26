@@ -467,7 +467,7 @@ export function useRevokeMandate() {
 // A payment, clearing or settlement touches money across participants (deposit
 // balances, reserves) and links payments↔cycles↔settlements. Rather than thread
 // every affected id, invalidate the whole network plus all participant-scoped
-// data — the in-memory dataset is tiny and this is always correct.
+// data — the teaching dataset is tiny and this is always correct.
 function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   // qk.payments() is a prefix of qk.paymentAudit(), so the network's own audit
   // trail is refreshed by the first line here.

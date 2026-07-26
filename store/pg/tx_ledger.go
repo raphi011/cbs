@@ -59,6 +59,48 @@ func (t *tx) ensureBook(ctx context.Context, book ledger.BookID) error {
 	return nil
 }
 
+// inSavepoint runs one statement inside a SAVEPOINT, so that an error it raises
+// costs the caller that statement and not the whole unit of work.
+//
+// Postgres aborts a transaction on any error: every later statement fails with
+// SQLSTATE 25P02 ("current transaction is aborted") until it ends. That is the
+// right default for an error nobody expected, but it is wrong for the errors
+// this package translates INTO DOMAIN SENTINELS. A sentinel is a documented
+// answer — ledger.ErrDuplicateIdempotencyKey says "that key is taken", and a
+// caller is entitled to catch it and carry on: retry under a fresh key, fall
+// back to the transaction already behind the key, record the collision. Without
+// a savepoint that caller silently loses every write it makes afterwards while
+// store/mem, where the check is an ordinary map lookup, performs all of them.
+//
+// So the rule is: any statement whose SQLSTATE this package maps to a sentinel
+// runs in here. Statements whose failure is not translated are left alone —
+// there the abort is correct, because nobody is going to handle them and the
+// unit of work is over.
+//
+// pgx implements a nested Begin as SAVEPOINT/RELEASE/ROLLBACK TO, which is why
+// this reads as a transaction within a transaction; it is still one Postgres
+// transaction on one connection. ROLLBACK TO SAVEPOINT is one of the few
+// statements an aborted transaction still accepts, which is what makes the
+// recovery possible at all.
+func (t *tx) inSavepoint(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
+	sp, err := t.tx.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("pg: savepoint: %w", err)
+	}
+	if err := fn(ctx, sp); err != nil {
+		// Undo the failed statement and put the transaction back in a usable
+		// state. The rollback's own error is dropped: fn's is the reason the
+		// statement failed, and a failed ROLLBACK TO means the connection is
+		// gone, which the caller's next statement will report anyway.
+		_ = sp.Rollback(ctx)
+		return err
+	}
+	if err := sp.Commit(ctx); err != nil {
+		return fmt.Errorf("pg: release savepoint: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Identity allocation
 // ---------------------------------------------------------------------------
@@ -360,6 +402,12 @@ const transactionColumns = `
 // ledger.ErrDuplicateIdempotencyKey — which is the second of the three races:
 // two concurrent postings with the same key cannot both pass a SELECT that
 // found nothing, because there is no such SELECT.
+//
+// The insert runs inside a SAVEPOINT so that a caller who handles that sentinel
+// still has a usable transaction; see inSavepoint. The upsert branch also
+// rewrites idempotency_key, so re-putting a transaction under a new key frees
+// the old one — the key lives in the row, not in a separate index that could
+// outlive it.
 func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
 	if err := t.write(); err != nil {
 		return err
@@ -372,23 +420,28 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 		return fmt.Errorf("pg: put transaction %s: %w", txn.ID, err)
 	}
 
-	_, err = t.tx.Exec(ctx, `
-		INSERT INTO transactions
-			(book_id, id, idempotency_key, booking_date, value_date, status,
-			 description, metadata, reversal_of, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		ON CONFLICT (book_id, id) DO UPDATE SET
-			idempotency_key = EXCLUDED.idempotency_key,
-			booking_date    = EXCLUDED.booking_date,
-			value_date      = EXCLUDED.value_date,
-			status          = EXCLUDED.status,
-			description     = EXCLUDED.description,
-			metadata        = EXCLUDED.metadata,
-			reversal_of     = EXCLUDED.reversal_of,
-			created_at      = EXCLUDED.created_at`,
-		string(book), string(txn.ID), txn.IdempotencyKey,
-		nullTime(txn.BookingDate), nullTime(txn.ValueDate), int16(txn.Status),
-		txn.Description, metadata, string(txn.ReversalOf), nullTime(txn.CreatedAt))
+	// Inside a SAVEPOINT, because the error this statement raises is one the
+	// caller is meant to survive. See inSavepoint.
+	err = t.inSavepoint(ctx, func(ctx context.Context, q pgx.Tx) error {
+		_, err := q.Exec(ctx, `
+			INSERT INTO transactions
+				(book_id, id, idempotency_key, booking_date, value_date, status,
+				 description, metadata, reversal_of, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			ON CONFLICT (book_id, id) DO UPDATE SET
+				idempotency_key = EXCLUDED.idempotency_key,
+				booking_date    = EXCLUDED.booking_date,
+				value_date      = EXCLUDED.value_date,
+				status          = EXCLUDED.status,
+				description     = EXCLUDED.description,
+				metadata        = EXCLUDED.metadata,
+				reversal_of     = EXCLUDED.reversal_of,
+				created_at      = EXCLUDED.created_at`,
+			string(book), string(txn.ID), txn.IdempotencyKey,
+			nullTime(txn.BookingDate), nullTime(txn.ValueDate), int16(txn.Status),
+			txn.Description, metadata, string(txn.ReversalOf), nullTime(txn.CreatedAt))
+		return err
+	})
 	if isUniqueViolationOn(err, "transactions_idempotency_key_idx") {
 		return ledger.ErrDuplicateIdempotencyKey
 	}

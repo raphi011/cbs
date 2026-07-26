@@ -189,6 +189,15 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 			return ledger.ErrDuplicateIdempotencyKey
 		}
 	}
+	// A Put is an upsert, and an upsert may change or clear the key. The old
+	// claim goes with it, or this index keeps resolving a key the transaction
+	// no longer carries — and then refuses the next transaction that
+	// legitimately claims it, which store/pg accepts because there the key
+	// lives in the row it belongs to. Deleting from a nil map is a no-op, so
+	// the first Put in a book needs no special case.
+	if prev, ok := t.state.transactions[book][txn.ID]; ok && prev.IdempotencyKey != txn.IdempotencyKey {
+		delete(t.state.idempotency[book], prev.IdempotencyKey)
+	}
 	t.state.insertSeq(book, kindTransaction, string(txn.ID))
 	bucket(t.state.transactions, book)[txn.ID] = copyTransaction(txn)
 	if txn.IdempotencyKey != "" {

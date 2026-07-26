@@ -409,8 +409,12 @@ export function getSettlement(sid: string): Promise<Settlement> {
 
 // --- Admin ----------------------------------------------------------------
 
-// resetState wipes the in-memory backend and reloads the built-in sample
-// dataset. The request has no body and returns {status:"reset"} (ignored).
+// resetState wipes all backend data and reloads the built-in sample dataset.
+// The request has no body and returns {status:"reset"} (ignored).
+//
+// Which store the backend runs on is not observable from here, and it matters:
+// on store/pg the wipe is durable and a restart does not bring anything back.
+// The copy in reset-button.tsx is worded to be true either way.
 export function resetState(): Promise<void> {
   return request<void>("POST", "/admin/reset");
 }

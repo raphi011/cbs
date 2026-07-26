@@ -59,6 +59,18 @@ CREATE TABLE books (
 -- The consequence to watch: if AddParticipantTx ever stops drawing a
 -- network-scoped ID first, the find-or-create becomes racy again and will need
 -- its own lock, because there is no constraint behind it.
+
+-- Also not here: a CHECK on the text columns.
+--
+-- Postgres does refuse some text on its own — a NUL is SQLSTATE 22021 in a TEXT
+-- column and 22P05 inside JSONB, and so is any byte sequence that is not valid
+-- UTF-8 — and store/mem, being a map of Go strings, refuses none of it. That is
+-- the same asymmetry as a UNIQUE constraint, pointing the other way, and it is
+-- closed the same way: in the domain, by ledger.ValidateText, which every layer
+-- calls before a string reaches a store. Restating the rule as a CHECK here
+-- would only make store/pg refuse a *different* set of strings from store/mem
+-- than it already does. What the system will accept is a domain question; these
+-- columns just hold the answer.
 CREATE TABLE ledgers (
     book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id         TEXT NOT NULL,

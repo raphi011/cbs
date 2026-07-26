@@ -334,6 +334,51 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("RePuttingAPaymentReleasesItsOldEndToEndID", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		// The same rule the ledger applies to a re-keyed idempotency key. The
+		// end-to-end id index is maintained by the store, so a store that only
+		// ever adds to it goes on resolving a reference the payment no longer
+		// carries — and the two implementations then disagree about which
+		// references are still free.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early))
+		})
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-002", early))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetPaymentByEndToEndID(ctx, "SCT-001")
+			assertErrorIs(t, "lookup by the reference that was replaced", err, payment.ErrPaymentNotFound)
+
+			got, err := tx.GetPaymentByEndToEndID(ctx, "SCT-002")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "payment behind the new reference", string(got.ID), "pay_1")
+			assertEqual(t, "the payment's stored reference", got.EndToEndID, "SCT-002")
+
+			all, err := tx.ListPayments(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "payments stored", len(all), 1)
+			return nil
+		})
+
+		// Clearing the reference releases it as well.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutPayment(ctx, samplePayment("pay_1", "", early))
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetPaymentByEndToEndID(ctx, "SCT-002")
+			assertErrorIs(t, "lookup by a reference that was cleared", err, payment.ErrPaymentNotFound)
+			return nil
+		})
+	})
+
 	t.Run("PutIsAnUpsertAndDeepCopies", func(t *testing.T) {
 		s := openPayment(t, newStore)
 

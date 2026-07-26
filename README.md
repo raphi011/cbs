@@ -756,6 +756,14 @@ TEST_DATABASE_URL=… go test ./...      # the same suites, on store/pg
 
 The rule it enforces is sharper than "both work": **`store/pg` must never accept or refuse a write that `store/mem` handles differently.** That rule has real consequences in the schema. There is no `UNIQUE (book_id, name)` on ledgers, subledgers or accounts, however tempting it looks — the domain does not hold a uniqueness invariant on names (two customers called "John Smith" at one bank is not an error), so the constraint would make Postgres reject a write the in-memory store accepts. Validation belongs in the domain layer; the store is a per-table key/value store that happens to be relational.
 
+It cuts the other way too, and that direction is easier to miss. `store/mem` is a map of Go strings and will hold any byte sequence at all; Postgres will not hold a NUL in a `text` column (SQLSTATE 22021) or in a `jsonb` string (22P05), nor anything that is not valid UTF-8. So `POST /participants` with `{"name":"Ban\u0000k"}` — legal JSON — created a bank on one backend and returned a 500 carrying a raw SQLSTATE on the other. The fix is not a check in `store/pg`; it is `ledger.ValidateText`, one domain rule applied to every caller-supplied string that reaches a store, whether as a value it stores or as a key it looks a row up by:
+
+> **Text must be valid UTF-8 and free of control characters.** That covers names, descriptions, reject and return reasons, idempotency keys, end-to-end ids, IBANs, metadata keys and values, and identifiers a request supplies for lookup. Length is unbounded and every printable Unicode character is allowed; `Crédit Soleil`, `三菱UFJ銀行` and `🏦` are all fine.
+
+The rule is drawn at control characters rather than at "the two things Postgres refuses" on purpose: a rule that can only be stated by naming a database is not a domain rule, and no field in this list has a legitimate use for a tab, a newline or an ANSI escape. Identifiers arriving in a URL rather than in a request body are screened at the API edge instead — they pass through no domain constructor — which is why `GET /participants/bank%001` is a 400 on both backends rather than a 404 on one and a 500 on the other.
+
+The same argument covers the errors a store returns. `ErrDuplicateIdempotencyKey` is a documented answer, so a caller may handle it and go on using the same unit of work; in Postgres any error aborts the transaction, so `store/pg` runs the statement behind that sentinel inside a `SAVEPOINT`. Wherever a SQLSTATE becomes a domain sentinel, the sentinel has to cost the caller one statement rather than the whole transaction — because that is what it costs on `store/mem`.
+
 ### The Ledger as Relational Tables
 
 The accounting model maps onto tables almost mechanically, and the mapping is where the shape of double-entry becomes visible:
@@ -782,13 +790,15 @@ Four details carry more weight than they look like they should:
 
 ### A Balance Is an Aggregate, Not a Column
 
-There is no `balance` column anywhere in the schema. A book balance is computed on demand by summing the account's entries, signed by normal balance:
+There is no `balance` column anywhere in the schema. A book balance is computed on demand by summing the account's entries, signed by normal balance — which makes the account's normal direction a **parameter** of the query rather than a constant in it:
 
 ```sql
-SELECT COALESCE(SUM(CASE WHEN direction = debit THEN amount ELSE -amount END), 0)
+SELECT COALESCE(SUM(CASE WHEN direction = $3 THEN amount ELSE -amount END), 0)
   FROM entries
- WHERE book_id = $1 AND account_id = $2;
+ WHERE book_id = $1 AND account_id = $2;   -- $3 = the account's normal direction
 ```
+
+Hardcoding `debit` there is the easy mistake, and it is only half wrong, which is what makes it hard to see: it is correct for every Asset and Expense account and it negates every Liability, Equity and Revenue one. Alice's checking account in the walkthrough below is a **Liability** — a customer deposit is money the bank owes — so a debit-hardcoded query would report its 75000 as −75000.
 
 A stored balance is a **cache of a derivable fact**. It has to be updated in lockstep with every posting, forever, by every code path — and the first bug, crash or concurrent write that updates one without the other leaves a number that no one can reconcile against the history. Deriving it means the append-only entry list is the single source of truth and the balance cannot disagree with it, because it *is* the entry list.
 

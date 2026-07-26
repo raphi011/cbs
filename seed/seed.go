@@ -42,6 +42,26 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // outlives the process, seeding unconditionally would stack a second copy of
 // the scenario on top of the first at every restart.
 //
+// # Why the probe is "any participants", and not "the whole scenario"
+//
+// The probe asks whether the store has content of its own, not whether this
+// exact dataset is complete, and the distinction matters because the two have
+// different false positives. A completeness check — "are there settlements? are
+// there mandates?" — would refuse to boot against a Postgres database in which
+// the user had created a couple of banks through the API and nothing else,
+// which is an ordinary way to use this system and not a fault at all. There is
+// no marker that separates "seeded and then edited" from "never seeded" without
+// tagging rows, and a tag is a schema change in aid of a situation that should
+// not arise.
+//
+// It should not arise because the half-built store this probe used to paper
+// over had one cause: POST /admin/reset truncating and then losing its context
+// before it reseeded. That is fixed where it belongs, in the handler, by
+// running the reset on a context the client cannot cancel — see
+// api.Server.handleReset. What remains is a process killed mid-seed, which
+// leaves a partial dataset that this probe will indeed skip; the answer to that
+// is to reset, which is now a single call that finishes.
+//
 // The clock goes live on every path out of Populate, including the one that
 // built nothing. That is not a detail: the second process to open a store that
 // outlives the first has a Dataset whose clock is still frozen at baseDate, and

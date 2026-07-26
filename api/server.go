@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 
 	"github.com/raphi011/cbs/payment"
 )
@@ -22,6 +23,10 @@ type Server struct {
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
 	populate func(context.Context, *payment.Network) error
+
+	// resetMu serializes Reset. See the method for why one unit of work cannot
+	// do the job instead.
+	resetMu sync.Mutex
 
 	log *slog.Logger
 }
@@ -51,7 +56,25 @@ func (s *Server) network() *payment.Network { return s.net }
 // Reset discards all persisted state and rebuilds the sample dataset. It must
 // go through the store: swapping an in-memory object graph would leave every
 // row in the database intact and still report success.
+//
+// Resets serialize. They are the one operation in this system that is NOT a
+// single unit of work and cannot be made into one: the clear is a TRUNCATE
+// outside any transaction, and the rebuild is dozens of separate units of work,
+// because the seed builder drives the ordinary public API. Two overlapping
+// resets therefore interleave — the second clears over the first's half-built
+// scenario and the first finishes writing on top of the second's — leaving
+// several copies of some entities and none of others. Eight concurrent resets
+// produced twelve participants where there should have been four.
+//
+// A mutex is the honest fix for that shape: the operation is rare, bounded, and
+// idempotent, so a second caller waiting for the first and then redoing the work
+// is exactly the right answer. Note this makes resets exclusive within ONE
+// process; two servers sharing a database could still race, which is a property
+// of a teaching tool that does not pretend to be an HA deployment.
 func (s *Server) Reset(ctx context.Context) error {
+	s.resetMu.Lock()
+	defer s.resetMu.Unlock()
+
 	if err := s.net.Store().Reset(ctx); err != nil {
 		return err
 	}

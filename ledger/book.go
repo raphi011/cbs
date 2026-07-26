@@ -137,6 +137,10 @@ func (s *Book) CreateLedger(ctx context.Context, name string) (Ledger, error) {
 
 // CreateLedgerTx is CreateLedger within a caller-supplied unit of work.
 func (s *Book) CreateLedgerTx(ctx context.Context, tx Tx, name string) (Ledger, error) {
+	if err := ValidateText("name", name); err != nil {
+		return Ledger{}, err
+	}
+
 	id, err := tx.NextID(ctx, s.id, "ldg")
 	if err != nil {
 		return Ledger{}, err
@@ -185,6 +189,12 @@ func (s *Book) CreateSubledger(ctx context.Context, ledgerID LedgerID, name stri
 
 // CreateSubledgerTx is CreateSubledger within a caller-supplied unit of work.
 func (s *Book) CreateSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
+	if err := ValidateText("name", name); err != nil {
+		return Subledger{}, err
+	}
+	if err := ValidateText("ledgerId", string(ledgerID)); err != nil {
+		return Subledger{}, err
+	}
 	if _, err := tx.GetLedger(ctx, s.id, ledgerID); err != nil {
 		return Subledger{}, err
 	}
@@ -249,6 +259,12 @@ func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name 
 
 // CreateAccountTx is CreateAccount within a caller-supplied unit of work.
 func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+	if err := ValidateText("name", name); err != nil {
+		return Account{}, err
+	}
+	if err := ValidateText("subledgerId", string(subledgerID)); err != nil {
+		return Account{}, err
+	}
 	if _, err := tx.GetSubledger(ctx, s.id, subledgerID); err != nil {
 		return Account{}, err
 	}
@@ -381,6 +397,24 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 	for _, e := range req.Entries {
 		if e.Amount <= 0 {
 			return Transaction{}, ErrInvalidAmount
+		}
+	}
+
+	// Validate: text. Every one of these is stored, and the account ids are
+	// used as lookup keys below — see ValidateText for why that is a domain
+	// rule rather than something either store enforces for itself.
+	if err := ValidateText("idempotencyKey", req.IdempotencyKey); err != nil {
+		return Transaction{}, err
+	}
+	if err := ValidateText("description", req.Description); err != nil {
+		return Transaction{}, err
+	}
+	if err := ValidateTextMap("metadata", req.Metadata); err != nil {
+		return Transaction{}, err
+	}
+	for _, e := range req.Entries {
+		if err := ValidateText("accountId", string(e.AccountID)); err != nil {
+			return Transaction{}, err
 		}
 	}
 
@@ -594,6 +628,13 @@ func (s *Book) ReverseTransaction(ctx context.Context, txID TransactionID, descr
 // ReverseTransactionTx is ReverseTransaction within a caller-supplied unit of
 // work.
 func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID TransactionID, description string) (Transaction, error) {
+	if err := ValidateText("description", description); err != nil {
+		return Transaction{}, err
+	}
+	if err := ValidateText("transactionId", string(txID)); err != nil {
+		return Transaction{}, err
+	}
+
 	original, err := tx.GetTransaction(ctx, s.id, txID)
 	if err != nil {
 		return Transaction{}, err

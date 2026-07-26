@@ -74,6 +74,14 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	if err := t.write(); err != nil {
 		return err
 	}
+	// A Put is an upsert, and an upsert may change or clear the reference. The
+	// old claim goes with it, for the same reason PutTransaction releases a
+	// replaced idempotency key: an index that only ever grows keeps resolving a
+	// reference the payment no longer carries, and store/pg — where the
+	// reference is a column of the row itself — does not.
+	if prev, ok := t.state.payments[p.ID]; ok && prev.EndToEndID != p.EndToEndID {
+		delete(t.state.endToEnd, prev.EndToEndID)
+	}
 	t.state.insertSeq(ledger.NetworkBook, kindPayment, string(p.ID))
 	t.state.payments[p.ID] = copyPayment(p)
 	if p.EndToEndID != "" {

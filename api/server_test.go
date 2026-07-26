@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -326,6 +327,222 @@ func TestResetEmptiesState(t *testing.T) {
 	if len(got) != 1 || got[0] != "Baseline" {
 		t.Fatalf("accounts after reset = %v, want [Baseline]", got)
 	}
+}
+
+// TestResetSurvivesAClientDisconnect pins that a reset is finished on the
+// server's own terms once it has started.
+//
+// POST /admin/reset TRUNCATEs and then re-seeds. Against store/pg both halves
+// are durable, so a client that hangs up in between leaves a permanently
+// half-seeded database — and seed.Populate's own idempotency probe then sees
+// participants and declines to repair it, so restarting does not help either.
+// Under store/mem the old pointer swap made that impossible; durability is what
+// makes it stick. The handler therefore detaches the work from the request's
+// cancellation.
+//
+// A pre-cancelled request context is the deterministic form of "the client went
+// away": it is the same signal a disconnect delivers, arriving at the earliest
+// possible moment.
+func TestResetSurvivesAClientDisconnect(t *testing.T) {
+	var (
+		populateRan bool
+		populateCtx error
+	)
+	baseline := func(ctx context.Context, net *payment.Network) error {
+		populateRan = true
+		populateCtx = ctx.Err()
+		existing, err := net.ListParticipants(ctx)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			return nil
+		}
+		_, err = net.AddParticipant(ctx, "Bank A")
+		return err
+	}
+
+	srv := newServer(t, baseline)
+	h := srv.Routes()
+
+	populateRan, populateCtx = false, nil
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest("POST", "/admin/reset", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	assertEqual(t, "status", rec.Code, http.StatusOK)
+	assertEqual(t, "the reseed ran", populateRan, true)
+	if populateCtx != nil {
+		t.Fatalf("the reseed inherited the cancelled request context: %v", populateCtx)
+	}
+
+	// And the store is whole rather than truncated-but-not-reseeded.
+	var parts []participantDTO
+	getJSON(t, h, "/participants", &parts)
+	assertEqual(t, "participants after the reset", len(parts), 1)
+	assertEqual(t, "participant name", parts[0].Name, "Bank A")
+}
+
+// TestConcurrentResetsLeaveExactlyOneDataset pins that resets serialize.
+//
+// A reset is a TRUNCATE followed by a rebuild, and neither half is inside the
+// other's unit of work — the rebuild is dozens of separate ones. Two resets
+// overlapping therefore interleave: the second truncates over the first's
+// half-built scenario, and the first then finishes writing on top of the
+// second's, leaving several copies of some entities and none of others.
+//
+// It became reachable when the reset stopped inheriting the request's
+// cancellation: before that, a client that clicked twice produced one reset and
+// one cancellation, and the interleaving was hidden by the very bug that made
+// a single reset unsafe. Eight resets against a durable store produced twelve
+// participants where there should have been four.
+func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
+	baseline := func(ctx context.Context, net *payment.Network) error {
+		existing, err := net.ListParticipants(ctx)
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			return nil
+		}
+		p, err := net.AddParticipant(ctx, "Bank A")
+		if err != nil {
+			return err
+		}
+		_, err = p.OpenCustomerAccount(ctx, "Baseline")
+		return err
+	}
+
+	h := newServer(t, baseline).Routes()
+
+	// A start barrier, so the requests genuinely overlap rather than each
+	// finishing before the next goroutine is scheduled — the failure mode that
+	// makes a concurrency test pass while proving nothing.
+	const resets = 8
+	start := make(chan struct{})
+	codes := make([]int, resets)
+	var wg sync.WaitGroup
+	for i := range resets {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest("POST", "/admin/reset", nil))
+			codes[i] = rec.Code
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, code := range codes {
+		assertEqual(t, fmt.Sprintf("reset %d status", i), code, http.StatusOK)
+	}
+
+	var parts []participantDTO
+	getJSON(t, h, "/participants", &parts)
+	assertEqual(t, "participants after concurrent resets", len(parts), 1)
+
+	var accounts []depositAccountDTO
+	getJSON(t, h, "/participants/"+parts[0].ID+"/deposit-accounts", &accounts)
+	assertEqual(t, "deposit accounts after concurrent resets", len(accounts), 1)
+	assertEqual(t, "deposit account name", accounts[0].Name, "Baseline")
+}
+
+// ---------------------------------------------------------------------------
+// Text validation
+// ---------------------------------------------------------------------------
+
+// TestControlCharactersAreRefusedNotStored pins the one rule store/storetest
+// exists to enforce, at the level a client can actually reach it: store/pg must
+// never accept or refuse a write that store/mem handles differently.
+//
+// `{"name":"Ban\u0000k"}` is legal JSON. store/mem stored it and answered 201;
+// store/pg could not (a NUL is SQLSTATE 22021 in a text column and 22P05 inside
+// jsonb) and answered 500 with the raw SQLSTATE in the body. The rule is now a
+// domain rule — see ledger.ValidateText — so both stores answer 400.
+//
+// This test runs against whichever store TEST_DATABASE_URL selects, so "both
+// stores agree" is checked by running it twice rather than asserted once.
+func TestControlCharactersAreRefusedNotStored(t *testing.T) {
+	h := newTestServer(t)
+
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
+		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	// nul and esc are JSON escapes — six characters in this source file, one
+	// control character by the time encoding/json is done with them. That is
+	// what a client actually sends, and it is why no amount of byte-level
+	// screening of the request body would catch it.
+	const (
+		nul = `\u0000`
+		esc = `\u001b`
+	)
+
+	entries := func(first string) string {
+		return `"entries":[{"accountId":"` + first + `","amount":100,"direction":"Debit"},` +
+			`{"accountId":"` + gl + `","amount":100,"direction":"Credit"}]`
+	}
+
+	for _, tc := range []struct{ what, method, path, body string }{
+		{"a participant name", "POST", "/participants", `{"name":"Ban` + nul + `k"}`},
+		{"a participant name with an escape sequence", "POST", "/participants", `{"name":"Bank` + esc + `[31m"}`},
+		{"a participant name with a newline", "POST", "/participants", `{"name":"Bank\nof Nowhere"}`},
+		{"a deposit account name", "POST", "/participants/" + pid + "/deposit-accounts",
+			`{"name":"Al` + nul + `ice","overdraftLimit":0}`},
+		{"a ledger name", "POST", "/participants/" + pid + "/ledgers", `{"name":"G` + nul + `L"}`},
+		{"a funding description", "POST", "/participants/" + pid + "/deposits",
+			`{"account":"` + did + `","amount":1000,"description":"op` + nul + `ening"}`},
+		{"a funding account id", "POST", "/participants/" + pid + "/deposits",
+			`{"account":"` + did + nul + `","amount":1000,"description":"opening"}`},
+		{"a hold description", "POST", "/participants/" + pid + "/deposit-accounts/" + did + "/holds",
+			`{"amount":1000,"description":"pre-a` + nul + `uth"}`},
+		{"a transaction description", "POST", "/participants/" + pid + "/transactions",
+			`{"description":"re` + nul + `nt",` + entries(gl) + `}`},
+		{"a transaction idempotency key", "POST", "/participants/" + pid + "/transactions",
+			`{"idempotencyKey":"key` + nul + `-1",` + entries(gl) + `}`},
+		{"a transaction metadata value", "POST", "/participants/" + pid + "/transactions",
+			`{"metadata":{"ref":"INV` + nul + `"},` + entries(gl) + `}`},
+		{"an entry account id", "POST", "/participants/" + pid + "/transactions",
+			`{` + entries(gl+nul) + `}`},
+	} {
+		rec := do(t, h, tc.method, tc.path, tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: got status %d, want 400 (body: %s)", tc.what, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}
+
+	// Nothing was created by any of the refused requests.
+	var parts []participantDTO
+	getJSON(t, h, "/participants", &parts)
+	assertEqual(t, "participants after the refusals", len(parts), 1)
+
+	var accounts []depositAccountDTO
+	getJSON(t, h, "/participants/"+pid+"/deposit-accounts", &accounts)
+	assertEqual(t, "deposit accounts after the refusals", len(accounts), 1)
+}
+
+// TestControlCharactersInAPathAreRefused pins the read half of the same rule.
+// A URL-encoded NUL is decoded into the path parameter and handed straight to
+// the store as a lookup key: store/mem answers 404, store/pg answers 500 with a
+// raw SQLSTATE. Identifiers here are system-generated and never contain a
+// control character, so such a request cannot name anything and is refused at
+// the edge.
+func TestControlCharactersInAPathAreRefused(t *testing.T) {
+	h := newTestServer(t)
+
+	// A well-formed but unknown id is still an honest 404.
+	assertStatus(t, h, "GET", "/participants/bank_404", "", http.StatusNotFound)
+
+	assertStatus(t, h, "GET", "/participants/bank%001", "", http.StatusBadRequest)
+	assertStatus(t, h, "GET", "/participants/bank_1/deposit-accounts/dep%001", "", http.StatusBadRequest)
+	assertStatus(t, h, "GET", "/payments/audit?entity=pay%001", "", http.StatusBadRequest)
 }
 
 // ---------------------------------------------------------------------------

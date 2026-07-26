@@ -551,6 +551,245 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 	})
 
+	t.Run("RePuttingATransactionReleasesItsOldIdempotencyKey", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// PutTransaction is an upsert, and an upsert may change the key. The
+		// old claim has to go with it. A store that only ever adds to its
+		// idempotency index keeps resolving a key the transaction no longer
+		// carries — and then refuses the next transaction that legitimately
+		// claims it, which the other store accepts. That is the same parity
+		// rule as everywhere else in this suite, pointing the other way: mem
+		// refusing a write pg allows is exactly as wrong as the reverse.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
+		})
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-2"))
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			_, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
+			assertErrorIs(t, "lookup by the key that was replaced", err, ledger.ErrTransactionNotFound)
+
+			got, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-2")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transaction behind the new key", string(got.ID), "tx_1")
+			assertEqual(t, "the transaction's stored key", got.IdempotencyKey, "key-2")
+			return nil
+		})
+
+		// The released key is free for a different transaction to claim.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, transaction("tx_2", "key-1"))
+		})
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			got, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transaction behind the reclaimed key", string(got.ID), "tx_2")
+
+			all, err := tx.ListTransactions(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transactions stored", len(all), 2)
+			return nil
+		})
+
+		// Dropping a key entirely releases it too.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, transaction("tx_2", ""))
+		})
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			_, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
+			assertErrorIs(t, "lookup by a key that was cleared", err, ledger.ErrTransactionNotFound)
+			return nil
+		})
+	})
+
+	t.Run("HandledDuplicateKeyLeavesTheUnitOfWorkUsable", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// ErrDuplicateIdempotencyKey is a domain sentinel, which means a caller
+		// is entitled to handle it and carry on — retry under a fresh key, fall
+		// back to the existing transaction, record the collision. That is only
+		// true if the failed statement did not take the whole unit of work with
+		// it. In Postgres it does by default: any error aborts the transaction
+		// and every later statement fails with SQLSTATE 25P02, so the writes
+		// after the handled error are silently lost while Update still returns
+		// nil-worthy work. store/pg therefore runs the statement inside a
+		// SAVEPOINT. store/mem never had the problem, and this subtest is what
+		// says the two agree.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
+		})
+
+		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+			dup := tx.PutTransaction(ctx, bookA, transaction("tx_2", "key-1"))
+			if !errors.Is(dup, ledger.ErrDuplicateIdempotencyKey) {
+				return fmt.Errorf("storetest: duplicate put returned %v, want ErrDuplicateIdempotencyKey", dup)
+			}
+			// Everything after the handled error must still work: a read, a
+			// write of another kind, and a second transaction under a free key.
+			if _, err := tx.GetTransaction(ctx, bookA, "tx_1"); err != nil {
+				return fmt.Errorf("storetest: read after a handled duplicate: %w", err)
+			}
+			if err := tx.PutLedger(ctx, bookA, ledger.Ledger{ID: "ldg_1", Name: "GL", CreatedAt: early}); err != nil {
+				return fmt.Errorf("storetest: write after a handled duplicate: %w", err)
+			}
+			if err := tx.PutTransaction(ctx, bookA, transaction("tx_3", "key-2")); err != nil {
+				return fmt.Errorf("storetest: retry under a free key: %w", err)
+			}
+			return tx.AppendAudit(ctx, ledger.AuditEvent{
+				ID: "evt_1", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated,
+			})
+		})
+		if err != nil {
+			t.Fatalf("Update after a handled duplicate key: %v", err)
+		}
+
+		// And all of it committed: the sentinel cost the caller one statement,
+		// not the unit of work.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			ledgers, err := tx.ListLedgers(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "ledgers committed after a handled duplicate", len(ledgers), 1)
+
+			all, err := tx.ListTransactions(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "transactions after a handled duplicate",
+				ids(all, func(txn ledger.Transaction) string { return string(txn.ID) }), "tx_1", "tx_3")
+
+			// The refused write left nothing behind — not even a row with no
+			// key, which a store that inserted first and cleaned up later could
+			// plausibly leave.
+			_, err = tx.GetTransaction(ctx, bookA, "tx_2")
+			assertErrorIs(t, "the refused transaction", err, ledger.ErrTransactionNotFound)
+
+			behind, err := tx.GetTransactionByIdempotencyKey(ctx, bookA, "key-1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "transaction still behind key-1", string(behind.ID), "tx_1")
+
+			events, err := tx.ListAudit(ctx, ledger.AuditFilter{})
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "audit events committed", len(events), 1)
+			return nil
+		})
+	})
+
+	t.Run("EveryTextTheDomainAcceptsRoundTrips", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// The store is a key/value layer: it does not validate, it stores. What
+		// it MUST do is hold, byte for byte, every string the domain is willing
+		// to hand it — because the domain is the only validator, and a store
+		// that refuses input the domain accepted is a store that refuses a write
+		// the other store performs.
+		//
+		// Postgres cannot hold a NUL in a text column (SQLSTATE 22021) or in a
+		// jsonb string (22P05), nor a byte sequence that is not valid UTF-8;
+		// store/mem holds all of them. That gap is closed in ledger.ValidateText
+		// rather than here, so the corpus below is filtered through it: anything
+		// the domain rejects never reaches a store, and everything else has to
+		// survive the trip. Loosening ValidateText widens this corpus, which is
+		// what makes this subtest bite.
+		corpus := []string{
+			"Aurora Bank",
+			"Crédit Soleil",
+			"三菱UFJ銀行",
+			"Банк «Восток»",
+			"🏦 Emoji Bank",
+			`He said "50% off"; 'ok'`,
+			`C:\path\to\nowhere`,
+			"$1 -- DROP TABLE ledgers",
+			"Ban\x00k",   // refused by the domain; must never reach a store
+			"Ban\xffk",   // likewise
+			"two\nlines", // likewise
+		}
+
+		type sample struct{ id, text string }
+		var samples []sample
+		for i, text := range corpus {
+			if err := ledger.ValidateText("name", text); err != nil {
+				continue
+			}
+			samples = append(samples, sample{id: fmt.Sprintf("%03d", i), text: text})
+		}
+		if len(samples) == 0 {
+			t.Fatal("storetest: the whole corpus was rejected by the domain; nothing was tested")
+		}
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for _, sm := range samples {
+				if err := tx.PutLedger(ctx, bookA, ledger.Ledger{
+					ID: ledger.LedgerID("ldg_" + sm.id), Name: sm.text, CreatedAt: early,
+				}); err != nil {
+					return err
+				}
+				if err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+					ID:          ledger.TransactionID("txt_" + sm.id),
+					Status:      ledger.Posted,
+					CreatedAt:   early,
+					Description: sm.text,
+					// Metadata is jsonb in store/pg, so it refuses a different
+					// set of bytes from a text column and needs its own sample.
+					Metadata: map[string]string{sm.text: sm.text},
+					Entries: []ledger.Entry{
+						{ID: ledger.EntryID("ent_" + sm.id), AccountID: "100.100.001", Amount: 100, Direction: ledger.Debit},
+					},
+				}); err != nil {
+					return err
+				}
+				if err := tx.AppendAudit(ctx, ledger.AuditEvent{
+					ID: "evt_" + sm.id, BookID: bookA, Scope: ledger.ScopeLedger,
+					Type: ledger.EventLedgerCreated, EntityID: "ldg_" + sm.id,
+					Metadata: map[string]string{"name": sm.text},
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for _, sm := range samples {
+				l, err := tx.GetLedger(ctx, bookA, ledger.LedgerID("ldg_"+sm.id))
+				if err != nil {
+					return err
+				}
+				assertEqual(t, "ledger name round-trip", l.Name, sm.text)
+
+				txn, err := tx.GetTransaction(ctx, bookA, ledger.TransactionID("txt_"+sm.id))
+				if err != nil {
+					return err
+				}
+				assertEqual(t, "description round-trip", txn.Description, sm.text)
+				assertEqual(t, "metadata value round-trip", txn.Metadata[sm.text], sm.text)
+			}
+			events, err := tx.ListAudit(ctx, ledger.AuditFilter{})
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "audit events stored", len(events), len(samples))
+			for i, e := range events {
+				assertEqual(t, "audit metadata round-trip", e.Metadata["name"], samples[i].text)
+			}
+			return nil
+		})
+	})
+
 	t.Run("EmptyIdempotencyKeyNotDeduplicated", func(t *testing.T) {
 		s := open(t, newStore)
 

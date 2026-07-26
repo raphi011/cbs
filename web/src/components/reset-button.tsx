@@ -9,9 +9,13 @@ import { ConfirmAction } from "@/components/forms/confirm-action";
 import { useResetState } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
-// Sidebar action: confirm, then reset the backend to the sample dataset. The
-// in-memory backend has no undo, so this is a destructive confirm. When the nav
-// rail is collapsed it renders icon-only with a native tooltip.
+// Sidebar action: confirm, then reset the backend to the sample dataset.
+//
+// The copy says "all data" rather than "the in-memory state": the backend runs
+// on store/mem or on store/pg depending on how it was started, the frontend has
+// no way to tell which, and on Postgres the wipe is durable. A reset has no
+// undo either way, so this is a destructive confirm. When the nav rail is
+// collapsed it renders icon-only with a native tooltip.
 export function ResetButton({ collapsed }: { collapsed?: boolean }) {
   const reset = useResetState();
   return (
@@ -19,7 +23,7 @@ export function ResetButton({ collapsed }: { collapsed?: boolean }) {
       <ConfirmAction
         destructive
         title="Reset all data?"
-        description="This wipes the in-memory state and reloads the built-in sample dataset (banks, accounts, payments, clearing cycles and settlements). Anything you created will be lost."
+        description="This permanently wipes all backend data and reloads the built-in sample dataset (banks, accounts, payments, clearing cycles and settlements). Anything you created will be lost, and there is no undo."
         confirmLabel="Reset data"
         pending={reset.isPending}
         onConfirm={async () => {

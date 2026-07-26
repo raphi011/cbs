@@ -143,6 +143,10 @@ func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID
 // account and the deposit account are created through the same Tx, so an
 // account can never exist in one layer without the other.
 func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
+	if err := ledger.ValidateText("name", name); err != nil {
+		return Account{}, err
+	}
+
 	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability)
 	if err != nil {
 		return Account{}, err
@@ -350,6 +354,13 @@ func (r *Register) CreateHold(ctx context.Context, req CreateHoldRequest) (Hold,
 // available-balance check and the hold write happen through the same Tx, so two
 // concurrent holds cannot both see the same funds.
 func (r *Register) CreateHoldTx(ctx context.Context, tx Tx, req CreateHoldRequest) (Hold, error) {
+	if err := ledger.ValidateText("description", req.Description); err != nil {
+		return Hold{}, err
+	}
+	if err := ledger.ValidateText("accountId", string(req.AccountID)); err != nil {
+		return Hold{}, err
+	}
+
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, req.AccountID)
 	if err != nil {
 		return Hold{}, err

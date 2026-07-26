@@ -50,6 +50,18 @@ type Tx interface {
 	// with overlapping account sets.
 	LockAccounts(ctx context.Context, book BookID, ids []AccountID) error
 
+	// PutTransaction stores a transaction, its ordered entries and its
+	// idempotency claim. A non-empty key already held by a different
+	// transaction fails with ErrDuplicateIdempotencyKey.
+	//
+	// That error is a documented answer rather than a broken unit of work: a
+	// caller may handle it and go on using the same Tx. store/pg makes that
+	// true by running the insert inside a SAVEPOINT, because in Postgres any
+	// error otherwise aborts the whole transaction. Every sentinel a store
+	// returns from a write carries the same promise.
+	//
+	// A Put is an upsert, so re-putting a transaction under a different key
+	// RELEASES the old one: it is free for another transaction to claim.
 	PutTransaction(ctx context.Context, book BookID, t Transaction) error
 	GetTransaction(ctx context.Context, book BookID, id TransactionID) (Transaction, error)
 	GetTransactionByIdempotencyKey(ctx context.Context, book BookID, key string) (Transaction, error)

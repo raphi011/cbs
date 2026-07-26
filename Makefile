@@ -69,7 +69,13 @@ test: ## Run the Go and web suites against the in-memory store (no setup)
 	set -euo pipefail
 	go build ./... && go vet ./...
 	test -z "$$(gofmt -l .)" || { echo "gofmt: $$(gofmt -l .)"; exit 1; }
-	go test ./...
+	# TEST_DATABASE_URL is cleared, not merely unset by default: store/testenv
+	# reads it from the environment, and the README tells anyone working on
+	# store/pg to export it. Inheriting it here would silently turn this target
+	# into a second copy of `make test-pg` — for exactly the developers who need
+	# the two runs to differ — and "both stores stay green" would become one
+	# store, twice.
+	TEST_DATABASE_URL= go test ./...
 	cd $(WEB) && npm run typecheck && npm run lint && npm run test
 
 # The same suites, on the other store. TEST_DATABASE_URL is what store/testenv

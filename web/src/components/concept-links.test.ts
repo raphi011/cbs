@@ -56,3 +56,25 @@ describe("validateConceptContent", () => {
     expect(() => validateConceptContent()).not.toThrow();
   });
 });
+
+// The four documentation layers (README.md, this registry, the quiz, and
+// store/pg/schema/0001_init.sql) are kept in step by hand, so a claim that
+// drifts is caught by a reader or by nothing. This one had drifted: the prose
+// said the balance is "signed by normal balance" and the SQL beneath it
+// hardcoded `direction = debit`, which negates every liability balance —
+// including the README's own worked example, where Alice's checking account is
+// a liability asserted at 75000 and the published query returns −75000. The
+// real query parameterises the direction (store/pg/tx_ledger.go, `$3 = normal`)
+// and quiz ch15-q7 describes it correctly, so three layers agreed and one did
+// not.
+describe("derived-balance hint", () => {
+  const body = hintContent["derived-balance"].body;
+
+  it("does not hardcode the debit direction in the balance query", () => {
+    expect(body).not.toMatch(/direction\s*=\s*debit/i);
+  });
+
+  it("shows the direction as a parameter, matching store/pg", () => {
+    expect(body).toMatch(/direction\s*=\s*\$3/);
+  });
+});

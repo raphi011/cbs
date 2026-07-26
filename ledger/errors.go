@@ -60,4 +60,10 @@ var (
 	// not permitted. Note: this is only enforced for Asset and Expense
 	// accounts.
 	ErrInsufficientBalance = errors.New("insufficient available balance")
+
+	// ErrInvalidText is returned when a caller-supplied string is not
+	// valid UTF-8 or contains a control character. See ValidateText for
+	// which fields this covers and why the rule is a domain rule rather
+	// than a per-store one.
+	ErrInvalidText = errors.New("text must be valid UTF-8 without control characters")
 )

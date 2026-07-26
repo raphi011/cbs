@@ -692,12 +692,14 @@ What is *not* a column is the balance — see [[derived-balance]]. What is not a
   },
   "derived-balance": {
     title: "A balance is an aggregate, not a column",
-    body: `There is no \`balance\` column anywhere. A book balance is computed on demand by summing the account's entries, signed by [[normal-balance]]:
+    body: `There is no \`balance\` column anywhere. A book balance is computed on demand by summing the account's entries, signed by [[normal-balance]] — so the account's *normal* direction is a parameter of the query, not a constant in it:
 
 \`\`\`sql
-SELECT COALESCE(SUM(CASE WHEN direction = debit THEN amount ELSE -amount END), 0)
-FROM entries WHERE book_id = $1 AND account_id = $2;
+SELECT COALESCE(SUM(CASE WHEN direction = $3 THEN amount ELSE -amount END), 0)
+FROM entries WHERE book_id = $1 AND account_id = $2;   -- $3 = the account's normal direction
 \`\`\`
+
+Hardcoding \`debit\` there would be right for every asset and expense account and would negate every liability, equity and revenue one: a customer's checking account holding 750.00 would report −750.00.
 
 A stored balance is a **cache of a derivable fact**, and caches go stale: any bug, crash or concurrent write that updates one of the two without the other leaves a number no one can reconcile. Deriving it means the [[audit-trail|append-only history]] is the single source of truth and the balance cannot disagree with it.
 
