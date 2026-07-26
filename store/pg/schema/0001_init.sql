@@ -68,6 +68,30 @@ CREATE TABLE ledgers (
     PRIMARY KEY (book_id, id)
 );
 
+-- subledgers.ledger_id carries NO foreign key, and neither does
+-- accounts.subledger_id or entries.account_id. That is a rule about what this
+-- layer is for, not an oversight.
+--
+-- The store is a per-table key/value layer. "The parent must exist" is a domain
+-- rule, and ledger.Book enforces it: CreateSubledgerTx reads the ledger first,
+-- CreateAccountTx reads the subledger, PostTransactionTx reads every account it
+-- is about to touch. Put the same rule in the schema and store/pg starts
+-- rejecting writes store/mem accepts — a divergence between the two
+-- implementations, which is the single thing this package must never introduce.
+--
+-- This one used to be a composite FK, and it was wrong for exactly that reason:
+--
+--   PutSubledger{ID: "100", LedgerID: "ldg_nope"}
+--     store/mem = nil
+--     store/pg  = SQLSTATE 23503, violates subledgers_book_id_ledger_id_fkey
+--
+-- storetest/ParentReferencesAreNotEnforced now pins the answer, so the rule is
+-- enforced by the suite rather than remembered.
+--
+-- The child-table FKs below (entries -> transactions, cycle_payments -> cycles,
+-- settlement_positions -> settlements) are a different case and stay: the store
+-- writes both sides of those itself, within one statement sequence, so there is
+-- no caller who could ever produce an orphan.
 CREATE TABLE subledgers (
     book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id         TEXT NOT NULL,
@@ -75,14 +99,9 @@ CREATE TABLE subledgers (
     name       TEXT NOT NULL,
     created_at TIMESTAMPTZ,
     seq        BIGSERIAL NOT NULL,
-    PRIMARY KEY (book_id, id),
-    FOREIGN KEY (book_id, ledger_id) REFERENCES ledgers (book_id, id) ON DELETE CASCADE
+    PRIMARY KEY (book_id, id)
 );
 
--- accounts.subledger_id carries no foreign key. The store is a dumb per-table
--- key/value store; validation ("the subledger must exist") lives in
--- ledger.Book, and the conformance suite writes accounts with no subledger at
--- all to prove the store does not invent rules of its own.
 CREATE TABLE accounts (
     book_id      TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id           TEXT NOT NULL,

@@ -217,6 +217,70 @@ func TestConcurrentPostsWithOneIdempotencyKeyCollide(t *testing.T) {
 	assertEqual(t, "the surviving transaction is the keyed one", string(all[1].ID), string(posted.ID))
 }
 
+// Race 2, at the store primitive. The test above drives the race through
+// Book.PostTransactionTx, which is the realistic path but NOT an isolating one:
+// PostTransactionTx allocates entry and transaction IDs before it calls
+// PutTransaction, and NextID's INSERT … ON CONFLICT DO UPDATE takes a row lock
+// on id_sequences. The two racers therefore serialize on the counter, and the
+// loser's pre-check runs after the winner has committed and duly finds the row —
+// so a check-then-insert PutTransaction passes it. That was measured, not
+// assumed.
+//
+// This test calls tx.PutTransaction directly with two pre-chosen IDs and one
+// shared key, so nothing allocates an ID and nothing serializes the racers
+// before they reach the index. It is the same isolation
+// TestConcurrentMarkReversedOnlyOneWins needed, for the same reason.
+//
+// It kills both dangerous shapes: a check-then-insert that drops the SQLSTATE
+// mapping (the loser surfaces a raw 23505, a 500 where the API owes a 409), and
+// a check-then-insert with the unique index removed (both racers win).
+func TestConcurrentPutTransactionWithOneIdempotencyKey(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Commit something into the book FIRST. Without this the racers serialize
+	// before they ever reach the index: the first write to a book inserts its
+	// books row, and a concurrent INSERT … ON CONFLICT DO NOTHING blocks on that
+	// uncommitted tuple until the first transaction commits. Measured — with
+	// this line removed, a check-then-insert PutTransaction passes five runs out
+	// of five. Every serialization point before the statement under test has to
+	// be paid off before the race is a race.
+	if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		return tx.PutLedger(ctx, "bank", ledger.Ledger{ID: "ldg_1", Name: "GL", CreatedAt: frozen()})
+	}); err != nil {
+		t.Fatalf("seed book: %v", err)
+	}
+
+	ids := []ledger.TransactionID{"tx_a", "tx_b"}
+	errs := raceInTransactions(t, s, 2, func(ctx context.Context, tx ledger.Tx, i int) error {
+		return tx.PutTransaction(ctx, "bank", ledger.Transaction{
+			ID: ids[i], IdempotencyKey: "same-key", Status: ledger.Posted, CreatedAt: frozen(),
+			Entries: []ledger.Entry{
+				{ID: ledger.EntryID(string(ids[i]) + "_1"), AccountID: "100.100.001", Amount: 100, Direction: ledger.Debit},
+				{ID: ledger.EntryID(string(ids[i]) + "_2"), AccountID: "200.100.001", Amount: 100, Direction: ledger.Credit},
+			},
+		})
+	})
+
+	assertOneWinner(t, "concurrent PutTransaction with one key", errs, ledger.ErrDuplicateIdempotencyKey)
+
+	// Exactly one row was written, and the key resolves to it.
+	var all []ledger.Transaction
+	var byKey ledger.Transaction
+	if err := s.View(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		var err error
+		if all, err = tx.ListTransactions(ctx, "bank"); err != nil {
+			return err
+		}
+		byKey, err = tx.GetTransactionByIdempotencyKey(ctx, "bank", "same-key")
+		return err
+	}); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	assertEqual(t, "transactions written", len(all), 1)
+	assertEqual(t, "the key resolves to the surviving transaction", string(byKey.ID), string(all[0].ID))
+}
+
 // Race 3: a reversal.
 //
 // Posted -> Reversed happens at most once. A read-compare-write would let two

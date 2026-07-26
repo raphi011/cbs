@@ -317,6 +317,75 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 	})
 
+	t.Run("ParentReferencesAreNotEnforced", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// A store is a per-table key/value layer. "The parent must exist" is a
+		// DOMAIN rule — ledger.Book reads the ledger before creating a
+		// subledger, the subledger before an account, and every account before
+		// posting to it — and putting it in the store as well would mean the two
+		// implementations disagree the moment one of them can express it and the
+		// other cannot. store/pg can (a foreign key); store/mem cannot. So
+		// neither does, and this subtest is what says so.
+		//
+		// It is written from the failure it prevents: store/pg shipped a
+		// composite FK on subledgers(book_id, ledger_id), which turned the first
+		// write below into SQLSTATE 23503 while store/mem returned nil. No other
+		// fixture in this suite writes a dangling LedgerID, so nothing caught it.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			// A subledger under a ledger that does not exist.
+			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{
+				ID: "100", LedgerID: "ldg_nope", Name: "orphan", CreatedAt: early,
+			}); err != nil {
+				return err
+			}
+			// An account under a subledger that does not exist, and one with no
+			// subledger at all.
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.900.001", SubledgerID: "900", Type: ledger.Liability, Name: "orphan", CreatedAt: early,
+			}); err != nil {
+				return err
+			}
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.900.002", Type: ledger.Liability, Name: "no subledger", CreatedAt: early,
+			}); err != nil {
+				return err
+			}
+			// A transaction whose legs name accounts that do not exist.
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID: "tx_1", Status: ledger.Posted, CreatedAt: early,
+				Entries: []ledger.Entry{
+					{ID: "ent_1", AccountID: "999.999.001", Amount: 100, Direction: ledger.Debit},
+					{ID: "ent_2", AccountID: "999.999.002", Amount: 100, Direction: ledger.Credit},
+				},
+			})
+		})
+
+		// The orphans are readable, and the aggregate over an account that was
+		// never created still adds up — a balance is a sum over entries, not a
+		// join to a chart of accounts.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			sl, err := tx.GetSubledger(ctx, bookA, "100")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "orphan subledger's ledger", string(sl.LedgerID), "ldg_nope")
+
+			a, err := tx.GetAccount(ctx, bookA, "200.900.001")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "orphan account's subledger", string(a.SubledgerID), "900")
+
+			balance, err := tx.BookBalance(ctx, bookA, "999.999.001", ledger.Debit)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "balance of an account that was never created", balance, ledger.Amount(100))
+			return nil
+		})
+	})
+
 	t.Run("ListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
 		s := open(t, newStore)
 
