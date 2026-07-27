@@ -717,10 +717,8 @@ func TestCreateAccountRejectsUnregisteredAsset(t *testing.T) {
 
 If `newSubledger(t, book)` does not exist as a helper, add one alongside `newBook` that creates a ledger and a subledger and returns the subledger.
 
-Add to `deposit/register_test.go` — the deposit half (the cross-asset
-`CaptureHold` case belongs to Task 4, which adds the rule that refuses it):
-
-Add to `deposit/register_test.go`:
+Add to `deposit/register_test.go` — the deposit half. The cross-asset
+`CaptureHold` case belongs to Task 4, which adds the rule that refuses it:
 
 ```go
 func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
@@ -743,12 +741,11 @@ func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
 		t.Errorf("GL account asset %q != deposit account asset %q", gl.Asset, acct.Asset)
 	}
 }
+```
 
 Reuse whatever setup helpers `deposit/register_test.go` already has instead of
 `newRegister`/`subledgerFor` if they exist under other names; register EUR and
 BTC in the test book's setup.
-
-Add to `payment/system_test.go`:
 
 Add to `payment/system_test.go`:
 
