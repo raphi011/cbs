@@ -17,31 +17,33 @@ import { Button } from "@/components/ui/button";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
 import { PartyRefFields, emptyPartyRef } from "@/components/forms/party-ref-fields";
-import { useCreateMandate } from "@/lib/api/hooks";
+import { useAssetLookup, useCreateMandate, useDepositAccounts } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { PartyRef } from "@/lib/types";
 
-// A mandate names no scheme and no asset (createMandateRequest has neither),
-// so there is nothing to resolve a scale from until the mandate is used.
-// Every scheme implemented so far settles in EUR (see payment/scheme.go's
-// SCT/SDD) — see the matching comment in net-positions-table.tsx.
-const MANDATE_ASSET = { code: "EUR", scale: 2 };
-
-// A mandate is standing authorization for a creditor to pull funds from a
-// debtor, up to a maximum amount — the prerequisite for pull (direct-debit)
-// schemes.
+// A mandate names no scheme (createMandateRequest has neither), so there is
+// nothing to resolve a scale from the way a payment's asset is resolved from
+// its scheme. What fixes the mandate's asset is the debtor account being
+// authorized to pull from — MaxAmount is denominated in that account's asset
+// (see api/dto_payment.go's toMandateDTO) — so this form resolves the same
+// way the backend does: the debtor's own deposit account.
 export function CreateMandateForm() {
   const [open, setOpen] = useState(false);
   const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);
   const [creditor, setCreditor] = useState<PartyRef>(emptyPartyRef);
   const [maxAmount, setMaxAmount] = useState<number | null>(null);
   const create = useCreateMandate();
+  const debtorAccounts = useDepositAccounts(debtor.participant);
+  const debtorAccount = debtorAccounts.data?.find((a) => a.id === debtor.account);
+  const { byCode } = useAssetLookup(debtor.participant);
+  const resolvedAsset = debtorAccount ? byCode.get(debtorAccount.asset) : undefined;
 
   const valid =
     debtor.participant.trim() &&
     debtor.account.trim() &&
     creditor.participant.trim() &&
     creditor.account.trim() &&
+    resolvedAsset != null &&
     maxAmount != null;
 
   async function submit(e: React.FormEvent) {
@@ -90,12 +92,19 @@ export function CreateMandateForm() {
             <FieldLabel htmlFor="mandate-max" required>
               Maximum amount
             </FieldLabel>
-            <MoneyInput
-              id="mandate-max"
-              value={maxAmount}
-              onChange={setMaxAmount}
-              asset={MANDATE_ASSET}
-            />
+            {resolvedAsset ? (
+              <MoneyInput
+                id="mandate-max"
+                value={maxAmount}
+                onChange={setMaxAmount}
+                asset={resolvedAsset}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Choose the debtor&apos;s deposit account to resolve the
+                mandate&apos;s asset.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button type="submit" disabled={create.isPending || !valid}>

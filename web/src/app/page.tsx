@@ -32,7 +32,7 @@ const IN_FLIGHT = new Set(["Initiated", "Accepted", "Cleared"]);
 
 export default function Home() {
   const { data: participants, isLoading, error, refetch } = useParticipants();
-  const { data: reserves } = useReserves();
+  const { data: reserves, isLoading: reservesLoading } = useReserves();
   const { data: cycles } = useCycles();
   const { data: payments } = usePayments();
   const { data: settlements } = useSettlements();
@@ -79,7 +79,11 @@ export default function Home() {
         <Stat label="Member banks">{participants?.length ?? 0}</Stat>
         <Stat label="Total reserves" hint="central-bank-reserves">
           {assetTotals.length === 0 ? (
-            <Skeleton className="h-6 w-20" />
+            reservesLoading ? (
+              <Skeleton className="h-6 w-20" />
+            ) : (
+              <span className="text-sm text-muted-foreground">None yet.</span>
+            )
           ) : (
             assetTotals.map(([code, { total, participant }]) => (
               <AssetTotalRow key={code} participant={participant} code={code} total={total} />

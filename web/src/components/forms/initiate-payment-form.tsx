@@ -25,17 +25,9 @@ import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
 import { PartyRefFields, emptyPartyRef } from "@/components/forms/party-ref-fields";
-import { useInitiatePayment, useSchemes } from "@/lib/api/hooks";
+import { useAssetLookup, useInitiatePayment, useSchemes } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { PartyRef } from "@/lib/types";
-
-// schemeDTO carries no asset field, even though the API resolves one
-// server-side for the payment it produces (see toPaymentDTO in
-// api/dto_payment.go) — so the chosen scheme can't tell this form its scale
-// either. Every scheme implemented so far settles in EUR (see
-// payment/scheme.go's SCT/SDD) — see the matching comment in
-// net-positions-table.tsx.
-const PAYMENT_ASSET = { code: "EUR", scale: 2 };
 
 // Initiates a payment under a scheme. The form is scheme-aware: a mandate is
 // required only when the chosen scheme requires one (pull/direct-debit).
@@ -54,12 +46,21 @@ export function InitiatePaymentForm() {
   const selected = schemes.data?.find((s) => s.id === scheme);
   const needsMandate = selected?.requiresMandate ?? false;
 
+  // schemeDTO now carries the scheme's asset (see api/dto_payment.go's
+  // toSchemeDTO), the same way a payment's asset is the scheme's — but its
+  // scale still has to come from a participant's own book-scoped registry
+  // (see ledger.Book.CreateAsset), so this resolves it against the debtor
+  // once one is chosen.
+  const { byCode } = useAssetLookup(debtor.participant);
+  const resolvedAsset = selected ? byCode.get(selected.asset) : undefined;
+
   const valid =
     scheme &&
     debtor.participant.trim() &&
     debtor.account.trim() &&
     creditor.participant.trim() &&
     creditor.account.trim() &&
+    resolvedAsset != null &&
     amount != null &&
     (!needsMandate || mandateId.trim());
 
@@ -137,12 +138,19 @@ export function InitiatePaymentForm() {
             <FieldLabel htmlFor="pay-amount" required>
               Amount
             </FieldLabel>
-            <MoneyInput
-              id="pay-amount"
-              value={amount}
-              onChange={setAmount}
-              asset={PAYMENT_ASSET}
-            />
+            {resolvedAsset ? (
+              <MoneyInput
+                id="pay-amount"
+                value={amount}
+                onChange={setAmount}
+                asset={resolvedAsset}
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Choose a scheme and debtor to resolve the payment&apos;s
+                asset.
+              </p>
+            )}
           </div>
 
           {needsMandate && (

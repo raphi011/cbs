@@ -17,7 +17,13 @@ import type { Reserve } from "@/lib/types";
 function ReserveAmountCell({ reserve }: { reserve: Reserve }) {
   const { byCode, isLoading } = useAssetLookup(reserve.participant);
   const asset = byCode.get(reserve.asset);
-  if (!asset) return isLoading ? <Skeleton className="ml-auto h-4 w-16" /> : null;
+  if (!asset) {
+    return isLoading ? (
+      <Skeleton className="ml-auto h-4 w-16" />
+    ) : (
+      <span className="block text-right text-muted-foreground">—</span>
+    );
+  }
   return <AmountCell amount={reserve.reserve} asset={asset} />;
 }
 

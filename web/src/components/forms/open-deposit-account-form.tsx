@@ -103,14 +103,14 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             <FieldLabel htmlFor="dda-overdraft" hint="overdraft">
               Overdraft limit
             </FieldLabel>
-            <MoneyInput
-              id="dda-overdraft"
-              value={overdraft}
-              onChange={setOverdraft}
-              asset={resolvedAsset ?? { code: asset.trim() || "?", scale: 2 }}
-              disabled={!resolvedAsset}
-            />
-            {!resolvedAsset && (
+            {resolvedAsset ? (
+              <MoneyInput
+                id="dda-overdraft"
+                value={overdraft}
+                onChange={setOverdraft}
+                asset={resolvedAsset}
+              />
+            ) : (
               <p className="text-xs text-muted-foreground">
                 Amount disabled until &ldquo;{asset.trim() || "…"}&rdquo; resolves to an asset
                 registered in this bank&apos;s book.

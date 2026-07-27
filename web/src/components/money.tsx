@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import {
@@ -93,6 +93,21 @@ export function MoneyInput({
   const [text, setText] = useState(
     value == null ? "" : amountToInput(value, asset),
   );
+
+  // Resync the displayed text whenever the asset changes. `text` is otherwise
+  // decoupled from `value` after mount — deliberately, so an in-progress
+  // keystroke like "30." isn't clobbered by re-formatting on every render —
+  // but that same decoupling let a stale, wrong-scale string linger on
+  // screen once the asset switched underneath it: minor units typed at one
+  // scale, reinterpreted unchanged as a different scale's amount, and a
+  // `value` a parent reset out from under this input (e.g. on an account
+  // switch) never reaching the box at all. Keyed on the asset only, not
+  // `value` — resyncing on every value edit would fight the user mid-keystroke.
+  useEffect(() => {
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
+    setText(value == null ? "" : amountToInput(value, asset));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [asset.code, asset.scale]);
 
   function handleChange(next: string) {
     setText(next);

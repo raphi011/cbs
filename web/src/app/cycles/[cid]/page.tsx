@@ -129,7 +129,7 @@ export default function CycleDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <NetPositionsTable positions={c.netPositions} />
+              <NetPositionsTable positions={c.netPositions} asset={c.asset} />
             </CardContent>
           </Card>
 

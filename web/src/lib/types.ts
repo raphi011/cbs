@@ -203,6 +203,9 @@ export interface Mandate {
   id: string;
   debtor: PartyRef;
   creditor: PartyRef;
+  // Resolved server-side from the debtor's own deposit account (a mandate
+  // names no scheme — see api/dto_payment.go's toMandateDTO).
+  asset: string;
   maxAmount: number;
   status: MandateStatus;
   createdAt: string;
@@ -211,6 +214,8 @@ export interface Mandate {
 export interface ClearingCycle {
   id: string;
   scheme: string;
+  // The scheme's asset, resolved server-side (see toClearingCycleDTO).
+  asset: string;
   status: CycleStatus;
   paymentIds: string[];
   netPositions?: Record<string, number>;
@@ -222,6 +227,9 @@ export interface ClearingCycle {
 export interface Settlement {
   id: string;
   cycleId: string;
+  // Resolved server-side via the settlement's cycle's scheme (see
+  // toSettlementDTO).
+  asset: string;
   netPositions: Record<string, number>;
   settlementTx: string;
   valueDate: string;
@@ -230,6 +238,8 @@ export interface Settlement {
 
 export interface Scheme {
   id: string;
+  // The unit the scheme settles in (see payment.Scheme.Asset()).
+  asset: string;
   direction: SchemeDirection;
   settlementModel: SettlementModel;
   requiresMandate: boolean;

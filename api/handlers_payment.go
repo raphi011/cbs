@@ -1,11 +1,39 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
+
+// mandateAsset resolves a mandate's asset from the debtor's own deposit
+// account. A mandate carries no scheme (see toMandateDTO), so there is no
+// scheme to derive an asset from the way a payment's is; what a mandate does
+// fix at creation is the debtor account being authorized, and that account's
+// own asset (see deposit.Account.Asset) is what MaxAmount is denominated in.
+func (s *Server) mandateAsset(ctx context.Context, m payment.Mandate) (string, error) {
+	p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+	if err != nil {
+		return "", err
+	}
+	acct, err := p.Deposit.GetAccount(ctx, m.Debtor.Account)
+	if err != nil {
+		return "", err
+	}
+	return string(acct.Asset), nil
+}
+
+// settlementAsset resolves a settlement's asset via its cycle's scheme — a
+// settlement carries a CycleID but no scheme of its own (see toSettlementDTO).
+func (s *Server) settlementAsset(ctx context.Context, st payment.Settlement) (string, error) {
+	c, err := s.network().GetCycle(ctx, st.CycleID)
+	if err != nil {
+		return "", err
+	}
+	return schemeAsset(c.Scheme, s.network().ListSchemes()), nil
+}
 
 func (s *Server) registerPaymentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /mandates", s.handleCreateMandate)
@@ -40,7 +68,12 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toMandateDTO(m))
+	asset, err := s.mandateAsset(r.Context(), m)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toMandateDTO(m, asset))
 }
 
 func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
@@ -51,7 +84,12 @@ func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]mandateDTO, len(mandates))
 	for i, m := range mandates {
-		out[i] = toMandateDTO(m)
+		asset, err := s.mandateAsset(r.Context(), m)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out[i] = toMandateDTO(m, asset)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -62,7 +100,12 @@ func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMandateDTO(m))
+	asset, err := s.mandateAsset(r.Context(), m)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
 }
 
 func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +118,12 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toMandateDTO(m))
+	asset, err := s.mandateAsset(r.Context(), m)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
 }
 
 func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +202,7 @@ func (s *Server) handleOpenCycle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toClearingCycleDTO(c))
+	writeJSON(w, http.StatusCreated, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
 func (s *Server) handleListCycles(w http.ResponseWriter, r *http.Request) {
@@ -163,9 +211,10 @@ func (s *Server) handleListCycles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	schemes := s.network().ListSchemes()
 	out := make([]clearingCycleDTO, len(cycles))
 	for i, c := range cycles {
-		out[i] = toClearingCycleDTO(c)
+		out[i] = toClearingCycleDTO(c, schemes)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -176,7 +225,7 @@ func (s *Server) handleGetCycle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toClearingCycleDTO(c))
+	writeJSON(w, http.StatusOK, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
 func (s *Server) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +234,7 @@ func (s *Server) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toClearingCycleDTO(c))
+	writeJSON(w, http.StatusOK, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
 func (s *Server) handleSettleCycle(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +243,12 @@ func (s *Server) handleSettleCycle(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toSettlementDTO(settlement))
+	asset, err := s.settlementAsset(r.Context(), settlement)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toSettlementDTO(settlement, asset))
 }
 
 func (s *Server) handleListSettlements(w http.ResponseWriter, r *http.Request) {
@@ -205,7 +259,12 @@ func (s *Server) handleListSettlements(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]settlementDTO, len(settlements))
 	for i, st := range settlements {
-		out[i] = toSettlementDTO(st)
+		asset, err := s.settlementAsset(r.Context(), st)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out[i] = toSettlementDTO(st, asset)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -216,5 +275,10 @@ func (s *Server) handleGetSettlement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toSettlementDTO(st))
+	asset, err := s.settlementAsset(r.Context(), st)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toSettlementDTO(st, asset))
 }

@@ -22,7 +22,13 @@ import type { Payment } from "@/lib/types";
 function PaymentAmountCell({ payment }: { payment: Payment }) {
   const { byCode, isLoading } = useAssetLookup(payment.debtor.participant);
   const asset = byCode.get(payment.asset);
-  if (!asset) return isLoading ? <Skeleton className="ml-auto h-4 w-16" /> : null;
+  if (!asset) {
+    return isLoading ? (
+      <Skeleton className="ml-auto h-4 w-16" />
+    ) : (
+      <span className="block text-right text-muted-foreground">—</span>
+    );
+  }
   return <Money amount={payment.amount} asset={asset} />;
 }
 

@@ -146,16 +146,26 @@ type mandateDTO struct {
 	ID        string      `json:"id"`
 	Debtor    partyRefDTO `json:"debtor"`
 	Creditor  partyRefDTO `json:"creditor"`
+	Asset     string      `json:"asset"`
 	MaxAmount int64       `json:"maxAmount"`
 	Status    string      `json:"status"`
 	CreatedAt time.Time   `json:"createdAt"`
 }
 
-func toMandateDTO(m payment.Mandate) mandateDTO {
+// toMandateDTO renders a mandate, including the asset its MaxAmount is
+// denominated in. A mandate names no scheme — CreateMandate takes none, and
+// the mandate can later be presented to any pull scheme that accepts it — so
+// unlike paymentDTO there is no scheme to resolve an asset from. What is
+// fixed at creation is the debtor account being authorized to pull from, and
+// its asset is what a pulled amount is denominated in; callers resolve it via
+// (*Server).mandateAsset and pass it in here rather than this function doing
+// its own I/O.
+func toMandateDTO(m payment.Mandate, asset string) mandateDTO {
 	return mandateDTO{
 		ID:        string(m.ID),
 		Debtor:    toPartyRefDTO(m.Debtor),
 		Creditor:  toPartyRefDTO(m.Creditor),
+		Asset:     asset,
 		MaxAmount: int64(m.MaxAmount),
 		Status:    m.Status.String(),
 		CreatedAt: m.CreatedAt,
@@ -165,6 +175,7 @@ func toMandateDTO(m payment.Mandate) mandateDTO {
 type clearingCycleDTO struct {
 	ID           string           `json:"id"`
 	Scheme       string           `json:"scheme"`
+	Asset        string           `json:"asset"`
 	Status       string           `json:"status"`
 	PaymentIDs   []string         `json:"paymentIds"`
 	NetPositions map[string]int64 `json:"netPositions,omitempty"`
@@ -173,7 +184,11 @@ type clearingCycleDTO struct {
 	SettlementID string           `json:"settlementId,omitempty"`
 }
 
-func toClearingCycleDTO(c payment.ClearingCycle) clearingCycleDTO {
+// toClearingCycleDTO renders a cycle, including the asset it clears in. A
+// cycle names a scheme (unlike a mandate), so its asset is resolved the same
+// way toPaymentDTO resolves a payment's: by looking the scheme up in the
+// network's registered set.
+func toClearingCycleDTO(c payment.ClearingCycle, schemes []payment.Scheme) clearingCycleDTO {
 	ids := make([]string, len(c.PaymentIDs))
 	for i, id := range c.PaymentIDs {
 		ids[i] = string(id)
@@ -181,6 +196,7 @@ func toClearingCycleDTO(c payment.ClearingCycle) clearingCycleDTO {
 	return clearingCycleDTO{
 		ID:           string(c.ID),
 		Scheme:       string(c.Scheme),
+		Asset:        schemeAsset(c.Scheme, schemes),
 		Status:       c.Status.String(),
 		PaymentIDs:   ids,
 		NetPositions: positionsToMap(c.NetPositions),
@@ -190,19 +206,38 @@ func toClearingCycleDTO(c payment.ClearingCycle) clearingCycleDTO {
 	}
 }
 
+// schemeAsset resolves a scheme ID's asset by looking it up in the network's
+// registered set — the same resolution toPaymentDTO inlines for a payment's
+// asset, factored out here so toClearingCycleDTO (and, transitively, a
+// settlement via its cycle) can share it.
+func schemeAsset(id payment.SchemeID, schemes []payment.Scheme) string {
+	for _, sc := range schemes {
+		if sc.ID() == id {
+			return string(sc.Asset())
+		}
+	}
+	return ""
+}
+
 type settlementDTO struct {
 	ID           string           `json:"id"`
 	CycleID      string           `json:"cycleId"`
+	Asset        string           `json:"asset"`
 	NetPositions map[string]int64 `json:"netPositions"`
 	SettlementTx string           `json:"settlementTx"`
 	ValueDate    time.Time        `json:"valueDate"`
 	SettledAt    time.Time        `json:"settledAt"`
 }
 
-func toSettlementDTO(s payment.Settlement) settlementDTO {
+// toSettlementDTO renders a settlement, including the asset it settles. A
+// settlement carries no scheme itself, only a CycleID — its asset is one hop
+// further than a cycle's: callers resolve it via (*Server).settlementAsset
+// (settlement -> its cycle -> the cycle's scheme) and pass it in here.
+func toSettlementDTO(s payment.Settlement, asset string) settlementDTO {
 	return settlementDTO{
 		ID:           string(s.ID),
 		CycleID:      string(s.CycleID),
+		Asset:        asset,
 		NetPositions: positionsToMap(s.NetPositions),
 		SettlementTx: string(s.SettlementTx),
 		ValueDate:    s.ValueDate,
@@ -223,6 +258,7 @@ func positionsToMap(in map[payment.ParticipantID]ledger.Amount) map[string]int64
 
 type schemeDTO struct {
 	ID              string `json:"id"`
+	Asset           string `json:"asset"`
 	Direction       string `json:"direction"`
 	SettlementModel string `json:"settlementModel"`
 	RequiresMandate bool   `json:"requiresMandate"`
@@ -233,6 +269,7 @@ type schemeDTO struct {
 func toSchemeDTO(s payment.Scheme) schemeDTO {
 	return schemeDTO{
 		ID:              string(s.ID()),
+		Asset:           string(s.Asset()),
 		Direction:       s.Direction().String(),
 		SettlementModel: s.SettlementModel().String(),
 		RequiresMandate: s.RequiresMandate(),

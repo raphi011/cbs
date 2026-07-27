@@ -310,6 +310,96 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 	}`, http.StatusUnprocessableEntity)
 }
 
+// TestPaymentDTOsCarryAsset pins the fix for the gap flagged in task-7's web
+// review: mandateDTO, clearingCycleDTO, settlementDTO and schemeDTO used to
+// carry no asset at all, which forced the frontend to hardcode "EUR"
+// constants with nothing to notice when that stopped being true (see
+// api/dto_payment.go's toMandateDTO/toClearingCycleDTO/toSettlementDTO/
+// toSchemeDTO). Each now carries its asset, resolved server-side.
+//
+// The mandate case is asserted against a USD debtor, not EUR, specifically to
+// prove the value is genuinely derived from the debtor's own deposit account
+// rather than a value that merely happens to match every other DTO's EUR —
+// a test that only ever saw EUR would look identical to the hardcoded
+// constants it replaces.
+func TestPaymentDTOsCarryAsset(t *testing.T) {
+	h := newTestServer(t)
+
+	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	aliceUSD := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceUSD","asset":"USD"}`, http.StatusCreated)["id"].(string)
+	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	// Mandate: derived from the (non-EUR) debtor account.
+	mandate := doJSON(t, h, "POST", "/mandates", `{
+		"debtor":{"participant":"`+a+`","account":"`+aliceUSD+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"maxAmount":50000
+	}`, http.StatusCreated)
+	assertEqual(t, "created mandate asset", mandate["asset"].(string), "USD")
+	mid := mandate["id"].(string)
+
+	var mandates []mandateDTO
+	getJSON(t, h, "/mandates", &mandates)
+	if len(mandates) != 1 || mandates[0].Asset != "USD" {
+		t.Fatalf("GET /mandates asset = %+v, want one USD mandate", mandates)
+	}
+
+	got := doJSON(t, h, "GET", "/mandates/"+mid, "", http.StatusOK)
+	assertEqual(t, "GET mandate asset", got["asset"].(string), "USD")
+
+	revoked := doJSON(t, h, "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
+	assertEqual(t, "revoked mandate asset", revoked["asset"].(string), "USD")
+
+	// Scheme: every scheme implemented today settles in EUR (see
+	// payment/scheme.go's SCT/SDD) — the field must still be populated, not
+	// merely absent-and-unnoticed.
+	var schemes []schemeDTO
+	getJSON(t, h, "/schemes", &schemes)
+	if len(schemes) == 0 {
+		t.Fatal("no schemes returned")
+	}
+	for _, sc := range schemes {
+		assertEqual(t, "scheme "+sc.ID+" asset", sc.Asset, "EUR")
+	}
+
+	// Cycle and settlement: derived from the scheme.
+	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
+		`{"account":"`+aliceEUR+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	cyc := doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	assertEqual(t, "created cycle asset", cyc["asset"].(string), "EUR")
+	cid := cyc["id"].(string)
+
+	var cycles []clearingCycleDTO
+	getJSON(t, h, "/cycles", &cycles)
+	if len(cycles) != 1 || cycles[0].Asset != "EUR" {
+		t.Fatalf("GET /cycles asset = %+v, want one EUR cycle", cycles)
+	}
+
+	doJSON(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+aliceEUR+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusCreated)
+
+	assertStatus(t, h, "POST", "/cycles/"+cid+"/close", "", http.StatusOK)
+	settlement := doJSON(t, h, "POST", "/cycles/"+cid+"/settle", "", http.StatusOK)
+	assertEqual(t, "settled settlement asset", settlement["asset"].(string), "EUR")
+	sid := settlement["id"].(string)
+
+	var settlements []settlementDTO
+	getJSON(t, h, "/settlements", &settlements)
+	if len(settlements) != 1 || settlements[0].Asset != "EUR" {
+		t.Fatalf("GET /settlements asset = %+v, want one EUR settlement", settlements)
+	}
+
+	gotSettlement := doJSON(t, h, "GET", "/settlements/"+sid, "", http.StatusOK)
+	assertEqual(t, "GET settlement asset", gotSettlement["asset"].(string), "EUR")
+}
+
 // TestErrorMapping locks one error per HTTP status class.
 func TestErrorMapping(t *testing.T) {
 	h := newTestServer(t)

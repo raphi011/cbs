@@ -9,19 +9,29 @@ import { IdText } from "@/components/id-text";
 import { Money } from "@/components/money";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { CreateMandateForm } from "@/components/forms/create-mandate-form";
-import { useMandates, useRevokeMandate } from "@/lib/api/hooks";
+import { useAssetLookup, useMandates, useRevokeMandate } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Mandate } from "@/lib/types";
 
-// mandateDTO carries no asset field — a mandate names debtor/creditor
-// accounts, not a scheme, so there is nothing on the wire to resolve a scale
-// from (unlike Payment, whose asset the API derives from its scheme). Every
-// scheme implemented so far settles in EUR (see payment/scheme.go's SCT/SDD),
-// so this is that fact made explicit and grep-able, not a guessed default —
-// it stops being true, and needs revisiting, the day a non-EUR scheme ships.
-const MANDATE_ASSET = { code: "EUR", scale: 2 };
+// A mandate's asset is resolved server-side from the debtor's own deposit
+// account (mandateDTO now carries it — see api/dto_payment.go's
+// toMandateDTO) — the debtor's participant is where that code's scale lives
+// (assets are book-scoped; see ledger.Book.CreateAsset).
+function MandateAmountCell({ mandate }: { mandate: Mandate }) {
+  const { byCode, isLoading } = useAssetLookup(mandate.debtor.participant);
+  const asset = byCode.get(mandate.asset);
+  if (!asset) {
+    return isLoading ? (
+      <Skeleton className="ml-auto h-4 w-16" />
+    ) : (
+      <span className="block text-right text-muted-foreground">—</span>
+    );
+  }
+  return <Money amount={mandate.maxAmount} asset={asset} />;
+}
 
 function RevokeButton({ mandate }: { mandate: Mandate }) {
   const revoke = useRevokeMandate();
@@ -69,7 +79,7 @@ export default function MandatesPage() {
       key: "maxAmount",
       header: "Max amount",
       align: "right",
-      render: (m) => <Money amount={m.maxAmount} asset={MANDATE_ASSET} />,
+      render: (m) => <MandateAmountCell mandate={m} />,
     },
     { key: "status", header: "Status", render: (m) => <EnumBadge value={m.status} /> },
     {

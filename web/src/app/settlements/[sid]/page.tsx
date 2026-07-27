@@ -73,7 +73,7 @@ export default function SettlementDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <NetPositionsTable positions={s.netPositions} />
+              <NetPositionsTable positions={s.netPositions} asset={s.asset} />
             </CardContent>
           </Card>
         </>
