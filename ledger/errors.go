@@ -35,7 +35,7 @@ var (
 	// It is not returned on its own. The empty case has its own sentinel
 	// (ErrEmptyTransaction, guarded earlier in PostTransactionTx), and every
 	// other imbalance is an imbalance within some asset.
-	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits")
+	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: debits must equal credits within each asset")
 
 	// ErrEmptyTransaction is returned when a transaction is submitted
 	// with no entries. A valid transaction requires at least two entries
@@ -89,9 +89,12 @@ var (
 	// asset within a transaction do not net to zero.
 	//
 	// This is the double-entry invariant restated for a multi-asset ledger.
-	// A global check is not enough: a transaction debiting 100 EUR and
-	// crediting 100 BTC balances by the old rule and still creates value out
-	// of nothing. Balance has to hold per asset or it means nothing.
+	// A global check is not enough: amounts are integers in their asset's
+	// minor units, so a global sum is satisfied whenever the integers match.
+	// 10_000_000_000 debited from a EUR account (€100M) against
+	// 10_000_000_000 credited to a BTC one (100 BTC) balances by the old rule
+	// and creates most of a hundred million euro out of nothing. Balance has
+	// to hold per asset or it means nothing.
 	//
 	// It is returned wrapped with the offending asset code, so errors.Is
 	// works and the message names the asset.

@@ -42,8 +42,11 @@ import (
 // # Double-Entry Bookkeeping
 //
 // Every transaction posted through this book enforces the fundamental
-// accounting equation: total debits must equal total credits. This guarantee is
-// checked before any entries are applied to account balances.
+// accounting equation: debits must equal credits *within each asset*. A book
+// may hold accounts in several assets, and a total taken across all of them
+// would be satisfied by legs that merely share an integer — so the sum is
+// taken per asset. This guarantee is checked before any entries are applied to
+// account balances.
 //
 // # ID Generation
 //
@@ -480,8 +483,11 @@ type PostTransactionRequest struct {
 //  3. All referenced accounts must exist.
 //  4. If an idempotency key is provided, it must not already be used.
 //  5. Debits must equal credits *within each asset*. A global total is not
-//     enough: 100 EUR debited against 100 BTC credited nets to zero overall
-//     while creating value out of nothing. See validateBalance.
+//     enough: an Amount is an integer in its asset's minor units, so a global
+//     sum is satisfied whenever the integers match. 10_000_000_000 debited
+//     from a EUR account (€100M) against 10_000_000_000 credited to a BTC one
+//     (100 BTC) nets to zero overall while inventing most of a hundred
+//     million euro. See validateBalance.
 //  6. Asset and Expense accounts must have sufficient book balance.
 //
 // If all validations pass, the entries are atomically applied to the
@@ -642,11 +648,16 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 // asset. This is the core invariant of double-entry bookkeeping, restated for
 // a ledger that holds more than one asset.
 //
-// Checking globally would not do. A transaction that debits 100 EUR and
-// credits 100 BTC nets to zero by the old rule while turning euros into
-// bitcoin at an implied rate of 1 — value created from nothing. Per asset,
-// there is no rate to get wrong, which is why the ledger never has to know
-// what anything is worth.
+// Checking globally would not do. An entry carries an Amount in its asset's
+// minor units and nothing else, so a global sum is satisfied whenever the
+// integers match, whatever they are worth: 10_000_000_000 debited from a EUR
+// account (€100M) against 10_000_000_000 credited to a BTC one (100 BTC) nets
+// to zero by the old rule and invents most of a hundred million euro. What
+// breaks it is not that the legs differ in value — the check has no rate with
+// which to notice that — but that equal integers in assets whose scales differ
+// by a factor of a million are not equal amounts. Per asset, there is no rate
+// to get wrong, which is why the ledger never has to know what anything is
+// worth.
 //
 // An FX trade therefore cannot be one naive two-asset posting. Each asset
 // balances through its own position account, and the bank's open exposure is

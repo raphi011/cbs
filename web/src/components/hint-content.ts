@@ -586,14 +586,18 @@ The reserve account is the ultimate destination of all [[net-positions|net settl
   },
   "central-bank-reserves": {
     title: "Central-bank reserves",
-    body: `The **central bank** holds one **reserve liability** per participant — what it owes each member bank. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
+    body: `The **central bank** holds one **reserve liability** per participant **per [[asset]]** — what it owes each member bank, in each kind of money it issues. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
 
 \`\`\`
 Central-bank ledger:
-  Reserve: Bank A (Liability)  ← CB owes Bank A its reserves
-  Reserve: Bank B (Liability)  ← CB owes Bank B its reserves
-  Settlement Assets (Asset)    ← balancing asset when funded
+  Reserve: Bank A (EUR)  (Liability)  ← CB owes Bank A its euro reserves
+  Reserve: Bank A (USD)  (Liability)  ← ...and its dollar reserves
+  Reserve: Bank B (EUR)  (Liability)  ← CB owes Bank B its euro reserves
+  Settlement Assets (EUR) (Asset)     ← balancing asset when funded
+  Settlement Assets (USD) (Asset)     ← one per asset, too
 \`\`\`
+
+Even the balancing account splits per asset: the euro reserves a central bank has issued are not backed by the dollars it has issued. See [[participant-assets]] for the matching split on each commercial bank's own books.
 
 At settlement, the central bank transfers reserves between these liability accounts:
 
@@ -819,16 +823,18 @@ At 18 decimals — ether's native precision — an \`int64\` holds 9.2 ETH. Not 
     title: "Transactions balance per asset",
     body: `[[double-entry|Debits must equal credits]] — but once a book holds more than one [[asset]], that has to hold **within each asset**, not across the whole transaction.
 
-A global check is not a weaker rule, it is a broken one. Debit 100 EUR, credit 100 BTC:
+A global check is not a weaker rule, it is a broken one — and why becomes clear once you are precise about what it compares. An amount is an integer in its asset's [[asset-scale|minor units]] and carries nothing else, so a global sum is satisfied whenever the **integers** match, whatever they are worth. Ten billion is ten billion:
 
 \`\`\`
-Debit  Cash EUR (Asset)          100 EUR
-Credit Customer BTC (Liability)  100 BTC
-                                 ───────
-Total debits − credits:          0  ✓ by the old rule
+Debit  Cash EUR (Asset)         10_000_000_000   // €100,000,000.00
+Credit Customer BTC (Liability) 10_000_000_000   // ₿100.00000000
+                                ──────────────
+Total debits − credits:                      0   ✓ by the old rule
 \`\`\`
 
-It passes, and the bank has just swapped euro for bitcoin at an implied rate of **1** — millions conjured out of nothing by an engine that had no idea it was pricing anything. Worse: amounts are minor units, so what actually got compared was \`10000\` cents against \`10000\` satoshi — a rate that is an artefact of two unrelated scale conventions.
+It passes. The bank has booked €100,000,000 of cash against an obligation of 100 BTC — worth roughly €6.5 million — so about **€93 million appears out of nothing**, booked by an engine that had no idea it was pricing anything, because it was not: it was comparing two integers.
+
+What did the damage is *not* that the legs were unequal in value; the check never looks at value, and has no rate with which to. It is that the integers were equal while the assets were not — EUR and BTC differ in scale by a factor of a million.
 
 So the check sums debits and credits *within* each asset and requires each to net to zero. A failure returns \`ErrUnbalancedAsset\` wrapped with \`ErrUnbalancedTransaction\`, naming the asset; both match under \`errors.Is\`, so a caller can ask either "did it balance?" or "which asset broke?".
 

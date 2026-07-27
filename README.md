@@ -140,18 +140,20 @@ The rule as Pacioli stated it assumes something he never had to say out loud: th
 
 > Every transaction must have equal debits and credits **within each asset**.
 
-The global version is not a weaker check — it is a *broken* one, and this is the clearest way to see why. Take a transaction with two legs: debit 100 EUR, credit 100 BTC.
+The global version is not a weaker check — it is a *broken* one, and seeing exactly why means being precise about what it compares. An `Amount` is an integer in its asset's [minor units](#amounts-and-precision) and carries nothing else; a global check sums those integers with no idea which asset each belongs to. So it is satisfied by any two legs whose **integers** match, whatever those integers are worth.
+
+Ten billion is ten billion:
 
 ```
-Debit  Cash EUR (Asset)            100 EUR
-Credit Customer BTC (Liability)    100 BTC
-                                   ───────
-Total debits − total credits:      0  ✓ by the old rule
+Debit  Cash EUR (Asset)         10_000_000_000    // €100,000,000.00
+Credit Customer BTC (Liability) 10_000_000_000    // ₿100.00000000
+                                ──────────────
+Total debits − total credits:                0    ✓ by the old rule
 ```
 
-It passes. The numbers are equal, the ledger is satisfied, and the bank has just exchanged one hundred euro for one hundred bitcoin at an implied rate of 1 — several million euro conjured out of nothing by an accounting engine that had no idea it was pricing anything.
+It passes. The bank has booked one hundred million euro of cash against an obligation of one hundred bitcoin — worth roughly €6.5 million at the rate the [FX example below](#foreign-exchange-and-why-the-ledger-needs-no-rates) implies. Some **€93 million has appeared out of nothing**, and the engine that waved it through had no idea it was pricing anything, because it was not pricing anything: it was comparing two integers.
 
-Sharpen it once more and it gets worse. Amounts are integers in each asset's [minor units](#amounts-and-precision), so what a global check actually compares is `10000` cents against `10000` satoshi. The implied rate is not merely wrong; it is an artefact of two unrelated scale conventions, and it changes if either asset's scale changes.
+Notice what actually did the damage. It is *not* that the two legs were unequal in value — the check never looks at value, and could not, since it has no rate. It is that the integers were equal while the assets were not, and EUR and BTC differ in scale by a factor of a million (2 places against 8). Change either asset's scale and the very same posting becomes a different fiction. The rate this transaction implies is not merely wrong; it is an artefact of two unrelated unit conventions that no one chose and nothing records.
 
 Per asset, there is no rate to get wrong. The check sums debits and credits *within* each asset and requires each sum to net to zero:
 
@@ -660,9 +662,11 @@ Each participant's chart of accounts holds:
 | Clearing Suspense | Liability | In-transit funds that have left a customer but not yet settled between banks. Returns to zero once a cycle settles. |
 | Reserve at Central Bank | Asset | The bank's claim on the central bank. Moves only at settlement and **mirrors** the bank's reserve account in the central-bank ledger (the classic nostro/vostro reconciliation). |
 
-The central-bank ledger holds one **Reserve: \<Bank\>** liability account per participant (the central bank owes each member its reserves) plus a balancing **Settlement Assets** account used when reserves are funded.
+The central-bank ledger holds one **Reserve: \<Bank\> (\<asset\>)** liability account per participant *per asset* (the central bank owes each member its reserves in each kind of money it issues), plus a balancing **Settlement Assets** account, also one per asset, used when reserves are funded.
 
-Every one of those internal accounts exists **once per [asset](#assets-what-an-account-is-denominated-in) the participant operates in.** A bank clearing both a euro scheme and a dollar one holds two clearing-suspense accounts and two reserve accounts — not two currencies inside one — because a GL account is bound to a single asset, and because netting a euro position against a dollar one is not a smaller number, it is a meaningless one. `Participant.AccountsFor(asset)` resolves the set, and a bank that does not operate in an asset gets `ErrParticipantAssetNotFound`.
+**The asset dimension runs through both sides.** Every internal account above exists **once per [asset](#assets-what-an-account-is-denominated-in) the participant operates in** — on the commercial bank's books *and* on the central bank's. A bank clearing both a euro scheme and a dollar one holds two clearing-suspense accounts and two reserve accounts, and the central bank holds two matching reserve liabilities for it, because a GL account is bound to a single asset and because netting a euro position against a dollar one is not a smaller number, it is a meaningless one. The euro reserves a central bank has issued are not backed by the dollars it has issued, so even the balancing Settlement Assets account splits per asset.
+
+The account names carry the asset in parentheses — `Reserve at Central Bank (EUR)`, `Reserve: Aurora Bank (USD)` — which is what keeps a chart of accounts holding several of each readable. `Participant.AccountsFor(asset)` resolves one bank's set for one asset; a bank that does not operate in an asset gets `ErrParticipantAssetNotFound`. `ParticipantAccounts.Settlement` is the central-bank leg of that set, and it is per asset like the rest.
 
 Settlement resolves that set from the **cycle's** asset, which comes from the cycle's scheme, once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything is posted — exactly the treatment an underfunded member gets. There is deliberately no fallback: defaulting to euro would settle a dollar cycle in the wrong money, and doing so quietly, in the one place in the system where money becomes final.
 

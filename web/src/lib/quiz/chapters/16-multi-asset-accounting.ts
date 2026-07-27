@@ -86,16 +86,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "per-asset-balance",
       prompt:
-        "A transaction debits 100 EUR from a cash account and credits 100 BTC to a customer account. Under a *global* debits-equals-credits check, what happens?",
+        "An amount is an integer in its asset's minor units. A transaction debits 10,000,000,000 from a EUR cash account (€100,000,000) and credits 10,000,000,000 to a customer's BTC account (100 BTC). Under a *global* debits-equals-credits check, what happens?",
       options: [
-        "It is rejected, because the two legs are in different assets",
-        "It is rejected, because 100 EUR and 100 BTC are not worth the same",
-        "It posts, and the bank has swapped euro for bitcoin at an implied rate of 1",
+        "It is rejected, because the two legs are denominated in different assets",
+        "It is rejected, because €100,000,000 and 100 BTC are not worth the same",
+        "It posts: the integers are equal, so the check is satisfied, and roughly €93 million appears from nothing",
         "It posts, but is flagged for manual review because it crosses assets",
       ],
       answer: 2,
       explanation:
-        "It **posts**. The numbers are equal, so a global check is satisfied, and millions have been conjured out of nothing by an engine that had no idea it was pricing anything. Nothing in it knows the two legs are different kinds of money — which is precisely why the rule has to be [[per-asset-balance|stated per asset]]. Sharpen it further and it is worse: amounts are [[amount-cents|minor units]], so what actually got compared was 10000 cents against 10000 satoshi, an implied rate that is an artefact of two unrelated scale conventions.",
+        "It **posts**. A global check sums amounts and has no idea which asset each belongs to, so it is satisfied whenever the *integers* match — and here they do. The bank has booked €100,000,000 of cash against an obligation of 100 BTC, worth roughly €6.5 million, so about **€93 million appears out of nothing**. Note what did the damage: not that the legs differ in value — the check never looks at value and has no rate with which to — but that equal integers in assets whose [[asset-scale|scales]] differ by a factor of a million are not equal amounts. Which is precisely why the rule has to be [[per-asset-balance|stated per asset]].",
     },
     {
       kind: "numeric",
