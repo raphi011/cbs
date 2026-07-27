@@ -35,10 +35,20 @@ export default function Home() {
   const { data: payments } = usePayments();
   const { data: settlements } = useSettlements();
 
-  const reserveFor = (pid: string) =>
-    reserves?.find((r) => r.participant === pid)?.reserve ?? 0;
+  // A bank holds one reserve account per asset, so both of these are per
+  // asset. Reserves in different assets are different things: picking whichever
+  // row came first, or adding them up, would state a number that is not true of
+  // anything.
+  const reservesFor = (pid: string) =>
+    (reserves ?? []).filter((r) => r.participant === pid);
 
-  const totalReserves = (reserves ?? []).reduce((sum, r) => sum + r.reserve, 0);
+  const totalsByAsset = (reserves ?? []).reduce<Record<string, number>>(
+    (totals, r) => ({ ...totals, [r.asset]: (totals[r.asset] ?? 0) + r.reserve }),
+    {},
+  );
+  const assetTotals = Object.entries(totalsByAsset).sort(([a], [b]) =>
+    a.localeCompare(b),
+  );
   const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
   const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
   const settlementCount = (settlements ?? []).length;
@@ -58,7 +68,18 @@ export default function Home() {
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
         <Stat label="Member banks">{participants?.length ?? 0}</Stat>
         <Stat label="Total reserves" hint="central-bank-reserves">
-          <Money cents={totalReserves} />
+          {assetTotals.length === 0 ? (
+            <Money cents={0} />
+          ) : (
+            assetTotals.map(([asset, total]) => (
+              <span key={asset} className="block">
+                <Money cents={total} />{" "}
+                <span className="text-sm font-normal text-muted-foreground">
+                  {asset}
+                </span>
+              </span>
+            ))
+          )}
         </Stat>
         <Stat label="Open cycles" hint="netting">
           {openCycles}
@@ -107,9 +128,20 @@ export default function Home() {
                       Reserves
                       <Hint id="central-bank-reserves" />
                     </p>
-                    <p className="text-lg font-semibold">
-                      <Money cents={reserveFor(p.id)} />
-                    </p>
+                    {reservesFor(p.id).length === 0 ? (
+                      <p className="text-lg font-semibold">
+                        <Money cents={0} />
+                      </p>
+                    ) : (
+                      reservesFor(p.id).map((r) => (
+                        <p key={r.asset} className="text-lg font-semibold">
+                          <Money cents={r.reserve} />{" "}
+                          <span className="text-xs font-normal text-muted-foreground">
+                            {r.asset}
+                          </span>
+                        </p>
+                      ))
+                    )}
                   </CardContent>
                 </Card>
               </Link>

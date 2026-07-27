@@ -16,6 +16,11 @@ const reserveColumns: Column<Reserve>[] = [
     render: (r) => <IdText id={r.participant} />,
   },
   {
+    key: "asset",
+    header: "Asset",
+    render: (r) => r.asset,
+  },
+  {
     key: "reserve",
     header: "Reserve",
     align: "right",
@@ -34,7 +39,7 @@ export default function CentralBankPage() {
       <PageHeader
         title="Central bank"
         hint="central-bank-reserves"
-        description="Banks meet only here. The central bank holds one reserve account per participant, and settlement is reserves moving between them."
+        description="Banks meet only here. The central bank holds one reserve account per participant and asset, and settlement is reserves moving between them."
       />
 
       <section className="space-y-3">
@@ -45,7 +50,7 @@ export default function CentralBankPage() {
           <DataTable
             columns={reserveColumns}
             rows={reserves.data}
-            rowKey={(r) => r.participant}
+            rowKey={(r) => `${r.participant}:${r.asset}`}
             isLoading={reserves.isLoading}
             empty="No participants yet. Create one to see its reserve account."
           />
