@@ -109,11 +109,36 @@ Two things the implementation sharpened, both worth carrying forward:
   the reasoning in the database with `COMMENT ON COLUMN`, because the absence of
   a constraint is invisible in a schema dump.
 
-### 2. Lending — `todo`
+### 2. Lending — `spec`
+
+Spec: [`superpowers/specs/2026-07-27-lending-design.md`](superpowers/specs/2026-07-27-lending-design.md)
 
 Loan accounts on the Asset side, disbursement, amortization schedules, interest
 accrual, repayment allocation (interest before principal), delinquency and
 non-performing states.
+
+Three products ship together — term loan, revolving credit line, and the
+existing arranged overdraft given a rate — because the third is what stops the
+abstraction from being loan-shaped by accident. Deferred to their own future
+work: non-accrual/NPL accounting, ECL provisioning and IFRS 9 staging,
+write-off, fees, early-repayment penalties, restructuring.
+
+The design's load-bearing decision is that **an overdrawn current account gets no
+loan account.** The drawn amount is the negative balance of the customer's
+Liability account viewed by sign; it has no independent existence, so storing it
+would create exactly the drift the unified-ledger design eliminates. The
+Asset-side classification is a derived aggregate,
+`Σ max(0, −balance)` over the Customer Deposits subledger — the same query shape
+"total customer deposits" already is. In a real bank that split falls out of
+subledger-to-GL summarization, which this repo has no equivalent of, and
+deliberately so (`docs/deposit-accounts-vs-subledger.md`, section 7).
+
+That decision drives the packaging: a pure `interest` package (day counts,
+accrual, the sub-minor-unit accrued type), overdraft terms staying in `deposit`
+where the limit already lives — which is also where real core banking puts them,
+in the CASA module rather than Loans — and a new `lending` package for the two
+products whose drawn amount is real. A single `lending` owning all three would
+have produced `deposit → lending → deposit`.
 
 Almost pure addition on top of the existing GL, and the mirror image of the
 deposit layer: where `deposit` wraps a Liability account, lending wraps an Asset
@@ -194,4 +219,5 @@ Three things the implementation adds to the FX spec's inbox:
 | 2026-07-27 | Roadmap created. Ordering agreed: multi-asset → lending → crypto → FX. Framing agreed: teaching reference, production-grade backend. |
 | 2026-07-27 | Sub-project 1 design agreed and spec written. |
 | 2026-07-27 | Sub-project 1 **done**. Assets, per-asset balancing, scheme assets, per-asset participant accounts, migrations `0002`–`0006`, API and web carried through, and the docs updated across all four layers (README, hints, quiz chapter 16, schema comments). Every decision in the spec shipped as designed. Learned: the payment-layer asset check is justified more strongly than the spec argued (a payment is two postings in two books, each valid on its own); the asset check being a domain rule is what forbids a constraint on `accounts.asset`; and the scale cap of 9 is a hard scoping constraint on sub-project 3, while the "can a position account go negative?" question is a hard one on sub-project 4. FX position accounts still look like the right shape. |
+| 2026-07-27 | Sub-project 2 design agreed and spec written. Scope widened to three products (term loan, revolving line, arranged overdraft); impairment deferred. Settled: an overdrawn account gets no loan account, because its drawn amount is the negative balance viewed by sign and has no independent existence — the Asset-side figure is a derived aggregate, as "total customer deposits" already is. Rejected a reclassification journal and an EOD sweep (the latter models a linked-loan product, not an arranged overdraft) and rejected restructuring deposits into control accounts as a regression. Packaging follows: pure `interest`, overdraft terms in `deposit` (CASA, not Loans — and a single `lending` owning the limit would cycle through `deposit`), `lending` for the two real-drawdown products. Interest is held at sub-minor-unit precision and posted daily as the delta of the rounded value; repayment allocates against actual accrued interest, not the schedule, which is why 30/360 exists. |
 | 2026-07-27 | Sub-project 1 **reworked**, in two parts. (1) The book-scoped `assets` table is gone; the definitions are a package-level list in `ledger`, the way schemes are Go types. The table was writable but unhonourable — a bank's plumbing accounts are provisioned when it joins, so an asset registered later gave a customer account that could never settle, surfacing as a 404 on funding. `GET /assets` replaces the per-participant registry endpoints; migrations `0002`–`0006` were folded into `0001` (no deployed databases; `migrate.go`'s own doc comment sanctions it). (2) The whole-branch review's findings: the euro-to-bitcoin counter-example was **wrong in five places** — the ledger does catch it, at settlement, and what it cannot catch is the payment at *initiation*; that correction is now pinned by a test rather than by argument. Also: N+1 round trips in two listing endpoints, an asset on both balance responses, mismatched-asset mandates refused, `ErrParticipantAssetNotFound` → 422, and the web form that silently reinterpreted an overdraft limit at a new scale. Learned: this is the **second** counter-example on this branch that argued the opposite of what it claimed. Prose that asserts what code does needs a test, not a careful reading. |
