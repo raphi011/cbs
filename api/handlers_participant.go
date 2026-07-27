@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -64,7 +65,7 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), req.Amount, req.Description); err != nil {
+	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), ledger.Amount(req.Amount), req.Description); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -98,7 +99,7 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		out = append(out, reserveDTO{Participant: string(p.ID), Reserve: bal})
+		out = append(out, reserveDTO{Participant: string(p.ID), Reserve: int64(bal)})
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -110,5 +111,5 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, reserveDTO{Participant: string(pid), Reserve: bal})
+	writeJSON(w, http.StatusOK, reserveDTO{Participant: string(pid), Reserve: int64(bal)})
 }

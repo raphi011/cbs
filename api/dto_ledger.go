@@ -75,7 +75,7 @@ func toTransactionDTO(tx ledger.Transaction) transactionDTO {
 		entries[i] = entryDTO{
 			ID:        string(e.ID),
 			AccountID: string(e.AccountID),
-			Amount:    e.Amount,
+			Amount:    int64(e.Amount),
 			Direction: e.Direction.String(),
 		}
 	}
@@ -119,7 +119,7 @@ func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, err
 		}
 		entries[i] = ledger.Entry{
 			AccountID: ledger.AccountID(e.AccountID),
-			Amount:    e.Amount,
+			Amount:    ledger.Amount(e.Amount),
 			Direction: dir,
 		}
 	}

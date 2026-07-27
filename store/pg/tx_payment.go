@@ -529,7 +529,7 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 			out = append(out, s)
 		}
 		if participantID != nil {
-			out[pos].NetPositions[payment.ParticipantID(*participantID)] = *amount
+			out[pos].NetPositions[payment.ParticipantID(*participantID)] = ledger.Amount(*amount)
 		}
 	}
 	return out, rows.Err()
@@ -548,7 +548,7 @@ func marshalPositions(m map[payment.ParticipantID]ledger.Amount) (any, error) {
 	}
 	flat := make(map[string]int64, len(m))
 	for k, v := range m {
-		flat[string(k)] = v
+		flat[string(k)] = int64(v)
 	}
 	raw, err := json.Marshal(flat)
 	if err != nil {
@@ -567,7 +567,7 @@ func unmarshalPositions(raw []byte) (map[payment.ParticipantID]ledger.Amount, er
 	}
 	out := make(map[payment.ParticipantID]ledger.Amount, len(flat))
 	for k, v := range flat {
-		out[payment.ParticipantID(k)] = v
+		out[payment.ParticipantID(k)] = ledger.Amount(v)
 	}
 	return out, nil
 }

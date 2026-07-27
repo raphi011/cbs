@@ -13,10 +13,20 @@ type (
 	EntryID       string
 )
 
-// Amount represents a monetary value in the smallest unit of the currency
-// (e.g., cents for USD, pence for GBP). This is the standard approach
+// Amount represents a monetary value in the smallest unit of the asset
+// (e.g., cents for USD, satoshis for BTC). This is the standard approach
 // used by most payment systems and banks.
-type Amount = int64
+//
+// It is a defined type rather than an alias, so a bare int64 cannot be
+// passed where an Amount is expected. That matters more than it looks:
+// if a 128-bit amount ever becomes necessary, the compiler points at
+// every site that has to change instead of silently accepting the old
+// type.
+//
+// The width is a real constraint, not an incidental one. int64 tops out
+// near 9.22e18, so an asset with 18 decimal places (wei) would hold only
+// 9.2 units. Asset.Scale is capped at 9 for exactly this reason.
+type Amount int64
 
 // AccountType classifies accounts in the chart of accounts.
 type AccountType int

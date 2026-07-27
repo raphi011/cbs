@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -34,7 +35,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	m, err := s.network().CreateMandate(r.Context(), req.Debtor.toDomain(), req.Creditor.toDomain(), req.MaxAmount)
+	m, err := s.network().CreateMandate(r.Context(), req.Debtor.toDomain(), req.Creditor.toDomain(), ledger.Amount(req.MaxAmount))
 	if err != nil {
 		writeError(w, err)
 		return

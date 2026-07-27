@@ -75,7 +75,7 @@ func toPaymentDTO(p payment.Payment) paymentDTO {
 		Scheme:        string(p.Scheme),
 		Debtor:        toPartyRefDTO(p.Debtor),
 		Creditor:      toPartyRefDTO(p.Creditor),
-		Amount:        p.Amount,
+		Amount:        int64(p.Amount),
 		MandateID:     string(p.MandateID),
 		EndToEndID:    p.EndToEndID,
 		Status:        p.Status.String(),
@@ -105,7 +105,7 @@ func toMandateDTO(m payment.Mandate) mandateDTO {
 		ID:        string(m.ID),
 		Debtor:    toPartyRefDTO(m.Debtor),
 		Creditor:  toPartyRefDTO(m.Creditor),
-		MaxAmount: m.MaxAmount,
+		MaxAmount: int64(m.MaxAmount),
 		Status:    m.Status.String(),
 		CreatedAt: m.CreatedAt,
 	}
@@ -165,7 +165,7 @@ func positionsToMap(in map[payment.ParticipantID]ledger.Amount) map[string]int64
 	}
 	out := make(map[string]int64, len(in))
 	for k, v := range in {
-		out[string(k)] = v
+		out[string(k)] = int64(v)
 	}
 	return out
 }
@@ -217,7 +217,7 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		Scheme:      payment.SchemeID(req.Scheme),
 		Debtor:      req.Debtor.toDomain(),
 		Creditor:    req.Creditor.toDomain(),
-		Amount:      req.Amount,
+		Amount:      ledger.Amount(req.Amount),
 		MandateID:   payment.MandateID(req.MandateID),
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,

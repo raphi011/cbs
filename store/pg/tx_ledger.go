@@ -575,7 +575,7 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 			out[at].Entries = append(out[at].Entries, ledger.Entry{
 				ID:        ledger.EntryID(*entryID),
 				AccountID: ledger.AccountID(*accountID),
-				Amount:    *amount,
+				Amount:    ledger.Amount(*amount),
 				Direction: ledger.Direction(*direction),
 			})
 		}

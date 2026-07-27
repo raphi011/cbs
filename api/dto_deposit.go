@@ -24,7 +24,7 @@ func toDepositAccountDTO(a deposit.Account) depositAccountDTO {
 		GLAccount:      string(a.GLAccount),
 		Name:           a.Name,
 		Status:         a.Status.String(),
-		OverdraftLimit: a.OverdraftLimit,
+		OverdraftLimit: int64(a.OverdraftLimit),
 		CreatedAt:      a.CreatedAt,
 	}
 }
@@ -43,7 +43,7 @@ func toHoldDTO(h deposit.Hold) holdDTO {
 	return holdDTO{
 		ID:          string(h.ID),
 		AccountID:   string(h.AccountID),
-		Amount:      h.Amount,
+		Amount:      int64(h.Amount),
 		ExpiresAt:   h.ExpiresAt,
 		Description: h.Description,
 		Status:      h.Status.String(),
@@ -58,7 +58,7 @@ type balanceDTO struct {
 }
 
 func toBalanceDTO(b deposit.Balance) balanceDTO {
-	return balanceDTO{Book: b.Book, Holds: b.Holds, Available: b.Available}
+	return balanceDTO{Book: int64(b.Book), Holds: int64(b.Holds), Available: int64(b.Available)}
 }
 
 type snapshotDTO struct {

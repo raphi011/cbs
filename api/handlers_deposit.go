@@ -36,7 +36,7 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, err.Error())
 		return
 	}
-	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, req.OverdraftLimit)
+	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, ledger.Amount(req.OverdraftLimit))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -151,7 +151,7 @@ func (s *Server) handleCreateHold(w http.ResponseWriter, r *http.Request) {
 	}
 	holdReq := deposit.CreateHoldRequest{
 		AccountID:   deposit.AccountID(r.PathValue("did")),
-		Amount:      req.Amount,
+		Amount:      ledger.Amount(req.Amount),
 		Description: req.Description,
 	}
 	if req.ExpiresAt != nil {
@@ -221,7 +221,7 @@ func (s *Server) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
 		r.Context(),
 		deposit.HoldID(r.PathValue("hid")),
 		ledger.AccountID(req.Counterparty),
-		req.Amount,
+		ledger.Amount(req.Amount),
 		req.Description,
 	)
 	if err != nil {

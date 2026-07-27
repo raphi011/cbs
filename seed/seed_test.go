@@ -133,7 +133,7 @@ func TestReservesConserved(t *testing.T) {
 		if bal < 0 {
 			t.Errorf("participant %s reserve negative: %d", p.ID, bal)
 		}
-		sum += bal
+		sum += int64(bal)
 	}
 	// Total reserves equal total funded; settlements and returns only move
 	// reserves between participants.
