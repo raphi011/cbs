@@ -232,12 +232,12 @@ func (s *Server) handleCaptureHold(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, dto)
+	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
 }
 
 func (s *Server) handleTakeSnapshot(w http.ResponseWriter, r *http.Request) {

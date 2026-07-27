@@ -213,12 +213,12 @@ func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, dto)
+	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
 }
 
 func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) {
@@ -237,14 +237,14 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 		writeError(w, err)
 		return
 	}
+	assets, err := entryAssets(r.Context(), p.Ledger, txs)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]transactionDTO, len(txs))
 	for i, tx := range txs {
-		dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		out[i] = dto
+		out[i] = toTransactionDTO(tx, assets)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -259,12 +259,12 @@ func (s *Server) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, dto)
+	writeJSON(w, http.StatusOK, toTransactionDTO(tx, assets))
 }
 
 func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request) {
@@ -282,10 +282,10 @@ func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, dto)
+	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
 }

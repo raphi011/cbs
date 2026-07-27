@@ -8,6 +8,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,6 +212,71 @@ func TestGetAccount_NotFound(t *testing.T) {
 
 	_, err := book.GetAccount(ctx, "nonexistent")
 	assertError(t, err, ErrAccountNotFound)
+}
+
+// countingStore wraps a Store to count View calls, so a test can assert how
+// many read units of work an operation opens without instrumenting store/mem
+// or store/pg themselves. Everything but View is the embedded store's own
+// method, promoted unchanged.
+type countingStore struct {
+	testenv.Store
+	views atomic.Int64
+}
+
+func (c *countingStore) View(ctx context.Context, fn func(context.Context, Tx) error) error {
+	c.views.Add(1)
+	return c.Store.View(ctx, fn)
+}
+
+// TestGetAccounts pins GetAccounts' reason for existing: resolving several
+// accounts costs exactly one View, regardless of how many distinct IDs (or
+// repeats of the same ID) are asked for. GetAccount, called once per ID
+// instead, would cost one View per ID — on store/pg a full BEGIN…COMMIT
+// round trip each, which is what made rendering a transaction listing's
+// entries cost roughly one Postgres round trip per entry.
+func TestGetAccounts(t *testing.T) {
+	ctx := context.Background()
+	cs := &countingStore{Store: testenv.New(t, testClock)}
+	book := NewBook(cs, "bank", testClock)
+	assertNoError(t, cs.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return tx.PutAsset(ctx, book.ID(), AssetDef{Code: testAsset, Name: "Euro", Scale: 2, Class: Fiat})
+	}))
+
+	l, err := book.CreateLedger(ctx, "GL")
+	assertNoError(t, err)
+	sl, err := book.CreateSubledger(ctx, l.ID, "Deposits")
+	assertNoError(t, err)
+	alice, err := book.CreateAccount(ctx, sl.ID, "Alice", Liability, testAsset)
+	assertNoError(t, err)
+	bob, err := book.CreateAccount(ctx, sl.ID, "Bob", Liability, testAsset)
+	assertNoError(t, err)
+
+	cs.views.Store(0) // Everything above is fixture, not the call under test.
+
+	// alice.ID appears twice: a repeated ID must not cost a second read.
+	got, err := book.GetAccounts(ctx, []AccountID{alice.ID, bob.ID, alice.ID})
+	assertNoError(t, err)
+	assertEqual(t, "views opened", cs.views.Load(), int64(1))
+	assertEqual(t, "accounts resolved", len(got), 2)
+	assertEqual(t, "alice's name", got[alice.ID].Name, "Alice")
+	assertEqual(t, "bob's name", got[bob.ID].Name, "Bob")
+}
+
+func TestGetAccounts_NotFound(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	_, err := book.GetAccounts(ctx, []AccountID{"nonexistent"})
+	assertError(t, err, ErrAccountNotFound)
+}
+
+func TestGetAccounts_Empty(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	got, err := book.GetAccounts(ctx, nil)
+	assertNoError(t, err)
+	assertEqual(t, "accounts resolved", len(got), 0)
 }
 
 // ---------------------------------------------------------------------------

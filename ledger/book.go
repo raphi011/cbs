@@ -318,6 +318,43 @@ func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	return out, err
 }
 
+// GetAccounts retrieves several accounts in one unit of work.
+//
+// It exists for callers that need to resolve accounts referenced across a
+// whole batch of results — rendering the entries of a transaction listing,
+// for instance — rather than one at a time. GetAccount's single store.View
+// per call is a full BEGIN…COMMIT round trip on store/pg; calling it once per
+// entry across a listing of N transactions costs on the order of N such round
+// trips, serialized, for what is fundamentally N cheap reads. GetAccounts
+// opens exactly one store.View and issues one tx.GetAccount per distinct ID
+// inside it, so the round-trip count stops depending on how many results are
+// being rendered.
+//
+// Duplicate IDs are resolved once. Returns ErrAccountNotFound (via the same
+// error GetAccount returns) at the first ID that does not exist, rather than
+// resolving the rest and reporting a partial map — a caller-visible error
+// should not depend on where in the batch the bad ID happened to fall.
+func (s *Book) GetAccounts(ctx context.Context, ids []AccountID) (map[AccountID]Account, error) {
+	out := make(map[AccountID]Account, len(ids))
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		for _, id := range ids {
+			if _, ok := out[id]; ok {
+				continue
+			}
+			acct, err := tx.GetAccount(ctx, s.id, id)
+			if err != nil {
+				return err
+			}
+			out[id] = acct
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Asset Registry
 // ---------------------------------------------------------------------------

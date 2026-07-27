@@ -77,32 +77,60 @@ type transactionDTO struct {
 	CreatedAt      time.Time         `json:"createdAt"`
 }
 
+// entryAccountIDs collects the distinct account IDs referenced by any entry
+// across one or more transactions, in first-seen order. It is the input to
+// entryAssets, kept separate so a caller with just one transaction can build
+// it without allocating a slice of transactions.
+func entryAccountIDs(txs []ledger.Transaction) []ledger.AccountID {
+	seen := make(map[ledger.AccountID]bool)
+	var ids []ledger.AccountID
+	for _, tx := range txs {
+		for _, e := range tx.Entries {
+			if !seen[e.AccountID] {
+				seen[e.AccountID] = true
+				ids = append(ids, e.AccountID)
+			}
+		}
+	}
+	return ids
+}
+
+// entryAssets resolves the asset of every account referenced by any entry
+// across txs, in one Book.GetAccounts call. Rendering a listing of N
+// transactions used to call Book.GetAccount once per entry — on store/pg,
+// one BEGIN…COMMIT round trip each — which made a listing's cost scale with
+// how many transactions it rendered rather than how much work it actually
+// did. Resolving the whole batch's accounts up front, once, is what keeps a
+// listing at one round trip regardless of N.
+func entryAssets(ctx context.Context, lb *ledger.Book, txs []ledger.Transaction) (map[ledger.AccountID]ledger.AssetCode, error) {
+	ids := entryAccountIDs(txs)
+	accts, err := lb.GetAccounts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[ledger.AccountID]ledger.AssetCode, len(accts))
+	for id, a := range accts {
+		out[id] = a.Asset
+	}
+	return out, nil
+}
+
 // toTransactionDTO renders a transaction, including each entry's asset. An
 // entry carries no asset of its own — Amount balances per asset precisely
 // because the asset is a property of the account it posts to — so rendering
-// it means resolving each entry's account. lb is the participant's own book;
-// every account an entry references was validated against it when the
-// transaction was posted, so a lookup failure here means the store changed
-// underneath the request rather than a malformed transaction.
-func toTransactionDTO(ctx context.Context, lb *ledger.Book, tx ledger.Transaction) (transactionDTO, error) {
+// it means resolving each entry's account. assets is the pre-resolved
+// account-to-asset map (see entryAssets); toTransactionDTO does no I/O of its
+// own, so a caller rendering several transactions can resolve the whole
+// batch's accounts once and reuse the map across every call.
+func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.AssetCode) transactionDTO {
 	entries := make([]entryDTO, len(tx.Entries))
-	assets := make(map[ledger.AccountID]ledger.AssetCode, len(tx.Entries))
 	for i, e := range tx.Entries {
-		asset, ok := assets[e.AccountID]
-		if !ok {
-			acct, err := lb.GetAccount(ctx, e.AccountID)
-			if err != nil {
-				return transactionDTO{}, err
-			}
-			asset = acct.Asset
-			assets[e.AccountID] = asset
-		}
 		entries[i] = entryDTO{
 			ID:        string(e.ID),
 			AccountID: string(e.AccountID),
 			Amount:    int64(e.Amount),
 			Direction: e.Direction.String(),
-			Asset:     string(asset),
+			Asset:     string(assets[e.AccountID]),
 		}
 	}
 	return transactionDTO{
@@ -116,7 +144,7 @@ func toTransactionDTO(ctx context.Context, lb *ledger.Book, tx ledger.Transactio
 		Metadata:       tx.Metadata,
 		ReversalOf:     string(tx.ReversalOf),
 		CreatedAt:      tx.CreatedAt,
-	}, nil
+	}
 }
 
 // createAccountRequest carries a required asset. There is no default: an
