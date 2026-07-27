@@ -1035,6 +1035,86 @@ func TestFullLedgerWorkflow(t *testing.T) {
 // Helper functions for tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Ensure (resolve-or-create) Tests
+// ---------------------------------------------------------------------------
+
+func TestEnsureSubledgerTx_CreatesOnceThenResolves(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	gl, err := book.CreateLedger(ctx, "GL")
+	assertNoError(t, err)
+
+	var first, second Subledger
+	assertNoError(t, book.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		if first, err = book.EnsureSubledgerTx(ctx, tx, gl.ID, "Income"); err != nil {
+			return err
+		}
+		second, err = book.EnsureSubledgerTx(ctx, tx, gl.ID, "Income")
+		return err
+	}))
+
+	if first.ID != second.ID {
+		t.Errorf("second Ensure created a new subledger: %s then %s", first.ID, second.ID)
+	}
+
+	all, err := book.ListSubledgers(ctx, gl.ID)
+	assertNoError(t, err)
+	if len(all) != 1 {
+		t.Errorf("subledgers = %d, want 1", len(all))
+	}
+}
+
+func TestEnsureAccountTx_MatchesOnNameTypeAndAsset(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	gl, err := book.CreateLedger(ctx, "GL")
+	assertNoError(t, err)
+	sub, err := book.CreateSubledger(ctx, gl.ID, "Income")
+	assertNoError(t, err)
+
+	var eur, eurAgain, usd, expense Account
+	assertNoError(t, book.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		if eur, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Revenue, testAsset); err != nil {
+			return err
+		}
+		if eurAgain, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Revenue, testAsset); err != nil {
+			return err
+		}
+		// Same name, different asset: a separate account, because an account
+		// and its asset are inseparable.
+		if usd, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Revenue, "USD"); err != nil {
+			return err
+		}
+		// Same name and asset, different type: also separate. Matching on the
+		// name alone would hand back a Revenue account to a caller asking for
+		// an Expense one, and the mismatch would only surface as a balance
+		// with the wrong sign.
+		expense, err = book.EnsureAccountTx(ctx, tx, sub.ID, "Interest Income", Expense, testAsset)
+		return err
+	}))
+
+	if eur.ID != eurAgain.ID {
+		t.Errorf("second Ensure created a new account: %s then %s", eur.ID, eurAgain.ID)
+	}
+	if usd.ID == eur.ID {
+		t.Error("the USD account reused the EUR account")
+	}
+	if expense.ID == eur.ID {
+		t.Error("the Expense account reused the Revenue account")
+	}
+
+	all, err := book.ListAccounts(ctx, sub.ID)
+	assertNoError(t, err)
+	if len(all) != 3 {
+		t.Errorf("accounts = %d, want 3", len(all))
+	}
+}
+
 // findAccountByName walks the chart of accounts looking for an account by name.
 // The Book no longer holds a map to peek at, so it enumerates the same way any
 // other caller would.
