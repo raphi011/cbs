@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -36,6 +37,7 @@ type accountDTO struct {
 	SubledgerID string    `json:"subledgerId"`
 	Name        string    `json:"name"`
 	Type        string    `json:"type"`
+	Asset       string    `json:"asset"`
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
@@ -45,6 +47,7 @@ func toAccountDTO(a ledger.Account) accountDTO {
 		SubledgerID: string(a.SubledgerID),
 		Name:        a.Name,
 		Type:        a.Type.String(),
+		Asset:       string(a.Asset),
 		CreatedAt:   a.CreatedAt,
 	}
 }
@@ -54,6 +57,11 @@ type entryDTO struct {
 	AccountID string `json:"accountId"`
 	Amount    int64  `json:"amount"`
 	Direction string `json:"direction"`
+	// Asset is the entry's account's asset. It is never sent by a client — a
+	// transaction request names accounts, not assets, and the asset a leg
+	// posts in is decided by the account it debits or credits — so this is
+	// populated only when rendering a response.
+	Asset string `json:"asset,omitempty"`
 }
 
 type transactionDTO struct {
@@ -69,14 +77,32 @@ type transactionDTO struct {
 	CreatedAt      time.Time         `json:"createdAt"`
 }
 
-func toTransactionDTO(tx ledger.Transaction) transactionDTO {
+// toTransactionDTO renders a transaction, including each entry's asset. An
+// entry carries no asset of its own — Amount balances per asset precisely
+// because the asset is a property of the account it posts to — so rendering
+// it means resolving each entry's account. lb is the participant's own book;
+// every account an entry references was validated against it when the
+// transaction was posted, so a lookup failure here means the store changed
+// underneath the request rather than a malformed transaction.
+func toTransactionDTO(ctx context.Context, lb *ledger.Book, tx ledger.Transaction) (transactionDTO, error) {
 	entries := make([]entryDTO, len(tx.Entries))
+	assets := make(map[ledger.AccountID]ledger.AssetCode, len(tx.Entries))
 	for i, e := range tx.Entries {
+		asset, ok := assets[e.AccountID]
+		if !ok {
+			acct, err := lb.GetAccount(ctx, e.AccountID)
+			if err != nil {
+				return transactionDTO{}, err
+			}
+			asset = acct.Asset
+			assets[e.AccountID] = asset
+		}
 		entries[i] = entryDTO{
 			ID:        string(e.ID),
 			AccountID: string(e.AccountID),
 			Amount:    int64(e.Amount),
 			Direction: e.Direction.String(),
+			Asset:     string(asset),
 		}
 	}
 	return transactionDTO{
@@ -90,7 +116,7 @@ func toTransactionDTO(tx ledger.Transaction) transactionDTO {
 		Metadata:       tx.Metadata,
 		ReversalOf:     string(tx.ReversalOf),
 		CreatedAt:      tx.CreatedAt,
-	}
+	}, nil
 }
 
 // createAccountRequest carries a required asset. There is no default: an

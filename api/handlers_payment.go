@@ -89,7 +89,7 @@ func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toPaymentDTO(p))
+	writeJSON(w, http.StatusCreated, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
 func (s *Server) handleListPayments(w http.ResponseWriter, r *http.Request) {
@@ -98,9 +98,10 @@ func (s *Server) handleListPayments(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	schemes := s.network().ListSchemes()
 	out := make([]paymentDTO, len(payments))
 	for i, p := range payments {
-		out[i] = toPaymentDTO(p)
+		out[i] = toPaymentDTO(p, schemes)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -111,7 +112,7 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentDTO(p))
+	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
 func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
@@ -125,7 +126,7 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentDTO(p))
+	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
 func (s *Server) handleReturnPayment(w http.ResponseWriter, r *http.Request) {
@@ -139,7 +140,7 @@ func (s *Server) handleReturnPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentDTO(p))
+	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
 func (s *Server) handleOpenCycle(w http.ResponseWriter, r *http.Request) {

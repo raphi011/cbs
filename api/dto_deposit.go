@@ -13,6 +13,7 @@ type depositAccountDTO struct {
 	ID             string    `json:"id"`
 	GLAccount      string    `json:"glAccount"`
 	Name           string    `json:"name"`
+	Asset          string    `json:"asset"`
 	Status         string    `json:"status"`
 	OverdraftLimit int64     `json:"overdraftLimit"`
 	CreatedAt      time.Time `json:"createdAt"`
@@ -23,6 +24,7 @@ func toDepositAccountDTO(a deposit.Account) depositAccountDTO {
 		ID:             string(a.ID),
 		GLAccount:      string(a.GLAccount),
 		Name:           a.Name,
+		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
 		OverdraftLimit: int64(a.OverdraftLimit),
 		CreatedAt:      a.CreatedAt,

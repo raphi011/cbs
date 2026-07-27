@@ -88,6 +88,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerParticipantRoutes(mux)
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)
+	s.registerAssetRoutes(mux)
 	s.registerPaymentRoutes(mux)
 	s.registerAuditRoutes(mux)
 	s.registerAdminRoutes(mux)

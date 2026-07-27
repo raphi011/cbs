@@ -213,7 +213,12 @@ func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toTransactionDTO(tx))
+	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, dto)
 }
 
 func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +239,12 @@ func (s *Server) handleListTransactions(w http.ResponseWriter, r *http.Request) 
 	}
 	out := make([]transactionDTO, len(txs))
 	for i, tx := range txs {
-		out[i] = toTransactionDTO(tx)
+		dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out[i] = dto
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -249,7 +259,12 @@ func (s *Server) handleGetTransaction(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toTransactionDTO(tx))
+	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, dto)
 }
 
 func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request) {
@@ -267,5 +282,10 @@ func (s *Server) handleReverseTransaction(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toTransactionDTO(tx))
+	dto, err := toTransactionDTO(r.Context(), p.Ledger, tx)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, dto)
 }

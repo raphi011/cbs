@@ -22,15 +22,20 @@ func (s *Server) registerParticipantRoutes(mux *http.ServeMux) {
 }
 
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
-	var req nameRequest
+	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	// nil assets means the network's default joining set — see AddParticipant.
-	// That is a default for which assets a bank joins with, not for the asset
-	// of any account, which is always named by its caller.
-	p, err := s.network().AddParticipant(r.Context(), req.Name, nil)
+	// An empty (or absent) Assets means the network's default joining set —
+	// see AddParticipant. That is a default for which assets a bank joins
+	// with, not for the asset of any account, which is always named by its
+	// caller.
+	assets := make([]ledger.AssetCode, len(req.Assets))
+	for i, a := range req.Assets {
+		assets[i] = ledger.AssetCode(a)
+	}
+	p, err := s.network().AddParticipant(r.Context(), req.Name, assets)
 	if err != nil {
 		writeError(w, err)
 		return

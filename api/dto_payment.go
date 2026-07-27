@@ -53,6 +53,20 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 	}
 }
 
+// createParticipantRequest carries the participant's name and, optionally,
+// the set of assets it joins with. An absent or empty Assets defaults to
+// ["EUR"] — AddParticipant applies that default itself, so an empty slice is
+// forwarded unchanged rather than special-cased here.
+//
+// This is the one deliberate default anywhere in the asset dimension: it
+// preserves existing behaviour for callers that do not care which assets a
+// bank joins with. It is not a default for the asset of any account — every
+// account, deposit account and transaction still names its asset explicitly.
+type createParticipantRequest struct {
+	Name   string   `json:"name"`
+	Assets []string `json:"assets"`
+}
+
 type partyRefDTO struct {
 	Participant string `json:"participant"`
 	Account     string `json:"account"`
@@ -74,6 +88,7 @@ func (r partyRefDTO) toDomain() payment.PartyRef {
 type paymentDTO struct {
 	ID            string            `json:"id"`
 	Scheme        string            `json:"scheme"`
+	Asset         string            `json:"asset"`
 	Debtor        partyRefDTO       `json:"debtor"`
 	Creditor      partyRefDTO       `json:"creditor"`
 	Amount        int64             `json:"amount"`
@@ -91,10 +106,24 @@ type paymentDTO struct {
 	CreatedAt     time.Time         `json:"createdAt"`
 }
 
-func toPaymentDTO(p payment.Payment) paymentDTO {
+// toPaymentDTO renders a payment, including the asset it settles in. A
+// payment names a scheme, not an asset — the asset is the scheme's, fixed at
+// registration — so rendering it means resolving the scheme. schemes is the
+// network's registered set (payment.Network.ListSchemes), searched by ID
+// rather than threaded through payment.Payment itself, which stays a pure
+// domain record.
+func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
+	var asset string
+	for _, sc := range schemes {
+		if sc.ID() == p.Scheme {
+			asset = string(sc.Asset())
+			break
+		}
+	}
 	return paymentDTO{
 		ID:            string(p.ID),
 		Scheme:        string(p.Scheme),
+		Asset:         asset,
 		Debtor:        toPartyRefDTO(p.Debtor),
 		Creditor:      toPartyRefDTO(p.Creditor),
 		Amount:        int64(p.Amount),

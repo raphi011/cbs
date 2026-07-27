@@ -204,6 +204,112 @@ func TestOpenDepositAccountRequiresAsset(t *testing.T) {
 		`{"name":"No Asset"}`, http.StatusBadRequest)
 }
 
+// TestCreateAndListAssets pins the new registry endpoints: an asset created
+// through POST /participants/{pid}/assets shows up on GET of the same route,
+// scoped to that participant's own book.
+func TestCreateAndListAssets(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	created := doJSON(t, h, "POST", "/participants/"+pid+"/assets",
+		`{"code":"BTC","name":"Bitcoin","scale":8,"class":"Crypto"}`, http.StatusCreated)
+	assertEqual(t, "code", created["code"].(string), "BTC")
+	assertEqual(t, "name", created["name"].(string), "Bitcoin")
+	assertEqual(t, "scale", int(created["scale"].(float64)), 8)
+	assertEqual(t, "class", created["class"].(string), "Crypto")
+
+	var assets []assetDTO
+	getJSON(t, h, "/participants/"+pid+"/assets", &assets)
+	found := false
+	for _, a := range assets {
+		if a.Code == "BTC" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("GET /assets did not list BTC: %v", assets)
+	}
+}
+
+// TestCreateAssetRejectsUnknownClass pins that class is validated against the
+// two known names rather than accepted verbatim.
+func TestCreateAssetRejectsUnknownClass(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/assets",
+		`{"code":"XYZ","name":"Mystery","scale":2,"class":"Commodity"}`, http.StatusBadRequest)
+}
+
+// TestAccountResponseIncludesAsset pins that the account, deposit-account and
+// entry DTOs all carry the asset they are denominated in.
+func TestAccountResponseIncludesAsset(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
+
+	res := do(t, h, "GET", "/participants/"+pid+"/deposit-accounts", "")
+	if !strings.Contains(res.Body.String(), `"asset":"EUR"`) {
+		t.Errorf("deposit-account listing has no asset field: %s", res.Body)
+	}
+
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)
+	assertEqual(t, "account asset", acct["asset"].(string), "EUR")
+
+	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/transactions", `{
+		"entries":[
+			{"accountId":"`+acct["id"].(string)+`","amount":100,"direction":"Debit"},
+			{"accountId":"`+other+`","amount":100,"direction":"Credit"}
+		]
+	}`, http.StatusCreated)
+	entries := tx["entries"].([]any)
+	for _, e := range entries {
+		entry := e.(map[string]any)
+		assertEqual(t, "entry asset", entry["asset"].(string), "EUR")
+	}
+}
+
+// TestCreateParticipantWithAssets pins the optional assets array on
+// participant creation: given, it is forwarded to AddParticipant instead of
+// the default EUR-only set.
+func TestCreateParticipantWithAssets(t *testing.T) {
+	h := newTestServer(t)
+	p := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD"]}`, http.StatusCreated)
+	assets := p["assets"].([]any)
+	if len(assets) != 1 {
+		t.Fatalf("participant assets = %v, want exactly one (USD)", assets)
+	}
+	row := assets[0].(map[string]any)
+	assertEqual(t, "participant asset", row["asset"].(string), "USD")
+}
+
+// TestCrossAssetPaymentReturns422 is the HTTP-layer half of Task 5's
+// payment.ErrAssetMismatch mapping: initiating a payment through a scheme
+// whose asset does not match the debtor account's asset must answer 422, not
+// 500. A bank joined with USD only has no EUR account to collide with
+// sepa.ct's EUR, so the mismatch is reached without needing to fund anything
+// or open a cycle — checkPartyTx and the asset check both run before either
+// would matter.
+func TestCrossAssetPaymentReturns422(t *testing.T) {
+	h := newTestServer(t)
+	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"USD"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusUnprocessableEntity)
+}
+
 // TestErrorMapping locks one error per HTTP status class.
 func TestErrorMapping(t *testing.T) {
 	h := newTestServer(t)
