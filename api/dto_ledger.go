@@ -93,9 +93,14 @@ func toTransactionDTO(tx ledger.Transaction) transactionDTO {
 	}
 }
 
+// createAccountRequest carries a required asset. There is no default: an
+// account and its asset are inseparable, and quietly booking a new account in
+// euro because the caller forgot to say is the bug the asset dimension exists
+// to prevent. A missing asset is a 400, not an assumption.
 type createAccountRequest struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
+	Name  string `json:"name"`
+	Type  string `json:"type"`
+	Asset string `json:"asset"`
 }
 
 type postTransactionRequest struct {

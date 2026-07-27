@@ -34,15 +34,16 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
-		INSERT INTO deposit_accounts (book_id, id, gl_account, name, status, overdraft_limit, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO deposit_accounts (book_id, id, gl_account, name, asset, status, overdraft_limit, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (book_id, id) DO UPDATE SET
 			gl_account      = EXCLUDED.gl_account,
 			name            = EXCLUDED.name,
+			asset           = EXCLUDED.asset,
 			status          = EXCLUDED.status,
 			overdraft_limit = EXCLUDED.overdraft_limit,
 			created_at      = EXCLUDED.created_at`,
-		string(book), string(a.ID), string(a.GLAccount), a.Name,
+		string(book), string(a.ID), string(a.GLAccount), a.Name, string(a.Asset),
 		int16(a.Status), a.OverdraftLimit, nullTime(a.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put deposit account %s: %w", a.ID, err)
@@ -57,9 +58,9 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 		createdAt *time.Time
 	)
 	err := t.tx.QueryRow(ctx, `
-		SELECT id, gl_account, name, status, overdraft_limit, created_at
+		SELECT id, gl_account, name, asset, status, overdraft_limit, created_at
 		FROM deposit_accounts WHERE book_id = $1 AND id = $2`,
-		string(book), string(id)).Scan(&a.ID, &a.GLAccount, &a.Name, &status, &a.OverdraftLimit, &createdAt)
+		string(book), string(id)).Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return deposit.Account{}, deposit.ErrAccountNotFound
 	}
@@ -73,7 +74,7 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
 	rows, err := t.tx.Query(ctx, `
-		SELECT id, gl_account, name, status, overdraft_limit, created_at
+		SELECT id, gl_account, name, asset, status, overdraft_limit, created_at
 		FROM deposit_accounts WHERE book_id = $1
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
 	if err != nil {
@@ -88,7 +89,7 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 			status    int16
 			createdAt *time.Time
 		)
-		if err := rows.Scan(&a.ID, &a.GLAccount, &a.Name, &status, &a.OverdraftLimit, &createdAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit, &createdAt); err != nil {
 			return nil, fmt.Errorf("pg: list deposit accounts: %w", err)
 		}
 		a.Status = deposit.AccountStatus(status)

@@ -2,11 +2,29 @@ package payment
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 )
+
+// ParticipantAccounts are the internal accounts a participant needs for one
+// asset:
+//
+//   - Suspense (Liability): an in-transit account holding funds that have left
+//     a customer but not yet settled between banks. Returns to zero once a
+//     cycle settles.
+//   - Reserve (Asset): the bank's claim on the central bank. It mirrors the
+//     bank's reserve account in the central-bank ledger and moves only at
+//     settlement.
+//   - Settlement: this participant's reserve account in the central-bank
+//     ledger — the central bank's "vostro" view of the bank.
+type ParticipantAccounts struct {
+	Suspense   ledger.AccountID
+	Reserve    ledger.AccountID
+	Settlement ledger.AccountID
+}
 
 // Participant is a bank (or payment service provider) that takes part in the
 // clearing and settlement system.
@@ -33,6 +51,9 @@ import (
 //   - Reserve at Central Bank (Asset): the bank's claim on the central bank.
 //     It mirrors the bank's reserve account in the central-bank ledger and
 //     moves only at settlement.
+//
+// The last two, plus the bank's reserve account in the central-bank ledger,
+// exist once per asset the bank operates in — see Assets.
 type Participant struct {
 	ID   ParticipantID
 	Name string
@@ -42,12 +63,16 @@ type Participant struct {
 	BookID ledger.BookID
 
 	CustomerSubledger ledger.SubledgerID
-	SuspenseAccount   ledger.AccountID // "Clearing Suspense" (Liability)
-	ReserveAccount    ledger.AccountID // "Reserve at Central Bank" (Asset)
 
-	// SettlementAccount is this participant's reserve account in the
-	// central-bank ledger (the central bank's "vostro" view of the bank).
-	SettlementAccount ledger.AccountID
+	// Assets holds one set of internal accounts per asset the participant
+	// operates in, keyed by asset code.
+	//
+	// Keyed rather than flat because every one of those accounts is
+	// denominated in exactly one asset: a bank clearing both euro and dollar
+	// schemes needs two suspense accounts and two reserve accounts, not two
+	// currencies inside one. Adding a scheme in a new asset is then a data
+	// change rather than a code change.
+	Assets map[ledger.AssetCode]ParticipantAccounts
 
 	CreatedAt time.Time
 
@@ -64,7 +89,22 @@ type Participant struct {
 	Deposit *deposit.Register `json:"-"`
 }
 
-// OpenCustomerAccount opens a new customer deposit account at the bank.
+// AccountsFor returns the participant's internal accounts for an asset.
+//
+// Returns ErrParticipantAssetNotFound if the participant does not operate in
+// that asset. There is deliberately no fallback to a base currency: settling a
+// dollar cycle through a euro reserve account would be a silent accounting
+// error rather than a visible failure.
+func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, error) {
+	accts, ok := p.Assets[asset]
+	if !ok {
+		return ParticipantAccounts{}, fmt.Errorf("%w: %s in %s", ErrParticipantAssetNotFound, asset, p.Name)
+	}
+	return accts, nil
+}
+
+// OpenCustomerAccount opens a new customer deposit account at the bank,
+// denominated in asset.
 //
 // Customer deposits are demand-deposit accounts managed by the bank's deposit
 // layer; each is backed by a Liability GL account, since the money belongs to
@@ -74,8 +114,8 @@ type Participant struct {
 // This opens its own unit of work, so it must not be called from inside one.
 // A caller already holding a Tx should drive p.Deposit.OpenAccountTx instead —
 // which is also how to open an account with an overdraft limit.
-func (p *Participant) OpenCustomerAccount(ctx context.Context, name string) (deposit.Account, error) {
-	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, 0)
+func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
+	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
 }
 
 // glAccountTx resolves a customer deposit account ID to the backing GL account

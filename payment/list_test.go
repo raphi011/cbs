@@ -20,7 +20,7 @@ func TestListParticipantsAndLookup(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "lookup returns Bank A", got.ID, a.ID)
 	// GetParticipant returns a bound participant, so its Ledger is usable.
-	assertEqual(t, "live ledger reachable", got.ReserveAccount, a.ReserveAccount)
+	assertEqual(t, "live ledger reachable", accountsOf(t, got).Reserve, accountsOf(t, a).Reserve)
 
 	_, err = sys.GetParticipant(ctx, "nope")
 	assertError(t, err, ErrParticipantNotFound)

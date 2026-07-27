@@ -176,9 +176,17 @@ func check(err error) {
 	}
 }
 
+// seedAsset is the asset the whole sample scenario is denominated in.
+//
+// The scenario is a SEPA one, and SEPA is a euro scheme, so every account it
+// opens is a euro account. It is spelled out at each site rather than left to
+// a default: the demo data is euro because the banks in it are euro banks, not
+// because nobody said.
+const seedAsset ledger.AssetCode = "EUR"
+
 // open opens a customer account, records its canonical IBAN, and returns it.
 func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
-	a := must(p.OpenCustomerAccount(b.ctx, name))
+	a := must(p.OpenCustomerAccount(b.ctx, name, seedAsset))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -186,7 +194,7 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // openOverdraft opens a customer account with an overdraft limit (the
 // participant helper only opens with zero overdraft) and records its IBAN.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, limit))
+	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, limit))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -227,10 +235,14 @@ func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *paymen
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank"))
-	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde"))
-	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank"))
-	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil"))
+	// Each bank joins the network as a euro bank: AddParticipant registers EUR
+	// in its book and in the central bank's, and opens its suspense, reserve
+	// and settlement accounts in it.
+	euro := []ledger.AssetCode{seedAsset}
+	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank", euro))
+	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", euro))
+	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", euro))
+	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", euro))
 
 	// --- Customer accounts (each gets a canonical IBAN) --------------------
 	alice := b.open(aurora, "Alice Andersson", "SE89-AURORA-1001")
@@ -347,13 +359,13 @@ func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
 	glID := must(p.Ledger.GetSubledger(ctx, p.CustomerSubledger)).LedgerID
 
 	equitySub := must(p.Ledger.CreateSubledger(ctx, glID, "Equity"))
-	shareCapital := must(p.Ledger.CreateAccount(ctx, equitySub.ID, "Share Capital", ledger.Equity))
+	shareCapital := must(p.Ledger.CreateAccount(ctx, equitySub.ID, "Share Capital", ledger.Equity, seedAsset))
 	treasurySub := must(p.Ledger.CreateSubledger(ctx, glID, "Treasury"))
-	vault := must(p.Ledger.CreateAccount(ctx, treasurySub.ID, "Vault Cash", ledger.Asset))
+	vault := must(p.Ledger.CreateAccount(ctx, treasurySub.ID, "Vault Cash", ledger.Asset, seedAsset))
 	incomeSub := must(p.Ledger.CreateSubledger(ctx, glID, "Income"))
-	feeIncome := must(p.Ledger.CreateAccount(ctx, incomeSub.ID, "Fee Income", ledger.Revenue))
+	feeIncome := must(p.Ledger.CreateAccount(ctx, incomeSub.ID, "Fee Income", ledger.Revenue, seedAsset))
 	expenseSub := must(p.Ledger.CreateSubledger(ctx, glID, "Expenses"))
-	opex := must(p.Ledger.CreateAccount(ctx, expenseSub.ID, "Operating Expenses", ledger.Expense))
+	opex := must(p.Ledger.CreateAccount(ctx, expenseSub.ID, "Operating Expenses", ledger.Expense, seedAsset))
 
 	// Capitalisation: Vault Cash (asset) up, Share Capital (equity) up.
 	must(p.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{

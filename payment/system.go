@@ -3,6 +3,7 @@ package payment
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -156,15 +157,15 @@ func (s *Network) participantTx(ctx context.Context, tx Tx, id ParticipantID) (*
 	return s.bind(rec), nil
 }
 
-// centralBankChartTx returns the central bank's reserve subledger and its
-// balancing settlement-asset account, creating the chart of accounts if this is
-// the first time the store has been used.
+// centralBankChartTx returns the central bank's reserve and capital
+// subledgers, creating the chart of accounts if this is the first time the
+// store has been used.
 //
 // It resolves by name on every call rather than caching IDs on the Network. A
 // cached ID is wrong in three situations that all occur in this system: after
 // Store.Reset, in a second process opened against the same database, and in a
 // process that constructed the Network before the data existed.
-func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.SubledgerID, ledger.AccountID, error) {
+func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.SubledgerID, ledger.SubledgerID, error) {
 	ledgers, err := tx.ListLedgers(ctx, CentralBankBook)
 	if err != nil {
 		return "", "", err
@@ -207,24 +208,39 @@ func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.Subledg
 			return "", "", err
 		}
 	}
+	return reserves.ID, capital.ID, nil
+}
 
+// centralBankAssetsAccountTx returns the central bank's balancing
+// settlement-asset account for one asset, creating it if it does not exist.
+//
+// There is one per asset, because the account is an asset account like any
+// other and an account is denominated in exactly one thing: the euro reserves
+// the central bank has issued are not backed by the dollars it has issued.
+//
+// The lookup is by (capital subledger, name, asset) rather than by name alone.
+// Keeping the name stable across assets is what lets a book written before the
+// asset dimension existed — whose account was backfilled to EUR — still be
+// found rather than duplicated.
+func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
+	_, capital, err := s.centralBankChartTx(ctx, tx)
+	if err != nil {
+		return "", err
+	}
 	accounts, err := tx.ListAccounts(ctx, CentralBankBook)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	var assets ledger.Account
 	for _, a := range accounts {
-		if a.SubledgerID == capital.ID && a.Name == cbAssetsName {
-			assets = a
-			break
+		if a.SubledgerID == capital && a.Name == cbAssetsName && a.Asset == asset {
+			return a.ID, nil
 		}
 	}
-	if assets.ID == "" {
-		if assets, err = s.centralBank.CreateAccountTx(ctx, tx, capital.ID, cbAssetsName, ledger.Asset); err != nil {
-			return "", "", err
-		}
+	created, err := s.centralBank.CreateAccountTx(ctx, tx, capital, cbAssetsName, ledger.Asset, asset)
+	if err != nil {
+		return "", err
 	}
-	return reserves.ID, assets.ID, nil
+	return created.ID, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -233,14 +249,18 @@ func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.Subledg
 
 // AddParticipant registers a new bank. It builds the bank's own book of
 // accounts and chart of accounts and opens a reserve account for it at the
-// central bank.
+// central bank, once per asset the bank operates in.
+//
+// An empty assets list means []ledger.AssetCode{"EUR"}. That is a default for
+// the *set of assets a bank joins with*, not for the asset of any individual
+// account: every account below is created with an asset its caller named.
 //
 // The new bank starts with zero reserves; fund it with Deposit.
-func (s *Network) AddParticipant(ctx context.Context, name string) (*Participant, error) {
+func (s *Network) AddParticipant(ctx context.Context, name string, assets []ledger.AssetCode) (*Participant, error) {
 	var out *Participant
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.AddParticipantTx(ctx, tx, name)
+		out, err = s.AddParticipantTx(ctx, tx, name, assets)
 		return err
 	})
 	if err != nil {
@@ -253,9 +273,12 @@ func (s *Network) AddParticipant(ctx context.Context, name string) (*Participant
 // bank's chart of accounts, its reserve account at the central bank and the
 // participant record are all written through the same Tx, so a bank can never
 // exist without the accounts it needs.
-func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Participant, error) {
+func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, assets []ledger.AssetCode) (*Participant, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
+	}
+	if len(assets) == 0 {
+		assets = []ledger.AssetCode{"EUR"}
 	}
 
 	// The bank gets its own book within the shared store, identified by its
@@ -280,23 +303,49 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Pa
 	if err != nil {
 		return nil, err
 	}
-	suspense, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Clearing Suspense", ledger.Liability)
-	if err != nil {
-		return nil, err
-	}
-	reserve, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Reserve at Central Bank", ledger.Asset)
-	if err != nil {
-		return nil, err
-	}
-
-	// Open the bank's reserve account in the central-bank ledger.
+	// The bank's reserve accounts live in the central-bank ledger, alongside
+	// every other member's.
 	reserveSubledger, _, err := s.centralBankChartTx(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
-	cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name, ledger.Liability)
-	if err != nil {
-		return nil, err
+
+	// One set of internal accounts per asset. Naming them with the asset in
+	// parentheses keeps them apart in a chart of accounts that now holds
+	// several of each.
+	accounts := make(map[ledger.AssetCode]ParticipantAccounts, len(assets))
+	for _, asset := range assets {
+		def, err := s.assetDef(asset)
+		if err != nil {
+			return nil, err
+		}
+		// The asset has to exist in both books: the bank holds its own
+		// suspense and reserve accounts, and the central bank holds the
+		// matching vostro account.
+		if err := ensureAsset(ctx, tx, bank, def); err != nil {
+			return nil, err
+		}
+		if err := ensureAsset(ctx, tx, s.centralBank, def); err != nil {
+			return nil, err
+		}
+		// The other side of every reserve credit in this asset.
+		if _, err := s.centralBankAssetsAccountTx(ctx, tx, asset); err != nil {
+			return nil, err
+		}
+
+		suspense, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Clearing Suspense ("+string(asset)+")", ledger.Liability, asset)
+		if err != nil {
+			return nil, err
+		}
+		reserve, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Reserve at Central Bank ("+string(asset)+")", ledger.Asset, asset)
+		if err != nil {
+			return nil, err
+		}
+		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
+		if err != nil {
+			return nil, err
+		}
+		accounts[asset] = ParticipantAccounts{Suspense: suspense.ID, Reserve: reserve.ID, Settlement: cbReserve.ID}
 	}
 
 	p := Participant{
@@ -304,9 +353,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Pa
 		Name:              name,
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
-		SuspenseAccount:   suspense.ID,
-		ReserveAccount:    reserve.ID,
-		SettlementAccount: cbReserve.ID,
+		Assets:            accounts,
 		CreatedAt:         s.now(),
 	}
 	if err := tx.PutParticipant(ctx, p); err != nil {
@@ -318,6 +365,30 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Pa
 	return s.bind(p), nil
 }
 
+// assetDef returns the definition for a well-known asset code. The network
+// needs it because it creates accounts in books it does not otherwise
+// populate, and an account cannot reference an unregistered asset.
+func (s *Network) assetDef(code ledger.AssetCode) (ledger.AssetDef, error) {
+	switch code {
+	case "EUR":
+		return ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2, Class: ledger.Fiat}, nil
+	case "USD":
+		return ledger.AssetDef{Code: "USD", Name: "US Dollar", Scale: 2, Class: ledger.Fiat}, nil
+	default:
+		return ledger.AssetDef{}, fmt.Errorf("%w: %s", ledger.ErrAssetNotFound, code)
+	}
+}
+
+// ensureAsset registers an asset in a book if it is not registered already.
+// Idempotent, because several participants join the same central-bank book.
+func ensureAsset(ctx context.Context, tx Tx, book *ledger.Book, def ledger.AssetDef) error {
+	_, err := book.CreateAssetTx(ctx, tx, def.Code, def.Name, def.Scale, def.Class)
+	if errors.Is(err, ledger.ErrDuplicateAsset) {
+		return nil
+	}
+	return err
+}
+
 // Deposit funds a customer deposit account with cash, modelled as the bank
 // placing the cash on reserve at the central bank.
 //
@@ -325,6 +396,11 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string) (*Pa
 //
 //	bank ledger:    Debit  Reserve at Central Bank (asset)  / Credit customer (liability)
 //	central bank:   Debit  Settlement Assets (asset)        / Credit Reserve: <bank> (liability)
+//
+// Which reserve moves is decided by the funded account's own asset, read here
+// rather than chosen by the caller. Cash paid into a dollar account raises the
+// bank's dollar reserve; there is nothing for a caller to pick and therefore
+// nothing to default, and the two legs cannot end up in different assets.
 //
 // Both postings go through one Tx, so the mirror can never be half-written.
 func (s *Network) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
@@ -348,7 +424,12 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err != nil {
 		return err
 	}
-	gl, err := p.glAccountTx(ctx, tx, account)
+	funded, err := tx.GetDepositAccount(ctx, p.BookID, account)
+	if err != nil {
+		return ErrAccountNotInParticipant
+	}
+	gl, asset := funded.GLAccount, funded.Asset
+	accts, err := p.AccountsFor(asset)
 	if err != nil {
 		return err
 	}
@@ -356,22 +437,22 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
-			{AccountID: p.ReserveAccount, Amount: amount, Direction: ledger.Debit},
+			{AccountID: accts.Reserve, Amount: amount, Direction: ledger.Debit},
 			{AccountID: gl, Amount: amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return err
 	}
 
-	_, assets, err := s.centralBankChartTx(ctx, tx)
+	cbAssets, err := s.centralBankAssetsAccountTx(ctx, tx, asset)
 	if err != nil {
 		return err
 	}
 	_, err = s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: "Reserve credit: " + p.Name,
 		Entries: []ledger.Entry{
-			{AccountID: assets, Amount: amount, Direction: ledger.Debit},
-			{AccountID: p.SettlementAccount, Amount: amount, Direction: ledger.Credit},
+			{AccountID: cbAssets, Amount: amount, Direction: ledger.Debit},
+			{AccountID: accts.Settlement, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	return err
@@ -594,12 +675,22 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		return Settlement{}, ErrCycleNotClosed
 	}
 
+	// The cycle settles in its scheme's asset, resolved once here and used for
+	// every participant in the batch. A member that does not hold that asset
+	// fails the whole batch, exactly as an underfunded member does — there is
+	// no reserve account to fall back to.
+	scheme, ok := s.scheme(c.Scheme)
+	if !ok {
+		return Settlement{}, ErrSchemeNotFound
+	}
+	asset := scheme.Asset()
+
 	// 1. Central-bank settlement transaction: move netted reserves between
 	//    participants. The net positions sum to zero, so this balances.
 	//
 	//    The participants are read in registration order so that both this
 	//    transaction's entries and the mirror postings below are deterministic.
-	legs, err := s.settlementLegsTx(ctx, tx, c)
+	legs, err := s.settlementLegsTx(ctx, tx, c, asset)
 	if err != nil {
 		return Settlement{}, err
 	}
@@ -607,9 +698,9 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	cbEntries := make([]ledger.Entry, 0, len(legs))
 	for _, leg := range legs {
 		if leg.net > 0 {
-			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.participant.SettlementAccount, Amount: leg.net, Direction: ledger.Credit})
+			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.accounts.Settlement, Amount: leg.net, Direction: ledger.Credit})
 		} else {
-			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.participant.SettlementAccount, Amount: -leg.net, Direction: ledger.Debit})
+			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.accounts.Settlement, Amount: -leg.net, Direction: ledger.Debit})
 		}
 	}
 
@@ -629,17 +720,17 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		//    moving funds between its suspense and reserve so suspense
 		//    returns to zero and its reserve asset tracks the central bank.
 		for _, leg := range legs {
-			p, net := leg.participant, leg.net
+			p, accts, net := leg.participant, leg.accounts, leg.net
 			var entries []ledger.Entry
 			if net > 0 { // net receiver: reserve up, suspense down
 				entries = []ledger.Entry{
-					{AccountID: p.ReserveAccount, Amount: net, Direction: ledger.Debit},
-					{AccountID: p.SuspenseAccount, Amount: net, Direction: ledger.Credit},
+					{AccountID: accts.Reserve, Amount: net, Direction: ledger.Debit},
+					{AccountID: accts.Suspense, Amount: net, Direction: ledger.Credit},
 				}
 			} else { // net payer: reserve down, suspense up
 				entries = []ledger.Entry{
-					{AccountID: p.SuspenseAccount, Amount: -net, Direction: ledger.Debit},
-					{AccountID: p.ReserveAccount, Amount: -net, Direction: ledger.Credit},
+					{AccountID: accts.Suspense, Amount: -net, Direction: ledger.Debit},
+					{AccountID: accts.Reserve, Amount: -net, Direction: ledger.Credit},
 				}
 			}
 			if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -663,6 +754,10 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		if err != nil {
 			return Settlement{}, err
 		}
+		creditorAccts, err := creditor.AccountsFor(asset)
+		if err != nil {
+			return Settlement{}, err
+		}
 		creditorGL, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
 		if err != nil {
 			return Settlement{}, err
@@ -673,7 +768,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 			ValueDate:      p.ValueDate,
 			Metadata:       paymentMetadata(&p),
 			Entries: []ledger.Entry{
-				{AccountID: creditor.SuspenseAccount, Amount: p.Amount, Direction: ledger.Debit},
+				{AccountID: creditorAccts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
 				{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Credit},
 			},
 		})
@@ -721,20 +816,27 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	return st, nil
 }
 
-// settlementLeg pairs a participant with its non-zero net position in a cycle.
+// settlementLeg pairs a participant with its non-zero net position in a cycle,
+// together with the internal accounts that position moves through in the
+// cycle's asset.
 type settlementLeg struct {
 	participant *Participant
+	accounts    ParticipantAccounts
 	net         ledger.Amount
 }
 
 // settlementLegsTx resolves a cycle's net positions to participants in
-// registration order.
+// registration order, and each participant to its accounts in the cycle's
+// asset.
 //
 // Registration order rather than map order because these legs decide the entry
 // order of the settlement transaction, which is persisted. Iterating the
 // NetPositions map directly would produce a different stored transaction on
 // every run.
-func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle) ([]settlementLeg, error) {
+//
+// A member with a position but no accounts in the asset fails here, before
+// anything is posted, with ErrParticipantAssetNotFound.
+func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, asset ledger.AssetCode) ([]settlementLeg, error) {
 	participants, err := tx.ListParticipants(ctx)
 	if err != nil {
 		return nil, err
@@ -746,7 +848,12 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle) 
 		if !ok || net == 0 {
 			continue
 		}
-		legs = append(legs, settlementLeg{participant: s.bind(rec), net: net})
+		p := s.bind(rec)
+		accts, err := p.AccountsFor(asset)
+		if err != nil {
+			return nil, err
+		}
+		legs = append(legs, settlementLeg{participant: p, accounts: accts, net: net})
 	}
 
 	// Every non-zero position must have matched a participant; a position that
@@ -881,6 +988,12 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if err != nil {
 		return Payment{}, err
 	}
+	// The suspense account the money lands in is the one for the scheme's
+	// asset: a euro scheme clears through the bank's euro suspense.
+	debtorAccts, err := debtor.AccountsFor(scheme.Asset())
+	if err != nil {
+		return Payment{}, err
+	}
 	debtorGL, err := debtor.glAccountTx(ctx, tx, p.Debtor.Account)
 	if err != nil {
 		return Payment{}, err
@@ -893,7 +1006,7 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
 			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: debtor.SuspenseAccount, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: debtorAccts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	})
 	if err != nil {
@@ -1009,6 +1122,17 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	if err != nil {
 		return Payment{}, err
 	}
+	// A return runs the original flow backwards, so it moves through the same
+	// accounts: the scheme's asset on both sides.
+	asset := scheme.Asset()
+	debtorAccts, err := debtor.AccountsFor(asset)
+	if err != nil {
+		return Payment{}, err
+	}
+	creditorAccts, err := creditor.AccountsFor(asset)
+	if err != nil {
+		return Payment{}, err
+	}
 	debtorGL, err := debtor.glAccountTx(ctx, tx, p.Debtor.Account)
 	if err != nil {
 		return Payment{}, err
@@ -1023,7 +1147,7 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 		IdempotencyKey: string(p.ID) + ":return-debit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
-			{AccountID: debtor.ReserveAccount, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: debtorAccts.Reserve, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
@@ -1036,7 +1160,7 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
 			{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: creditor.ReserveAccount, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: creditorAccts.Reserve, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return Payment{}, err
@@ -1047,8 +1171,8 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 		IdempotencyKey: string(p.ID) + ":return-settle",
 		Description:    "Return settlement for payment " + string(p.ID),
 		Entries: []ledger.Entry{
-			{AccountID: creditor.SettlementAccount, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: debtor.SettlementAccount, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: creditorAccts.Settlement, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: debtorAccts.Settlement, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		return Payment{}, err
@@ -1104,21 +1228,29 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 	return out, err
 }
 
-// ReserveBalance returns a participant's reserve book balance as held at the
-// central bank. Central-bank settlement accounts are plain GL accounts with no
-// deposit layer, so this is just the GL book balance.
-func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID) (ledger.Amount, error) {
+// ReserveBalance returns a participant's reserve book balance in one asset, as
+// held at the central bank. Central-bank settlement accounts are plain GL
+// accounts with no deposit layer, so this is just the GL book balance.
+//
+// It takes an asset because a bank holds one reserve account per asset, and a
+// single number across several of them would be an addition of unlike things.
+// Returns ErrParticipantAssetNotFound if the bank does not operate in it.
+func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset ledger.AssetCode) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		p, err := tx.GetParticipant(ctx, id)
 		if err != nil {
 			return err
 		}
-		acct, err := tx.GetAccount(ctx, CentralBankBook, p.SettlementAccount)
+		accts, err := p.AccountsFor(asset)
 		if err != nil {
 			return err
 		}
-		out, err = tx.BookBalance(ctx, CentralBankBook, p.SettlementAccount, acct.Type.NormalBalance())
+		acct, err := tx.GetAccount(ctx, CentralBankBook, accts.Settlement)
+		if err != nil {
+			return err
+		}
+		out, err = tx.BookBalance(ctx, CentralBankBook, accts.Settlement, acct.Type.NormalBalance())
 		return err
 	})
 	return out, err

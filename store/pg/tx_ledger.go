@@ -351,11 +351,11 @@ func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Accoun
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
-		INSERT INTO accounts (book_id, id, subledger_id, name, type, created_at) VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO accounts (book_id, id, subledger_id, name, type, asset, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (book_id, id) DO UPDATE
 		SET subledger_id = EXCLUDED.subledger_id, name = EXCLUDED.name,
-		    type = EXCLUDED.type, created_at = EXCLUDED.created_at`,
-		string(book), string(a.ID), string(a.SubledgerID), a.Name, int16(a.Type), nullTime(a.CreatedAt))
+		    type = EXCLUDED.type, asset = EXCLUDED.asset, created_at = EXCLUDED.created_at`,
+		string(book), string(a.ID), string(a.SubledgerID), a.Name, int16(a.Type), string(a.Asset), nullTime(a.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put account %s: %w", a.ID, err)
 	}
@@ -367,8 +367,8 @@ func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.Accou
 	var typ int16
 	var createdAt *time.Time
 	err := t.tx.QueryRow(ctx,
-		"SELECT id, subledger_id, name, type, created_at FROM accounts WHERE book_id = $1 AND id = $2",
-		string(book), string(id)).Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &createdAt)
+		"SELECT id, subledger_id, name, type, asset, created_at FROM accounts WHERE book_id = $1 AND id = $2",
+		string(book), string(id)).Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &createdAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ledger.Account{}, ledger.ErrAccountNotFound
 	}
@@ -382,7 +382,7 @@ func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.Accou
 
 func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
 	rows, err := t.tx.Query(ctx, `
-		SELECT id, subledger_id, name, type, created_at FROM accounts WHERE book_id = $1
+		SELECT id, subledger_id, name, type, asset, created_at FROM accounts WHERE book_id = $1
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
 	if err != nil {
 		return nil, fmt.Errorf("pg: list accounts: %w", err)
@@ -394,7 +394,7 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 		var a ledger.Account
 		var typ int16
 		var createdAt *time.Time
-		if err := rows.Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &createdAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.SubledgerID, &a.Name, &typ, &a.Asset, &createdAt); err != nil {
 			return nil, fmt.Errorf("pg: list accounts: %w", err)
 		}
 		a.Type = ledger.AccountType(typ)

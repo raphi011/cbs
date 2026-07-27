@@ -36,7 +36,11 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, err.Error())
 		return
 	}
-	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, ledger.Amount(req.OverdraftLimit))
+	if req.Asset == "" {
+		writeBadRequest(w, "asset is required")
+		return
+	}
+	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, ledger.AssetCode(req.Asset), ledger.Amount(req.OverdraftLimit))
 	if err != nil {
 		writeError(w, err)
 		return

@@ -175,11 +175,17 @@ type Subledger struct {
 }
 
 // Account is a financial account within a subledger.
+//
+// Asset is fixed at creation and never changes: an account number and its
+// asset are inseparable, the same way an IBAN is per-currency. That is what
+// keeps a balance a scalar and what lets Post check the double-entry
+// invariant per asset.
 type Account struct {
 	ID          AccountID
 	SubledgerID SubledgerID
 	Name        string
 	Type        AccountType
+	Asset       AssetCode
 	CreatedAt   time.Time
 }
 

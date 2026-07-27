@@ -40,10 +40,10 @@ func TestAccountNumbering(t *testing.T) {
 	deposits, _ := book.CreateSubledger(ctx, gl.ID, "Customer Deposits") // 100
 	interbank, _ := book.CreateSubledger(ctx, gl.ID, "Interbank")        // 200
 
-	alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice", Liability)
-	bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob", Liability)
-	suspense, _ := book.CreateAccount(ctx, interbank.ID, "Clearing Suspense", Liability)
-	reserve, _ := book.CreateAccount(ctx, interbank.ID, "Reserve", Asset)
+	alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice", Liability, testAsset)
+	bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob", Liability, testAsset)
+	suspense, _ := book.CreateAccount(ctx, interbank.ID, "Clearing Suspense", Liability, testAsset)
+	reserve, _ := book.CreateAccount(ctx, interbank.ID, "Reserve", Asset, testAsset)
 
 	want := map[string]string{
 		"alice": "200.100.001", "bob": "200.100.002",
@@ -66,7 +66,7 @@ func TestAccountNumberingDeterministic(t *testing.T) {
 		book := testBook(t)
 		gl, _ := book.CreateLedger(ctx, "GL")
 		sl, _ := book.CreateSubledger(ctx, gl.ID, "Deposits")
-		a, _ := book.CreateAccount(ctx, sl.ID, "Alice", Liability)
+		a, _ := book.CreateAccount(ctx, sl.ID, "Alice", Liability, testAsset)
 		return a.ID
 	}
 	if build() != build() {

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"sort"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
@@ -11,23 +12,44 @@ import (
 // Wire format for the interbank payment layer: participants, party refs,
 // payments, mandates, clearing cycles, settlements, schemes, and requests.
 
+// participantAccountsDTO is one asset's worth of a bank's internal accounts.
+type participantAccountsDTO struct {
+	Asset      string `json:"asset"`
+	Suspense   string `json:"suspense"`
+	Reserve    string `json:"reserve"`
+	Settlement string `json:"settlement"`
+}
+
+// participantDTO renders the internal accounts as a list rather than three
+// flat fields, because a bank holds one set per asset it operates in.
+//
+// A list rather than an object keyed by code so the order is the API's to
+// choose: Go randomises map iteration, and a wire format that reorders itself
+// between two identical requests is not one a client can diff.
 type participantDTO struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	CustomerSubledger string `json:"customerSubledger"`
-	SuspenseAccount   string `json:"suspenseAccount"`
-	ReserveAccount    string `json:"reserveAccount"`
-	SettlementAccount string `json:"settlementAccount"`
+	ID                string                   `json:"id"`
+	Name              string                   `json:"name"`
+	CustomerSubledger string                   `json:"customerSubledger"`
+	Assets            []participantAccountsDTO `json:"assets"`
 }
 
 func toParticipantDTO(p *payment.Participant) participantDTO {
+	assets := make([]participantAccountsDTO, 0, len(p.Assets))
+	for code, accts := range p.Assets {
+		assets = append(assets, participantAccountsDTO{
+			Asset:      string(code),
+			Suspense:   string(accts.Suspense),
+			Reserve:    string(accts.Reserve),
+			Settlement: string(accts.Settlement),
+		})
+	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i].Asset < assets[j].Asset })
+
 	return participantDTO{
 		ID:                string(p.ID),
 		Name:              p.Name,
 		CustomerSubledger: string(p.CustomerSubledger),
-		SuspenseAccount:   string(p.SuspenseAccount),
-		ReserveAccount:    string(p.ReserveAccount),
-		SettlementAccount: string(p.SettlementAccount),
+		Assets:            assets,
 	}
 }
 
@@ -190,8 +212,12 @@ func toSchemeDTO(s payment.Scheme) schemeDTO {
 	}
 }
 
+// reserveDTO is one bank's reserve at the central bank, in one asset. A bank
+// holds one reserve account per asset, so a reserve is only meaningful once
+// the asset is named alongside it.
 type reserveDTO struct {
 	Participant string `json:"participant"`
+	Asset       string `json:"asset"`
 	Reserve     int64  `json:"reserve"`
 }
 

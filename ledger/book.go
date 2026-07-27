@@ -75,7 +75,8 @@ type Book struct {
 //	book := ledger.NewBook(mem.New(time.Now), "bank", time.Now)
 //	l, _ := book.CreateLedger(ctx, "General Ledger")
 //	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
-//	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset)
+//	book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)
+//	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset, "EUR")
 func NewBook(store Store, id BookID, clock func() time.Time) *Book {
 	return &Book{store: store, id: id, clock: clock}
 }
@@ -244,28 +245,39 @@ func (s *Book) GetSubledger(ctx context.Context, id SubledgerID) (Subledger, err
 //   - Asset and Expense accounts have a normal debit balance (debits increase them)
 //   - Liability, Equity, and Revenue accounts have a normal credit balance (credits increase them)
 //
-// The account starts with a zero balance.
+// The account is denominated in asset, which must already be registered in this
+// book, and starts with a zero balance.
 //
-// Returns ErrSubledgerNotFound if the parent subledger does not exist.
-func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+// Returns ErrSubledgerNotFound if the parent subledger does not exist, or
+// ErrAssetNotFound if the asset is not registered in this book.
+func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	var out Account
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.CreateAccountTx(ctx, tx, subledgerID, name, accountType)
+		out, err = s.CreateAccountTx(ctx, tx, subledgerID, name, accountType, asset)
 		return err
 	})
 	return out, err
 }
 
 // CreateAccountTx is CreateAccount within a caller-supplied unit of work.
-func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType) (Account, error) {
+func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	if err := ValidateText("name", name); err != nil {
 		return Account{}, err
 	}
 	if err := ValidateText("subledgerId", string(subledgerID)); err != nil {
 		return Account{}, err
 	}
+	if err := ValidateText("asset", string(asset)); err != nil {
+		return Account{}, err
+	}
 	if _, err := tx.GetSubledger(ctx, s.id, subledgerID); err != nil {
+		return Account{}, err
+	}
+	// The asset must already be registered in this book. There is no default:
+	// silently falling back to a base currency is precisely the bug this
+	// dimension exists to prevent.
+	if _, err := tx.GetAsset(ctx, s.id, asset); err != nil {
 		return Account{}, err
 	}
 
@@ -282,6 +294,7 @@ func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 		SubledgerID: subledgerID,
 		Name:        name,
 		Type:        accountType,
+		Asset:       asset,
 		CreatedAt:   s.now(),
 	}
 	if err := tx.PutAccount(ctx, s.id, acct); err != nil {

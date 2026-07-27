@@ -113,16 +113,20 @@ function AccountDialog({
   onCreate,
 }: {
   pending: boolean;
-  onCreate: (name: string, type: AccountType) => Promise<void>;
+  onCreate: (name: string, type: AccountType, asset: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState<AccountType>("Asset");
+  // The asset is required by the backend and is fixed for the life of the
+  // account. It is pre-filled with the euro because the seeded network is a
+  // euro one, not because the field may be left unanswered.
+  const [asset, setAsset] = useState("EUR");
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || !asset.trim()) return;
     try {
-      await onCreate(name.trim(), type);
+      await onCreate(name.trim(), type, asset.trim());
       setName("");
       setOpen(false);
     } catch {
@@ -172,8 +176,22 @@ function AccountDialog({
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-2">
+            <FieldLabel htmlFor="acct-asset" required>
+              Asset
+            </FieldLabel>
+            <Input
+              id="acct-asset"
+              value={asset}
+              onChange={(e) => setAsset(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              The asset must already be registered in this bank&apos;s book, and
+              cannot be changed afterwards.
+            </p>
+          </div>
           <DialogFooter>
-            <Button type="submit" disabled={pending || !name.trim()}>
+            <Button type="submit" disabled={pending || !name.trim() || !asset.trim()}>
               {pending ? "Creating…" : "Create account"}
             </Button>
           </DialogFooter>
@@ -216,9 +234,9 @@ function SubledgerBlock({ pid, sub }: { pid: string; sub: Subledger }) {
         </span>
         <AccountDialog
           pending={create.isPending}
-          onCreate={async (name, type) => {
+          onCreate={async (name, type, asset) => {
             try {
-              const a = await create.mutateAsync({ name, type });
+              const a = await create.mutateAsync({ name, type, asset });
               toast.success(`Created ${a.name}`);
             } catch (e) {
               toast.error(describeError(e));

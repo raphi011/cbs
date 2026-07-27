@@ -70,7 +70,8 @@ export function listReserves(): Promise<Reserve[]> {
   return request("GET", "/central-bank/reserves");
 }
 
-export function getReserve(pid: string): Promise<Reserve> {
+// One row per asset the bank operates in, so a euro bank returns a list of one.
+export function getReserve(pid: string): Promise<Reserve[]> {
   return request("GET", `/central-bank/reserves/${pid}`);
 }
 

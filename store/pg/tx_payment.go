@@ -28,50 +28,104 @@ var _ payment.Tx = (*tx)(nil)
 // Participants
 // ---------------------------------------------------------------------------
 
-// PutParticipant stores a participant. Its Ledger and Deposit fields are simply
-// not written: they are live handles over this very store, not data, and there
-// is no column that could hold a *ledger.Book. store/mem nils them for the same
-// reason, and the Network rebinds them on the way out.
+// PutParticipant stores a participant and the set of internal accounts it
+// holds per asset. Its Ledger and Deposit fields are simply not written: they
+// are live handles over this very store, not data, and there is no column that
+// could hold a *ledger.Book. store/mem nils them for the same reason, and the
+// Network rebinds them on the way out.
+//
+// The child rows are deleted and rewritten rather than upserted. An upsert
+// alone would leave behind a row for an asset the participant no longer holds,
+// and a stale row here is not a cosmetic problem: settlement would resolve an
+// account the bank has given up.
 func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	if err := t.write(); err != nil {
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO participants
-			(id, name, book_id, customer_subledger, suspense_account, reserve_account, settlement_account, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(id, name, book_id, customer_subledger, created_at)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
 			book_id            = EXCLUDED.book_id,
 			customer_subledger = EXCLUDED.customer_subledger,
-			suspense_account   = EXCLUDED.suspense_account,
-			reserve_account    = EXCLUDED.reserve_account,
-			settlement_account = EXCLUDED.settlement_account,
 			created_at         = EXCLUDED.created_at`,
 		string(p.ID), p.Name, string(p.BookID), string(p.CustomerSubledger),
-		string(p.SuspenseAccount), string(p.ReserveAccount), string(p.SettlementAccount),
 		nullTime(p.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
 	}
+
+	if _, err := t.tx.Exec(ctx, "DELETE FROM participant_assets WHERE participant_id = $1", string(p.ID)); err != nil {
+		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
+	}
+	for asset, accts := range p.Assets {
+		if _, err := t.tx.Exec(ctx, `
+			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, settlement)
+			VALUES ($1, $2, $3, $4, $5)`,
+			string(p.ID), string(asset),
+			string(accts.Suspense), string(accts.Reserve), string(accts.Settlement)); err != nil {
+			return fmt.Errorf("pg: put participant %s asset %s: %w", p.ID, asset, err)
+		}
+	}
 	return nil
 }
 
-const participantColumns = `id, name, book_id, customer_subledger, suspense_account,
-	reserve_account, settlement_account, created_at`
+const participantColumns = `id, name, book_id, customer_subledger, created_at`
 
 func scanParticipant(row pgx.Row) (payment.Participant, error) {
 	var (
 		p         payment.Participant
 		createdAt *time.Time
 	)
-	err := row.Scan(&p.ID, &p.Name, &p.BookID, &p.CustomerSubledger,
-		&p.SuspenseAccount, &p.ReserveAccount, &p.SettlementAccount, &createdAt)
+	err := row.Scan(&p.ID, &p.Name, &p.BookID, &p.CustomerSubledger, &createdAt)
 	if err != nil {
 		return payment.Participant{}, err
 	}
 	p.CreatedAt = readTime(createdAt)
 	return p, nil
+}
+
+// participantAssets reads the internal accounts of one participant, or of
+// every participant when id is empty.
+//
+// Listing takes the second form deliberately: one query keyed by participant
+// id, folded into the records afterwards, rather than a query per row. A join
+// would work too, but it would flatten the participant row once per asset and
+// have to be de-duplicated on the way back — the same shape the cycle and
+// settlement readers use, and not worth it for a child table this small.
+func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts, error) {
+	query := "SELECT participant_id, asset, suspense, reserve, settlement FROM participant_assets"
+	args := []any{}
+	if id != "" {
+		query += " WHERE participant_id = $1"
+		args = append(args, string(id))
+	}
+	query += " ORDER BY participant_id, seq"
+
+	rows, err := t.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pg: participant assets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts)
+	for rows.Next() {
+		var (
+			pid   payment.ParticipantID
+			asset ledger.AssetCode
+			accts payment.ParticipantAccounts
+		)
+		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Settlement); err != nil {
+			return nil, fmt.Errorf("pg: participant assets: %w", err)
+		}
+		if out[pid] == nil {
+			out[pid] = make(map[ledger.AssetCode]payment.ParticipantAccounts)
+		}
+		out[pid][asset] = accts
+	}
+	return out, rows.Err()
 }
 
 func (t *tx) GetParticipant(ctx context.Context, id payment.ParticipantID) (payment.Participant, error) {
@@ -83,6 +137,11 @@ func (t *tx) GetParticipant(ctx context.Context, id payment.ParticipantID) (paym
 	if err != nil {
 		return payment.Participant{}, fmt.Errorf("pg: get participant %s: %w", id, err)
 	}
+	assets, err := t.participantAssets(ctx, id)
+	if err != nil {
+		return payment.Participant{}, err
+	}
+	p.Assets = assets[id]
 	return p, nil
 }
 
@@ -102,7 +161,20 @@ func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error
 		}
 		out = append(out, p)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// One extra query for every participant's assets, rather than one per
+	// participant.
+	assets, err := t.participantAssets(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Assets = assets[out[i].ID]
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------

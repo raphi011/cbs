@@ -21,28 +21,33 @@ export default function ParticipantOverview() {
   const { data: p } = useParticipant(pid);
   const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
 
+  // A bank holds one suspense, reserve and settlement account per asset it
+  // operates in, so the list is the customer subledger plus three rows per
+  // asset. A euro-only bank looks exactly as it always did.
   const accounts: { label: string; id: string; hint: HintKey }[] = p
     ? [
         {
           label: "Customer subledger",
           id: p.customerSubledger,
-          hint: "ledger-vs-subledger",
+          hint: "ledger-vs-subledger" as HintKey,
         },
-        {
-          label: "Clearing suspense",
-          id: p.suspenseAccount,
-          hint: "clearing-suspense",
-        },
-        {
-          label: "Reserve at central bank",
-          id: p.reserveAccount,
-          hint: "reserve-account",
-        },
-        {
-          label: "Settlement (central-bank ledger)",
-          id: p.settlementAccount,
-          hint: "central-bank-reserves",
-        },
+        ...(p.assets ?? []).flatMap((a) => [
+          {
+            label: `Clearing suspense (${a.asset})`,
+            id: a.suspense,
+            hint: "clearing-suspense" as HintKey,
+          },
+          {
+            label: `Reserve at central bank (${a.asset})`,
+            id: a.reserve,
+            hint: "reserve-account" as HintKey,
+          },
+          {
+            label: `Settlement, central-bank ledger (${a.asset})`,
+            id: a.settlement,
+            hint: "central-bank-reserves" as HintKey,
+          },
+        ]),
       ]
     : [];
 
@@ -59,9 +64,14 @@ export default function ParticipantOverview() {
           {reserveLoading ? (
             <Skeleton className="h-8 w-32" />
           ) : (
-            <p className="text-2xl font-semibold">
-              <Money cents={reserve?.reserve ?? 0} />
-            </p>
+            (reserve ?? []).map((r) => (
+              <p key={r.asset} className="text-2xl font-semibold">
+                <Money cents={r.reserve} />{" "}
+                <span className="text-sm font-normal text-muted-foreground">
+                  {r.asset}
+                </span>
+              </p>
+            ))
           )}
           <p className="mt-1 text-sm text-muted-foreground">
             Starts at €0.00. Funding a deposit account raises this in step —

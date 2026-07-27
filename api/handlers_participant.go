@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
@@ -26,7 +27,10 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.network().AddParticipant(r.Context(), req.Name)
+	// nil assets means the network's default joining set — see AddParticipant.
+	// That is a default for which assets a bank joins with, not for the asset
+	// of any account, which is always named by its caller.
+	p, err := s.network().AddParticipant(r.Context(), req.Name, nil)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -65,6 +69,8 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
+	// No asset on the wire: funding raises the reserve of whichever asset the
+	// funded account is denominated in, which the network reads for itself.
 	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), ledger.Amount(req.Amount), req.Description); err != nil {
 		writeError(w, err)
 		return
@@ -86,6 +92,9 @@ func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleListReserves reports every bank's reserve in every asset it operates
+// in — one row per (participant, asset), because a reserve in one asset says
+// nothing about a reserve in another and the two must not be added up.
 func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 	parts, err := s.network().ListParticipants(r.Context())
 	if err != nil {
@@ -94,22 +103,48 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]reserveDTO, 0, len(parts))
 	for _, p := range parts {
-		bal, err := s.network().ReserveBalance(r.Context(), p.ID)
+		rows, err := s.reserveRows(r, p)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		out = append(out, reserveDTO{Participant: string(p.ID), Reserve: int64(bal)})
+		out = append(out, rows...)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
+// handleGetReserve reports one bank's reserves, one row per asset, for the
+// same reason handleListReserves does.
 func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
-	pid := payment.ParticipantID(r.PathValue("pid"))
-	bal, err := s.network().ReserveBalance(r.Context(), pid)
+	p, err := s.network().GetParticipant(r.Context(), payment.ParticipantID(r.PathValue("pid")))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, reserveDTO{Participant: string(pid), Reserve: int64(bal)})
+	out, err := s.reserveRows(r, p)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// reserveRows reads one participant's reserve in each of its assets, in asset
+// order so the response does not reshuffle between identical requests.
+func (s *Server) reserveRows(r *http.Request, p *payment.Participant) ([]reserveDTO, error) {
+	codes := make([]string, 0, len(p.Assets))
+	for code := range p.Assets {
+		codes = append(codes, string(code))
+	}
+	sort.Strings(codes)
+
+	out := make([]reserveDTO, 0, len(codes))
+	for _, code := range codes {
+		bal, err := s.network().ReserveBalance(r.Context(), p.ID, ledger.AssetCode(code))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, reserveDTO{Participant: string(p.ID), Asset: code, Reserve: int64(bal)})
+	}
+	return out, nil
 }

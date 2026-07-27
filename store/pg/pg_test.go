@@ -388,7 +388,7 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 
 	names := []string{"Aurora Bank", "Banca Verde", "Nordkredit"}
 	errs := runConcurrently(len(names), func(i int) error {
-		_, err := net.AddParticipant(ctx, names[i])
+		_, err := net.AddParticipant(ctx, names[i], nil)
 		return err
 	})
 	for _, err := range errs {
@@ -414,7 +414,7 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 
 	var reserves ledger.SubledgerID
 	for _, p := range participants {
-		acct, err := cb.GetAccount(ctx, p.SettlementAccount)
+		acct, err := cb.GetAccount(ctx, p.Assets["EUR"].Settlement)
 		assertNoError(t, err)
 		if reserves == "" {
 			reserves = acct.SubledgerID
@@ -442,9 +442,14 @@ func fundedChart(t *testing.T, book *ledger.Book, amount ledger.Amount) (cash, e
 	capital, err := book.CreateSubledger(ctx, gl.ID, "Capital")
 	assertNoError(t, err)
 
-	cashAcct, err := book.CreateAccount(ctx, assets.ID, "Cash", ledger.Asset)
+	// Accounts are denominated, so the book has to hold the euro before it can
+	// hold a euro account.
+	_, err = book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)
 	assertNoError(t, err)
-	equityAcct, err := book.CreateAccount(ctx, capital.ID, "Share Capital", ledger.Equity)
+
+	cashAcct, err := book.CreateAccount(ctx, assets.ID, "Cash", ledger.Asset, "EUR")
+	assertNoError(t, err)
+	equityAcct, err := book.CreateAccount(ctx, capital.ID, "Share Capital", ledger.Equity, "EUR")
 	assertNoError(t, err)
 
 	_, err = book.PostTransaction(ctx, ledger.PostTransactionRequest{

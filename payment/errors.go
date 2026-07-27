@@ -78,4 +78,8 @@ var (
 	// ErrDuplicateEndToEndID is returned when a payment is submitted with an
 	// end-to-end id that has already been used.
 	ErrDuplicateEndToEndID = errors.New("end-to-end id already used")
+
+	// ErrParticipantAssetNotFound is returned when a participant does not
+	// operate in an asset it is being asked to settle in.
+	ErrParticipantAssetNotFound = errors.New("participant does not hold accounts in this asset")
 )

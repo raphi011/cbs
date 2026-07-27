@@ -137,7 +137,11 @@ func (s *Server) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	acct, err := p.Ledger.CreateAccount(r.Context(), ledger.SubledgerID(r.PathValue("sid")), req.Name, acctType)
+	if req.Asset == "" {
+		writeBadRequest(w, "asset is required")
+		return
+	}
+	acct, err := p.Ledger.CreateAccount(r.Context(), ledger.SubledgerID(r.PathValue("sid")), req.Name, acctType, ledger.AssetCode(req.Asset))
 	if err != nil {
 		writeError(w, err)
 		return

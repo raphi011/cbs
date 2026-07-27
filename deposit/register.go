@@ -124,16 +124,22 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 // Liability account in the general ledger under the given subledger, then
 // records the deposit account in the Active state.
 //
+// asset is the unit the account is denominated in; it must already be
+// registered in the underlying book. A customer holding two assets holds two
+// accounts.
+//
 // overdraftLimit is a positive amount the account may go below zero by; 0
-// means no overdraft is permitted.
+// means no overdraft is permitted. The asset comes before it so that the two
+// ledger-typed arguments are not adjacent and transposable.
 //
 // Returns any error from the underlying ledger (for example
-// ledger.ErrSubledgerNotFound if the subledger does not exist).
-func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
+// ledger.ErrSubledgerNotFound if the subledger does not exist, or
+// ledger.ErrAssetNotFound if the asset is not registered).
+func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error) {
 	var out Account
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = r.OpenAccountTx(ctx, tx, subledger, name, overdraftLimit)
+		out, err = r.OpenAccountTx(ctx, tx, subledger, name, asset, overdraftLimit)
 		return err
 	})
 	return out, err
@@ -142,12 +148,12 @@ func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID
 // OpenAccountTx is OpenAccount within a caller-supplied unit of work. The GL
 // account and the deposit account are created through the same Tx, so an
 // account can never exist in one layer without the other.
-func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
+func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return Account{}, err
 	}
 
-	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability)
+	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability, asset)
 	if err != nil {
 		return Account{}, err
 	}
@@ -161,6 +167,7 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		ID:             AccountID(id),
 		GLAccount:      gl.ID,
 		Name:           name,
+		Asset:          gl.Asset,
 		Status:         Active,
 		OverdraftLimit: overdraftLimit,
 		CreatedAt:      r.now(),

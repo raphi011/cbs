@@ -26,15 +26,19 @@ import { describeError } from "@/lib/api/errors";
 export function OpenDepositAccountForm({ pid }: { pid: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  // Pre-filled rather than defaulted: the backend refuses an account with no
+  // asset, and the account's asset is fixed once it is open.
+  const [asset, setAsset] = useState("EUR");
   const [overdraftCents, setOverdraftCents] = useState<number | null>(0);
   const create = useOpenDepositAccount(pid);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || !asset.trim()) return;
     try {
       const acct = await create.mutateAsync({
         name: name.trim(),
+        asset: asset.trim(),
         overdraftLimit: overdraftCents ?? 0,
       });
       toast.success(`Opened ${acct.name}`);
@@ -75,6 +79,20 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             />
           </div>
           <div className="space-y-2">
+            <FieldLabel htmlFor="dda-asset" required>
+              Asset
+            </FieldLabel>
+            <Input
+              id="dda-asset"
+              value={asset}
+              onChange={(e) => setAsset(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">
+              A customer holding two assets holds two accounts, each with its
+              own IBAN.
+            </p>
+          </div>
+          <div className="space-y-2">
             <FieldLabel htmlFor="dda-overdraft" hint="overdraft">
               Overdraft limit
             </FieldLabel>
@@ -85,7 +103,10 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             />
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={create.isPending || !name.trim()}>
+            <Button
+              type="submit"
+              disabled={create.isPending || !name.trim() || !asset.trim()}
+            >
               {create.isPending ? "Opening…" : "Open account"}
             </Button>
           </DialogFooter>

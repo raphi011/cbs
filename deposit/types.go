@@ -50,10 +50,21 @@ func (s AccountStatus) String() string {
 // Account is a customer demand-deposit account. It wraps a backing Liability
 // account in the general ledger (GLAccount): the GL book balance of that
 // account is the customer's money.
+//
+// Asset duplicates the backing GL account's asset. That is a deliberate
+// exception to deriving rather than duplicating: the GL account's asset is
+// immutable, so the two cannot drift, and deriving it would make ListAccounts
+// an N+1 lookup in store/mem and a join in store/pg — divergent complexity in
+// both stores for a value that cannot change. store/storetest asserts they
+// always agree.
+//
+// A customer holding several assets holds several accounts, each with its own
+// IBAN, which is how most European retail banks work.
 type Account struct {
 	ID             AccountID
 	GLAccount      ledger.AccountID
 	Name           string
+	Asset          ledger.AssetCode
 	Status         AccountStatus
 	OverdraftLimit ledger.Amount // positive amount the balance may go below zero by; 0 means none
 	CreatedAt      time.Time

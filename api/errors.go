@@ -27,6 +27,7 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrSubledgerNotFound),
 		errors.Is(err, ledger.ErrAccountNotFound),
 		errors.Is(err, ledger.ErrTransactionNotFound),
+		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrAccountNotFound),
 		errors.Is(err, deposit.ErrHoldNotFound),
 		errors.Is(err, deposit.ErrSnapshotNotFound),
@@ -36,10 +37,12 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrCycleNotFound),
 		errors.Is(err, payment.ErrSettlementNotFound),
 		errors.Is(err, payment.ErrSchemeNotFound),
-		errors.Is(err, payment.ErrAccountNotInParticipant):
+		errors.Is(err, payment.ErrAccountNotInParticipant),
+		errors.Is(err, payment.ErrParticipantAssetNotFound):
 		return http.StatusNotFound
 
 	case errors.Is(err, ledger.ErrDuplicateIdempotencyKey),
+		errors.Is(err, ledger.ErrDuplicateAsset),
 		errors.Is(err, ledger.ErrTransactionAlreadyReversed),
 		errors.Is(err, payment.ErrDuplicateEndToEndID),
 		errors.Is(err, payment.ErrCycleAlreadyOpen):
@@ -66,6 +69,7 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrUnbalancedTransaction),
 		errors.Is(err, ledger.ErrInvalidAmount),
 		errors.Is(err, ledger.ErrInvalidText),
+		errors.Is(err, ledger.ErrInvalidScale),
 		errors.Is(err, deposit.ErrInvalidAmount),
 		errors.Is(err, payment.ErrInvalidPaymentAmount):
 		return http.StatusBadRequest

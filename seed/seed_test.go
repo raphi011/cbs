@@ -126,7 +126,7 @@ func TestReservesConserved(t *testing.T) {
 	net := testNetwork(t)
 	var sum int64
 	for _, p := range listParticipants(t, ctx, net) {
-		bal, err := net.ReserveBalance(ctx, p.ID)
+		bal, err := net.ReserveBalance(ctx, p.ID, "EUR")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -254,7 +254,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 
 	// And the observable consequence, not just the clock reading: a row written
 	// after the skip must carry a live timestamp.
-	acct, err := listParticipants(t, ctx, secondNet)[0].OpenCustomerAccount(ctx, "Opened after the skip")
+	acct, err := listParticipants(t, ctx, secondNet)[0].OpenCustomerAccount(ctx, "Opened after the skip", "EUR")
 	if err != nil {
 		t.Fatalf("open account after the skip: %v", err)
 	}

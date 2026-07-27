@@ -3,6 +3,8 @@ package payment
 import (
 	"context"
 	"time"
+
+	"github.com/raphi011/cbs/ledger"
 )
 
 // Scheme is the generic abstraction over a payment scheme. Concrete schemes
@@ -15,6 +17,14 @@ import (
 type Scheme interface {
 	// ID is the scheme's unique identifier, e.g. "sepa.ct".
 	ID() SchemeID
+
+	// Asset is the unit the scheme settles in. Both legs of a payment must be
+	// denominated in it.
+	//
+	// This is a property of the scheme, not a limitation of the ledger: SEPA
+	// is a euro scheme. A cross-currency payment is not one payment at all —
+	// it is a payment plus an FX trade.
+	Asset() ledger.AssetCode
 
 	// Direction reports whether the debtor pushes funds or the creditor
 	// pulls them.
@@ -82,6 +92,7 @@ const SchemeSEPACT SchemeID = "sepa.ct"
 type SCT struct{}
 
 func (SCT) ID() SchemeID                     { return SchemeSEPACT }
+func (SCT) Asset() ledger.AssetCode          { return "EUR" }
 func (SCT) Direction() SchemeDirection       { return Push }
 func (SCT) SettlementModel() SettlementModel { return Net }
 func (SCT) RequiresMandate() bool            { return false }
@@ -104,6 +115,7 @@ const SchemeSEPADD SchemeID = "sepa.dd"
 type SDD struct{}
 
 func (SDD) ID() SchemeID                     { return SchemeSEPADD }
+func (SDD) Asset() ledger.AssetCode          { return "EUR" }
 func (SDD) Direction() SchemeDirection       { return Pull }
 func (SDD) SettlementModel() SettlementModel { return Net }
 func (SDD) RequiresMandate() bool            { return true }

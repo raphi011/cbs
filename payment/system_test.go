@@ -16,11 +16,27 @@ import (
 // package's own test clock.
 var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
+// testAsset is the asset these tests operate in. SEPA is a euro scheme, so a
+// test bank that clears SEPA is a euro bank; euroOnly is the joining set that
+// says so at AddParticipant.
+const testAsset ledger.AssetCode = "EUR"
+
+var euroOnly = []ledger.AssetCode{testAsset}
+
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
 	store := testenv.New(t, clock)
 	return NewNetwork(store.Payment(), clock)
+}
+
+// accountsOf returns a participant's internal accounts in the test asset,
+// failing the test if it does not operate in it.
+func accountsOf(t *testing.T, p *Participant) ParticipantAccounts {
+	t.Helper()
+	accts, err := p.AccountsFor(testAsset)
+	assertNoError(t, err)
+	return accts
 }
 
 // setupTwoBanks creates two participant banks, opens a customer account at
@@ -31,14 +47,14 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 	t.Helper()
 	ctx := context.Background()
 
-	a, err := sys.AddParticipant(ctx, "Bank A")
+	a, err := sys.AddParticipant(ctx, "Bank A", euroOnly)
 	assertNoError(t, err)
-	b, err = sys.AddParticipant(ctx, "Bank B")
+	b, err = sys.AddParticipant(ctx, "Bank B", euroOnly)
 	assertNoError(t, err)
 
-	aliceAcct, err := a.OpenCustomerAccount(ctx, "Alice")
+	aliceAcct, err := a.OpenCustomerAccount(ctx, "Alice", testAsset)
 	assertNoError(t, err)
-	bobAcct, err := b.OpenCustomerAccount(ctx, "Bob")
+	bobAcct, err := b.OpenCustomerAccount(ctx, "Bob", testAsset)
 	assertNoError(t, err)
 
 	assertNoError(t, sys.Deposit(ctx, a.ID, aliceAcct.ID, 100000, "Alice opening deposit"))
@@ -81,8 +97,8 @@ func customerBalance(t *testing.T, p *Participant, acct deposit.AccountID) ledge
 // central bank's view of that bank's reserve.
 func assertReserveMirror(t *testing.T, sys *Network, p *Participant) {
 	t.Helper()
-	own := bookBalance(t, p.Ledger, p.ReserveAccount)
-	cb, err := sys.ReserveBalance(context.Background(), p.ID)
+	own := bookBalance(t, p.Ledger, accountsOf(t, p).Reserve)
+	cb, err := sys.ReserveBalance(context.Background(), p.ID, testAsset)
 	assertNoError(t, err)
 	assertEqual(t, "reserve mirror for "+p.Name, own, cb)
 }
@@ -118,10 +134,10 @@ func TestSCT_HappyPath(t *testing.T) {
 	// After settlement the money has arrived and suspense is flat.
 	assertEqual(t, "alice final", customerBalance(t, a, alice), 70000)
 	assertEqual(t, "bob final", customerBalance(t, b, bob), 30000)
-	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, a.SuspenseAccount), 0)
-	assertEqual(t, "bank B suspense", bookBalance(t, b.Ledger, b.SuspenseAccount), 0)
-	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, a.ReserveAccount), 70000)
-	assertEqual(t, "bank B reserve", bookBalance(t, b.Ledger, b.ReserveAccount), 30000)
+	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
+	assertEqual(t, "bank B suspense", bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, accountsOf(t, a).Reserve), 70000)
+	assertEqual(t, "bank B reserve", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 30000)
 	assertReserveMirror(t, sys, a)
 	assertReserveMirror(t, sys, b)
 
@@ -158,8 +174,8 @@ func TestSCT_Netting(t *testing.T) {
 	assertEqual(t, "alice", customerBalance(t, a, alice), 80000)
 	assertEqual(t, "bob", customerBalance(t, b, bob), 70000)
 	// Reserves moved only by the net.
-	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, a.ReserveAccount), 80000)
-	assertEqual(t, "bank B reserve", bookBalance(t, b.Ledger, b.ReserveAccount), 70000)
+	assertEqual(t, "bank A reserve", bookBalance(t, a.Ledger, accountsOf(t, a).Reserve), 80000)
+	assertEqual(t, "bank B reserve", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 70000)
 	assertReserveMirror(t, sys, a)
 	assertReserveMirror(t, sys, b)
 }
@@ -326,8 +342,8 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	reserveBefore := map[ParticipantID]ledger.Amount{}
 	txCountBefore := map[ParticipantID]int{}
 	for _, p := range participants {
-		suspenseBefore[p.ID] = bookBalance(t, p.Ledger, p.SuspenseAccount)
-		reserveBefore[p.ID] = bookBalance(t, p.Ledger, p.ReserveAccount)
+		suspenseBefore[p.ID] = bookBalance(t, p.Ledger, accountsOf(t, p).Suspense)
+		reserveBefore[p.ID] = bookBalance(t, p.Ledger, accountsOf(t, p).Reserve)
 		txs, err := p.Ledger.ListTransactions(ctx)
 		assertNoError(t, err)
 		txCountBefore[p.ID] = len(txs)
@@ -342,8 +358,8 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 
 	// No participant's own book moved, and none of them gained a transaction.
 	for _, p := range participants {
-		assertEqual(t, "suspense at "+p.Name, bookBalance(t, p.Ledger, p.SuspenseAccount), suspenseBefore[p.ID])
-		assertEqual(t, "reserve at "+p.Name, bookBalance(t, p.Ledger, p.ReserveAccount), reserveBefore[p.ID])
+		assertEqual(t, "suspense at "+p.Name, bookBalance(t, p.Ledger, accountsOf(t, p).Suspense), suspenseBefore[p.ID])
+		assertEqual(t, "reserve at "+p.Name, bookBalance(t, p.Ledger, accountsOf(t, p).Reserve), reserveBefore[p.ID])
 		txs, err := p.Ledger.ListTransactions(ctx)
 		assertNoError(t, err)
 		assertEqual(t, "transaction count at "+p.Name, len(txs), txCountBefore[p.ID])
@@ -386,18 +402,18 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	a, err := sys.AddParticipant(ctx, "Bank A") // net receiver
+	a, err := sys.AddParticipant(ctx, "Bank A", euroOnly) // net receiver
 	assertNoError(t, err)
-	b, err := sys.AddParticipant(ctx, "Bank B") // solvent net payer
+	b, err := sys.AddParticipant(ctx, "Bank B", euroOnly) // solvent net payer
 	assertNoError(t, err)
-	c, err := sys.AddParticipant(ctx, "Bank C") // underfunded net payer
+	c, err := sys.AddParticipant(ctx, "Bank C", euroOnly) // underfunded net payer
 	assertNoError(t, err)
 
-	alice, err := a.OpenCustomerAccount(ctx, "Alice")
+	alice, err := a.OpenCustomerAccount(ctx, "Alice", testAsset)
 	assertNoError(t, err)
-	bob, err := b.OpenCustomerAccount(ctx, "Bob")
+	bob, err := b.OpenCustomerAccount(ctx, "Bob", testAsset)
 	assertNoError(t, err)
-	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", 100000)
+	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, 100000)
 	assertNoError(t, err)
 
 	assertNoError(t, sys.Deposit(ctx, a.ID, alice.ID, 100000, "Alice opening deposit"))
@@ -433,7 +449,7 @@ func reserveBalances(t *testing.T, ctx context.Context, sys *Network) map[Partic
 
 	out := make(map[ParticipantID]ledger.Amount, len(participants))
 	for _, p := range participants {
-		bal, err := sys.ReserveBalance(ctx, p.ID)
+		bal, err := sys.ReserveBalance(ctx, p.ID, testAsset)
 		assertNoError(t, err)
 		out[p.ID] = bal
 	}
@@ -452,9 +468,9 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		var banks []*Participant
 		var accounts []deposit.Account
 		for _, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
-			p, err := sys.AddParticipant(ctx, name)
+			p, err := sys.AddParticipant(ctx, name, euroOnly)
 			assertNoError(t, err)
-			acct, err := p.OpenCustomerAccount(ctx, "Customer at "+name)
+			acct, err := p.OpenCustomerAccount(ctx, "Customer at "+name, testAsset)
 			assertNoError(t, err)
 			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
 			banks = append(banks, p)
@@ -568,7 +584,7 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "status", rejected.Status, Rejected)
 	assertEqual(t, "alice restored", customerBalance(t, a, alice), 100000)
-	assertEqual(t, "suspense flat", bookBalance(t, a.Ledger, a.SuspenseAccount), 0)
+	assertEqual(t, "suspense flat", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
 }
 
 func TestDuplicateEndToEndID(t *testing.T) {
@@ -631,6 +647,100 @@ func TestOpenCycle_AlreadyOpen(t *testing.T) {
 	assertNoError(t, err)
 	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
 	assertError(t, err, ErrCycleAlreadyOpen)
+}
+
+// ---------------------------------------------------------------------------
+// Assets
+// ---------------------------------------------------------------------------
+
+func TestParticipantHasAccountsPerAsset(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	p, err := sys.AddParticipant(ctx, "Alpha", []ledger.AssetCode{"EUR", "USD"})
+	assertNoError(t, err)
+
+	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
+		accts, err := p.AccountsFor(asset)
+		assertNoError(t, err)
+		for name, id := range map[string]ledger.AccountID{
+			"suspense": accts.Suspense, "reserve": accts.Reserve, "settlement": accts.Settlement,
+		} {
+			if id == "" {
+				t.Errorf("%s account for %s is empty", name, asset)
+			}
+		}
+		// Each of the three accounts must itself be denominated in that asset,
+		// two of them in the bank's book and one in the central bank's.
+		suspense, err := p.Ledger.GetAccount(ctx, accts.Suspense)
+		assertNoError(t, err)
+		assertEqual(t, "suspense asset", suspense.Asset, asset)
+		reserve, err := p.Ledger.GetAccount(ctx, accts.Reserve)
+		assertNoError(t, err)
+		assertEqual(t, "reserve asset", reserve.Asset, asset)
+		settlement, err := sys.CentralBank().GetAccount(ctx, accts.Settlement)
+		assertNoError(t, err)
+		assertEqual(t, "settlement asset", settlement.Asset, asset)
+	}
+
+	// And they survive the store, rather than only the value AddParticipant
+	// returned.
+	reloaded, err := sys.GetParticipant(ctx, p.ID)
+	assertNoError(t, err)
+	assertEqual(t, "assets after a reload", len(reloaded.Assets), 2)
+}
+
+func TestAccountsForUnknownAssetFails(t *testing.T) {
+	sys := testNetwork(t)
+
+	p, err := sys.AddParticipant(context.Background(), "Alpha", nil) // defaults to EUR
+	assertNoError(t, err)
+	assertEqual(t, "assets a bank joins with by default", len(p.Assets), 1)
+
+	_, err = p.AccountsFor("BTC")
+	assertError(t, err, ErrParticipantAssetNotFound)
+}
+
+// Settlement must never fall back to a base currency when a member does not
+// hold the cycle's asset. Taking the euro away from a member that is about to
+// settle simulates the state a future non-euro scheme would produce naturally.
+func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 30000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+	})
+	assertNoError(t, err)
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+
+	stored, err := sys.GetParticipant(ctx, b.ID)
+	assertNoError(t, err)
+	delete(stored.Assets, testAsset)
+	assertNoError(t, sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		return tx.PutParticipant(ctx, *stored)
+	}))
+
+	_, err = sys.SettleCycle(ctx, cyc.ID)
+	assertError(t, err, ErrParticipantAssetNotFound)
+
+	// And nothing was posted: the batch fails whole, exactly as it does for a
+	// member that cannot cover its position. The payer's money is still in its
+	// bank's suspense, where the debtor leg left it.
+	settlements, err := sys.ListSettlements(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "settlements recorded", len(settlements), 0)
+
+	after, err := sys.GetCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	assertEqual(t, "cycle status", after.Status, CycleClosed)
+	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 30000)
+	assertEqual(t, "bob was not credited", customerBalance(t, b, bob), 0)
 }
 
 // ---------------------------------------------------------------------------

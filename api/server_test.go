@@ -108,7 +108,7 @@ func TestDepositFlow(t *testing.T) {
 	h := newTestServer(t)
 
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 
 	// Fund Alice and confirm the returned balance.
 	bal := doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
@@ -129,8 +129,8 @@ func TestSCTEndToEnd(t *testing.T) {
 
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
@@ -161,8 +161,13 @@ func TestSCTEndToEnd(t *testing.T) {
 		t.Fatalf("bob book = %d, want 25000", got)
 	}
 
-	reserveA := doJSON(t, h, "GET", "/central-bank/reserves/"+a, "", http.StatusOK)
-	if got := int64(reserveA["reserve"].(float64)); got != 75000 {
+	// Reserves are reported one row per asset, so a euro bank has exactly one.
+	var reserveA []map[string]any
+	getJSON(t, h, "/central-bank/reserves/"+a, &reserveA)
+	if len(reserveA) != 1 || reserveA[0]["asset"] != "EUR" {
+		t.Fatalf("bank A reserves = %v, want one EUR row", reserveA)
+	}
+	if got := int64(reserveA[0]["reserve"].(float64)); got != 75000 {
 		t.Fatalf("bank A reserve = %d, want 75000", got)
 	}
 
@@ -172,11 +177,38 @@ func TestSCTEndToEnd(t *testing.T) {
 	}
 }
 
+// An account without an asset is refused rather than opened in euro. The whole
+// point of the asset dimension is that nothing picks a currency on the
+// caller's behalf, and a request body that forgot to say is exactly the case
+// where a default would go unnoticed.
+func TestCreateAccountRequiresAsset(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"No Asset","type":"Liability"}`, http.StatusBadRequest)
+
+	// An asset the book does not hold is a 404 from the registry, not a
+	// silent substitution.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Dogecoin","type":"Liability","asset":"DOGE"}`, http.StatusNotFound)
+}
+
+func TestOpenDepositAccountRequiresAsset(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"No Asset"}`, http.StatusBadRequest)
+}
+
 // TestErrorMapping locks one error per HTTP status class.
 func TestErrorMapping(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 
 	// 404: unknown participant.
 	assertStatus(t, h, "GET", "/participants/nope", "", http.StatusNotFound)
@@ -188,8 +220,8 @@ func TestErrorMapping(t *testing.T) {
 	// 400: unbalanced transaction.
 	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
-	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset"}`, http.StatusCreated)["id"].(string)
-	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts", `{"name":"Equity","type":"Equity"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts", `{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 	assertStatus(t, h, "POST", "/participants/"+pid+"/transactions", `{
 		"entries":[
 			{"accountId":"`+acct+`","amount":100,"direction":"Debit"},
@@ -286,11 +318,11 @@ func TestResetEmptiesState(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := net.AddParticipant(ctx, "Bank A")
+		p, err := net.AddParticipant(ctx, "Bank A", nil)
 		if err != nil {
 			return err
 		}
-		_, err = p.OpenCustomerAccount(ctx, "Baseline")
+		_, err = p.OpenCustomerAccount(ctx, "Baseline", "EUR")
 		return err
 	}
 
@@ -311,7 +343,7 @@ func TestResetEmptiesState(t *testing.T) {
 	}
 
 	// Mutate, reset, then assert the mutation is gone and the seed is back.
-	doJSON(t, srv, "POST", "/participants/bank_1/deposit-accounts", `{"name":"Temp","overdraftLimit":0}`, http.StatusCreated)
+	doJSON(t, srv, "POST", "/participants/bank_1/deposit-accounts", `{"name":"Temp","asset":"EUR","overdraftLimit":0}`, http.StatusCreated)
 	if got := names(); len(got) != 2 {
 		t.Fatalf("accounts after the mutation = %v, want two", got)
 	}
@@ -358,7 +390,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		_, err = net.AddParticipant(ctx, "Bank A")
+		_, err = net.AddParticipant(ctx, "Bank A", nil)
 		return err
 	}
 
@@ -408,11 +440,11 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := net.AddParticipant(ctx, "Bank A")
+		p, err := net.AddParticipant(ctx, "Bank A", nil)
 		if err != nil {
 			return err
 		}
-		_, err = p.OpenCustomerAccount(ctx, "Baseline")
+		_, err = p.OpenCustomerAccount(ctx, "Baseline", "EUR")
 		return err
 	}
 
@@ -471,7 +503,7 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newTestServer(t)
 
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
 		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
@@ -557,8 +589,8 @@ func auditFixture(t *testing.T, h http.Handler) (bankA, bankB, payID string) {
 	t.Helper()
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
 

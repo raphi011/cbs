@@ -37,7 +37,7 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	p.Ledger = nil
 	p.Deposit = nil
 	t.state.insertSeq(ledger.NetworkBook, kindParticipant, string(p.ID))
-	t.state.participants[p.ID] = p
+	t.state.participants[p.ID] = copyParticipant(p)
 	return nil
 }
 
@@ -46,13 +46,13 @@ func (t *tx) GetParticipant(ctx context.Context, id payment.ParticipantID) (paym
 	if !ok {
 		return payment.Participant{}, payment.ErrParticipantNotFound
 	}
-	return p, nil
+	return copyParticipant(p), nil
 }
 
 func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error) {
 	out := make([]payment.Participant, 0, len(t.state.participants))
 	for _, p := range t.state.participants {
-		out = append(out, p)
+		out = append(out, copyParticipant(p))
 	}
 	sortRows(t.state, out, ledger.NetworkBook, kindParticipant, func(p payment.Participant) (time.Time, string) {
 		return p.CreatedAt, string(p.ID)
@@ -236,9 +236,28 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 // Copying
 // ---------------------------------------------------------------------------
 //
-// Payments, cycles and settlements carry maps and slices, so they are copied in
-// both directions: neither the store nor its caller may end up holding a
-// reference into the other's data.
+// Participants, payments, cycles and settlements carry maps and slices, so they
+// are copied in both directions: neither the store nor its caller may end up
+// holding a reference into the other's data.
+
+// copyParticipant copies the per-asset account map, which is the one reference
+// a Participant carries.
+//
+// An empty map becomes nil, because store/pg cannot tell the two apart: the
+// accounts live in a child table, and no rows is no rows. A store that
+// answered "empty map" where the other answers nil would be a difference the
+// conformance suite exists to prevent.
+func copyParticipant(p payment.Participant) payment.Participant {
+	cp := p
+	cp.Assets = nil
+	if len(p.Assets) > 0 {
+		cp.Assets = make(map[ledger.AssetCode]payment.ParticipantAccounts, len(p.Assets))
+		for k, v := range p.Assets {
+			cp.Assets[k] = v
+		}
+	}
+	return cp
+}
 
 func copyPayment(p payment.Payment) payment.Payment {
 	cp := p

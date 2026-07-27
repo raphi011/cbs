@@ -128,13 +128,21 @@ export interface Snapshot {
 
 // --- Payment layer --------------------------------------------------------
 
+// A participant's internal accounts for one asset. A bank clearing both a euro
+// and a dollar scheme holds two of these — each of those accounts is
+// denominated in exactly one asset.
+export interface ParticipantAccounts {
+  asset: string;
+  suspense: string;
+  reserve: string;
+  settlement: string;
+}
+
 export interface Participant {
   id: string;
   name: string;
   customerSubledger: string;
-  suspenseAccount: string;
-  reserveAccount: string;
-  settlementAccount: string;
+  assets: ParticipantAccounts[];
 }
 
 export interface PartyRef {
@@ -201,8 +209,11 @@ export interface Scheme {
   settlementDelay: string;
 }
 
+// One bank's reserve at the central bank, in one asset. Reserves in different
+// assets are different things and are never added together.
 export interface Reserve {
   participant: string;
+  asset: string;
   reserve: number;
 }
 
@@ -215,6 +226,9 @@ export interface NameRequest {
 export interface CreateAccountRequest {
   name: string;
   type: AccountType;
+  // Required: the server refuses an account with no asset rather than
+  // opening it in euro.
+  asset: string;
 }
 
 // Entries on input carry only accountId/amount/direction (no id).
@@ -235,6 +249,8 @@ export interface PostTransactionRequest {
 
 export interface OpenDepositAccountRequest {
   name: string;
+  // Required, like CreateAccountRequest.asset.
+  asset: string;
   overdraftLimit: number;
 }
 

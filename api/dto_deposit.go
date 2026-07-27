@@ -72,8 +72,12 @@ func toSnapshotDTO(s deposit.Snapshot) snapshotDTO {
 	return snapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: toBalanceDTO(s.Balance), TakenAt: s.TakenAt}
 }
 
+// openDepositAccountRequest carries a required asset, for the same reason
+// createAccountRequest does: the deposit account's asset is its backing GL
+// account's, and neither may be guessed on the caller's behalf.
 type openDepositAccountRequest struct {
 	Name           string `json:"name"`
+	Asset          string `json:"asset"`
 	OverdraftLimit int64  `json:"overdraftLimit"`
 }
 

@@ -25,15 +25,31 @@ func testClock() time.Time {
 	return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 }
 
+// testAsset is what every account in these tests is denominated in. An account
+// cannot exist in an asset its book has not registered, so a test book is a
+// euro book from the moment it is created.
+const testAsset AssetCode = "EUR"
+
 // testBook creates a new Book over a fresh store with a fixed clock for
-// deterministic tests.
+// deterministic tests, with testAsset registered.
 //
 // The store comes from testenv: store/mem by default, store/pg when
 // TEST_DATABASE_URL is set. Every assertion below therefore has to hold on both
 // backends, which is the only way the two are kept honest.
+//
+// The euro is written straight through the store rather than through
+// CreateAsset, so a fresh book still starts with an empty audit log and an
+// unburned ID counter. Registering it is fixture, not a step under test — the
+// asset registry has its own tests in asset_test.go.
 func testBook(t *testing.T) *Book {
 	t.Helper()
-	return NewBook(testenv.New(t, testClock), "bank", testClock)
+	store := testenv.New(t, testClock)
+	book := NewBook(store, "bank", testClock)
+	err := store.Update(context.Background(), func(ctx context.Context, tx Tx) error {
+		return tx.PutAsset(ctx, book.ID(), AssetDef{Code: testAsset, Name: "Euro", Scale: 2, Class: Fiat})
+	})
+	assertNoError(t, err)
+	return book
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:
@@ -62,16 +78,16 @@ func setupChartOfAccounts(t *testing.T, book *Book) (alice, bob, cash, feeIncome
 	rev, err := book.CreateSubledger(ctx, gl.ID, "Revenue")
 	assertNoError(t, err)
 
-	alice, err = book.CreateAccount(ctx, deposits.ID, "Alice Checking", Liability)
+	alice, err = book.CreateAccount(ctx, deposits.ID, "Alice Checking", Liability, testAsset)
 	assertNoError(t, err)
 
-	bob, err = book.CreateAccount(ctx, deposits.ID, "Bob Checking", Liability)
+	bob, err = book.CreateAccount(ctx, deposits.ID, "Bob Checking", Liability, testAsset)
 	assertNoError(t, err)
 
-	cash, err = book.CreateAccount(ctx, assets.ID, "Cash", Asset)
+	cash, err = book.CreateAccount(ctx, assets.ID, "Cash", Asset, testAsset)
 	assertNoError(t, err)
 
-	feeIncome, err = book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue)
+	feeIncome, err = book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue, testAsset)
 	assertNoError(t, err)
 
 	return alice, bob, cash, feeIncome
@@ -169,7 +185,7 @@ func TestCreateAccount(t *testing.T) {
 	l, _ := book.CreateLedger(ctx, "GL")
 	sl, _ := book.CreateSubledger(ctx, l.ID, "Deposits")
 
-	acct, err := book.CreateAccount(ctx, sl.ID, "Alice", Liability)
+	acct, err := book.CreateAccount(ctx, sl.ID, "Alice", Liability, testAsset)
 	assertNoError(t, err)
 	assertEqual(t, "name", acct.Name, "Alice")
 	assertEqual(t, "type", acct.Type, Liability)
@@ -185,7 +201,7 @@ func TestCreateAccount_SubledgerNotFound(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.CreateAccount(ctx, "bad_sub", "Alice", Liability)
+	_, err := book.CreateAccount(ctx, "bad_sub", "Alice", Liability, testAsset)
 	assertError(t, err, ErrSubledgerNotFound)
 }
 
@@ -759,7 +775,7 @@ func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
 	// Proper test: debit a Liability with no prior balance.
 	l, _ := book.CreateLedger(ctx, "Test")
 	sl, _ := book.CreateSubledger(ctx, l.ID, "Test")
-	liab, _ := book.CreateAccount(ctx, sl.ID, "Test Liability", Liability)
+	liab, _ := book.CreateAccount(ctx, sl.ID, "Test Liability", Liability, testAsset)
 
 	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Debit unfunded liability",
@@ -805,11 +821,11 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	sl, _ := book.CreateSubledger(ctx, l.ID, "Test")
 
 	// Create one account of each type.
-	asset, _ := book.CreateAccount(ctx, sl.ID, "Asset", Asset)
-	liability, _ := book.CreateAccount(ctx, sl.ID, "Liability", Liability)
-	equity, _ := book.CreateAccount(ctx, sl.ID, "Equity", Equity)
-	revenue, _ := book.CreateAccount(ctx, sl.ID, "Revenue", Revenue)
-	expense, _ := book.CreateAccount(ctx, sl.ID, "Expense", Expense)
+	asset, _ := book.CreateAccount(ctx, sl.ID, "Asset", Asset, testAsset)
+	liability, _ := book.CreateAccount(ctx, sl.ID, "Liability", Liability, testAsset)
+	equity, _ := book.CreateAccount(ctx, sl.ID, "Equity", Equity, testAsset)
+	revenue, _ := book.CreateAccount(ctx, sl.ID, "Revenue", Revenue, testAsset)
+	expense, _ := book.CreateAccount(ctx, sl.ID, "Expense", Expense, testAsset)
 
 	accounts := []Account{asset, liability, equity, revenue, expense}
 
@@ -878,10 +894,10 @@ func TestFullLedgerWorkflow(t *testing.T) {
 	bankAssets, _ := book.CreateSubledger(ctx, gl.ID, "Bank Assets")
 	rev, _ := book.CreateSubledger(ctx, gl.ID, "Revenue")
 
-	alice, _ := book.CreateAccount(ctx, customerDeposits.ID, "Alice Checking", Liability)
-	nostro, _ := book.CreateAccount(ctx, bankAssets.ID, "Nostro USD", Asset)
-	cashAccount, _ := book.CreateAccount(ctx, bankAssets.ID, "Cash Vault", Asset)
-	feeIncome, _ := book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue)
+	alice, _ := book.CreateAccount(ctx, customerDeposits.ID, "Alice Checking", Liability, testAsset)
+	nostro, _ := book.CreateAccount(ctx, bankAssets.ID, "Nostro USD", Asset, testAsset)
+	cashAccount, _ := book.CreateAccount(ctx, bankAssets.ID, "Cash Vault", Asset, testAsset)
+	feeIncome, _ := book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue, testAsset)
 
 	// Step 2: Alice deposits $500 cash at the teller.
 	book.PostTransaction(ctx, PostTransactionRequest{

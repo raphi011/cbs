@@ -240,7 +240,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 var tables = []string{
 	"books", "ledgers", "subledgers", "accounts", "assets", "transactions", "entries",
 	"deposit_accounts", "holds", "snapshots",
-	"participants", "mandates", "payments", "cycles", "cycle_payments",
+	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions",
 	"audit_events", "id_sequences",
 }

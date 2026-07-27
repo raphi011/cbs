@@ -120,8 +120,11 @@ export function useAccounts(pid: string, sid: string) {
 export function useCreateAccount(pid: string, sid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; type: import("../enums").AccountType }) =>
-      api.createAccount(pid, sid, body),
+    mutationFn: (body: {
+      name: string;
+      type: import("../enums").AccountType;
+      asset: string;
+    }) => api.createAccount(pid, sid, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: qk.accounts(pid, sid) }),
   });
 }

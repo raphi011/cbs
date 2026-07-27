@@ -23,6 +23,50 @@ import (
 func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	t.Helper()
 
+	// A deposit account stores its asset even though its backing GL account
+	// already carries it — the one duplicated fact in the schema. Duplication
+	// is only safe while the two agree, so the suite says so out loud.
+	t.Run("DepositAccountAssetMatchesItsGLAccount", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}); err != nil {
+				return err
+			}
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.cust.001", SubledgerID: "cust", Name: "Anna",
+				Type: ledger.Liability, Asset: "BTC",
+			}); err != nil {
+				return err
+			}
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", GLAccount: "200.cust.001", Name: "Anna", Asset: "BTC",
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			dep, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			gl, err := tx.GetAccount(ctx, bookA, dep.GLAccount)
+			if err != nil {
+				return err
+			}
+			if dep.Asset != gl.Asset {
+				t.Errorf("deposit asset %q != GL asset %q", dep.Asset, gl.Asset)
+			}
+			listed, err := tx.ListDepositAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 || listed[0].Asset != "BTC" {
+				t.Errorf("ListDepositAccounts = %+v, want one BTC account", listed)
+			}
+			return nil
+		})
+	})
+
 	t.Run("DepositAccountRoundTripsAndIsBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 

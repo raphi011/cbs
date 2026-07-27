@@ -237,6 +237,41 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "accounts listed for book-a", len(listed), 1)
 	})
 
+	// An account's asset is what every per-asset rule above the store reads, so
+	// a store that drops it — an insert that forgets the column, a scan that
+	// forgets the field — turns every account into an account in nothing.
+	t.Run("AccountRoundTripsItsAsset", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}); err != nil {
+				return err
+			}
+			return tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "100.custody.001", SubledgerID: "custody", Name: "Custody",
+				Type: ledger.Asset, Asset: "BTC",
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			got, err := tx.GetAccount(ctx, bookA, "100.custody.001")
+			if err != nil {
+				return err
+			}
+			if got.Asset != "BTC" {
+				t.Errorf("account asset = %q, want BTC", got.Asset)
+			}
+			list, err := tx.ListAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(list) != 1 || list[0].Asset != "BTC" {
+				t.Errorf("ListAccounts = %+v, want one BTC account", list)
+			}
+			return nil
+		})
+	})
+
 	t.Run("AssetsAreScopedPerBook", func(t *testing.T) {
 		s := open(t, newStore)
 

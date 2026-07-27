@@ -54,9 +54,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		assertEqual(t, "name", got.Name, "Aurora Bank")
 		assertEqual(t, "book id", string(got.BookID), "bank_1")
 		assertEqual(t, "customer subledger", string(got.CustomerSubledger), "100")
-		assertEqual(t, "suspense account", string(got.SuspenseAccount), "200.200.001")
-		assertEqual(t, "reserve account", string(got.ReserveAccount), "100.200.001")
-		assertEqual(t, "settlement account", string(got.SettlementAccount), "200.100.001")
+		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
+		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
+		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
 		assertEqual(t, "created at", got.CreatedAt.Equal(early), true)
 
 		assertEqual(t, "Ledger is not persisted", got.Ledger == nil, true)
@@ -78,6 +78,85 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			assertEqual(t, "participants after an upsert", len(all), 1)
 			assertEqual(t, "name after an upsert", all[0].Name, "Aurora Bank AB")
+			return nil
+		})
+	})
+
+	t.Run("ParticipantAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutParticipant(ctx, payment.Participant{
+				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
+				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
+					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", Settlement: "200.res.002"},
+				},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			if len(got.Assets) != 2 {
+				t.Fatalf("participant has %d assets, want 2", len(got.Assets))
+			}
+			if got.Assets["USD"].Reserve != "100.ib.002" {
+				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
+			}
+			// A listing must carry them too, not just a single Get — the
+			// listing is the path SettleCycle resolves every member through.
+			listed, err := tx.ListParticipants(ctx)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 || len(listed[0].Assets) != 2 {
+				t.Errorf("ListParticipants = %+v, want one participant with two assets", listed)
+			}
+			return nil
+		})
+
+		// An upsert must replace the set, not merge into it: a stale asset
+		// left behind would settle through an account the participant no
+		// longer holds.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutParticipant(ctx, payment.Participant{
+				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
+				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
+				},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			if len(got.Assets) != 1 {
+				t.Errorf("after upsert participant has %d assets, want 1", len(got.Assets))
+			}
+			return nil
+		})
+
+		// And the map the store hands back is the caller's own: mutating it
+		// must not reach into the store, which store/mem could only get wrong
+		// by handing out its own map.
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			delete(got.Assets, "EUR")
+			again, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			if len(again.Assets) != 1 {
+				t.Errorf("mutating a returned Assets map changed the store: %d assets left", len(again.Assets))
+			}
 			return nil
 		})
 	})
@@ -395,11 +474,17 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		st := settlement("set_1", "cyc_1", early)
 		st.NetPositions = map[payment.ParticipantID]ledger.Amount{"bank_1": 100}
 
+		// A participant carries one too: the accounts it holds per asset.
+		bank := participant("bank_1", "Aurora Bank", early)
+
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutCycle(ctx, c); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, p); err != nil {
+				return err
+			}
+			if err := tx.PutParticipant(ctx, bank); err != nil {
 				return err
 			}
 			return tx.PutSettlement(ctx, st)
@@ -410,6 +495,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		c.NetPositions["bank_1"] = 999
 		p.Metadata["scheme"] = "tampered"
 		st.NetPositions["bank_1"] = 999
+		bank.Assets["EUR"] = payment.ParticipantAccounts{Suspense: "tampered"}
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			gotCycle, err := tx.GetCycle(ctx, "cyc_1")
@@ -424,6 +510,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				return err
 			}
 			assertEqual(t, "payment metadata after caller mutation", gotPayment.Metadata["scheme"], "sepa.ct")
+
+			gotParticipant, err := tx.GetParticipant(ctx, "bank_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "participant suspense after caller mutation",
+				string(gotParticipant.Assets["EUR"].Suspense), "200.200.001")
 
 			gotSettlement, err := tx.GetSettlement(ctx, "set_1")
 			if err != nil {
@@ -639,10 +732,10 @@ func participant(id payment.ParticipantID, name string, createdAt time.Time) pay
 		Name:              name,
 		BookID:            ledger.BookID(id),
 		CustomerSubledger: "100",
-		SuspenseAccount:   "200.200.001",
-		ReserveAccount:    "100.200.001",
-		SettlementAccount: "200.100.001",
-		CreatedAt:         createdAt,
+		Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},
+		},
+		CreatedAt: createdAt,
 	}
 }
 

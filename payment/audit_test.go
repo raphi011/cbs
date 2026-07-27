@@ -259,7 +259,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Bank A")
+	p, err := sys.AddParticipant(ctx, "Bank A", euroOnly)
 	assertNoError(t, err)
 
 	events := paymentAudit(t, sys, string(p.ID))
