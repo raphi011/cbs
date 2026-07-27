@@ -83,12 +83,18 @@ func (s *Server) handleDepositBalance(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(r.PathValue("did")))
+	did := deposit.AccountID(r.PathValue("did"))
+	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toBalanceDTO(bal))
+	bal, err := p.Deposit.GetBalance(r.Context(), did)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toBalanceDTO(bal, acct.Asset))
 }
 
 // handleDepositStatus dispatches a lifecycle transition based on the request's
@@ -255,12 +261,18 @@ func (s *Server) handleTakeSnapshot(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "invalid date (want YYYY-MM-DD)")
 		return
 	}
-	snap, err := p.Deposit.TakeEndOfDaySnapshot(r.Context(), deposit.AccountID(r.PathValue("did")), date)
+	did := deposit.AccountID(r.PathValue("did"))
+	acct, err := p.Deposit.GetAccount(r.Context(), did)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toSnapshotDTO(snap))
+	snap, err := p.Deposit.TakeEndOfDaySnapshot(r.Context(), did, date)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toSnapshotDTO(snap, acct.Asset))
 }
 
 // handleGetSnapshots returns one snapshot when ?date=YYYY-MM-DD is given, or all
@@ -271,6 +283,14 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	did := deposit.AccountID(r.PathValue("did"))
+	// Every snapshot of one account is in that account's asset — an account's
+	// asset is fixed at creation — so it is resolved once here rather than per
+	// row below.
+	acct, err := p.Deposit.GetAccount(r.Context(), did)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	if dateStr := r.URL.Query().Get("date"); dateStr != "" {
 		date, err := time.Parse("2006-01-02", dateStr)
 		if err != nil {
@@ -282,7 +302,7 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, toSnapshotDTO(snap))
+		writeJSON(w, http.StatusOK, toSnapshotDTO(snap, acct.Asset))
 		return
 	}
 	snaps, err := p.Deposit.ListSnapshots(r.Context(), did)
@@ -292,7 +312,7 @@ func (s *Server) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]snapshotDTO, len(snaps))
 	for i, snap := range snaps {
-		out[i] = toSnapshotDTO(snap)
+		out[i] = toSnapshotDTO(snap, acct.Asset)
 	}
 	writeJSON(w, http.StatusOK, out)
 }

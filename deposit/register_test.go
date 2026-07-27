@@ -42,10 +42,6 @@ const (
 // testRegister creates a Register backed by a fresh ledger with a fixed clock,
 // returning the register, the customer-deposits subledger, and a counterparty
 // Asset account (cash) for capture postings.
-//
-// The two assets are written straight through the store rather than through
-// CreateAsset, so the audit-log assertions below still see only the events the
-// test itself caused.
 func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID) {
 	t.Helper()
 	ctx := context.Background()
@@ -53,13 +49,6 @@ func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID
 	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, "bank", clock)
 	reg := NewRegister(store.Deposit(), book, book.ID(), clock)
-
-	assertNoError(t, store.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
-		if err := tx.PutAsset(ctx, book.ID(), ledger.AssetDef{Code: testAsset, Name: "Euro", Scale: 2, Class: ledger.Fiat}); err != nil {
-			return err
-		}
-		return tx.PutAsset(ctx, book.ID(), ledger.AssetDef{Code: otherAsset, Name: "Bitcoin", Scale: 8, Class: ledger.Crypto})
-	}))
 
 	gl, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)

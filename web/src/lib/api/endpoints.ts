@@ -22,6 +22,7 @@ import type {
   InitiatePaymentRequest,
   Ledger,
   Mandate,
+  AddParticipantRequest,
   NameRequest,
   OpenCycleRequest,
   OpenDepositAccountRequest,
@@ -49,7 +50,7 @@ export function getParticipant(pid: string): Promise<Participant> {
   return request("GET", `/participants/${pid}`);
 }
 
-export function addParticipant(body: NameRequest): Promise<Participant> {
+export function addParticipant(body: AddParticipantRequest): Promise<Participant> {
   return request("POST", "/participants", body);
 }
 
@@ -82,11 +83,11 @@ export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
 
 // --- Assets -----------------------------------------------------------
 
-// Assets are book-scoped: each participant registers its own (see
-// ledger.Book.CreateAsset), so this is per-participant, not a network-wide
-// registry.
-export function listAssets(pid: string): Promise<Asset[]> {
-  return request("GET", `/participants/${pid}/assets`);
+// Every asset the system knows. Network-wide and read-only, like listSchemes:
+// an asset definition is defined in Go (ledger.LookupAsset), not stored, so
+// there is a list to read and nothing to create.
+export function listAssets(): Promise<Asset[]> {
+  return request("GET", "/assets");
 }
 
 // --- Ledger: ledgers / subledgers / accounts -----------------------------
@@ -229,7 +230,8 @@ export function openDepositAccount(
   return request("POST", `/participants/${pid}/deposit-accounts`, body);
 }
 
-// The three-part deposit balance (book / holds / available), all in cents.
+// The three-part deposit balance (book / holds / available), all integers in
+// the account's asset's minor units — the asset comes back on the response.
 export function getDepositBalance(
   pid: string,
   did: string,

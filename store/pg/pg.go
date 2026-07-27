@@ -238,7 +238,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 // tables is every table Reset empties, and the order is irrelevant because
 // TRUNCATE takes them all in one statement.
 var tables = []string{
-	"books", "ledgers", "subledgers", "accounts", "assets", "transactions", "entries",
+	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 	"deposit_accounts", "holds", "snapshots",
 	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions",

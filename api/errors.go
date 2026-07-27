@@ -27,7 +27,6 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrSubledgerNotFound),
 		errors.Is(err, ledger.ErrAccountNotFound),
 		errors.Is(err, ledger.ErrTransactionNotFound),
-		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrAccountNotFound),
 		errors.Is(err, deposit.ErrHoldNotFound),
 		errors.Is(err, deposit.ErrSnapshotNotFound),
@@ -37,12 +36,10 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrCycleNotFound),
 		errors.Is(err, payment.ErrSettlementNotFound),
 		errors.Is(err, payment.ErrSchemeNotFound),
-		errors.Is(err, payment.ErrAccountNotInParticipant),
-		errors.Is(err, payment.ErrParticipantAssetNotFound):
+		errors.Is(err, payment.ErrAccountNotInParticipant):
 		return http.StatusNotFound
 
 	case errors.Is(err, ledger.ErrDuplicateIdempotencyKey),
-		errors.Is(err, ledger.ErrDuplicateAsset),
 		errors.Is(err, ledger.ErrTransactionAlreadyReversed),
 		errors.Is(err, payment.ErrDuplicateEndToEndID),
 		errors.Is(err, payment.ErrCycleAlreadyOpen):
@@ -63,14 +60,22 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrMandateExceeded),
 		errors.Is(err, payment.ErrMandateRequired),
 		errors.Is(err, payment.ErrSchemeUnsupportedReturn),
-		errors.Is(err, payment.ErrAssetMismatch):
+		errors.Is(err, payment.ErrAssetMismatch),
+		// The bank exists and the asset exists; this bank simply holds no
+		// accounts in it. 404 would read as "participant not found" on
+		// POST /participants/{pid}/deposits and GET /central-bank/reserves/
+		// {pid}, and as "cycle not found" on POST /cycles/{id}/settle. 422
+		// matches the sibling underfunded-member failure.
+		errors.Is(err, payment.ErrParticipantAssetNotFound):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),
 		errors.Is(err, ledger.ErrUnbalancedTransaction),
 		errors.Is(err, ledger.ErrInvalidAmount),
 		errors.Is(err, ledger.ErrInvalidText),
-		errors.Is(err, ledger.ErrInvalidScale),
+		// Assets are a fixed list in code, so an unknown code is a bad field
+		// value like an unparseable account type — not a missing resource.
+		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrInvalidAmount),
 		errors.Is(err, payment.ErrInvalidPaymentAmount):
 		return http.StatusBadRequest

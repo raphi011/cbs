@@ -32,25 +32,15 @@ func testClock() time.Time {
 const testAsset AssetCode = "EUR"
 
 // testBook creates a new Book over a fresh store with a fixed clock for
-// deterministic tests, with testAsset registered.
+// deterministic tests.
 //
 // The store comes from testenv: store/mem by default, store/pg when
 // TEST_DATABASE_URL is set. Every assertion below therefore has to hold on both
 // backends, which is the only way the two are kept honest.
-//
-// The euro is written straight through the store rather than through
-// CreateAsset, so a fresh book still starts with an empty audit log and an
-// unburned ID counter. Registering it is fixture, not a step under test — the
-// asset registry has its own tests in asset_test.go.
 func testBook(t *testing.T) *Book {
 	t.Helper()
 	store := testenv.New(t, testClock)
-	book := NewBook(store, "bank", testClock)
-	err := store.Update(context.Background(), func(ctx context.Context, tx Tx) error {
-		return tx.PutAsset(ctx, book.ID(), AssetDef{Code: testAsset, Name: "Euro", Scale: 2, Class: Fiat})
-	})
-	assertNoError(t, err)
-	return book
+	return NewBook(store, "bank", testClock)
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:
@@ -238,9 +228,6 @@ func TestGetAccounts(t *testing.T) {
 	ctx := context.Background()
 	cs := &countingStore{Store: testenv.New(t, testClock)}
 	book := NewBook(cs, "bank", testClock)
-	assertNoError(t, cs.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return tx.PutAsset(ctx, book.ID(), AssetDef{Code: testAsset, Name: "Euro", Scale: 2, Class: Fiat})
-	}))
 
 	l, err := book.CreateLedger(ctx, "GL")
 	assertNoError(t, err)

@@ -82,6 +82,21 @@ const (
 	cbAssetsName   = "Settlement Assets"
 )
 
+// cbAssetsAccountName is the balancing settlement-asset account's name in one
+// asset. The asset is part of the name, the way it is for a bank's reserve and
+// suspense accounts, because there is one such account per asset and a chart
+// of accounts listing two rows both called "Settlement Assets" is unreadable.
+//
+// The name used to be stable across assets: a book written before the asset
+// dimension existed had one such account, backfilled to EUR, and a name that
+// did not mention the asset was what let it be found rather than duplicated.
+// The migration series that produced those books has since been folded away —
+// there is one migration, and it creates accounts.asset from the start — so
+// there is no longer any book whose account is named without its asset.
+func cbAssetsAccountName(asset ledger.AssetCode) string {
+	return cbAssetsName + " (" + string(asset) + ")"
+}
+
 // NewNetwork creates a payment network with the SEPA Credit Transfer and SEPA
 // Direct Debit schemes registered.
 //
@@ -218,10 +233,10 @@ func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.Subledg
 // other and an account is denominated in exactly one thing: the euro reserves
 // the central bank has issued are not backed by the dollars it has issued.
 //
-// The lookup is by (capital subledger, name, asset) rather than by name alone.
-// Keeping the name stable across assets is what lets a book written before the
-// asset dimension existed — whose account was backfilled to EUR — still be
-// found rather than duplicated.
+// The lookup is by (capital subledger, name, asset). Matching on the asset as
+// well as the name is what makes it idempotent per asset rather than per
+// central bank — see cbAssetsAccountName for why the name carries the asset
+// too.
 func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
 	_, capital, err := s.centralBankChartTx(ctx, tx)
 	if err != nil {
@@ -232,11 +247,11 @@ func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset l
 		return "", err
 	}
 	for _, a := range accounts {
-		if a.SubledgerID == capital && a.Name == cbAssetsName && a.Asset == asset {
+		if a.SubledgerID == capital && a.Name == cbAssetsAccountName(asset) && a.Asset == asset {
 			return a.ID, nil
 		}
 	}
-	created, err := s.centralBank.CreateAccountTx(ctx, tx, capital, cbAssetsName, ledger.Asset, asset)
+	created, err := s.centralBank.CreateAccountTx(ctx, tx, capital, cbAssetsAccountName(asset), ledger.Asset, asset)
 	if err != nil {
 		return "", err
 	}
@@ -315,18 +330,17 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 	// several of each.
 	accounts := make(map[ledger.AssetCode]ParticipantAccounts, len(assets))
 	for _, asset := range assets {
-		def, err := s.assetDef(asset)
-		if err != nil {
+		// Reject an unknown code before writing anything, rather than letting
+		// the first CreateAccountTx below fail after part of the chart of
+		// accounts already exists.
+		if _, err := ledger.LookupAsset(asset); err != nil {
 			return nil, err
 		}
-		// The asset has to exist in both books: the bank holds its own
-		// suspense and reserve accounts, and the central bank holds the
-		// matching vostro account.
-		if err := ensureAsset(ctx, tx, bank, def); err != nil {
-			return nil, err
-		}
-		if err := ensureAsset(ctx, tx, s.centralBank, def); err != nil {
-			return nil, err
+		if _, seen := accounts[asset]; seen {
+			// A repeated code would otherwise create a second set of accounts
+			// and then overwrite the map entry pointing at the first, orphaning
+			// three accounts in the chart.
+			continue
 		}
 		// The other side of every reserve credit in this asset.
 		if _, err := s.centralBankAssetsAccountTx(ctx, tx, asset); err != nil {
@@ -363,30 +377,6 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 		return nil, err
 	}
 	return s.bind(p), nil
-}
-
-// assetDef returns the definition for a well-known asset code. The network
-// needs it because it creates accounts in books it does not otherwise
-// populate, and an account cannot reference an unregistered asset.
-func (s *Network) assetDef(code ledger.AssetCode) (ledger.AssetDef, error) {
-	switch code {
-	case "EUR":
-		return ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2, Class: ledger.Fiat}, nil
-	case "USD":
-		return ledger.AssetDef{Code: "USD", Name: "US Dollar", Scale: 2, Class: ledger.Fiat}, nil
-	default:
-		return ledger.AssetDef{}, fmt.Errorf("%w: %s", ledger.ErrAssetNotFound, code)
-	}
-}
-
-// ensureAsset registers an asset in a book if it is not registered already.
-// Idempotent, because several participants join the same central-bank book.
-func ensureAsset(ctx context.Context, tx Tx, book *ledger.Book, def ledger.AssetDef) error {
-	_, err := book.CreateAssetTx(ctx, tx, def.Code, def.Name, def.Scale, def.Class)
-	if errors.Is(err, ledger.ErrDuplicateAsset) {
-		return nil
-	}
-	return err
 }
 
 // Deposit funds a customer deposit account with cash, modelled as the bank
@@ -476,11 +466,25 @@ func (s *Network) CreateMandate(ctx context.Context, debtor, creditor PartyRef, 
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
 func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	if _, err := s.checkPartyTx(ctx, tx, "debtor", debtor); err != nil {
+	debtorAcct, err := s.checkPartyTx(ctx, tx, "debtor", debtor)
+	if err != nil {
 		return Mandate{}, err
 	}
-	if _, err := s.checkPartyTx(ctx, tx, "creditor", creditor); err != nil {
+	creditorAcct, err := s.checkPartyTx(ctx, tx, "creditor", creditor)
+	if err != nil {
 		return Mandate{}, err
+	}
+	// Both ends of a mandate must be denominated in the same asset. A mandate
+	// authorizes a future direct debit from the debtor to the creditor, and
+	// MaxAmount is one integer — an integer that means one thing at the
+	// debtor's scale and another at the creditor's is not a limit on anything.
+	// InitiatePaymentTx would refuse every payment such a mandate could
+	// authorize (both legs are checked against the scheme's asset, and these
+	// two cannot both match it), so this only makes the refusal happen where
+	// it can be understood instead of at first use.
+	if debtorAcct.Asset != creditorAcct.Asset {
+		return Mandate{}, fmt.Errorf("%w: debtor %s, creditor %s",
+			ErrAssetMismatch, debtorAcct.Asset, creditorAcct.Asset)
 	}
 
 	id, err := tx.NextID(ctx, ledger.NetworkBook, "mnd")

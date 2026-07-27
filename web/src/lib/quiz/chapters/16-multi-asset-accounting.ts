@@ -124,7 +124,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "The cap is arithmetic. An [[asset-scale|amount is an `int64`]], topping out near 9.22 × 10¹⁸ — which at 18 decimals is 9.2 whole units. Ether and most ERC-20 tokens *do* use 18 decimals, so the first option is simply false; the constraint is the width of the integer, not the world. And the whole point of integers here is that there is no [[amount-cents|floating-point arithmetic]] anywhere to lose precision.",
+        "The cap is arithmetic. An [[asset-scale|amount is an `int64`]], topping out near 9.22 × 10¹⁸ — which at 18 decimals is 9.2 whole units. Ether and most ERC-20 tokens *do* use 18 decimals, so the first option is simply false; the constraint is the width of the integer, not the world. And the whole point of integers here is that there is no [[minor-units|floating-point arithmetic]] anywhere to lose precision.",
     },
     {
       kind: "numeric",
@@ -136,7 +136,7 @@ export const chapter: Chapter = {
       answer: 9,
       tolerance: 0,
       explanation:
-        "**9.** Not 9 billion, not 9 million — nine. 9.22 × 10¹⁸ divided by 10¹⁸ is 9.22. Native 18-decimal precision and an `int64` amount are [[asset-scale|mutually exclusive]], and the only real decision is which of the two to give up. This system keeps the `int64`, caps scale at 9, and refuses an oversized scale loudly at registration rather than overflowing quietly at posting time.",
+        "**9.** Not 9 billion, not 9 million — nine. 9.22 × 10¹⁸ divided by 10¹⁸ is 9.22. Native 18-decimal precision and an `int64` amount are [[asset-scale|mutually exclusive]], and the only real decision is which of the two to give up. This system keeps the `int64` and caps scale at 9. Because the assets are a list in code, the cap is a test over that list: an entry that would overflow fails the build rather than posting quietly and wrongly.",
     },
     {
       kind: "mc",
@@ -190,16 +190,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "scheme-asset",
       prompt:
-        "A payment is attempted from a euro account to a bitcoin account. Why can the ledger's per-asset balance check not catch this on its own?",
+        "Suppose `ErrAssetMismatch` did not exist, and a payment from a euro account to a bitcoin account got past initiation. What would happen to it?",
       options: [
-        "It can — the posting would be unbalanced and rejected",
-        "Because a payment is never one posting: the debtor leg and the creditor leg are separate transactions in separate books, each balanced within its own asset",
-        "Because the ledger skips the balance check for payment-layer postings",
-        "Because the two accounts belong to different banks, and cross-book transactions are unchecked",
+        "Nothing would catch it — each leg balances within its own asset, so the payment settles and 3000 satoshi appear out of 3000 cents",
+        "It would survive initiation and fail at settlement with `ErrUnbalancedAsset`, failing the entire clearing cycle rather than just that payment",
+        "The debtor leg would be refused at initiation, because its two entries are in different assets",
+        "It would settle, and the imbalance would surface afterwards as a discrepancy in the central bank's reserve accounts",
       ],
       answer: 1,
       explanation:
-        "This is the one worth understanding. Bank A posts *debit Alice EUR / credit Suspense EUR* — impeccable double-entry in EUR. Bank B posts *debit Suspense BTC / credit Bob BTC* — impeccable in BTC. The error is not inside either posting; it is in the claim that these two are the halves of **one payment**, and no ledger can see that claim. Only [[scheme-asset|the payment layer holds both ends]], so only it can refuse, with `ErrAssetMismatch`. The general rule: an invariant can only be enforced where the whole of it is visible.",
+        "The ledger does catch it — in the worst possible place. At initiation there is only the debtor leg, *debit Alice EUR / credit Suspense EUR*, which is impeccable [[double-entry]] within one asset and contains no claim that a posting in another bank's book is its other half. At settlement the creditor leg is built from the creditor's suspense account **in the scheme's asset**, so it comes out *debit Suspense EUR / credit Bob BTC* — and that does not balance. But settlement is all-or-nothing: one bad payment fails every member's positions with it, and the error names an unbalanced asset rather than the payment behind it. [[scheme-asset|`ErrAssetMismatch`]] turns a late, batch-wide, misattributed failure into an immediate, correctly attributed one. The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.",
     },
     {
       kind: "truefalse",
@@ -219,16 +219,16 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "asset",
       prompt:
-        "Which of the following are true of the asset registry? (Select all that apply.)",
+        "Which of the following are true of assets in this system? (Select all that apply.)",
       options: [
-        "It is scoped to a book, so a bank that does not deal in bitcoin carries none",
+        "The known assets are a list in Go, not rows in a table — adding one is a code change",
         "An asset records a code, a name, a scale and a class (Fiat or Crypto)",
-        "Creating an account in an unregistered asset fails with an error",
+        "Creating an account in an asset the system does not know fails with an error",
         "An account's asset can be changed later if the customer switches currency",
       ],
       answers: [0, 1, 2],
       explanation:
-        "[[asset|Assets are book-scoped]], for the same reason [[book-scoped-id|IDs are]] — each participant owns its own book and its own chart of accounts. An account's asset is fixed at creation and never changes; a customer who wants euro *and* dollars gets a second account, which is why in practice they get a second IBAN. `AssetClass` carries no behaviour at all — it exists so a UI can tell a currency from a token without pattern-matching on the code.",
+        "[[asset|An asset definition is defined in code]], not stored: 'BTC has 8 decimal places' is a fact about the world, true in every book, and storing it per book would only make disagreement representable. It is the same call [[scheme-asset|the payment schemes make]] — a scheme is a Go type, its settlements are rows. An account's asset is fixed at creation and never changes; a customer who wants euro *and* dollars gets a second account, which is why in practice they get a second IBAN. `AssetClass` carries no behaviour at all — it exists so a UI can tell a currency from a token without pattern-matching on the code.",
     },
     {
       kind: "mc",
@@ -290,19 +290,19 @@ export const chapter: Chapter = {
         "In the relational schema the asset is stored on the `entries` table, so each leg carries the asset it was posted in.",
       answer: false,
       explanation:
-        "The asset is on **`accounts`**, and deliberately not on `entries`. An entry's asset is always its account's, so a column on `entries` would store the same fact twice and create the one thing a second copy always creates: the chance that the two disagree. Posting derives it instead, and derivation is free — the accounts have already been loaded for the sufficient-balance check. There is also no foreign key from `accounts.asset` to the assets table: 'the asset must be registered' is a *domain* rule, and a constraint there would make the Postgres store refuse a write the in-memory store performs. See [[relational-mapping]].",
+        "The asset is on **`accounts`**, and deliberately not on `entries`. An entry's asset is always its account's, so a column on `entries` would store the same fact twice and create the one thing a second copy always creates: the chance that the two disagree. Posting derives it instead, and derivation is free — the accounts have already been loaded for the sufficient-balance check. There is also no `CHECK` restricting `accounts.asset` to the known codes: 'the asset must be one the system knows' is a *domain* rule, and a constraint there would make the Postgres store refuse a write the in-memory store performs — and would turn a one-line change to a Go slice into a migration. See [[relational-mapping]].",
     },
     {
       kind: "numeric",
       id: "ch16-q20",
       difficulty: "challenge",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "A customer wants to send 0.00021 BTC. BTC has a scale of 8. What integer amount does the API receive?",
       answer: 21000,
       tolerance: 0,
       explanation:
-        "**21000** satoshi: 0.00021 × 10⁸. The conversion is the asset's scale and nothing else — [[amount-cents|there is no default scale]] anywhere in the frontend, and assuming 2 is precisely the bug this codebase once had, rendering 1 BTC (100000000 satoshi) as '1,000,000.00'. Every formatter takes the [[asset]] it is rendering.",
+        "**21000** satoshi: 0.00021 × 10⁸. The conversion is the asset's scale and nothing else — [[minor-units|there is no default scale]] anywhere in the frontend, and assuming 2 is precisely the bug this codebase once had, rendering 1 BTC (100000000 satoshi) as '1,000,000.00'. Every formatter takes the [[asset]] it is rendering.",
     },
   ],
 };

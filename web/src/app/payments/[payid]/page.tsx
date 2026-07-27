@@ -54,7 +54,7 @@ export default function PaymentDetailPage() {
   const ret = useReturnPayment();
   // See PaymentAmountCell in app/payments/page.tsx for why the debtor's
   // participant, not the scheme, is where a payment's scale is resolved from.
-  const { byCode } = useAssetLookup(p?.debtor.participant ?? "");
+  const { byCode } = useAssetLookup();
   const asset = p ? byCode.get(p.asset) : undefined;
 
   const scheme = schemes.data?.find((s) => s.id === p?.scheme);

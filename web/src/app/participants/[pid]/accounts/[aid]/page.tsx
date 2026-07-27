@@ -29,7 +29,7 @@ export default function AccountDetailPage() {
   const statement = useAccountStatement(pid, aid, account?.type);
   const { data: deposits } = useDepositAccounts(pid);
   const { data: participant } = useParticipant(pid);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode, isLoading: assetsLoading } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
 
   const back = `/participants/${pid}/ledger`;
@@ -48,8 +48,17 @@ export default function AccountDetailPage() {
         <Skeleton className="h-10 w-64" />
       ) : !account ? (
         <ErrorState error={new Error(`Account ${aid} not found in the chart of accounts.`)} onRetry={() => refetch()} />
-      ) : !asset ? (
+      ) : assetsLoading ? (
         <Skeleton className="h-10 w-64" />
+      ) : !asset ? (
+        <ErrorState
+          error={
+            new Error(
+              `This account is denominated in "${account.asset}", which the system has no definition for, so its amounts cannot be rendered at a known scale.`,
+            )
+          }
+          onRetry={() => refetch()}
+        />
       ) : (
         <>
           <div className="space-y-1">

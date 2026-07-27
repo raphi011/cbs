@@ -23,10 +23,9 @@ import type { ContraRef, StatementRow } from "@/lib/statement";
 import type { HintKey } from "@/components/hint-content";
 import type { Asset, Entry } from "@/lib/types";
 
-// A leg's amount is denominated in its own account's asset, which — since
-// Task 4 — can differ leg to leg within one transaction. `byCode` (from the
-// participant's own asset registry) resolves each leg independently rather
-// than assuming every leg shares the statement's own account's asset.
+// A leg's amount is denominated in its own account's asset, which can differ
+// leg to leg within one transaction. `byCode` resolves each leg independently
+// rather than assuming every leg shares the statement account's asset.
 function EntryAmount({ entry, byCode }: { entry: Entry; byCode: Map<string, Asset> }) {
   const asset = byCode.get(entry.asset);
   return asset ? <Money amount={entry.amount} asset={asset} /> : <Skeleton className="h-4 w-16" />;
@@ -59,7 +58,7 @@ export function StatementTable({
   amountHintId?: HintKey;
 }) {
   const [openTx, setOpenTx] = useState<string | null>(null);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
 
   if (rows.length === 0) {
     return (

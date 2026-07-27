@@ -35,7 +35,7 @@ export function CreateMandateForm() {
   const create = useCreateMandate();
   const debtorAccounts = useDepositAccounts(debtor.participant);
   const debtorAccount = debtorAccounts.data?.find((a) => a.id === debtor.account);
-  const { byCode } = useAssetLookup(debtor.participant);
+  const { byCode } = useAssetLookup();
   const resolvedAsset = debtorAccount ? byCode.get(debtorAccount.asset) : undefined;
 
   const valid =

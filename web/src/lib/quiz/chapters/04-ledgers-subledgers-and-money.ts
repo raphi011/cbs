@@ -43,24 +43,24 @@ export const chapter: Chapter = {
       kind: "truefalse",
       id: "ch4-q3",
       difficulty: "intro",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "Storing monetary amounts as floating-point numbers (e.g., `100.50` as a `float64`) is a safe and industry-standard approach for financial systems.",
       answer: false,
       explanation:
-        "Floating-point cannot represent most decimal fractions exactly — `0.1 + 0.2` is not `0.30` in binary. The [[amount-cents|industry standard]] stores money as integers of the smallest currency unit (cents for USD), making all arithmetic exact.",
+        "Floating-point cannot represent most decimal fractions exactly — `0.1 + 0.2` is not `0.30` in binary. The [[minor-units|industry standard]] stores money as integers of the smallest currency unit (cents for USD), making all arithmetic exact.",
     },
     {
       kind: "numeric",
       id: "ch4-q4",
       difficulty: "intro",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt: "A balance is stored internally as the integer 1234 cents. What is this amount in dollars? (Enter a number of dollars.)",
       answer: 12.34,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "[[amount-cents]]: banks store money as integer cents, so 1234 ÷ 100 = **$12.34**. Keeping the canonical value as the integer 1234 eliminates any floating-point rounding error.",
+        "[[minor-units]]: banks store money as integer cents, so 1234 ÷ 100 = **$12.34**. Keeping the canonical value as the integer 1234 eliminates any floating-point rounding error.",
     },
     {
       kind: "mc",
@@ -83,7 +83,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch4-q6",
       difficulty: "core",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "A wire transfer is for $1,234.56. Which stored integer correctly represents this amount using the integer-cents approach?",
       options: [
@@ -94,7 +94,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "[[amount-cents]]: $1,234.56 × 100 = **123,456 cents**. The accounting engine stores this as the integer 123456 — no rounding, no decimal point, exact.",
+        "[[minor-units]]: $1,234.56 × 100 = **123,456 cents**. The accounting engine stores this as the integer 123456 — no rounding, no decimal point, exact.",
     },
     {
       kind: "truefalse",
@@ -241,7 +241,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "IEEE 754 binary floating-point has no exact representation for `0.1` or `0.2`. Their sum evaluates to approximately `0.30000000000000004`. This is exactly why [[amount-cents|integer cents]] are used — integer arithmetic is always exact and this class of bug is impossible.",
+        "IEEE 754 binary floating-point has no exact representation for `0.1` or `0.2`. Their sum evaluates to approximately `0.30000000000000004`. This is exactly why [[minor-units|integer cents]] are used — integer arithmetic is always exact and this class of bug is impossible.",
     },
     {
       kind: "multi",

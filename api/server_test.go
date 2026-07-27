@@ -190,10 +190,11 @@ func TestCreateAccountRequiresAsset(t *testing.T) {
 	assertStatus(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
 		`{"name":"No Asset","type":"Liability"}`, http.StatusBadRequest)
 
-	// An asset the book does not hold is a 404 from the registry, not a
-	// silent substitution.
+	// An asset the system does not know is a 400 — a bad field value, like an
+	// unparseable account type — not a silent substitution, and not a 404,
+	// which on this route would read as "participant not found".
 	assertStatus(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
-		`{"name":"Dogecoin","type":"Liability","asset":"DOGE"}`, http.StatusNotFound)
+		`{"name":"Dogecoin","type":"Liability","asset":"DOGE"}`, http.StatusBadRequest)
 }
 
 func TestOpenDepositAccountRequiresAsset(t *testing.T) {
@@ -204,41 +205,42 @@ func TestOpenDepositAccountRequiresAsset(t *testing.T) {
 		`{"name":"No Asset"}`, http.StatusBadRequest)
 }
 
-// TestCreateAndListAssets pins the new registry endpoints: an asset created
-// through POST /participants/{pid}/assets shows up on GET of the same route,
-// scoped to that participant's own book.
-func TestCreateAndListAssets(t *testing.T) {
+// GET /assets lists the assets the system knows, with the scale a client needs
+// to render an amount. Read-only and network-wide: assets are defined in code,
+// like schemes, so there is nothing to create and nothing per-participant.
+func TestListAssets(t *testing.T) {
 	h := newTestServer(t)
-	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-
-	created := doJSON(t, h, "POST", "/participants/"+pid+"/assets",
-		`{"code":"BTC","name":"Bitcoin","scale":8,"class":"Crypto"}`, http.StatusCreated)
-	assertEqual(t, "code", created["code"].(string), "BTC")
-	assertEqual(t, "name", created["name"].(string), "Bitcoin")
-	assertEqual(t, "scale", int(created["scale"].(float64)), 8)
-	assertEqual(t, "class", created["class"].(string), "Crypto")
 
 	var assets []assetDTO
-	getJSON(t, h, "/participants/"+pid+"/assets", &assets)
-	found := false
+	getJSON(t, h, "/assets", &assets)
+
+	byCode := make(map[string]assetDTO, len(assets))
 	for _, a := range assets {
-		if a.Code == "BTC" {
-			found = true
-		}
+		byCode[a.Code] = a
 	}
-	if !found {
-		t.Errorf("GET /assets did not list BTC: %v", assets)
+	eur, ok := byCode["EUR"]
+	if !ok {
+		t.Fatalf("GET /assets did not list EUR: %v", assets)
 	}
+	assertEqual(t, "EUR scale", int(eur.Scale), 2)
+	assertEqual(t, "EUR class", eur.Class, "Fiat")
+
+	btc, ok := byCode["BTC"]
+	if !ok {
+		t.Fatalf("GET /assets did not list BTC: %v", assets)
+	}
+	assertEqual(t, "BTC scale", int(btc.Scale), 8)
+	assertEqual(t, "BTC class", btc.Class, "Crypto")
 }
 
-// TestCreateAssetRejectsUnknownClass pins that class is validated against the
-// two known names rather than accepted verbatim.
-func TestCreateAssetRejectsUnknownClass(t *testing.T) {
+// A participant cannot be created in an asset the system does not know. The
+// assets array names the set of assets a bank joins with, and each one has to
+// resolve before any of its plumbing accounts are written.
+func TestCreateParticipantRejectsUnknownAsset(t *testing.T) {
 	h := newTestServer(t)
-	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
-	assertStatus(t, h, "POST", "/participants/"+pid+"/assets",
-		`{"code":"XYZ","name":"Mystery","scale":2,"class":"Commodity"}`, http.StatusBadRequest)
+	assertStatus(t, h, "POST", "/participants",
+		`{"name":"Bank A","assets":["DOGE"]}`, http.StatusBadRequest)
 }
 
 // TestAccountResponseIncludesAsset pins that the account, deposit-account and
@@ -326,15 +328,17 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	h := newTestServer(t)
 
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
 	aliceUSD := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceUSD","asset":"USD"}`, http.StatusCreated)["id"].(string)
 	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	bobUSD := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"BobUSD","asset":"USD"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 
-	// Mandate: derived from the (non-EUR) debtor account.
+	// Mandate: derived from the (non-EUR) debtor account. Both ends are USD —
+	// CreateMandate refuses a mandate whose two accounts disagree.
 	mandate := doJSON(t, h, "POST", "/mandates", `{
 		"debtor":{"participant":"`+a+`","account":"`+aliceUSD+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bobUSD+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)
 	assertEqual(t, "created mandate asset", mandate["asset"].(string), "USD")

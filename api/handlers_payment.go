@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -14,15 +15,63 @@ import (
 // fix at creation is the debtor account being authorized, and that account's
 // own asset (see deposit.Account.Asset) is what MaxAmount is denominated in.
 func (s *Server) mandateAsset(ctx context.Context, m payment.Mandate) (string, error) {
-	p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+	assets, err := s.mandateAssets(ctx, []payment.Mandate{m})
 	if err != nil {
 		return "", err
 	}
-	acct, err := p.Deposit.GetAccount(ctx, m.Debtor.Account)
-	if err != nil {
-		return "", err
+	return assets[m.ID], nil
+}
+
+// mandateAssets resolves a whole batch of mandates' assets at once.
+//
+// The single-mandate path costs two store.View calls — a full BEGIN…COMMIT
+// each on store/pg — so calling it once per row turned GET /mandates into
+// 2N+1 round trips for what is a handful of reads. This is the same batch
+// shape as entryAssets (see api/dto_ledger.go): resolve per distinct
+// *participant* rather than per row, and read that participant's deposit
+// accounts in one listing rather than one at a time. A listing of any number
+// of mandates over k banks now costs k+1 round trips, and k is the number of
+// member banks, not the number of results.
+func (s *Server) mandateAssets(ctx context.Context, mandates []payment.Mandate) (map[payment.MandateID]string, error) {
+	byParticipant := make(map[payment.ParticipantID]map[deposit.AccountID]ledger.AssetCode)
+	for _, m := range mandates {
+		if _, done := byParticipant[m.Debtor.Participant]; done {
+			continue
+		}
+		p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+		if err != nil {
+			return nil, err
+		}
+		accounts, err := p.Deposit.ListAccounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		byAccount := make(map[deposit.AccountID]ledger.AssetCode, len(accounts))
+		for _, a := range accounts {
+			byAccount[a.ID] = a.Asset
+		}
+		byParticipant[m.Debtor.Participant] = byAccount
 	}
-	return string(acct.Asset), nil
+
+	out := make(map[payment.MandateID]string, len(mandates))
+	for _, m := range mandates {
+		asset, ok := byParticipant[m.Debtor.Participant][m.Debtor.Account]
+		if !ok {
+			// The mandate names an account that is not in its debtor's book.
+			// GetAccount is what says so, in the vocabulary the rest of the
+			// package maps to a status code.
+			p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.Deposit.GetAccount(ctx, m.Debtor.Account); err != nil {
+				return nil, err
+			}
+			return nil, deposit.ErrAccountNotFound
+		}
+		out[m.ID] = string(asset)
+	}
+	return out, nil
 }
 
 // settlementAsset resolves a settlement's asset via its cycle's scheme — a
@@ -33,6 +82,34 @@ func (s *Server) settlementAsset(ctx context.Context, st payment.Settlement) (st
 		return "", err
 	}
 	return schemeAsset(c.Scheme, s.network().ListSchemes()), nil
+}
+
+// settlementAssets resolves a whole batch of settlements' assets at once.
+//
+// Per row, settlementAsset costs a GetCycle (one store.View) plus a fresh
+// ListSchemes (which takes the network's lock). One ListCycles reads every
+// cycle in a single View and the scheme list is fetched once, so a listing of
+// N settlements costs 2 round trips rather than N+1.
+func (s *Server) settlementAssets(ctx context.Context, settlements []payment.Settlement) (map[payment.SettlementID]string, error) {
+	cycles, err := s.network().ListCycles(ctx)
+	if err != nil {
+		return nil, err
+	}
+	schemes := s.network().ListSchemes()
+	byCycle := make(map[payment.CycleID]payment.SchemeID, len(cycles))
+	for _, c := range cycles {
+		byCycle[c.ID] = c.Scheme
+	}
+
+	out := make(map[payment.SettlementID]string, len(settlements))
+	for _, st := range settlements {
+		scheme, ok := byCycle[st.CycleID]
+		if !ok {
+			return nil, payment.ErrCycleNotFound
+		}
+		out[st.ID] = schemeAsset(scheme, schemes)
+	}
+	return out, nil
 }
 
 func (s *Server) registerPaymentRoutes(mux *http.ServeMux) {
@@ -82,14 +159,14 @@ func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	assets, err := s.mandateAssets(r.Context(), mandates)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]mandateDTO, len(mandates))
 	for i, m := range mandates {
-		asset, err := s.mandateAsset(r.Context(), m)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		out[i] = toMandateDTO(m, asset)
+		out[i] = toMandateDTO(m, assets[m.ID])
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -257,14 +334,14 @@ func (s *Server) handleListSettlements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	assets, err := s.settlementAssets(r.Context(), settlements)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]settlementDTO, len(settlements))
 	for i, st := range settlements {
-		asset, err := s.settlementAsset(r.Context(), st)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		out[i] = toSettlementDTO(st, asset)
+		out[i] = toSettlementDTO(st, assets[st.ID])
 	}
 	writeJSON(w, http.StatusOK, out)
 }

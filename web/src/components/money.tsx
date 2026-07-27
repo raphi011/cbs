@@ -3,6 +3,7 @@
 import { useEffect, useId, useState } from "react";
 
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   amountToInput,
   formatAmount,
@@ -34,6 +35,36 @@ export function Money({
       <span className="ml-1 text-xs font-normal text-muted-foreground">
         {asset.code}
       </span>
+    </span>
+  );
+}
+
+// UnresolvedAmount is what goes on screen in place of an amount whose asset has
+// not resolved to a definition — the one thing that must NOT happen there is a
+// number, because rendering minor units at a guessed scale is the bug this
+// whole dimension exists to prevent.
+//
+// It exists so the choice is made once. Three different answers had grown up
+// across the app: an indefinite skeleton (which claims "still loading" forever
+// when the code will never resolve), a bare `null` (which silently drops a row),
+// and this. Loading is a skeleton; anything else is an explicit dash that says
+// what went wrong on hover.
+export function UnresolvedAmount({
+  code,
+  isLoading,
+  className,
+}: {
+  code: string;
+  isLoading?: boolean;
+  className?: string;
+}) {
+  if (isLoading) return <Skeleton className={cn("h-4 w-16", className)} />;
+  return (
+    <span
+      className={cn("text-muted-foreground", className)}
+      title={`No definition for asset "${code}" — amount not rendered rather than shown at a guessed scale.`}
+    >
+      —
     </span>
   );
 }
@@ -94,20 +125,32 @@ export function MoneyInput({
     value == null ? "" : amountToInput(value, asset),
   );
 
-  // Resync the displayed text whenever the asset changes. `text` is otherwise
-  // decoupled from `value` after mount — deliberately, so an in-progress
-  // keystroke like "30." isn't clobbered by re-formatting on every render —
-  // but that same decoupling let a stale, wrong-scale string linger on
-  // screen once the asset switched underneath it: minor units typed at one
-  // scale, reinterpreted unchanged as a different scale's amount, and a
-  // `value` a parent reset out from under this input (e.g. on an account
-  // switch) never reaching the box at all. Keyed on the asset only, not
-  // `value` — resyncing on every value edit would fight the user mid-keystroke.
+  // Resync the displayed text when the asset changes, and when a parent clears
+  // `value` to null.
+  //
+  // `text` is otherwise decoupled from `value` after mount — deliberately, so
+  // an in-progress keystroke like "30." isn't clobbered by re-formatting on
+  // every render — but that same decoupling leaves stale text on screen in two
+  // cases. One is a scale change: minor units typed at one scale, reinterpreted
+  // unchanged as another's. The other is a parent resetting the value out from
+  // under the input, which happens on every account switch in
+  // post-transaction-form; keying on the asset alone missed it whenever the two
+  // accounts shared an asset, leaving a filled-looking box, `ready` false and
+  // Post disabled with nothing on screen to explain it.
+  //
+  // They are two effects because the null case must only ever blank the box,
+  // never reformat it. A single effect keyed on `value` would reformat "3" to
+  // "3.00" on the keystroke that produced it.
   useEffect(() => {
     /* eslint-disable-next-line react-hooks/set-state-in-effect */
     setText(value == null ? "" : amountToInput(value, asset));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [asset.code, asset.scale]);
+
+  useEffect(() => {
+    /* eslint-disable-next-line react-hooks/set-state-in-effect */
+    if (value == null) setText("");
+  }, [value]);
 
   function handleChange(next: string) {
     setText(next);

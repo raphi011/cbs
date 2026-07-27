@@ -59,6 +59,9 @@ export default function SchemesPage() {
                 <CardTitle className="font-mono text-base">{s.id}</CardTitle>
               </CardHeader>
               <CardContent className="py-0">
+                <DetailRow label="Asset" hint="scheme-asset">
+                  {s.asset}
+                </DetailRow>
                 <DetailRow
                   label="Direction"
                   hint={

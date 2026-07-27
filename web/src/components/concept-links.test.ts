@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { conceptUrlTransform, validateConceptContent } from "./concept-links";
+import { chapters } from "@/lib/quiz";
 import { hintContent, type HintEntry } from "./hint-content";
 
 describe("conceptUrlTransform", () => {
@@ -54,6 +55,30 @@ describe("validateConceptContent", () => {
       delete registry["__probe__"];
     }
     expect(() => validateConceptContent()).not.toThrow();
+  });
+
+  // The gap this test closes: the runtime guard scans hint bodies only, but
+  // quiz explanations carry wiki-links too. A dangling one there passed
+  // typecheck, lint, `next build` AND `npm run test`, and surfaced only when
+  // someone answered that particular question.
+  it("finds no dangling wiki-links in any quiz explanation", () => {
+    const sources = chapters.flatMap((ch) =>
+      ch.questions.map((q) => ({
+        source: `${ch.slug}/${q.id}`,
+        body: q.explanation,
+      })),
+    );
+    expect(sources.length).toBeGreaterThan(0);
+    expect(() => validateConceptContent(sources)).not.toThrow();
+  });
+
+  // …and that assertion is only worth anything if a bad chapter link fails.
+  it("throws when a quiz explanation links to a key that is not registered", () => {
+    expect(() =>
+      validateConceptContent([
+        { source: "ch99/q1", body: "See [[definitely-not-a-concept]]." },
+      ]),
+    ).toThrow(/ch99\/q1 → \[\[definitely-not-a-concept\]\]/);
   });
 });
 

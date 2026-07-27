@@ -160,7 +160,7 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch2-q10",
       difficulty: "core",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "Banking ledgers store all monetary amounts as integer cents rather than decimal numbers. A customer deposits $1.05. How is this amount stored?",
       options: [
@@ -171,7 +171,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "[[amount-cents]] — storing money as the integer count of the smallest currency unit — guarantees exact arithmetic. Floating-point types cannot represent every decimal fraction exactly, so rounding errors accumulate across millions of transactions. $1.05 = 105 cents.",
+        "[[minor-units]] — storing money as the integer count of the smallest currency unit — guarantees exact arithmetic. Floating-point types cannot represent every decimal fraction exactly, so rounding errors accumulate across millions of transactions. $1.05 = 105 cents.",
     },
     {
       kind: "truefalse",

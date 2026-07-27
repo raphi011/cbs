@@ -6,10 +6,9 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable, type Column } from "@/components/data-table";
 import { EnumBadge } from "@/components/enum-badge";
 import { IdText } from "@/components/id-text";
-import { Money } from "@/components/money";
+import { Money, UnresolvedAmount } from "@/components/money";
 import { Button } from "@/components/ui/button";
 import { ErrorState } from "@/components/error-state";
-import { Skeleton } from "@/components/ui/skeleton";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import { CreateMandateForm } from "@/components/forms/create-mandate-form";
 import { useAssetLookup, useMandates, useRevokeMandate } from "@/lib/api/hooks";
@@ -17,17 +16,14 @@ import { describeError } from "@/lib/api/errors";
 import type { Mandate } from "@/lib/types";
 
 // A mandate's asset is resolved server-side from the debtor's own deposit
-// account (mandateDTO now carries it — see api/dto_payment.go's
-// toMandateDTO) — the debtor's participant is where that code's scale lives
-// (assets are book-scoped; see ledger.Book.CreateAsset).
+// account (mandateDTO carries it — see api/dto_payment.go's toMandateDTO);
+// the scale that code implies comes from the network-wide asset list.
 function MandateAmountCell({ mandate }: { mandate: Mandate }) {
-  const { byCode, isLoading } = useAssetLookup(mandate.debtor.participant);
+  const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(mandate.asset);
   if (!asset) {
-    return isLoading ? (
-      <Skeleton className="ml-auto h-4 w-16" />
-    ) : (
-      <span className="block text-right text-muted-foreground">—</span>
+    return (
+      <UnresolvedAmount code={mandate.asset} isLoading={isLoading} className="ml-auto block text-right" />
     );
   }
   return <Money amount={mandate.maxAmount} asset={asset} />;

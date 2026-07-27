@@ -30,9 +30,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		s := openDeposit(t, newStore)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}); err != nil {
-				return err
-			}
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.cust.001", SubledgerID: "cust", Name: "Anna",
 				Type: ledger.Liability, Asset: "BTC",

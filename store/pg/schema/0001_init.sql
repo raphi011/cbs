@@ -114,12 +114,26 @@ CREATE TABLE subledgers (
     PRIMARY KEY (book_id, id)
 );
 
+-- Every account is denominated in exactly one asset, fixed at creation.
+--
+-- The column is on accounts and NOT on entries. An entry's asset is always its
+-- account's, so storing it twice would only create the possibility of the two
+-- disagreeing. PostTransaction derives it when it checks that debits equal
+-- credits within each asset.
+--
+-- There is no table of assets for it to reference, and no CHECK enumerating the
+-- codes either. An asset definition is a fact about the world rather than
+-- per-bank state — "BTC has 8 decimal places" is true in every book — so the
+-- known assets are a list in Go (ledger.LookupAsset), the same way payment
+-- schemes are Go types rather than rows. See the COMMENT at the foot of this
+-- file for why the rule is not restated here as a constraint.
 CREATE TABLE accounts (
     book_id      TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id           TEXT NOT NULL,
     subledger_id TEXT NOT NULL,
     name         TEXT NOT NULL,
     type         SMALLINT NOT NULL,
+    asset        TEXT NOT NULL,
     created_at   TIMESTAMPTZ,
     seq          BIGSERIAL NOT NULL,
     PRIMARY KEY (book_id, id)
@@ -171,12 +185,19 @@ CREATE INDEX entries_account_idx ON entries (book_id, account_id);
 -- The deposit layer
 -- ---------------------------------------------------------------------------
 
+-- deposit_accounts.asset is duplicated from the backing GL account.
+--
+-- This is the one place the schema stores a fact twice on purpose. The GL
+-- account's asset is fixed at creation, so the two cannot drift, and deriving
+-- it would turn every listing of deposit accounts into a join for a value that
+-- can never change. store/storetest asserts the two always agree.
 CREATE TABLE deposit_accounts (
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id              TEXT NOT NULL,
     gl_account      TEXT NOT NULL,
     name            TEXT NOT NULL,
     status          SMALLINT NOT NULL,
+    asset           TEXT NOT NULL,
     overdraft_limit BIGINT NOT NULL,
     created_at      TIMESTAMPTZ,
     seq             BIGSERIAL NOT NULL,
@@ -228,11 +249,31 @@ CREATE TABLE participants (
     name               TEXT NOT NULL,
     book_id            TEXT NOT NULL,
     customer_subledger TEXT NOT NULL,
-    suspense_account   TEXT NOT NULL,
-    reserve_account    TEXT NOT NULL,
-    settlement_account TEXT NOT NULL,
     created_at         TIMESTAMPTZ,
     seq                BIGSERIAL NOT NULL
+);
+
+-- A participant's internal plumbing accounts, one set per asset it operates in.
+--
+-- These are a child table rather than three columns on participants because
+-- each of those accounts is denominated in exactly one asset: a bank clearing
+-- both a euro and a dollar scheme needs two suspense accounts and two reserve
+-- accounts, not two currencies inside one. Keying by (participant, asset) makes
+-- adding a scheme in a new asset a data change rather than a schema change.
+--
+-- The set is fixed when the bank joins the network, which is the reason the
+-- asset registry that used to sit beside this table is gone: an asset a bank
+-- did not join with has no suspense, reserve or settlement account here, so
+-- registering one afterwards produced customer accounts that could never
+-- settle. What a bank operates in is these rows; what an asset *is* is code.
+CREATE TABLE participant_assets (
+    participant_id TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
+    asset          TEXT NOT NULL,
+    suspense       TEXT NOT NULL,
+    reserve        TEXT NOT NULL,
+    settlement     TEXT NOT NULL,
+    seq            BIGSERIAL NOT NULL,
+    PRIMARY KEY (participant_id, asset)
 );
 
 CREATE TABLE mandates (
@@ -373,3 +414,40 @@ CREATE TABLE id_sequences (
     next_value BIGINT NOT NULL,
     PRIMARY KEY (book_id, name)
 );
+
+-- ---------------------------------------------------------------------------
+-- Why the asset columns carry no constraint
+-- ---------------------------------------------------------------------------
+--
+-- Recorded in the database rather than only in this file, because the absence
+-- of a constraint is invisible in a schema dump: the next author reads three
+-- TEXT columns holding "EUR" and "BTC" and adds the "missing" CHECK.
+
+COMMENT ON COLUMN accounts.asset IS
+    'The asset this account is denominated in, fixed at creation. There is '
+    'deliberately NO constraint restricting it to the known codes. A store is '
+    'a per-table key/value layer; "the asset must be one the system knows" is '
+    'a DOMAIN rule, enforced by ledger.Book.CreateAccountTx against the list '
+    'in ledger.LookupAsset — exactly where "the parent must exist" lives for '
+    'ledgers, subledgers and accounts too. Postgres could express the rule and '
+    'store/mem could not, so neither does: a constraint here would make '
+    'store/pg refuse a write store/mem performs, and the two stores accepting '
+    'and refusing the same writes is the property store/storetest exists to '
+    'hold. The subtest is ParentReferencesAreNotEnforced in '
+    'store/storetest/storetest.go, whose fixtures write accounts with no asset '
+    'set at all. An earlier composite FK on subledgers (book_id, ledger_id) '
+    'broke that same subtest and was removed for the same reason. A CHECK '
+    'would also make adding an asset — a one-line change to a Go slice — a '
+    'migration.';
+
+COMMENT ON COLUMN deposit_accounts.asset IS
+    'The asset this deposit account is denominated in, duplicated from its '
+    'backing GL account — the one fact this schema stores twice on purpose, '
+    'because the GL account''s asset is immutable and deriving it would turn '
+    'every listing into a join. Unconstrained, for the reason given on '
+    'accounts.asset.';
+
+COMMENT ON COLUMN participant_assets.asset IS
+    'One row per asset this bank operates in, holding the three plumbing '
+    'accounts that asset needs. Unconstrained, for the reason given on '
+    'accounts.asset.';

@@ -75,24 +75,29 @@ export function useCentralBankAudit(q: AuditQuery = {}) {
 
 // --- Assets -----------------------------------------------------------
 
-export function useAssets(pid: string) {
+export function useAssets() {
   return useQuery({
-    queryKey: qk.assets(pid),
-    queryFn: () => api.listAssets(pid),
-    enabled: pid !== "",
+    queryKey: qk.assets(),
+    queryFn: () => api.listAssets(),
+    // An asset definition cannot change while the app is open: the list is
+    // compiled into the backend. Fetch it once and reuse it everywhere.
+    staleTime: Infinity,
   });
 }
 
-// Resolves asset codes to their full definition (name, scale, class) via one
-// participant's own asset registry. Assets are book-scoped (see
-// ledger.Book.CreateAsset), so a code's scale can only be looked up against
-// the specific book it was registered in — there is no global table to
-// consult instead. `byCode.get(code)` is undefined while the registry is
-// still loading or for an unregistered code; callers must not substitute a
-// guessed scale in that case (that is exactly the bug this asset dimension
-// exists to prevent — see web/src/lib/money.ts).
-export function useAssetLookup(pid: string) {
-  const q = useAssets(pid);
+// Resolves asset codes to their full definition (name, scale, class).
+//
+// The list is network-wide because an asset definition is a fact about the
+// world rather than per-bank state — "BTC has 8 decimal places" is true in
+// every book — so it is one query, shared by every caller through one query
+// key, rather than one per participant.
+//
+// `byCode.get(code)` is undefined while the list is still loading and for a
+// code the system does not know; callers must not substitute a guessed scale
+// in that case (that is exactly the bug the asset dimension exists to
+// prevent — see web/src/lib/money.ts).
+export function useAssetLookup() {
+  const q = useAssets();
   const byCode = useMemo(() => {
     const m = new Map<string, Asset>();
     for (const a of q.data ?? []) m.set(a.code, a);

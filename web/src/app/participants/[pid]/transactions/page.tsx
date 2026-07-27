@@ -31,7 +31,7 @@ export default function TransactionsPage() {
   const pid = typeof params.pid === "string" ? params.pid : "";
   const { data, isLoading, error, refetch } = useTransactions(pid);
   const reverse = useReverseTransaction(pid);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
   const [selected, setSelected] = useState<Transaction | null>(null);
 
   const columns: Column<Transaction>[] = [

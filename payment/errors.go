@@ -86,9 +86,32 @@ var (
 	// ErrAssetMismatch is returned when a payment's debtor or creditor
 	// account is not denominated in the scheme's asset.
 	//
-	// The ledger cannot catch this: a EUR debit and a BTC credit each balance
-	// within their own asset, so the posting is valid double-entry and simply
-	// meaningless. Per-asset balancing proves no value was created, not that
-	// a payment makes sense.
+	// What the ledger can and cannot catch here is worth being precise about.
+	//
+	// It cannot catch it at INITIATION. A payment is never one posting: the
+	// debtor leg is a transaction in the payer's bank's book, the creditor leg
+	// a separate transaction in the payee's, written later at settlement. The
+	// debtor leg on its own —
+	//
+	//	Debit  Alice EUR      3000
+	//	Credit Suspense EUR   3000
+	//
+	// — is impeccable double-entry within one asset, and nothing in that
+	// posting contains the claim that some posting in another bank's book is
+	// its other half. Only the payment layer holds both ends at once.
+	//
+	// It does catch it at SETTLEMENT. SettleCycleTx resolves the creditor's
+	// suspense account with creditor.AccountsFor(scheme.Asset()), so the
+	// creditor leg comes out as a EUR suspense debit against a BTC credit and
+	// validateBalance refuses it with ledger.ErrUnbalancedAsset.
+	//
+	// That is a bad place to find out. Settlement is all-or-nothing, so one
+	// mismatched payment fails the entire clearing cycle, and the error names
+	// an unbalanced asset rather than the payment that caused it. This
+	// sentinel is what turns a late, batch-wide, misattributed failure into an
+	// immediate, correctly attributed one.
+	//
+	// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle in
+	// system_test.go pins both halves of that.
 	ErrAssetMismatch = errors.New("payment accounts are not denominated in the scheme's asset")
 )

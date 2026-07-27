@@ -35,15 +35,34 @@ export function parseConceptLinks(body: string): HintKey[] {
   return [...keys];
 }
 
-// Dev-time guard: throws if any body links to a key that isn't in the registry.
-export function validateConceptContent(): void {
+// A body of markdown that may contain wiki-links, labelled by where it came
+// from so a failure names the file to open.
+export interface ConceptSource {
+  source: string;
+  body: string;
+}
+
+// Throws if any body links to a key that isn't in the registry.
+//
+// `extra` widens the scan beyond the hint bodies. It exists because quiz
+// explanations carry wiki-links too, and for a long time nothing checked them:
+// this guard runs from RootLayout over `hintContent` alone, so a dangling link
+// in a chapter passed `npm run test` and then threw when that explanation was
+// rendered. The runtime caller deliberately still passes nothing — pulling all
+// sixteen chapters into the client bundle to validate them would cost every
+// visitor for a developer's benefit — so the quiz side is covered by the test
+// suite instead (see concept-links.test.ts).
+export function validateConceptContent(extra: ConceptSource[] = []): void {
   const broken: string[] = [];
-  for (const [key, entry] of Object.entries(hintContent)) {
-    for (const match of entry.body.matchAll(LINK_RE)) {
+  const check = (source: string, body: string) => {
+    for (const match of body.matchAll(LINK_RE)) {
       const target = match[1].trim();
-      if (!(target in hintContent)) broken.push(`${key} → [[${target}]]`);
+      if (!(target in hintContent)) broken.push(`${source} → [[${target}]]`);
     }
-  }
+  };
+  for (const [key, entry] of Object.entries(hintContent)) check(key, entry.body);
+  for (const { source, body } of extra) check(source, body);
+
   if (broken.length > 0) {
     throw new Error(`Unknown concept links:\n${broken.join("\n")}`);
   }

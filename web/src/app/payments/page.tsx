@@ -7,9 +7,8 @@ import { PageHeader } from "@/components/page-header";
 import { DataTable, type Column } from "@/components/data-table";
 import { EnumBadge } from "@/components/enum-badge";
 import { IdText } from "@/components/id-text";
-import { Money } from "@/components/money";
+import { Money, UnresolvedAmount } from "@/components/money";
 import { ErrorState } from "@/components/error-state";
-import { Skeleton } from "@/components/ui/skeleton";
 import { InitiatePaymentForm } from "@/components/forms/initiate-payment-form";
 import { useAssetLookup, usePayments } from "@/lib/api/hooks";
 import type { Payment } from "@/lib/types";
@@ -20,13 +19,11 @@ import type { Payment } from "@/lib/types";
 // registered in that scheme's asset (see payment.Network's ErrAssetMismatch
 // check) — so its book is where the scale lives.
 function PaymentAmountCell({ payment }: { payment: Payment }) {
-  const { byCode, isLoading } = useAssetLookup(payment.debtor.participant);
+  const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(payment.asset);
   if (!asset) {
-    return isLoading ? (
-      <Skeleton className="ml-auto h-4 w-16" />
-    ) : (
-      <span className="block text-right text-muted-foreground">—</span>
+    return (
+      <UnresolvedAmount code={payment.asset} isLoading={isLoading} className="ml-auto block text-right" />
     );
   }
   return <Money amount={payment.amount} asset={asset} />;

@@ -16,6 +16,7 @@ func (s *Server) registerParticipantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /participants/{pid}/deposits", s.handleFundDeposit)
 
 	mux.HandleFunc("GET /schemes", s.handleListSchemes)
+	mux.HandleFunc("GET /assets", s.handleListAssets)
 
 	mux.HandleFunc("GET /central-bank/reserves", s.handleListReserves)
 	mux.HandleFunc("GET /central-bank/reserves/{pid}", s.handleGetReserve)
@@ -80,12 +81,17 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	acct, err := p.Deposit.GetAccount(r.Context(), deposit.AccountID(req.Account))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(req.Account))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toBalanceDTO(bal))
+	writeJSON(w, http.StatusOK, toBalanceDTO(bal, acct.Asset))
 }
 
 func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {

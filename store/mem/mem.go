@@ -157,7 +157,6 @@ type state struct {
 	ledgers      map[ledger.BookID]map[ledger.LedgerID]ledger.Ledger
 	subledgers   map[ledger.BookID]map[ledger.SubledgerID]ledger.Subledger
 	accounts     map[ledger.BookID]map[ledger.AccountID]ledger.Account
-	assets       map[ledger.BookID]map[ledger.AssetCode]ledger.AssetDef
 	transactions map[ledger.BookID]map[ledger.TransactionID]ledger.Transaction
 
 	// idempotency maps idempotency keys to transaction IDs, per book. This is
@@ -238,7 +237,6 @@ const (
 	kindLedger         rowKind = "ledger"
 	kindSubledger      rowKind = "subledger"
 	kindAccount        rowKind = "account"
-	kindAsset          rowKind = "asset"
 	kindTransaction    rowKind = "transaction"
 	kindDepositAccount rowKind = "deposit_account"
 	kindHold           rowKind = "hold"
@@ -268,7 +266,6 @@ func newState() *state {
 		ledgers:         make(map[ledger.BookID]map[ledger.LedgerID]ledger.Ledger),
 		subledgers:      make(map[ledger.BookID]map[ledger.SubledgerID]ledger.Subledger),
 		accounts:        make(map[ledger.BookID]map[ledger.AccountID]ledger.Account),
-		assets:          make(map[ledger.BookID]map[ledger.AssetCode]ledger.AssetDef),
 		transactions:    make(map[ledger.BookID]map[ledger.TransactionID]ledger.Transaction),
 		idempotency:     make(map[ledger.BookID]map[string]ledger.TransactionID),
 		idCounter:       make(map[ledger.BookID]int64),
@@ -301,7 +298,6 @@ func (s *state) clone() *state {
 		ledgers:         cloneNested(s.ledgers),
 		subledgers:      cloneNested(s.subledgers),
 		accounts:        cloneNested(s.accounts),
-		assets:          cloneNested(s.assets),
 		transactions:    cloneNested(s.transactions),
 		idempotency:     cloneNested(s.idempotency),
 		audit:           s.audit,

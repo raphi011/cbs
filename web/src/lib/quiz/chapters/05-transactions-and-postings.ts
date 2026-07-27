@@ -180,14 +180,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch5-q12",
       difficulty: "core",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "A fee-split transaction posts two credit entries: a recipient account credited 9700 units and a fee-income account credited 300 units. Both amounts are in minor currency units (cents). What is the total value of all credits expressed in dollars?",
       answer: 100,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "9700 cents + 300 cents = 10 000 cents. [[amount-cents]] — storing amounts as integer minor units avoids floating-point errors. 10 000 cents ÷ 100 = **$100**. The sender was debited $100, and the two credit legs sum to the same amount, confirming the transaction is balanced.",
+        "9700 cents + 300 cents = 10 000 cents. [[minor-units]] — storing amounts as integer minor units avoids floating-point errors. 10 000 cents ÷ 100 = **$100**. The sender was debited $100, and the two credit legs sum to the same amount, confirming the transaction is balanced.",
     },
     {
       kind: "mc",
@@ -211,14 +211,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch5-q14",
       difficulty: "core",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "A sender is debited $100 for a transfer that includes a $3 fee. The recipient receives the remainder. By how many dollars does the recipient's account increase?",
       answer: 97,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "Debit side: $100. Credit side must also total $100: $3 to fee income + $97 to recipient = $100. [[amount-cents]] records these as 10 000, 300, and 9700 integer cents respectively. The recipient's account is credited **$97**.",
+        "Debit side: $100. Credit side must also total $100: $3 to fee income + $97 to recipient = $100. [[minor-units]] records these as 10 000, 300, and 9700 integer cents respectively. The recipient's account is credited **$97**.",
     },
     {
       kind: "truefalse",
@@ -268,14 +268,14 @@ export const chapter: Chapter = {
       kind: "numeric",
       id: "ch5-q18",
       difficulty: "challenge",
-      concept: "amount-cents",
+      concept: "minor-units",
       prompt:
         "A $10,000 loan disbursement is recorded as a single multi-leg transaction: loan-receivable asset debited $10,000; customer deposit credited $10,000; customer deposit debited $200 (origination fee); fee-revenue credited $200. What is the net credit to the customer's deposit account in dollars?",
       answer: 9800,
       unit: "dollars",
       tolerance: 0,
       explanation:
-        "The customer's deposit receives two legs in the same transaction: a credit of $10,000 and a debit of $200 (origination fee). Net: $10,000 − $200 = **$9,800**. [[amount-cents]] arithmetic: 1 000 000 − 20 000 = 980 000 cents = $9,800. All four legs balance: total debits ($10,000 + $200) = total credits ($10,000 + $200) = $10,200.",
+        "The customer's deposit receives two legs in the same transaction: a credit of $10,000 and a debit of $200 (origination fee). Net: $10,000 − $200 = **$9,800**. [[minor-units]] arithmetic: 1 000 000 − 20 000 = 980 000 cents = $9,800. All four legs balance: total debits ($10,000 + $200) = total credits ($10,000 + $200) = $10,200.",
     },
     {
       kind: "multi",

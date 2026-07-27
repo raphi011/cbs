@@ -2,8 +2,8 @@
 // are integer **minor units of an asset** (never floats or strings) — cents
 // for EUR, satoshi for BTC. The asset a given amount is denominated in is
 // named alongside it: an `asset` field carrying the asset's code (see `Asset`
-// below for the full definition, fetched separately per participant from
-// GET /participants/{pid}/assets). There is no default asset: converting an
+// below for the full definition, fetched once from GET /assets). There is no
+// default asset: converting an
 // amount to a major-unit string requires knowing which asset's `scale` to use
 // (see web/src/lib/money.ts). Request bodies must match these shapes exactly:
 // the backend uses DisallowUnknownFields(), so never send keys it doesn't
@@ -24,11 +24,10 @@ import type {
   TransactionStatus,
 } from "./enums";
 
-// Mirrors assetDTO from GET /participants/{pid}/assets. Assets are
-// book-scoped — each participant registers its own (see
-// ledger.Book.CreateAsset) — so always resolve an amount's scale from the
-// asset registry of the participant whose book the amount lives in, never
-// from a global table.
+// Mirrors assetDTO from GET /assets. The known assets are defined in Go
+// (ledger.LookupAsset) rather than stored, so the list is network-wide and
+// read-only — the same shape as GET /schemes, and for the same reason. Resolve
+// an amount's scale from this list; never assume one.
 export interface Asset {
   code: string;
   name: string;
@@ -110,11 +109,13 @@ export interface AuditEvent {
   metadata?: Record<string, string>;
 }
 
-// GET .../accounts/{aid}/balance returns the book balance as an integer in the
-// minor units of the account's asset — cents for EUR, satoshi for BTC. The
-// scale needed to render it comes from the asset, not from this response.
+// GET .../accounts/{aid}/balance. `balance` is an integer in the minor units of
+// the account's asset — cents for EUR, satoshi for BTC — and `asset` is the
+// code whose scale renders it. The two travel together so displaying a balance
+// is one request, not three.
 export interface BookBalance {
   accountId: string;
+  asset: string;
   balance: number;
 }
 
@@ -140,7 +141,12 @@ export interface Hold {
   createdAt: string;
 }
 
+// All three numbers are integers in `asset`'s minor units. The asset is on the
+// response for the same reason it is on BookBalance: a number with no asset is
+// not an amount, and a client that has to fetch the account to find out will
+// render the digits first.
 export interface Balance {
+  asset: string;
   book: number;
   holds: number;
   available: number;
@@ -261,6 +267,16 @@ export interface Reserve {
 
 export interface NameRequest {
   name: string;
+}
+
+// POST /participants. `assets` is the set of assets the bank joins with — one
+// suspense, reserve and settlement account is provisioned per entry, and only
+// those assets can hold money at this bank afterwards. Omitting it (or sending
+// an empty array) means ["EUR"]; that is a default for the joining *set*, not
+// for the asset of any individual account.
+export interface AddParticipantRequest {
+  name: string;
+  assets?: string[];
 }
 
 export interface CreateAccountRequest {

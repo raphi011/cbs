@@ -25,7 +25,7 @@ function DepositAccountRow({
   account: DepositAccount;
 }) {
   const { data } = useDepositBalance(pid, account.id);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
   const asset = byCode.get(account.asset);
   return (
     <Link

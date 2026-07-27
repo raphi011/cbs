@@ -34,7 +34,7 @@ export default function StatementPage() {
   const did = typeof params.did === "string" ? params.did : "";
 
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode, isLoading: assetsLoading } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
   const back = `/participants/${pid}/deposit-accounts/${did}`;
 
@@ -46,8 +46,17 @@ export default function StatementPage() {
 
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
-      ) : isLoading || !account || !asset ? (
+      ) : isLoading || assetsLoading || !account ? (
         <Skeleton className="h-10 w-64" />
+      ) : !asset ? (
+        <ErrorState
+          error={
+            new Error(
+              `This account is denominated in "${account.asset}", which the system has no definition for, so its amounts cannot be rendered at a known scale.`,
+            )
+          }
+          onRetry={() => refetch()}
+        />
       ) : (
         <>
           <div className="flex items-center gap-2">

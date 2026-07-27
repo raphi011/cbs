@@ -442,11 +442,6 @@ func fundedChart(t *testing.T, book *ledger.Book, amount ledger.Amount) (cash, e
 	capital, err := book.CreateSubledger(ctx, gl.ID, "Capital")
 	assertNoError(t, err)
 
-	// Accounts are denominated, so the book has to hold the euro before it can
-	// hold a euro account.
-	_, err = book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)
-	assertNoError(t, err)
-
 	cashAcct, err := book.CreateAccount(ctx, assets.ID, "Cash", ledger.Asset, "EUR")
 	assertNoError(t, err)
 	equityAcct, err := book.CreateAccount(ctx, capital.ID, "Share Capital", ledger.Equity, "EUR")

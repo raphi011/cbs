@@ -64,7 +64,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   // each leg's scale is resolved from its own picked account, not assumed
   // shared across the form.
   const accounts = useAllAccounts(pid);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
   function assetForLeg(accountId: string) {
     const acct = accounts.data?.find((a) => a.id === accountId);
     return acct ? byCode.get(acct.asset) : undefined;
@@ -76,19 +76,40 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   const credits = legs
     .filter((l) => l.direction === "Credit")
     .reduce((s, l) => s + (l.amount ?? 0), 0);
-  const balanced = debits === credits && debits > 0;
-  const ready =
-    balanced && legs.every((l) => l.accountId.trim() && (l.amount ?? 0) > 0);
 
   // The debits/credits summary below is only meaningful rendered in one
-  // asset — a raw sum across different assets isn't a number anything, per
-  // the same reasoning as home page's reserve totals. Only show it once
+  // asset — a raw sum across different assets isn't a number of anything, per
+  // the same reasoning as the home page's reserve totals. Only show it once
   // every leg's account has resolved to the same asset.
   const legAssets = legs.map((l) => assetForLeg(l.accountId));
   const summaryAsset =
     legAssets.length > 0 && legAssets.every((a) => a && a.code === legAssets[0]?.code)
       ? legAssets[0]
       : undefined;
+
+  // Balance is per asset, exactly as the server checks it (ledger's
+  // validateBalance / ErrUnbalancedAsset). A global debits === credits is
+  // satisfied by 100 cents against 100 satoshi, which is the bug chapter 16
+  // exists to teach against — showing "Balanced ✓" for it would demonstrate
+  // the mistake in the app that teaches it. A leg whose account has not
+  // resolved yet has no asset, so nothing can be said to balance.
+  const netByAsset = new Map<string, number>();
+  let everyLegResolved = legs.length > 0;
+  legs.forEach((l, i) => {
+    const code = legAssets[i]?.code;
+    if (!code) {
+      everyLegResolved = false;
+      return;
+    }
+    const signed = (l.amount ?? 0) * (l.direction === "Debit" ? 1 : -1);
+    netByAsset.set(code, (netByAsset.get(code) ?? 0) + signed);
+  });
+  const balanced =
+    everyLegResolved &&
+    debits > 0 &&
+    [...netByAsset.values()].every((net) => net === 0);
+  const ready =
+    balanced && legs.every((l) => l.accountId.trim() && (l.amount ?? 0) > 0);
 
   function reset() {
     setLegs(emptyLegs());
@@ -173,7 +194,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
           <div className="space-y-2">
             <div className="flex items-center gap-1.5">
               <span className="text-sm font-medium">Legs</span>
-              <Hint id="amount-cents" />
+              <Hint id="minor-units" />
             </div>
             {legs.map((leg, i) => {
               const asset = assetForLeg(leg.accountId);
@@ -259,8 +280,8 @@ export function PostTransactionForm({ pid }: { pid: string }) {
                 </>
               ) : (
                 <>
-                  Debits {debits} · Credits {credits} (legs use different assets — see
-                  each leg above)
+                  Legs are in different assets — each one balances on its own,
+                  so there is no single total. See each leg above.
                 </>
               )}
             </span>

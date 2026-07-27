@@ -5,7 +5,13 @@ import { AccountTypeBadge } from "@/components/enum-badge";
 import { useAllAccounts } from "@/lib/api/hooks";
 
 // Pick a general-ledger account within a participant. Searchable by account
-// name, id, type, or its ledger/subledger names.
+// name, id, type, asset, or its ledger/subledger names.
+//
+// The asset is shown, not just searchable. In a multi-asset chart of accounts
+// "Cash (EUR)" and "Cash (BTC)" are two different accounts whose labels differ
+// only there, and a transaction whose legs land in different assets is refused
+// by the server — so a picker that hides the asset is what lets a user build
+// that transaction in the first place.
 export function GLAccountPicker({
   pid,
   value,
@@ -21,8 +27,8 @@ export function GLAccountPicker({
   const options = (data ?? []).map((a) => ({
     value: a.id,
     label: a.name,
-    detail: a.id,
-    keywords: [a.type, a.subledgerName, a.ledgerName],
+    detail: `${a.asset} · ${a.id}`,
+    keywords: [a.type, a.asset, a.subledgerName, a.ledgerName],
     badge: <AccountTypeBadge type={a.type} />,
   }));
   return (

@@ -46,12 +46,11 @@ export function InitiatePaymentForm() {
   const selected = schemes.data?.find((s) => s.id === scheme);
   const needsMandate = selected?.requiresMandate ?? false;
 
-  // schemeDTO now carries the scheme's asset (see api/dto_payment.go's
-  // toSchemeDTO), the same way a payment's asset is the scheme's — but its
-  // scale still has to come from a participant's own book-scoped registry
-  // (see ledger.Book.CreateAsset), so this resolves it against the debtor
-  // once one is chosen.
-  const { byCode } = useAssetLookup(debtor.participant);
+  // schemeDTO carries the scheme's asset (see api/dto_payment.go's
+  // toSchemeDTO), the same way a payment's asset is the scheme's. Its scale
+  // comes from the network-wide asset list, so the amount input is scaled
+  // correctly the moment a scheme is chosen.
+  const { byCode } = useAssetLookup();
   const resolvedAsset = selected ? byCode.get(selected.asset) : undefined;
 
   const valid =

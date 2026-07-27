@@ -29,7 +29,6 @@ const (
 	EventLedgerCreated       = "ledger.created"
 	EventSubledgerCreated    = "subledger.created"
 	EventAccountCreated      = "account.created"
-	EventAssetCreated        = "asset.created"
 	EventTransactionPosted   = "transaction.posted"
 	EventTransactionReversed = "transaction.reversed"
 

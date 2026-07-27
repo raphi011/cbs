@@ -52,6 +52,18 @@ func toAccountDTO(a ledger.Account) accountDTO {
 	}
 }
 
+// accountBalanceDTO is the response of GET .../accounts/{aid}/balance.
+//
+// Balance is an integer in the account's minor units, so the asset it is
+// denominated in travels with it — the same rule balanceDTO follows on the
+// deposit layer. This response used to be a bare `{accountId, balance}` map
+// literal; a number with no asset is not an amount.
+type accountBalanceDTO struct {
+	AccountID string `json:"accountId"`
+	Asset     string `json:"asset"`
+	Balance   int64  `json:"balance"`
+}
+
 type entryDTO struct {
 	ID        string `json:"id,omitempty"`
 	AccountID string `json:"accountId"`

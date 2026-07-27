@@ -78,7 +78,6 @@ type Book struct {
 //	book := ledger.NewBook(mem.New(time.Now), "bank", time.Now)
 //	l, _ := book.CreateLedger(ctx, "General Ledger")
 //	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
-//	book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)
 //	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset, "EUR")
 func NewBook(store Store, id BookID, clock func() time.Time) *Book {
 	return &Book{store: store, id: id, clock: clock}
@@ -248,11 +247,11 @@ func (s *Book) GetSubledger(ctx context.Context, id SubledgerID) (Subledger, err
 //   - Asset and Expense accounts have a normal debit balance (debits increase them)
 //   - Liability, Equity, and Revenue accounts have a normal credit balance (credits increase them)
 //
-// The account is denominated in asset, which must already be registered in this
-// book, and starts with a zero balance.
+// The account is denominated in asset, which must be a known asset (see
+// LookupAsset), and starts with a zero balance.
 //
 // Returns ErrSubledgerNotFound if the parent subledger does not exist, or
-// ErrAssetNotFound if the asset is not registered in this book.
+// ErrAssetNotFound if the asset code is not one the system knows.
 func (s *Book) CreateAccount(ctx context.Context, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
 	var out Account
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -277,10 +276,10 @@ func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 	if _, err := tx.GetSubledger(ctx, s.id, subledgerID); err != nil {
 		return Account{}, err
 	}
-	// The asset must already be registered in this book. There is no default:
-	// silently falling back to a base currency is precisely the bug this
-	// dimension exists to prevent.
-	if _, err := tx.GetAsset(ctx, s.id, asset); err != nil {
+	// The asset must be one the system knows. There is no default: silently
+	// falling back to a base currency is precisely the bug this dimension
+	// exists to prevent.
+	if _, err := LookupAsset(asset); err != nil {
 		return Account{}, err
 	}
 
@@ -356,80 +355,6 @@ func (s *Book) GetAccounts(ctx context.Context, ids []AccountID) (map[AccountID]
 		return nil, err
 	}
 	return out, nil
-}
-
-// ---------------------------------------------------------------------------
-// Asset Registry
-// ---------------------------------------------------------------------------
-
-// CreateAsset registers an asset in this book.
-//
-// Assets are book-scoped rather than global because each participant owns its
-// own book: a bank that does not deal in BTC should not carry BTC in its chart
-// of accounts.
-//
-// Returns ErrDuplicateAsset if the code is already registered, and
-// ErrInvalidScale if scale exceeds MaxAssetScale.
-func (s *Book) CreateAsset(ctx context.Context, code AssetCode, name string, scale uint8, class AssetClass) (AssetDef, error) {
-	var out AssetDef
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.CreateAssetTx(ctx, tx, code, name, scale, class)
-		return err
-	})
-	return out, err
-}
-
-// CreateAssetTx is CreateAsset within a caller-supplied unit of work.
-func (s *Book) CreateAssetTx(ctx context.Context, tx Tx, code AssetCode, name string, scale uint8, class AssetClass) (AssetDef, error) {
-	if err := ValidateText("code", string(code)); err != nil {
-		return AssetDef{}, err
-	}
-	if err := ValidateText("name", name); err != nil {
-		return AssetDef{}, err
-	}
-	if scale > MaxAssetScale {
-		return AssetDef{}, ErrInvalidScale
-	}
-
-	switch _, err := tx.GetAsset(ctx, s.id, code); {
-	case err == nil:
-		return AssetDef{}, ErrDuplicateAsset
-	case !errors.Is(err, ErrAssetNotFound):
-		return AssetDef{}, err
-	}
-
-	a := AssetDef{Code: code, Name: name, Scale: scale, Class: class}
-	if err := tx.PutAsset(ctx, s.id, a); err != nil {
-		return AssetDef{}, err
-	}
-	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventAssetCreated, string(a.Code), a); err != nil {
-		return AssetDef{}, err
-	}
-	return a, nil
-}
-
-// GetAsset retrieves an asset by its code.
-// Returns ErrAssetNotFound if the asset is not registered in this book.
-func (s *Book) GetAsset(ctx context.Context, code AssetCode) (AssetDef, error) {
-	var out AssetDef
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = tx.GetAsset(ctx, s.id, code)
-		return err
-	})
-	return out, err
-}
-
-// ListAssets returns every asset registered in this book.
-func (s *Book) ListAssets(ctx context.Context) ([]AssetDef, error) {
-	var out []AssetDef
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = tx.ListAssets(ctx, s.id)
-		return err
-	})
-	return out, err
 }
 
 // ---------------------------------------------------------------------------

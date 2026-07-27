@@ -185,12 +185,26 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aid := ledger.AccountID(r.PathValue("aid"))
+	// The asset comes back with the number. It is an integer in the account's
+	// minor units and cannot be rendered without the scale its code implies;
+	// leaving it out would make displaying one balance cost three requests,
+	// and would put the digits on screen before the thing that gives them a
+	// magnitude.
+	acct, err := p.Ledger.GetAccount(r.Context(), aid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	bal, err := p.Ledger.BookBalance(r.Context(), aid)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"accountId": string(aid), "balance": bal})
+	writeJSON(w, http.StatusOK, accountBalanceDTO{
+		AccountID: string(aid),
+		Asset:     string(acct.Asset),
+		Balance:   int64(bal),
+	})
 }
 
 func (s *Server) handlePostTransaction(w http.ResponseWriter, r *http.Request) {

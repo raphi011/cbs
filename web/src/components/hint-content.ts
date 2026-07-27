@@ -128,13 +128,13 @@ General Ledger
 
 The GL might show "Total Customer Deposits: €10M" while the Customer Deposits subledger contains 50,000 individual accounts that sum to that total. This lets regulators and management see the big picture in one row while operations can drill into any individual account. New accounts created via the API are always placed inside a subledger.`,
   },
-  "amount-cents": {
+  "minor-units": {
     title: "Amounts are integer minor units",
     body: `**All monetary amounts are stored as integers in the asset's smallest unit** — cents for EUR/USD, pence for GBP, satoshi for BTC. This is the same approach used by Stripe and most payment processors, extended here to any asset, not just fiat currency.
 
 Floating-point arithmetic cannot represent most decimal fractions exactly: \`0.1 + 0.2 = 0.30000000000000004\` in IEEE 754. With integers there is no rounding error at all.
 
-How many decimal places an asset's minor unit has is its **scale**, registered per asset (2 for EUR, 8 for BTC):
+How many decimal places an asset's minor unit has is its **scale** (2 for EUR, 8 for BTC):
 
 \`\`\`
 Display amount → Internal storage (scale)
@@ -574,13 +574,13 @@ After settlement, each bank's [[reserve-account|reserve asset]] changes by exact
 
 \`\`\`
 Bank A's chart of accounts:
-  Reserve at CB (Asset) ←── moves at settlement
+  Reserve at Central Bank (EUR) (Asset) ←── moves at settlement
 
 Central Bank's chart of accounts:
-  Reserve: Bank A (Liability) ←── the other side
+  Reserve: Bank A (EUR) (Liability) ←── the other side
 \`\`\`
 
-These two accounts must always agree: when Bank A's reserve asset rises by €200, the central bank's Reserve: Bank A liability also rises by €200. If they diverge, it signals a bookkeeping error. This is the [[double-entry]] invariant applied across the two institutions.
+These two accounts must always agree: when Bank A's reserve asset rises by €200, the central bank's Reserve: Bank A (EUR) liability also rises by €200. If they diverge, it signals a bookkeeping error. This is the [[double-entry]] invariant applied across the two institutions.
 
 The reserve account is the ultimate destination of all [[net-positions|net settlement]] flows — no payment is final until it is reflected here.`,
   },
@@ -602,8 +602,8 @@ Even the balancing account splits per asset: the euro reserves a central bank ha
 At settlement, the central bank transfers reserves between these liability accounts:
 
 \`\`\`
-Debit  Reserve: Bank A (Liability) 20000  ← A's balance falls
-Credit Reserve: Bank B (Liability) 20000  ← B's balance rises
+Debit  Reserve: Bank A (EUR) (Liability) 20000  ← A's balance falls
+Credit Reserve: Bank B (EUR) (Liability) 20000  ← B's balance rises
 \`\`\`
 
 The central bank's own books stay balanced under [[double-entry]] — one liability falls as another rises. Commercial banks never write into each other's ledgers; they only interact via these central-bank accounts. The corresponding [[reserve-account|reserve asset]] on each bank's own books moves in lockstep.`,
@@ -790,23 +790,25 @@ The [[payment-lifecycle|payment layer]]'s own entities — participants, payment
   },
   asset: {
     title: "Asset (what an account is denominated in)",
-    body: `An **asset** here is a unit of value that accounts are counted in — EUR, USD, BTC. It is registered per book as \`code\`, \`name\`, [[asset-scale|scale]] and class (\`Fiat\` or \`Crypto\`).
+    body: `An **asset** here is a unit of value that accounts are counted in — EUR, USD, BTC. It carries a \`code\`, a \`name\`, a [[asset-scale|scale]] and a class (\`Fiat\` or \`Crypto\`).
 
-> **Not the same "asset" as [[account-type-asset|the account type]].** An account's *type* says whether it is something the bank owns or owes; its *asset* says what kind of money it is counted in. A euro deposit and a bitcoin deposit are both **Liability** accounts. (In Go the registry type is \`AssetDef\`, because \`Asset\` was already the account-type constant.)
+> **Not the same "asset" as [[account-type-asset|the account type]].** An account's *type* says whether it is something the bank owns or owes; its *asset* says what kind of money it is counted in. A euro deposit and a bitcoin deposit are both **Liability** accounts. (In Go the type is \`AssetDef\`, because \`Asset\` was already the account-type constant.)
 
 Three properties do the work:
 
-- **Book-scoped.** The registry belongs to a book, so a bank that does not deal in bitcoin carries no bitcoin — the same reason [[book-scoped-id|IDs are book-scoped]]. \`EUR\` in two banks' books is two registrations, not one shared row.
+- **Defined in code, not stored.** The known assets are a list in Go, not rows in a table — an asset *definition* is a fact about the world, and "BTC has 8 decimals" is true in every book. Two books able to disagree about it would be a bug, not a feature. Same reasoning as [[scheme-asset|a payment scheme being a Go type]] rather than a row.
 - **One asset per account, fixed at creation.** An account number and its currency are inseparable in real banking, which is why IBANs are per-currency.
 - **So a balance stays a scalar.** If one account could hold several assets, every balance, statement line and snapshot would carry a *map* instead of a number. Binding the asset to the account pushes that dimension into the chart of accounts, where it costs one more account rather than one more parameter on everything.
 
-A bank in three currencies therefore has three cash accounts, not one holding three kinds of money. Creating an account in an unregistered asset fails with \`ErrAssetNotFound\`.`,
+A bank in three currencies therefore has three cash accounts, not one holding three kinds of money. An account naming a code the system does not know fails with \`ErrAssetNotFound\`.
+
+What *is* per bank is which assets it operates in — see [[participant-assets]].`,
   },
   "asset-scale": {
     title: "Scale, and why it stops at 9",
-    body: `An asset's **scale** is how many decimal places its minor unit has: 2 for EUR (cents), 8 for BTC (satoshi), 0 for an asset with no fractional unit. [[amount-cents|Amounts are integers]] at that scale, so the same integer means different things in different assets — \`100000000\` is one bitcoin *and* a million euro.
+    body: `An asset's **scale** is how many decimal places its minor unit has: 2 for EUR (cents), 8 for BTC (satoshi), 0 for an asset with no fractional unit. [[minor-units|Amounts are integers]] at that scale, so the same integer means different things in different assets — \`100000000\` is one bitcoin *and* a million euro.
 
-Scale is capped at **9**. A larger one is refused when the asset is registered, with \`ErrInvalidScale\`.
+Scale is capped at **9**, and every known asset is held to it.
 
 The cap is arithmetic, not taste. An amount is an \`int64\`, which tops out near **9.22 × 10¹⁸**:
 
@@ -817,7 +819,7 @@ The cap is arithmetic, not taste. An amount is an \`int64\`, which tops out near
 | 9 (the cap) | ~9.2 billion units |
 | 18 (wei) | **9.2 units** |
 
-At 18 decimals — ether's native precision — an \`int64\` holds 9.2 ETH. Not 9.2 billion: nine. Native 18-decimal precision and an \`int64\` amount are mutually exclusive, so an 18-decimal asset can only be carried here at reduced precision. The refusal happens **at registration**, loudly, rather than as a silent overflow when someone eventually posts a large amount.`,
+At 18 decimals — ether's native precision — an \`int64\` holds 9.2 ETH. Not 9.2 billion: nine. Native 18-decimal precision and an \`int64\` amount are mutually exclusive, so an 18-decimal asset can only be carried here at reduced precision. Because the assets are a list in code rather than runtime input, the bound is **a test over that list** — adding an entry that would silently overflow fails the build.`,
   },
   "per-asset-balance": {
     title: "Transactions balance per asset",
@@ -868,19 +870,25 @@ What is **not** in the ledger under this scheme is trading profit and loss. That
 
 Both the debtor's and the creditor's accounts are checked against it at initiation; a mismatch is \`ErrAssetMismatch\`. The check sits in \`InitiatePaymentTx\` rather than inside a scheme's own \`Validate\`, so it runs for **every** scheme — a future card scheme whose \`Validate\` places a hold instead of checking funds would otherwise skip it silently.
 
-**The ledger cannot catch this**, which is the part worth understanding. A payment is never one posting: the [[debtor-leg]] is a transaction in the payer's bank's book, the [[creditor-leg]] a separate one in the payee's. Give Alice a euro account and Bob a bitcoin one:
+**The ledger cannot catch this at initiation**, which is the part worth understanding. A payment is never one posting: the [[debtor-leg]] is a transaction in the payer's bank's book, written now; the [[creditor-leg]] is a separate one in the payee's, written later at [[clearing-vs-settlement|settlement]]. Give Alice a euro account and Bob a bitcoin one, and initiation writes exactly this:
 
 \`\`\`
 Bank A:  Debit  Alice EUR     3000   ← balances in EUR ✓
          Credit Suspense EUR  3000
-
-Bank B:  Debit  Suspense BTC  3000   ← balances in BTC ✓
-         Credit Bob BTC       3000
 \`\`\`
 
-Both are impeccable [[double-entry]]. The error is not inside either posting — it is in the claim that these two are halves of *one payment*, and no ledger can see that claim. Only the payment layer holds both ends, so only it can refuse.
+Impeccable [[double-entry]]. Nothing in it contains the claim that a posting in another bank's book is its other half — and no ledger can see a claim that is not in front of it.
 
-The general rule: an invariant can only be enforced where the whole of it is visible.`,
+**It is caught at settlement, which is the argument *for* the check.** The creditor leg is built from the creditor's suspense account *in the scheme's asset*, so what actually gets posted is a EUR debit against a BTC credit:
+
+\`\`\`
+Bank B:  Debit  Suspense EUR  3000   ← EUR
+         Credit Bob BTC       3000   ← BTC — does not balance
+\`\`\`
+
+That is \`ErrUnbalancedAsset\`. But settlement is all-or-nothing: one bad payment fails the **whole [[net-positions|clearing cycle]]**, and the error names an imbalance rather than the payment behind it. \`ErrAssetMismatch\` turns a late, batch-wide, misattributed failure into an immediate, correctly attributed one.
+
+The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.`,
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",

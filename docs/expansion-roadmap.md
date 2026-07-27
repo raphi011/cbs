@@ -37,12 +37,13 @@ Two consequences that apply to every sub-project below:
   central-bank book inside one store transaction. `payment.Network`.
 - `api`, `store/mem`, `store/pg`, `store/storetest`, `seed`, `web`.
 
-**The asset dimension is in.** Assets are book-scoped `ledger.AssetDef`s (code,
-name, scale, class); every GL account is denominated in exactly one, fixed at
-creation; `deposit.Account` carries the same asset; transactions balance **per
-asset**; schemes declare their asset and both legs of a payment are validated
-against it; participants hold one suspense/reserve/settlement set per asset.
-Migrations `0002`–`0006`. See `README.md` and quiz chapter 16.
+**The asset dimension is in.** The known assets are a package-level list of
+`ledger.AssetDef`s in code (code, name, scale, class — `ledger.LookupAsset`),
+not rows; every GL account is denominated in exactly one, fixed at creation;
+`deposit.Account` carries the same asset; transactions balance **per asset**;
+schemes declare their asset and both legs of a payment are validated against it;
+participants hold one suspense/reserve/settlement set per asset they joined
+with. The whole schema is `0001_init.sql`. See `README.md` and quiz chapter 16.
 
 ## Sub-projects
 
@@ -53,10 +54,18 @@ build order.
 
 Spec: [`superpowers/specs/2026-07-27-multi-asset-ledger-design.md`](superpowers/specs/2026-07-27-multi-asset-ledger-design.md)
 
-Introduced an asset dimension: assets as first-class, book-scoped entities (code,
+Introduced an asset dimension: assets as first-class definitions (code, name,
 scale, class), an asset on every GL account, per-asset balance enforcement in
 `Book.PostTransaction`, and the corresponding deposit, payment, schema, store,
 conformance, API, web and documentation changes.
+
+A follow-up removed the book-scoped `assets` *table* it had shipped with. The
+table was writable at runtime and nothing downstream could honour a runtime
+asset — a bank's plumbing accounts are provisioned when it joins the network —
+so it promised a capability the system could not deliver, and the mismatch
+surfaced as a reachable 404 on funding. The definitions moved into Go, where
+schemes already live. What stayed per bank is `participant_assets`: which assets
+a bank operates in.
 
 Foundational — it touched `ledger.Account`, `Book.PostTransaction`,
 `deposit.OpenAccount`, the participant account triple, both stores,
@@ -82,18 +91,23 @@ Two things the implementation sharpened, both worth carrying forward:
 
 - **Why the ledger cannot catch a cross-asset payment is stronger than the spec
   said.** It is not merely that "each leg balances in its own asset". A payment
-  is never one posting: the debtor leg is a transaction in the payer's bank's
-  book and the creditor leg a separate one in the payee's. Both are impeccable
-  double-entry within their own asset. The error is in the *claim that the two
-  are halves of one payment* — a claim no ledger can see. The check therefore
-  went into `InitiatePaymentTx` itself rather than into a scheme's `Validate`,
-  so it runs for every scheme rather than only those that check funds.
-- **The registry check is a domain rule, so the schema gets no foreign key.**
-  `accounts.asset` deliberately has no FK to `assets`; Postgres could express
-  "the asset must be registered" and `store/mem` could not, and the conformance
-  subtest `ParentReferencesAreNotEnforced` is what holds the line. Migration
-  `0006` records the reasoning in the database with `COMMENT ON COLUMN`, because
-  the absence of a constraint is invisible in a schema dump.
+  is never one posting: at initiation only the debtor leg exists, and it is
+  impeccable double-entry within one asset. The ledger *does* catch the mismatch
+  eventually — at settlement, where the creditor leg is built from the
+  creditor's suspense account in the scheme's asset and comes out unbalanced —
+  but settlement is all-or-nothing, so one bad payment fails the whole cycle and
+  the error names an imbalance rather than the payment behind it. The check
+  therefore went into `InitiatePaymentTx` itself rather than into a scheme's
+  `Validate`, so it runs for every scheme rather than only those that check
+  funds, at the one moment both ends are in view and neither is written.
+- **The asset check is a domain rule, so the schema gets no constraint.**
+  `accounts.asset` deliberately has no `CHECK` restricting it to the known
+  codes; Postgres could express "the asset must be one the system knows" and
+  `store/mem` could not, and the conformance subtest
+  `ParentReferencesAreNotEnforced` is what holds the line. A `CHECK` would also
+  turn a one-line change to a Go slice into a migration. `0001_init.sql` records
+  the reasoning in the database with `COMMENT ON COLUMN`, because the absence of
+  a constraint is invisible in a schema dump.
 
 ### 2. Lending — `todo`
 
@@ -121,13 +135,13 @@ and stablecoin rails (a payment-network-sized project of its own). To be pinned
 down before its spec.
 
 *After sub-project 1:* the small end of that range is now nearly free — BTC is a
-registered asset with scale 8 and works today. But the **scale cap of 9 is a hard
+known asset with scale 8 and works today. But the **scale cap of 9 is a hard
 boundary on the scope**, and it lands squarely on the most obvious next asset:
 ether and most ERC-20 tokens are 18-decimal, and `int64` holds 9.2 ETH at native
 precision. So any crypto scope that includes the Ethereum family has to choose
 one of:
 
-- hold them at reduced precision (register at scale 9, discard the last nine
+- hold them at reduced precision (list at scale 9, discard the last nine
   places) and document the truncation at the boundary; or
 - widen `Amount` to a 128-bit type — which the defined type makes a
   compiler-guided change rather than an audit, and which is the reason `Amount`
@@ -179,4 +193,5 @@ Three things the implementation adds to the FX spec's inbox:
 | --- | --- |
 | 2026-07-27 | Roadmap created. Ordering agreed: multi-asset → lending → crypto → FX. Framing agreed: teaching reference, production-grade backend. |
 | 2026-07-27 | Sub-project 1 design agreed and spec written. |
-| 2026-07-27 | Sub-project 1 **done**. Assets, per-asset balancing, scheme assets, per-asset participant accounts, migrations `0002`–`0006`, API and web carried through, and the docs updated across all four layers (README, hints, quiz chapter 16, schema comments). Every decision in the spec shipped as designed. Learned: the payment-layer asset check is justified more strongly than the spec argued (a payment is two postings in two books, each valid on its own); the registry check being a domain rule is what forbids a foreign key on `accounts.asset`; and the scale cap of 9 is a hard scoping constraint on sub-project 3, while the "can a position account go negative?" question is a hard one on sub-project 4. FX position accounts still look like the right shape. |
+| 2026-07-27 | Sub-project 1 **done**. Assets, per-asset balancing, scheme assets, per-asset participant accounts, migrations `0002`–`0006`, API and web carried through, and the docs updated across all four layers (README, hints, quiz chapter 16, schema comments). Every decision in the spec shipped as designed. Learned: the payment-layer asset check is justified more strongly than the spec argued (a payment is two postings in two books, each valid on its own); the asset check being a domain rule is what forbids a constraint on `accounts.asset`; and the scale cap of 9 is a hard scoping constraint on sub-project 3, while the "can a position account go negative?" question is a hard one on sub-project 4. FX position accounts still look like the right shape. |
+| 2026-07-27 | Sub-project 1 **reworked**, in two parts. (1) The book-scoped `assets` table is gone; the definitions are a package-level list in `ledger`, the way schemes are Go types. The table was writable but unhonourable — a bank's plumbing accounts are provisioned when it joins, so an asset registered later gave a customer account that could never settle, surfacing as a 404 on funding. `GET /assets` replaces the per-participant registry endpoints; migrations `0002`–`0006` were folded into `0001` (no deployed databases; `migrate.go`'s own doc comment sanctions it). (2) The whole-branch review's findings: the euro-to-bitcoin counter-example was **wrong in five places** — the ledger does catch it, at settlement, and what it cannot catch is the payment at *initiation*; that correction is now pinned by a test rather than by argument. Also: N+1 round trips in two listing endpoints, an asset on both balance responses, mismatched-asset mandates refused, `ErrParticipantAssetNotFound` → 422, and the web form that silently reinterpreted an overdraft limit at a new scale. Learned: this is the **second** counter-example on this branch that argued the opposite of what it claimed. Prose that asserts what code does needs a test, not a careful reading. |

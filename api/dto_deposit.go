@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // Wire format for the demand-deposit layer: customer accounts, holds,
@@ -53,14 +54,28 @@ func toHoldDTO(h deposit.Hold) holdDTO {
 	}
 }
 
+// balanceDTO carries the asset alongside the three numbers.
+//
+// Every one of them is an integer in the account's minor units, and a client
+// cannot render any of them without the asset's scale. Without this field a
+// balance costs three requests to display — the balance, then the account for
+// its code, then the asset list for that code's scale — and the number is on
+// screen before the scale that gives it meaning, which is what an amount
+// rendered at a guessed scale looks like just before it is wrong.
 type balanceDTO struct {
-	Book      int64 `json:"book"`
-	Holds     int64 `json:"holds"`
-	Available int64 `json:"available"`
+	Asset     string `json:"asset"`
+	Book      int64  `json:"book"`
+	Holds     int64  `json:"holds"`
+	Available int64  `json:"available"`
 }
 
-func toBalanceDTO(b deposit.Balance) balanceDTO {
-	return balanceDTO{Book: int64(b.Book), Holds: int64(b.Holds), Available: int64(b.Available)}
+func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
+	return balanceDTO{
+		Asset:     string(asset),
+		Book:      int64(b.Book),
+		Holds:     int64(b.Holds),
+		Available: int64(b.Available),
+	}
 }
 
 type snapshotDTO struct {
@@ -70,8 +85,8 @@ type snapshotDTO struct {
 	TakenAt   time.Time  `json:"takenAt"`
 }
 
-func toSnapshotDTO(s deposit.Snapshot) snapshotDTO {
-	return snapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: toBalanceDTO(s.Balance), TakenAt: s.TakenAt}
+func toSnapshotDTO(s deposit.Snapshot, asset ledger.AssetCode) snapshotDTO {
+	return snapshotDTO{AccountID: string(s.AccountID), Date: s.Date, Balance: toBalanceDTO(s.Balance, asset), TakenAt: s.TakenAt}
 }
 
 // openDepositAccountRequest carries a required asset, for the same reason

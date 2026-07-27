@@ -9,61 +9,65 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-// A test book already holds the euro (see testBook), so the tests that
-// register an asset for the first time use the dollar instead.
+// The known assets are a package-level list in code rather than rows, so what
+// there is to test is the list itself and the rule that reads it.
 
-func TestCreateAssetRoundTrips(t *testing.T) {
-	book := testBook(t)
-	ctx := context.Background()
-
-	want, err := book.CreateAsset(ctx, "USD", "US Dollar", 2, ledger.Fiat)
+func TestLookupAssetReturnsTheDefinition(t *testing.T) {
+	got, err := ledger.LookupAsset("BTC")
 	if err != nil {
-		t.Fatalf("CreateAsset: %v", err)
+		t.Fatalf("LookupAsset(BTC): %v", err)
 	}
-	if want.Code != "USD" || want.Scale != 2 || want.Class != ledger.Fiat {
-		t.Fatalf("CreateAsset returned %+v", want)
-	}
-
-	got, err := book.GetAsset(ctx, "USD")
-	if err != nil {
-		t.Fatalf("GetAsset: %v", err)
-	}
+	want := ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}
 	if got != want {
-		t.Errorf("GetAsset = %+v, want %+v", got, want)
+		t.Errorf("LookupAsset(BTC) = %+v, want %+v", got, want)
 	}
 }
 
-func TestCreateAssetRejectsScaleAboveNine(t *testing.T) {
-	book := testBook(t)
-
-	// 18 decimals is what an 18-decimal crypto asset would want. int64
-	// holds 9.2 units at that scale, so the registry refuses it rather
-	// than letting the overflow surface as a wrong balance later.
-	_, err := book.CreateAsset(context.Background(), "ETH", "Ether", 18, ledger.Crypto)
-	if !errors.Is(err, ledger.ErrInvalidScale) {
-		t.Errorf("CreateAsset(scale 18) error = %v, want ErrInvalidScale", err)
-	}
-}
-
-func TestCreateAssetRejectsDuplicateCode(t *testing.T) {
-	book := testBook(t)
-	ctx := context.Background()
-
-	if _, err := book.CreateAsset(ctx, "USD", "US Dollar", 2, ledger.Fiat); err != nil {
-		t.Fatalf("first CreateAsset: %v", err)
-	}
-	_, err := book.CreateAsset(ctx, "USD", "US Dollar again", 2, ledger.Fiat)
-	if !errors.Is(err, ledger.ErrDuplicateAsset) {
-		t.Errorf("duplicate CreateAsset error = %v, want ErrDuplicateAsset", err)
-	}
-}
-
-func TestGetAssetUnknownCode(t *testing.T) {
-	book := testBook(t)
-
-	_, err := book.GetAsset(context.Background(), "BTC")
+func TestLookupAssetUnknownCode(t *testing.T) {
+	_, err := ledger.LookupAsset("DOGE")
 	if !errors.Is(err, ledger.ErrAssetNotFound) {
-		t.Errorf("GetAsset error = %v, want ErrAssetNotFound", err)
+		t.Errorf("LookupAsset(DOGE) error = %v, want ErrAssetNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "DOGE") {
+		t.Errorf("error %q does not name the code that was asked for", err)
+	}
+}
+
+// The cap exists because Amount is an int64: at 18 decimal places it would hold
+// 9.2 whole units. With the list in code there is no runtime registration to
+// refuse a bad scale, so the list itself is what has to respect the bound —
+// this is the check that a future entry cannot quietly break it.
+func TestKnownAssetsRespectMaxScale(t *testing.T) {
+	assets := ledger.Assets()
+	if len(assets) == 0 {
+		t.Fatal("no known assets")
+	}
+	seen := make(map[ledger.AssetCode]bool, len(assets))
+	for _, a := range assets {
+		if a.Scale > ledger.MaxAssetScale {
+			t.Errorf("%s has scale %d, above MaxAssetScale %d", a.Code, a.Scale, ledger.MaxAssetScale)
+		}
+		if a.Code == "" || a.Name == "" {
+			t.Errorf("asset %+v has an empty code or name", a)
+		}
+		if seen[a.Code] {
+			t.Errorf("asset code %s appears twice", a.Code)
+		}
+		seen[a.Code] = true
+	}
+}
+
+// Assets returns a copy, so a caller rendering the list cannot edit the
+// definitions CreateAccount validates against.
+func TestAssetsReturnsACopy(t *testing.T) {
+	ledger.Assets()[0].Scale = 99
+
+	eur, err := ledger.LookupAsset("EUR")
+	if err != nil {
+		t.Fatalf("LookupAsset(EUR): %v", err)
+	}
+	if eur.Scale != 2 {
+		t.Errorf("EUR scale = %d after mutating the returned slice, want 2", eur.Scale)
 	}
 }
 
@@ -87,10 +91,6 @@ func newSubledger(t *testing.T, book *ledger.Book) ledger.Subledger {
 func TestCreateAccountRecordsItsAsset(t *testing.T) {
 	book := testBook(t)
 	ctx := context.Background()
-
-	if _, err := book.CreateAsset(ctx, "BTC", "Bitcoin", 8, ledger.Crypto); err != nil {
-		t.Fatalf("CreateAsset: %v", err)
-	}
 	sl := newSubledger(t, book)
 
 	acct, err := book.CreateAccount(ctx, sl.ID, "Crypto Custody", ledger.Asset, "BTC")
@@ -110,13 +110,13 @@ func TestCreateAccountRecordsItsAsset(t *testing.T) {
 	}
 }
 
-func TestCreateAccountRejectsUnregisteredAsset(t *testing.T) {
+func TestCreateAccountRejectsUnknownAsset(t *testing.T) {
 	book := testBook(t)
 	sl := newSubledger(t, book)
 
 	_, err := book.CreateAccount(context.Background(), sl.ID, "Dogecoin Custody", ledger.Asset, "DOGE")
 	if !errors.Is(err, ledger.ErrAssetNotFound) {
-		t.Errorf("CreateAccount with unregistered asset = %v, want ErrAssetNotFound", err)
+		t.Errorf("CreateAccount with an unknown asset = %v, want ErrAssetNotFound", err)
 	}
 }
 
@@ -124,21 +124,11 @@ func TestCreateAccountRejectsUnregisteredAsset(t *testing.T) {
 // Per-asset balance
 // ---------------------------------------------------------------------------
 
-// newAccountIn registers asset in book (scale 2 for EUR, 8 for BTC) if it is
-// not registered yet — testBook already registers EUR, so this ignores
-// ErrDuplicateAsset rather than treating it as a fixture failure — then
-// creates an account of type typ, denominated in asset, in a fresh subledger.
+// newAccountIn creates an account of type typ, denominated in asset, in a fresh
+// subledger of book.
 func newAccountIn(t *testing.T, book *ledger.Book, asset ledger.AssetCode, typ ledger.AccountType) ledger.Account {
 	t.Helper()
 	ctx := context.Background()
-
-	scale, class := uint8(2), ledger.Fiat
-	if asset == "BTC" {
-		scale, class = 8, ledger.Crypto
-	}
-	if _, err := book.CreateAsset(ctx, asset, string(asset), scale, class); err != nil && !errors.Is(err, ledger.ErrDuplicateAsset) {
-		t.Fatalf("CreateAsset(%s): %v", asset, err)
-	}
 
 	sl := newSubledger(t, book)
 	acct, err := book.CreateAccount(ctx, sl.ID, string(asset)+" account", typ, asset)
@@ -168,8 +158,15 @@ func TestPostRejectsCrossAssetTransfer(t *testing.T) {
 	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
 		t.Fatalf("cross-asset PostTransaction error = %v, want ErrUnbalancedAsset", err)
 	}
-	if !strings.Contains(err.Error(), "EUR") && !strings.Contains(err.Error(), "BTC") {
-		t.Errorf("error %q does not name the offending asset", err)
+	// EUR specifically, not "either of the two". validateBalance walks its
+	// assets in first-appearance order precisely so the message is
+	// deterministic, and the EUR leg is first here; an assertion that passed
+	// on either code would not notice if that ordering were lost.
+	if !strings.Contains(err.Error(), "EUR") {
+		t.Errorf("error %q does not name EUR, the first unbalanced asset", err)
+	}
+	if strings.Contains(err.Error(), "BTC") {
+		t.Errorf("error %q names BTC; it should stop at the first offender", err)
 	}
 }
 

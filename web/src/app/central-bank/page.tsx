@@ -3,25 +3,21 @@
 import { PageHeader } from "@/components/page-header";
 import { AuditTable, useAuditPager } from "@/components/audit-table";
 import { DataTable, type Column } from "@/components/data-table";
-import { AmountCell } from "@/components/money";
+import { AmountCell, UnresolvedAmount } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { ErrorState } from "@/components/error-state";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useAssetLookup, useCentralBankAudit, useReserves } from "@/lib/api/hooks";
 import type { Reserve } from "@/lib/types";
 
-// A reserve's amount can only be rendered once its asset's scale is resolved
-// from the *reserve-holding participant's* own book-scoped asset registry
-// (see ledger.Book.CreateAsset) — reserves span every participant, so this
-// resolves per row rather than once for the page.
+// A reserve's amount can only be rendered once its asset's scale is known.
+// Reserves in different assets are different things, so each row resolves its
+// own code rather than the page assuming one.
 function ReserveAmountCell({ reserve }: { reserve: Reserve }) {
-  const { byCode, isLoading } = useAssetLookup(reserve.participant);
+  const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(reserve.asset);
   if (!asset) {
-    return isLoading ? (
-      <Skeleton className="ml-auto h-4 w-16" />
-    ) : (
-      <span className="block text-right text-muted-foreground">—</span>
+    return (
+      <UnresolvedAmount code={reserve.asset} isLoading={isLoading} className="ml-auto block text-right" />
     );
   }
   return <AmountCell amount={reserve.reserve} asset={asset} />;

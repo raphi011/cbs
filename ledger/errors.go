@@ -71,19 +71,11 @@ var (
 	// than a per-store one.
 	ErrInvalidText = errors.New("text must be valid UTF-8 without control characters")
 
-	// ErrAssetNotFound is returned when an asset code is not registered in
-	// this book. Assets are per book: a bank that does not deal in BTC has
-	// no BTC in its chart of accounts.
+	// ErrAssetNotFound is returned when an asset code is not one the system
+	// knows. The known assets are a package-level list in code (see
+	// LookupAsset), so this is a bad request rather than missing state:
+	// nothing a caller can do at runtime will make "DOGE" resolve.
 	ErrAssetNotFound = errors.New("asset not found")
-
-	// ErrDuplicateAsset is returned when registering an asset code that the
-	// book already has.
-	ErrDuplicateAsset = errors.New("asset already exists")
-
-	// ErrInvalidScale is returned when an asset's scale exceeds
-	// MaxAssetScale. Amount is an int64 and cannot represent 18 decimal
-	// places usefully.
-	ErrInvalidScale = errors.New("asset scale exceeds the maximum supported decimal places")
 
 	// ErrUnbalancedAsset is returned when the debits and credits of one
 	// asset within a transaction do not net to zero.

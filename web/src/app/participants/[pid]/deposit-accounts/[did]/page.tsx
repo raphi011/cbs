@@ -272,7 +272,7 @@ export default function DepositAccountDetailPage() {
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
   const setStatus = useSetDepositStatus(pid, did);
   const close = useCloseDepositAccount(pid);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode, isLoading: assetsLoading } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
 
   const back = `/participants/${pid}/deposit-accounts`;
@@ -302,8 +302,16 @@ export default function DepositAccountDetailPage() {
         <ArrowLeft className="size-4" /> Deposit accounts
       </Link>
 
-      {isLoading || !account || !asset ? (
+      {isLoading || assetsLoading || !account ? (
         <Skeleton className="h-10 w-64" />
+      ) : !asset ? (
+        <ErrorState
+          error={
+            new Error(
+              `This account is denominated in "${account.asset}", which the system has no definition for, so its amounts cannot be rendered at a known scale.`,
+            )
+          }
+        />
       ) : (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">

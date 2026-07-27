@@ -31,12 +31,11 @@ type Tx interface {
 	NextSubledgerBlock(ctx context.Context, book BookID) (int, error)
 	NextAccountSeq(ctx context.Context, book BookID, typeBlock int, subledger SubledgerID) (int, error)
 
-	// Assets are per book. PutAsset is an upsert, like every other Put here;
-	// the duplicate check lives in Book.CreateAssetTx, so a store never has
-	// to know the difference between registering and correcting an asset.
-	PutAsset(ctx context.Context, book BookID, a AssetDef) error
-	GetAsset(ctx context.Context, book BookID, code AssetCode) (AssetDef, error)
-	ListAssets(ctx context.Context, book BookID) ([]AssetDef, error)
+	// Assets are not here. An asset definition is a fact about the world, not
+	// per-book state, so it lives in code (see LookupAsset) and a store never
+	// sees one. What a store does persist is every row denominated in an
+	// asset: Account.Asset, deposit.Account.Asset, and a participant's
+	// per-asset plumbing accounts.
 
 	PutLedger(ctx context.Context, book BookID, l Ledger) error
 	GetLedger(ctx context.Context, book BookID, id LedgerID) (Ledger, error)

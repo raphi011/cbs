@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
+import { AssetPicker } from "@/components/pickers/asset-picker";
 import { useAssetLookup, useOpenDepositAccount } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
@@ -26,31 +27,39 @@ import { describeError } from "@/lib/api/errors";
 export function OpenDepositAccountForm({ pid }: { pid: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  // Pre-filled rather than defaulted: the backend refuses an account with no
-  // asset, and the account's asset is fixed once it is open.
-  const [asset, setAsset] = useState("EUR");
-  const [overdraft, setOverdraft] = useState<number | null>(0);
+  // No default: the backend refuses an account with no asset, and the
+  // account's asset is fixed once it is open.
+  const [asset, setAsset] = useState("");
+  const [overdraft, setOverdraft] = useState<number | null>(null);
   const create = useOpenDepositAccount(pid);
-  // The typed code's scale, resolved against this bank's own asset registry
-  // (assets are book-scoped — see ledger.Book.CreateAsset). Until the code
-  // resolves to a registered asset there is no scale to convert a non-zero
-  // overdraft limit by, so the amount input stays disabled rather than
-  // guessing one (0 is scale-invariant, so the default needs no resolution).
-  const { byCode } = useAssetLookup(pid);
-  const resolvedAsset = byCode.get(asset.trim());
+  // Until an asset is chosen there is no scale to convert a typed overdraft
+  // limit by, so the amount input is not rendered at all rather than guessing.
+  const { byCode } = useAssetLookup();
+  const resolvedAsset = byCode.get(asset);
+
+  // Switching the asset discards a previously-typed limit rather than
+  // reinterpreting its minor units at the new scale: 5.00 EUR is 500, and 500
+  // under a scale-8 asset is 0.000005, a number the user never asked for.
+  // Same rule as a transaction leg switching accounts in
+  // post-transaction-form.
+  function chooseAsset(code: string) {
+    setAsset(code);
+    setOverdraft(null);
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !asset.trim()) return;
+    if (!name.trim() || !asset) return;
     try {
       const acct = await create.mutateAsync({
         name: name.trim(),
-        asset: asset.trim(),
+        asset,
         overdraftLimit: overdraft ?? 0,
       });
       toast.success(`Opened ${acct.name}`);
       setName("");
-      setOverdraft(0);
+      setAsset("");
+      setOverdraft(null);
       setOpen(false);
     } catch (err) {
       toast.error(describeError(err));
@@ -89,11 +98,7 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             <FieldLabel htmlFor="dda-asset" required>
               Asset
             </FieldLabel>
-            <Input
-              id="dda-asset"
-              value={asset}
-              onChange={(e) => setAsset(e.target.value)}
-            />
+            <AssetPicker id="dda-asset" value={asset} onChange={chooseAsset} />
             <p className="text-xs text-muted-foreground">
               A customer holding two assets holds two accounts, each with its
               own IBAN.
@@ -112,15 +117,15 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
               />
             ) : (
               <p className="text-xs text-muted-foreground">
-                Amount disabled until &ldquo;{asset.trim() || "…"}&rdquo; resolves to an asset
-                registered in this bank&apos;s book.
+                Choose an asset first — an amount has no meaning until its scale
+                is known. Left empty, the limit is 0: a hard-decline account.
               </p>
             )}
           </div>
           <DialogFooter>
             <Button
               type="submit"
-              disabled={create.isPending || !name.trim() || !asset.trim()}
+              disabled={create.isPending || !name.trim() || !asset}
             >
               {create.isPending ? "Opening…" : "Open account"}
             </Button>

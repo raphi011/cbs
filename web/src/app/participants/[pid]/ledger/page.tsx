@@ -27,6 +27,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { FieldLabel } from "@/components/field-label";
+import { AssetPicker } from "@/components/pickers/asset-picker";
 import { Hint } from "@/components/hint";
 import { IdText } from "@/components/id-text";
 import { Money } from "@/components/money";
@@ -119,16 +120,17 @@ function AccountDialog({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState<AccountType>("Asset");
-  // The asset is required by the backend and is fixed for the life of the
-  // account. It is pre-filled with the euro because the seeded network is a
-  // euro one, not because the field may be left unanswered.
-  const [asset, setAsset] = useState("EUR");
+  // Required by the backend and fixed for the life of the account. No default:
+  // the whole point of the asset dimension is that nothing picks a currency on
+  // the caller's behalf.
+  const [asset, setAsset] = useState("");
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !asset.trim()) return;
+    if (!name.trim() || !asset) return;
     try {
-      await onCreate(name.trim(), type, asset.trim());
+      await onCreate(name.trim(), type, asset);
       setName("");
+      setAsset("");
       setOpen(false);
     } catch {
       /* toast handled by caller */
@@ -181,18 +183,14 @@ function AccountDialog({
             <FieldLabel htmlFor="acct-asset" required>
               Asset
             </FieldLabel>
-            <Input
-              id="acct-asset"
-              value={asset}
-              onChange={(e) => setAsset(e.target.value)}
-            />
+            <AssetPicker id="acct-asset" value={asset} onChange={setAsset} />
             <p className="text-xs text-muted-foreground">
-              The asset must already be registered in this bank&apos;s book, and
-              cannot be changed afterwards.
+              An account is denominated in exactly one asset, fixed at creation
+              — the same reason an IBAN is per-currency.
             </p>
           </div>
           <DialogFooter>
-            <Button type="submit" disabled={pending || !name.trim() || !asset.trim()}>
+            <Button type="submit" disabled={pending || !name.trim() || !asset}>
               {pending ? "Creating…" : "Create account"}
             </Button>
           </DialogFooter>
@@ -204,7 +202,7 @@ function AccountDialog({
 
 function AccountRow({ pid, account }: { pid: string; account: Account }) {
   const { data } = useAccountBalance(pid, account.id);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
   const asset = byCode.get(account.asset);
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2">

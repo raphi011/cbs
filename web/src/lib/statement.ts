@@ -16,8 +16,8 @@ export type StatementRow = {
   date: string; // valueDate
   description?: string;
   direction: Direction;
-  delta: number; // signed cents: the account's normal-balance direction +amount, the opposite −amount
-  runningBalance: number; // cents after this row, signed by the account's normal balance
+  delta: number; // signed minor units: the account's normal-balance direction +amount, the opposite −amount
+  runningBalance: number; // minor units after this row, signed by the account's normal balance
   contra: ContraRef;
   status: TransactionStatus;
   isReversed: boolean;

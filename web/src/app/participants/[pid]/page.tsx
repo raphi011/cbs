@@ -20,7 +20,7 @@ export default function ParticipantOverview() {
   const pid = typeof params.pid === "string" ? params.pid : "";
   const { data: p } = useParticipant(pid);
   const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
-  const { byCode } = useAssetLookup(pid);
+  const { byCode } = useAssetLookup();
 
   // A bank holds one suspense, reserve and settlement account per asset it
   // operates in, so the list is the customer subledger plus three rows per

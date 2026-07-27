@@ -743,20 +743,12 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	assertEqual(t, "bob was not credited", customerBalance(t, b, bob), 0)
 }
 
-// registerAsset registers a non-default asset directly in a participant's own
-// book, bypassing AddParticipant's well-known-asset list (payment.assetDef
-// only knows EUR and USD) — the route needed to give a bank an account in an
-// asset the network has no reserve provisioning for, such as BTC.
-func registerAsset(t *testing.T, p *Participant, code ledger.AssetCode, scale uint8, class ledger.AssetClass) {
-	t.Helper()
-	_, err := p.Ledger.CreateAsset(context.Background(), code, string(code), scale, class)
-	assertNoError(t, err)
-}
-
-// The ledger cannot catch this. A EUR debit and a BTC credit each balance
-// within their own asset, so the posting is valid double-entry — it is merely
-// meaningless. Per-asset balancing guarantees no value is created, not that a
-// payment is coherent, so the scheme has to check.
+// The ledger cannot catch this at initiation: the debtor leg alone is a EUR
+// debit against a EUR credit, valid double-entry that says nothing about the
+// creditor's account. It surfaces only at settlement, and then as a failure of
+// the whole cycle — see
+// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle. The scheme
+// check is what makes the refusal immediate and attributable.
 func TestPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -765,7 +757,6 @@ func TestPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
 	assertNoError(t, err)
-	registerAsset(t, beta, "BTC", 8, ledger.Crypto)
 
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
 	assertNoError(t, err)
@@ -794,7 +785,6 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
 	assertNoError(t, err)
-	registerAsset(t, alpha, "BTC", 8, ledger.Crypto)
 
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
 	assertNoError(t, err)
@@ -825,9 +815,11 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
 	assertNoError(t, err)
-	registerAsset(t, beta, "BTC", 8, ledger.Crypto)
 
-	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
+	// Both ends in BTC: a mandate's two accounts have to agree (see
+	// CreateMandateTx), so the mismatch under test is between the mandate's
+	// asset and the SEPA scheme's, not between the two accounts.
+	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
 	assertNoError(t, err)
 	creditorAcct, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
 	assertNoError(t, err)
@@ -845,6 +837,103 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 		Debtor: debtor, Creditor: creditor,
 	})
 	assertError(t, err, ErrAssetMismatch)
+}
+
+// A mandate holds two accounts and one MaxAmount. An integer that means 50.00
+// at the debtor's scale and 0.0000005 at the creditor's is not a ceiling on
+// anything, so the two accounts have to agree before the mandate exists —
+// rather than every payment it could authorize failing later.
+func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	assertNoError(t, err)
+	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	assertNoError(t, err)
+
+	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
+	assertNoError(t, err)
+	creditorAcct, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
+	assertNoError(t, err)
+
+	_, err = sys.CreateMandate(ctx,
+		PartyRef{Participant: alpha.ID, Account: debtorAcct.ID},
+		PartyRef{Participant: beta.ID, Account: creditorAcct.ID}, 50000)
+	assertError(t, err, ErrAssetMismatch)
+
+	// And nothing was written: a refused mandate is not a mandate.
+	mandates, err := sys.ListMandates(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "mandates recorded", len(mandates), 0)
+}
+
+// What the ledger does and does not catch about a euro-to-bitcoin payment.
+//
+// The claim this test exists to keep honest is a narrow one, and it was stated
+// too broadly once already. The ledger DOES catch a cross-asset payment — at
+// settlement. SettleCycleTx resolves the creditor's suspense account with
+// creditor.AccountsFor(scheme.Asset()), so the creditor leg comes out as a EUR
+// suspense debit against a BTC credit, and validateBalance refuses it with
+// ErrUnbalancedAsset.
+//
+// What the ledger cannot catch is the payment at INITIATION. The debtor leg on
+// its own is impeccable double-entry within one asset, and nothing in that
+// posting says a second posting elsewhere is its other half.
+//
+// The cost of finding out late is what ErrAssetMismatch buys: settlement is
+// all-or-nothing, so one bad payment takes down the whole clearing cycle, and
+// the error names an imbalance rather than the payment that caused it.
+//
+// Constructing the state needs the store directly, because ErrAssetMismatch
+// now refuses such a payment at initiation — which is the point.
+func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	// A BTC account in a euro-only bank: allowed, because an account's asset
+	// is validated against the known assets, not against what its bank
+	// clears in.
+	bobBTC, err := b.OpenCustomerAccount(ctx, "Bob BTC", "BTC")
+	assertNoError(t, err)
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	pay, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 30000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+	})
+	assertNoError(t, err)
+
+	// The debtor leg is already posted and already balanced — in EUR, on its
+	// own, with nothing wrong with it.
+	assertEqual(t, "bank A suspense after initiation", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 30000)
+
+	// Point the creditor end at the bitcoin account, the state ErrAssetMismatch
+	// exists to prevent.
+	assertNoError(t, sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		stored, err := tx.GetPayment(ctx, pay.ID)
+		if err != nil {
+			return err
+		}
+		stored.Creditor.Account = bobBTC.ID
+		return tx.PutPayment(ctx, stored)
+	}))
+
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+
+	_, err = sys.SettleCycle(ctx, cyc.ID)
+	assertError(t, err, ledger.ErrUnbalancedAsset)
+
+	// The whole batch fails, not the one payment: nothing settled, and Alice's
+	// money is still where the debtor leg left it.
+	settlements, err := sys.ListSettlements(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "settlements recorded", len(settlements), 0)
+	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 30000)
+	assertEqual(t, "bob was not credited", customerBalance(t, b, bob), 0)
 }
 
 // SEPA is a euro scheme, not a scheme that happens to be tested with EUR

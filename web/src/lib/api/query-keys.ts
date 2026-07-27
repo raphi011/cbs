@@ -24,8 +24,8 @@ export const qk = {
   centralBankAudit: (q?: AuditQuery) =>
     auditKey(["central-bank", "audit"], q),
 
-  // Book-scoped asset registry (one per participant).
-  assets: (pid: string) => ["participants", pid, "assets"] as const,
+  // Network-wide: assets are defined in code, not per book.
+  assets: () => ["assets"] as const,
 
   // Ledger layer (all nested under the participant so a post can invalidate
   // a whole subtree at once).

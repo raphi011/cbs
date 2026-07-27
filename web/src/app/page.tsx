@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Money } from "@/components/money";
+import { Money, UnresolvedAmount } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { Hint } from "@/components/hint";
 import type { HintKey } from "@/components/hint-content";
@@ -44,18 +44,13 @@ export default function Home() {
   const reservesFor = (pid: string) =>
     (reserves ?? []).filter((r) => r.participant === pid);
 
-  // Sum per asset code, remembering one participant that holds it — needed to
-  // resolve the code's scale, since assets are book-scoped (see
-  // useAssetLookup) rather than defined once, globally.
-  const totalsByAsset = (reserves ?? []).reduce<
-    Record<string, { total: number; participant: string }>
-  >((totals, r) => {
-    const cur = totals[r.asset];
-    return {
-      ...totals,
-      [r.asset]: { total: (cur?.total ?? 0) + r.reserve, participant: cur?.participant ?? r.participant },
-    };
-  }, {});
+  // Sum per asset code. A code means the same asset everywhere — the
+  // definitions are compiled in, not registered per book — so the codes are
+  // the only key the sum needs.
+  const totalsByAsset = (reserves ?? []).reduce<Record<string, number>>(
+    (totals, r) => ({ ...totals, [r.asset]: (totals[r.asset] ?? 0) + r.reserve }),
+    {},
+  );
   const assetTotals = Object.entries(totalsByAsset).sort(([a], [b]) =>
     a.localeCompare(b),
   );
@@ -85,8 +80,8 @@ export default function Home() {
               <span className="text-sm text-muted-foreground">None yet.</span>
             )
           ) : (
-            assetTotals.map(([code, { total, participant }]) => (
-              <AssetTotalRow key={code} participant={participant} code={code} total={total} />
+            assetTotals.map(([code, total]) => (
+              <AssetTotalRow key={code} code={code} total={total} />
             ))
           )}
         </Stat>
@@ -135,24 +130,21 @@ export default function Home() {
   );
 }
 
-// One asset code's reserve total, summed across every participant. The scale
-// needed to render `total` is resolved from `participant`'s own asset
-// registry — any one participant holding this code will do, since a code
-// means the same asset network-wide by construction (every implemented
-// scheme registers the same well-known def in every book it touches; see
-// payment.Network.assetDef).
+// One asset code's reserve total, summed across every participant. Summing is
+// only meaningful within an asset, which is why there is a row per code rather
+// than one number.
 function AssetTotalRow({
-  participant,
   code,
   total,
 }: {
-  participant: string;
   code: string;
   total: number;
 }) {
-  const { byCode, isLoading } = useAssetLookup(participant);
+  const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(code);
-  if (!asset) return isLoading ? <Skeleton className="h-6 w-20" /> : null;
+  if (!asset) {
+    return <UnresolvedAmount code={code} isLoading={isLoading} className="block" />;
+  }
   return (
     <span className="block">
       <Money amount={total} asset={asset} />
@@ -168,7 +160,7 @@ function ParticipantCard({
   participant: Participant;
   reserves: Reserve[];
 }) {
-  const { byCode, isLoading } = useAssetLookup(p.id);
+  const { byCode, isLoading } = useAssetLookup();
   return (
     <Link href={`/participants/${p.id}`}>
       <Card className="h-full transition-colors hover:border-foreground/30">
