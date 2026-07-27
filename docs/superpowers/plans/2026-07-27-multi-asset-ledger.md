@@ -636,25 +636,42 @@ carry — 18 places would hold 9.2 whole units."
 
 ---
 
-### Task 3: Every account is denominated in an asset
+### Task 3: Thread the asset through every layer that creates an account
+
+Merged from what were three separate tasks. They cannot be split without
+temporary hardcoded assets at the call sites in between: the moment
+`CreateAccount` requires an asset, every caller — `deposit`, `payment`, `api`,
+`seed` — must supply a real one. One commit, and the tree is green on both
+sides of it.
+
+Large, and deliberately so. The compiler drives most of it.
 
 **Files:**
-- Modify: `ledger/types.go` (`Account.Asset`)
-- Modify: `ledger/book.go` (`CreateAccount`, `CreateAccountTx` signatures + asset existence check)
-- Modify: `ledger/book_test.go` and every other `ledger` test calling `CreateAccount`
-- Create: `store/pg/schema/0003_account_asset.sql`
-- Modify: `store/pg/tx_ledger.go` (`PutAccount`, `GetAccount`, `ListAccounts`)
-- Modify: `store/mem/tx.go` (nothing structural — `Account` is stored whole)
-- Modify: `store/storetest/storetest.go`
-- Modify: `deposit/register.go`, `payment/system.go`, `payment/participant.go`, `seed/seed.go`, `api/handlers_ledger.go` — every `CreateAccount` caller
+- Modify: `ledger/types.go` (`Account.Asset`), `ledger/book.go` (`CreateAccount`, `CreateAccountTx`)
+- Modify: `deposit/types.go` (`Account.Asset`), `deposit/register.go` (`OpenAccount`, `OpenAccountTx`)
+- Modify: `payment/participant.go` (`ParticipantAccounts`, `Participant.Assets`, `AccountsFor`, `OpenCustomerAccount`)
+- Modify: `payment/system.go` (`AddParticipant`, funding, the payment path, `SettleCycle`), `payment/errors.go`, `payment/store.go`
+- Modify: `api/handlers_ledger.go`, `api/handlers_deposit.go`, `api/dto_ledger.go`, `api/dto_deposit.go`
+- Modify: `seed/seed.go`
+- Create: `store/pg/schema/0003_account_asset.sql`, `0004_deposit_account_asset.sql`, `0005_participant_assets.sql`
+- Modify: `store/pg/tx_ledger.go`, `store/pg/tx_deposit.go`, `store/pg/tx_payment.go`, `store/mem/tx_payment.go`
+- Modify: `store/storetest/storetest.go`, `store/storetest/deposit.go`, `store/storetest/payment.go`
+- Modify: `ledger/asset_test.go`, `deposit/register_test.go`, `payment/system_test.go`, `api/server_test.go`
 
 **Interfaces:**
-- Consumes: `ledger.Asset`, `Tx.GetAsset` (Task 2).
+- Consumes: `ledger.AssetDef`, `Tx.GetAsset`, `Book.CreateAssetTx` (Task 2).
 - Produces:
-  - `Account` gains `Asset AssetCode`.
-  - `func (s *Book) CreateAccount(ctx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error)`
-  - `func (s *Book) CreateAccountTx(ctx, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error)`
-  - `CreateAccount` returns `ErrAssetNotFound` when the asset is not registered in the book.
+  - `Account` gains `Asset AssetCode`; `CreateAccount(ctx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error)` and the same for `CreateAccountTx`, returning `ErrAssetNotFound` for an unregistered asset.
+  - `deposit.Account` gains `Asset ledger.AssetCode`; `OpenAccount(ctx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error)` and the same for `OpenAccountTx`. The asset parameter goes *before* `overdraftLimit` so the two `ledger`-typed arguments are not adjacent and transposable.
+  - `payment.ParticipantAccounts{Suspense, Reserve, Settlement ledger.AccountID}`; `Participant.Assets map[ledger.AssetCode]ParticipantAccounts` replacing the three flat fields; `(*Participant).AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, error)`; `ErrParticipantAssetNotFound`.
+  - `AddParticipant` gains `assets []ledger.AssetCode`; empty means `[]ledger.AssetCode{"EUR"}`.
+  - `(*Participant).OpenCustomerAccount(ctx, name string, asset ledger.AssetCode) (deposit.Account, error)`.
+  - `asset` required in the create-account and open-deposit-account API request bodies (400 when missing).
+
+**Cross-asset behaviour is NOT part of this task.** Task 4 adds per-asset
+balancing, so a cross-asset posting still succeeds after this task. Do not add
+a guard for it here — that check belongs in `ledger`, not scattered across
+callers.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -700,10 +717,122 @@ func TestCreateAccountRejectsUnregisteredAsset(t *testing.T) {
 
 If `newSubledger(t, book)` does not exist as a helper, add one alongside `newBook` that creates a ledger and a subledger and returns the subledger.
 
+Add to `deposit/register_test.go` — the deposit half (the cross-asset
+`CaptureHold` case belongs to Task 4, which adds the rule that refuses it):
+
+Add to `deposit/register_test.go`:
+
+```go
+func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
+	reg, book := newRegister(t)
+	ctx := context.Background()
+
+	acct, err := reg.OpenAccount(ctx, subledgerFor(t, book), "Anna BTC", "BTC", 0)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	if acct.Asset != "BTC" {
+		t.Errorf("deposit account asset = %q, want BTC", acct.Asset)
+	}
+
+	gl, err := book.GetAccount(ctx, acct.GLAccount)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if gl.Asset != acct.Asset {
+		t.Errorf("GL account asset %q != deposit account asset %q", gl.Asset, acct.Asset)
+	}
+}
+
+Reuse whatever setup helpers `deposit/register_test.go` already has instead of
+`newRegister`/`subledgerFor` if they exist under other names; register EUR and
+BTC in the test book's setup.
+
+Add to `payment/system_test.go`:
+
+Add to `payment/system_test.go`:
+
+```go
+func TestParticipantHasAccountsPerAsset(t *testing.T) {
+	net := newNetwork(t)
+	ctx := context.Background()
+
+	p, err := net.AddParticipant(ctx, "Alpha", []ledger.AssetCode{"EUR", "USD"})
+	if err != nil {
+		t.Fatalf("AddParticipant: %v", err)
+	}
+
+	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
+		accts, err := p.AccountsFor(asset)
+		if err != nil {
+			t.Fatalf("AccountsFor(%s): %v", asset, err)
+		}
+		for name, id := range map[string]ledger.AccountID{
+			"suspense": accts.Suspense, "reserve": accts.Reserve, "settlement": accts.Settlement,
+		} {
+			if id == "" {
+				t.Errorf("%s account for %s is empty", name, asset)
+				continue
+			}
+		}
+		// Each of the three accounts must itself be denominated in that asset.
+		gl, err := p.Ledger.GetAccount(ctx, accts.Suspense)
+		if err != nil {
+			t.Fatalf("GetAccount: %v", err)
+		}
+		if gl.Asset != asset {
+			t.Errorf("suspense account for %s is denominated in %s", asset, gl.Asset)
+		}
+	}
+}
+
+func TestAccountsForUnknownAssetFails(t *testing.T) {
+	net := newNetwork(t)
+
+	p, err := net.AddParticipant(context.Background(), "Alpha", nil) // defaults to EUR
+	if err != nil {
+		t.Fatalf("AddParticipant: %v", err)
+	}
+	if _, err := p.AccountsFor("BTC"); !errors.Is(err, payment.ErrParticipantAssetNotFound) {
+		t.Errorf("AccountsFor(BTC) = %v, want ErrParticipantAssetNotFound", err)
+	}
+}
+
+// Settlement must never fall back to a base currency when a member does not
+// hold the cycle's asset. Deleting a participant's asset entry simulates the
+// state that a future non-EUR scheme would produce naturally.
+func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
+	net := newNetwork(t)
+	ctx := context.Background()
+
+	alpha := addParticipant(t, net, "Alpha")
+	beta := addParticipant(t, net, "Beta")
+	cycle := acceptedCycle(t, net, alpha, beta)
+
+	// Take EUR away from a member that is about to settle.
+	stored, err := net.GetParticipant(ctx, beta.ID)
+	if err != nil {
+		t.Fatalf("GetParticipant: %v", err)
+	}
+	delete(stored.Assets, "EUR")
+	putParticipant(t, net, stored)
+
+	if err := net.SettleCycle(ctx, cycle.ID); !errors.Is(err, payment.ErrParticipantAssetNotFound) {
+		t.Errorf("SettleCycle = %v, want ErrParticipantAssetNotFound", err)
+	}
+
+	// And nothing was posted: the batch fails whole, exactly as it does for
+	// a member that cannot cover its position.
+	assertNoSettlementPostings(t, net, cycle.ID)
+}
+```
+
+`acceptedCycle`, `putParticipant` and `assertNoSettlementPostings` stand in for whatever the existing end-to-end settlement test in this file already does to drive a cycle to the point of settlement, write a participant back, and assert that a failed batch posted nothing. Read that test first and reuse its helpers under their real names — do not add parallel ones.
+
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./ledger/ -run TestCreateAccount -v`
-Expected: FAIL — `CreateAccount` takes 4 arguments, not 5.
+Run: `go test ./ledger/ ./deposit/ ./payment/ -run 'Asset|AccountsFor' -v`
+Expected: FAIL — `CreateAccount` takes 4 arguments, `OpenAccount` takes 4, `AccountsFor` undefined.
 
 - [ ] **Step 3: Confirm the naming is already settled**
 
@@ -715,7 +844,7 @@ Run: `go build ./...`
 Expected: PASS — nothing to change here; this step exists so the distinction
 is not discovered halfway through Step 5.
 
-- [ ] **Step 4: Add the field and the parameter**
+- [ ] **Step 4: Add the asset to `ledger.Account`**
 
 In `ledger/types.go`, extend `Account`:
 
@@ -752,18 +881,220 @@ In `ledger/book.go`, change both signatures and add the existence check after th
 
 and set `Asset: asset` in the `Account` literal.
 
-- [ ] **Step 5: Update every caller**
+- [ ] **Step 5: Add the asset to `deposit.Account`**
 
-Run: `go build ./...` and fix each error. The callers are:
-- `deposit/register.go:150` — `CreateAccountTx(ctx, tx, subledger, name, ledger.Liability, ...)`. The asset comes from the parameter added in Task 5; **for now** thread a literal `"EUR"` and leave a `// TODO(task-5)` marker, because Task 5 replaces it with a real parameter two tasks later.
-- `payment/system.go:283,287,297` — the suspense, reserve and central-bank reserve accounts. Same: `"EUR"` for now, replaced in Task 7.
-- `seed/seed.go` — every account it creates; pass `"EUR"`, and register EUR in each book it builds (add a `CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)` immediately after each book's ledger is created, before any account).
-- `api/handlers_ledger.go` — the create-account handler; Task 8 makes it a request field, so for now pass `"EUR"`.
-- every test in `ledger`, `deposit`, `payment` that calls `CreateAccount` — pass `"EUR"` and register the asset in the test's setup helper.
+In `deposit/types.go`, extend `Account`:
 
-The `// TODO(task-5)` and `// TODO(task-7)` markers must be removed by those tasks. This is the one place in the plan where a temporary literal is acceptable: it keeps the tree compiling and green between commits, which is worth more than avoiding a two-task-lived marker.
+```go
+// Account is a customer demand-deposit account. It wraps a backing Liability
+// account in the general ledger (GLAccount): the GL book balance of that
+// account is the customer's money.
+//
+// Asset duplicates the backing GL account's asset. That is a deliberate
+// exception to deriving rather than duplicating: the GL account's asset is
+// immutable, so the two cannot drift, and deriving it would make ListAccounts
+// an N+1 lookup in store/mem and a join in store/pg — divergent complexity in
+// both stores for a value that cannot change. store/storetest asserts they
+// always agree.
+//
+// A customer holding several assets holds several accounts, each with its own
+// IBAN, which is how most European retail banks work.
+type Account struct {
+	ID             AccountID
+	GLAccount      ledger.AccountID
+	Name           string
+	Asset          ledger.AssetCode
+	Status         AccountStatus
+	OverdraftLimit ledger.Amount
+	CreatedAt      time.Time
+}
+```
 
-- [ ] **Step 6: Add the migration**
+- [ ] **Step 6: Thread the asset through `deposit.Register`**
+
+In `deposit/register.go`, add `asset ledger.AssetCode` to both signatures, pass it straight through to `CreateAccountTx`, and set `Asset: asset` in the `Account` literal.
+
+In `payment/participant.go`, `OpenCustomerAccount` gains the parameter and forwards it:
+
+```go
+func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
+	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
+}
+```
+
+- [ ] **Step 7: Restructure `Participant`**
+
+In `payment/participant.go`, replace the three flat fields:
+
+```go
+// ParticipantAccounts are the internal accounts a participant needs for one
+// asset:
+//
+//   - Suspense (Liability): an in-transit account holding funds that have left
+//     a customer but not yet settled between banks. Returns to zero once a
+//     cycle settles.
+//   - Reserve (Asset): the bank's claim on the central bank. It mirrors the
+//     bank's reserve account in the central-bank ledger and moves only at
+//     settlement.
+//   - Settlement: this participant's reserve account in the central-bank
+//     ledger — the central bank's "vostro" view of the bank.
+type ParticipantAccounts struct {
+	Suspense   ledger.AccountID
+	Reserve    ledger.AccountID
+	Settlement ledger.AccountID
+}
+```
+
+and on `Participant`:
+
+```go
+	// Assets holds one set of internal accounts per asset the participant
+	// operates in, keyed by asset code.
+	//
+	// Keyed rather than flat because every one of those accounts is
+	// denominated in exactly one asset: a bank clearing both euro and dollar
+	// schemes needs two suspense accounts and two reserve accounts, not two
+	// currencies inside one. Adding a scheme in a new asset is then a data
+	// change rather than a code change.
+	Assets map[ledger.AssetCode]ParticipantAccounts
+```
+
+Add the lookup:
+
+```go
+// AccountsFor returns the participant's internal accounts for an asset.
+//
+// Returns ErrParticipantAssetNotFound if the participant does not operate in
+// that asset. There is deliberately no fallback to a base currency: settling a
+// dollar cycle through a euro reserve account would be a silent accounting
+// error rather than a visible failure.
+func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, error) {
+	accts, ok := p.Assets[asset]
+	if !ok {
+		return ParticipantAccounts{}, fmt.Errorf("%w: %s in %s", ErrParticipantAssetNotFound, asset, p.Name)
+	}
+	return accts, nil
+}
+```
+
+Add the sentinel to `payment/errors.go`:
+
+```go
+	// ErrParticipantAssetNotFound is returned when a participant does not
+	// operate in an asset it is being asked to settle in.
+	ErrParticipantAssetNotFound = errors.New("participant does not hold accounts in this asset")
+```
+
+- [ ] **Step 8: Create the participant's accounts per asset in `AddParticipant`**
+
+In `payment/system.go`, around lines 283–309, wrap the three `CreateAccountTx` calls in a loop over the requested assets. Register the asset in both the participant's book and the central bank's book first — an account cannot reference an unregistered asset (Task 3):
+
+```go
+	if len(assets) == 0 {
+		assets = []ledger.AssetCode{"EUR"}
+	}
+
+	accounts := make(map[ledger.AssetCode]ParticipantAccounts, len(assets))
+	for _, asset := range assets {
+		def, err := s.assetDef(asset)
+		if err != nil {
+			return Participant{}, err
+		}
+		// The asset has to exist in both books: the bank holds its own
+		// suspense and reserve accounts, and the central bank holds the
+		// matching vostro account.
+		if err := ensureAsset(ctx, tx, bank, def); err != nil {
+			return Participant{}, err
+		}
+		if err := ensureAsset(ctx, tx, s.centralBank, def); err != nil {
+			return Participant{}, err
+		}
+
+		suspense, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Clearing Suspense ("+string(asset)+")", ledger.Liability, asset)
+		if err != nil {
+			return Participant{}, err
+		}
+		reserve, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Reserve at Central Bank ("+string(asset)+")", ledger.Asset, asset)
+		if err != nil {
+			return Participant{}, err
+		}
+		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
+		if err != nil {
+			return Participant{}, err
+		}
+		accounts[asset] = ParticipantAccounts{Suspense: suspense.ID, Reserve: reserve.ID, Settlement: cbReserve.ID}
+	}
+```
+
+Add the two helpers next to `AddParticipant`:
+
+```go
+// assetDef returns the definition for a well-known asset code. The network
+// needs it because it creates accounts in books it does not otherwise
+// populate, and an account cannot reference an unregistered asset.
+func (s *Network) assetDef(code ledger.AssetCode) (ledger.AssetDef, error) {
+	switch code {
+	case "EUR":
+		return ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2, Class: ledger.Fiat}, nil
+	case "USD":
+		return ledger.AssetDef{Code: "USD", Name: "US Dollar", Scale: 2, Class: ledger.Fiat}, nil
+	default:
+		return ledger.AssetDef{}, fmt.Errorf("%w: %s", ledger.ErrAssetNotFound, code)
+	}
+}
+
+// ensureAsset registers an asset in a book if it is not registered already.
+// Idempotent, because several participants join the same central-bank book.
+func ensureAsset(ctx context.Context, tx Tx, book *ledger.Book, def ledger.AssetDef) error {
+	_, err := book.CreateAssetTx(ctx, tx, def.Code, def.Name, def.Scale, def.Class)
+	if errors.Is(err, ledger.ErrDuplicateAsset) {
+		return nil
+	}
+	return err
+}
+```
+
+Naming the accounts with the asset in parentheses keeps them distinguishable in a chart of accounts that now holds several of each.
+
+- [ ] **Step 9: Update every reader of the old flat participant fields**
+
+Run: `go build ./...` and replace each `p.SuspenseAccount` / `p.ReserveAccount` / `p.SettlementAccount` with an `AccountsFor(asset)` call. The asset comes from:
+- **funding** (`payment/system.go:326-371`): add an `asset ledger.AssetCode` parameter to the funding entry point, defaulting to `"EUR"` at its API/seed callers.
+- **the payment path**: `scheme.Asset()`.
+- **`SettleCycle`**: the cycle's scheme's asset, resolved once at the top and used for every participant in the batch. A participant missing it fails the whole batch — which is already how an underfunded member behaves.
+
+- [ ] **Step 10: Update the remaining callers**
+
+Run: `go build ./...` and fix what is left:
+
+- `payment/participant.go` — `OpenCustomerAccount` gains the asset parameter and forwards it:
+
+```go
+func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
+	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
+}
+```
+
+- `seed/seed.go` — register EUR in each book it builds, immediately after that book's ledger is created and before any account, with `CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)`. Pass `"EUR"` at every account-opening site and `[]ledger.AssetCode{"EUR"}` to `AddParticipant`. The seeded network stays euro-only, so the demo data is unchanged in substance.
+- `api/handlers_ledger.go` and `api/handlers_deposit.go` — `asset` becomes a **required** field on the create-account and open-deposit-account request bodies, returning 400 when absent. There is no default: silently falling back to a base currency is the bug this dimension exists to prevent. Add the field to the request structs in `api/dto_ledger.go` and `api/dto_deposit.go`.
+- the remaining tests across `ledger`, `deposit`, `payment` and `api` — pass `"EUR"` and register the asset in each test's setup helper.
+
+Add an API test to `api/server_test.go`, matching its existing helper names:
+
+```go
+func TestCreateAccountRequiresAsset(t *testing.T) {
+	srv := newServer(t)
+
+	res := srv.post(t, "/participants/alpha/accounts", map[string]any{
+		"subledgerId": "cust", "name": "No Asset", "type": "Liability",
+	})
+	if res.Code != http.StatusBadRequest {
+		t.Errorf("POST account without asset = %d, want 400", res.Code)
+	}
+}
+```
+
+- [ ] **Step 11: Add the three migrations**
 
 Create `store/pg/schema/0003_account_asset.sql`:
 
@@ -794,7 +1125,66 @@ ALTER TABLE accounts ADD CONSTRAINT accounts_asset_fkey
 
 `class` is `0` because `Fiat` is the zero value of `AssetClass`.
 
-- [ ] **Step 7: Update the pg store**
+
+Create `store/pg/schema/0004_deposit_account_asset.sql`:
+
+```sql
+-- A deposit account's asset, duplicated from its backing GL account.
+--
+-- This is the one place the schema stores a fact twice on purpose. The GL
+-- account's asset is fixed at creation, so the two cannot drift, and deriving
+-- it would turn every listing of deposit accounts into a join for a value that
+-- can never change. store/storetest asserts the two always agree.
+--
+-- Existing rows are EUR by construction, like every other backfill in this
+-- series of migrations.
+ALTER TABLE deposit_accounts ADD COLUMN asset TEXT;
+
+UPDATE deposit_accounts SET asset = 'EUR' WHERE asset IS NULL;
+
+ALTER TABLE deposit_accounts ALTER COLUMN asset SET NOT NULL;
+ALTER TABLE deposit_accounts ADD CONSTRAINT deposit_accounts_asset_fkey
+    FOREIGN KEY (book_id, asset) REFERENCES assets (book_id, code);
+```
+
+
+Create `store/pg/schema/0005_participant_assets.sql`:
+
+```sql
+-- A participant's internal accounts, one set per asset it operates in.
+--
+-- These were three columns on participants. They move to a child table because
+-- each of those accounts is denominated in exactly one asset: a bank clearing
+-- both a euro and a dollar scheme needs two suspense accounts and two reserve
+-- accounts, not two currencies inside one. Keying by (participant, asset) makes
+-- adding a scheme in a new asset a data change rather than a schema change.
+--
+-- The existing three columns are migrated into a single EUR row per
+-- participant, then dropped. As everywhere in this series, EUR is exact: the
+-- system had no other asset.
+CREATE TABLE participant_assets (
+    participant_id TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
+    asset          TEXT NOT NULL,
+    suspense       TEXT NOT NULL,
+    reserve        TEXT NOT NULL,
+    settlement     TEXT NOT NULL,
+    seq            BIGSERIAL NOT NULL,
+    PRIMARY KEY (participant_id, asset)
+);
+
+INSERT INTO participant_assets (participant_id, asset, suspense, reserve, settlement)
+SELECT id, 'EUR', suspense_account, reserve_account, settlement_account FROM participants;
+
+ALTER TABLE participants DROP COLUMN suspense_account;
+ALTER TABLE participants DROP COLUMN reserve_account;
+ALTER TABLE participants DROP COLUMN settlement_account;
+```
+
+Check the real column names in `store/pg/schema/0001_init.sql` at the `participants` table (line 226) before writing this — they may be `suspense_account` or another spelling, and the `INSERT ... SELECT` must match exactly.
+
+There is no foreign key from `participant_assets.asset` to `assets`, because a participant row is keyed by participant ID while assets are keyed by book. Note that in the comment, in the same spirit as the existing note on why the audit table has no foreign key.
+
+- [ ] **Step 12: Update the pg store**
 
 In `store/pg/tx_ledger.go`, add `asset` to `PutAccount`'s insert, update-set and both read queries:
 
@@ -811,7 +1201,22 @@ and add `asset` to the `SELECT` column lists and `Scan` targets in `GetAccount` 
 
 `store/mem` needs no change — it stores the whole `Account` value.
 
-- [ ] **Step 8: Add the conformance case**
+
+In `store/pg/tx_deposit.go`, add `asset` to `PutDepositAccount`'s insert and update-set, and to the `SELECT` lists and `Scan` targets of `GetDepositAccount` and `ListDepositAccounts`.
+
+
+`store/pg/tx_payment.go`: `PutParticipant` writes the parent row then replaces the child rows (`DELETE` then `INSERT`, so an upsert cannot leave a stale asset behind); `GetParticipant` and `ListParticipants` load the child rows into the `Assets` map. Loading every participant's assets in one extra query keyed by participant ID avoids an N+1 in `ListParticipants`.
+
+`store/mem/tx_payment.go`: `Participant` is stored whole, so the map travels with it — but **copy the map on write and on read**, or two callers will share one map and mutate each other's state. The rest of the mem store stores value types for exactly this reason.
+
+- [ ] **Step 13: Update the mem store**
+
+`store/mem` needs no change for accounts or deposit accounts — it stores those
+whole values.
+
+`Participant` is stored whole, so the map travels with it — but **copy the map on write and on read**, or two callers will share one map and mutate each other's state. The rest of the mem store stores value types for exactly this reason.
+
+- [ ] **Step 14: Add the conformance cases**
 
 In `store/storetest/storetest.go`, inside `RunLedger`:
 
@@ -849,26 +1254,135 @@ In `store/storetest/storetest.go`, inside `RunLedger`:
 	})
 ```
 
-- [ ] **Step 9: Run the tests**
+
+In `store/storetest/deposit.go`, inside `RunDeposit`:
+
+```go
+	t.Run("DepositAccountAssetMatchesItsGLAccount", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}); err != nil {
+				return err
+			}
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
+				ID: "200.cust.001", SubledgerID: "cust", Name: "Anna",
+				Type: ledger.Liability, Asset: "BTC",
+			}); err != nil {
+				return err
+			}
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", GLAccount: "200.cust.001", Name: "Anna", Asset: "BTC",
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			dep, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			gl, err := tx.GetAccount(ctx, bookA, dep.GLAccount)
+			if err != nil {
+				return err
+			}
+			if dep.Asset != gl.Asset {
+				t.Errorf("deposit asset %q != GL asset %q", dep.Asset, gl.Asset)
+			}
+			return nil
+		})
+	})
+```
+
+Match the helper names and `bookA` constant that `store/storetest/deposit.go` already uses.
+
+
+In `store/storetest/payment.go`, inside `RunPayment`:
+
+```go
+	t.Run("ParticipantAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutParticipant(ctx, payment.Participant{
+				ID: "alpha", Name: "Alpha", BookID: "alpha",
+				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
+					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", Settlement: "200.res.002"},
+				},
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			if len(got.Assets) != 2 {
+				t.Fatalf("participant has %d assets, want 2", len(got.Assets))
+			}
+			if got.Assets["USD"].Reserve != "100.ib.002" {
+				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
+			}
+			return nil
+		})
+
+		// An upsert must replace the set, not merge into it: a stale asset
+		// left behind would settle through an account the participant no
+		// longer holds.
+		update(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutParticipant(ctx, payment.Participant{
+				ID: "alpha", Name: "Alpha", BookID: "alpha",
+				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
+				},
+			})
+		})
+
+		view(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetParticipant(ctx, "alpha")
+			if err != nil {
+				return err
+			}
+			if len(got.Assets) != 1 {
+				t.Errorf("after upsert participant has %d assets, want 1", len(got.Assets))
+			}
+			return nil
+		})
+	})
+```
+
+- [ ] **Step 15: Run the tests**
 
 Run: `go test ./...`
 Expected: PASS
 
-- [ ] **Step 10: Verify against Postgres**
+- [ ] **Step 16: Verify against Postgres**
 
 Run: `make test-pg`
 Expected: PASS
 
-- [ ] **Step 11: Commit**
+- [ ] **Step 17: Run the app**
+
+Run: `make run`, open the web app, and confirm a participant page loads with its
+accounts and a payment can be initiated end to end. The seeded euro network must
+behave exactly as it did before.
+
+- [ ] **Step 18: Commit**
 
 ```bash
 git add -A
-git commit -m "Denominate every GL account in an asset
+git commit -m "Denominate accounts, deposit accounts and reserves in an asset
 
-The asset lives on the account and not on the entry: an entry's asset is
-always its account's, so storing it twice would only let the two disagree.
-Existing rows backfill to EUR, which is exact rather than a guess — the
-system had no other asset."
+One commit because it cannot be split: the moment CreateAccount requires
+an asset, every caller must supply a real one, and splitting would mean
+temporary hardcoded currencies at the seams.
+
+The asset lives on the account and not on the entry — an entry's asset is
+always its account's. Participants hold one set of suspense, reserve and
+settlement accounts per asset, so settlement resolves them by the cycle's
+asset and fails when a member does not hold it, rather than falling back
+to EUR. Existing rows backfill to EUR, which is exact: the system had no
+other asset."
 ```
 
 ---
@@ -886,7 +1400,7 @@ The invariant this whole sub-project exists for.
 - Consumes: `Account.Asset` (Task 3).
 - Produces:
   - `func validateBalance(entries []Entry, accounts map[AccountID]Account) error` (unexported)
-  - `ErrUnbalancedAsset` — returned when one asset's debits and credits do not net to zero. Wrapped with the offending code via `fmt.Errorf("%w: %s", ErrUnbalancedAsset, code)`, so `errors.Is` works and the message names the asset.
+  - `ErrUnbalancedAsset` — returned when one asset's debits and credits do not net to zero, returned wrapped **together with** `ErrUnbalancedTransaction` via `fmt.Errorf("%w: %w: %s", ErrUnbalancedTransaction, ErrUnbalancedAsset, code)` (Go 1.20+ multi-`%w`; this module is on Go 1.25). `errors.Is` therefore returns true for both sentinels and the message names the asset.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -942,6 +1456,42 @@ func TestPostAcceptsTwoAssetsBalancedThroughPositionAccounts(t *testing.T) {
 	}
 }
 
+// A capture that moves money into an account of a different asset needs no
+// check in the deposit layer: the posting debits one asset and credits
+// another, and the per-asset rule refuses it. This lives in deposit's tests
+// because that is where the behaviour is observed, and it is the invariant
+// paying for itself.
+//
+// Put this one in deposit/register_test.go, not here.
+func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
+	reg, book := newRegister(t)
+	ctx := context.Background()
+	sl := subledgerFor(t, book)
+
+	acct, err := reg.OpenAccount(ctx, sl, "Anna EUR", "EUR", 0)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	fund(t, reg, book, acct, 10_000)
+
+	btcGL, err := book.CreateAccount(ctx, sl, "Merchant BTC", ledger.Liability, "BTC")
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+
+	hold, err := reg.CreateHold(ctx, deposit.CreateHoldRequest{
+		AccountID: acct.ID, Amount: 500, Description: "auth",
+	})
+	if err != nil {
+		t.Fatalf("CreateHold: %v", err)
+	}
+
+	_, err = reg.CaptureHold(ctx, hold.ID, btcGL.ID, 500, "capture into a BTC account")
+	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
+		t.Errorf("cross-asset CaptureHold = %v, want ErrUnbalancedAsset", err)
+	}
+}
+
 // The pre-existing single-asset failure must keep its own error.
 func TestPostStillRejectsSingleAssetImbalance(t *testing.T) {
 	book := newBook(t)
@@ -963,13 +1513,20 @@ func TestPostStillRejectsSingleAssetImbalance(t *testing.T) {
 }
 ```
 
-Add a helper `newAccountIn(t, book, asset, typ)` that registers the asset if it is not registered yet (ignore `ErrDuplicateAsset`) with scale 2 for EUR and 8 for BTC, then creates an account in the test's subledger. Import `strings`.
+Add a helper `newAccountIn(t, book, asset, typ)` that registers the asset if it
+is not registered yet (ignore `ErrDuplicateAsset`) with scale 2 for EUR and 8
+for BTC, then creates an account in the test's subledger. Import `strings`.
+
+The `CaptureHold` case goes in `deposit/register_test.go`, using that file's
+existing setup helpers under their real names. Check `deposit.CreateHoldRequest`
+in `deposit/register.go` around line 322 and `CaptureHold`'s signature at line
+447 before writing the call.
 
 Match `ledger.PostRequest`'s actual field names — check `ledger/book.go` around line 320 for the real struct.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./ledger/ -run TestPost -v`
+Run: `go test ./ledger/ ./deposit/ -run 'TestPost|TestCaptureHoldRejects' -v`
 Expected: FAIL — `ErrUnbalancedAsset` undefined; the cross-asset case currently *passes* posting, which is the bug being fixed.
 
 - [ ] **Step 3: Add the sentinel**
@@ -990,7 +1547,24 @@ In `ledger/errors.go`:
 	ErrUnbalancedAsset = errors.New("transaction entries do not balance within an asset")
 ```
 
-Keep `ErrUnbalancedTransaction` — Task 4 does not remove it; it stays for the empty/one-sided case guarded elsewhere in `PostTx`. If nothing references it after this change, leave the sentinel in place and note in its comment that per-asset balancing supersedes it, rather than deleting an exported symbol.
+`ErrUnbalancedTransaction` is **not** removed and **not** left dangling — it
+becomes the general case that `ErrUnbalancedAsset` specialises. Extend its
+existing comment:
+
+```go
+	// ErrUnbalancedTransaction is returned when a transaction does not
+	// balance. It is the general fact; ErrUnbalancedAsset names which asset
+	// it failed in, and every per-asset failure wraps both, so a caller may
+	// match on whichever level it cares about.
+	//
+	// It is not returned on its own. The empty case has its own sentinel
+	// (ErrEmptyTransaction, guarded earlier in PostTx), and every other
+	// imbalance is an imbalance within some asset.
+	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits")
+```
+
+Do not delete it. It is exported, callers may already match on it, and it is
+the name the README and the quiz use for the double-entry invariant.
 
 - [ ] **Step 4: Rewrite the check**
 
@@ -1031,7 +1605,7 @@ func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
 
 	for _, asset := range order {
 		if net[asset] != 0 {
-			return fmt.Errorf("%w: %s", ErrUnbalancedAsset, asset)
+			return fmt.Errorf("%w: %w: %s", ErrUnbalancedTransaction, ErrUnbalancedAsset, asset)
 		}
 	}
 	return nil
@@ -1058,7 +1632,7 @@ Expected: PASS. If `export_test.go` re-exports `validateBalance`, update its sig
 - [ ] **Step 7: Run the tests**
 
 Run: `go test ./...`
-Expected: PASS. Existing single-asset tests asserting `ErrUnbalancedTransaction` on an imbalance now get `ErrUnbalancedAsset` — update those assertions; do **not** weaken the new check to keep them passing.
+Expected: PASS. Existing single-asset tests asserting `ErrUnbalancedTransaction` keep passing unchanged, because the per-asset error wraps it — that is the point of the double wrap. Do **not** weaken the new check to make anything pass.
 
 - [ ] **Step 8: Verify against Postgres**
 
@@ -1079,236 +1653,7 @@ ignorant of what anything is worth."
 
 ---
 
-### Task 5: Deposit accounts carry their asset
-
-**Files:**
-- Modify: `deposit/types.go` (`Account.Asset`)
-- Modify: `deposit/register.go` (`OpenAccount`, `OpenAccountTx`)
-- Modify: `payment/participant.go` (`OpenCustomerAccount`)
-- Create: `store/pg/schema/0004_deposit_account_asset.sql`
-- Modify: `store/pg/tx_deposit.go`
-- Modify: `store/storetest/deposit.go`
-- Modify: `deposit/register_test.go`, `seed/seed.go`, `api/handlers_deposit.go`
-
-**Interfaces:**
-- Consumes: `ledger.AssetCode`, `Book.CreateAccountTx` with asset (Task 3).
-- Produces:
-  - `deposit.Account` gains `Asset ledger.AssetCode`.
-  - `func (r *Register) OpenAccount(ctx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error)`
-  - `func (r *Register) OpenAccountTx(ctx, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error)`
-  - `func (p *Participant) OpenCustomerAccount(ctx, name string, asset ledger.AssetCode) (deposit.Account, error)`
-
-The asset parameter goes *before* `overdraftLimit` so the two `ledger`-typed arguments are not adjacent and transposable.
-
-- [ ] **Step 1: Write the failing tests**
-
-Add to `deposit/register_test.go`:
-
-```go
-func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
-	reg, book := newRegister(t)
-	ctx := context.Background()
-
-	acct, err := reg.OpenAccount(ctx, subledgerFor(t, book), "Anna BTC", "BTC", 0)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
-	if acct.Asset != "BTC" {
-		t.Errorf("deposit account asset = %q, want BTC", acct.Asset)
-	}
-
-	gl, err := book.GetAccount(ctx, acct.GLAccount)
-	if err != nil {
-		t.Fatalf("GetAccount: %v", err)
-	}
-	if gl.Asset != acct.Asset {
-		t.Errorf("GL account asset %q != deposit account asset %q", gl.Asset, acct.Asset)
-	}
-}
-
-// A capture that moves money into an account of a different asset needs no
-// check in the deposit layer: the posting would debit one asset and credit
-// another, and the ledger's per-asset rule refuses it. This test pins that,
-// because it is the invariant paying for itself.
-func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
-	reg, book := newRegister(t)
-	ctx := context.Background()
-	sl := subledgerFor(t, book)
-
-	acct, err := reg.OpenAccount(ctx, sl, "Anna EUR", "EUR", 0)
-	if err != nil {
-		t.Fatalf("OpenAccount: %v", err)
-	}
-	fund(t, reg, book, acct, 10_000)
-
-	btcGL, err := book.CreateAccount(ctx, sl, "Merchant BTC", ledger.Liability, "BTC")
-	if err != nil {
-		t.Fatalf("CreateAccount: %v", err)
-	}
-
-	hold, err := reg.CreateHold(ctx, deposit.CreateHoldRequest{
-		AccountID: acct.ID, Amount: 500, Description: "auth",
-	})
-	if err != nil {
-		t.Fatalf("CreateHold: %v", err)
-	}
-
-	_, err = reg.CaptureHold(ctx, hold.ID, btcGL.ID, 500, "capture into a BTC account")
-	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
-		t.Errorf("cross-asset CaptureHold = %v, want ErrUnbalancedAsset", err)
-	}
-}
-```
-
-Reuse whatever setup helpers `deposit/register_test.go` already has instead of `newRegister`/`subledgerFor`/`fund` if they exist under other names; register EUR and BTC in the test book's setup.
-
-Check `deposit.CreateHoldRequest`'s real field names in `deposit/register.go` around line 322 and `CaptureHold`'s real signature at line 447 before writing the calls.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `go test ./deposit/ -run 'TestOpenAccountRecordsAsset|TestCaptureHoldRejects' -v`
-Expected: FAIL — `OpenAccount` takes 4 arguments, not 5.
-
-- [ ] **Step 3: Add the field**
-
-In `deposit/types.go`, extend `Account`:
-
-```go
-// Account is a customer demand-deposit account. It wraps a backing Liability
-// account in the general ledger (GLAccount): the GL book balance of that
-// account is the customer's money.
-//
-// Asset duplicates the backing GL account's asset. That is a deliberate
-// exception to deriving rather than duplicating: the GL account's asset is
-// immutable, so the two cannot drift, and deriving it would make ListAccounts
-// an N+1 lookup in store/mem and a join in store/pg — divergent complexity in
-// both stores for a value that cannot change. store/storetest asserts they
-// always agree.
-//
-// A customer holding several assets holds several accounts, each with its own
-// IBAN, which is how most European retail banks work.
-type Account struct {
-	ID             AccountID
-	GLAccount      ledger.AccountID
-	Name           string
-	Asset          ledger.AssetCode
-	Status         AccountStatus
-	OverdraftLimit ledger.Amount
-	CreatedAt      time.Time
-}
-```
-
-- [ ] **Step 4: Thread the parameter**
-
-In `deposit/register.go`, add `asset ledger.AssetCode` to both signatures, pass it to `CreateAccountTx` (replacing the `// TODO(task-5)` literal from Task 3), and set `Asset: asset` in the `Account` literal.
-
-In `payment/participant.go`, `OpenCustomerAccount` gains the parameter and forwards it:
-
-```go
-func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
-	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
-}
-```
-
-- [ ] **Step 5: Update every caller**
-
-Run: `go build ./...` and fix each error — `seed/seed.go` (`open`, `openOverdraft`, all `"EUR"`), `api/handlers_deposit.go` (`"EUR"` for now; Task 8 makes it a request field), and the tests.
-
-- [ ] **Step 6: Add the migration**
-
-Create `store/pg/schema/0004_deposit_account_asset.sql`:
-
-```sql
--- A deposit account's asset, duplicated from its backing GL account.
---
--- This is the one place the schema stores a fact twice on purpose. The GL
--- account's asset is fixed at creation, so the two cannot drift, and deriving
--- it would turn every listing of deposit accounts into a join for a value that
--- can never change. store/storetest asserts the two always agree.
---
--- Existing rows are EUR by construction, like every other backfill in this
--- series of migrations.
-ALTER TABLE deposit_accounts ADD COLUMN asset TEXT;
-
-UPDATE deposit_accounts SET asset = 'EUR' WHERE asset IS NULL;
-
-ALTER TABLE deposit_accounts ALTER COLUMN asset SET NOT NULL;
-ALTER TABLE deposit_accounts ADD CONSTRAINT deposit_accounts_asset_fkey
-    FOREIGN KEY (book_id, asset) REFERENCES assets (book_id, code);
-```
-
-- [ ] **Step 7: Update the pg store**
-
-In `store/pg/tx_deposit.go`, add `asset` to `PutDepositAccount`'s insert and update-set, and to the `SELECT` lists and `Scan` targets of `GetDepositAccount` and `ListDepositAccounts`.
-
-- [ ] **Step 8: Add the conformance case**
-
-In `store/storetest/deposit.go`, inside `RunDeposit`:
-
-```go
-	t.Run("DepositAccountAssetMatchesItsGLAccount", func(t *testing.T) {
-		s := open(t, newStore)
-
-		update(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8, Class: ledger.Crypto}); err != nil {
-				return err
-			}
-			if err := tx.PutAccount(ctx, bookA, ledger.Account{
-				ID: "200.cust.001", SubledgerID: "cust", Name: "Anna",
-				Type: ledger.Liability, Asset: "BTC",
-			}); err != nil {
-				return err
-			}
-			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: "dep_1", GLAccount: "200.cust.001", Name: "Anna", Asset: "BTC",
-			})
-		})
-
-		view(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			dep, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
-			if err != nil {
-				return err
-			}
-			gl, err := tx.GetAccount(ctx, bookA, dep.GLAccount)
-			if err != nil {
-				return err
-			}
-			if dep.Asset != gl.Asset {
-				t.Errorf("deposit asset %q != GL asset %q", dep.Asset, gl.Asset)
-			}
-			return nil
-		})
-	})
-```
-
-Match the helper names and `bookA` constant that `store/storetest/deposit.go` already uses.
-
-- [ ] **Step 9: Run the tests**
-
-Run: `go test ./...`
-Expected: PASS
-
-- [ ] **Step 10: Verify against Postgres**
-
-Run: `make test-pg`
-Expected: PASS
-
-- [ ] **Step 11: Commit**
-
-```bash
-git add -A
-git commit -m "Denominate deposit accounts in an asset
-
-The asset is stored rather than derived from the backing GL account: the
-GL account's asset is immutable so the two cannot drift, and deriving it
-would make every listing an N+1 in mem and a join in pg. A cross-asset
-capture needs no new check — the ledger's per-asset rule already refuses
-it."
-```
-
----
-
-### Task 6: Schemes declare their asset
+### Task 5: Schemes declare their asset
 
 **Files:**
 - Modify: `payment/scheme.go` (`Scheme` interface, both SEPA schemes)
@@ -1317,7 +1662,7 @@ it."
 - Modify: `payment/system_test.go`
 
 **Interfaces:**
-- Consumes: `deposit.Account.Asset` (Task 5).
+- Consumes: `deposit.Account.Asset` (Task 3).
 - Produces:
   - `Scheme` gains `Asset() ledger.AssetCode`.
   - `ErrAssetMismatch` — a payment whose debtor or creditor account is not in the scheme's asset.
@@ -1439,389 +1784,7 @@ leg balances within its own asset, so the check lives here."
 
 ---
 
-### Task 7: Participant reserve accounts become per-asset
-
-The one structurally invasive change in `payment`.
-
-**Files:**
-- Modify: `payment/participant.go` (`ParticipantAccounts`, `Participant.Assets`)
-- Modify: `payment/system.go` (`AddParticipant`, funding, `SettleCycle`)
-- Modify: `payment/errors.go` (`ErrParticipantAssetNotFound`)
-- Modify: `payment/store.go` if the participant store methods change shape
-- Create: `store/pg/schema/0005_participant_assets.sql`
-- Modify: `store/pg/tx_payment.go`, `store/mem/tx_payment.go`
-- Modify: `store/storetest/payment.go`
-- Modify: `seed/seed.go`, `payment/system_test.go`
-
-**Interfaces:**
-- Consumes: `Scheme.Asset()` (Task 6).
-- Produces:
-  - `type ParticipantAccounts struct { Suspense, Reserve, Settlement ledger.AccountID }`
-  - `Participant.Assets map[ledger.AssetCode]ParticipantAccounts` — replaces the flat `SuspenseAccount`, `ReserveAccount`, `SettlementAccount` fields.
-  - `func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, error)` — returns `ErrParticipantAssetNotFound` when absent.
-  - `AddParticipant` gains an `assets []ledger.AssetCode` parameter; an empty slice means `[]ledger.AssetCode{"EUR"}`.
-
-- [ ] **Step 1: Write the failing tests**
-
-Add to `payment/system_test.go`:
-
-```go
-func TestParticipantHasAccountsPerAsset(t *testing.T) {
-	net := newNetwork(t)
-	ctx := context.Background()
-
-	p, err := net.AddParticipant(ctx, "Alpha", []ledger.AssetCode{"EUR", "USD"})
-	if err != nil {
-		t.Fatalf("AddParticipant: %v", err)
-	}
-
-	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
-		accts, err := p.AccountsFor(asset)
-		if err != nil {
-			t.Fatalf("AccountsFor(%s): %v", asset, err)
-		}
-		for name, id := range map[string]ledger.AccountID{
-			"suspense": accts.Suspense, "reserve": accts.Reserve, "settlement": accts.Settlement,
-		} {
-			if id == "" {
-				t.Errorf("%s account for %s is empty", name, asset)
-				continue
-			}
-		}
-		// Each of the three accounts must itself be denominated in that asset.
-		gl, err := p.Ledger.GetAccount(ctx, accts.Suspense)
-		if err != nil {
-			t.Fatalf("GetAccount: %v", err)
-		}
-		if gl.Asset != asset {
-			t.Errorf("suspense account for %s is denominated in %s", asset, gl.Asset)
-		}
-	}
-}
-
-func TestAccountsForUnknownAssetFails(t *testing.T) {
-	net := newNetwork(t)
-
-	p, err := net.AddParticipant(context.Background(), "Alpha", nil) // defaults to EUR
-	if err != nil {
-		t.Fatalf("AddParticipant: %v", err)
-	}
-	if _, err := p.AccountsFor("BTC"); !errors.Is(err, payment.ErrParticipantAssetNotFound) {
-		t.Errorf("AccountsFor(BTC) = %v, want ErrParticipantAssetNotFound", err)
-	}
-}
-
-// Settlement must never fall back to a base currency when a member does not
-// hold the cycle's asset. Deleting a participant's asset entry simulates the
-// state that a future non-EUR scheme would produce naturally.
-func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
-	net := newNetwork(t)
-	ctx := context.Background()
-
-	alpha := addParticipant(t, net, "Alpha")
-	beta := addParticipant(t, net, "Beta")
-	cycle := acceptedCycle(t, net, alpha, beta)
-
-	// Take EUR away from a member that is about to settle.
-	stored, err := net.GetParticipant(ctx, beta.ID)
-	if err != nil {
-		t.Fatalf("GetParticipant: %v", err)
-	}
-	delete(stored.Assets, "EUR")
-	putParticipant(t, net, stored)
-
-	if err := net.SettleCycle(ctx, cycle.ID); !errors.Is(err, payment.ErrParticipantAssetNotFound) {
-		t.Errorf("SettleCycle = %v, want ErrParticipantAssetNotFound", err)
-	}
-
-	// And nothing was posted: the batch fails whole, exactly as it does for
-	// a member that cannot cover its position.
-	assertNoSettlementPostings(t, net, cycle.ID)
-}
-```
-
-`acceptedCycle`, `putParticipant` and `assertNoSettlementPostings` stand in for whatever the existing end-to-end settlement test in this file already does to drive a cycle to the point of settlement, write a participant back, and assert that a failed batch posted nothing. Read that test first and reuse its helpers under their real names — do not add parallel ones.
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `go test ./payment/ -run 'TestParticipantHasAccountsPerAsset|TestAccountsForUnknownAsset' -v`
-Expected: FAIL — `AddParticipant` takes one argument, `AccountsFor` undefined.
-
-- [ ] **Step 3: Restructure `Participant`**
-
-In `payment/participant.go`, replace the three flat fields:
-
-```go
-// ParticipantAccounts are the internal accounts a participant needs for one
-// asset:
-//
-//   - Suspense (Liability): an in-transit account holding funds that have left
-//     a customer but not yet settled between banks. Returns to zero once a
-//     cycle settles.
-//   - Reserve (Asset): the bank's claim on the central bank. It mirrors the
-//     bank's reserve account in the central-bank ledger and moves only at
-//     settlement.
-//   - Settlement: this participant's reserve account in the central-bank
-//     ledger — the central bank's "vostro" view of the bank.
-type ParticipantAccounts struct {
-	Suspense   ledger.AccountID
-	Reserve    ledger.AccountID
-	Settlement ledger.AccountID
-}
-```
-
-and on `Participant`:
-
-```go
-	// Assets holds one set of internal accounts per asset the participant
-	// operates in, keyed by asset code.
-	//
-	// Keyed rather than flat because every one of those accounts is
-	// denominated in exactly one asset: a bank clearing both euro and dollar
-	// schemes needs two suspense accounts and two reserve accounts, not two
-	// currencies inside one. Adding a scheme in a new asset is then a data
-	// change rather than a code change.
-	Assets map[ledger.AssetCode]ParticipantAccounts
-```
-
-Add the lookup:
-
-```go
-// AccountsFor returns the participant's internal accounts for an asset.
-//
-// Returns ErrParticipantAssetNotFound if the participant does not operate in
-// that asset. There is deliberately no fallback to a base currency: settling a
-// dollar cycle through a euro reserve account would be a silent accounting
-// error rather than a visible failure.
-func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, error) {
-	accts, ok := p.Assets[asset]
-	if !ok {
-		return ParticipantAccounts{}, fmt.Errorf("%w: %s in %s", ErrParticipantAssetNotFound, asset, p.Name)
-	}
-	return accts, nil
-}
-```
-
-Add the sentinel to `payment/errors.go`:
-
-```go
-	// ErrParticipantAssetNotFound is returned when a participant does not
-	// operate in an asset it is being asked to settle in.
-	ErrParticipantAssetNotFound = errors.New("participant does not hold accounts in this asset")
-```
-
-- [ ] **Step 4: Create the accounts per asset in `AddParticipant`**
-
-In `payment/system.go`, around lines 283–309, wrap the three `CreateAccountTx` calls in a loop over the requested assets. Register the asset in both the participant's book and the central bank's book first — an account cannot reference an unregistered asset (Task 3):
-
-```go
-	if len(assets) == 0 {
-		assets = []ledger.AssetCode{"EUR"}
-	}
-
-	accounts := make(map[ledger.AssetCode]ParticipantAccounts, len(assets))
-	for _, asset := range assets {
-		def, err := s.assetDef(asset)
-		if err != nil {
-			return Participant{}, err
-		}
-		// The asset has to exist in both books: the bank holds its own
-		// suspense and reserve accounts, and the central bank holds the
-		// matching vostro account.
-		if err := ensureAsset(ctx, tx, bank, def); err != nil {
-			return Participant{}, err
-		}
-		if err := ensureAsset(ctx, tx, s.centralBank, def); err != nil {
-			return Participant{}, err
-		}
-
-		suspense, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Clearing Suspense ("+string(asset)+")", ledger.Liability, asset)
-		if err != nil {
-			return Participant{}, err
-		}
-		reserve, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Reserve at Central Bank ("+string(asset)+")", ledger.Asset, asset)
-		if err != nil {
-			return Participant{}, err
-		}
-		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
-		if err != nil {
-			return Participant{}, err
-		}
-		accounts[asset] = ParticipantAccounts{Suspense: suspense.ID, Reserve: reserve.ID, Settlement: cbReserve.ID}
-	}
-```
-
-Add the two helpers next to `AddParticipant`:
-
-```go
-// assetDef returns the definition for a well-known asset code. The network
-// needs it because it creates accounts in books it does not otherwise
-// populate, and an account cannot reference an unregistered asset.
-func (s *Network) assetDef(code ledger.AssetCode) (ledger.AssetDef, error) {
-	switch code {
-	case "EUR":
-		return ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2, Class: ledger.Fiat}, nil
-	case "USD":
-		return ledger.AssetDef{Code: "USD", Name: "US Dollar", Scale: 2, Class: ledger.Fiat}, nil
-	default:
-		return ledger.AssetDef{}, fmt.Errorf("%w: %s", ledger.ErrAssetNotFound, code)
-	}
-}
-
-// ensureAsset registers an asset in a book if it is not registered already.
-// Idempotent, because several participants join the same central-bank book.
-func ensureAsset(ctx context.Context, tx Tx, book *ledger.Book, def ledger.AssetDef) error {
-	_, err := book.CreateAssetTx(ctx, tx, def.Code, def.Name, def.Scale, def.Class)
-	if errors.Is(err, ledger.ErrDuplicateAsset) {
-		return nil
-	}
-	return err
-}
-```
-
-Naming the accounts with the asset in parentheses keeps them distinguishable in a chart of accounts that now holds several of each. Remove the `// TODO(task-7)` markers left by Task 3.
-
-- [ ] **Step 5: Update every reader of the old fields**
-
-Run: `go build ./...` and replace each `p.SuspenseAccount` / `p.ReserveAccount` / `p.SettlementAccount` with an `AccountsFor(asset)` call. The asset comes from:
-- **funding** (`payment/system.go:326-371`): add an `asset ledger.AssetCode` parameter to the funding entry point, defaulting to `"EUR"` at its API/seed callers.
-- **the payment path**: `scheme.Asset()`.
-- **`SettleCycle`**: the cycle's scheme's asset, resolved once at the top and used for every participant in the batch. A participant missing it fails the whole batch — which is already how an underfunded member behaves.
-
-- [ ] **Step 6: Add the migration**
-
-Create `store/pg/schema/0005_participant_assets.sql`:
-
-```sql
--- A participant's internal accounts, one set per asset it operates in.
---
--- These were three columns on participants. They move to a child table because
--- each of those accounts is denominated in exactly one asset: a bank clearing
--- both a euro and a dollar scheme needs two suspense accounts and two reserve
--- accounts, not two currencies inside one. Keying by (participant, asset) makes
--- adding a scheme in a new asset a data change rather than a schema change.
---
--- The existing three columns are migrated into a single EUR row per
--- participant, then dropped. As everywhere in this series, EUR is exact: the
--- system had no other asset.
-CREATE TABLE participant_assets (
-    participant_id TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
-    asset          TEXT NOT NULL,
-    suspense       TEXT NOT NULL,
-    reserve        TEXT NOT NULL,
-    settlement     TEXT NOT NULL,
-    seq            BIGSERIAL NOT NULL,
-    PRIMARY KEY (participant_id, asset)
-);
-
-INSERT INTO participant_assets (participant_id, asset, suspense, reserve, settlement)
-SELECT id, 'EUR', suspense_account, reserve_account, settlement_account FROM participants;
-
-ALTER TABLE participants DROP COLUMN suspense_account;
-ALTER TABLE participants DROP COLUMN reserve_account;
-ALTER TABLE participants DROP COLUMN settlement_account;
-```
-
-Check the real column names in `store/pg/schema/0001_init.sql` at the `participants` table (line 226) before writing this — they may be `suspense_account` or another spelling, and the `INSERT ... SELECT` must match exactly.
-
-There is no foreign key from `participant_assets.asset` to `assets`, because a participant row is keyed by participant ID while assets are keyed by book. Note that in the comment, in the same spirit as the existing note on why the audit table has no foreign key.
-
-- [ ] **Step 7: Update both stores**
-
-`store/pg/tx_payment.go`: `PutParticipant` writes the parent row then replaces the child rows (`DELETE` then `INSERT`, so an upsert cannot leave a stale asset behind); `GetParticipant` and `ListParticipants` load the child rows into the `Assets` map. Loading every participant's assets in one extra query keyed by participant ID avoids an N+1 in `ListParticipants`.
-
-`store/mem/tx_payment.go`: `Participant` is stored whole, so the map travels with it — but **copy the map on write and on read**, or two callers will share one map and mutate each other's state. The rest of the mem store stores value types for exactly this reason.
-
-- [ ] **Step 8: Add the conformance case**
-
-In `store/storetest/payment.go`, inside `RunPayment`:
-
-```go
-	t.Run("ParticipantAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
-		s := open(t, newStore)
-
-		update(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, payment.Participant{
-				ID: "alpha", Name: "Alpha", BookID: "alpha",
-				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
-					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
-					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", Settlement: "200.res.002"},
-				},
-			})
-		})
-
-		view(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetParticipant(ctx, "alpha")
-			if err != nil {
-				return err
-			}
-			if len(got.Assets) != 2 {
-				t.Fatalf("participant has %d assets, want 2", len(got.Assets))
-			}
-			if got.Assets["USD"].Reserve != "100.ib.002" {
-				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
-			}
-			return nil
-		})
-
-		// An upsert must replace the set, not merge into it: a stale asset
-		// left behind would settle through an account the participant no
-		// longer holds.
-		update(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, payment.Participant{
-				ID: "alpha", Name: "Alpha", BookID: "alpha",
-				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
-					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
-				},
-			})
-		})
-
-		view(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetParticipant(ctx, "alpha")
-			if err != nil {
-				return err
-			}
-			if len(got.Assets) != 1 {
-				t.Errorf("after upsert participant has %d assets, want 1", len(got.Assets))
-			}
-			return nil
-		})
-	})
-```
-
-- [ ] **Step 9: Update `seed`**
-
-`seed/seed.go` passes `[]ledger.AssetCode{"EUR"}` (or `nil`) to `AddParticipant`. The seeded network stays euro-only, so the demo data is unchanged in substance.
-
-- [ ] **Step 10: Run the tests**
-
-Run: `go test ./...`
-Expected: PASS
-
-- [ ] **Step 11: Verify against Postgres**
-
-Run: `make test-pg`
-Expected: PASS
-
-- [ ] **Step 12: Run the app and check the seeded network still works**
-
-Run: `make run`, open the web app, and confirm a participant page loads with its accounts and a payment can be initiated end to end.
-
-- [ ] **Step 13: Commit**
-
-```bash
-git add -A
-git commit -m "Give participants one set of internal accounts per asset
-
-Suspense, reserve and settlement accounts are each denominated in exactly
-one asset, so a bank clearing two schemes needs two of each rather than
-two currencies inside one. Settlement resolves them by the cycle's asset
-and fails when a member does not hold it — never falling back to EUR."
-```
-
----
-
-### Task 8: API
+### Task 6: API
 
 **Files:**
 - Create: `api/handlers_asset.go`
@@ -1831,7 +1794,7 @@ and fails when a member does not hold it — never falling back to EUR."
 - Modify: `api/server_test.go`
 
 **Interfaces:**
-- Consumes: everything from Tasks 2–7.
+- Consumes: everything from Tasks 2–5.
 - Produces:
   - `GET /participants/{pid}/assets` → `[]assetDTO`
   - `POST /participants/{pid}/assets` → `assetDTO`
@@ -1861,17 +1824,6 @@ func TestCreateAndListAssets(t *testing.T) {
 	}
 }
 
-func TestCreateAccountRequiresAsset(t *testing.T) {
-	srv := newServer(t)
-
-	res := srv.post(t, "/participants/alpha/accounts", map[string]any{
-		"subledgerId": "cust", "name": "No Asset", "type": "Liability",
-	})
-	if res.Code != http.StatusBadRequest {
-		t.Errorf("POST account without asset = %d, want 400", res.Code)
-	}
-}
-
 func TestAccountResponseIncludesAsset(t *testing.T) {
 	srv := newServer(t)
 
@@ -1886,7 +1838,7 @@ Read `api/server_test.go` first — reuse its actual helper names and the actual
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `go test ./api/ -run 'TestCreateAndListAssets|TestCreateAccountRequiresAsset|TestAccountResponseIncludesAsset' -v`
+Run: `go test ./api/ -run 'TestCreateAndListAssets|TestAccountResponseIncludesAsset' -v`
 Expected: FAIL — 404 on the assets routes, and no `asset` field in responses.
 
 - [ ] **Step 3: Add the asset DTO and handlers**
@@ -1932,7 +1884,7 @@ Wire `registerAssetRoutes` into wherever `registerLedgerRoutes` and friends are 
 
 - [ ] **Step 4: Add `asset` to the existing DTOs**
 
-`asset` on the account DTO, the deposit-account DTO, the entry DTO (from its account) and the payment DTO (from its scheme). `asset` becomes a required field on the create-account and open-deposit-account requests — replacing the `"EUR"` literals Tasks 3 and 5 left in the handlers — and returns 400 when missing. `assets` becomes an optional array on the create-participant body, defaulting to `["EUR"]`.
+`asset` on the account **response** DTO, the deposit-account DTO, the entry DTO (from its account) and the payment DTO (from its scheme). The request-side `asset` field already landed in Task 3; do not add it twice. `assets` becomes an optional array on the create-participant body, defaulting to `["EUR"]`, forwarded to `AddParticipant`.
 
 - [ ] **Step 5: Run the tests**
 
@@ -1957,7 +1909,7 @@ created rather than defaulting to EUR behind the caller's back."
 
 ---
 
-### Task 9: Web
+### Task 7: Web
 
 **Files:**
 - Modify: `web/src/lib/money.ts`
@@ -1966,7 +1918,7 @@ created rather than defaulting to EUR behind the caller's back."
 - Modify: `web/src/lib/statement.test.ts` and any `money` test file
 
 **Interfaces:**
-- Consumes: the `asset` field on API responses (Task 8).
+- Consumes: the `asset` field on API responses (Task 6).
 - Produces: money formatters that take a scale instead of assuming 2.
 
 - [ ] **Step 1: Write the failing test**
@@ -2035,7 +1987,7 @@ money.ts divided by 100 in three places, which renders 1 BTC as
 
 ---
 
-### Task 10: Documentation
+### Task 8: Documentation
 
 Per `CLAUDE.md` the domain content is duplicated across layers by design, and a change to one is a change to all. This task is part of the work, not follow-up.
 
@@ -2047,7 +1999,7 @@ Per `CLAUDE.md` the domain content is duplicated across layers by design, and a 
 - Modify: `docs/expansion-roadmap.md`
 
 **Interfaces:**
-- Consumes: the behaviour built in Tasks 1–9.
+- Consumes: the behaviour built in Tasks 1–7.
 - Produces: chapter 16, registered in the quiz index; new `hint-content.ts` keys for every new `[[wiki-link]]`.
 
 - [ ] **Step 1: Update the README**
@@ -2116,4 +2068,4 @@ design, so a correction in one layer is a correction in all of them."
 - `make dev` serves the app with no route throwing, and the seeded euro network behaves exactly as it did before.
 - A book can register EUR and BTC, hold accounts in both, refuse a transaction that mixes them, and accept one that balances both through position accounts.
 - A SEPA payment between a EUR account and a BTC account is refused with `ErrAssetMismatch`.
-- No `// TODO(task-N)` markers remain.
+- No temporary or hardcoded asset remains at any call site: every account is created with an asset its caller chose.
