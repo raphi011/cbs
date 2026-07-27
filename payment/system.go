@@ -476,10 +476,10 @@ func (s *Network) CreateMandate(ctx context.Context, debtor, creditor PartyRef, 
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
 func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	if err := s.checkPartyTx(ctx, tx, "debtor", debtor); err != nil {
+	if _, err := s.checkPartyTx(ctx, tx, "debtor", debtor); err != nil {
 		return Mandate{}, err
 	}
-	if err := s.checkPartyTx(ctx, tx, "creditor", creditor); err != nil {
+	if _, err := s.checkPartyTx(ctx, tx, "creditor", creditor); err != nil {
 		return Mandate{}, err
 	}
 
@@ -911,11 +911,20 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if req.Amount <= 0 {
 		return Payment{}, ErrInvalidPaymentAmount
 	}
-	if err := s.checkPartyTx(ctx, tx, "debtor", req.Debtor); err != nil {
+	debtorAccount, err := s.checkPartyTx(ctx, tx, "debtor", req.Debtor)
+	if err != nil {
 		return Payment{}, err
 	}
-	if err := s.checkPartyTx(ctx, tx, "creditor", req.Creditor); err != nil {
+	creditorAccount, err := s.checkPartyTx(ctx, tx, "creditor", req.Creditor)
+	if err != nil {
 		return Payment{}, err
+	}
+	// Both legs must be denominated in the scheme's asset. This runs for every
+	// scheme unconditionally — unlike a check tucked inside a scheme's own
+	// Validate, it cannot be skipped by a scheme (e.g. a future card scheme)
+	// whose Validate does something other than call validateFunds.
+	if debtorAccount.Asset != scheme.Asset() || creditorAccount.Asset != scheme.Asset() {
+		return Payment{}, ErrAssetMismatch
 	}
 	if err := ledger.ValidateText("endToEndId", req.EndToEndID); err != nil {
 		return Payment{}, err
@@ -1292,19 +1301,22 @@ func validateParty(field string, ref PartyRef) error {
 }
 
 // checkPartyTx verifies that a party's participant exists and its deposit
-// account exists within that participant.
-func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) error {
+// account exists within that participant, returning the account so callers
+// that need more than existence (its Asset, its GLAccount, ...) don't have to
+// fetch it again.
+func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, error) {
 	if err := validateParty(field, ref); err != nil {
-		return err
+		return deposit.Account{}, err
 	}
 	p, err := tx.GetParticipant(ctx, ref.Participant)
 	if err != nil {
-		return ErrParticipantNotFound
+		return deposit.Account{}, ErrParticipantNotFound
 	}
-	if _, err := tx.GetDepositAccount(ctx, p.BookID, ref.Account); err != nil {
-		return ErrAccountNotInParticipant
+	acct, err := tx.GetDepositAccount(ctx, p.BookID, ref.Account)
+	if err != nil {
+		return deposit.Account{}, ErrAccountNotInParticipant
 	}
-	return nil
+	return acct, nil
 }
 
 // removeFromCycleTx drops a payment from its (open) clearing cycle.

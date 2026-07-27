@@ -62,7 +62,8 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrMandateMismatch),
 		errors.Is(err, payment.ErrMandateExceeded),
 		errors.Is(err, payment.ErrMandateRequired),
-		errors.Is(err, payment.ErrSchemeUnsupportedReturn):
+		errors.Is(err, payment.ErrSchemeUnsupportedReturn),
+		errors.Is(err, payment.ErrAssetMismatch):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),

@@ -812,6 +812,41 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	assertError(t, err, ErrAssetMismatch)
 }
 
+// SEPA Direct Debit used to inherit the asset check only because SDD.Validate
+// happened to call validateFunds. Now that the check runs unconditionally in
+// InitiatePaymentTx, before any scheme's Validate is reached, it applies to
+// SDD structurally rather than by that scheme's choice. A valid mandate keeps
+// SDD's own mandate guards out of the way, so this isolates the asset check.
+func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	assertNoError(t, err)
+	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	assertNoError(t, err)
+	registerAsset(t, beta, "BTC", 8, ledger.Crypto)
+
+	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
+	assertNoError(t, err)
+	creditorAcct, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
+	assertNoError(t, err)
+
+	debtor := PartyRef{Participant: alpha.ID, Account: debtorAcct.ID}
+	creditor := PartyRef{Participant: beta.ID, Account: creditorAcct.ID}
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+
+	_, err = sys.OpenCycle(ctx, SchemeSEPADD)
+	assertNoError(t, err)
+
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID,
+		Debtor: debtor, Creditor: creditor,
+	})
+	assertError(t, err, ErrAssetMismatch)
+}
+
 // SEPA is a euro scheme, not a scheme that happens to be tested with EUR
 // accounts. This pins that fact directly on the scheme types.
 func TestSEPASchemesAreEuroSchemes(t *testing.T) {
