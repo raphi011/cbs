@@ -743,6 +743,85 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	assertEqual(t, "bob was not credited", customerBalance(t, b, bob), 0)
 }
 
+// registerAsset registers a non-default asset directly in a participant's own
+// book, bypassing AddParticipant's well-known-asset list (payment.assetDef
+// only knows EUR and USD) — the route needed to give a bank an account in an
+// asset the network has no reserve provisioning for, such as BTC.
+func registerAsset(t *testing.T, p *Participant, code ledger.AssetCode, scale uint8, class ledger.AssetClass) {
+	t.Helper()
+	_, err := p.Ledger.CreateAsset(context.Background(), code, string(code), scale, class)
+	assertNoError(t, err)
+}
+
+// The ledger cannot catch this. A EUR debit and a BTC credit each balance
+// within their own asset, so the posting is valid double-entry — it is merely
+// meaningless. Per-asset balancing guarantees no value is created, not that a
+// payment is coherent, so the scheme has to check.
+func TestPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	assertNoError(t, err)
+	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	assertNoError(t, err)
+	registerAsset(t, beta, "BTC", 8, ledger.Crypto)
+
+	from, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
+	assertNoError(t, err)
+	to, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
+	assertNoError(t, err)
+
+	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 1000,
+		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+	})
+	assertError(t, err, ErrAssetMismatch)
+}
+
+// The creditor leg above proves the check reaches an account fetched from a
+// different participant's book. This proves the debtor leg is checked too —
+// a scheme that only validated the creditor would let this one through.
+func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	assertNoError(t, err)
+	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	assertNoError(t, err)
+	registerAsset(t, alpha, "BTC", 8, ledger.Crypto)
+
+	from, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
+	assertNoError(t, err)
+	to, err := beta.OpenCustomerAccount(ctx, "Bruno", testAsset)
+	assertNoError(t, err)
+
+	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 1000,
+		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+	})
+	assertError(t, err, ErrAssetMismatch)
+}
+
+// SEPA is a euro scheme, not a scheme that happens to be tested with EUR
+// accounts. This pins that fact directly on the scheme types.
+func TestSEPASchemesAreEuroSchemes(t *testing.T) {
+	for _, sc := range []Scheme{SCT{}, SDD{}} {
+		if sc.Asset() != "EUR" {
+			t.Errorf("%s asset = %q, want EUR", sc.ID(), sc.Asset())
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Enum String() methods
 // ---------------------------------------------------------------------------

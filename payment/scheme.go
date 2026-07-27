@@ -65,18 +65,42 @@ type SchemeContext struct {
 	Now     time.Time
 }
 
-// validateFunds is shared by the SEPA schemes: it confirms the debtor's
-// deposit account exists at its bank and is permitted to withdraw the payment
-// amount. The deposit layer is the authority for the funds/status check; a
-// shortfall surfaces as deposit.ErrInsufficientAvailable.
+// validateFunds is shared by the SEPA schemes: it confirms both legs are
+// denominated in the scheme's asset, that the debtor's deposit account exists
+// at its bank, and that it is permitted to withdraw the payment amount. The
+// deposit layer is the authority for the funds/status check; a shortfall
+// surfaces as deposit.ErrInsufficientAvailable.
 func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
+	scheme, ok := sc.Network.scheme(p.Scheme)
+	if !ok {
+		return ErrSchemeNotFound
+	}
+
 	part, err := sc.Network.participantTx(ctx, sc.Tx, p.Debtor.Participant)
 	if err != nil {
 		return ErrParticipantNotFound
 	}
-	if _, err := sc.Tx.GetDepositAccount(ctx, part.BookID, p.Debtor.Account); err != nil {
+	debtorAccount, err := sc.Tx.GetDepositAccount(ctx, part.BookID, p.Debtor.Account)
+	if err != nil {
 		return ErrAccountNotInParticipant
 	}
+
+	// The creditor's account lives in a different participant's book, so it is
+	// resolved the same way the creditor leg is at settlement (see
+	// Network.SettleCycleTx) rather than assumed to share the debtor's book.
+	creditorPart, err := sc.Network.participantTx(ctx, sc.Tx, p.Creditor.Participant)
+	if err != nil {
+		return ErrParticipantNotFound
+	}
+	creditorAccount, err := sc.Tx.GetDepositAccount(ctx, creditorPart.BookID, p.Creditor.Account)
+	if err != nil {
+		return ErrAccountNotInParticipant
+	}
+
+	if debtorAccount.Asset != scheme.Asset() || creditorAccount.Asset != scheme.Asset() {
+		return ErrAssetMismatch
+	}
+
 	return part.Deposit.CheckWithdrawalTx(ctx, sc.Tx, p.Debtor.Account, p.Amount)
 }
 

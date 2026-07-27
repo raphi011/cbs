@@ -82,4 +82,13 @@ var (
 	// ErrParticipantAssetNotFound is returned when a participant does not
 	// operate in an asset it is being asked to settle in.
 	ErrParticipantAssetNotFound = errors.New("participant does not hold accounts in this asset")
+
+	// ErrAssetMismatch is returned when a payment's debtor or creditor
+	// account is not denominated in the scheme's asset.
+	//
+	// The ledger cannot catch this: a EUR debit and a BTC credit each balance
+	// within their own asset, so the posting is valid double-entry and simply
+	// meaningless. Per-asset balancing proves no value was created, not that
+	// a payment makes sense.
+	ErrAssetMismatch = errors.New("payment accounts are not denominated in the scheme's asset")
 )
