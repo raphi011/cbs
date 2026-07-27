@@ -109,9 +109,10 @@ Two things the implementation sharpened, both worth carrying forward:
   the reasoning in the database with `COMMENT ON COLUMN`, because the absence of
   a constraint is invisible in a schema dump.
 
-### 2. Lending — `spec`
+### 2. Lending — `plan`
 
 Spec: [`superpowers/specs/2026-07-27-lending-design.md`](superpowers/specs/2026-07-27-lending-design.md)
+Plan: [`superpowers/plans/2026-07-27-lending.md`](superpowers/plans/2026-07-27-lending.md)
 
 Loan accounts on the Asset side, disbursement, amortization schedules, interest
 accrual, repayment allocation (interest before principal), delinquency and
