@@ -423,6 +423,31 @@ func TestCaptureHoldRollsBackWithTheCallersUnitOfWork(t *testing.T) {
 	}
 }
 
+// A capture that moves money into an account of a different asset needs no
+// check in the deposit layer: the posting debits one asset and credits
+// another, and the ledger's per-asset balance rule refuses it. This is the
+// invariant paying for itself — deposit relies on the GL posting for a check
+// it never has to implement on its own.
+func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
+	ctx := context.Background()
+	reg, deposits, cash := testRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, deposits, "Anna EUR", testAsset, 0)
+	assertNoError(t, err)
+	fund(t, reg, cash, acct, 10_000)
+
+	btcGL, err := reg.Book().CreateAccount(ctx, deposits, "Merchant BTC", ledger.Liability, otherAsset)
+	assertNoError(t, err)
+
+	hold, err := reg.CreateHold(ctx, CreateHoldRequest{
+		AccountID: acct.ID, Amount: 500, Description: "auth",
+	})
+	assertNoError(t, err)
+
+	_, err = reg.CaptureHold(ctx, hold.ID, btcGL.ID, 500, "capture into a BTC account")
+	assertError(t, err, ledger.ErrUnbalancedAsset)
+}
+
 // ---------------------------------------------------------------------------
 // Status Lifecycle
 // ---------------------------------------------------------------------------

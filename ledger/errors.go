@@ -27,10 +27,14 @@ var (
 	// match any existing transaction in the system.
 	ErrTransactionNotFound = errors.New("transaction not found")
 
-	// ErrUnbalancedTransaction is returned when the total debits do not
-	// equal the total credits in a transaction. In double-entry
-	// bookkeeping, every transaction must balance: the sum of debit
-	// amounts must equal the sum of credit amounts.
+	// ErrUnbalancedTransaction is returned when a transaction does not
+	// balance. It is the general fact; ErrUnbalancedAsset names which asset
+	// it failed in, and every per-asset failure wraps both, so a caller may
+	// match on whichever level it cares about.
+	//
+	// It is not returned on its own. The empty case has its own sentinel
+	// (ErrEmptyTransaction, guarded earlier in PostTx), and every other
+	// imbalance is an imbalance within some asset.
 	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits")
 
 	// ErrEmptyTransaction is returned when a transaction is submitted
@@ -80,4 +84,16 @@ var (
 	// MaxAssetScale. Amount is an int64 and cannot represent 18 decimal
 	// places usefully.
 	ErrInvalidScale = errors.New("asset scale exceeds the maximum supported decimal places")
+
+	// ErrUnbalancedAsset is returned when the debits and credits of one
+	// asset within a transaction do not net to zero.
+	//
+	// This is the double-entry invariant restated for a multi-asset ledger.
+	// A global check is not enough: a transaction debiting 100 EUR and
+	// crediting 100 BTC balances by the old rule and still creates value out
+	// of nothing. Balance has to hold per asset or it means nothing.
+	//
+	// It is returned wrapped with the offending asset code, so errors.Is
+	// works and the message names the asset.
+	ErrUnbalancedAsset = errors.New("transaction entries do not balance within an asset")
 )

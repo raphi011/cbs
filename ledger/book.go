@@ -533,8 +533,9 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 		}
 	}
 
-	// Validate: balanced.
-	if err := validateBalance(req.Entries); err != nil {
+	// Validate: balanced within every asset. accounts was already loaded
+	// above for the sufficient-balance check, so this costs no extra reads.
+	if err := validateBalance(req.Entries, accounts); err != nil {
 		return Transaction{}, err
 	}
 
@@ -598,23 +599,43 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 	return posted, nil
 }
 
-// validateBalance checks that total debits equal total credits.
-// This is the core invariant of double-entry bookkeeping.
-func validateBalance(entries []Entry) error {
-	var debits, credits Amount
+// validateBalance checks that total debits equal total credits within each
+// asset. This is the core invariant of double-entry bookkeeping, restated for
+// a ledger that holds more than one asset.
+//
+// Checking globally would not do. A transaction that debits 100 EUR and
+// credits 100 BTC nets to zero by the old rule while turning euros into
+// bitcoin at an implied rate of 1 — value created from nothing. Per asset,
+// there is no rate to get wrong, which is why the ledger never has to know
+// what anything is worth.
+//
+// An FX trade therefore cannot be one naive two-asset posting. Each asset
+// balances through its own position account, and the bank's open exposure is
+// the balance of those accounts.
+func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
+	// net[asset] is debits minus credits in that asset.
+	net := make(map[AssetCode]Amount, 2)
+	// order preserves first-appearance order, so the error names the same
+	// asset every time rather than whichever one the map iterated to first.
+	order := make([]AssetCode, 0, 2)
 
 	for _, e := range entries {
+		asset := accounts[e.AccountID].Asset
+		if _, seen := net[asset]; !seen {
+			order = append(order, asset)
+		}
 		if e.Direction == Debit {
-			debits += e.Amount
+			net[asset] += e.Amount
 		} else {
-			credits += e.Amount
+			net[asset] -= e.Amount
 		}
 	}
 
-	if debits != credits {
-		return ErrUnbalancedTransaction
+	for _, asset := range order {
+		if net[asset] != 0 {
+			return fmt.Errorf("%w: %w: %s", ErrUnbalancedTransaction, ErrUnbalancedAsset, asset)
+		}
 	}
-
 	return nil
 }
 

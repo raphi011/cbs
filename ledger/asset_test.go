@@ -3,6 +3,7 @@ package ledger_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/ledger"
@@ -116,5 +117,102 @@ func TestCreateAccountRejectsUnregisteredAsset(t *testing.T) {
 	_, err := book.CreateAccount(context.Background(), sl.ID, "Dogecoin Custody", ledger.Asset, "DOGE")
 	if !errors.Is(err, ledger.ErrAssetNotFound) {
 		t.Errorf("CreateAccount with unregistered asset = %v, want ErrAssetNotFound", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Per-asset balance
+// ---------------------------------------------------------------------------
+
+// newAccountIn registers asset in book (scale 2 for EUR, 8 for BTC) if it is
+// not registered yet — testBook already registers EUR, so this ignores
+// ErrDuplicateAsset rather than treating it as a fixture failure — then
+// creates an account of type typ, denominated in asset, in a fresh subledger.
+func newAccountIn(t *testing.T, book *ledger.Book, asset ledger.AssetCode, typ ledger.AccountType) ledger.Account {
+	t.Helper()
+	ctx := context.Background()
+
+	scale, class := uint8(2), ledger.Fiat
+	if asset == "BTC" {
+		scale, class = 8, ledger.Crypto
+	}
+	if _, err := book.CreateAsset(ctx, asset, string(asset), scale, class); err != nil && !errors.Is(err, ledger.ErrDuplicateAsset) {
+		t.Fatalf("CreateAsset(%s): %v", asset, err)
+	}
+
+	sl := newSubledger(t, book)
+	acct, err := book.CreateAccount(ctx, sl.ID, string(asset)+" account", typ, asset)
+	if err != nil {
+		t.Fatalf("CreateAccount: %v", err)
+	}
+	return acct
+}
+
+// A cross-asset transfer balances globally — 100 debit, 100 credit — and is
+// still nonsense: it turns euros into bitcoin at an implied rate of 1. The
+// per-asset rule is what rejects it.
+func TestPostRejectsCrossAssetTransfer(t *testing.T) {
+	book := testBook(t)
+	ctx := context.Background()
+
+	eur := newAccountIn(t, book, "EUR", ledger.Liability)
+	btc := newAccountIn(t, book, "BTC", ledger.Liability)
+
+	_, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "turn euros into bitcoin",
+		Entries: []ledger.Entry{
+			{AccountID: eur.ID, Amount: 100, Direction: ledger.Debit},
+			{AccountID: btc.ID, Amount: 100, Direction: ledger.Credit},
+		},
+	})
+	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
+		t.Fatalf("cross-asset PostTransaction error = %v, want ErrUnbalancedAsset", err)
+	}
+	if !strings.Contains(err.Error(), "EUR") && !strings.Contains(err.Error(), "BTC") {
+		t.Errorf("error %q does not name the offending asset", err)
+	}
+}
+
+// The shape an FX trade takes under the per-asset rule: each asset balances
+// through its own position account, so no rate is needed to validate it.
+func TestPostAcceptsTwoAssetsBalancedThroughPositionAccounts(t *testing.T) {
+	book := testBook(t)
+	ctx := context.Background()
+
+	eurCust := newAccountIn(t, book, "EUR", ledger.Liability)
+	eurPos := newAccountIn(t, book, "EUR", ledger.Liability)
+	btcCust := newAccountIn(t, book, "BTC", ledger.Liability)
+	btcPos := newAccountIn(t, book, "BTC", ledger.Liability)
+
+	if _, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "FX: customer sells 100 EUR for 200 BTC units",
+		Entries: []ledger.Entry{
+			{AccountID: eurCust.ID, Amount: 100, Direction: ledger.Debit},
+			{AccountID: eurPos.ID, Amount: 100, Direction: ledger.Credit},
+			{AccountID: btcPos.ID, Amount: 200, Direction: ledger.Debit},
+			{AccountID: btcCust.ID, Amount: 200, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		t.Fatalf("balanced two-asset PostTransaction: %v", err)
+	}
+}
+
+// The pre-existing single-asset failure must keep its own error.
+func TestPostStillRejectsSingleAssetImbalance(t *testing.T) {
+	book := testBook(t)
+	ctx := context.Background()
+
+	a := newAccountIn(t, book, "EUR", ledger.Liability)
+	b := newAccountIn(t, book, "EUR", ledger.Liability)
+
+	_, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "lopsided",
+		Entries: []ledger.Entry{
+			{AccountID: a.ID, Amount: 100, Direction: ledger.Debit},
+			{AccountID: b.ID, Amount: 90, Direction: ledger.Credit},
+		},
+	})
+	if !errors.Is(err, ledger.ErrUnbalancedAsset) {
+		t.Errorf("imbalanced PostTransaction error = %v, want ErrUnbalancedAsset", err)
 	}
 }
