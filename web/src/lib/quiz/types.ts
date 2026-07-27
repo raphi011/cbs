@@ -32,7 +32,7 @@ export type Question =
 export interface Chapter {
   /** Matches the book filename stem, e.g. "02-double-entry-bookkeeping". */
   slug: string;
-  /** 1..15 */
+  /** 1..16 */
   number: number;
   /** Book Part heading, used to group chapters on the index. */
   part: string;

@@ -33,8 +33,8 @@ var (
 	// match on whichever level it cares about.
 	//
 	// It is not returned on its own. The empty case has its own sentinel
-	// (ErrEmptyTransaction, guarded earlier in PostTx), and every other
-	// imbalance is an imbalance within some asset.
+	// (ErrEmptyTransaction, guarded earlier in PostTransactionTx), and every
+	// other imbalance is an imbalance within some asset.
 	ErrUnbalancedTransaction = errors.New("transaction entries do not balance: total debits must equal total credits")
 
 	// ErrEmptyTransaction is returned when a transaction is submitted

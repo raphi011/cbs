@@ -20,15 +20,20 @@ The sections below are organized around these layers: general-ledger concepts fi
 
 - [Core Banking Concepts](#core-banking-concepts)
 - [Accounting Foundations](#accounting-foundations)
+  - [Assets: What an Account Is Denominated In](#assets-what-an-account-is-denominated-in)
   - [Double-Entry Bookkeeping](#double-entry-bookkeeping)
+    - [The Invariant Is Per Asset](#the-invariant-is-per-asset)
+    - [Foreign Exchange, and Why the Ledger Needs No Rates](#foreign-exchange-and-why-the-ledger-needs-no-rates)
   - [Chart of Accounts](#chart-of-accounts)
     - [Asset](#asset--things-the-bank-owns-or-is-owed)
     - [Liability](#liability--things-the-bank-owes-to-others)
     - [Equity](#equity--the-owners-residual-interest)
     - [Revenue](#revenue--income-the-bank-earns)
     - [Expense](#expense--costs-the-bank-incurs)
+    - [Accounts Are Per Asset](#accounts-are-per-asset)
   - [Ledger and Subledger Hierarchy](#ledger-and-subledger-hierarchy)
   - [Amounts and Precision](#amounts-and-precision)
+    - [Why Scale Is Capped at Nine](#why-scale-is-capped-at-nine)
 - [Transactions](#transactions)
   - [Entries, Legs, and Postings](#entries-legs-and-postings)
   - [Booking Date vs. Value Date](#booking-date-vs-value-date)
@@ -49,6 +54,8 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Why a Separate Package](#why-a-separate-package)
   - [The Multi-Bank Model](#the-multi-bank-model)
   - [Payment Schemes](#payment-schemes)
+    - [A Scheme Declares Its Asset](#a-scheme-declares-its-asset)
+    - [Cross-Currency Payments Are Two Operations](#cross-currency-payments-are-two-operations)
   - [The Payment Lifecycle](#the-payment-lifecycle)
   - [Posting Choreography: SEPA Credit Transfer](#posting-choreography-sepa-credit-transfer)
   - [Netting: A Worked Example](#netting-a-worked-example)
@@ -65,6 +72,8 @@ The sections below are organized around these layers: general-ledger concepts fi
 - [Persistence](#persistence)
   - [Two Stores, One Conformance Suite](#two-stores-one-conformance-suite)
   - [The Ledger as Relational Tables](#the-ledger-as-relational-tables)
+  - [The Asset Dimension in the Schema](#the-asset-dimension-in-the-schema)
+    - [The Foreign Key That Is Missing on Purpose](#the-foreign-key-that-is-missing-on-purpose)
   - [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column)
   - [The Unit of Work](#the-unit-of-work)
   - [Three Races a Single Mutex Was Hiding](#three-races-a-single-mutex-was-hiding)
@@ -77,6 +86,35 @@ The sections below are organized around these layers: general-ledger concepts fi
 A core banking system is the backbone of a financial institution. It is the "system of record" for all financial activity — every deposit, withdrawal, transfer, loan disbursement, and fee charge flows through it. The concepts below explain how this system models real-world banking.
 
 ## Accounting Foundations
+
+### Assets: What an Account Is Denominated In
+
+An **asset**, in the sense used throughout the rest of this document, is a unit of value that accounts are denominated in: euro, dollars, bitcoin. It is registered as a `ledger.AssetDef`:
+
+```go
+type AssetDef struct {
+    Code  AssetCode  // "EUR", "USD", "BTC" — the natural key
+    Name  string     // "Euro"
+    Scale uint8      // decimal places: 2 for EUR, 8 for BTC
+    Class AssetClass // Fiat | Crypto
+}
+```
+
+> **A note on the name.** `AssetDef`, not `Asset`, because `Asset` is already taken: it is the `AccountType` constant for the asset side of the balance sheet ([below](#asset--things-the-bank-owns-or-is-owed)). That constant keeps the name — it is the accounting term, and it appears in every chart of accounts ever written. The two senses are genuinely different things: an account's *type* says whether it is something the bank owns or owes, and its *asset* says what kind of money it is counted in. A euro deposit and a bitcoin deposit are both Liability accounts.
+>
+> `AssetClass` (`Fiat` or `Crypto`) carries no behaviour at all today. It exists so a chart of accounts or a UI can tell a currency from a token without pattern-matching on the code.
+
+Three properties do most of the work.
+
+**Assets are book-scoped.** The registry belongs to a `ledger.Book`, not to the process. Each participant bank owns its own book, and a bank that does not deal in bitcoin should not carry bitcoin in its chart of accounts — the same reason ledgers, subledgers and accounts are book-scoped rather than global. A consequence worth noticing early: when two books both operate in euro, `EUR` is two separate registrations, one per book, and not a shared row that both point at.
+
+**An account is denominated in exactly one asset, fixed at creation.** It is chosen when the account is created and never changes afterwards. This is how real core banking systems work — an account number and its currency are inseparable, which is why IBANs are per-currency and why "my euro account" and "my dollar account" are two accounts and not two views of one.
+
+**That is what keeps a balance a scalar.** If a single account could hold several assets, its balance would be a *map*, and every balance query, every statement line, every end-of-day snapshot and every available-balance calculation would have to carry an asset alongside the number, forever. Fixing the asset to the account pushes that dimension into the chart of accounts, where it costs one more account instead of one more type parameter on everything.
+
+The `deposit` layer follows the GL: a `deposit.Account` stores its asset too, copied from the backing GL account. It is the one fact this system stores twice on purpose — the GL account's asset is immutable, so the two cannot drift, and deriving it would turn every listing of deposit accounts into a join for a value that can never change. See [The Asset Dimension in the Schema](#the-asset-dimension-in-the-schema).
+
+Registration comes first: `book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)` before any account can be denominated in euro, and creating an account in an unregistered asset fails with `ErrAssetNotFound`. A scale above `ledger.MaxAssetScale` is refused at registration with `ErrInvalidScale` — see [Why Scale Is Capped at Nine](#why-scale-is-capped-at-nine). That the registry check is a *domain* rule enforced by `ledger.Book`, rather than a constraint in the database, turns out to have consequences for the schema — see [The Asset Dimension in the Schema](#the-asset-dimension-in-the-schema).
 
 ### Double-Entry Bookkeeping
 
@@ -95,6 +133,63 @@ When a customer transfers $50 to another customer:
 - **Credit:** Receiver's Deposit account (liability increases)
 
 The balanced nature of double-entry provides a built-in error-detection mechanism: if debits don't equal credits, something is wrong.
+
+#### The Invariant Is Per Asset
+
+The rule as Pacioli stated it assumes something he never had to say out loud: that everything in the book is counted in the same money. Once a book holds more than one [asset](#assets-what-an-account-is-denominated-in), the invariant needs one more clause:
+
+> Every transaction must have equal debits and credits **within each asset**.
+
+The global version is not a weaker check — it is a *broken* one, and this is the clearest way to see why. Take a transaction with two legs: debit 100 EUR, credit 100 BTC.
+
+```
+Debit  Cash EUR (Asset)            100 EUR
+Credit Customer BTC (Liability)    100 BTC
+                                   ───────
+Total debits − total credits:      0  ✓ by the old rule
+```
+
+It passes. The numbers are equal, the ledger is satisfied, and the bank has just exchanged one hundred euro for one hundred bitcoin at an implied rate of 1 — several million euro conjured out of nothing by an accounting engine that had no idea it was pricing anything.
+
+Sharpen it once more and it gets worse. Amounts are integers in each asset's [minor units](#amounts-and-precision), so what a global check actually compares is `10000` cents against `10000` satoshi. The implied rate is not merely wrong; it is an artefact of two unrelated scale conventions, and it changes if either asset's scale changes.
+
+Per asset, there is no rate to get wrong. The check sums debits and credits *within* each asset and requires each sum to net to zero:
+
+```go
+// ledger.validateBalance, in essence
+net := map[AssetCode]Amount{}
+for _, e := range entries {
+    asset := accounts[e.AccountID].Asset   // an entry's asset is its account's
+    if e.Direction == Debit { net[asset] += e.Amount } else { net[asset] -= e.Amount }
+}
+// every asset must net to zero
+```
+
+A failure returns `ErrUnbalancedAsset` **wrapped together with** `ErrUnbalancedTransaction`, and names the offending asset. Both sentinels match under `errors.Is`, so a caller that only wants to know "did this balance?" checks the general one and a caller that wants to report which asset broke checks the specific one, without either having to know about the other.
+
+This is the whole reason the ledger never needs to know what anything is worth. A single-asset check needs no prices because there is only one thing to price; a per-asset check needs no prices because the assets never meet inside one balancing sum. A *global* multi-asset check would need prices, and that is precisely the design that puts an exchange rate in the middle of an accounting engine.
+
+#### Foreign Exchange, and Why the Ledger Needs No Rates
+
+Foreign exchange is **not implemented** — there are no rates anywhere in this system and no trade operation. What follows is the shape the ledger was designed to accommodate, not something you can call today.
+
+The per-asset invariant rules out the obvious posting. A customer selling 100 EUR for bitcoin cannot be recorded as one transaction with a euro leg and a bitcoin leg, because that is exactly the posting rejected above. Instead each asset balances through a **position account** of its own asset, and the trade is two ordinary, individually balanced postings:
+
+```
+EUR side — balances in EUR:
+  Debit  Customer EUR deposit (Liability)   10000      // the customer's euros leave
+  Credit EUR Position                       10000      // the bank takes them on
+
+BTC side — balances in BTC:
+  Debit  BTC Position                      153000      // the bank gives bitcoin up
+  Credit Customer BTC deposit (Liability)  153000      // the customer receives it
+```
+
+Neither posting mentions the other, and neither mentions a rate. The rate is expressed *entirely* in the choice of the two amounts — `10000` cents against `153000` satoshi — and that choice is made above the ledger, by whatever quoted the price. The ledger records the consequence of a price; it never decides one. Which of the five [account types](#chart-of-accounts) a position account should be is a modelling decision that belongs to the FX work itself; what matters here is that there is one per asset and that it is the counterparty to every trade leg in that asset.
+
+The balance of a position account is then a number worth having in its own right: it is the bank's **open position** in that asset — how much of it the bank is long or short as a result of the trades it has done. A bank that has bought and sold the same amount of bitcoin is *flat*, and its BTC position account reads zero. A bank that has been buying is long, and holds a real exposure to the price moving against it.
+
+Note what is *not* in the ledger under this scheme: the profit or loss on trading. It appears only when the positions are revalued at a current rate, which needs a price and therefore lives above the ledger too — in the same layer that quoted the trade in the first place.
 
 ### Chart of Accounts
 
@@ -199,6 +294,25 @@ Expenses have a **debit normal balance**. When the bank pays $10 in monthly inte
 
 Like revenue, expense accounts are closed at year-end into retained earnings.
 
+#### Accounts Are Per Asset
+
+The five types say what an account *is*. The [asset](#assets-what-an-account-is-denominated-in) says what it is *counted in*, and the two dimensions are independent: a euro deposit and a bitcoin deposit are both Liability accounts, and a euro cash account and a bitcoin wallet are both Asset accounts.
+
+Because an account is bound to exactly one asset, a bank that operates in three currencies does not have one Cash account holding three kinds of money. It has three Cash accounts:
+
+```
+Bank Assets (subledger)
+├── 100.100.001  Cash EUR   (Asset,     EUR)
+├── 100.100.002  Cash USD   (Asset,     USD)
+└── 100.100.003  Cash BTC   (Asset,     BTC)
+
+Customer Deposits (subledger)
+├── 200.100.001  Alice EUR  (Liability, EUR)
+└── 200.100.002  Alice BTC  (Liability, BTC)
+```
+
+So the chart of accounts of a multi-asset bank is, roughly, its single-asset chart multiplied by the assets it operates in. That sounds like duplication and is in fact the point: it is what makes "the bank's euro cash" a thing with a balance you can read, rather than one component of a vector that some caller has to know how to project. Alice, likewise, has two accounts rather than one account with two balances — which is why in practice a customer with a foreign-currency account has a second IBAN.
+
 ### Ledger and Subledger Hierarchy
 
 Accounts are organized into a two-level hierarchy:
@@ -226,17 +340,41 @@ In practice, the General Ledger might show one line item for "Total Customer Dep
 
 ### Amounts and Precision
 
-All monetary amounts are represented as integer values in the smallest unit of the currency (e.g., cents for USD). This is the same approach used by Stripe, most banks, and payment processors.
+All monetary amounts are integers in the smallest unit of their [asset](#assets-what-an-account-is-denominated-in) — cents for EUR and USD, satoshi for BTC. This is the approach Stripe, most banks and most payment processors use, generalized here to any asset rather than to a single currency.
 
-This avoids floating-point precision issues entirely. For example:
+It avoids floating-point precision entirely. `0.1 + 0.2` is `0.30000000000000004` in IEEE 754, and a system whose whole job is adding money cannot afford an error that accumulates. With integers there is no rounding at all.
 
-| Display | Internal | Unit |
-|---------|----------|------|
-| $100.50 | 10050 | cents |
-| $1,234.56 | 123456 | cents |
-| $10,000.00 | 1000000 | cents |
+How many decimal places an asset's minor unit has is its **scale**, and scale is a property of the *asset*, not of the system:
 
-The caller is responsible for converting to/from display format.
+| Display | Internal | Asset | Scale |
+|---------|----------|-------|-------|
+| €100.50 | 10050 | EUR | 2 |
+| €1,234.56 | 123456 | EUR | 2 |
+| ₿1.00000000 | 100000000 | BTC | 8 |
+| ₿0.00000001 | 1 | BTC | 8 |
+
+The same integer therefore means quite different things in different assets: `100000000` is one bitcoin, and it is also a million euro. Nothing can be rendered, and nothing can be compared, without knowing which asset it belongs to — which is one more reason the asset lives on the account rather than being passed around beside the number.
+
+The caller is responsible for converting to and from display format.
+
+#### Why Scale Is Capped at Nine
+
+`ledger.Amount` is an `int64`, and `ledger.MaxAssetScale` is **9**. Registering an asset with a larger scale is refused with `ErrInvalidScale`.
+
+The cap is arithmetic, not preference. A signed 64-bit integer tops out at 9,223,372,036,854,775,807 — about 9.22 × 10¹⁸. Divide that by the scale to get the largest amount the type can hold:
+
+| Scale | Asset | Largest representable amount |
+|-------|-------|------------------------------|
+| 2 | EUR | ~92 quadrillion € |
+| 8 | BTC | ~92 billion ₿ (the entire 21M supply is 2.1 × 10¹⁵ satoshi) |
+| 9 | the cap | ~9.2 billion whole units |
+| 18 | ETH (wei) | **9.2 units** |
+
+At 18 decimal places — the native precision of ether and of most ERC-20 tokens — an `int64` holds 9.2 ETH. Not 9.2 billion, not 9.2 million: nine. Native 18-decimal precision and an `int64` amount are mutually exclusive, and the only real decision is which of the two to give up.
+
+This system keeps the `int64` and caps the scale, so an 18-decimal asset can be carried only at reduced precision — registered at 9 places, say, discarding the smallest nine. That is a real limitation and it is stated here rather than discovered later. The important part is that the refusal is **loud and early**: an out-of-range scale is rejected when the asset is registered, not silently overflowed when someone eventually posts a large amount.
+
+`Amount` is a defined type (`type Amount int64`) rather than an alias for exactly this reason. If the trade-off is ever revisited and amounts widen to 128 bits, the compiler points at every site that has to change instead of quietly accepting a bare `int64`.
 
 ## Transactions
 
@@ -524,6 +662,10 @@ Each participant's chart of accounts holds:
 
 The central-bank ledger holds one **Reserve: \<Bank\>** liability account per participant (the central bank owes each member its reserves) plus a balancing **Settlement Assets** account used when reserves are funded.
 
+Every one of those internal accounts exists **once per [asset](#assets-what-an-account-is-denominated-in) the participant operates in.** A bank clearing both a euro scheme and a dollar one holds two clearing-suspense accounts and two reserve accounts — not two currencies inside one — because a GL account is bound to a single asset, and because netting a euro position against a dollar one is not a smaller number, it is a meaningless one. `Participant.AccountsFor(asset)` resolves the set, and a bank that does not operate in an asset gets `ErrParticipantAssetNotFound`.
+
+Settlement resolves that set from the **cycle's** asset, which comes from the cycle's scheme, once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything is posted — exactly the treatment an underfunded member gets. There is deliberately no fallback: defaulting to euro would settle a dollar cycle in the wrong money, and doing so quietly, in the one place in the system where money becomes final.
+
 ### Payment Schemes
 
 Different payment products behave differently, so the package abstracts them behind a `Scheme` interface:
@@ -533,6 +675,7 @@ type Scheme interface {
     ID() SchemeID
     Direction() SchemeDirection      // Push (payer initiates) | Pull (payee initiates)
     SettlementModel() SettlementModel // Net (batched) | Gross (instant, per-payment)
+    Asset() ledger.AssetCode          // the one asset this scheme carries
     RequiresMandate() bool
     AllowsReturn() bool
     SettlementDelay() time.Duration   // determines the value date
@@ -546,6 +689,34 @@ Two schemes ship today, both net-settled:
 - **SEPA Direct Debit (`SDD`)** — a **pull** payment: the payee's bank collects funds from the payer under a previously signed **mandate** (T+2), and the payer may demand a **return**. Maps to `pacs.003`.
 
 Crucially, money always flows **debtor → creditor** regardless of who *initiates* — `Direction` only governs initiation and whether a mandate is required. This is why the same posting machinery serves both schemes. Other **net-settled** schemes drop in by implementing `Scheme` and registering it — the orchestrator does not change. **Instant** and **card** schemes need a little more wiring; see [Next Work](#next-work).
+
+#### A Scheme Declares Its Asset
+
+`SCT` and `SDD` both return `EUR`, and that is not a simplification. SEPA is the **Single Euro Payments Area**; its schemes carry euro and nothing else, and a "SEPA dollar transfer" is not a thing that exists. A scheme in another currency is another scheme, with its own rulebook, its own clearing cycles and its own settlement arrangements — which is exactly why `Asset()` sits on the scheme rather than on the payment.
+
+At initiation, **both** the debtor's and the creditor's accounts are checked against the scheme's asset, and a mismatch is `ErrAssetMismatch`. The check lives in `InitiatePaymentTx` itself rather than inside a scheme's own `Validate`, so that it runs for every scheme unconditionally: a scheme whose `Validate` does something other than check funds — a future card scheme placing a hold, say — would otherwise skip it silently, and the failure would be invisible until it settled.
+
+**The ledger structurally cannot catch this, which is the interesting part.** It is tempting to assume the per-asset balance check would reject a euro-to-bitcoin payment, and it would not, because a payment is never one posting. The debtor leg is a transaction in the payer's bank's book; the creditor leg is a separate transaction in the payee's bank's book. Give Alice a euro account and Bob a bitcoin one and you get:
+
+```
+Bank A (debtor leg):    Debit  Alice EUR       3000     ← balances in EUR ✓
+                        Credit Suspense EUR    3000
+
+Bank B (creditor leg):  Debit  Suspense BTC    3000     ← balances in BTC ✓
+                        Credit Bob BTC         3000
+```
+
+Both transactions are impeccable double-entry. Each balances within its own asset; each would pass `validateBalance` without complaint. The error is not inside either posting — it is in the claim that these two postings are the two halves of one payment. Nothing a ledger can see contains that claim. Only the `payment` layer holds both ends at once, so only the `payment` layer can refuse it.
+
+The general shape of the rule: an invariant can only be enforced where the whole of it is visible. Pushing this one down into the ledger would not make it stricter, it would make it unenforceable.
+
+#### Cross-Currency Payments Are Two Operations
+
+A consequence of the above: paying euro *into* a bitcoin account is not a payment this system can perform, and `ErrAssetMismatch` is the honest answer rather than a gap.
+
+In the real world it is not one operation either. Sending euro to a dollar account is a euro payment plus a **foreign-exchange trade**, and somebody — the sender's bank, the recipient's bank, or a correspondent in between — does the trade, quotes a rate, and takes a spread on it. The reason the transfer has a worse rate than the one on the news is that the trade is a separate, priced transaction that has been bundled into the payment's presentation.
+
+Modelling it therefore needs the [FX machinery](#foreign-exchange-and-why-the-ledger-needs-no-rates) — position accounts, a rate source, a spread booked to revenue — none of which exists here. What does exist is the refusal, which is the part that keeps the books correct in the meantime.
 
 ### The Payment Lifecycle
 
@@ -624,7 +795,7 @@ This is a learning model, not a production processor. The simplifications are in
 
 - **No ISO 20022 message parsing.** The `Payment` struct stands in for `pain.001`/`pacs.008`/`pacs.003`; the schemes only *name* the messages they correspond to.
 - **No IBAN or BIC validation.** Routing is by explicit `ParticipantID`; IBANs are free-form labels.
-- **A single currency**, using `ledger.Amount` (integer minor units). No FX.
+- **Many assets, but no exchange between them.** Accounts are denominated in registered [assets](#assets-what-an-account-is-denominated-in) — EUR, USD, BTC — and transactions [balance per asset](#the-invariant-is-per-asset), so the multi-asset accounting is real rather than a currency label on a single-currency system. What is missing is everything to do with *converting* one asset into another: there are no exchange rates anywhere in the system, no FX trade operation, no position accounts, and consequently no [cross-currency payment](#cross-currency-payments-are-two-operations) — a payment whose two ends differ in asset is refused with `ErrAssetMismatch` rather than converted, because converting it would require a rate, and a rate is a *price*: something a ledger records the consequences of and never decides. One further limit is worth stating plainly: asset scale is [capped at 9 decimal places](#why-scale-is-capped-at-nine), so an 18-decimal asset such as ether cannot be held at its native precision.
 - **Settlement is one database transaction, standing in for a settlement window.** Every book — each participant's and the central bank's — lives in the same store, told apart by its `ledger.BookID`, and `payment.Tx` embeds `deposit.Tx` embeds `ledger.Tx`, so a single transaction reaches all three layers. `SettleCycle` therefore moves the netted reserves at the central bank, mirrors each movement in the paying bank's own books, and pays out every creditor inside one `Store.Update`: if any net payer cannot cover its position, nothing is posted at all. That is what a real RTGS calls a **settlement window** — an interval in which the settlement agent holds the participants' accounts, checks that every payer can cover, and posts the whole batch or none of it. A real system also has to decide what to do next (queue the batch, run a liquidity-saving optimisation, unwind the defaulter, tap intraday credit); here the batch simply fails and can be retried once the member is funded.
 - **Returns settle immediately** rather than being batched into a later R-cycle.
 
@@ -786,7 +957,44 @@ Four details carry more weight than they look like they should:
 
 - **Identity counters are ordinary rows, not Postgres `SEQUENCE`s.** A sequence survives a rollback on purpose — which would burn a transaction number on a failed posting. A counter row rolls back with its caller and stays gap-free. It also, as a side effect, serializes any two write transactions in the same book that both allocate an ID.
 
-`store/pg/schema/0001_init.sql` is the whole schema in one file, and its comments say why each of these is the way it is.
+`store/pg/schema/0001_init.sql` is the original schema in one file, and its comments say why each of these is the way it is. Migrations `0002`–`0006` add the asset dimension described next.
+
+### The Asset Dimension in the Schema
+
+Assets get a table of their own, keyed the same way everything else in a book is keyed:
+
+```sql
+CREATE TABLE assets (
+    book_id TEXT     NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    code    TEXT     NOT NULL,
+    name    TEXT     NOT NULL,
+    scale   SMALLINT NOT NULL CHECK (scale BETWEEN 0 AND 9),
+    class   SMALLINT NOT NULL,
+    PRIMARY KEY (book_id, code)
+);
+```
+
+`(book_id, code)` rather than `code` alone, because [assets are book-scoped](#assets-what-an-account-is-denominated-in): a bank that does not deal in bitcoin should not carry it. The `CHECK` restates the [scale cap](#why-scale-is-capped-at-nine) so the database is not simply trusting the application, even though the real reason for the bound — the width of Go's `int64` — is one the database has no way to know.
+
+Three decisions in how the column spreads from there.
+
+**The asset is on `accounts`, and deliberately not on `entries`.** An entry's asset is always its account's, so a column on `entries` would store the same fact a second time and create the one thing a second copy always creates: the possibility that the two disagree. `PostTransaction` derives it instead, and derivation is free here — the accounts have already been loaded to check [sufficient balance](#overdraft), so the per-asset balance check adds no reads at all.
+
+**`deposit_accounts.asset` is the one exception, duplicated on purpose.** The backing GL account's asset is immutable, so the two cannot drift, and deriving it would turn every listing of deposit accounts into a join for a value that can never change. `store/storetest` asserts the two always agree, which is what makes the duplication safe rather than merely convenient.
+
+**A participant's internal accounts move to a child table.** Suspense, reserve and settlement used to be three columns on `participants`. They are now `participant_assets`, keyed `(participant_id, asset)`, because each of those accounts is denominated in exactly one asset and [a bank operating in two of them needs two of each](#the-multi-bank-model). Keying it this way makes adding a scheme in a new asset a *data* change rather than a schema change.
+
+#### The Foreign Key That Is Missing on Purpose
+
+`accounts.asset` holds a code, and `assets` is keyed by exactly that code. There is deliberately **no foreign key** between them, and putting the "missing" one back breaks the conformance suite.
+
+The argument is the one from [Two Stores, One Conformance Suite](#two-stores-one-conformance-suite), pointed at a new case. A store is a per-table key/value layer; "the asset must be registered" is a **domain** rule, and `ledger.Book.CreateAccountTx` enforces it by reading the registry before it creates an account — precisely where "the parent must exist" already lives for ledgers and subledgers. Postgres could express that rule as a constraint and `store/mem` could not, so neither does: a foreign key here would make `store/pg` refuse a write `store/mem` performs, and the two stores accepting and refusing the same writes is the whole property `store/storetest` exists to hold. The subtest is `ParentReferencesAreNotEnforced`, whose fixtures write accounts with no asset set at all. An earlier composite FK on `subledgers (book_id, ledger_id)` broke that same subtest and was removed for the same reason.
+
+`participant_assets.asset` has none either, for a second and quite different reason: a participant row is keyed by participant id, while an asset is keyed by the *book* it is registered in. The same code exists in two books here — the bank's and the central bank's — so there is no single row for the reference to point at.
+
+Migration `0006` writes this reasoning into the database itself with `COMMENT ON COLUMN`, next to the columns it explains. That is not ceremony. The absence of a constraint is invisible: the next author reads the schema, sees a code column pointing at a table keyed by that code, concludes someone forgot, and helpfully adds it. A comment on the column is the only place that warning can sit where it will actually be read.
+
+One more property of these migrations worth noting, because it is rarely available: the backfills are **exact rather than a guess**. Before this change the system had no asset dimension at all, and every book it had ever held was a euro book. So `UPDATE accounts SET asset = 'EUR'` is not a default being assumed — it is a fact being written down, which is why the columns could go straight to `NOT NULL` in the same migration.
 
 ### A Balance Is an Aggregate, Not a Column
 
@@ -910,18 +1118,23 @@ defer store.Close()
 
 book := ledger.NewBook(store, "bank-a", time.Now)
 
+// Register the assets this bank deals in. Assets are per book, and an
+// account cannot be created in one that is not registered here.
+book.CreateAsset(ctx, "EUR", "Euro", 2, ledger.Fiat)
+
 // Set up the chart of accounts
 gl, _ := book.CreateLedger(ctx, "General Ledger")
 deposits, _ := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 revenue, _ := book.CreateSubledger(ctx, gl.ID, "Revenue")
 
-// Create accounts
-alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice Checking", ledger.Liability)
-bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob Checking", ledger.Liability)
-fees, _ := book.CreateAccount(ctx, revenue.ID, "Transfer Fees", ledger.Revenue)
+// Create accounts. The last argument is the asset, fixed for the account's life.
+alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice Checking", ledger.Liability, "EUR")
+bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob Checking", ledger.Liability, "EUR")
+fees, _ := book.CreateAccount(ctx, revenue.ID, "Transfer Fees", ledger.Revenue, "EUR")
 
-// Transfer $100 from Alice to Bob with a $2 fee. The whole posting — the
+// Transfer €100 from Alice to Bob with a €2 fee. The whole posting — the
 // balance checks, the three entries and the audit event — is one unit of work.
+// All three accounts are EUR, so the transaction balances within that asset.
 book.PostTransaction(ctx, ledger.PostTransactionRequest{
     IdempotencyKey: "transfer-001",
     Description:    "Transfer from Alice to Bob",
@@ -946,10 +1159,11 @@ the same data inside the same transaction:
 dep := store.Deposit()   // the same store, presented as a deposit.Store
 reg := deposit.NewRegister(dep, book, book.ID(), time.Now)
 
-// Open a customer deposit account (creates a backing Liability GL account)
-acct, _ := reg.OpenAccount(ctx, deposits.ID, "Carol Checking", 0 /* no overdraft */)
+// Open a customer deposit account (creates a backing Liability GL account in
+// the given asset; the deposit account records the same asset)
+acct, _ := reg.OpenAccount(ctx, deposits.ID, "Carol Checking", "EUR", 0 /* no overdraft */)
 
-// Place and then capture a $30 authorization hold
+// Place and then capture a €30 authorization hold
 hold, _ := reg.CreateHold(ctx, deposit.CreateHoldRequest{AccountID: acct.ID, Amount: 3000})
 reg.CaptureHold(ctx, hold.ID, fees.ID, 2500, "Card capture")
 
@@ -981,13 +1195,16 @@ go run ./cmd/server            # listens on :8080 (override with PORT env or -ad
 DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 ```
 
-The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`) while keeping amounts as integer minor units.
+The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`, `"class": "Fiat"`) while keeping amounts as integer minor units.
+
+Every request that creates an account names its **asset** explicitly, and there is no default: opening a deposit account without one is a `400`, not a euro account. The single exception is `POST /participants`, whose optional `assets` array defaults to `["EUR"]` — a default for which assets a *bank joins with*, not for the asset of any account. Responses carry the asset wherever an amount would otherwise be ambiguous, including on every entry of a transaction, so a client never has to infer a scale.
 
 Representative endpoints:
 
 | Method & path | Operation |
 |---|---|
 | `POST` / `GET /participants`, `GET /participants/{id}` | create / list / get a bank |
+| `POST` / `GET /participants/{id}/assets` | register / list the assets a bank deals in |
 | `POST /participants/{id}/deposits` | fund a customer account |
 | `POST` / `GET /participants/{id}/deposit-accounts` | open / list customer accounts |
 | `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
@@ -1007,13 +1224,16 @@ Example — a SEPA credit transfer end to end:
 BASE=http://localhost:8080; H='-H Content-Type:application/json'
 A=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank A"}' | jq -r .id)
 B=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank B"}' | jq -r .id)
-ALICE=$(curl -s $H -X POST $BASE/participants/$A/deposit-accounts -d '{"name":"Alice"}' | jq -r .id)
-BOB=$(curl -s $H -X POST $BASE/participants/$B/deposit-accounts -d '{"name":"Bob"}' | jq -r .id)
+ALICE=$(curl -s $H -X POST $BASE/participants/$A/deposit-accounts -d '{"name":"Alice","asset":"EUR"}' | jq -r .id)
+BOB=$(curl -s $H -X POST $BASE/participants/$B/deposit-accounts -d '{"name":"Bob","asset":"EUR"}' | jq -r .id)
 curl -s $H -X POST $BASE/participants/$A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
-CYC=$(curl -s $H -X POST $BASE/cycles -d '{"scheme":"sepa.ct"}' | jq -r .id)
-curl -s $H -X POST $BASE/payments -d "{\"scheme\":\"sepa.ct\",
+
+# A payment joins its scheme's open clearing cycle by itself, and the response
+# says which. (`POST /cycles` opens one, but a scheme may only have one open at
+# a time — against the seeded dataset it answers "already open for scheme".)
+CYC=$(curl -s $H -X POST $BASE/payments -d "{\"scheme\":\"sepa.ct\",
   \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
-  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}"
+  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}" | jq -r .cycleId)
 curl -s $H -X POST $BASE/cycles/$CYC/close && curl -s $H -X POST $BASE/cycles/$CYC/settle
 curl -s $BASE/participants/$A/deposit-accounts/$ALICE/balance   # book 75000
 curl -s $BASE/participants/$B/deposit-accounts/$BOB/balance     # book 25000

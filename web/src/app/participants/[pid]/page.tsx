@@ -77,8 +77,10 @@ export default function ParticipantOverview() {
             })
           )}
           <p className="mt-1 text-sm text-muted-foreground">
-            Starts at €0.00. Funding a deposit account raises this in step —
-            funding is modelled as the bank placing cash on reserve.
+            One reserve per asset the bank operates in, each starting at zero.
+            Funding a deposit account raises the reserve in that account&apos;s
+            asset in step — funding is modelled as the bank placing cash on
+            reserve.
           </p>
         </CardContent>
       </Card>

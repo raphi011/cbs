@@ -110,7 +110,9 @@ export interface AuditEvent {
   metadata?: Record<string, string>;
 }
 
-// GET .../accounts/{aid}/balance returns the book balance (integer cents).
+// GET .../accounts/{aid}/balance returns the book balance as an integer in the
+// minor units of the account's asset — cents for EUR, satoshi for BTC. The
+// scale needed to render it comes from the asset, not from this response.
 export interface BookBalance {
   accountId: string;
   balance: number;

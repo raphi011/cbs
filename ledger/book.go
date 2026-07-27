@@ -479,7 +479,9 @@ type PostTransactionRequest struct {
 //  2. All entry amounts must be positive (direction determines sign).
 //  3. All referenced accounts must exist.
 //  4. If an idempotency key is provided, it must not already be used.
-//  5. Total debits must equal total credits.
+//  5. Debits must equal credits *within each asset*. A global total is not
+//     enough: 100 EUR debited against 100 BTC credited nets to zero overall
+//     while creating value out of nothing. See validateBalance.
 //  6. Asset and Expense accounts must have sufficient book balance.
 //
 // If all validations pass, the entries are atomically applied to the
@@ -649,6 +651,13 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 // An FX trade therefore cannot be one naive two-asset posting. Each asset
 // balances through its own position account, and the bank's open exposure is
 // the balance of those accounts.
+//
+// accounts must hold every account referenced by entries; the caller has
+// already loaded them all. A missing key would read as the zero AssetCode
+// rather than as an error, quietly bucketing unrelated entries into one asset
+// and admitting a transaction that does not balance in any real one. Not
+// reachable from the only caller today, which loads every referenced account
+// before it calls.
 func validateBalance(entries []Entry, accounts map[AccountID]Account) error {
 	// net[asset] is debits minus credits in that asset.
 	net := make(map[AssetCode]Amount, 2)

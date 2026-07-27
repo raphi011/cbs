@@ -13,12 +13,15 @@ The banking/accounting/payments content is duplicated, by design, across:
 
 - `README.md` — the authoritative source.
 - `web/src/components/hint-content.ts` — distilled from the README.
-- `web/src/lib/quiz/chapters/*.ts` — the 15-chapter quiz.
-- `store/pg/schema/0001_init.sql` — the relational mapping. Its comments are
-  domain content, not implementation notes: which key is composite and why, why
-  no balance is stored, why `entries` needs an ordering column, why the audit
-  table has no foreign key. Chapter 15 and the README's _Persistence_ section
-  teach exactly these claims, so a schema change is a documentation change.
+- `web/src/lib/quiz/chapters/*.ts` — the 16-chapter quiz.
+- `store/pg/schema/*.sql` — the relational mapping. Its comments are domain
+  content, not implementation notes: which key is composite and why, why no
+  balance is stored, why `entries` needs an ordering column, why the audit table
+  has no foreign key, why `accounts.asset` has none either (`0006` records that
+  one with `COMMENT ON COLUMN`, in the database, because a missing constraint is
+  invisible in a schema dump). Chapters 15 and 16 and the README's _Persistence_
+  section teach exactly these claims, so a schema change is a documentation
+  change.
 
 When you correct a domain fact in one layer, check and fix the same claim in the
 others.

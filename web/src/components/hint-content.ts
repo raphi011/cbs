@@ -784,6 +784,114 @@ A single-column key would force globally unique numbering and destroy the [[ledg
 
 The [[payment-lifecycle|payment layer]]'s own entities — participants, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.`,
   },
+  asset: {
+    title: "Asset (what an account is denominated in)",
+    body: `An **asset** here is a unit of value that accounts are counted in — EUR, USD, BTC. It is registered per book as \`code\`, \`name\`, [[asset-scale|scale]] and class (\`Fiat\` or \`Crypto\`).
+
+> **Not the same "asset" as [[account-type-asset|the account type]].** An account's *type* says whether it is something the bank owns or owes; its *asset* says what kind of money it is counted in. A euro deposit and a bitcoin deposit are both **Liability** accounts. (In Go the registry type is \`AssetDef\`, because \`Asset\` was already the account-type constant.)
+
+Three properties do the work:
+
+- **Book-scoped.** The registry belongs to a book, so a bank that does not deal in bitcoin carries no bitcoin — the same reason [[book-scoped-id|IDs are book-scoped]]. \`EUR\` in two banks' books is two registrations, not one shared row.
+- **One asset per account, fixed at creation.** An account number and its currency are inseparable in real banking, which is why IBANs are per-currency.
+- **So a balance stays a scalar.** If one account could hold several assets, every balance, statement line and snapshot would carry a *map* instead of a number. Binding the asset to the account pushes that dimension into the chart of accounts, where it costs one more account rather than one more parameter on everything.
+
+A bank in three currencies therefore has three cash accounts, not one holding three kinds of money. Creating an account in an unregistered asset fails with \`ErrAssetNotFound\`.`,
+  },
+  "asset-scale": {
+    title: "Scale, and why it stops at 9",
+    body: `An asset's **scale** is how many decimal places its minor unit has: 2 for EUR (cents), 8 for BTC (satoshi), 0 for an asset with no fractional unit. [[amount-cents|Amounts are integers]] at that scale, so the same integer means different things in different assets — \`100000000\` is one bitcoin *and* a million euro.
+
+Scale is capped at **9**. A larger one is refused when the asset is registered, with \`ErrInvalidScale\`.
+
+The cap is arithmetic, not taste. An amount is an \`int64\`, which tops out near **9.22 × 10¹⁸**:
+
+| Scale | Largest amount it can hold |
+|---|---|
+| 2 (EUR) | ~92 quadrillion € |
+| 8 (BTC) | ~92 billion ₿ — the whole 21M supply is 2.1 × 10¹⁵ satoshi |
+| 9 (the cap) | ~9.2 billion units |
+| 18 (wei) | **9.2 units** |
+
+At 18 decimals — ether's native precision — an \`int64\` holds 9.2 ETH. Not 9.2 billion: nine. Native 18-decimal precision and an \`int64\` amount are mutually exclusive, so an 18-decimal asset can only be carried here at reduced precision. The refusal happens **at registration**, loudly, rather than as a silent overflow when someone eventually posts a large amount.`,
+  },
+  "per-asset-balance": {
+    title: "Transactions balance per asset",
+    body: `[[double-entry|Debits must equal credits]] — but once a book holds more than one [[asset]], that has to hold **within each asset**, not across the whole transaction.
+
+A global check is not a weaker rule, it is a broken one. Debit 100 EUR, credit 100 BTC:
+
+\`\`\`
+Debit  Cash EUR (Asset)          100 EUR
+Credit Customer BTC (Liability)  100 BTC
+                                 ───────
+Total debits − credits:          0  ✓ by the old rule
+\`\`\`
+
+It passes, and the bank has just swapped euro for bitcoin at an implied rate of **1** — millions conjured out of nothing by an engine that had no idea it was pricing anything. Worse: amounts are minor units, so what actually got compared was \`10000\` cents against \`10000\` satoshi — a rate that is an artefact of two unrelated scale conventions.
+
+So the check sums debits and credits *within* each asset and requires each to net to zero. A failure returns \`ErrUnbalancedAsset\` wrapped with \`ErrUnbalancedTransaction\`, naming the asset; both match under \`errors.Is\`, so a caller can ask either "did it balance?" or "which asset broke?".
+
+This is exactly why the ledger never needs an exchange rate: per asset, there is no rate to get wrong. A *global* multi-asset check would need one — which is how a pricing decision ends up inside an accounting engine. See [[fx-position-account]] for what that means for FX.`,
+  },
+  "fx-position-account": {
+    title: "FX and position accounts",
+    body: `**Not implemented** — there are no exchange rates and no trade operation in this system. This is the shape it was designed to accommodate.
+
+[[per-asset-balance|Balancing per asset]] rules out the obvious posting: a customer selling €100 for bitcoin *cannot* be one transaction with a euro leg and a bitcoin leg, because that is precisely the posting the invariant rejects. Instead each asset balances through a **position account** of its own asset, and the trade is two ordinary postings:
+
+\`\`\`
+EUR side — balances in EUR:
+  Debit  Customer EUR deposit   10000
+  Credit EUR Position           10000
+
+BTC side — balances in BTC:
+  Debit  BTC Position          153000
+  Credit Customer BTC deposit  153000
+\`\`\`
+
+Neither posting mentions the other, and **neither mentions a rate**. The rate lives entirely in the choice of the two amounts — 10000 cents against 153000 satoshi — made above the ledger by whatever quoted the price. The ledger records the consequence of a price; it never decides one.
+
+The balance of a position account is then the bank's **open position** in that asset: how much it is long or short from the trades it has done. A bank that has bought and sold the same amount is *flat*, and the account reads zero.
+
+What is **not** in the ledger under this scheme is trading profit and loss. That appears only when positions are revalued at a current rate — which needs a price, and so lives above the ledger too.`,
+  },
+  "scheme-asset": {
+    title: "A scheme declares its asset",
+    body: `Every [[payment-lifecycle|payment scheme]] names the one [[asset]] it carries. \`SCT\` and \`SDD\` both return **EUR** — SEPA is the *Single Euro Payments Area*, and a "SEPA dollar transfer" is not a thing. A scheme in another currency is another scheme, with its own rulebook and its own cycles.
+
+Both the debtor's and the creditor's accounts are checked against it at initiation; a mismatch is \`ErrAssetMismatch\`. The check sits in \`InitiatePaymentTx\` rather than inside a scheme's own \`Validate\`, so it runs for **every** scheme — a future card scheme whose \`Validate\` places a hold instead of checking funds would otherwise skip it silently.
+
+**The ledger cannot catch this**, which is the part worth understanding. A payment is never one posting: the [[debtor-leg]] is a transaction in the payer's bank's book, the [[creditor-leg]] a separate one in the payee's. Give Alice a euro account and Bob a bitcoin one:
+
+\`\`\`
+Bank A:  Debit  Alice EUR     3000   ← balances in EUR ✓
+         Credit Suspense EUR  3000
+
+Bank B:  Debit  Suspense BTC  3000   ← balances in BTC ✓
+         Credit Bob BTC       3000
+\`\`\`
+
+Both are impeccable [[double-entry]]. The error is not inside either posting — it is in the claim that these two are halves of *one payment*, and no ledger can see that claim. Only the payment layer holds both ends, so only it can refuse.
+
+The general rule: an invariant can only be enforced where the whole of it is visible.`,
+  },
+  "participant-assets": {
+    title: "Internal accounts, one set per asset",
+    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], settlement — exist **once per [[asset]] it operates in**.
+
+A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
+
+\`\`\`
+Bank A
+├── EUR: suspense, reserve, settlement
+└── USD: suspense, reserve, settlement
+\`\`\`
+
+[[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.
+
+There is deliberately **no fallback** to a default asset. Defaulting to euro would settle a dollar cycle in the wrong money, quietly, in the one place in the system where money becomes final.`,
+  },
 } satisfies Record<string, HintEntry>;
 
 export type HintKey = keyof typeof hintContent;

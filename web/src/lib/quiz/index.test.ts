@@ -19,12 +19,13 @@ const BOOK_SLUGS = [
   "13-card-transactions",
   "14-snapshots-audit-and-statements",
   "15-persistence-and-durability",
+  "16-multi-asset-accounting",
 ];
 
 describe("quiz bank", () => {
-  it("has the 15 chapters, in order, with unique known slugs", () => {
-    expect(chapters).toHaveLength(15);
-    expect(chapters.map((c) => c.number)).toEqual(Array.from({ length: 15 }, (_, i) => i + 1));
+  it("has the 16 chapters, in order, with unique known slugs", () => {
+    expect(chapters).toHaveLength(16);
+    expect(chapters.map((c) => c.number)).toEqual(Array.from({ length: 16 }, (_, i) => i + 1));
     const slugs = chapters.map((c) => c.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
     for (const s of slugs) expect(BOOK_SLUGS).toContain(s);
@@ -37,7 +38,7 @@ describe("quiz bank", () => {
 
   it("groups every chapter under exactly one part", () => {
     const grouped = chaptersByPart().flatMap((p) => p.chapters);
-    expect(grouped).toHaveLength(15);
+    expect(grouped).toHaveLength(16);
   });
 
   it("has globally unique question ids", () => {

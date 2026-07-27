@@ -35,7 +35,7 @@ Stack: Next.js 16 (App Router) · React 19 · Tailwind v4 (no config file; token
 **Data layer grows in three files, one section per backend area:**
 `src/lib/api/endpoints.ts` (one typed fn per route) → `src/lib/api/query-keys.ts` (key factory; ledger/deposit keys nest under `["participants", pid, …]` so one invalidate clears a subtree) → `src/lib/api/hooks.ts` (query/mutation hooks; mutations invalidate keys). `errors.ts` maps HTTP status → friendly text via `describeError`.
 
-**Types & money.** `src/lib/types.ts` mirrors `api/dto.go` verbatim (exact JSON field names); enums in `src/lib/enums.ts` are the exact Go `String()` wire values. **All amounts are integer cents** — `src/lib/money.ts` is the source of truth (`<MoneyInput>` edits major units, emits cents).
+**Types & money.** `src/lib/types.ts` mirrors `api/dto.go` verbatim (exact JSON field names); enums in `src/lib/enums.ts` are the exact Go `String()` wire values. **All amounts are integers in the minor units of their asset** — cents for EUR, satoshi for BTC — and the asset's `scale` is what converts one to a human-readable major-unit string. `src/lib/money.ts` is the source of truth, and every formatter in it takes the asset it is rendering; there is no default scale, because assuming 2 renders 1 BTC as "1,000,000.00". `<MoneyInput>` edits major units and emits minor units at the given asset's scale.
 
 **Routing.** Network-wide pages at `src/app/{payments,mandates,cycles,settlements,central-bank,schemes}` (global because a payment spans two participants). Participant-scoped pages under `src/app/participants/[pid]/`; to add a section, append to the `tabs` array in `[pid]/layout.tsx` and add the page.
 
