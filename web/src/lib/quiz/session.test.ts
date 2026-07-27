@@ -33,7 +33,7 @@ const num: Question = {
   prompt: "p",
   explanation: "e",
   answer: 100,
-  unit: "dollars",
+  unit: { asset: "USD", in: "major" },
   tolerance: 1,
 };
 

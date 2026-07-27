@@ -1,4 +1,5 @@
 import type { HintKey } from "@/components/hint-content";
+import type { NumericUnit } from "./units";
 
 export type QuestionKind = "mc" | "truefalse" | "multi" | "numeric";
 export type Difficulty = "intro" | "core" | "challenge";
@@ -24,7 +25,12 @@ export type Question =
   | (BaseQuestion & {
       kind: "numeric";
       answer: number;
-      unit?: "cents" | "dollars";
+      /**
+       * What the answer counts. Omit for a bare number. The old shape was
+       * `"cents" | "dollars"`, which made an answer in satoshi unwritable —
+       * there was no correct label for one and no way to add it.
+       */
+      unit?: NumericUnit;
       /** Accepted absolute deviation from `answer`; defaults to 0. */
       tolerance?: number;
     });

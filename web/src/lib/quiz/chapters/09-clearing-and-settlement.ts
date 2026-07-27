@@ -171,7 +171,7 @@ export const chapter: Chapter = {
       prompt:
         "Three banks settle together. Bank A's net position is −$40,000 and Bank B's net position is +$25,000. Using the zero-sum property of net settlement, what is Bank C's net position in dollars? (Positive means Bank C is a net receiver; enter a positive number if Bank C receives net.)",
       answer: 15000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[net-positions]] across all participants in a clearing cycle always sum to zero — every dollar sent by a net payer is received by a net receiver. Bank A (−$40,000) + Bank B (+$25,000) + Bank C = $0, so Bank C = **+$15,000**. Bank C's [[reserve-account]] at the central bank rises by $15,000 at settlement.",
@@ -277,7 +277,7 @@ export const chapter: Chapter = {
       prompt:
         "In a clearing cycle: Bank A pays Bank B $45,000; Bank B pays Bank A $15,000; Bank B pays Bank C $10,000; Bank C pays Bank A $5,000. What is Bank B's net position in dollars? (Positive means Bank B receives net; enter a positive number if Bank B is a net receiver.)",
       answer: 20000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Bank B's [[net-positions|net position]] = inflows − outflows = $45,000 − ($15,000 + $10,000) = **+$20,000**. Bank B is a net receiver: its reserve account at the central bank rises by $20,000 at settlement. As a sanity check: Bank A's net is −$25,000, Bank C's is +$5,000; all three sum to zero — the defining property of net positions.",
@@ -309,7 +309,7 @@ export const chapter: Chapter = {
       prompt:
         "Bank A initiates $80,000 in outbound payments and receives $30,000 in inbound payments during a clearing cycle. After netting, how many dollars of central-bank reserves does Bank A transfer at settlement? (Enter a number of dollars.)",
       answer: 50000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Bank A's net outflow = $80,000 − $30,000 = **$50,000**. Under [[settlement-model-net|net settlement]], only this net amount moves as [[central-bank-reserves]] — not the $110,000 gross total. This is why netting dramatically reduces the liquidity each participant must hold to cover a full cycle.",

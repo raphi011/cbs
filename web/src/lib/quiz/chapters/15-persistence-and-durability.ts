@@ -104,7 +104,7 @@ export const chapter: Chapter = {
       prompt:
         "An account's `entries` rows are: a debit of 500, a credit of 200, a debit of 150, and a credit of 50 (all in cents). The account is an asset, so its normal balance is debit. What does the derived book balance query return, in cents?",
       answer: 400,
-      unit: "cents",
+      unit: { asset: "EUR", in: "minor" },
       tolerance: 0,
       explanation:
         "The [[derived-balance|balance query]] sums debits minus credits for a debit-normal account: 500 − 200 + 150 − 50 = **400**. Nothing is read from an account row; the figure exists only as the result of that aggregate. See [[normal-balance]] for why the sign flips for a liability.",

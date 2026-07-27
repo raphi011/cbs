@@ -173,7 +173,7 @@ export const chapter: Chapter = {
       prompt:
         "An account holds $800. A check for $300 is deposited and immediately posted with today's booking date but a value date two business days away. What is the book balance in dollars immediately after posting?",
       answer: 1100,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The [[balance-book]] includes all posted transactions by booking date regardless of value date. The $300 check is posted, so book balance = $800 + $300 = **$1,100**. The value-date balance remains $800 until the value date arrives.",
@@ -186,7 +186,7 @@ export const chapter: Chapter = {
       prompt:
         "Same account: $800 starting balance, $300 check posted today and value-dated two business days away. The bank places a $300 hold on the deposit until clearance. What is the available balance in dollars?",
       answer: 800,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[balance-available]] = book balance − holds = $1,100 − $300 = **$800**. Even though the check raises the [[balance-book]], the hold matches the deposit amount exactly, leaving available funds unchanged until the value date passes and the hold is released.",
@@ -299,7 +299,7 @@ export const chapter: Chapter = {
       prompt:
         "An account's value-date balance at the end of January is $500. Two transactions are then posted: a $200 credit posted January 31 with a value date of February 1, and a $100 credit posted February 25 with a value date of March 1. What is the account's February closing balance in dollars?",
       answer: 700,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The [[statement-amount|closing balance]] is computed from [[value-date|value dates]]. The $200 credit has value date February 1 — within February — raising the balance to $700. The $100 credit has value date March 1 — outside February — so it does not affect February's closing balance. Result: $500 + $200 = **$700**.",

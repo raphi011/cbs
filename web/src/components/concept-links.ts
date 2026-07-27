@@ -2,8 +2,39 @@ import { defaultUrlTransform } from "react-markdown";
 
 import { hintContent, type HintKey } from "./hint-content";
 
-// Matches [[key]] and [[key|custom label]].
-const LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+// The syntax of a wiki-link: [[key]] and [[key|custom label]].
+const LINK = String.raw`\[\[([^\]|]+)(?:\|([^\]]+))?\]\]`;
+
+// Markdown's verbatim regions: fenced blocks and inline spans. A code region
+// renders exactly the characters it contains, so a [[wiki-link]] inside one is
+// text the author wants shown — and rewriting it put the literal string
+// "[Clearing suspense](concept:clearing-suspense)" in monospace inside a hint's
+// ledger diagram. A code block is also where an author is *most* likely to
+// write something that only looks like a wiki-link, so the rule belongs here
+// rather than in the one body that tripped over it.
+//
+// Not modelled: fences of four or more backticks, and inline spans containing a
+// backtick. Neither appears in the registry, and an unmatched fence falls
+// through to the link pattern — i.e. to the old behaviour — rather than
+// swallowing the rest of the body.
+const CODE = String.raw`\x60{3}[\s\S]*?\x60{3}|~{3}[\s\S]*?~{3}|\x60[^\x60\n]*\x60`;
+
+// One pattern, with the verbatim regions first so each is consumed whole and
+// never seen as a link. Group 1 is a code region; groups 2 and 3 are a link's
+// key and label.
+const CODE_OR_LINK_RE = new RegExp(`(${CODE})|${LINK}`, "g");
+
+// Every wiki-link in a body that markdown will render as a link, in order.
+// The rewrite below replaces over the same pattern; the "Related" row and the
+// registry guard read through here, so all three agree on which links exist.
+function renderedLinks(body: string): Array<{ key: string; label?: string }> {
+  const out: Array<{ key: string; label?: string }> = [];
+  for (const m of body.matchAll(CODE_OR_LINK_RE)) {
+    if (m[1] !== undefined) continue; // a code region, not a link
+    out.push({ key: m[2].trim(), label: m[3]?.trim() });
+  }
+  return out;
+}
 
 // react-markdown sanitizes every href through `defaultUrlTransform`, whose
 // allow-list (http(s)/irc(s)/mailto/xmpp) rewrites our custom `concept:` scheme
@@ -18,18 +49,22 @@ export function conceptUrlTransform(url: string): string {
 // react-markdown renders them and our custom <a> can intercept them. The label
 // defaults to the target concept's title.
 export function preprocessConceptMarkdown(body: string): string {
-  return body.replace(LINK_RE, (_match, rawKey: string, label?: string) => {
-    const key = rawKey.trim();
-    const text = (label ?? hintContent[key as HintKey]?.title ?? key).trim();
-    return `[${text}](concept:${key})`;
-  });
+  return body.replace(
+    CODE_OR_LINK_RE,
+    (_match, code: string | undefined, rawKey: string, label?: string) => {
+      // A verbatim region: put it back exactly as written.
+      if (code !== undefined) return code;
+      const key = rawKey.trim();
+      const text = (label ?? hintContent[key as HintKey]?.title ?? key).trim();
+      return `[${text}](concept:${key})`;
+    },
+  );
 }
 
 // Distinct, valid concept keys referenced by a body — used for the "Related" row.
 export function parseConceptLinks(body: string): HintKey[] {
   const keys = new Set<HintKey>();
-  for (const match of body.matchAll(LINK_RE)) {
-    const key = match[1].trim();
+  for (const { key } of renderedLinks(body)) {
     if (key in hintContent) keys.add(key as HintKey);
   }
   return [...keys];
@@ -52,12 +87,16 @@ export interface ConceptSource {
 // sixteen chapters into the client bundle to validate them would cost every
 // visitor for a developer's benefit — so the quiz side is covered by the test
 // suite instead (see concept-links.test.ts).
+//
+// Links inside a code region are not checked, because they are not links: the
+// rewrite leaves them alone, so nothing ever resolves the key and a dangling one
+// cannot throw. Demanding they resolve would fail an author for quoting
+// wiki-link syntax in an example.
 export function validateConceptContent(extra: ConceptSource[] = []): void {
   const broken: string[] = [];
   const check = (source: string, body: string) => {
-    for (const match of body.matchAll(LINK_RE)) {
-      const target = match[1].trim();
-      if (!(target in hintContent)) broken.push(`${source} → [[${target}]]`);
+    for (const { key } of renderedLinks(body)) {
+      if (!(key in hintContent)) broken.push(`${source} → [[${key}]]`);
     }
   };
   for (const [key, entry] of Object.entries(hintContent)) check(key, entry.body);

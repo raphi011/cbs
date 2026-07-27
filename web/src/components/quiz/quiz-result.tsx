@@ -4,6 +4,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import type { ScoreResult } from "@/lib/quiz/session";
 import type { Question } from "@/lib/quiz/types";
+import { formatNumericAnswer } from "@/lib/quiz/units";
 import { ProgressRing } from "./progress-ring";
 
 function correctText(q: Question): string {
@@ -15,7 +16,7 @@ function correctText(q: Question): string {
     case "multi":
       return q.answers.map((i) => q.options[i]).join(", ");
     case "numeric":
-      return q.unit === "dollars" ? `$${q.answer}` : String(q.answer);
+      return formatNumericAnswer(q.answer, q.unit);
   }
 }
 

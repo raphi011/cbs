@@ -13,11 +13,11 @@ import { InitiatePaymentForm } from "@/components/forms/initiate-payment-form";
 import { useAssetLookup, usePayments } from "@/lib/api/hooks";
 import type { Payment } from "@/lib/types";
 
-// A payment's asset is fixed by its scheme, but the scheme itself carries no
-// scale on the wire (schemeDTO has no asset field). What we do have is the
-// debtor's participant, and by construction the debtor's account must be
-// registered in that scheme's asset (see payment.Network's ErrAssetMismatch
-// check) — so its book is where the scale lives.
+// A payment carries its own asset code, fixed by its scheme. The scale that
+// code implies lives only in the network-wide asset list, which every caller
+// shares through useAssetLookup (one GET /assets). Until the code resolves
+// there is no scale to render at, and guessing one is the bug the whole asset
+// dimension exists to prevent — so withhold the number instead.
 function PaymentAmountCell({ payment }: { payment: Payment }) {
   const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(payment.asset);

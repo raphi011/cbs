@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { conceptUrlTransform, validateConceptContent } from "./concept-links";
+import {
+  conceptUrlTransform,
+  parseConceptLinks,
+  preprocessConceptMarkdown,
+  validateConceptContent,
+} from "./concept-links";
 import { chapters } from "@/lib/quiz";
 import { hintContent, type HintEntry } from "./hint-content";
 
@@ -26,6 +31,66 @@ describe("conceptUrlTransform", () => {
   // Must NOT regress react-markdown's XSS protection for unknown schemes.
   it("still strips dangerous schemes", () => {
     expect(conceptUrlTransform("javascript:alert(1)")).toBe("");
+  });
+});
+
+describe("preprocessConceptMarkdown", () => {
+  it("rewrites a wiki-link to a concept: markdown link, titled from the registry", () => {
+    expect(preprocessConceptMarkdown("See [[netting]].")).toBe(
+      `See [${hintContent["netting"].title}](concept:netting).`,
+    );
+  });
+
+  it("honours an explicit label", () => {
+    expect(preprocessConceptMarkdown("See [[netting|the net]].")).toBe(
+      "See [the net](concept:netting).",
+    );
+  });
+
+  // The defect: one regex rewrote every [[…]] in a body, including the ones in
+  // fenced blocks, so the clearing-vs-settlement hint printed the literal string
+  // "[Clearing suspense](concept:clearing-suspense)" in monospace.
+  it("leaves a wiki-link inside a fenced block exactly as written", () => {
+    const body = "Before [[netting]].\n\n```\nBanks clear [[clearing-suspense]]\n```\n\nAfter.";
+    const out = preprocessConceptMarkdown(body);
+    expect(out).toContain("```\nBanks clear [[clearing-suspense]]\n```");
+    expect(out).toContain("Before [Netting](concept:netting).");
+  });
+
+  it("leaves a wiki-link inside an inline code span alone", () => {
+    expect(preprocessConceptMarkdown("Write `[[netting]]` to link it.")).toBe(
+      "Write `[[netting]]` to link it.",
+    );
+  });
+
+  it("resumes rewriting after the fence closes", () => {
+    const body = "```\n[[netting]]\n```\nthen [[netting]]";
+    expect(preprocessConceptMarkdown(body)).toBe(
+      "```\n[[netting]]\n```\nthen [Netting](concept:netting)",
+    );
+  });
+
+  // An unterminated fence must not swallow the rest of the body — the links
+  // after it should still work, i.e. degrade to the old behaviour.
+  it("does not swallow the body when a fence is never closed", () => {
+    expect(preprocessConceptMarkdown("```\nopen forever [[netting]]")).toBe(
+      "```\nopen forever [Netting](concept:netting)",
+    );
+  });
+});
+
+describe("parseConceptLinks", () => {
+  it("collects the distinct keys a body links to", () => {
+    expect(parseConceptLinks("[[netting]] and [[netting|again]] and [[reserve-account]]")).toEqual([
+      "netting",
+      "reserve-account",
+    ]);
+  });
+
+  // The "Related" row lists what the reader can click; a key that renders as
+  // literal text in a code block is not clickable.
+  it("ignores keys that only appear inside a code region", () => {
+    expect(parseConceptLinks("```\n[[netting]]\n```")).toEqual([]);
   });
 });
 
@@ -55,6 +120,17 @@ describe("validateConceptContent", () => {
       delete registry["__probe__"];
     }
     expect(() => validateConceptContent()).not.toThrow();
+  });
+
+  // …but only for links that render. A key quoted inside a code block is never
+  // resolved by the rewrite, so it cannot throw, and failing an author for
+  // showing wiki-link syntax in an example would be a false positive.
+  it("ignores a dangling link inside a code region", () => {
+    expect(() =>
+      validateConceptContent([
+        { source: "ch99/q1", body: "```\n[[definitely-not-a-concept]]\n```" },
+      ]),
+    ).not.toThrow();
   });
 
   // The gap this test closes: the runtime guard scans hint bodies only, but

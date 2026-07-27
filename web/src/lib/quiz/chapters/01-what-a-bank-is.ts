@@ -69,7 +69,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank reports $400,000 in total assets and $360,000 in total liabilities. Using the accounting equation (Assets = Liabilities + Equity), what is the bank's equity? (Enter a number of dollars.)",
       answer: 40000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[account-type-equity]] = Assets − Liabilities = $400,000 − $360,000 = **$40,000**. Equity is the owners' residual stake — what would be left for shareholders if every asset were sold at book value and every liability paid off.",
@@ -213,7 +213,7 @@ export const chapter: Chapter = {
       prompt:
         "A customer deposits $750 cash at the bank. By how many dollars do the bank's total liabilities increase? (Enter a number of dollars.)",
       answer: 750,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The deposit creates a new [[account-type-liability]] of $750 — the bank now owes the customer that amount on demand. Simultaneously, cash (an asset) rises by $750. Both sides of the accounting equation increase by exactly **$750**, and total liabilities increase by $750.",
@@ -290,7 +290,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank starts with $5,000,000 in total assets and $4,400,000 in total liabilities. It then takes a $500,000 cash deposit and immediately lends $500,000 to a borrower by crediting the borrower's deposit account. What is the bank's equity after both transactions? (Enter a number of dollars.)",
       answer: 600000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Initial [[account-type-equity]] = $5,000,000 − $4,400,000 = $600,000. The cash deposit adds $500k to assets and $500k to liabilities equally — equity unchanged. The loan adds a $500k receivable (asset) and a $500k deposit for the borrower (liability) equally — equity still unchanged. Every transaction keeps both sides in lockstep, so equity remains **$600,000**.",

@@ -57,7 +57,7 @@ export const chapter: Chapter = {
       concept: "minor-units",
       prompt: "A balance is stored internally as the integer 1234 cents. What is this amount in dollars? (Enter a number of dollars.)",
       answer: 12.34,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[minor-units]]: banks store money as integer cents, so 1234 ÷ 100 = **$12.34**. Keeping the canonical value as the integer 1234 eliminates any floating-point rounding error.",
@@ -159,7 +159,7 @@ export const chapter: Chapter = {
       prompt:
         "A Customer Deposits subledger contains three accounts: Alice at $1,200, Bob at $800, and Carol at $500. What must the GL control account balance for Customer Deposits equal? (Enter dollars.)",
       answer: 2500,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The GL [[ledger-vs-subledger|control account]] must equal the sum of all subledger account balances: $1,200 + $800 + $500 = **$2,500**. This reconciliation holds because [[double-entry]] applies at every level — every posting hits both the subledger account and the GL control account simultaneously.",
@@ -284,7 +284,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank's Loans subledger opens the month with $2,480,000 in outstanding balances. During the month, new loans totaling $375,000 are disbursed and principal repayments of $130,000 are received. What is the closing Loans subledger total in dollars?",
       answer: 2725000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Loan balances are [[account-type-asset|assets]] — disbursements increase the asset (the bank gains a new receivable) and principal repayments decrease it (the receivable is partially extinguished). $2,480,000 + $375,000 − $130,000 = **$2,725,000**. The GL Asset control account for Loans must show this same total.",

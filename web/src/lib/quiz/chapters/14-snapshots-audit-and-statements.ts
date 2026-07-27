@@ -93,7 +93,7 @@ export const chapter: Chapter = {
       prompt:
         "A savings account holds $36,500 and earns 4% annual interest. Using the snapshot model (daily interest = principal × rate / 365), how many dollars of interest accrue for one day? (Enter a number of dollars.)",
       answer: 4,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Daily interest = $36,500 × 0.04 / 365 = $1,460 / 365 = **$4.00**. The end-of-day [[snapshot]] provides the exact principal for each day's accrual calculation. Without a captured end-of-day figure there is nothing to accrue against.",
@@ -163,7 +163,7 @@ export const chapter: Chapter = {
       prompt:
         "An account's end-of-January snapshot shows a value-date book balance of $1,500. In February, three credits land with February value dates: $200, $350, and $100. One debit of $400 also posts with a February value date. What is the February closing balance in dollars?",
       answer: 1750,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[statement-amount|Closing balance]] = opening snapshot + credits − debits, measured by value date. $1,500 + ($200 + $350 + $100) − $400 = $1,500 + $650 − $400 = **$1,750**.",
@@ -271,7 +271,7 @@ export const chapter: Chapter = {
       prompt:
         "An account's April 30 end-of-day snapshot shows a value-date book balance of $3,000. In May, the following postings occur: a $100 credit booked April 28 with value date May 2; a $500 credit with value date May 3; a $200 debit with value date May 10; a $150 credit with value date May 20. What is the May closing balance in dollars?",
       answer: 3550,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The April 30 snapshot captures balances for value dates ≤ April 30 only. The April 28-booked / May 2-value credit was NOT in the snapshot — its value date is in May, so it contributes to May. May closing = $3,000 + $100 + $500 − $200 + $150 = **$3,550**. This is a concrete example of why the statement-amount calculation counts postings by value date, not booking date.",

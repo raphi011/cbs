@@ -59,7 +59,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of $500 and one active hold of $120. What is the available balance in dollars?",
       answer: 380,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[balance-available]] = Book balance − Active holds = $500 − $120 = **$380**. The [[holds|hold]] is an off-ledger reservation: it reduces spendable funds without changing the [[balance-book|book balance]].",
@@ -198,7 +198,7 @@ export const chapter: Chapter = {
       prompt:
         "An account's book balance is $10,000 and its available balance is $9,200. No overdraft facility is in place. What is the total dollar amount currently tied up in active holds?",
       answer: 800,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Rearranging the formula: Active holds = [[balance-book|Book balance]] − [[balance-available|Available balance]] = $10,000 − $9,200 = **$800**. This matches the chapter's worked example exactly.",
@@ -245,7 +245,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of $1,000, two active holds of $150 and $75, and an arranged overdraft limit of $200. Using the full available-balance formula including an arranged overdraft facility, what is the available balance in dollars?",
       answer: 975,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[balance-available]] = Book balance − Active holds + [[overdraft|Overdraft limit]] = $1,000 − $150 − $75 + $200 = **$975**. An overdraft limit adds to spendable capacity while [[holds]] reduce it. Without the overdraft, available would be only $775.",

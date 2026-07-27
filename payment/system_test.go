@@ -749,7 +749,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 // the whole cycle — see
 // TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle. The scheme
 // check is what makes the refusal immediate and attributable.
-func TestPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
+func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
@@ -774,9 +774,10 @@ func TestPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertError(t, err, ErrAssetMismatch)
 }
 
-// The creditor leg above proves the check reaches an account fetched from a
-// different participant's book. This proves the debtor leg is checked too —
-// a scheme that only validated the creditor would let this one through.
+// The creditor leg above proves the check reaches an account that may live in a
+// different participant's book — nothing forbids a payment whose debtor and
+// creditor are in the same one. This proves the debtor leg is checked too: a
+// scheme that only validated the creditor would let this one through.
 func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)

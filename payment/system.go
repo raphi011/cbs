@@ -246,6 +246,23 @@ func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset l
 	if err != nil {
 		return "", err
 	}
+	return s.centralBankAssetsAccountIn(ctx, tx, capital, accounts, asset)
+}
+
+// centralBankAssetsAccountIn is centralBankAssetsAccountTx against a chart the
+// caller has already resolved and listed.
+//
+// It exists for AddParticipantTx, which needs one of these per asset a bank
+// joins with. Neither the capital subledger nor the central bank's chart of
+// accounts changes underneath that loop, so re-resolving both on every
+// iteration was pure repetition — idempotent, and a full re-listing of the
+// central bank's accounts each time round.
+//
+// `accounts` may be stale with respect to accounts the caller's own loop has
+// created since. That is safe here because the match is on the asset and
+// AddParticipantTx handles each asset exactly once; a caller that could ask
+// twice for the same asset would create a second account and must list again.
+func (s *Network) centralBankAssetsAccountIn(ctx context.Context, tx Tx, capital ledger.SubledgerID, accounts []ledger.Account, asset ledger.AssetCode) (ledger.AccountID, error) {
 	for _, a := range accounts {
 		if a.SubledgerID == capital && a.Name == cbAssetsAccountName(asset) && a.Asset == asset {
 			return a.ID, nil
@@ -319,8 +336,14 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 		return nil, err
 	}
 	// The bank's reserve accounts live in the central-bank ledger, alongside
-	// every other member's.
-	reserveSubledger, _, err := s.centralBankChartTx(ctx, tx)
+	// every other member's. Resolved once, with the chart of accounts listed
+	// alongside it: the per-asset loop below needs both and neither moves while
+	// it runs.
+	reserveSubledger, capitalSubledger, err := s.centralBankChartTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	cbAccounts, err := tx.ListAccounts(ctx, CentralBankBook)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +366,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 			continue
 		}
 		// The other side of every reserve credit in this asset.
-		if _, err := s.centralBankAssetsAccountTx(ctx, tx, asset); err != nil {
+		if _, err := s.centralBankAssetsAccountIn(ctx, tx, capitalSubledger, cbAccounts, asset); err != nil {
 			return nil, err
 		}
 

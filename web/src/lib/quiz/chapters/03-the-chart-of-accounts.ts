@@ -219,7 +219,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank's balance sheet shows total assets of $150,000,000 and total liabilities of $138,000,000. Using the accounting equation Assets = Liabilities + Equity, what is the bank's equity in dollars?",
       answer: 12000000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The accounting equation — the foundation of [[double-entry]] bookkeeping — rearranges to Equity = Assets − Liabilities = $150,000,000 − $138,000,000 = **$12,000,000**. Equity is the residual: what belongs to the owners after all obligations are subtracted from everything the bank owns.",
@@ -294,7 +294,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank holds a $200,000 mortgage loan at an annual interest rate of 4%. How many dollars of interest income does the bank earn from this mortgage in one year?",
       answer: 8000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Interest income = principal × rate = $200,000 × 4% = **$8,000**. This is an [[account-type-revenue]] item — the bank credits Interest Income $8,000 and debits Cash (or the loan balance) $8,000. Lending at a rate above what the bank pays depositors is the primary revenue engine for most banks.",
@@ -306,7 +306,7 @@ export const chapter: Chapter = {
       prompt:
         "At the start of the year, a bank's retained earnings stand at $3,000,000. During the year it earns $700,000 in total revenue and incurs $450,000 in total expenses. After the year-end closing entries transfer net income into retained earnings, what are the retained earnings in dollars?",
       answer: 3250000,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Net income = Revenue − Expenses = $700,000 − $450,000 = $250,000. This profit is closed into retained earnings: $3,000,000 + $250,000 = **$3,250,000**. Closing zeroes out the temporary [[account-type-revenue|revenue]] and [[account-type-expense|expense]] accounts and rolls their net result into the permanent equity section of the balance sheet.",

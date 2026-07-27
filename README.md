@@ -128,12 +128,12 @@ The most fundamental principle in banking is double-entry bookkeeping, codified 
 
 > Every transaction must have equal debits and credits.
 
-This means money never appears or disappears — it always moves from one account to another. When a customer deposits $100 cash:
+This means money never appears or disappears — it always moves from one account to another. When a customer deposits €100 cash:
 
 - **Debit:** Bank's Cash account (asset increases — the bank has more cash)
 - **Credit:** Customer's Deposit account (liability increases — the bank owes the customer more)
 
-When a customer transfers $50 to another customer:
+When a customer transfers €50 to another customer:
 
 - **Debit:** Sender's Deposit account (liability decreases)
 - **Credit:** Receiver's Deposit account (liability increases)

@@ -9,6 +9,7 @@ import { ConceptMarkdown } from "@/components/concept-markdown";
 import { cn } from "@/lib/utils";
 import { isCorrect, type Response, type SessionItem } from "@/lib/quiz/session";
 import type { Question } from "@/lib/quiz/types";
+import { unitLabel } from "@/lib/quiz/units";
 import { TypeBadge } from "./type-badge";
 
 const DIFF_LABEL = { intro: "Intro", core: "Core", challenge: "Challenge" } as const;
@@ -247,9 +248,7 @@ export function QuestionCard({
           )}
         />
         {question.unit && (
-          <span className="text-sm text-muted-foreground">
-            {question.unit === "dollars" ? "dollars" : "cents"}
-          </span>
+          <span className="text-sm text-muted-foreground">{unitLabel(question.unit)}</span>
         )}
       </div>
     );

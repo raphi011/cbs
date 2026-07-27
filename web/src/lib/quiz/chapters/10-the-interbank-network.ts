@@ -202,7 +202,7 @@ export const chapter: Chapter = {
       prompt:
         "Bank A owes Bank B $500 and Bank B owes Bank A $300 in the same clearing cycle. How many dollars of central-bank reserves actually move at settlement?",
       answer: 200,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[net-positions]] offset each other: Bank B's $300 obligation cancels $300 of Bank A's $500, leaving a **net of $200** flowing from Bank A to Bank B. Only this net amount clears through the central bank — not the $800 gross total.",
@@ -215,7 +215,7 @@ export const chapter: Chapter = {
       prompt:
         "Bank A starts the day with a reserve balance of $5,000. In the clearing cycle its net position is −$1,200 (Bank A is a net payer). What is Bank A's reserve balance after settlement?",
       answer: 3800,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "A negative net position means Bank A pays that amount of central-bank reserves. Its [[reserve-account]] balance falls: $5,000 − $1,200 = **$3,800**.",
@@ -292,7 +292,7 @@ export const chapter: Chapter = {
       prompt:
         "In a three-bank clearing cycle: Bank A sends $600 to Bank B; Bank B sends $400 to Bank C; Bank C sends $250 to Bank A. By how many dollars do Bank B's central-bank reserves increase at settlement? (Enter a positive number — Bank B is a net receiver.)",
       answer: 200,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Bank B's [[net-positions|net position]] = received from A ($600) − paid to C ($400) = **+$200**. Net positions sum to zero across all three banks (A: −$350, B: +$200, C: +$150 → total 0), confirming no reserves are created or destroyed — only redistributed.",

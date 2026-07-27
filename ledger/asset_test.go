@@ -124,14 +124,18 @@ func TestCreateAccountRejectsUnknownAsset(t *testing.T) {
 // Per-asset balance
 // ---------------------------------------------------------------------------
 
-// newAccountIn creates an account of type typ, denominated in asset, in a fresh
-// subledger of book.
-func newAccountIn(t *testing.T, book *ledger.Book, asset ledger.AssetCode, typ ledger.AccountType) ledger.Account {
+// newAccountIn creates an account named name, of type typ, denominated in
+// asset, in subledger sl.
+//
+// The subledger is a parameter rather than one created per call because the
+// per-asset rule is a property of a transaction, not of where its accounts are
+// filed: a trade posted against four accounts in four different subledgers is
+// not a shape any book actually has, and proving the rule only there would
+// leave the real one — one chart, several assets — untested.
+func newAccountIn(t *testing.T, book *ledger.Book, sl ledger.Subledger, name string, asset ledger.AssetCode, typ ledger.AccountType) ledger.Account {
 	t.Helper()
-	ctx := context.Background()
 
-	sl := newSubledger(t, book)
-	acct, err := book.CreateAccount(ctx, sl.ID, string(asset)+" account", typ, asset)
+	acct, err := book.CreateAccount(context.Background(), sl.ID, name, typ, asset)
 	if err != nil {
 		t.Fatalf("CreateAccount: %v", err)
 	}
@@ -145,8 +149,9 @@ func TestPostRejectsCrossAssetTransfer(t *testing.T) {
 	book := testBook(t)
 	ctx := context.Background()
 
-	eur := newAccountIn(t, book, "EUR", ledger.Liability)
-	btc := newAccountIn(t, book, "BTC", ledger.Liability)
+	sl := newSubledger(t, book)
+	eur := newAccountIn(t, book, sl, "Customer EUR", "EUR", ledger.Liability)
+	btc := newAccountIn(t, book, sl, "Customer BTC", "BTC", ledger.Liability)
 
 	_, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "turn euros into bitcoin",
@@ -176,10 +181,12 @@ func TestPostAcceptsTwoAssetsBalancedThroughPositionAccounts(t *testing.T) {
 	book := testBook(t)
 	ctx := context.Background()
 
-	eurCust := newAccountIn(t, book, "EUR", ledger.Liability)
-	eurPos := newAccountIn(t, book, "EUR", ledger.Liability)
-	btcCust := newAccountIn(t, book, "BTC", ledger.Liability)
-	btcPos := newAccountIn(t, book, "BTC", ledger.Liability)
+	// One subledger: an FX desk's four legs sit in the same chart of accounts.
+	sl := newSubledger(t, book)
+	eurCust := newAccountIn(t, book, sl, "Customer EUR", "EUR", ledger.Liability)
+	eurPos := newAccountIn(t, book, sl, "EUR Position", "EUR", ledger.Liability)
+	btcCust := newAccountIn(t, book, sl, "Customer BTC", "BTC", ledger.Liability)
+	btcPos := newAccountIn(t, book, sl, "BTC Position", "BTC", ledger.Liability)
 
 	if _, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "FX: customer sells 100 EUR for 200 BTC units",
@@ -199,8 +206,9 @@ func TestPostStillRejectsSingleAssetImbalance(t *testing.T) {
 	book := testBook(t)
 	ctx := context.Background()
 
-	a := newAccountIn(t, book, "EUR", ledger.Liability)
-	b := newAccountIn(t, book, "EUR", ledger.Liability)
+	sl := newSubledger(t, book)
+	a := newAccountIn(t, book, sl, "Customer A", "EUR", ledger.Liability)
+	b := newAccountIn(t, book, sl, "Customer B", "EUR", ledger.Liability)
 
 	_, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
 		Description: "lopsided",

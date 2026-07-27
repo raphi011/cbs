@@ -107,7 +107,7 @@ export const chapter: Chapter = {
       prompt:
         "In one clearing cycle, Bank A submits 4 outgoing payments of $75 each to Bank B, and Bank B submits 3 outgoing payments of $40 each to Bank A. How many dollars of central-bank reserves move at settlement?",
       answer: 180,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[netting]] aggregates all payments before computing net positions. Bank A's gross outflow = 4 × $75 = $300; Bank A's gross inflow = 3 × $40 = $120; net[A] = −$300 + $120 = −$180. Bank B's net = +$180. Only **$180** of reserves transfers — netting collapses the $420 gross total into a single $180 net flow.",
@@ -214,7 +214,7 @@ export const chapter: Chapter = {
       prompt:
         "Bank A sends $10,000 in payments to other banks and receives $9,500 from other banks in one clearing cycle. How many dollars does Bank A pay out at settlement?",
       answer: 500,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[settlement-model-net]] computes the net position: $10,000 outgoing − $9,500 incoming = **$500 net outflow**. Bank A's reserve account at the central bank decreases by only $500, not by the $10,000 gross outgoing total.",
@@ -312,7 +312,7 @@ export const chapter: Chapter = {
       prompt:
         "Bank A sends Bank B $300 and Bank B sends Bank A $100 in one clearing cycle. How many dollars of reserves would move if these payments settled gross (individually) instead of net?",
       answer: 400,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Under [[settlement-model-gross]] every payment settles individually: $300 moves one way and $100 moves the other — **$400** of reserves in total. Netting collapses this to just $200, which is exactly why clearing exists as a step before settlement: it converts a large gross flow into a small net one.",

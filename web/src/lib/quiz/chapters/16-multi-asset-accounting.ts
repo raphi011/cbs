@@ -105,7 +105,7 @@ export const chapter: Chapter = {
       prompt:
         "A transaction has five legs: debit Alice EUR 7500, credit Bob EUR 5000, credit Fee Income EUR ?, debit Custody BTC 200000, credit Customer BTC 200000. What must the fee credit be, in cents, for the transaction to post?",
       answer: 2500,
-      unit: "cents",
+      unit: { asset: "EUR", in: "minor" },
       tolerance: 0,
       explanation:
         "**2500.** The EUR legs must net to zero on their own: 7500 − 5000 = 2500 left to credit. The BTC legs already net to zero on their own, and they neither help nor hinder the euro side — [[per-asset-balance|each asset is checked separately]]. Note that no amount of bitcoin could ever fix a euro imbalance, which is the whole point.",
@@ -261,7 +261,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "It is the **open position**: a bank that has bought and sold the same amount is *flat*, and the account reads zero. Trading profit and loss is specifically *not* in the ledger under this scheme — it appears only when positions are revalued at a current rate, which needs a price and therefore [[fx-position-account|lives above the ledger]] alongside whatever quoted the trade. Customer holdings are the customers' own [[account-type-liability|liability accounts]], a different thing entirely.",
+        "It is the **open position**: a bank that has bought and sold the same amount is *flat*, and the account reads zero. Trading profit and loss is specifically *not* in the ledger under this scheme — it appears only when positions are revalued at a current rate, which needs a price and therefore [[fx-position-account|lives above the ledger]] alongside whatever quoted the trade. Customer holdings are the customers' own [[account-type-liability|liability accounts]], a different thing entirely. (FX is **not implemented** here — this is the shape the ledger was designed to accommodate.)",
     },
     {
       kind: "mc",

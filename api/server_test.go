@@ -290,6 +290,31 @@ func TestCreateParticipantWithAssets(t *testing.T) {
 	assertEqual(t, "participant asset", row["asset"].(string), "USD")
 }
 
+// The other half of that contract: the two ways of not naming any asset must
+// behave identically. `{"assets":[]}` and an absent field are distinguishable
+// on the wire — one decodes to an empty slice, the other leaves the field nil —
+// and only a `len == 0` test collapses them. That test is right, and it was
+// right by inspection alone, which is the kind of correctness that stops being
+// true without anything going red. Both mean "join with EUR".
+func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
+	h := newTestServer(t)
+
+	for _, tc := range []struct{ name, body string }{
+		{"absent", `{"name":"Bank A"}`},
+		{"explicitly empty", `{"name":"Bank B","assets":[]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := doJSON(t, h, "POST", "/participants", tc.body, http.StatusCreated)
+			assets := p["assets"].([]any)
+			if len(assets) != 1 {
+				t.Fatalf("participant assets = %v, want exactly one (EUR)", assets)
+			}
+			row := assets[0].(map[string]any)
+			assertEqual(t, "participant asset", row["asset"].(string), "EUR")
+		})
+	}
+}
+
 // TestCrossAssetPaymentReturns422 is the HTTP-layer half of Task 5's
 // payment.ErrAssetMismatch mapping: initiating a payment through a scheme
 // whose asset does not match the debtor account's asset must answer 422, not

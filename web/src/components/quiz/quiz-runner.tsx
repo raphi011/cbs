@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { useConceptPanel } from "@/components/concept-panel-provider";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   buildSession,
   isCorrect,
@@ -28,9 +29,28 @@ export function QuizRunner({
   const router = useRouter();
   const { setDefaultConcept, togglePanel } = useConceptPanel();
 
-  const [seed, setSeed] = useState(() => Date.now());
+  // A fresh shuffle every visit means the seed is random, and a random seed
+  // cannot be rendered on the server: the server would pick one order and the
+  // client another, which is verbatim the hydration mismatch Next names
+  // ("Variable input such as `Date.now()` or `Math.random()`"). React recovers
+  // by throwing the server tree away, so the only visible trace was a
+  // <TypeBadge> whose kind disagreed — the symptom, one level down from the
+  // cause. So the seed starts null and is set on mount, the same shape as the
+  // localStorage read on /learn, and until it lands there is no session to
+  // render rather than a differently-shuffled one.
+  const [seed, setSeed] = useState<number | null>(null);
   const [pool, setPool] = useState<Question[]>(questions);
-  const session = useMemo<SessionItem[]>(() => buildSession(pool, seed), [pool, seed]);
+  const session = useMemo<SessionItem[]>(
+    () => (seed === null ? [] : buildSession(pool, seed)),
+    [pool, seed],
+  );
+
+  useEffect(() => {
+    // Guarded so React's double-invoked mount effect in dev does not reshuffle
+    // a session the reader has already seen.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSeed((s) => s ?? Date.now());
+  }, []);
 
   const [index, setIndex] = useState(0);
   const [responses, setResponses] = useState<(Response | null)[]>(() => session.map(() => null));
@@ -64,6 +84,17 @@ export function QuizRunner({
     setDefaultConcept(show ? (current?.question.concept ?? null) : null);
     return () => setDefaultConcept(null);
   }, [current, phase, conceptRevealed, setDefaultConcept]);
+
+  // Pre-mount: the shuffle has no seed yet, so nothing can be shown. Distinct
+  // from an empty chapter below, which is a fact about the content.
+  if (seed === null) {
+    return (
+      <div className="space-y-4">
+        <Skeleton className="h-11 w-48" />
+        <Skeleton className="h-64" />
+      </div>
+    );
+  }
 
   if (session.length === 0) {
     return (

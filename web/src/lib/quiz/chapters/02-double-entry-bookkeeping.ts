@@ -272,7 +272,7 @@ export const chapter: Chapter = {
       prompt:
         "A customer deposits $500 cash. By how many dollars do the bank's total assets increase? (Enter a number of dollars.)",
       answer: 500,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The $500 cash deposit is recorded as a debit to Cash — an [[account-type-asset]] rises with a debit. The matching credit goes to the customer's deposit liability. Total assets grow by exactly $500; total liabilities also grow by $500, keeping the accounting equation balanced.",
@@ -285,7 +285,7 @@ export const chapter: Chapter = {
       prompt:
         "Customer A transfers $75 to Customer B — both banking at the same institution. By how many dollars does the bank's total liabilities change? (Enter a number of dollars.)",
       answer: 0,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Customer A's deposit (an [[account-type-liability]]) is debited $75; Customer B's deposit is credited $75. One liability falls while another rises by the same amount. The bank's total liabilities are unchanged — the obligation moved between customers, no money left the bank.",
@@ -298,7 +298,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank earns $800 in net income during the year and pays no dividends. By how many dollars does equity increase when net income is closed to Retained Earnings at year-end? (Enter a number of dollars.)",
       answer: 800,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "At year-end, the net of Revenue minus Expense accounts is transferred into [[account-type-equity]] (Retained Earnings). With $800 net income and no dividends paid, equity grows by exactly $800. This is how profitable operations accumulate owner value on the balance sheet.",

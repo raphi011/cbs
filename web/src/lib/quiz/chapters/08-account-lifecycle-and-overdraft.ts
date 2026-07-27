@@ -271,7 +271,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of $50, an arranged overdraft limit of $300, and active holds totalling $80. What is the available balance in dollars?",
       answer: 270,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[balance-available]] = Book balance + Overdraft limit − Active holds = $50 + $300 − $80 = **$270**. The overdraft limit adds to spendable capacity; active [[holds]] reduce it.",
@@ -283,7 +283,7 @@ export const chapter: Chapter = {
       prompt:
         "An account starts with a book balance of $200 and an arranged overdraft limit of $500 (no active holds). A $600 debit posts. How many dollars does the customer now owe the bank?",
       answer: 400,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Available before the debit = $200 + $500 − $0 = $700 ≥ $600, so the transaction is approved. Book balance after = $200 − $600 = −$400. A negative book balance means the customer owes the bank **$400** — the [[overdraft]] has flipped the relationship.",
@@ -295,7 +295,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of −$350, an arranged overdraft limit of $500, and active holds of $100. How many dollars can still be debited before the overdraft limit is fully utilized?",
       answer: 50,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[balance-available]] = book (−$350) + limit ($500) − holds ($100) = **$50**. This is the maximum additional debit permitted before the available balance reaches zero and the overdraft capacity is exhausted.",

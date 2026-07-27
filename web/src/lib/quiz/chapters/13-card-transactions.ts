@@ -124,7 +124,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of $600 and an existing authorization hold of $200. A card terminal requests a new $150 authorization. If the authorization is approved, how many dollars is the available balance? (Enter a number of dollars.)",
       answer: 250,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Available balance = book balance − total active [[holds]] = $600 − $200 − $150 = **$250**. The [[balance-book|book balance]] is still $600 — no posting has occurred — but $350 in active holds reduces what can be spent or authorized.",
@@ -218,7 +218,7 @@ export const chapter: Chapter = {
       prompt:
         "A restaurant authorizes $50 for a meal. The customer writes in a $14 tip and the final capture is $64. By how many dollars does the cardholder's book balance fall at capture? (Enter a number of dollars.)",
       answer: 64,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[hold-capture]] posts the **final captured amount** — $64 — to the ledger, not the original authorization of $50. Card schemes permit captures to exceed the authorized amount within a reasonable tolerance (such as a tip). The original $50 hold is released and the book balance falls by exactly **$64**.",
@@ -266,7 +266,7 @@ export const chapter: Chapter = {
       prompt:
         "An account has a book balance of $800 and an existing $100 authorization hold from an earlier transaction. A petrol pump pre-authorizes $150. The customer pumps $120 of fuel; the $120 is captured and the excess hold released. How many dollars of available balance does the account have immediately after the capture? (Enter a number of dollars.)",
       answer: 580,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "Before capture: available = $800 book − $100 existing hold − $150 pump hold = **$550**. At capture, the $120 is posted (book falls to $680) and the full $150 pump hold is [[hold-release|released]] — only the $100 existing hold remains. Available = $680 − $100 = **$580**. The $30 excess reservation disappears without a ledger trace.",

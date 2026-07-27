@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -60,7 +62,14 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	if _, err := t.tx.Exec(ctx, "DELETE FROM participant_assets WHERE participant_id = $1", string(p.ID)); err != nil {
 		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
 	}
-	for asset, accts := range p.Assets {
+	// Sorted, because `seq` is a BIGSERIAL and Go's map iteration order is
+	// deliberately random: inserting straight from the map gave a participant's
+	// asset rows an arbitrary sequence, different on every write of the same
+	// data. Nothing reads that order today — the rows fold back into a map — but
+	// `seq` means real, load-bearing ordering everywhere else in this schema,
+	// and store/mem has no equivalent randomness to diverge from.
+	for _, asset := range slices.Sorted(maps.Keys(p.Assets)) {
+		accts := p.Assets[asset]
 		if _, err := t.tx.Exec(ctx, `
 			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, settlement)
 			VALUES ($1, $2, $3, $4, $5)`,

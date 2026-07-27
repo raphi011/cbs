@@ -526,10 +526,10 @@ Clearing phase:
 Settlement phase:
   Central bank debits Bank A reserves: −net
   Central bank credits Bank B reserves: +net
-  Banks clear their [[clearing-suspense]] accounts
+  Banks clear their clearing suspense accounts
 \`\`\`
 
-The gap between the two phases is the **settlement window** — during it, counterparty risk exists. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.`,
+The gap between the two phases is the **settlement window** — during it, counterparty risk exists, and the money sits in each bank's [[clearing-suspense]] account. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.`,
   },
   netting: {
     title: "Netting",

@@ -288,7 +288,7 @@ export const chapter: Chapter = {
       prompt:
         "Alice initiates a €75 SEPA Credit Transfer to Bob. The debtor leg posts at initiation. By how many euros does Alice's book balance decrease? (Enter a number.)",
       answer: 75,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "The [[debtor-leg]] at initiation debits Alice's deposit account (a Liability) by **€75**, reducing her book balance immediately, while crediting the bank's clearing suspense. The full €75 leaves Alice's balance at initiation — before clearing or settlement occur.",
@@ -301,7 +301,7 @@ export const chapter: Chapter = {
       prompt:
         "A bank initiates a €60 SEPA Credit Transfer (SCT) and a €40 SEPA Direct Debit (SDD) collection, both at T=0. SCT settles at T+1 and SDD settles at T+2. How many euros of interbank reserves have settled by the end of T+1?",
       answer: 60,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[settlement-delay]] — each SEPA scheme has its own settlement schedule. The SCT (a push) settles at T+1: **€60** of reserves move between banks by end of T+1. The SDD (a pull) doesn't settle until T+2, so its €40 has not yet moved. By T+1, only **€60** of interbank reserves have settled.",
@@ -314,7 +314,7 @@ export const chapter: Chapter = {
       prompt:
         "A $200 SDD settles successfully. The debtor then triggers a return. After the compensating return transactions post, by how many dollars does the creditor's book balance decrease? (Enter a number.)",
       answer: 200,
-      unit: "dollars",
+      unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
         "[[allows-return]] — a return fully unwinds the original settlement. The creditor received $200 when the [[creditor-leg]] posted at settlement; the return posts new compensating entries that exactly reverse that credit, reducing the creditor's balance by **$200**. The original entries remain in the ledger — only new offsetting entries are added.",
