@@ -15,6 +15,7 @@ Self-contained, educational Next.js frontend (in `web/`, own `package.json`, npm
 go run ./cmd/server
 # ...or on Postgres, where state survives a restart (see the root README)
 DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
+# ...or `make dev-pg` from the repo root: container + backend + frontend, one command
 # Frontend (from web/)
 npm run dev          # http://localhost:3000
 npm run typecheck    # tsc --noEmit — must be clean

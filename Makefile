@@ -15,9 +15,16 @@ WEB          := web
 APP_URL      ?= http://localhost:3000
 BACKEND_ADDR ?= :8080
 
-# The docker-compose Postgres. Only `db-up`, `db-down` and `test-pg` use it;
-# everything else runs on the in-memory store and needs no database at all.
+# The docker-compose Postgres. Only the `-pg` targets and `db-up`/`db-down` use
+# it; everything else runs on the in-memory store and needs no database at all.
 DB_URL       ?= postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable
+
+# The DSN the server is started with. Empty — the default — is the in-memory
+# store, which is the whole point: `make dev` and `make run` need no database.
+# It is passed to the binary as an explicit -database flag rather than left to
+# the environment so that `make dev DATABASE_URL=…` works the same way whether
+# the value arrives from your shell or from the command line.
+DATABASE_URL ?=
 
 # Pick the OS default-browser opener.
 UNAME := $(shell uname -s)
@@ -27,7 +34,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run dev clean test test-pg db-up db-down
+.PHONY: help install build run run-pg dev dev-pg clean test test-pg db-up db-down
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -53,17 +60,34 @@ endef
 
 run: build ## Fresh checkout → build, start backend + frontend (prod), open browser
 	set -euo pipefail
-	./bin/cbs -addr "$(BACKEND_ADDR)" & BACK=$$!
+	./bin/cbs -addr "$(BACKEND_ADDR)" -database "$(DATABASE_URL)" & BACK=$$!
 	trap 'kill $$BACK 2>/dev/null || true' EXIT INT TERM
 	$(open_when_ready)
 	cd $(WEB) && npm run start
 
 dev: install ## Run backend + frontend in watch mode, open browser
 	set -euo pipefail
-	go run ./cmd/server -addr "$(BACKEND_ADDR)" & BACK=$$!
+	go run ./cmd/server -addr "$(BACKEND_ADDR)" -database "$(DATABASE_URL)" & BACK=$$!
 	trap 'kill $$BACK 2>/dev/null || true' EXIT INT TERM
 	$(open_when_ready)
 	cd $(WEB) && npm run dev
+
+# The two above, against the docker-compose Postgres instead of store/mem: start
+# the container, wait for it to accept connections, then hand off with a DSN.
+#
+# These exist for convenience only, and the convenience is the whole risk: the
+# property worth protecting is that `dev` and `run` need no database, so the
+# database belongs in a target you have to ask for by name rather than in a
+# default anyone can trip over.
+#
+# `db-up` is a prerequisite rather than a step, so the container is already
+# healthy before the server dials it; the recursive call is what exports
+# DATABASE_URL into the recipe.
+dev-pg: db-up ## Like `dev`, but on the docker-compose Postgres (state persists)
+	$(MAKE) dev DATABASE_URL="$(DB_URL)"
+
+run-pg: db-up ## Like `run`, but on the docker-compose Postgres (state persists)
+	$(MAKE) run DATABASE_URL="$(DB_URL)"
 
 test: ## Run the Go and web suites against the in-memory store (no setup)
 	set -euo pipefail

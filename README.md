@@ -874,10 +874,18 @@ It has one limitation worth stating plainly: **the applied-set keys on filename,
 ### Running Against Postgres
 
 ```bash
-make db-up                                     # postgres:16 via docker-compose
-DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
+make dev-pg                                    # container + backend + frontend, on Postgres
 make test-pg                                   # the whole Go suite, on Postgres
 make db-down                                   # stop it, delete the data
+```
+
+`dev-pg` (and `run-pg`, its production-build twin) starts the container, waits
+for it to accept connections, and then runs the ordinary `dev` target with a
+DSN. The pieces are still there to be used directly:
+
+```bash
+make db-up                                     # postgres:16 via docker-compose
+DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 ```
 
 `pg.Open` connects and then applies the embedded migrations, so a fresh database is usable immediately. Seeding is **idempotent** — `seed.Populate` builds the sample scenario against an empty system and returns without touching a populated one — which is what makes a restart against Postgres a no-op rather than a second copy of every bank. `POST /admin/reset` clears the store and rebuilds the scenario, on either backend.
