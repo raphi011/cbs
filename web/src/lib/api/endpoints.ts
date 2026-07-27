@@ -5,6 +5,7 @@
 import { request, qs } from "./client";
 import type {
   Account,
+  Asset,
   AuditEvent,
   AuditQuery,
   Balance,
@@ -77,6 +78,15 @@ export function getReserve(pid: string): Promise<Reserve[]> {
 
 export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", `/central-bank/audit${qs({ ...q })}`);
+}
+
+// --- Assets -----------------------------------------------------------
+
+// Assets are book-scoped: each participant registers its own (see
+// ledger.Book.CreateAsset), so this is per-participant, not a network-wide
+// registry.
+export function listAssets(pid: string): Promise<Asset[]> {
+  return request("GET", `/participants/${pid}/assets`);
 }
 
 // --- Ledger: ledgers / subledgers / accounts -----------------------------

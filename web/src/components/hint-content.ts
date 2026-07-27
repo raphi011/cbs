@@ -129,19 +129,21 @@ General Ledger
 The GL might show "Total Customer Deposits: €10M" while the Customer Deposits subledger contains 50,000 individual accounts that sum to that total. This lets regulators and management see the big picture in one row while operations can drill into any individual account. New accounts created via the API are always placed inside a subledger.`,
   },
   "amount-cents": {
-    title: "Amounts are integer cents",
-    body: `**All monetary amounts are stored as integers in the smallest currency unit** — cents for EUR/USD, pence for GBP. This is the same approach used by Stripe and most payment processors.
+    title: "Amounts are integer minor units",
+    body: `**All monetary amounts are stored as integers in the asset's smallest unit** — cents for EUR/USD, pence for GBP, satoshi for BTC. This is the same approach used by Stripe and most payment processors, extended here to any asset, not just fiat currency.
 
 Floating-point arithmetic cannot represent most decimal fractions exactly: \`0.1 + 0.2 = 0.30000000000000004\` in IEEE 754. With integers there is no rounding error at all.
 
+How many decimal places an asset's minor unit has is its **scale**, registered per asset (2 for EUR, 8 for BTC):
+
 \`\`\`
-Display amount → Internal storage
-  €30.00        →  3000
-  €1,234.56     →  123456
-  €0.01         →  1
+Display amount → Internal storage (scale)
+  €30.00        →  3000        (EUR, scale 2)
+  €1,234.56     →  123456      (EUR, scale 2)
+  ₿1.00000000   →  100000000   (BTC, scale 8)
 \`\`\`
 
-The API always sends and receives integer cents. The frontend is responsible for converting to/from display format — that is what \`<MoneyInput>\` and the \`formatCents\` helper in \`money.ts\` do. Never pass a decimal like \`30.00\` to an endpoint.`,
+The API always sends and receives an integer at the asset's scale. The frontend is responsible for converting to/from display format — that is what \`<MoneyInput>\` and the \`formatAmount\` helper in \`money.ts\` do, given the asset (and its scale) the amount belongs to. Never pass a decimal like \`30.00\` to an endpoint.`,
   },
   "idempotency-key": {
     title: "Idempotency key",

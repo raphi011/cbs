@@ -24,6 +24,7 @@ import { FundParticipantForm } from "@/components/forms/fund-participant-form";
 import { StatementCard } from "@/components/statement/statement-card";
 import { AccountRef } from "@/components/account-ref";
 import {
+  useAssetLookup,
   useCloseDepositAccount,
   useDepositAccount,
   useDepositBalance,
@@ -36,7 +37,7 @@ import {
 import { describeError } from "@/lib/api/errors";
 import { formatDate } from "@/lib/dates";
 import type { DepositStatus, DepositStatusAction } from "@/lib/enums";
-import type { Hold, Snapshot } from "@/lib/types";
+import type { Asset, Hold, Snapshot } from "@/lib/types";
 
 // Which lifecycle transitions are offered from each status. The backend is the
 // source of truth (it rejects invalid moves), but only showing the legal ones
@@ -78,12 +79,12 @@ const STATUS_TRANSITIONS: Record<
 
 // --- Three-part balance ---------------------------------------------------
 
-function BalanceCard({ pid, did }: { pid: string; did: string }) {
+function BalanceCard({ pid, did, asset }: { pid: string; did: string; asset: Asset }) {
   const { data, isLoading } = useDepositBalance(pid, did);
-  const stats: { label: string; hint: "balance-book" | "balance-holds" | "balance-available"; cents?: number }[] = [
-    { label: "Book", hint: "balance-book", cents: data?.book },
-    { label: "Holds", hint: "balance-holds", cents: data?.holds },
-    { label: "Available", hint: "balance-available", cents: data?.available },
+  const stats: { label: string; hint: "balance-book" | "balance-holds" | "balance-available"; amount?: number }[] = [
+    { label: "Book", hint: "balance-book", amount: data?.book },
+    { label: "Holds", hint: "balance-holds", amount: data?.holds },
+    { label: "Available", hint: "balance-available", amount: data?.available },
   ];
   return (
     <Card>
@@ -102,7 +103,7 @@ function BalanceCard({ pid, did }: { pid: string; did: string }) {
                 <Skeleton className="mt-1 h-6 w-20" />
               ) : (
                 <div className="mt-0.5 text-lg font-semibold tabular-nums">
-                  <Money cents={s.cents ?? 0} />
+                  <Money amount={s.amount ?? 0} asset={asset} />
                 </div>
               )}
             </div>
@@ -115,12 +116,12 @@ function BalanceCard({ pid, did }: { pid: string; did: string }) {
 
 // --- Holds ----------------------------------------------------------------
 
-function HoldActions({ pid, hold }: { pid: string; hold: Hold }) {
+function HoldActions({ pid, hold, asset }: { pid: string; hold: Hold; asset: Asset }) {
   const release = useReleaseHold(pid);
   if (hold.status !== "Active") return <span className="text-muted-foreground">—</span>;
   return (
     <div className="flex items-center justify-end gap-2">
-      <CaptureHoldForm pid={pid} hid={hold.id} heldAmount={hold.amount} />
+      <CaptureHoldForm pid={pid} hid={hold.id} heldAmount={hold.amount} asset={asset} />
       <ConfirmAction
         trigger={
           <Button variant="ghost" size="sm">
@@ -142,10 +143,10 @@ function HoldActions({ pid, hold }: { pid: string; hold: Hold }) {
   );
 }
 
-function HoldsCard({ pid, did }: { pid: string; did: string }) {
+function HoldsCard({ pid, did, asset }: { pid: string; did: string; asset: Asset }) {
   const { data, isLoading, error, refetch } = useHolds(pid, did);
   const columns: Column<Hold>[] = [
-    { key: "amount", header: "Amount", render: (h) => <Money cents={h.amount} /> },
+    { key: "amount", header: "Amount", render: (h) => <Money amount={h.amount} asset={asset} /> },
     { key: "status", header: "Status", render: (h) => <EnumBadge value={h.status} /> },
     {
       key: "expiresAt",
@@ -161,7 +162,7 @@ function HoldsCard({ pid, did }: { pid: string; did: string }) {
       key: "actions",
       header: "",
       align: "right",
-      render: (h) => <HoldActions pid={pid} hold={h} />,
+      render: (h) => <HoldActions pid={pid} hold={h} asset={asset} />,
     },
   ];
   return (
@@ -171,7 +172,7 @@ function HoldsCard({ pid, did }: { pid: string; did: string }) {
           Holds
           <Hint id="holds" />
         </CardTitle>
-        <CreateHoldForm pid={pid} did={did} />
+        <CreateHoldForm pid={pid} did={did} asset={asset} />
       </CardHeader>
       <CardContent>
         {error ? (
@@ -192,7 +193,7 @@ function HoldsCard({ pid, did }: { pid: string; did: string }) {
 
 // --- Snapshots ------------------------------------------------------------
 
-function SnapshotsCard({ pid, did }: { pid: string; did: string }) {
+function SnapshotsCard({ pid, did, asset }: { pid: string; did: string; asset: Asset }) {
   const { data, isLoading, error, refetch } = useSnapshots(pid, did);
   const take = useTakeSnapshot(pid, did);
   const [date, setDate] = useState("");
@@ -211,12 +212,12 @@ function SnapshotsCard({ pid, did }: { pid: string; did: string }) {
 
   const columns: Column<Snapshot>[] = [
     { key: "date", header: "Date", render: (s) => formatDate(s.date) },
-    { key: "book", header: "Book", render: (s) => <Money cents={s.balance.book} /> },
-    { key: "holds", header: "Holds", render: (s) => <Money cents={s.balance.holds} /> },
+    { key: "book", header: "Book", render: (s) => <Money amount={s.balance.book} asset={asset} /> },
+    { key: "holds", header: "Holds", render: (s) => <Money amount={s.balance.holds} asset={asset} /> },
     {
       key: "available",
       header: "Available",
-      render: (s) => <Money cents={s.balance.available} />,
+      render: (s) => <Money amount={s.balance.available} asset={asset} />,
     },
   ];
 
@@ -271,6 +272,8 @@ export default function DepositAccountDetailPage() {
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
   const setStatus = useSetDepositStatus(pid, did);
   const close = useCloseDepositAccount(pid);
+  const { byCode } = useAssetLookup(pid);
+  const asset = account ? byCode.get(account.asset) : undefined;
 
   const back = `/participants/${pid}/deposit-accounts`;
 
@@ -299,7 +302,7 @@ export default function DepositAccountDetailPage() {
         <ArrowLeft className="size-4" /> Deposit accounts
       </Link>
 
-      {isLoading || !account ? (
+      {isLoading || !account || !asset ? (
         <Skeleton className="h-10 w-64" />
       ) : (
         <>
@@ -313,7 +316,7 @@ export default function DepositAccountDetailPage() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {account.status !== "Closed" && (
-                <FundParticipantForm pid={pid} did={did} />
+                <FundParticipantForm pid={pid} did={did} asset={asset} />
               )}
               {transitions.map((t) => (
                 <ConfirmAction
@@ -366,14 +369,14 @@ export default function DepositAccountDetailPage() {
 
           <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
             Backed by GL account <AccountRef pid={pid} id={account.glAccount} /> · overdraft
-            limit <Money cents={account.overdraftLimit} />
+            limit <Money amount={account.overdraftLimit} asset={asset} />
             <Hint id="overdraft" />
           </p>
 
-          <BalanceCard pid={pid} did={did} />
-          <HoldsCard pid={pid} did={did} />
-          <SnapshotsCard pid={pid} did={did} />
-          <StatementCard pid={pid} did={did} account={account} />
+          <BalanceCard pid={pid} did={did} asset={asset} />
+          <HoldsCard pid={pid} did={did} asset={asset} />
+          <SnapshotsCard pid={pid} did={did} asset={asset} />
+          <StatementCard pid={pid} did={did} account={account} asset={asset} />
         </>
       )}
     </div>

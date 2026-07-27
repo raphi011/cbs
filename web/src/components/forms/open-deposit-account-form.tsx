@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
-import { useOpenDepositAccount } from "@/lib/api/hooks";
+import { useAssetLookup, useOpenDepositAccount } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
 // Opens a demand-deposit account backed by a Liability GL account. Overdraft
@@ -29,8 +29,15 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
   // Pre-filled rather than defaulted: the backend refuses an account with no
   // asset, and the account's asset is fixed once it is open.
   const [asset, setAsset] = useState("EUR");
-  const [overdraftCents, setOverdraftCents] = useState<number | null>(0);
+  const [overdraft, setOverdraft] = useState<number | null>(0);
   const create = useOpenDepositAccount(pid);
+  // The typed code's scale, resolved against this bank's own asset registry
+  // (assets are book-scoped — see ledger.Book.CreateAsset). Until the code
+  // resolves to a registered asset there is no scale to convert a non-zero
+  // overdraft limit by, so the amount input stays disabled rather than
+  // guessing one (0 is scale-invariant, so the default needs no resolution).
+  const { byCode } = useAssetLookup(pid);
+  const resolvedAsset = byCode.get(asset.trim());
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,11 +46,11 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
       const acct = await create.mutateAsync({
         name: name.trim(),
         asset: asset.trim(),
-        overdraftLimit: overdraftCents ?? 0,
+        overdraftLimit: overdraft ?? 0,
       });
       toast.success(`Opened ${acct.name}`);
       setName("");
-      setOverdraftCents(0);
+      setOverdraft(0);
       setOpen(false);
     } catch (err) {
       toast.error(describeError(err));
@@ -98,9 +105,17 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
             </FieldLabel>
             <MoneyInput
               id="dda-overdraft"
-              valueCents={overdraftCents}
-              onChangeCents={setOverdraftCents}
+              value={overdraft}
+              onChange={setOverdraft}
+              asset={resolvedAsset ?? { code: asset.trim() || "?", scale: 2 }}
+              disabled={!resolvedAsset}
             />
+            {!resolvedAsset && (
+              <p className="text-xs text-muted-foreground">
+                Amount disabled until &ldquo;{asset.trim() || "…"}&rdquo; resolves to an asset
+                registered in this bank&apos;s book.
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button

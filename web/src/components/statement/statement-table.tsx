@@ -15,10 +15,22 @@ import { IdText } from "@/components/id-text";
 import { DirectionBadge } from "@/components/enum-badge";
 import { Hint } from "@/components/hint";
 import { AccountRef } from "@/components/account-ref";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAssetLookup } from "@/lib/api/hooks";
 import { formatDate } from "@/lib/dates";
 import { cn } from "@/lib/utils";
 import type { ContraRef, StatementRow } from "@/lib/statement";
 import type { HintKey } from "@/components/hint-content";
+import type { Asset, Entry } from "@/lib/types";
+
+// A leg's amount is denominated in its own account's asset, which — since
+// Task 4 — can differ leg to leg within one transaction. `byCode` (from the
+// participant's own asset registry) resolves each leg independently rather
+// than assuming every leg shares the statement's own account's asset.
+function EntryAmount({ entry, byCode }: { entry: Entry; byCode: Map<string, Asset> }) {
+  const asset = byCode.get(entry.asset);
+  return asset ? <Money amount={entry.amount} asset={asset} /> : <Skeleton className="h-4 w-16" />;
+}
 
 function ContraCell({ pid, contra }: { pid: string; contra: ContraRef }) {
   if (contra.kind === "split") {
@@ -32,15 +44,22 @@ export function StatementTable({
   book,
   glAccount,
   pid,
+  asset,
   amountHintId = "statement-amount",
 }: {
   rows: StatementRow[];
   book?: number;
   glAccount: string;
   pid: string;
+  // The asset of the account this statement is projected onto. `delta` and
+  // `runningBalance` are always in this one asset (they're this account's
+  // own balance); individual legs of the underlying transaction may differ
+  // — see EntryAmount above.
+  asset: Asset;
   amountHintId?: HintKey;
 }) {
   const [openTx, setOpenTx] = useState<string | null>(null);
+  const { byCode } = useAssetLookup(pid);
 
   if (rows.length === 0) {
     return (
@@ -97,10 +116,10 @@ export function StatementTable({
                     <ContraCell pid={pid} contra={row.contra} />
                   </TableCell>
                   <TableCell>
-                    <AmountCell cents={row.delta} signed />
+                    <AmountCell amount={row.delta} asset={asset} signed />
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
-                    <Money cents={row.runningBalance} />
+                    <Money amount={row.runningBalance} asset={asset} />
                   </TableCell>
                 </TableRow>
                 {openTx === row.txId && (
@@ -130,7 +149,7 @@ export function StatementTable({
                                     </span>
                                   )}
                                 </span>
-                                <Money cents={e.amount} />
+                                <EntryAmount entry={e} byCode={byCode} />
                               </div>
                             );
                           })}
@@ -148,12 +167,14 @@ export function StatementTable({
       {book != null &&
         (reconciles ? (
           <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
-            ✓ Running balance reconciles to the book balance <Money cents={book} className="font-medium" />.
+            ✓ Running balance reconciles to the book balance{" "}
+            <Money amount={book} asset={asset} className="font-medium" />.
           </p>
         ) : (
           <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-            Running balance (<Money cents={rows[0].runningBalance} />) doesn&apos;t match the book balance
-            (<Money cents={book} />) — usually the statement is still loading or a transaction is missing.
+            Running balance (<Money amount={rows[0].runningBalance} asset={asset} />) doesn&apos;t match the
+            book balance (<Money amount={book} asset={asset} />) — usually the statement is still loading or a
+            transaction is missing.
           </p>
         ))}
     </div>

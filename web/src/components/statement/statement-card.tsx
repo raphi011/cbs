@@ -8,16 +8,18 @@ import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import { StatementTable } from "@/components/statement/statement-table";
 import { useStatement } from "@/lib/api/hooks";
-import type { DepositAccount } from "@/lib/types";
+import type { Asset, DepositAccount } from "@/lib/types";
 
 export function StatementCard({
   pid,
   did,
   account,
+  asset,
 }: {
   pid: string;
   did: string;
   account: DepositAccount;
+  asset: Asset;
 }) {
   const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.glAccount);
   const recent = rows.slice(0, 10);
@@ -42,7 +44,7 @@ export function StatementCard({
           <Skeleton className="h-40 w-full" />
         ) : (
           <>
-            <StatementTable rows={recent} book={book} glAccount={account.glAccount} pid={pid} />
+            <StatementTable rows={recent} book={book} glAccount={account.glAccount} pid={pid} asset={asset} />
             {hasMore && (
               <p className="text-xs text-muted-foreground">
                 Showing the {recent.length} most recent of {rows.length} transactions.{" "}

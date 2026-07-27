@@ -9,9 +9,22 @@ import { EnumBadge } from "@/components/enum-badge";
 import { IdText } from "@/components/id-text";
 import { Money } from "@/components/money";
 import { ErrorState } from "@/components/error-state";
+import { Skeleton } from "@/components/ui/skeleton";
 import { InitiatePaymentForm } from "@/components/forms/initiate-payment-form";
-import { usePayments } from "@/lib/api/hooks";
+import { useAssetLookup, usePayments } from "@/lib/api/hooks";
 import type { Payment } from "@/lib/types";
+
+// A payment's asset is fixed by its scheme, but the scheme itself carries no
+// scale on the wire (schemeDTO has no asset field). What we do have is the
+// debtor's participant, and by construction the debtor's account must be
+// registered in that scheme's asset (see payment.Network's ErrAssetMismatch
+// check) — so its book is where the scale lives.
+function PaymentAmountCell({ payment }: { payment: Payment }) {
+  const { byCode, isLoading } = useAssetLookup(payment.debtor.participant);
+  const asset = byCode.get(payment.asset);
+  if (!asset) return isLoading ? <Skeleton className="ml-auto h-4 w-16" /> : null;
+  return <Money amount={payment.amount} asset={asset} />;
+}
 
 export default function PaymentsPage() {
   const router = useRouter();
@@ -35,7 +48,7 @@ export default function PaymentsPage() {
       key: "amount",
       header: "Amount",
       align: "right",
-      render: (p) => <Money cents={p.amount} />,
+      render: (p) => <PaymentAmountCell payment={p} />,
     },
     { key: "status", header: "Status", render: (p) => <EnumBadge value={p.status} /> },
   ];

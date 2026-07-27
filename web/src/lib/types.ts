@@ -1,10 +1,17 @@
 // Exact mirror of api/dto.go — verbatim JSON field names. All monetary amounts
-// are integer **cents** (minor units), never floats or strings. Request bodies
-// must match these shapes exactly: the backend uses DisallowUnknownFields(), so
-// never send keys it doesn't define.
+// are integer **minor units of an asset** (never floats or strings) — cents
+// for EUR, satoshi for BTC. The asset a given amount is denominated in is
+// named alongside it: an `asset` field carrying the asset's code (see `Asset`
+// below for the full definition, fetched separately per participant from
+// GET /participants/{pid}/assets). There is no default asset: converting an
+// amount to a major-unit string requires knowing which asset's `scale` to use
+// (see web/src/lib/money.ts). Request bodies must match these shapes exactly:
+// the backend uses DisallowUnknownFields(), so never send keys it doesn't
+// define.
 
 import type {
   AccountType,
+  AssetClass,
   CycleStatus,
   DepositStatus,
   DepositStatusAction,
@@ -16,6 +23,18 @@ import type {
   SettlementModel,
   TransactionStatus,
 } from "./enums";
+
+// Mirrors assetDTO from GET /participants/{pid}/assets. Assets are
+// book-scoped — each participant registers its own (see
+// ledger.Book.CreateAsset) — so always resolve an amount's scale from the
+// asset registry of the participant whose book the amount lives in, never
+// from a global table.
+export interface Asset {
+  code: string;
+  name: string;
+  scale: number;
+  class: AssetClass;
+}
 
 // --- Ledger layer ---------------------------------------------------------
 
@@ -37,6 +56,7 @@ export interface Account {
   subledgerId: string;
   name: string;
   type: AccountType;
+  asset: string;
   createdAt: string;
 }
 
@@ -45,6 +65,10 @@ export interface Entry {
   accountId: string;
   amount: number;
   direction: Direction;
+  // The entry's account's asset. Always populated on a response (never sent
+  // by a client — a transaction request names accounts, not assets; see
+  // EntryInput below).
+  asset: string;
 }
 
 export interface Transaction {
@@ -98,6 +122,7 @@ export interface DepositAccount {
   id: string;
   glAccount: string;
   name: string;
+  asset: string;
   status: DepositStatus;
   overdraftLimit: number;
   createdAt: string;
@@ -154,6 +179,9 @@ export interface PartyRef {
 export interface Payment {
   id: string;
   scheme: string;
+  // The scheme's asset, resolved server-side (a payment names a scheme, not
+  // an asset — see api/dto_payment.go's toPaymentDTO).
+  asset: string;
   debtor: PartyRef;
   creditor: PartyRef;
   amount: number;

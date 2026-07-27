@@ -19,28 +19,37 @@ import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
 import { useCreateHold } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
+import type { Asset } from "@/lib/types";
 
 // Places an authorization hold: reserves funds so they drop out of the
 // available balance without touching the book balance or the ledger.
-export function CreateHoldForm({ pid, did }: { pid: string; did: string }) {
+export function CreateHoldForm({
+  pid,
+  did,
+  asset,
+}: {
+  pid: string;
+  did: string;
+  asset: Asset;
+}) {
   const [open, setOpen] = useState(false);
-  const [amountCents, setAmountCents] = useState<number | null>(null);
+  const [amount, setAmount] = useState<number | null>(null);
   const [expires, setExpires] = useState("");
   const [description, setDescription] = useState("");
   const create = useCreateHold(pid, did);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (amountCents == null) return;
+    if (amount == null) return;
     try {
       const hold = await create.mutateAsync({
-        amount: amountCents,
+        amount,
         // *time.Time wants RFC3339; <input type="date"> gives YYYY-MM-DD.
         expiresAt: expires ? `${expires}T00:00:00.000Z` : null,
         description: description.trim() || undefined,
       });
       toast.success(`Hold placed (${hold.id})`);
-      setAmountCents(null);
+      setAmount(null);
       setExpires("");
       setDescription("");
       setOpen(false);
@@ -72,8 +81,9 @@ export function CreateHoldForm({ pid, did }: { pid: string; did: string }) {
             </FieldLabel>
             <MoneyInput
               id="hold-amount"
-              valueCents={amountCents}
-              onChangeCents={setAmountCents}
+              value={amount}
+              onChange={setAmount}
+              asset={asset}
             />
           </div>
           <div className="space-y-2">
@@ -97,7 +107,7 @@ export function CreateHoldForm({ pid, did }: { pid: string; did: string }) {
           <DialogFooter>
             <Button
               type="submit"
-              disabled={create.isPending || amountCents == null}
+              disabled={create.isPending || amount == null}
             >
               {create.isPending ? "Placing…" : "Place hold"}
             </Button>

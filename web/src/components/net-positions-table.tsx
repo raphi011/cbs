@@ -9,6 +9,15 @@ interface NetPosition {
   amount: number;
 }
 
+// clearingCycleDTO/settlementDTO carry net positions with no asset field —
+// a cycle only names a scheme, and schemeDTO itself has no asset field (the
+// API resolves a payment's asset from its scheme server-side, but doesn't
+// expose that resolution for a scheme or cycle directly). Every scheme
+// implemented so far settles in EUR (see payment/scheme.go's SCT/SDD), so
+// this is that fact made explicit and grep-able, not a guessed default — it
+// stops being true, and needs revisiting, the day a non-EUR scheme ships.
+const NET_POSITION_ASSET = { code: "EUR", scale: 2 };
+
 // Renders a clearing cycle's / settlement's net positions: one signed number
 // per participant. Positive = net receiver (owed money); negative = net payer
 // (owes money). The whole table sums to zero — money is conserved.
@@ -35,7 +44,7 @@ export function NetPositionsTable({
       header: "Net position",
       hint: "netting",
       align: "right",
-      render: (r) => <AmountCell cents={r.amount} signed />,
+      render: (r) => <AmountCell amount={r.amount} asset={NET_POSITION_ASSET} signed />,
     },
   ];
 

@@ -21,6 +21,12 @@ import { useCreateMandate } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { PartyRef } from "@/lib/types";
 
+// A mandate names no scheme and no asset (createMandateRequest has neither),
+// so there is nothing to resolve a scale from until the mandate is used.
+// Every scheme implemented so far settles in EUR (see payment/scheme.go's
+// SCT/SDD) — see the matching comment in net-positions-table.tsx.
+const MANDATE_ASSET = { code: "EUR", scale: 2 };
+
 // A mandate is standing authorization for a creditor to pull funds from a
 // debtor, up to a maximum amount — the prerequisite for pull (direct-debit)
 // schemes.
@@ -28,7 +34,7 @@ export function CreateMandateForm() {
   const [open, setOpen] = useState(false);
   const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);
   const [creditor, setCreditor] = useState<PartyRef>(emptyPartyRef);
-  const [maxCents, setMaxCents] = useState<number | null>(null);
+  const [maxAmount, setMaxAmount] = useState<number | null>(null);
   const create = useCreateMandate();
 
   const valid =
@@ -36,7 +42,7 @@ export function CreateMandateForm() {
     debtor.account.trim() &&
     creditor.participant.trim() &&
     creditor.account.trim() &&
-    maxCents != null;
+    maxAmount != null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -45,12 +51,12 @@ export function CreateMandateForm() {
       const m = await create.mutateAsync({
         debtor,
         creditor,
-        maxAmount: maxCents!,
+        maxAmount: maxAmount!,
       });
       toast.success(`Mandate created (${m.id})`);
       setDebtor(emptyPartyRef);
       setCreditor(emptyPartyRef);
-      setMaxCents(null);
+      setMaxAmount(null);
       setOpen(false);
     } catch (err) {
       toast.error(describeError(err));
@@ -86,8 +92,9 @@ export function CreateMandateForm() {
             </FieldLabel>
             <MoneyInput
               id="mandate-max"
-              valueCents={maxCents}
-              onChangeCents={setMaxCents}
+              value={maxAmount}
+              onChange={setMaxAmount}
+              asset={MANDATE_ASSET}
             />
           </div>
           <DialogFooter>

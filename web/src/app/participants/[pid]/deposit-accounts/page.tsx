@@ -11,7 +11,7 @@ import { Hint } from "@/components/hint";
 import { Money } from "@/components/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OpenDepositAccountForm } from "@/components/forms/open-deposit-account-form";
-import { useDepositAccounts, useDepositBalance } from "@/lib/api/hooks";
+import { useAssetLookup, useDepositAccounts, useDepositBalance } from "@/lib/api/hooks";
 import type { DepositAccount } from "@/lib/types";
 
 // One row per deposit account. The available balance is fetched per-row (like
@@ -25,6 +25,8 @@ function DepositAccountRow({
   account: DepositAccount;
 }) {
   const { data } = useDepositBalance(pid, account.id);
+  const { byCode } = useAssetLookup(pid);
+  const asset = byCode.get(account.asset);
   return (
     <Link
       href={`/participants/${pid}/deposit-accounts/${account.id}`}
@@ -37,7 +39,11 @@ function DepositAccountRow({
       </span>
       <span className="flex items-center gap-3">
         <span className="text-right text-sm font-medium">
-          <Money cents={data?.available ?? 0} />
+          {asset ? (
+            <Money amount={data?.available ?? 0} asset={asset} />
+          ) : (
+            <Skeleton className="ml-auto h-4 w-16" />
+          )}
           <span className="block text-xs font-normal text-muted-foreground">
             available
           </span>

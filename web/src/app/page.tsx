@@ -17,12 +17,14 @@ import type { HintKey } from "@/components/hint-content";
 import { ErrorState } from "@/components/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  useAssetLookup,
   useCycles,
   useParticipants,
   usePayments,
   useReserves,
   useSettlements,
 } from "@/lib/api/hooks";
+import type { Participant, Reserve } from "@/lib/types";
 
 // A payment is "in flight" until it reaches a terminal state. Settled, Rejected
 // and Returned payments are done; everything before that is still moving.
@@ -42,10 +44,18 @@ export default function Home() {
   const reservesFor = (pid: string) =>
     (reserves ?? []).filter((r) => r.participant === pid);
 
-  const totalsByAsset = (reserves ?? []).reduce<Record<string, number>>(
-    (totals, r) => ({ ...totals, [r.asset]: (totals[r.asset] ?? 0) + r.reserve }),
-    {},
-  );
+  // Sum per asset code, remembering one participant that holds it — needed to
+  // resolve the code's scale, since assets are book-scoped (see
+  // useAssetLookup) rather than defined once, globally.
+  const totalsByAsset = (reserves ?? []).reduce<
+    Record<string, { total: number; participant: string }>
+  >((totals, r) => {
+    const cur = totals[r.asset];
+    return {
+      ...totals,
+      [r.asset]: { total: (cur?.total ?? 0) + r.reserve, participant: cur?.participant ?? r.participant },
+    };
+  }, {});
   const assetTotals = Object.entries(totalsByAsset).sort(([a], [b]) =>
     a.localeCompare(b),
   );
@@ -69,15 +79,10 @@ export default function Home() {
         <Stat label="Member banks">{participants?.length ?? 0}</Stat>
         <Stat label="Total reserves" hint="central-bank-reserves">
           {assetTotals.length === 0 ? (
-            <Money cents={0} />
+            <Skeleton className="h-6 w-20" />
           ) : (
-            assetTotals.map(([asset, total]) => (
-              <span key={asset} className="block">
-                <Money cents={total} />{" "}
-                <span className="text-sm font-normal text-muted-foreground">
-                  {asset}
-                </span>
-              </span>
+            assetTotals.map(([code, { total, participant }]) => (
+              <AssetTotalRow key={code} participant={participant} code={code} total={total} />
             ))
           )}
         </Stat>
@@ -117,39 +122,82 @@ export default function Home() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {participants?.map((p) => (
-              <Link key={p.id} href={`/participants/${p.id}`}>
-                <Card className="h-full transition-colors hover:border-foreground/30">
-                  <CardHeader>
-                    <CardTitle className="text-base">{p.name}</CardTitle>
-                    <IdText id={p.id} />
-                  </CardHeader>
-                  <CardContent>
-                    <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                      Reserves
-                      <Hint id="central-bank-reserves" />
-                    </p>
-                    {reservesFor(p.id).length === 0 ? (
-                      <p className="text-lg font-semibold">
-                        <Money cents={0} />
-                      </p>
-                    ) : (
-                      reservesFor(p.id).map((r) => (
-                        <p key={r.asset} className="text-lg font-semibold">
-                          <Money cents={r.reserve} />{" "}
-                          <span className="text-xs font-normal text-muted-foreground">
-                            {r.asset}
-                          </span>
-                        </p>
-                      ))
-                    )}
-                  </CardContent>
-                </Card>
-              </Link>
+              <ParticipantCard key={p.id} participant={p} reserves={reservesFor(p.id)} />
             ))}
           </div>
         )}
       </section>
     </div>
+  );
+}
+
+// One asset code's reserve total, summed across every participant. The scale
+// needed to render `total` is resolved from `participant`'s own asset
+// registry — any one participant holding this code will do, since a code
+// means the same asset network-wide by construction (every implemented
+// scheme registers the same well-known def in every book it touches; see
+// payment.Network.assetDef).
+function AssetTotalRow({
+  participant,
+  code,
+  total,
+}: {
+  participant: string;
+  code: string;
+  total: number;
+}) {
+  const { byCode, isLoading } = useAssetLookup(participant);
+  const asset = byCode.get(code);
+  if (!asset) return isLoading ? <Skeleton className="h-6 w-20" /> : null;
+  return (
+    <span className="block">
+      <Money amount={total} asset={asset} />
+    </span>
+  );
+}
+
+// One member-bank card: name, id, and one reserve line per asset it holds.
+function ParticipantCard({
+  participant: p,
+  reserves,
+}: {
+  participant: Participant;
+  reserves: Reserve[];
+}) {
+  const { byCode, isLoading } = useAssetLookup(p.id);
+  return (
+    <Link href={`/participants/${p.id}`}>
+      <Card className="h-full transition-colors hover:border-foreground/30">
+        <CardHeader>
+          <CardTitle className="text-base">{p.name}</CardTitle>
+          <IdText id={p.id} />
+        </CardHeader>
+        <CardContent>
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            Reserves
+            <Hint id="central-bank-reserves" />
+          </p>
+          {reserves.length === 0 ? (
+            isLoading ? (
+              <Skeleton className="h-6 w-20" />
+            ) : (
+              <p className="text-sm text-muted-foreground">None yet.</p>
+            )
+          ) : (
+            reserves.map((r) => {
+              const asset = byCode.get(r.asset);
+              return asset ? (
+                <p key={r.asset} className="text-lg font-semibold">
+                  <Money amount={r.reserve} asset={asset} />
+                </p>
+              ) : (
+                <Skeleton key={r.asset} className="h-6 w-20" />
+              );
+            })
+          )}
+        </CardContent>
+      </Card>
+    </Link>
   );
 }
 
@@ -170,7 +218,7 @@ function Stat({
           {label}
           {hint && <Hint id={hint} />}
         </p>
-        <p className="mt-1 text-2xl font-semibold tabular-nums">{children}</p>
+        <div className="mt-1 text-2xl font-semibold tabular-nums">{children}</div>
       </CardContent>
     </Card>
   );

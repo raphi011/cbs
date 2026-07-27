@@ -15,6 +15,14 @@ import { useMandates, useRevokeMandate } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Mandate } from "@/lib/types";
 
+// mandateDTO carries no asset field — a mandate names debtor/creditor
+// accounts, not a scheme, so there is nothing on the wire to resolve a scale
+// from (unlike Payment, whose asset the API derives from its scheme). Every
+// scheme implemented so far settles in EUR (see payment/scheme.go's SCT/SDD),
+// so this is that fact made explicit and grep-able, not a guessed default —
+// it stops being true, and needs revisiting, the day a non-EUR scheme ships.
+const MANDATE_ASSET = { code: "EUR", scale: 2 };
+
 function RevokeButton({ mandate }: { mandate: Mandate }) {
   const revoke = useRevokeMandate();
   if (mandate.status !== "Active") {
@@ -61,7 +69,7 @@ export default function MandatesPage() {
       key: "maxAmount",
       header: "Max amount",
       align: "right",
-      render: (m) => <Money cents={m.maxAmount} />,
+      render: (m) => <Money amount={m.maxAmount} asset={MANDATE_ASSET} />,
     },
     { key: "status", header: "Status", render: (m) => <EnumBadge value={m.status} /> },
     {

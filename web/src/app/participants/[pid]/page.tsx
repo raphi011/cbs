@@ -12,7 +12,7 @@ import { Money } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { Hint } from "@/components/hint";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useParticipant, useReserve } from "@/lib/api/hooks";
+import { useAssetLookup, useParticipant, useReserve } from "@/lib/api/hooks";
 import type { HintKey } from "@/components/hint-content";
 
 export default function ParticipantOverview() {
@@ -20,6 +20,7 @@ export default function ParticipantOverview() {
   const pid = typeof params.pid === "string" ? params.pid : "";
   const { data: p } = useParticipant(pid);
   const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
+  const { byCode } = useAssetLookup(pid);
 
   // A bank holds one suspense, reserve and settlement account per asset it
   // operates in, so the list is the customer subledger plus three rows per
@@ -64,14 +65,16 @@ export default function ParticipantOverview() {
           {reserveLoading ? (
             <Skeleton className="h-8 w-32" />
           ) : (
-            (reserve ?? []).map((r) => (
-              <p key={r.asset} className="text-2xl font-semibold">
-                <Money cents={r.reserve} />{" "}
-                <span className="text-sm font-normal text-muted-foreground">
-                  {r.asset}
-                </span>
-              </p>
-            ))
+            (reserve ?? []).map((r) => {
+              const asset = byCode.get(r.asset);
+              return asset ? (
+                <p key={r.asset} className="text-2xl font-semibold">
+                  <Money amount={r.reserve} asset={asset} />
+                </p>
+              ) : (
+                <Skeleton key={r.asset} className="h-8 w-32" />
+              );
+            })
           )}
           <p className="mt-1 text-sm text-muted-foreground">
             Starts at €0.00. Funding a deposit account raises this in step —

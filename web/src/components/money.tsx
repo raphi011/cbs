@@ -3,99 +3,121 @@
 import { useId, useState } from "react";
 
 import { Input } from "@/components/ui/input";
-import { centsToInput, formatCents, formatSigned, parseDollars } from "@/lib/money";
+import {
+  amountToInput,
+  formatAmount,
+  formatSigned,
+  parseAmount,
+  type AssetScale,
+} from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-// Money renders integer cents as currency. `signed` adds an explicit +/- and is
+// Money renders an integer amount at its asset's scale, with the asset code
+// alongside it — an amount is meaningless without knowing which asset it's
+// denominated in, and now that a network can hold more than one, the code
+// is part of the number, not decoration. `signed` adds an explicit +/- and is
 // used for net positions and deltas.
 export function Money({
-  cents,
+  amount,
+  asset,
   signed = false,
   className,
 }: {
-  cents: number;
+  amount: number;
+  asset: AssetScale;
   signed?: boolean;
   className?: string;
 }) {
   return (
     <span className={cn("tabular-nums", className)}>
-      {signed ? formatSigned(cents) : formatCents(cents)}
+      {signed ? formatSigned(amount, asset) : formatAmount(amount, asset)}
+      <span className="ml-1 text-xs font-normal text-muted-foreground">
+        {asset.code}
+      </span>
     </span>
   );
 }
 
 // AmountCell is a right-aligned, sign-colored cell for tables.
 export function AmountCell({
-  cents,
+  amount,
+  asset,
   signed = false,
 }: {
-  cents: number;
+  amount: number;
+  asset: AssetScale;
   signed?: boolean;
 }) {
   const tone =
-    cents > 0
+    amount > 0
       ? "text-emerald-700 dark:text-emerald-400"
-      : cents < 0
+      : amount < 0
         ? "text-red-700 dark:text-red-400"
         : "text-foreground";
   return (
     <span className={cn("block text-right tabular-nums", signed && tone)}>
-      {signed ? formatSigned(cents) : formatCents(cents)}
+      {signed ? formatSigned(amount, asset) : formatAmount(amount, asset)}
+      <span className="ml-1 text-xs font-normal text-muted-foreground">
+        {asset.code}
+      </span>
     </span>
   );
 }
 
 interface MoneyInputProps {
-  // Current value in integer cents, or null when empty.
-  valueCents: number | null;
-  onChangeCents: (cents: number | null) => void;
+  // Current value in the asset's integer minor units, or null when empty.
+  value: number | null;
+  onChange: (amount: number | null) => void;
+  asset: AssetScale;
   id?: string;
   placeholder?: string;
   disabled?: boolean;
   required?: boolean;
 }
 
-// MoneyInput edits major units (what people type, e.g. "30.00") but emits
-// integer cents — the source of truth the API expects. It keeps its own text
-// state so intermediate values like "30." are typeable.
+// MoneyInput edits major units (what people type, e.g. "30.00", or for an
+// 8-decimal asset "0.00000001") but emits an integer amount at the asset's
+// scale — the source of truth the API expects. It keeps its own text state so
+// intermediate values like "30." are typeable.
 export function MoneyInput({
-  valueCents,
-  onChangeCents,
+  value,
+  onChange,
+  asset,
   id,
-  placeholder = "0.00",
+  placeholder,
   disabled,
   required,
 }: MoneyInputProps) {
   const generatedId = useId();
   const inputId = id ?? generatedId;
   const [text, setText] = useState(
-    valueCents == null ? "" : centsToInput(valueCents),
+    value == null ? "" : amountToInput(value, asset),
   );
 
   function handleChange(next: string) {
     setText(next);
-    onChangeCents(parseDollars(next));
+    onChange(parseAmount(next, asset));
   }
 
   return (
     <div className="relative">
-      <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-sm text-muted-foreground">
-        €
+      <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-xs text-muted-foreground">
+        {asset.code}
       </span>
       <Input
         id={inputId}
         inputMode="decimal"
-        placeholder={placeholder}
+        placeholder={placeholder ?? (asset.scale > 0 ? (0).toFixed(asset.scale) : "0")}
         value={text}
         disabled={disabled}
         required={required}
         onChange={(e) => handleChange(e.target.value)}
-        // Normalize to two decimals on blur when the value is valid.
+        // Normalize to the asset's scale on blur when the value is valid.
         onBlur={() => {
-          const cents = parseDollars(text);
-          if (cents != null) setText(centsToInput(cents));
+          const amount = parseAmount(text, asset);
+          if (amount != null) setText(amountToInput(amount, asset));
         }}
-        className="pl-7 text-right tabular-nums"
+        className="pl-12 text-right tabular-nums"
       />
     </div>
   );

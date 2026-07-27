@@ -26,7 +26,8 @@ import { MoneyInput, Money } from "@/components/money";
 import { FieldLabel } from "@/components/field-label";
 import { GLAccountPicker } from "@/components/pickers/gl-account-picker";
 import { Hint } from "@/components/hint";
-import { usePostTransaction } from "@/lib/api/hooks";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAllAccounts, useAssetLookup, usePostTransaction } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { newIdempotencyKey } from "@/lib/idempotency";
 import type { Direction } from "@/lib/enums";
@@ -35,12 +36,12 @@ import { cn } from "@/lib/utils";
 interface Leg {
   accountId: string;
   direction: Direction;
-  cents: number | null;
+  amount: number | null;
 }
 
 const emptyLegs = (): Leg[] => [
-  { accountId: "", direction: "Debit", cents: null },
-  { accountId: "", direction: "Credit", cents: null },
+  { accountId: "", direction: "Debit", amount: null },
+  { accountId: "", direction: "Credit", amount: null },
 ];
 
 function dateToRFC3339(date: string): string | null {
@@ -58,15 +59,36 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   const [valueDate, setValueDate] = useState("");
   const post = usePostTransaction(pid);
 
+  // A leg's amount is denominated in the asset of the account it posts to —
+  // since Task 4, legs of one transaction can balance in different assets, so
+  // each leg's scale is resolved from its own picked account, not assumed
+  // shared across the form.
+  const accounts = useAllAccounts(pid);
+  const { byCode } = useAssetLookup(pid);
+  function assetForLeg(accountId: string) {
+    const acct = accounts.data?.find((a) => a.id === accountId);
+    return acct ? byCode.get(acct.asset) : undefined;
+  }
+
   const debits = legs
     .filter((l) => l.direction === "Debit")
-    .reduce((s, l) => s + (l.cents ?? 0), 0);
+    .reduce((s, l) => s + (l.amount ?? 0), 0);
   const credits = legs
     .filter((l) => l.direction === "Credit")
-    .reduce((s, l) => s + (l.cents ?? 0), 0);
+    .reduce((s, l) => s + (l.amount ?? 0), 0);
   const balanced = debits === credits && debits > 0;
   const ready =
-    balanced && legs.every((l) => l.accountId.trim() && (l.cents ?? 0) > 0);
+    balanced && legs.every((l) => l.accountId.trim() && (l.amount ?? 0) > 0);
+
+  // The debits/credits summary below is only meaningful rendered in one
+  // asset — a raw sum across different assets isn't a number anything, per
+  // the same reasoning as home page's reserve totals. Only show it once
+  // every leg's account has resolved to the same asset.
+  const legAssets = legs.map((l) => assetForLeg(l.accountId));
+  const summaryAsset =
+    legAssets.length > 0 && legAssets.every((a) => a && a.code === legAssets[0]?.code)
+      ? legAssets[0]
+      : undefined;
 
   function reset() {
     setLegs(emptyLegs());
@@ -77,7 +99,19 @@ export function PostTransactionForm({ pid }: { pid: string }) {
   }
 
   function updateLeg(i: number, patch: Partial<Leg>) {
-    setLegs((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
+    setLegs((prev) =>
+      prev.map((l, idx) => {
+        if (idx !== i) return l;
+        // Switching accounts can switch assets, so a previously-typed amount
+        // (minor units at the old account's scale) is discarded rather than
+        // silently reinterpreted at the new account's scale.
+        const next = { ...l, ...patch };
+        if (patch.accountId !== undefined && patch.accountId !== l.accountId) {
+          next.amount = null;
+        }
+        return next;
+      }),
+    );
   }
 
   function submit(e: React.FormEvent) {
@@ -88,7 +122,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
         idempotencyKey,
         entries: legs.map((l) => ({
           accountId: l.accountId.trim(),
-          amount: l.cents ?? 0,
+          amount: l.amount ?? 0,
           direction: l.direction,
         })),
         bookingDate: dateToRFC3339(bookingDate),
@@ -129,8 +163,9 @@ export function PostTransactionForm({ pid }: { pid: string }) {
               <Hint id="double-entry" />
             </DialogTitle>
             <DialogDescription>
-              Add legs until total debits equal total credits. Amounts are in
-              euros; they’re stored as integer cents.
+              Add legs until total debits equal total credits per asset. Each
+              leg&apos;s amount is in the asset of the account it posts to,
+              stored as an integer at that asset&apos;s scale.
             </DialogDescription>
           </DialogHeader>
 
@@ -140,7 +175,9 @@ export function PostTransactionForm({ pid }: { pid: string }) {
               <span className="text-sm font-medium">Legs</span>
               <Hint id="amount-cents" />
             </div>
-            {legs.map((leg, i) => (
+            {legs.map((leg, i) => {
+              const asset = assetForLeg(leg.accountId);
+              return (
               <div key={i} className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
                   <GLAccountPicker
@@ -164,10 +201,15 @@ export function PostTransactionForm({ pid }: { pid: string }) {
                   </SelectContent>
                 </Select>
                 <div className="w-32">
-                  <MoneyInput
-                    valueCents={leg.cents}
-                    onChangeCents={(c) => updateLeg(i, { cents: c })}
-                  />
+                  {asset ? (
+                    <MoneyInput
+                      value={leg.amount}
+                      onChange={(a) => updateLeg(i, { amount: a })}
+                      asset={asset}
+                    />
+                  ) : (
+                    <Skeleton className="h-9 w-full" />
+                  )}
                 </div>
                 <Button
                   type="button"
@@ -182,7 +224,8 @@ export function PostTransactionForm({ pid }: { pid: string }) {
                   <Trash2 className="size-4" />
                 </Button>
               </div>
-            ))}
+              );
+            })}
             <Button
               type="button"
               variant="outline"
@@ -190,7 +233,7 @@ export function PostTransactionForm({ pid }: { pid: string }) {
               onClick={() =>
                 setLegs((prev) => [
                   ...prev,
-                  { accountId: "", direction: "Credit", cents: null },
+                  { accountId: "", direction: "Credit", amount: null },
                 ])
               }
             >
@@ -209,8 +252,17 @@ export function PostTransactionForm({ pid }: { pid: string }) {
             )}
           >
             <span className="text-muted-foreground">
-              Debits <Money cents={debits} /> · Credits{" "}
-              <Money cents={credits} />
+              {summaryAsset ? (
+                <>
+                  Debits <Money amount={debits} asset={summaryAsset} /> · Credits{" "}
+                  <Money amount={credits} asset={summaryAsset} />
+                </>
+              ) : (
+                <>
+                  Debits {debits} · Credits {credits} (legs use different assets — see
+                  each leg above)
+                </>
+              )}
             </span>
             <span className={balanced ? "text-emerald-600" : "text-amber-600"}>
               {balanced ? "Balanced ✓" : "Not balanced"}

@@ -19,6 +19,7 @@ import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
 import { useFundDeposit } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
+import type { Asset } from "@/lib/types";
 
 // Funds a deposit account: credits the customer's deposit and raises the bank's
 // central-bank reserve in step. This is how reserves (which start at 0) are
@@ -26,26 +27,28 @@ import { describeError } from "@/lib/api/errors";
 export function FundParticipantForm({
   pid,
   did,
+  asset,
 }: {
   pid: string;
   did: string;
+  asset: Asset;
 }) {
   const [open, setOpen] = useState(false);
-  const [amountCents, setAmountCents] = useState<number | null>(null);
+  const [amount, setAmount] = useState<number | null>(null);
   const [description, setDescription] = useState("");
   const fund = useFundDeposit(pid);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (amountCents == null) return;
+    if (amount == null) return;
     try {
       await fund.mutateAsync({
         account: did,
-        amount: amountCents,
+        amount,
         description: description.trim() || undefined,
       });
       toast.success("Funded — reserve raised in step");
-      setAmountCents(null);
+      setAmount(null);
       setDescription("");
       setOpen(false);
     } catch (err) {
@@ -76,8 +79,9 @@ export function FundParticipantForm({
             </FieldLabel>
             <MoneyInput
               id="fund-amount"
-              valueCents={amountCents}
-              onChangeCents={setAmountCents}
+              value={amount}
+              onChange={setAmount}
+              asset={asset}
             />
           </div>
           <div className="space-y-2">
@@ -92,7 +96,7 @@ export function FundParticipantForm({
           <DialogFooter>
             <Button
               type="submit"
-              disabled={fund.isPending || amountCents == null}
+              disabled={fund.isPending || amount == null}
             >
               {fund.isPending ? "Funding…" : "Fund"}
             </Button>

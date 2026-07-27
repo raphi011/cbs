@@ -35,6 +35,7 @@ import { ErrorState } from "@/components/error-state";
 import {
   useAccountBalance,
   useAccounts,
+  useAssetLookup,
   useCreateAccount,
   useCreateLedger,
   useCreateSubledger,
@@ -203,6 +204,8 @@ function AccountDialog({
 
 function AccountRow({ pid, account }: { pid: string; account: Account }) {
   const { data } = useAccountBalance(pid, account.id);
+  const { byCode } = useAssetLookup(pid);
+  const asset = byCode.get(account.asset);
   return (
     <div className="flex items-center justify-between gap-3 px-3 py-2">
       <span className="flex items-center gap-2">
@@ -216,7 +219,11 @@ function AccountRow({ pid, account }: { pid: string; account: Account }) {
         <IdText id={account.id} />
       </span>
       <span className="text-sm font-medium">
-        <Money cents={data?.balance ?? 0} />
+        {asset ? (
+          <Money amount={data?.balance ?? 0} asset={asset} />
+        ) : (
+          <Skeleton className="h-4 w-16" />
+        )}
       </span>
     </div>
   );

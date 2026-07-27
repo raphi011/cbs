@@ -20,7 +20,8 @@ import { Hint } from "@/components/hint";
 import { ErrorState } from "@/components/error-state";
 import { PostTransactionForm } from "@/components/forms/post-transaction-form";
 import { ConfirmAction } from "@/components/forms/confirm-action";
-import { useReverseTransaction, useTransactions } from "@/lib/api/hooks";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAssetLookup, useReverseTransaction, useTransactions } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { formatDate } from "@/lib/dates";
 import type { Transaction } from "@/lib/types";
@@ -30,6 +31,7 @@ export default function TransactionsPage() {
   const pid = typeof params.pid === "string" ? params.pid : "";
   const { data, isLoading, error, refetch } = useTransactions(pid);
   const reverse = useReverseTransaction(pid);
+  const { byCode } = useAssetLookup(pid);
   const [selected, setSelected] = useState<Transaction | null>(null);
 
   const columns: Column<Transaction>[] = [
@@ -103,18 +105,25 @@ export default function TransactionsPage() {
                 </div>
 
                 <div className="rounded-md border divide-y">
-                  {selected.entries.map((e, i) => (
-                    <div
-                      key={e.id ?? i}
-                      className="flex items-center justify-between gap-2 px-3 py-2"
-                    >
-                      <span className="flex items-center gap-2">
-                        <DirectionBadge direction={e.direction} />
-                        <IdText id={e.accountId} />
-                      </span>
-                      <Money cents={e.amount} />
-                    </div>
-                  ))}
+                  {selected.entries.map((e, i) => {
+                    const asset = byCode.get(e.asset);
+                    return (
+                      <div
+                        key={e.id ?? i}
+                        className="flex items-center justify-between gap-2 px-3 py-2"
+                      >
+                        <span className="flex items-center gap-2">
+                          <DirectionBadge direction={e.direction} />
+                          <IdText id={e.accountId} />
+                        </span>
+                        {asset ? (
+                          <Money amount={e.amount} asset={asset} />
+                        ) : (
+                          <Skeleton className="h-4 w-16" />
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {selected.status === "Posted" && (

@@ -8,22 +8,24 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { IdText } from "@/components/id-text";
 import { ErrorState } from "@/components/error-state";
 import { StatementTable } from "@/components/statement/statement-table";
-import { useDepositAccount, useStatement } from "@/lib/api/hooks";
-import type { DepositAccount } from "@/lib/types";
+import { useAssetLookup, useDepositAccount, useStatement } from "@/lib/api/hooks";
+import type { Asset, DepositAccount } from "@/lib/types";
 
 function StatementBody({
   pid,
   did,
   account,
+  asset,
 }: {
   pid: string;
   did: string;
   account: DepositAccount;
+  asset: Asset;
 }) {
   const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.glAccount);
   if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
   if (isLoading) return <Skeleton className="h-64 w-full" />;
-  return <StatementTable rows={rows} book={book} glAccount={account.glAccount} pid={pid} />;
+  return <StatementTable rows={rows} book={book} glAccount={account.glAccount} pid={pid} asset={asset} />;
 }
 
 export default function StatementPage() {
@@ -32,6 +34,8 @@ export default function StatementPage() {
   const did = typeof params.did === "string" ? params.did : "";
 
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
+  const { byCode } = useAssetLookup(pid);
+  const asset = account ? byCode.get(account.asset) : undefined;
   const back = `/participants/${pid}/deposit-accounts/${did}`;
 
   return (
@@ -42,7 +46,7 @@ export default function StatementPage() {
 
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
-      ) : isLoading || !account ? (
+      ) : isLoading || !account || !asset ? (
         <Skeleton className="h-10 w-64" />
       ) : (
         <>
@@ -50,7 +54,7 @@ export default function StatementPage() {
             <h2 className="text-xl font-semibold tracking-tight">{account.name} — statement</h2>
             <IdText id={account.id} />
           </div>
-          <StatementBody pid={pid} did={did} account={account} />
+          <StatementBody pid={pid} did={did} account={account} asset={asset} />
         </>
       )}
     </div>

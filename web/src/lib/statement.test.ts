@@ -7,7 +7,7 @@ import type { Entry, Participant, Transaction } from "@/lib/types";
 const A = "acct_11"; // backing account (a liability)
 
 function leg(accountId: string, amount: number, direction: Direction): Entry {
-  return { accountId, amount, direction };
+  return { accountId, amount, direction, asset: "EUR" };
 }
 
 function tx(p: {

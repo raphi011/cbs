@@ -19,6 +19,7 @@ import { MoneyInput } from "@/components/money";
 import { GLAccountPicker } from "@/components/pickers/gl-account-picker";
 import { useCaptureHold } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
+import type { Asset } from "@/lib/types";
 
 // Captures a hold: posts a real ledger transaction debiting the customer and
 // crediting a counterparty GL account, for the final amount (up to the held
@@ -28,26 +29,28 @@ export function CaptureHoldForm({
   pid,
   hid,
   heldAmount,
+  asset,
 }: {
   pid: string;
   hid: string;
   heldAmount: number;
+  asset: Asset;
 }) {
   const [open, setOpen] = useState(false);
   const [counterparty, setCounterparty] = useState("");
-  const [amountCents, setAmountCents] = useState<number | null>(heldAmount);
+  const [amount, setAmount] = useState<number | null>(heldAmount);
   const [description, setDescription] = useState("");
   const capture = useCaptureHold(pid);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!counterparty.trim() || amountCents == null) return;
+    if (!counterparty.trim() || amount == null) return;
     try {
       const tx = await capture.mutateAsync({
         hid,
         body: {
           counterparty: counterparty.trim(),
-          amount: amountCents,
+          amount,
           description: description.trim() || undefined,
         },
       });
@@ -93,8 +96,9 @@ export function CaptureHoldForm({
             </FieldLabel>
             <MoneyInput
               id="cap-amount"
-              valueCents={amountCents}
-              onChangeCents={setAmountCents}
+              value={amount}
+              onChange={setAmount}
+              asset={asset}
             />
           </div>
           <div className="space-y-2">
@@ -109,7 +113,7 @@ export function CaptureHoldForm({
             <Button
               type="submit"
               disabled={
-                capture.isPending || !counterparty.trim() || amountCents == null
+                capture.isPending || !counterparty.trim() || amount == null
               }
             >
               {capture.isPending ? "Capturing…" : "Capture"}

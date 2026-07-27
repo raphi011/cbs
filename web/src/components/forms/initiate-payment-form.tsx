@@ -29,6 +29,14 @@ import { useInitiatePayment, useSchemes } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { PartyRef } from "@/lib/types";
 
+// schemeDTO carries no asset field, even though the API resolves one
+// server-side for the payment it produces (see toPaymentDTO in
+// api/dto_payment.go) — so the chosen scheme can't tell this form its scale
+// either. Every scheme implemented so far settles in EUR (see
+// payment/scheme.go's SCT/SDD) — see the matching comment in
+// net-positions-table.tsx.
+const PAYMENT_ASSET = { code: "EUR", scale: 2 };
+
 // Initiates a payment under a scheme. The form is scheme-aware: a mandate is
 // required only when the chosen scheme requires one (pull/direct-debit).
 export function InitiatePaymentForm() {
@@ -37,7 +45,7 @@ export function InitiatePaymentForm() {
   const [scheme, setScheme] = useState("");
   const [debtor, setDebtor] = useState<PartyRef>(emptyPartyRef);
   const [creditor, setCreditor] = useState<PartyRef>(emptyPartyRef);
-  const [amountCents, setAmountCents] = useState<number | null>(null);
+  const [amount, setAmount] = useState<number | null>(null);
   const [mandateId, setMandateId] = useState("");
   const [endToEndId, setEndToEndId] = useState("");
   const [description, setDescription] = useState("");
@@ -52,7 +60,7 @@ export function InitiatePaymentForm() {
     debtor.account.trim() &&
     creditor.participant.trim() &&
     creditor.account.trim() &&
-    amountCents != null &&
+    amount != null &&
     (!needsMandate || mandateId.trim());
 
   async function submit(e: React.FormEvent) {
@@ -63,7 +71,7 @@ export function InitiatePaymentForm() {
         scheme,
         debtor,
         creditor,
-        amount: amountCents!,
+        amount: amount!,
         mandateId: mandateId.trim() || undefined,
         endToEndId: endToEndId.trim() || undefined,
         description: description.trim() || undefined,
@@ -71,7 +79,7 @@ export function InitiatePaymentForm() {
       toast.success(`Payment initiated (${p.id})`);
       setDebtor(emptyPartyRef);
       setCreditor(emptyPartyRef);
-      setAmountCents(null);
+      setAmount(null);
       setMandateId("");
       setEndToEndId("");
       setDescription("");
@@ -131,8 +139,9 @@ export function InitiatePaymentForm() {
             </FieldLabel>
             <MoneyInput
               id="pay-amount"
-              valueCents={amountCents}
-              onChangeCents={setAmountCents}
+              value={amount}
+              onChange={setAmount}
+              asset={PAYMENT_ASSET}
             />
           </div>
 

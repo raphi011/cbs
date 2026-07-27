@@ -12,7 +12,7 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
-import type { AuditQuery } from "@/lib/types";
+import type { Asset, AuditQuery } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -71,6 +71,34 @@ export function useCentralBankAudit(q: AuditQuery = {}) {
     queryKey: qk.centralBankAudit(q),
     queryFn: () => api.centralBankAudit(q),
   });
+}
+
+// --- Assets -----------------------------------------------------------
+
+export function useAssets(pid: string) {
+  return useQuery({
+    queryKey: qk.assets(pid),
+    queryFn: () => api.listAssets(pid),
+    enabled: pid !== "",
+  });
+}
+
+// Resolves asset codes to their full definition (name, scale, class) via one
+// participant's own asset registry. Assets are book-scoped (see
+// ledger.Book.CreateAsset), so a code's scale can only be looked up against
+// the specific book it was registered in — there is no global table to
+// consult instead. `byCode.get(code)` is undefined while the registry is
+// still loading or for an unregistered code; callers must not substitute a
+// guessed scale in that case (that is exactly the bug this asset dimension
+// exists to prevent — see web/src/lib/money.ts).
+export function useAssetLookup(pid: string) {
+  const q = useAssets(pid);
+  const byCode = useMemo(() => {
+    const m = new Map<string, Asset>();
+    for (const a of q.data ?? []) m.set(a.code, a);
+    return m;
+  }, [q.data]);
+  return { byCode, isLoading: q.isLoading, error: q.error };
 }
 
 // --- Ledger: accounts tree ------------------------------------------------

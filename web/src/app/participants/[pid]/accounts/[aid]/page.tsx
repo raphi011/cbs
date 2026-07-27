@@ -13,6 +13,7 @@ import { ErrorState } from "@/components/error-state";
 import { StatementTable } from "@/components/statement/statement-table";
 import {
   useAccountStatement,
+  useAssetLookup,
   useDepositAccounts,
   useGLAccount,
   useParticipant,
@@ -28,6 +29,8 @@ export default function AccountDetailPage() {
   const statement = useAccountStatement(pid, aid, account?.type);
   const { data: deposits } = useDepositAccounts(pid);
   const { data: participant } = useParticipant(pid);
+  const { byCode } = useAssetLookup(pid);
+  const asset = account ? byCode.get(account.asset) : undefined;
 
   const back = `/participants/${pid}/ledger`;
   const backingDeposit = deposits?.find((d) => d.glAccount === aid);
@@ -45,6 +48,8 @@ export default function AccountDetailPage() {
         <Skeleton className="h-10 w-64" />
       ) : !account ? (
         <ErrorState error={new Error(`Account ${aid} not found in the chart of accounts.`)} onRetry={() => refetch()} />
+      ) : !asset ? (
+        <Skeleton className="h-10 w-64" />
       ) : (
         <>
           <div className="space-y-1">
@@ -84,7 +89,7 @@ export default function AccountDetailPage() {
                 <Skeleton className="h-6 w-24" />
               ) : (
                 <div className="text-lg font-semibold tabular-nums">
-                  <Money cents={statement.book} />
+                  <Money amount={statement.book} asset={asset} />
                 </div>
               )}
             </CardContent>
@@ -102,6 +107,7 @@ export default function AccountDetailPage() {
                 book={statement.book}
                 glAccount={aid}
                 pid={pid}
+                asset={asset}
                 amountHintId="normal-balance"
               />
             )}

@@ -15,6 +15,7 @@ import { Hint } from "@/components/hint";
 import { Money } from "@/components/money";
 import { ConfirmAction } from "@/components/forms/confirm-action";
 import {
+  useAssetLookup,
   usePayment,
   useRejectPayment,
   useReturnPayment,
@@ -51,6 +52,10 @@ export default function PaymentDetailPage() {
   const schemes = useSchemes();
   const reject = useRejectPayment();
   const ret = useReturnPayment();
+  // See PaymentAmountCell in app/payments/page.tsx for why the debtor's
+  // participant, not the scheme, is where a payment's scale is resolved from.
+  const { byCode } = useAssetLookup(p?.debtor.participant ?? "");
+  const asset = p ? byCode.get(p.asset) : undefined;
 
   const scheme = schemes.data?.find((s) => s.id === p?.scheme);
   // Reject is for in-flight payments (before money has settled); return unwinds
@@ -70,7 +75,7 @@ export default function PaymentDetailPage() {
 
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
-      ) : isLoading || !p ? (
+      ) : isLoading || !p || !asset ? (
         <Skeleton className="h-64 w-full" />
       ) : (
         <>
@@ -139,7 +144,7 @@ export default function PaymentDetailPage() {
               <CardContent className="py-0">
                 <Row label="Scheme">{p.scheme}</Row>
                 <Row label="Amount">
-                  <Money cents={p.amount} />
+                  <Money amount={p.amount} asset={asset} />
                 </Row>
                 {p.mandateId && (
                   <Row label="Mandate" hint="requires-mandate">

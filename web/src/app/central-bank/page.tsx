@@ -6,8 +6,20 @@ import { DataTable, type Column } from "@/components/data-table";
 import { AmountCell } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { ErrorState } from "@/components/error-state";
-import { useCentralBankAudit, useReserves } from "@/lib/api/hooks";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAssetLookup, useCentralBankAudit, useReserves } from "@/lib/api/hooks";
 import type { Reserve } from "@/lib/types";
+
+// A reserve's amount can only be rendered once its asset's scale is resolved
+// from the *reserve-holding participant's* own book-scoped asset registry
+// (see ledger.Book.CreateAsset) — reserves span every participant, so this
+// resolves per row rather than once for the page.
+function ReserveAmountCell({ reserve }: { reserve: Reserve }) {
+  const { byCode, isLoading } = useAssetLookup(reserve.participant);
+  const asset = byCode.get(reserve.asset);
+  if (!asset) return isLoading ? <Skeleton className="ml-auto h-4 w-16" /> : null;
+  return <AmountCell amount={reserve.reserve} asset={asset} />;
+}
 
 const reserveColumns: Column<Reserve>[] = [
   {
@@ -25,7 +37,7 @@ const reserveColumns: Column<Reserve>[] = [
     header: "Reserve",
     align: "right",
     hint: "reserve-account",
-    render: (r) => <AmountCell cents={r.reserve} />,
+    render: (r) => <ReserveAmountCell reserve={r} />,
   },
 ];
 

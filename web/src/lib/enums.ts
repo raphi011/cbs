@@ -40,6 +40,10 @@ export type SchemeDirection = "Push" | "Pull";
 
 export type SettlementModel = "Net" | "Gross";
 
+// AssetClass mirrors ledger.AssetClass.String() ("Fiat" or "Crypto") — the
+// wire value from assetDTO.class, not a numeric enum.
+export type AssetClass = "Fiat" | "Crypto";
+
 export const ACCOUNT_TYPES: AccountType[] = [
   "Asset",
   "Liability",
