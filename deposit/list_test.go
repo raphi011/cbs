@@ -1,16 +1,23 @@
-package deposit
+package deposit_test
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	. "github.com/raphi011/cbs/deposit"
+)
 
 func TestListAccountsHoldsSnapshots(t *testing.T) {
+	ctx := context.Background()
 	reg, deposits, cash := testRegister(t)
 
-	alice, err := reg.OpenAccount(deposits, "Alice", 0)
+	alice, err := reg.OpenAccount(ctx, deposits, "Alice", 0)
 	assertNoError(t, err)
-	_, err = reg.OpenAccount(deposits, "Bob", 0)
+	_, err = reg.OpenAccount(ctx, deposits, "Bob", 0)
 	assertNoError(t, err)
 
-	accts := reg.ListAccounts()
+	accts, err := reg.ListAccounts(ctx)
+	assertNoError(t, err)
 	assertEqual(t, "deposit account count", len(accts), 2)
 	assertEqual(t, "first account is Alice", accts[0].ID, alice.ID)
 
@@ -18,19 +25,25 @@ func TestListAccountsHoldsSnapshots(t *testing.T) {
 	fund(t, reg, cash, alice, 10000)
 
 	// Two holds on Alice; none on an unknown account.
-	_, err = reg.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 1000})
+	_, err = reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 1000})
 	assertNoError(t, err)
-	_, err = reg.CreateHold(CreateHoldRequest{AccountID: alice.ID, Amount: 2000})
+	_, err = reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 2000})
 	assertNoError(t, err)
 
-	holds := reg.ListHolds(alice.ID)
+	holds, err := reg.ListHolds(ctx, alice.ID)
+	assertNoError(t, err)
 	assertEqual(t, "hold count for Alice", len(holds), 2)
-	assertEqual(t, "holds for unknown account", len(reg.ListHolds("nope")), 0)
+	unknownHolds, err := reg.ListHolds(ctx, "nope")
+	assertNoError(t, err)
+	assertEqual(t, "holds for unknown account", len(unknownHolds), 0)
 
 	// Snapshots enumerate by business date.
-	_, err = reg.TakeEndOfDaySnapshot(alice.ID, fixedTime)
+	_, err = reg.TakeEndOfDaySnapshot(ctx, alice.ID, fixedTime)
 	assertNoError(t, err)
-	snaps := reg.ListSnapshots(alice.ID)
+	snaps, err := reg.ListSnapshots(ctx, alice.ID)
+	assertNoError(t, err)
 	assertEqual(t, "snapshot count for Alice", len(snaps), 1)
-	assertEqual(t, "snapshots for unknown account", len(reg.ListSnapshots("nope")), 0)
+	unknownSnaps, err := reg.ListSnapshots(ctx, "nope")
+	assertNoError(t, err)
+	assertEqual(t, "snapshots for unknown account", len(unknownSnaps), 0)
 }

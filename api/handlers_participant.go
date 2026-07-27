@@ -25,7 +25,7 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.network().AddParticipant(req.Name)
+	p, err := s.network().AddParticipant(r.Context(), req.Name)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -34,7 +34,11 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListParticipants(w http.ResponseWriter, r *http.Request) {
-	parts := s.network().ListParticipants()
+	parts, err := s.network().ListParticipants(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]participantDTO, len(parts))
 	for i, p := range parts {
 		out[i] = toParticipantDTO(p)
@@ -60,11 +64,11 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	if err := s.network().Deposit(p.ID, deposit.AccountID(req.Account), req.Amount, req.Description); err != nil {
+	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), req.Amount, req.Description); err != nil {
 		writeError(w, err)
 		return
 	}
-	bal, err := p.Deposit.GetBalance(deposit.AccountID(req.Account))
+	bal, err := p.Deposit.GetBalance(r.Context(), deposit.AccountID(req.Account))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -82,10 +86,14 @@ func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
-	parts := s.network().ListParticipants()
+	parts, err := s.network().ListParticipants(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	out := make([]reserveDTO, 0, len(parts))
 	for _, p := range parts {
-		bal, err := s.network().ReserveBalance(p.ID)
+		bal, err := s.network().ReserveBalance(r.Context(), p.ID)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -97,7 +105,7 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 	pid := payment.ParticipantID(r.PathValue("pid"))
-	bal, err := s.network().ReserveBalance(pid)
+	bal, err := s.network().ReserveBalance(r.Context(), pid)
 	if err != nil {
 		writeError(w, err)
 		return

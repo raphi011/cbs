@@ -1,8 +1,9 @@
 package deposit
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
@@ -19,67 +20,100 @@ import (
 // creates a GL account, and capturing a hold posts a real GL transaction.
 // Holds and snapshots are operational state tracked only here.
 //
+// # Where the state lives
+//
+// A Register owns no state of its own. Accounts, holds, snapshots and the audit
+// log live in a Store, exactly as the ledger's do — and in the same store, since
+// deposit.Tx embeds ledger.Tx. The Register keeps only the store handle, the
+// ledger.Book it composes with, the BookID both are scoped to, and its clock.
+//
+// # Units of work
+//
+// Every mutating method comes in two forms. The plain form (CaptureHold) wraps a
+// single Store.Update. The exported …Tx form (CaptureHoldTx) takes a
+// caller-supplied Tx, so the payment layer can drive a deposit operation and its
+// own bookkeeping in one atomic unit of work.
+//
+// A …Tx method must never call a plain method on the Register or on the Book:
+// that would open a second unit of work inside the first, which store/mem
+// refuses (and, without the guard, would deadlock on its write lock). This is
+// why CaptureHoldTx calls Book.PostTransactionTx rather than
+// Book.PostTransaction.
+//
 // # Thread Safety
 //
-// All public methods on Register are safe for concurrent use. Internally, a
-// read-write mutex protects the Register's own state; the backing ledger.Book
-// has its own lock.
+// All public methods on Register are safe for concurrent use; the Store
+// provides the isolation.
 type Register struct {
-	mu sync.RWMutex
+	// store owns all persistent state of this layer.
+	store Store
 
-	// book is the underlying general ledger backing the deposit accounts.
-	book *ledger.Book
+	// gl is the general ledger this register composes with. Only its …Tx
+	// methods are used from inside a unit of work.
+	gl *ledger.Book
 
-	// accounts stores deposit accounts, keyed by ID.
-	accounts map[AccountID]*Account
-
-	// holds stores holds, keyed by ID.
-	holds map[HoldID]*Hold
-
-	// accountHolds maps account IDs to their hold IDs, enabling efficient
-	// lookup of holds per account.
-	accountHolds map[AccountID][]HoldID
-
-	// snapshots stores end-of-day balance snapshots.
-	// Structure: accountID -> dateKey -> snapshot.
-	snapshots map[AccountID]map[string]*Snapshot
-
-	// idCounter is a simple monotonic counter for generating unique IDs.
-	idCounter int64
+	// bookID is the book both layers are scoped to. Every store call carries
+	// it, and every audit event this layer writes is stamped with it.
+	bookID ledger.BookID
 
 	// clock is the time source. Override in tests to control time.
 	clock func() time.Time
 }
 
-// NewRegister creates a new deposit register backed by the given general
-// ledger. It uses time.Now as its clock.
-func NewRegister(book *ledger.Book) *Register {
-	return NewRegisterWithClock(book, time.Now)
+// NewRegister creates a deposit register over the given store, layered on the
+// given general ledger.
+//
+// id must be book.ID(): the register's rows and the book's rows are scoped by
+// the same BookID, which is what lets one Tx read both.
+//
+// Share the clock with the backing ledger.Book so that audit timestamps and
+// snapshot dates line up across layers.
+//
+// Example:
+//
+//	s := mem.New(time.Now)
+//	book := ledger.NewBook(s, "bank", time.Now)
+//	reg := deposit.NewRegister(s.Deposit(), book, "bank", time.Now)
+func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time) *Register {
+	return &Register{store: store, gl: book, bookID: id, clock: clock}
 }
 
-// NewRegisterWithClock creates a new deposit register that reads the current
-// time from the provided clock function instead of time.Now. Share the clock
-// with the backing ledger.Book so that snapshot dates line up across layers.
-func NewRegisterWithClock(book *ledger.Book, clock func() time.Time) *Register {
-	return &Register{
-		book:         book,
-		accounts:     make(map[AccountID]*Account),
-		holds:        make(map[HoldID]*Hold),
-		accountHolds: make(map[AccountID][]HoldID),
-		snapshots:    make(map[AccountID]map[string]*Snapshot),
-		clock:        clock,
-	}
-}
+// Store returns the underlying store, so a caller that needs to span several
+// layers in one unit of work can open the Update itself and then drive the …Tx
+// methods of each layer with the resulting Tx.
+func (r *Register) Store() Store { return r.store }
 
-// nextID generates a unique ID with the given prefix.
-func (r *Register) nextID(prefix string) string {
-	r.idCounter++
-	return fmt.Sprintf("%s_%d", prefix, r.idCounter)
-}
+// BookID returns the book this register is scoped to.
+func (r *Register) BookID() ledger.BookID { return r.bookID }
 
 // now returns the current time using the register's clock.
-func (r *Register) now() time.Time {
-	return r.clock()
+func (r *Register) now() time.Time { return r.clock() }
+
+// appendAuditTx records an immutable deposit-scope event through the
+// transaction, so an audit event never outlives an operation that rolled back.
+//
+// payload is marshalled now, not held by reference, so later mutation of the
+// entity cannot rewrite history. The event's Seq is assigned by the store, and
+// its BookID is the register's, so a deposit event is attributable to the bank
+// that made it rather than landing in the log unscoped.
+func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
+	}
+	id, err := tx.NextID(ctx, r.bookID, "evt")
+	if err != nil {
+		return err
+	}
+	return tx.AppendAudit(ctx, ledger.AuditEvent{
+		ID:         id,
+		BookID:     r.bookID,
+		Scope:      ledger.ScopeDeposit,
+		Type:       eventType,
+		EntityID:   entityID,
+		Payload:    raw,
+		OccurredAt: r.now(),
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -95,38 +129,61 @@ func (r *Register) now() time.Time {
 //
 // Returns any error from the underlying ledger (for example
 // ledger.ErrSubledgerNotFound if the subledger does not exist).
-func (r *Register) OpenAccount(subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
+	var out Account
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.OpenAccountTx(ctx, tx, subledger, name, overdraftLimit)
+		return err
+	})
+	return out, err
+}
 
-	gl, err := r.book.CreateAccount(subledger, name, ledger.Liability)
+// OpenAccountTx is OpenAccount within a caller-supplied unit of work. The GL
+// account and the deposit account are created through the same Tx, so an
+// account can never exist in one layer without the other.
+func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, overdraftLimit ledger.Amount) (Account, error) {
+	if err := ledger.ValidateText("name", name); err != nil {
+		return Account{}, err
+	}
+
+	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability)
 	if err != nil {
 		return Account{}, err
 	}
 
-	acct := &Account{
-		ID:             AccountID(r.nextID("dep")),
+	id, err := tx.NextID(ctx, r.bookID, "dep")
+	if err != nil {
+		return Account{}, err
+	}
+
+	acct := Account{
+		ID:             AccountID(id),
 		GLAccount:      gl.ID,
 		Name:           name,
 		Status:         Active,
 		OverdraftLimit: overdraftLimit,
 		CreatedAt:      r.now(),
 	}
-	r.accounts[acct.ID] = acct
-	return *acct, nil
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return Account{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventAccountOpened, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
+	return acct, nil
 }
 
 // GetAccount retrieves a deposit account by its ID.
 // Returns ErrAccountNotFound if the account does not exist.
-func (r *Register) GetAccount(id AccountID) (Account, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	acct, ok := r.accounts[id]
-	if !ok {
-		return Account{}, ErrAccountNotFound
-	}
-	return *acct, nil
+func (r *Register) GetAccount(ctx context.Context, id AccountID) (Account, error) {
+	var out Account
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetDepositAccount(ctx, r.bookID, id)
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -138,38 +195,30 @@ func (r *Register) GetAccount(id AccountID) (Account, error) {
 //
 // Returns ErrAccountNotFound if the account does not exist, or
 // ErrInvalidStatusTransition if the account is not Active.
-func (r *Register) Freeze(id AccountID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) Freeze(ctx context.Context, id AccountID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.FreezeTx(ctx, tx, id)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
-	}
-	if acct.Status != Active {
-		return ErrInvalidStatusTransition
-	}
-	acct.Status = Frozen
-	return nil
+// FreezeTx is Freeze within a caller-supplied unit of work.
+func (r *Register) FreezeTx(ctx context.Context, tx Tx, id AccountID) error {
+	return r.transitionTx(ctx, tx, id, Active, Frozen, ledger.EventAccountFrozen)
 }
 
 // Unfreeze transitions an account from Frozen back to Active.
 //
 // Returns ErrAccountNotFound if the account does not exist, or
 // ErrInvalidStatusTransition if the account is not Frozen.
-func (r *Register) Unfreeze(id AccountID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) Unfreeze(ctx context.Context, id AccountID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.UnfreezeTx(ctx, tx, id)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
-	}
-	if acct.Status != Frozen {
-		return ErrInvalidStatusTransition
-	}
-	acct.Status = Active
-	return nil
+// UnfreezeTx is Unfreeze within a caller-supplied unit of work.
+func (r *Register) UnfreezeTx(ctx context.Context, tx Tx, id AccountID) error {
+	return r.transitionTx(ctx, tx, id, Frozen, Active, ledger.EventAccountUnfrozen)
 }
 
 // MarkDormant transitions an account from Active to Dormant, reflecting a
@@ -177,38 +226,48 @@ func (r *Register) Unfreeze(id AccountID) error {
 //
 // Returns ErrAccountNotFound if the account does not exist, or
 // ErrInvalidStatusTransition if the account is not Active.
-func (r *Register) MarkDormant(id AccountID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) MarkDormant(ctx context.Context, id AccountID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.MarkDormantTx(ctx, tx, id)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
-	}
-	if acct.Status != Active {
-		return ErrInvalidStatusTransition
-	}
-	acct.Status = Dormant
-	return nil
+// MarkDormantTx is MarkDormant within a caller-supplied unit of work.
+func (r *Register) MarkDormantTx(ctx context.Context, tx Tx, id AccountID) error {
+	return r.transitionTx(ctx, tx, id, Active, Dormant, ledger.EventAccountDormant)
 }
 
 // Reactivate transitions an account from Dormant back to Active.
 //
 // Returns ErrAccountNotFound if the account does not exist, or
 // ErrInvalidStatusTransition if the account is not Dormant.
-func (r *Register) Reactivate(id AccountID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) Reactivate(ctx context.Context, id AccountID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.ReactivateTx(ctx, tx, id)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
+// ReactivateTx is Reactivate within a caller-supplied unit of work.
+func (r *Register) ReactivateTx(ctx context.Context, tx Tx, id AccountID) error {
+	return r.transitionTx(ctx, tx, id, Dormant, Active, ledger.EventAccountReactivated)
+}
+
+// transitionTx moves an account from one status to another if it is currently
+// in the expected one, and records the event. The four simple lifecycle edges
+// differ only in their from/to states and event type.
+func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, to AccountStatus, eventType string) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
 	}
-	if acct.Status != Dormant {
+	if acct.Status != from {
 		return ErrInvalidStatusTransition
 	}
-	acct.Status = Active
-	return nil
+	acct.Status = to
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, eventType, string(acct.ID), acct)
 }
 
 // Close permanently closes an account. Closed is a terminal state.
@@ -220,19 +279,23 @@ func (r *Register) Reactivate(id AccountID) error {
 // Returns ErrAccountNotFound if the account does not exist,
 // ErrInvalidStatusTransition if the account is already Closed, or
 // ErrAccountNotEmpty if its balance is non-zero.
-func (r *Register) Close(id AccountID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) Close(ctx context.Context, id AccountID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.CloseTx(ctx, tx, id)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
+// CloseTx is Close within a caller-supplied unit of work.
+func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
 	}
 	if acct.Status == Closed {
 		return ErrInvalidStatusTransition
 	}
 
-	book, err := r.book.BookBalance(acct.GLAccount)
+	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
 	if err != nil {
 		return err
 	}
@@ -241,7 +304,10 @@ func (r *Register) Close(id AccountID) error {
 	}
 
 	acct.Status = Closed
-	return nil
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventAccountClosed, string(acct.ID), acct)
 }
 
 // ---------------------------------------------------------------------------
@@ -274,22 +340,39 @@ type CreateHoldRequest struct {
 //   - ErrInvalidStatusTransition if the account is dormant.
 //   - ErrInvalidAmount if the amount is not positive.
 //   - ErrInsufficientAvailable if the hold would overdraw the available balance.
-func (r *Register) CreateHold(req CreateHoldRequest) (Hold, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) CreateHold(ctx context.Context, req CreateHoldRequest) (Hold, error) {
+	var out Hold
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.CreateHoldTx(ctx, tx, req)
+		return err
+	})
+	return out, err
+}
 
-	acct, ok := r.accounts[req.AccountID]
-	if !ok {
-		return Hold{}, ErrAccountNotFound
+// CreateHoldTx is CreateHold within a caller-supplied unit of work. The
+// available-balance check and the hold write happen through the same Tx, so two
+// concurrent holds cannot both see the same funds.
+func (r *Register) CreateHoldTx(ctx context.Context, tx Tx, req CreateHoldRequest) (Hold, error) {
+	if err := ledger.ValidateText("description", req.Description); err != nil {
+		return Hold{}, err
 	}
-	if err := r.requireActive(acct); err != nil {
+	if err := ledger.ValidateText("accountId", string(req.AccountID)); err != nil {
+		return Hold{}, err
+	}
+
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, req.AccountID)
+	if err != nil {
+		return Hold{}, err
+	}
+	if err := requireActive(acct); err != nil {
 		return Hold{}, err
 	}
 	if req.Amount <= 0 {
 		return Hold{}, ErrInvalidAmount
 	}
 
-	available, err := r.availableLocked(acct)
+	available, err := r.availableTx(ctx, tx, acct)
 	if err != nil {
 		return Hold{}, err
 	}
@@ -297,20 +380,27 @@ func (r *Register) CreateHold(req CreateHoldRequest) (Hold, error) {
 		return Hold{}, ErrInsufficientAvailable
 	}
 
-	now := r.now()
-	h := &Hold{
-		ID:          HoldID(r.nextID("hld")),
+	id, err := tx.NextID(ctx, r.bookID, "hld")
+	if err != nil {
+		return Hold{}, err
+	}
+
+	h := Hold{
+		ID:          HoldID(id),
 		AccountID:   req.AccountID,
 		Amount:      req.Amount,
 		ExpiresAt:   req.ExpiresAt,
 		Description: req.Description,
 		Status:      HoldActive,
-		CreatedAt:   now,
+		CreatedAt:   r.now(),
 	}
-
-	r.holds[h.ID] = h
-	r.accountHolds[req.AccountID] = append(r.accountHolds[req.AccountID], h.ID)
-	return *h, nil
+	if err := tx.PutHold(ctx, r.bookID, h); err != nil {
+		return Hold{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventHoldCreated, string(h.ID), h); err != nil {
+		return Hold{}, err
+	}
+	return h, nil
 }
 
 // ReleaseHold cancels an active hold, restoring the available balance.
@@ -318,20 +408,27 @@ func (r *Register) CreateHold(req CreateHoldRequest) (Hold, error) {
 // Returns:
 //   - ErrHoldNotFound if the hold does not exist.
 //   - ErrHoldNotActive if the hold has already been released or captured.
-func (r *Register) ReleaseHold(id HoldID) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) ReleaseHold(ctx context.Context, id HoldID) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.ReleaseHoldTx(ctx, tx, id)
+	})
+}
 
-	h, ok := r.holds[id]
-	if !ok {
-		return ErrHoldNotFound
+// ReleaseHoldTx is ReleaseHold within a caller-supplied unit of work.
+func (r *Register) ReleaseHoldTx(ctx context.Context, tx Tx, id HoldID) error {
+	h, err := tx.GetHold(ctx, r.bookID, id)
+	if err != nil {
+		return err
 	}
 	if h.Status != HoldActive {
 		return ErrHoldNotActive
 	}
 
 	h.Status = HoldReleased
-	return nil
+	if err := tx.PutHold(ctx, r.bookID, h); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventHoldReleased, string(h.ID), h)
 }
 
 // CaptureHold converts an active hold into a posted general-ledger
@@ -347,27 +444,45 @@ func (r *Register) ReleaseHold(id HoldID) error {
 //   - ErrHoldNotActive if the hold has already been released or captured.
 //   - ErrAccountNotFound if the deposit account no longer exists.
 //   - any error from the underlying ledger posting.
-func (r *Register) CaptureHold(id HoldID, counterparty ledger.AccountID, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) CaptureHold(ctx context.Context, id HoldID, counterparty ledger.AccountID, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
+	var out ledger.Transaction
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.CaptureHoldTx(ctx, tx, id, counterparty, captureAmount, description)
+		return err
+	})
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+	return out, nil
+}
 
-	h, ok := r.holds[id]
-	if !ok {
-		return ledger.Transaction{}, ErrHoldNotFound
+// CaptureHoldTx is CaptureHold within a caller-supplied unit of work.
+//
+// This is the method the whole store split exists for: the hold write and the
+// GL posting go through one Tx, so a posting that fails leaves the hold Active
+// instead of half-capturing it, and a caller composing this with its own writes
+// gets all of them or none.
+func (r *Register) CaptureHoldTx(ctx context.Context, tx Tx, id HoldID, counterparty ledger.AccountID, captureAmount ledger.Amount, description string) (ledger.Transaction, error) {
+	h, err := tx.GetHold(ctx, r.bookID, id)
+	if err != nil {
+		return ledger.Transaction{}, err
 	}
 	if h.Status != HoldActive {
 		return ledger.Transaction{}, ErrHoldNotActive
 	}
-	acct, ok := r.accounts[h.AccountID]
-	if !ok {
-		return ledger.Transaction{}, ErrAccountNotFound
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, h.AccountID)
+	if err != nil {
+		return ledger.Transaction{}, err
 	}
-
 	if captureAmount <= 0 {
 		captureAmount = h.Amount
 	}
 
-	tx, err := r.book.PostTransaction(ledger.PostTransactionRequest{
+	// Same tx as the hold write below — both commit or neither does. Note
+	// PostTransactionTx, not PostTransaction: the latter would open a second
+	// unit of work inside this one.
+	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
 			{AccountID: acct.GLAccount, Amount: captureAmount, Direction: ledger.Debit},
@@ -379,20 +494,28 @@ func (r *Register) CaptureHold(id HoldID, counterparty ledger.AccountID, capture
 	}
 
 	h.Status = HoldCaptured
-	return tx, nil
+	if err := tx.PutHold(ctx, r.bookID, h); err != nil {
+		return ledger.Transaction{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventHoldCaptured, string(h.ID), map[string]string{
+		"hold_id":        string(h.ID),
+		"transaction_id": string(glTx.ID),
+	}); err != nil {
+		return ledger.Transaction{}, err
+	}
+	return glTx, nil
 }
 
 // GetHold retrieves a hold by its ID.
 // Returns ErrHoldNotFound if the hold does not exist.
-func (r *Register) GetHold(id HoldID) (Hold, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	h, ok := r.holds[id]
-	if !ok {
-		return Hold{}, ErrHoldNotFound
-	}
-	return *h, nil
+func (r *Register) GetHold(ctx context.Context, id HoldID) (Hold, error) {
+	var out Hold
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetHold(ctx, r.bookID, id)
+		return err
+	})
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -408,26 +531,17 @@ func (r *Register) GetHold(id HoldID) (Hold, error) {
 //   - Available: Book - Holds + OverdraftLimit.
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (r *Register) GetBalance(id AccountID) (Balance, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	acct, ok := r.accounts[id]
-	if !ok {
-		return Balance{}, ErrAccountNotFound
-	}
-
-	book, err := r.book.BookBalance(acct.GLAccount)
-	if err != nil {
-		return Balance{}, err
-	}
-	holds := r.computeActiveHolds(id)
-
-	return Balance{
-		Book:      book,
-		Holds:     holds,
-		Available: book - holds + acct.OverdraftLimit,
-	}, nil
+func (r *Register) GetBalance(ctx context.Context, id AccountID) (Balance, error) {
+	var out Balance
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+		if err != nil {
+			return err
+		}
+		out, err = r.balanceTx(ctx, tx, acct)
+		return err
+	})
+	return out, err
 }
 
 // CheckWithdrawal reports whether the account may currently support a
@@ -439,19 +553,24 @@ func (r *Register) GetBalance(id AccountID) (Balance, error) {
 // ErrInsufficientAvailable is returned.
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (r *Register) CheckWithdrawal(id AccountID, amount ledger.Amount) error {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
+func (r *Register) CheckWithdrawal(ctx context.Context, id AccountID, amount ledger.Amount) error {
+	return r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		return r.CheckWithdrawalTx(ctx, tx, id, amount)
+	})
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return ErrAccountNotFound
+// CheckWithdrawalTx is CheckWithdrawal within a caller-supplied unit of work,
+// so a caller can check the funds and post the withdrawal atomically.
+func (r *Register) CheckWithdrawalTx(ctx context.Context, tx Tx, id AccountID, amount ledger.Amount) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
 	}
-	if err := r.requireActive(acct); err != nil {
+	if err := requireActive(acct); err != nil {
 		return err
 	}
 
-	available, err := r.availableLocked(acct)
+	available, err := r.availableTx(ctx, tx, acct)
 	if err != nil {
 		return err
 	}
@@ -462,8 +581,7 @@ func (r *Register) CheckWithdrawal(id AccountID, amount ledger.Amount) error {
 }
 
 // requireActive returns a status-specific error if the account is not Active.
-// The caller must hold r.mu.
-func (r *Register) requireActive(acct *Account) error {
+func requireActive(acct Account) error {
 	switch acct.Status {
 	case Active:
 		return nil
@@ -476,40 +594,43 @@ func (r *Register) requireActive(acct *Account) error {
 	}
 }
 
-// availableLocked computes the available balance of an account:
-// Book - Holds + OverdraftLimit. The caller must hold r.mu.
-func (r *Register) availableLocked(acct *Account) (ledger.Amount, error) {
-	book, err := r.book.BookBalance(acct.GLAccount)
+// balanceTx computes an account's three balances within a unit of work.
+func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance, error) {
+	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	if err != nil {
+		return Balance{}, err
+	}
+	holds, err := tx.ActiveHoldTotal(ctx, r.bookID, acct.ID, r.now())
+	if err != nil {
+		return Balance{}, err
+	}
+	return Balance{
+		Book:      book,
+		Holds:     holds,
+		Available: book - holds + acct.OverdraftLimit,
+	}, nil
+}
+
+// availableTx computes the available balance of an account:
+// Book - Holds + OverdraftLimit.
+func (r *Register) availableTx(ctx context.Context, tx Tx, acct Account) (ledger.Amount, error) {
+	bal, err := r.balanceTx(ctx, tx, acct)
 	if err != nil {
 		return 0, err
 	}
-	return book - r.computeActiveHolds(acct.ID) + acct.OverdraftLimit, nil
+	return bal.Available, nil
 }
 
-// computeActiveHolds sums all active, non-expired holds for an account.
-// The caller must hold r.mu.
-func (r *Register) computeActiveHolds(id AccountID) ledger.Amount {
-	var total ledger.Amount
-	now := r.now()
-
-	for _, holdID := range r.accountHolds[id] {
-		h := r.holds[holdID]
-		if h.Status != HoldActive {
-			continue
-		}
-		if r.expired(h, now) {
-			continue
-		}
-		total += h.Amount
+// bookBalanceTx reads the GL book balance of a backing account within a unit of
+// work. It reads the GL account first for its normal direction — the same two
+// steps Book.BookBalance takes, done here through the caller's Tx rather than by
+// opening a second one.
+func (r *Register) bookBalanceTx(ctx context.Context, tx Tx, id ledger.AccountID) (ledger.Amount, error) {
+	gl, err := tx.GetAccount(ctx, r.bookID, id)
+	if err != nil {
+		return 0, err
 	}
-
-	return total
-}
-
-// expired reports whether a hold's expiry has passed relative to now. A hold
-// with a zero ExpiresAt never expires.
-func (r *Register) expired(h *Hold, now time.Time) bool {
-	return !h.ExpiresAt.IsZero() && h.ExpiresAt.Before(now)
+	return tx.BookBalance(ctx, r.bookID, id, gl.Type.NormalBalance())
 }
 
 // ---------------------------------------------------------------------------
@@ -521,39 +642,42 @@ func (r *Register) expired(h *Hold, now time.Time) bool {
 // account/date, it is overwritten.
 //
 // Returns ErrAccountNotFound if the account does not exist.
-func (r *Register) TakeEndOfDaySnapshot(id AccountID, date time.Time) (Snapshot, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Register) TakeEndOfDaySnapshot(ctx context.Context, id AccountID, date time.Time) (Snapshot, error) {
+	var out Snapshot
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.TakeEndOfDaySnapshotTx(ctx, tx, id, date)
+		return err
+	})
+	return out, err
+}
 
-	acct, ok := r.accounts[id]
-	if !ok {
-		return Snapshot{}, ErrAccountNotFound
-	}
-
-	book, err := r.book.BookBalance(acct.GLAccount)
+// TakeEndOfDaySnapshotTx is TakeEndOfDaySnapshot within a caller-supplied unit
+// of work, so an end-of-day run can snapshot every account atomically.
+func (r *Register) TakeEndOfDaySnapshotTx(ctx context.Context, tx Tx, id AccountID, date time.Time) (Snapshot, error) {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	holds := r.computeActiveHolds(id)
 
-	snap := &Snapshot{
+	bal, err := r.balanceTx(ctx, tx, acct)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	snap := Snapshot{
 		AccountID: id,
 		Date:      date,
-		Balance: Balance{
-			Book:      book,
-			Holds:     holds,
-			Available: book - holds + acct.OverdraftLimit,
-		},
-		TakenAt: r.now(),
+		Balance:   bal,
+		TakenAt:   r.now(),
 	}
-
-	if r.snapshots[id] == nil {
-		r.snapshots[id] = make(map[string]*Snapshot)
+	if err := tx.PutSnapshot(ctx, r.bookID, snap); err != nil {
+		return Snapshot{}, err
 	}
-	dateKey := date.Format("2006-01-02")
-	r.snapshots[id][dateKey] = snap
-
-	return *snap, nil
+	if err := r.appendAuditTx(ctx, tx, ledger.EventSnapshotTaken, string(id), snap); err != nil {
+		return Snapshot{}, err
+	}
+	return snap, nil
 }
 
 // GetSnapshot retrieves an end-of-day balance snapshot for an account and
@@ -561,20 +685,35 @@ func (r *Register) TakeEndOfDaySnapshot(id AccountID, date time.Time) (Snapshot,
 //
 // Returns ErrAccountNotFound if the account does not exist, or
 // ErrSnapshotNotFound if no snapshot exists for the given parameters.
-func (r *Register) GetSnapshot(id AccountID, date time.Time) (Snapshot, error) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	if _, ok := r.accounts[id]; !ok {
-		return Snapshot{}, ErrAccountNotFound
-	}
-
-	dateKey := date.Format("2006-01-02")
-	if byAccount, ok := r.snapshots[id]; ok {
-		if snap, ok := byAccount[dateKey]; ok {
-			return *snap, nil
+func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time) (Snapshot, error) {
+	var out Snapshot
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetDepositAccount(ctx, r.bookID, id); err != nil {
+			return err
 		}
-	}
+		var err error
+		out, err = tx.GetSnapshot(ctx, r.bookID, id, SnapshotDateKey(date))
+		return err
+	})
+	return out, err
+}
 
-	return Snapshot{}, ErrSnapshotNotFound
+// ---------------------------------------------------------------------------
+// Audit Trail
+// ---------------------------------------------------------------------------
+
+// GetAuditLog returns this register's deposit-scope audit events, ordered by
+// Seq.
+//
+// The ledger below writes into the same log under ScopeLedger; this method
+// deliberately narrows to ScopeDeposit and to the register's own book, so it
+// reports only the mutations this layer made.
+func (r *Register) GetAuditLog(ctx context.Context) ([]ledger.AuditEvent, error) {
+	var out []ledger.AuditEvent
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListAudit(ctx, ledger.AuditFilter{BookID: r.bookID, Scope: ledger.ScopeDeposit})
+		return err
+	})
+	return out, err
 }

@@ -40,9 +40,22 @@ func (c *clock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// goLive switches the clock to real wall-clock time, permanently.
+// goLive switches the clock to real wall-clock time.
 func (c *clock) goLive() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.live = true
+}
+
+// rewind refreezes the clock at start.
+//
+// Reseeding after a store reset has to replay the same timeline, or the sample
+// data's booking dates, value dates and snapshot dates would drift a little
+// further from baseDate with every reset — and the dataset would stop being the
+// fixed reference the tests and the UI describe.
+func (c *clock) rewind(start time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = start
+	c.live = false
 }

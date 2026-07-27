@@ -1,23 +1,39 @@
-package ledger
+// The ledger tests live in package ledger_test rather than package ledger: they
+// build a Book over store/mem, and store/mem imports ledger, so an in-package
+// test file could not import it without a cycle. The package is dot-imported so
+// the tests still read as if they were inside it; the handful of unexported
+// things they need are re-exported by export_test.go.
+package ledger_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
+
+	. "github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // ---------------------------------------------------------------------------
 // Test Helpers
 // ---------------------------------------------------------------------------
 
-// testBook creates a new Book with a fixed clock for deterministic tests.
+// testClock is the instant every test book reads. Frozen, so CreatedAt ties
+// everywhere and ordering has to come from IDs rather than from the clock.
+func testClock() time.Time {
+	return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
+}
+
+// testBook creates a new Book over a fresh store with a fixed clock for
+// deterministic tests.
+//
+// The store comes from testenv: store/mem by default, store/pg when
+// TEST_DATABASE_URL is set. Every assertion below therefore has to hold on both
+// backends, which is the only way the two are kept honest.
 func testBook(t *testing.T) *Book {
 	t.Helper()
-	book := NewBook()
-	book.clock = func() time.Time {
-		return time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
-	}
-	return book
+	return NewBook(testenv.New(t, testClock), "bank", testClock)
 }
 
 // setupChartOfAccounts creates a standard chart of accounts for testing:
@@ -32,29 +48,30 @@ func testBook(t *testing.T) *Book {
 //	        └── Fee Income     (Revenue)
 func setupChartOfAccounts(t *testing.T, book *Book) (alice, bob, cash, feeIncome Account) {
 	t.Helper()
+	ctx := context.Background()
 
-	gl, err := book.CreateLedger("General Ledger")
+	gl, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)
 
-	deposits, err := book.CreateSubledger(gl.ID, "Customer Deposits")
+	deposits, err := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	assertNoError(t, err)
 
-	assets, err := book.CreateSubledger(gl.ID, "Bank Assets")
+	assets, err := book.CreateSubledger(ctx, gl.ID, "Bank Assets")
 	assertNoError(t, err)
 
-	rev, err := book.CreateSubledger(gl.ID, "Revenue")
+	rev, err := book.CreateSubledger(ctx, gl.ID, "Revenue")
 	assertNoError(t, err)
 
-	alice, err = book.CreateAccount(deposits.ID, "Alice Checking", Liability)
+	alice, err = book.CreateAccount(ctx, deposits.ID, "Alice Checking", Liability)
 	assertNoError(t, err)
 
-	bob, err = book.CreateAccount(deposits.ID, "Bob Checking", Liability)
+	bob, err = book.CreateAccount(ctx, deposits.ID, "Bob Checking", Liability)
 	assertNoError(t, err)
 
-	cash, err = book.CreateAccount(assets.ID, "Cash", Asset)
+	cash, err = book.CreateAccount(ctx, assets.ID, "Cash", Asset)
 	assertNoError(t, err)
 
-	feeIncome, err = book.CreateAccount(rev.ID, "Fee Income", Revenue)
+	feeIncome, err = book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue)
 	assertNoError(t, err)
 
 	return alice, bob, cash, feeIncome
@@ -86,53 +103,58 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateLedger(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	l, err := book.CreateLedger("General Ledger")
+	l, err := book.CreateLedger(ctx, "General Ledger")
 	assertNoError(t, err)
 	assertEqual(t, "name", l.Name, "General Ledger")
 
 	// Verify it can be retrieved.
-	got, err := book.GetLedger(l.ID)
+	got, err := book.GetLedger(ctx, l.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, l.ID)
 }
 
 func TestGetLedger_NotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.GetLedger("nonexistent")
+	_, err := book.GetLedger(ctx, "nonexistent")
 	assertError(t, err, ErrLedgerNotFound)
 }
 
 func TestCreateSubledger(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	l, err := book.CreateLedger("GL")
+	l, err := book.CreateLedger(ctx, "GL")
 	assertNoError(t, err)
 
-	sl, err := book.CreateSubledger(l.ID, "Deposits")
+	sl, err := book.CreateSubledger(ctx, l.ID, "Deposits")
 	assertNoError(t, err)
 	assertEqual(t, "name", sl.Name, "Deposits")
 	assertEqual(t, "ledgerID", sl.LedgerID, l.ID)
 
 	// Verify retrieval.
-	got, err := book.GetSubledger(sl.ID)
+	got, err := book.GetSubledger(ctx, sl.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, sl.ID)
 }
 
 func TestCreateSubledger_LedgerNotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.CreateSubledger("bad_ledger", "Deposits")
+	_, err := book.CreateSubledger(ctx, "bad_ledger", "Deposits")
 	assertError(t, err, ErrLedgerNotFound)
 }
 
 func TestGetSubledger_NotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.GetSubledger("nonexistent")
+	_, err := book.GetSubledger(ctx, "nonexistent")
 	assertError(t, err, ErrSubledgerNotFound)
 }
 
@@ -141,34 +163,37 @@ func TestGetSubledger_NotFound(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCreateAccount(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	l, _ := book.CreateLedger("GL")
-	sl, _ := book.CreateSubledger(l.ID, "Deposits")
+	l, _ := book.CreateLedger(ctx, "GL")
+	sl, _ := book.CreateSubledger(ctx, l.ID, "Deposits")
 
-	acct, err := book.CreateAccount(sl.ID, "Alice", Liability)
+	acct, err := book.CreateAccount(ctx, sl.ID, "Alice", Liability)
 	assertNoError(t, err)
 	assertEqual(t, "name", acct.Name, "Alice")
 	assertEqual(t, "type", acct.Type, Liability)
 	assertEqual(t, "subledgerID", acct.SubledgerID, sl.ID)
 
 	// Verify retrieval.
-	got, err := book.GetAccount(acct.ID)
+	got, err := book.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, acct.ID)
 }
 
 func TestCreateAccount_SubledgerNotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.CreateAccount("bad_sub", "Alice", Liability)
+	_, err := book.CreateAccount(ctx, "bad_sub", "Alice", Liability)
 	assertError(t, err, ErrSubledgerNotFound)
 }
 
 func TestGetAccount_NotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.GetAccount("nonexistent")
+	_, err := book.GetAccount(ctx, "nonexistent")
 	assertError(t, err, ErrAccountNotFound)
 }
 
@@ -231,12 +256,13 @@ func TestTransactionStatus_String(t *testing.T) {
 //	Debit Alice  $50 (liability decreases — Alice has less)
 //	Credit Bob   $50 (liability increases — Bob has more)
 func TestPostTransaction_SimpleTransfer(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	// First, fund Alice's account: bank receives cash from Alice.
 	// Credit Alice (liability up) + Debit Cash (asset up).
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Initial deposit",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 10000, Direction: Credit},
@@ -247,7 +273,7 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 
 	// Properly balanced initial deposit.
 	cash := findAccountByName(t, book, "Cash")
-	_, err = book.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Alice deposits $100",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -257,7 +283,7 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	assertNoError(t, err)
 
 	// Now transfer $50 from Alice to Bob.
-	tx, err := book.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "transfer-001",
 		Description:    "Alice sends $50 to Bob",
 		Entries: []Entry{
@@ -273,12 +299,12 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 	// Alice: credited 10000, debited 5000 -> net credit of 5000.
 	// For Liability (normal=Credit): credit adds, debit subtracts.
 	// Balance = +10000 - 5000 = 5000
-	aliceBal, err := book.BookBalance(alice.ID)
+	aliceBal, err := book.BookBalance(ctx, alice.ID)
 	assertNoError(t, err)
 	assertEqual(t, "alice book balance", aliceBal, Amount(5000))
 
 	// Bob: credited 5000 -> net credit of 5000.
-	bobBal, err := book.BookBalance(bob.ID)
+	bobBal, err := book.BookBalance(ctx, bob.ID)
 	assertNoError(t, err)
 	assertEqual(t, "bob book balance", bobBal, Amount(5000))
 }
@@ -292,11 +318,12 @@ func TestPostTransaction_SimpleTransfer(t *testing.T) {
 //	Credit Bob    $100 (he receives the principal)
 //	Credit Fees   $2   (bank earns the fee)
 func TestPostTransaction_MultiLeg(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, cash, feeIncome := setupChartOfAccounts(t, book)
 
 	// Fund Alice with $200.
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Alice deposits $200",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 20000, Direction: Debit},
@@ -306,7 +333,7 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	assertNoError(t, err)
 
 	// Transfer $100 to Bob with $2 fee.
-	tx, err := book.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Transfer with fee",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 10200, Direction: Debit},
@@ -318,28 +345,29 @@ func TestPostTransaction_MultiLeg(t *testing.T) {
 	assertEqual(t, "entries count", len(tx.Entries), 3)
 
 	// Alice: +20000 (credit) - 10200 (debit) = 9800
-	aliceBal, _ := book.BookBalance(alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "alice balance", aliceBal, Amount(9800))
 
 	// Bob: +10000 (credit)
-	bobBal, _ := book.BookBalance(bob.ID)
+	bobBal, _ := book.BookBalance(ctx, bob.ID)
 	assertEqual(t, "bob balance", bobBal, Amount(10000))
 
 	// Fee Income: +200 (credit). Revenue normal = Credit, so +200.
-	feeBal, _ := book.BookBalance(feeIncome.ID)
+	feeBal, _ := book.BookBalance(ctx, feeIncome.ID)
 	assertEqual(t, "fee income balance", feeBal, Amount(200))
 }
 
 // TestPostTransaction_BookingAndValueDate tests that booking date and
 // value date are correctly stored.
 func TestPostTransaction_BookingAndValueDate(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	bookingDate := time.Date(2025, 1, 15, 14, 30, 0, 0, time.UTC)
 	valueDate := time.Date(2025, 1, 16, 0, 0, 0, 0, time.UTC)
 
-	tx, err := book.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Forward-dated transfer",
 		BookingDate: bookingDate,
 		ValueDate:   valueDate,
@@ -356,10 +384,11 @@ func TestPostTransaction_BookingAndValueDate(t *testing.T) {
 // TestPostTransaction_DefaultDates tests that dates default correctly
 // when not provided.
 func TestPostTransaction_DefaultDates(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, err := book.PostTransaction(PostTransactionRequest{
+	tx, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Transfer with default dates",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 1000, Direction: Debit},
@@ -379,9 +408,10 @@ func TestPostTransaction_DefaultDates(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPostTransaction_EmptyEntries(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Empty",
 		Entries:     []Entry{},
 	})
@@ -389,10 +419,11 @@ func TestPostTransaction_EmptyEntries(t *testing.T) {
 }
 
 func TestPostTransaction_InvalidAmount(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Zero amount",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 0, Direction: Debit},
@@ -401,7 +432,7 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 	})
 	assertError(t, err, ErrInvalidAmount)
 
-	_, err = book.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Negative amount",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: -100, Direction: Debit},
@@ -412,10 +443,11 @@ func TestPostTransaction_InvalidAmount(t *testing.T) {
 }
 
 func TestPostTransaction_AccountNotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, _, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Bad account",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -426,10 +458,11 @@ func TestPostTransaction_AccountNotFound(t *testing.T) {
 }
 
 func TestPostTransaction_Unbalanced(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Unbalanced",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -444,11 +477,12 @@ func TestPostTransaction_Unbalanced(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestPostTransaction_Idempotency(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
 	// First post succeeds.
-	tx1, err := book.PostTransaction(PostTransactionRequest{
+	tx1, err := book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "key-1",
 		Description:    "Transfer",
 		Entries: []Entry{
@@ -459,7 +493,7 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 	assertNoError(t, err)
 
 	// Second post with same key fails.
-	_, err = book.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "key-1",
 		Description:    "Duplicate",
 		Entries: []Entry{
@@ -470,12 +504,12 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 	assertError(t, err, ErrDuplicateIdempotencyKey)
 
 	// Can retrieve original by idempotency key.
-	got, err := book.GetTransactionByIdempotencyKey("key-1")
+	got, err := book.GetTransactionByIdempotencyKey(ctx, "key-1")
 	assertNoError(t, err)
 	assertEqual(t, "tx id", got.ID, tx1.ID)
 
 	// Non-existent idempotency key.
-	_, err = book.GetTransactionByIdempotencyKey("no-such-key")
+	_, err = book.GetTransactionByIdempotencyKey(ctx, "no-such-key")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
@@ -484,10 +518,11 @@ func TestPostTransaction_Idempotency(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGetTransaction(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, _ := book.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Test",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -495,15 +530,16 @@ func TestGetTransaction(t *testing.T) {
 		},
 	})
 
-	got, err := book.GetTransaction(tx.ID)
+	got, err := book.GetTransaction(ctx, tx.ID)
 	assertNoError(t, err)
 	assertEqual(t, "id", got.ID, tx.ID)
 }
 
 func TestGetTransaction_NotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.GetTransaction("nonexistent")
+	_, err := book.GetTransaction(ctx, "nonexistent")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
@@ -514,11 +550,12 @@ func TestGetTransaction_NotFound(t *testing.T) {
 // TestReverseTransaction tests that reversing a transaction exactly
 // offsets its balance impact.
 func TestReverseTransaction(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, cash, _ := setupChartOfAccounts(t, book)
 
 	// Fund Alice.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Deposit",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -527,7 +564,7 @@ func TestReverseTransaction(t *testing.T) {
 	})
 
 	// Transfer $50 from Alice to Bob.
-	tx, _ := book.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
@@ -536,37 +573,39 @@ func TestReverseTransaction(t *testing.T) {
 	})
 
 	// Reverse the transfer.
-	reversal, err := book.ReverseTransaction(tx.ID, "Reversal of erroneous transfer")
+	reversal, err := book.ReverseTransaction(ctx, tx.ID, "Reversal of erroneous transfer")
 	assertNoError(t, err)
 	assertEqual(t, "reversal status", reversal.Status, Posted)
 	assertEqual(t, "reversalOf", reversal.ReversalOf, tx.ID)
 	assertEqual(t, "entries count", len(reversal.Entries), 2)
 
 	// Original should be marked as Reversed.
-	original, _ := book.GetTransaction(tx.ID)
+	original, _ := book.GetTransaction(ctx, tx.ID)
 	assertEqual(t, "original status", original.Status, Reversed)
 
 	// Alice's balance should be back to 10000.
-	aliceBal, _ := book.BookBalance(alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "alice balance after reversal", aliceBal, Amount(10000))
 
 	// Bob's balance should be back to 0.
-	bobBal, _ := book.BookBalance(bob.ID)
+	bobBal, _ := book.BookBalance(ctx, bob.ID)
 	assertEqual(t, "bob balance after reversal", bobBal, Amount(0))
 }
 
 func TestReverseTransaction_NotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.ReverseTransaction("nonexistent", "")
+	_, err := book.ReverseTransaction(ctx, "nonexistent", "")
 	assertError(t, err, ErrTransactionNotFound)
 }
 
 func TestReverseTransaction_AlreadyReversed(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, bob, _, _ := setupChartOfAccounts(t, book)
 
-	tx, _ := book.PostTransaction(PostTransactionRequest{
+	tx, _ := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Transfer",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 100, Direction: Debit},
@@ -575,12 +614,90 @@ func TestReverseTransaction_AlreadyReversed(t *testing.T) {
 	})
 
 	// First reversal succeeds.
-	_, err := book.ReverseTransaction(tx.ID, "First reversal")
+	_, err := book.ReverseTransaction(ctx, tx.ID, "First reversal")
 	assertNoError(t, err)
 
 	// Second reversal fails.
-	_, err = book.ReverseTransaction(tx.ID, "Second reversal")
+	_, err = book.ReverseTransaction(ctx, tx.ID, "Second reversal")
 	assertError(t, err, ErrTransactionAlreadyReversed)
+}
+
+// ---------------------------------------------------------------------------
+// Audit Trail Tests
+// ---------------------------------------------------------------------------
+
+func TestAuditLog(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	// Post a transaction.
+	book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "Transfer",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
+		},
+	})
+
+	log, err := book.GetAuditLog(ctx)
+	assertNoError(t, err)
+
+	// Should have: ledger created, 3x subledger created, 4x account created,
+	// 1x transaction posted = 9 events.
+	if len(log) < 9 {
+		t.Fatalf("expected at least 9 audit events, got %d", len(log))
+	}
+
+	// Verify first event is ledger creation.
+	assertEqual(t, "first event type", log[0].Type, EventLedgerCreated)
+
+	// Verify last event is the transaction.
+	last := log[len(log)-1]
+	assertEqual(t, "last event type", last.Type, EventTransactionPosted)
+}
+
+func TestAuditLogForEntity(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	tx, _ := book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "Transfer",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 100, Direction: Debit},
+			{AccountID: bob.ID, Amount: 100, Direction: Credit},
+		},
+	})
+
+	// Get events for Alice's account.
+	aliceEvents, err := book.GetAuditLogForEntity(ctx, string(alice.ID))
+	assertNoError(t, err)
+	assertEqual(t, "alice events", len(aliceEvents), 1)
+	assertEqual(t, "event type", aliceEvents[0].Type, EventAccountCreated)
+
+	// Get events for the transaction.
+	txEvents, err := book.GetAuditLogForEntity(ctx, string(tx.ID))
+	assertNoError(t, err)
+	assertEqual(t, "tx events", len(txEvents), 1)
+	assertEqual(t, "event type", txEvents[0].Type, EventTransactionPosted)
+}
+
+func TestAuditLog_ImmutableCopy(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	book.CreateLedger(ctx, "GL")
+
+	log1, err := book.GetAuditLog(ctx)
+	assertNoError(t, err)
+	log2, err := book.GetAuditLog(ctx)
+	assertNoError(t, err)
+
+	// Modifying the returned slice should not affect the internal log.
+	log1[0].Type = "tampered"
+	if log2[0].Type == "tampered" {
+		t.Fatal("audit log returned mutable reference")
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -591,11 +708,12 @@ func TestReverseTransaction_AlreadyReversed(t *testing.T) {
 // is rejected when it would cause an Asset account's book balance
 // to go below zero.
 func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, _, cash, _ := setupChartOfAccounts(t, book)
 
 	// Fund cash account with $100.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Initial deposit",
 		Entries: []Entry{
 			{AccountID: cash.ID, Amount: 10000, Direction: Debit},
@@ -604,7 +722,7 @@ func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
 	})
 
 	// Try to withdraw more cash than available (credit cash $150).
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Overdraw cash",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 15000, Direction: Debit},
@@ -614,19 +732,20 @@ func TestPostTransaction_InsufficientBalance_Asset(t *testing.T) {
 	assertError(t, err, ErrInsufficientBalance)
 
 	// Cash balance should be unchanged.
-	bal, _ := book.BookBalance(cash.ID)
+	bal, _ := book.BookBalance(ctx, cash.ID)
 	assertEqual(t, "cash balance unchanged", bal, Amount(10000))
 }
 
 // TestPostTransaction_InsufficientBalance_LiabilityNotChecked tests that
 // Liability accounts are not subject to balance checking.
 func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, _, cash, _ := setupChartOfAccounts(t, book)
 
 	// Debit Alice (Liability) without any prior credit — this should succeed
 	// because Liability accounts are not checked for insufficient balance.
-	_, err := book.PostTransaction(PostTransactionRequest{
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Debit unfunded liability",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 5000, Direction: Debit},
@@ -638,11 +757,11 @@ func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
 	assertError(t, err, ErrUnbalancedTransaction)
 
 	// Proper test: debit a Liability with no prior balance.
-	l, _ := book.CreateLedger("Test")
-	sl, _ := book.CreateSubledger(l.ID, "Test")
-	liab, _ := book.CreateAccount(sl.ID, "Test Liability", Liability)
+	l, _ := book.CreateLedger(ctx, "Test")
+	sl, _ := book.CreateSubledger(ctx, l.ID, "Test")
+	liab, _ := book.CreateAccount(ctx, sl.ID, "Test Liability", Liability)
 
-	_, err = book.PostTransaction(PostTransactionRequest{
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Debit unfunded liability",
 		Entries: []Entry{
 			{AccountID: liab.ID, Amount: 5000, Direction: Debit},
@@ -657,19 +776,21 @@ func TestPostTransaction_InsufficientBalance_LiabilityNotChecked(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBookBalance_AccountNotFound(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	_, err := book.BookBalance("nonexistent")
+	_, err := book.BookBalance(ctx, "nonexistent")
 	assertError(t, err, ErrAccountNotFound)
 }
 
 // TestBookBalance_ZeroForNewAccount tests that a new account has zero
 // balance.
 func TestBookBalance_ZeroForNewAccount(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 	alice, _, _, _ := setupChartOfAccounts(t, book)
 
-	bal, err := book.BookBalance(alice.ID)
+	bal, err := book.BookBalance(ctx, alice.ID)
 	assertNoError(t, err)
 	assertEqual(t, "book", bal, Amount(0))
 }
@@ -677,23 +798,24 @@ func TestBookBalance_ZeroForNewAccount(t *testing.T) {
 // TestBookBalance_AllAccountTypes tests that balance calculations work
 // correctly for every account type.
 func TestBookBalance_AllAccountTypes(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
-	l, _ := book.CreateLedger("GL")
-	sl, _ := book.CreateSubledger(l.ID, "Test")
+	l, _ := book.CreateLedger(ctx, "GL")
+	sl, _ := book.CreateSubledger(ctx, l.ID, "Test")
 
 	// Create one account of each type.
-	asset, _ := book.CreateAccount(sl.ID, "Asset", Asset)
-	liability, _ := book.CreateAccount(sl.ID, "Liability", Liability)
-	equity, _ := book.CreateAccount(sl.ID, "Equity", Equity)
-	revenue, _ := book.CreateAccount(sl.ID, "Revenue", Revenue)
-	expense, _ := book.CreateAccount(sl.ID, "Expense", Expense)
+	asset, _ := book.CreateAccount(ctx, sl.ID, "Asset", Asset)
+	liability, _ := book.CreateAccount(ctx, sl.ID, "Liability", Liability)
+	equity, _ := book.CreateAccount(ctx, sl.ID, "Equity", Equity)
+	revenue, _ := book.CreateAccount(ctx, sl.ID, "Revenue", Revenue)
+	expense, _ := book.CreateAccount(ctx, sl.ID, "Expense", Expense)
 
 	accounts := []Account{asset, liability, equity, revenue, expense}
 
 	// Post a debit of 100 and credit of 100 between pairs.
 	// Debit asset, credit liability.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "D asset, C liability",
 		Entries: []Entry{
 			{AccountID: asset.ID, Amount: 1000, Direction: Debit},
@@ -702,7 +824,7 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	})
 
 	// Debit expense, credit revenue.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "D expense, C revenue",
 		Entries: []Entry{
 			{AccountID: expense.ID, Amount: 500, Direction: Debit},
@@ -711,7 +833,7 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	})
 
 	// Credit equity, debit asset.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "D asset, C equity",
 		Entries: []Entry{
 			{AccountID: asset.ID, Amount: 2000, Direction: Debit},
@@ -728,7 +850,7 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	expected := []Amount{3000, 1000, 2000, 500, 500}
 
 	for i, acct := range accounts {
-		bal, _ := book.BookBalance(acct.ID)
+		bal, _ := book.BookBalance(ctx, acct.ID)
 		assertEqual(t, acct.Name+" balance", bal, expected[i])
 	}
 }
@@ -745,22 +867,24 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 //  3. Customer makes a card payment.
 //  4. Customer receives a wire transfer.
 //  5. An erroneous fee is posted and then reversed.
+//  6. Audit trail is verified.
 func TestFullLedgerWorkflow(t *testing.T) {
+	ctx := context.Background()
 	book := testBook(t)
 
 	// Step 1: Chart of accounts.
-	gl, _ := book.CreateLedger("General Ledger")
-	customerDeposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits")
-	bankAssets, _ := book.CreateSubledger(gl.ID, "Bank Assets")
-	rev, _ := book.CreateSubledger(gl.ID, "Revenue")
+	gl, _ := book.CreateLedger(ctx, "General Ledger")
+	customerDeposits, _ := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
+	bankAssets, _ := book.CreateSubledger(ctx, gl.ID, "Bank Assets")
+	rev, _ := book.CreateSubledger(ctx, gl.ID, "Revenue")
 
-	alice, _ := book.CreateAccount(customerDeposits.ID, "Alice Checking", Liability)
-	nostro, _ := book.CreateAccount(bankAssets.ID, "Nostro USD", Asset)
-	cashAccount, _ := book.CreateAccount(bankAssets.ID, "Cash Vault", Asset)
-	feeIncome, _ := book.CreateAccount(rev.ID, "Fee Income", Revenue)
+	alice, _ := book.CreateAccount(ctx, customerDeposits.ID, "Alice Checking", Liability)
+	nostro, _ := book.CreateAccount(ctx, bankAssets.ID, "Nostro USD", Asset)
+	cashAccount, _ := book.CreateAccount(ctx, bankAssets.ID, "Cash Vault", Asset)
+	feeIncome, _ := book.CreateAccount(ctx, rev.ID, "Fee Income", Revenue)
 
 	// Step 2: Alice deposits $500 cash at the teller.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "deposit-001",
 		Description:    "Cash deposit at branch",
 		Entries: []Entry{
@@ -769,11 +893,11 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ := book.BookBalance(alice.ID)
+	aliceBal, _ := book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "after deposit", aliceBal, Amount(50000))
 
 	// Step 3: Alice pays a restaurant $75 in cash.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		Description: "Restaurant bill",
 		Entries: []Entry{
 			{AccountID: alice.ID, Amount: 7500, Direction: Debit},
@@ -781,11 +905,11 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "book after payment", aliceBal, Amount(42500))
 
 	// Step 4: Alice receives a $200 wire transfer.
-	book.PostTransaction(PostTransactionRequest{
+	book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "wire-001",
 		Description:    "Incoming wire transfer",
 		BookingDate:    time.Date(2025, 1, 15, 14, 30, 0, 0, time.UTC),
@@ -796,11 +920,11 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "after wire", aliceBal, Amount(62500))
 
 	// Step 5: Erroneous $10 fee, then reversal.
-	errTx, _ := book.PostTransaction(PostTransactionRequest{
+	errTx, _ := book.PostTransaction(ctx, PostTransactionRequest{
 		IdempotencyKey: "fee-001",
 		Description:    "Monthly maintenance fee (error)",
 		Entries: []Entry{
@@ -809,24 +933,59 @@ func TestFullLedgerWorkflow(t *testing.T) {
 		},
 	})
 
-	aliceBal, _ = book.BookBalance(alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "after fee", aliceBal, Amount(61500))
 
-	book.ReverseTransaction(errTx.ID, "Reverse erroneous fee")
+	book.ReverseTransaction(ctx, errTx.ID, "Reverse erroneous fee")
 
-	aliceBal, _ = book.BookBalance(alice.ID)
+	aliceBal, _ = book.BookBalance(ctx, alice.ID)
 	assertEqual(t, "after fee reversal", aliceBal, Amount(62500))
+
+	// Step 6: Audit trail should contain all operations.
+	auditLog, err := book.GetAuditLog(ctx)
+	assertNoError(t, err)
+	if len(auditLog) == 0 {
+		t.Fatal("audit log should not be empty")
+	}
+
+	// Count event types.
+	counts := make(map[string]int)
+	for _, e := range auditLog {
+		counts[e.Type]++
+	}
+
+	if counts[EventTransactionPosted] < 3 {
+		t.Fatalf("expected at least 3 transaction.posted events, got %d", counts[EventTransactionPosted])
+	}
+	if counts[EventTransactionReversed] != 1 {
+		t.Fatalf("expected 1 transaction.reversed event, got %d", counts[EventTransactionReversed])
+	}
 }
 
 // ---------------------------------------------------------------------------
 // Helper functions for tests
 // ---------------------------------------------------------------------------
 
+// findAccountByName walks the chart of accounts looking for an account by name.
+// The Book no longer holds a map to peek at, so it enumerates the same way any
+// other caller would.
 func findAccountByName(t *testing.T, book *Book, name string) Account {
 	t.Helper()
-	for _, acct := range book.accounts {
-		if acct.Name == name {
-			return *acct
+	ctx := context.Background()
+
+	ledgers, err := book.ListLedgers(ctx)
+	assertNoError(t, err)
+	for _, l := range ledgers {
+		subs, err := book.ListSubledgers(ctx, l.ID)
+		assertNoError(t, err)
+		for _, sl := range subs {
+			accts, err := book.ListAccounts(ctx, sl.ID)
+			assertNoError(t, err)
+			for _, acct := range accts {
+				if acct.Name == name {
+					return acct
+				}
+			}
 		}
 	}
 	t.Fatalf("account %q not found", name)

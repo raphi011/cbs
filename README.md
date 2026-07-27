@@ -1,12 +1,14 @@
-# In-Memory Core Banking System
+# A Core Banking System
 
-A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use (which would require persistent storage, distributed transactions, etc.).
+A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use.
+
+State lives behind a store interface with two implementations: `store/mem`, an in-memory reference implementation that needs no setup, and `store/pg`, which persists everything to Postgres. The Postgres backend is entirely optional — with no `DATABASE_URL` the server runs on `store/mem` — and it exists mostly as *curriculum*: it is where a double-entry ledger meets relational tables, and where a single process-wide mutex stops doing your concurrency control for you. See [Persistence](#persistence) for what that turns out to involve.
 
 ## Three-Layer Architecture
 
 The system is split into three layers, each in its own package and building on the one below it:
 
-1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, and on-demand book balances. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
+1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, on-demand book balances, and an immutable audit log. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
 
 2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits**, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
 
@@ -55,10 +57,19 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Next Work](#next-work)
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
+  - [Audit Trail](#audit-trail)
 - [Statements](#statements)
   - [Derived from the Ledger, Not a Separate Account Ledger](#derived-from-the-ledger-not-a-separate-account-ledger)
   - [What Appears on a Statement](#what-appears-on-a-statement)
   - [Why Transactions and Balances May Not Reconcile](#why-transactions-and-balances-may-not-reconcile)
+- [Persistence](#persistence)
+  - [Two Stores, One Conformance Suite](#two-stores-one-conformance-suite)
+  - [The Ledger as Relational Tables](#the-ledger-as-relational-tables)
+  - [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column)
+  - [The Unit of Work](#the-unit-of-work)
+  - [Three Races a Single Mutex Was Hiding](#three-races-a-single-mutex-was-hiding)
+  - [Migrations](#migrations)
+  - [Running Against Postgres](#running-against-postgres)
 - [Usage Example](#usage-example)
 
 ## Core Banking Concepts
@@ -249,7 +260,7 @@ In the `payment` layer two specific legs get their own names: the **debtor leg**
 
 Every transaction carries two dates:
 
-- **Booking Date:** The date/time when the transaction was recorded in the system. This is the "system date" or "processing date". It determines when the transaction appears in system reports.
+- **Booking Date:** The date/time when the transaction was recorded in the system. This is the "system date" or "processing date". It determines when the transaction appears in audit trails and system reports.
 
 - **Value Date:** The date when the transaction takes economic effect. This determines when interest starts accruing, when funds become available, and which business day "owns" the transaction. The value date may be in the past (back-dated) or future (forward-dated) relative to the booking date.
 
@@ -379,7 +390,7 @@ In a real banking system, accounts are not simply created and then used forever.
 | **Active** | Normal operating state. The account is open and fully functional. | All: debits, credits, holds, statements |
 | **Dormant** | No customer-initiated activity for an extended period (typically 12–24 months, varies by jurisdiction). The bank may charge dormancy fees. | Credits only (incoming payments reactivate the account). Debits and new holds blocked until reactivated. |
 | **Frozen** | Temporarily restricted, usually due to a court order, fraud investigation, or regulatory action. | View balance only. All debits, credits, and holds blocked. The freeze may be partial (e.g., allowing credits but blocking debits). |
-| **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for regulatory purposes. |
+| **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for audit and regulatory purposes. |
 
 ### State Transitions
 
@@ -614,7 +625,7 @@ This is a learning model, not a production processor. The simplifications are in
 - **No ISO 20022 message parsing.** The `Payment` struct stands in for `pain.001`/`pacs.008`/`pacs.003`; the schemes only *name* the messages they correspond to.
 - **No IBAN or BIC validation.** Routing is by explicit `ParticipantID`; IBANs are free-form labels.
 - **A single currency**, using `ledger.Amount` (integer minor units). No FX.
-- **Cross-ledger postings are not atomic.** Each bank and the central bank have separate locks, so a payment touches several ledgers sequentially. The `Network` serialises whole operations under one lock; a real RTGS uses a locked settlement window or two-phase commit.
+- **Settlement is one database transaction, standing in for a settlement window.** Every book — each participant's and the central bank's — lives in the same store, told apart by its `ledger.BookID`, and `payment.Tx` embeds `deposit.Tx` embeds `ledger.Tx`, so a single transaction reaches all three layers. `SettleCycle` therefore moves the netted reserves at the central bank, mirrors each movement in the paying bank's own books, and pays out every creditor inside one `Store.Update`: if any net payer cannot cover its position, nothing is posted at all. That is what a real RTGS calls a **settlement window** — an interval in which the settlement agent holds the participants' accounts, checks that every payer can cover, and posts the whole batch or none of it. A real system also has to decide what to do next (queue the batch, run a liquidity-saving optimisation, unwind the defaulter, tap intraday credit); here the batch simply fails and can be retried once the member is funded.
 - **Returns settle immediately** rather than being batched into a later R-cycle.
 
 ### Next Work
@@ -646,6 +657,38 @@ At the end of each business day, the system captures a snapshot of each account'
 - **Regulatory reporting:** Banks must report their positions to regulators. End-of-day balances are the standard reporting granularity.
 
 - **Performance optimization:** Instead of replaying all transactions from account creation, balance queries can start from the most recent snapshot and only replay subsequent transactions.
+
+### Audit Trail
+
+The audit trail is an immutable, append-only log of every mutation in the system. Nothing is ever deleted from the audit trail. Every event is recorded with:
+
+- A monotonic sequence number, assigned by the store
+- A unique event ID
+- A timestamp
+- The scope — which layer produced the event
+- The book it belongs to
+- The event type
+- The entity affected
+- The full event payload, as it was at the time
+
+All three layers write to the same log, told apart by **scope**:
+
+| Scope | Book | Events |
+| --- | --- | --- |
+| `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
+| `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
+| `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+
+An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes neither `cycle.settled` nor any of its `payment.settled` events.
+
+Because the log is append-only and unbounded, every audit endpoint is **paged**: `?limit=` (default 100, capped at 1000) and `?before=<seq>`, which is an exclusive upper cursor on the sequence number, plus `?type=` and `?entity=` to narrow. A page is the newest events below the cursor, handed back oldest-first, so paging walks backwards while each page still reads chronologically. The sequence number is a store-global total order rather than a per-book counter, so a cursor is only meaningful when replayed against the same filter that produced it.
+
+The audit trail provides:
+
+- Regulatory compliance (banks must maintain complete records)
+- Forensic investigation capability
+- System debugging and incident response
+- Independent balance verification (replay events to recompute balances)
 
 ## Statements
 
@@ -687,25 +730,191 @@ Most retail bank statements show both dates per transaction when they differ, so
 
 End-of-day snapshots use value date for this reason — they are the foundation for the balance figures that appear on statements and for interest accrual.
 
+## Persistence
+
+Every layer reaches state through a **store interface** — `ledger.Store`, `deposit.Store`, `payment.Store` — never through a map it owns. There are two implementations:
+
+| | `store/mem` | `store/pg` |
+|---|---|---|
+| State | Go maps behind one `sync.RWMutex` | Postgres tables |
+| Setup | none | a `DATABASE_URL` |
+| Survives a restart | no | yes |
+| Dependencies | stdlib only | `jackc/pgx` |
+
+`store/mem` is the reference implementation: where the two ever disagree, `mem` is right by definition and `pg` is wrong. That is not a preference — it is what makes the pair teachable, because it means every difference between them is a *database* concern rather than a domain one.
+
+> **On dependencies.** The library core — `ledger`, `deposit`, `payment`, `api`, `seed`, `store/mem` — is standard library only. `store/pg` is the single exception, and it is why the module has a dependency at all. The driver is compiled into the binary either way, but with no `DATABASE_URL` it is never dialed: the default build needs no setup whatsoever.
+
+### Two Stores, One Conformance Suite
+
+`store/storetest` is a single suite that both implementations must pass. It is the only thing standing between "two backends" and "two subtly different systems", and it is run twice:
+
+```bash
+go test ./...                          # store/mem — zero setup
+TEST_DATABASE_URL=… go test ./...      # the same suites, on store/pg
+```
+
+The rule it enforces is sharper than "both work": **`store/pg` must never accept or refuse a write that `store/mem` handles differently.** That rule has real consequences in the schema. There is no `UNIQUE (book_id, name)` on ledgers, subledgers or accounts, however tempting it looks — the domain does not hold a uniqueness invariant on names (two customers called "John Smith" at one bank is not an error), so the constraint would make Postgres reject a write the in-memory store accepts. Validation belongs in the domain layer; the store is a per-table key/value store that happens to be relational.
+
+It cuts the other way too, and that direction is easier to miss. `store/mem` is a map of Go strings and will hold any byte sequence at all; Postgres will not hold a NUL in a `text` column (SQLSTATE 22021) or in a `jsonb` string (22P05), nor anything that is not valid UTF-8. So `POST /participants` with `{"name":"Ban\u0000k"}` — legal JSON — created a bank on one backend and returned a 500 carrying a raw SQLSTATE on the other. The fix is not a check in `store/pg`; it is `ledger.ValidateText`, one domain rule applied to every caller-supplied string that reaches a store, whether as a value it stores or as a key it looks a row up by:
+
+> **Text must be valid UTF-8 and free of control characters.** That covers names, descriptions, reject and return reasons, idempotency keys, end-to-end ids, IBANs, metadata keys and values, and identifiers a request supplies for lookup. Length is unbounded and every printable Unicode character is allowed; `Crédit Soleil`, `三菱UFJ銀行` and `🏦` are all fine.
+
+The rule is drawn at control characters rather than at "the two things Postgres refuses" on purpose: a rule that can only be stated by naming a database is not a domain rule, and no field in this list has a legitimate use for a tab, a newline or an ANSI escape. Identifiers arriving in a URL rather than in a request body are screened at the API edge instead — they pass through no domain constructor — which is why `GET /participants/bank%001` is a 400 on both backends rather than a 404 on one and a 500 on the other.
+
+The same argument covers the errors a store returns. `ErrDuplicateIdempotencyKey` is a documented answer, so a caller may handle it and go on using the same unit of work; in Postgres any error aborts the transaction, so `store/pg` runs the statement behind that sentinel inside a `SAVEPOINT`. Wherever a SQLSTATE becomes a domain sentinel, the sentinel has to cost the caller one statement rather than the whole transaction — because that is what it costs on `store/mem`.
+
+### The Ledger as Relational Tables
+
+The accounting model maps onto tables almost mechanically, and the mapping is where the shape of double-entry becomes visible:
+
+```
+ledgers ─┬─▶ subledgers ─┬─▶ accounts
+         │               │
+transactions ─▶ entries ─┘      entries.account_id names an account
+```
+
+A transaction is a **parent row** and its legs are **child rows**. That is the relational statement of "a posting has two or more balanced entries": one-to-many, not two columns. Serializing the legs into a JSON blob would store the same bytes and lose the only thing worth having — the ability to index and sum entries *by account*, which is what every balance query does.
+
+Four details carry more weight than they look like they should:
+
+- **Primary keys are composite: `(book_id, id)`.** Chart-of-accounts numbers are unique *within a book*, not globally, so two participants both holding `200.100.001` is normal rather than a collision. A single-column key would force global numbering and destroy the chart of accounts as a readable, per-bank structure. The cost is that every query must carry `WHERE book_id = $1`, and the failure mode when one is missing is the quiet kind: not an error, not an empty result, but another bank's rows mixed in and looking plausible. (The `payment` layer's own entities — participants, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.)
+
+- **`entries` needs an explicit `position` column.** `Transaction.Entries` is an ordered slice; a relational table is a set. Without a stored position the legs come back in whatever order the plan produces, and the order is visible — on statements, and in the multi-leg settlement postings.
+
+- **Listings are `ORDER BY created_at, seq` — never `ORDER BY id`.** IDs are counter-derived strings, so `dep_10` sorts before `dep_8` as text and a customer list silently reorders itself the moment a counter crosses a power of ten. `seq` is a monotonic integer assigned on insert and deliberately *not* touched by the upsert branch, so editing a row does not move it to the end of its own list.
+
+- **Identity counters are ordinary rows, not Postgres `SEQUENCE`s.** A sequence survives a rollback on purpose — which would burn a transaction number on a failed posting. A counter row rolls back with its caller and stays gap-free. It also, as a side effect, serializes any two write transactions in the same book that both allocate an ID.
+
+`store/pg/schema/0001_init.sql` is the whole schema in one file, and its comments say why each of these is the way it is.
+
+### A Balance Is an Aggregate, Not a Column
+
+There is no `balance` column anywhere in the schema. A book balance is computed on demand by summing the account's entries, signed by normal balance — which makes the account's normal direction a **parameter** of the query rather than a constant in it:
+
+```sql
+SELECT COALESCE(SUM(CASE WHEN direction = $3 THEN amount ELSE -amount END), 0)
+  FROM entries
+ WHERE book_id = $1 AND account_id = $2;   -- $3 = the account's normal direction
+```
+
+Hardcoding `debit` there is the easy mistake, and it is only half wrong, which is what makes it hard to see: it is correct for every Asset and Expense account and it negates every Liability, Equity and Revenue one. Alice's checking account in the walkthrough below is a **Liability** — a customer deposit is money the bank owes — so a debit-hardcoded query would report its 75000 as −75000.
+
+A stored balance is a **cache of a derivable fact**. It has to be updated in lockstep with every posting, forever, by every code path — and the first bug, crash or concurrent write that updates one without the other leaves a number that no one can reconcile against the history. Deriving it means the append-only entry list is the single source of truth and the balance cannot disagree with it, because it *is* the entry list.
+
+Two consequences follow:
+
+- The query does **not** filter on transaction status. A [reversal](#transaction-reversal) is a new, equal-and-opposite posting rather than a deletion, so both sets of entries are summed and net to zero. Excluding reversed transactions would double-count the correction.
+- Reading a balance costs an aggregate over every entry the account has ever had. The remedy is not to add the column back; it is to **checkpoint**. That is precisely what an [end-of-day snapshot](#end-of-day-snapshots) is for: a query starts from the nearest snapshot and replays only what came after it.
+
+### The Unit of Work
+
+Every mutation runs inside one atomic scope: `BEGIN`, do all of it, `COMMIT` — or `ROLLBACK`, and it is as if nothing happened. The audit event is written inside the **same** scope as the operation it describes, so a rolled-back operation leaves no record claiming it happened.
+
+The scope has to span all three layers, because the operations do. Settling a clearing cycle posts a creditor leg in each member's book, moves reserves in the central bank's book, and updates the payment and cycle rows:
+
+```
+SettleCycle:
+  BEGIN
+    creditor legs in Bank A, Bank B, Bank C     (ledger layer)
+    deposit balances follow                     (deposit layer)
+    reserves moved at the central bank          (ledger layer)
+    cycle + payments marked Settled             (payment layer)
+    audit events appended
+  COMMIT      ← all of it, or none of it
+```
+
+A partial success there would leave money that had left one bank without arriving at another, and no retry could tell which half had happened. This is why one concrete transaction type implements all three layers' `Tx` interfaces — `payment.Tx` embeds `deposit.Tx`, which embeds `ledger.Tx` — rather than each layer owning its own.
+
+It is also why every mutating method comes in a **pair**: the plain one (`PostTransaction`) opens a unit of work; the `…Tx` one (`PostTransactionTx`) joins the caller's. Calling the plain one from inside an open unit of work is **refused** by both stores rather than allowed, because the alternatives are worse in different ways depending on the backend. Under `store/mem` the mutex is not reentrant and nesting would deadlock. Under `store/pg` a nested `Update` would quietly take a *second* connection from the pool and run a *separate* transaction — so its writes would commit even when the outer ones rolled back, and deep enough nesting exhausts the pool instead. Both refusing it means the single most likely mistake in this codebase behaves identically on either store.
+
+### Three Races a Single Mutex Was Hiding
+
+Under `store/mem` one process-wide mutex makes every unit of work atomic *and* serialized, which is a great deal more than atomicity — it hands out mutual exclusion for free. Three read-then-write races are invisible under it and have to be closed explicitly the moment the state moves into a real database.
+
+**1. A balance check followed by the posting that depends on it.** Two withdrawals both read a balance of 1000, both conclude that 600 is affordable, and together they overdraw the account. The check has to be locked to the write:
+
+```sql
+SELECT id FROM accounts
+ WHERE book_id = $1 AND id = ANY($2::text[])
+ ORDER BY id
+   FOR UPDATE;          -- held until COMMIT
+```
+
+`ORDER BY id` is load-bearing rather than cosmetic: two transactions locking overlapping account sets in *different* orders would each hold a row the other wants, which is a deadlock. One agreed order turns that into a queue.
+
+**2. An idempotency key checked before it is written.** *Look, then insert* is not a check — two concurrent retries both look, both find nothing, and both post. The fix is to make the check and the write one statement and let the database decide:
+
+```sql
+CREATE UNIQUE INDEX transactions_idempotency_key_idx
+    ON transactions (book_id, idempotency_key)
+    WHERE idempotency_key <> '';
+```
+
+The insert is attempted; the loser gets a unique violation, which is translated back into `ledger.ErrDuplicateIdempotencyKey`. There is no window between deciding and acting because there is no separate decision.
+
+**3. A reversal read, compared, and then written.** Two concurrent reversals both read `Posted` and both write, reversing the transaction twice. Folding the condition into the `WHERE` makes the write itself the decision, with the row count as the answer:
+
+```sql
+UPDATE transactions SET status = $3
+ WHERE book_id = $1 AND id = $2 AND status = $4;
+-- 0 rows affected → already reversed, or never existed
+```
+
+All three are the same rule: **never read a value, decide, and then write the decision.** Make the write the decision; where that is impossible, take the lock first.
+
+> A note for anyone writing a test for this. A concurrency test proves nothing unless every *earlier* serialization point has been paid off first. In this schema there are three — the shared per-book ID counter row, the `books` row created on demand by the first write naming a book, and the locks above — and an operation that allocates an ID before reaching the statement under test has already been serialized by the counter, so its "race" cannot interleave. Two tests in `store/pg` passed against deliberately broken implementations for exactly this reason before they were rewritten to drive the store directly.
+
+### Migrations
+
+`store/pg/migrate.go` is about forty lines rather than a migration-tool dependency: an applied-set table, `go:embed`ded `.sql` files applied in filename order, one transaction each, under a Postgres advisory lock so two processes cannot run DDL at once. The interesting part of a schema is the schema.
+
+It has one limitation worth stating plainly: **the applied-set keys on filename, with no checksum.** A file whose name is already in `schema_migrations` is skipped without being read, so editing a shipped `.sql` file in place changes nothing on a database that has already run it, and the two silently disagree from then on. A production tool stores a hash of every file and refuses to start when one no longer matches. This one does not, because there are no deployed databases here — every Postgres it meets is a throwaway container or a per-test schema, both of which migrate from empty. The rule that keeps it harmless is the ordinary one: **a shipped migration is immutable**; a schema change is a new file with the next number, never an edit to an old one.
+
+### Running Against Postgres
+
+```bash
+make db-up                                     # postgres:16 via docker-compose
+DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
+make test-pg                                   # the whole Go suite, on Postgres
+make db-down                                   # stop it, delete the data
+```
+
+`pg.Open` connects and then applies the embedded migrations, so a fresh database is usable immediately. Seeding is **idempotent** — `seed.Populate` builds the sample scenario against an empty system and returns without touching a populated one — which is what makes a restart against Postgres a no-op rather than a second copy of every bank. `POST /admin/reset` clears the store and rebuilds the scenario, on either backend.
+
+The DSN is redacted before it is logged. A connection string arrives from the environment with a real credential in it, and a log line is the easiest place in a system to leak one.
+
+Two properties are deliberately kept, and both are easy to break by accident:
+
+- **Nothing requires a database.** `go test ./...`, `make dev` and `make run` all work on a fresh checkout with no setup. Postgres is opt-in via `DATABASE_URL` (server) or `TEST_DATABASE_URL` (tests).
+- **Both runs must stay green.** A change that passes only one of them has, by definition, made the two stores diverge.
+
 ## Usage Example
 
-Working directly with the general ledger:
+Working directly with the general ledger. A `Book` is a view over a store and a
+book identity — swapping `mem.New(time.Now)` for `pg.Open(ctx, dsn, time.Now)`
+is the only change needed to make all of this outlive the process:
 
 ```go
-book := ledger.NewBook()
+ctx := context.Background()
+store := mem.New(time.Now)
+defer store.Close()
+
+book := ledger.NewBook(store, "bank-a", time.Now)
 
 // Set up the chart of accounts
-gl, _ := book.CreateLedger("General Ledger")
-deposits, _ := book.CreateSubledger(gl.ID, "Customer Deposits")
-revenue, _ := book.CreateSubledger(gl.ID, "Revenue")
+gl, _ := book.CreateLedger(ctx, "General Ledger")
+deposits, _ := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
+revenue, _ := book.CreateSubledger(ctx, gl.ID, "Revenue")
 
 // Create accounts
-alice, _ := book.CreateAccount(deposits.ID, "Alice Checking", ledger.Liability)
-bob, _ := book.CreateAccount(deposits.ID, "Bob Checking", ledger.Liability)
-fees, _ := book.CreateAccount(revenue.ID, "Transfer Fees", ledger.Revenue)
+alice, _ := book.CreateAccount(ctx, deposits.ID, "Alice Checking", ledger.Liability)
+bob, _ := book.CreateAccount(ctx, deposits.ID, "Bob Checking", ledger.Liability)
+fees, _ := book.CreateAccount(ctx, revenue.ID, "Transfer Fees", ledger.Revenue)
 
-// Transfer $100 from Alice to Bob with a $2 fee
-book.PostTransaction(ledger.PostTransactionRequest{
+// Transfer $100 from Alice to Bob with a $2 fee. The whole posting — the
+// balance checks, the three entries and the audit event — is one unit of work.
+book.PostTransaction(ctx, ledger.PostTransactionRequest{
     IdempotencyKey: "transfer-001",
     Description:    "Transfer from Alice to Bob",
     Entries: []ledger.Entry{
@@ -715,33 +924,53 @@ book.PostTransaction(ledger.PostTransactionRequest{
     },
 })
 
-// Read a book balance on demand
-aliceBal, _ := book.BookBalance(alice.ID)
+// Read a book balance on demand. Nothing stores it; see Persistence.
+aliceBal, _ := book.BookBalance(ctx, alice.ID)
 ```
 
 Note that customer deposit accounts are **Liability** accounts (the bank owes the customer). Debiting Alice's Liability account decreases it (she has less money), and crediting Bob's increases it (he has more money).
 
-Adding the deposit layer for status, holds, and available balance:
+Adding the deposit layer for status, holds, and available balance. The register
+takes the *same* store, presented as a `deposit.Store`, so both layers address
+the same data inside the same transaction:
 
 ```go
-reg := deposit.NewRegister(book)
+dep := store.Deposit()   // the same store, presented as a deposit.Store
+reg := deposit.NewRegister(dep, book, book.ID(), time.Now)
 
 // Open a customer deposit account (creates a backing Liability GL account)
-acct, _ := reg.OpenAccount(deposits.ID, "Carol Checking", 0 /* no overdraft */)
+acct, _ := reg.OpenAccount(ctx, deposits.ID, "Carol Checking", 0 /* no overdraft */)
 
 // Place and then capture a $30 authorization hold
-hold, _ := reg.CreateHold(deposit.CreateHoldRequest{AccountID: acct.ID, Amount: 3000})
-reg.CaptureHold(hold.ID, fees.ID, 2500, "Card capture")
+hold, _ := reg.CreateHold(ctx, deposit.CreateHoldRequest{AccountID: acct.ID, Amount: 3000})
+reg.CaptureHold(ctx, hold.ID, fees.ID, 2500, "Card capture")
 
-bal, _ := reg.GetBalance(acct.ID) // bal.Book, bal.Holds, bal.Available
+bal, _ := reg.GetBalance(ctx, acct.ID) // bal.Book, bal.Holds, bal.Available
+```
+
+To span both layers atomically — say, a hold capture that must commit with a
+ledger posting of your own — open the unit of work yourself and drive the `…Tx`
+methods with the resulting transaction:
+
+```go
+dep.Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+    if _, err := reg.CaptureHoldTx(ctx, tx, hold.ID, fees.ID, 2500, "Card capture"); err != nil {
+        return err // nothing is committed
+    }
+    _, err := book.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{ /* … */ })
+    return err
+})
 ```
 
 ## REST API
 
-A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only, keeping the module dependency-free.
+A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only — the module's single dependency, `jackc/pgx`, is used by the optional Postgres store in `store/pg` and by nothing else, so the default in-memory build still needs no setup at all.
 
 ```bash
 go run ./cmd/server            # listens on :8080 (override with PORT env or -addr flag)
+
+# The same server, on Postgres. State then survives a restart.
+DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 ```
 
 The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`) while keeping amounts as integer minor units.
@@ -782,4 +1011,4 @@ curl -s $BASE/participants/$A/deposit-accounts/$ALICE/balance   # book 75000
 curl -s $BASE/participants/$B/deposit-accounts/$BOB/balance     # book 25000
 ```
 
-> Like the library, the server is **in-memory**: all state resets on restart. It is a learning and prototyping tool, not a production service.
+> Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.

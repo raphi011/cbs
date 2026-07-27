@@ -1,8 +1,12 @@
-// One typed function per backend route. Each returns the parsed DTO(s).
+// One typed function per backend route. Each returns the parsed DTO(s). This
+// file is the first of the three the data layer grows in — endpoints.ts →
+// query-keys.ts → hooks.ts — one section per backend area; see web/CLAUDE.md.
 
 import { request, qs } from "./client";
 import type {
   Account,
+  AuditEvent,
+  AuditQuery,
   Balance,
   BookBalance,
   CaptureHoldRequest,
@@ -68,6 +72,10 @@ export function listReserves(): Promise<Reserve[]> {
 
 export function getReserve(pid: string): Promise<Reserve> {
   return request("GET", `/central-bank/reserves/${pid}`);
+}
+
+export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
+  return request("GET", `/central-bank/audit${qs({ ...q })}`);
 }
 
 // --- Ledger: ledgers / subledgers / accounts -----------------------------
@@ -181,6 +189,15 @@ export function reverseTransaction(
   );
 }
 
+// --- Ledger: audit --------------------------------------------------------
+
+export function ledgerAudit(
+  pid: string,
+  q: AuditQuery = {},
+): Promise<AuditEvent[]> {
+  return request("GET", `/participants/${pid}/audit${qs({ ...q })}`);
+}
+
 // --- Deposit: accounts ----------------------------------------------------
 
 export function listDepositAccounts(pid: string): Promise<DepositAccount[]> {
@@ -286,6 +303,15 @@ export function takeSnapshot(
   );
 }
 
+// --- Deposit: audit -------------------------------------------------------
+
+export function depositAudit(
+  pid: string,
+  q: AuditQuery = {},
+): Promise<AuditEvent[]> {
+  return request("GET", `/participants/${pid}/deposit-audit${qs({ ...q })}`);
+}
+
 // --- Payment: mandates ----------------------------------------------------
 
 export function listMandates(): Promise<Mandate[]> {
@@ -337,6 +363,15 @@ export function returnPayment(
   return request("POST", `/payments/${payid}/return`, body);
 }
 
+// --- Payment: audit -------------------------------------------------------
+
+// The network's own audit trail: participants, mandates, payments and clearing
+// cycles. It is network-scoped rather than per-bank, which is why it hangs off
+// /payments rather than /participants/{pid}.
+export function paymentAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
+  return request("GET", `/payments/audit${qs({ ...q })}`);
+}
+
 // --- Payment: clearing cycles ---------------------------------------------
 
 export function listCycles(): Promise<ClearingCycle[]> {
@@ -374,8 +409,12 @@ export function getSettlement(sid: string): Promise<Settlement> {
 
 // --- Admin ----------------------------------------------------------------
 
-// resetState wipes the in-memory backend and reloads the built-in sample
-// dataset. The request has no body and returns {status:"reset"} (ignored).
+// resetState wipes all backend data and reloads the built-in sample dataset.
+// The request has no body and returns {status:"reset"} (ignored).
+//
+// Which store the backend runs on is not observable from here, and it matters:
+// on store/pg the wipe is durable and a restart does not bring anything back.
+// The copy in reset-button.tsx is worded to be true either way.
 export function resetState(): Promise<void> {
   return request<void>("POST", "/admin/reset");
 }

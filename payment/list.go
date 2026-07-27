@@ -1,142 +1,122 @@
 package payment
 
-import "sort"
+import (
+	"context"
+	"sort"
+)
 
 // ---------------------------------------------------------------------------
 // Enumeration and lookup
 //
 // These read-only methods let callers browse the network (for example a UI),
-// since most entities are otherwise only reachable by ID. They take a read
-// lock and return value copies — except ListParticipants/GetParticipant, which
-// return the live *Participant so callers can reach the bank's own Ledger and
-// Deposit register (consistent with AddParticipant). Results are sorted for a
-// stable order across calls.
+// since most entities are otherwise only reachable by ID. Each runs in one
+// read-only unit of work and returns snapshots the store has already copied.
+//
+// Ordering is the store's, not this package's: creation instant ascending,
+// ties broken by the row's insertion sequence. It is deliberately never the ID
+// — IDs here are unpadded counters, so "pay_10" sorts before "pay_8". See the
+// contract notes in store.go.
 // ---------------------------------------------------------------------------
 
-// ListParticipants returns all participant banks, ordered by ID.
+// ListParticipants returns all participant banks in registration order.
 //
-// The returned pointers are the network's live Participant values: callers may
-// read their fields and use Ledger/Deposit, but must not mutate the struct
-// fields directly. The Ledger and Deposit registers are themselves
-// mutex-guarded and safe for concurrent use.
-func (s *Network) ListParticipants() []*Participant {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]*Participant, 0, len(s.participants))
-	for _, p := range s.participants {
-		result = append(result, p)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID < result[j].ID
-	})
-	return result
-}
-
-// GetParticipant returns the participant bank with the given ID.
-//
-// Like ListParticipants it returns the live *Participant so the caller can
-// reach the bank's Ledger and Deposit register; do not mutate the struct
-// fields directly. Returns ErrParticipantNotFound if no such participant
-// exists.
-func (s *Network) GetParticipant(id ParticipantID) (*Participant, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	p, ok := s.participants[id]
-	if !ok {
-		return nil, ErrParticipantNotFound
-	}
-	return p, nil
-}
-
-// ListPayments returns all payments, ordered by creation time then ID.
-func (s *Network) ListPayments() []Payment {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]Payment, 0, len(s.payments))
-	for _, p := range s.payments {
-		result = append(result, copyPayment(p))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
-			return result[i].ID < result[j].ID
+// The returned Participants carry live Ledger and Deposit handles bound to the
+// network's store, so a caller can go straight from a listing to a bank's books.
+// Their data fields are a snapshot; mutating them changes nothing.
+func (s *Network) ListParticipants(ctx context.Context) ([]*Participant, error) {
+	var out []*Participant
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		records, err := tx.ListParticipants(ctx)
+		if err != nil {
+			return err
 		}
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
+		out = make([]*Participant, len(records))
+		for i, rec := range records {
+			out[i] = s.bind(rec)
+		}
+		return nil
 	})
-	return result
+	return out, err
 }
 
-// ListMandates returns all direct-debit mandates, ordered by creation time
-// then ID.
-func (s *Network) ListMandates() []Mandate {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]Mandate, 0, len(s.mandates))
-	for _, m := range s.mandates {
-		result = append(result, *m)
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
-			return result[i].ID < result[j].ID
-		}
-		return result[i].CreatedAt.Before(result[j].CreatedAt)
+// GetParticipant returns the participant bank with the given ID, with its
+// Ledger and Deposit handles bound. Returns ErrParticipantNotFound if no such
+// participant exists.
+func (s *Network) GetParticipant(ctx context.Context, id ParticipantID) (*Participant, error) {
+	var out *Participant
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.participantTx(ctx, tx, id)
+		return err
 	})
-	return result
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
-// ListCycles returns all clearing cycles, ordered by open time then ID.
-func (s *Network) ListCycles() []ClearingCycle {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]ClearingCycle, 0, len(s.cycles))
-	for _, c := range s.cycles {
-		result = append(result, copyCycle(c))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].OpenedAt.Equal(result[j].OpenedAt) {
-			return result[i].ID < result[j].ID
-		}
-		return result[i].OpenedAt.Before(result[j].OpenedAt)
+// ListPayments returns all payments, oldest first.
+func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
+	var out []Payment
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListPayments(ctx)
+		return err
 	})
-	return result
+	return out, err
 }
 
-// ListSettlements returns all settlements, ordered by settle time then ID.
-func (s *Network) ListSettlements() []Settlement {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]Settlement, 0, len(s.settlements))
-	for _, st := range s.settlements {
-		result = append(result, copySettlement(st))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		if result[i].SettledAt.Equal(result[j].SettledAt) {
-			return result[i].ID < result[j].ID
-		}
-		return result[i].SettledAt.Before(result[j].SettledAt)
+// ListMandates returns all direct-debit mandates, oldest first.
+func (s *Network) ListMandates(ctx context.Context) ([]Mandate, error) {
+	var out []Mandate
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListMandates(ctx)
+		return err
 	})
-	return result
+	return out, err
+}
+
+// ListCycles returns all clearing cycles, oldest first by the time they opened.
+func (s *Network) ListCycles(ctx context.Context) ([]ClearingCycle, error) {
+	var out []ClearingCycle
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListCycles(ctx)
+		return err
+	})
+	return out, err
+}
+
+// ListSettlements returns all settlements, oldest first by the time they
+// settled.
+func (s *Network) ListSettlements(ctx context.Context) ([]Settlement, error) {
+	var out []Settlement
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListSettlements(ctx)
+		return err
+	})
+	return out, err
 }
 
 // GetSettlement returns the settlement with the given ID, or
 // ErrSettlementNotFound if it does not exist.
-func (s *Network) GetSettlement(id SettlementID) (Settlement, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	st, ok := s.settlements[id]
-	if !ok {
-		return Settlement{}, ErrSettlementNotFound
-	}
-	return copySettlement(st), nil
+func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlement, error) {
+	var out Settlement
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetSettlement(ctx, id)
+		return err
+	})
+	return out, err
 }
 
 // ListSchemes returns all registered payment schemes, ordered by scheme ID.
+//
+// Schemes are code rather than data — they are registered at startup and live
+// in memory — so this is the one listing that does not touch the store and the
+// one that is still ordered by ID.
 func (s *Network) ListSchemes() []Scheme {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -149,10 +129,4 @@ func (s *Network) ListSchemes() []Scheme {
 		return result[i].ID() < result[j].ID()
 	})
 	return result
-}
-
-func copySettlement(st *Settlement) Settlement {
-	cp := *st
-	cp.NetPositions = copyPositions(st.NetPositions)
-	return cp
 }

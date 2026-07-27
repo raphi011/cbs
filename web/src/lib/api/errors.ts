@@ -17,7 +17,7 @@ export function messageForStatus(status: number): string {
     case 400:
       return "The request was rejected — check the highlighted fields.";
     case 404:
-      return "Not found — state is in-memory and resets when the backend restarts.";
+      return "Not found — it may have been reset, or the backend may have been restarted on a different store.";
     case 409:
       return "Conflict — this was a duplicate key or has already been applied.";
     case 422:

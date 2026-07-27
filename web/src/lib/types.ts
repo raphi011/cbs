@@ -60,6 +60,32 @@ export interface Transaction {
   createdAt: string;
 }
 
+// AuditQuery narrows an audit listing. The log is append-only and unbounded, so
+// the backend defaults `limit` to 100 and caps it at 1000; `before` is the
+// exclusive upper cursor on `seq` and pages BACKWARDS, while each page still
+// reads oldest-first.
+//
+// `seq` is a store-global total order, not a per-book or per-scope counter, so a
+// cursor only means "the next page" when it is replayed against the same
+// endpoint and the same type/entity filter that produced it.
+export interface AuditQuery {
+  limit?: number;
+  before?: number;
+  type?: string;
+  entity?: string;
+}
+
+export interface AuditEvent {
+  seq: number;
+  id: string;
+  scope: string;
+  timestamp: string;
+  type: string;
+  entityId: string;
+  payload?: unknown;
+  metadata?: Record<string, string>;
+}
+
 // GET .../accounts/{aid}/balance returns the book balance (integer cents).
 export interface BookBalance {
   accountId: string;

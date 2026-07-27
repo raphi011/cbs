@@ -12,6 +12,7 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
+import type { AuditQuery } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -39,6 +40,8 @@ export function useAddParticipant() {
     mutationFn: api.addParticipant,
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.participants() });
+      // participant.added is a network-scope audit event.
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
     },
   });
 }
@@ -60,6 +63,13 @@ export function useReserve(pid: string) {
     queryKey: qk.reserve(pid),
     queryFn: () => api.getReserve(pid),
     enabled: pid !== "",
+  });
+}
+
+export function useCentralBankAudit(q: AuditQuery = {}) {
+  return useQuery({
+    queryKey: qk.centralBankAudit(q),
+    queryFn: () => api.centralBankAudit(q),
   });
 }
 
@@ -191,14 +201,15 @@ export function useTransaction(pid: string, tid: string) {
   });
 }
 
-// Invalidate the participant's transactions and account balances after any
-// posting.
+// Invalidate the participant's transactions, account balances and audit after
+// any posting.
 function invalidateLedger(
   qc: ReturnType<typeof useQueryClient>,
   pid: string,
 ) {
   qc.invalidateQueries({ queryKey: ["participants", pid, "transactions"] });
   qc.invalidateQueries({ queryKey: ["participants", pid, "accounts"] });
+  qc.invalidateQueries({ queryKey: ["participants", pid, "audit"] });
 }
 
 export function usePostTransaction(pid: string) {
@@ -219,17 +230,26 @@ export function useReverseTransaction(pid: string) {
   });
 }
 
+export function useLedgerAudit(pid: string, q: AuditQuery = {}) {
+  return useQuery({
+    queryKey: qk.ledgerAudit(pid, q),
+    queryFn: () => api.ledgerAudit(pid, q),
+    enabled: pid !== "",
+  });
+}
+
 // --- Deposit: accounts ----------------------------------------------------
 
 // Invalidate the participant's whole deposit subtree (every account, balance,
-// hold list and snapshot list). Used after any deposit mutation — broad, but
-// the subtree is small and it's always correct, even for release/capture where
-// we only have a hold id, not its account.
+// hold list and snapshot list) plus the deposit audit log. Used after any
+// deposit mutation — broad, but the subtree is small and it's always correct,
+// even for release/capture where we only have a hold id, not its account.
 function invalidateDeposits(
   qc: ReturnType<typeof useQueryClient>,
   pid: string,
 ) {
   qc.invalidateQueries({ queryKey: qk.depositAccounts(pid) });
+  qc.invalidateQueries({ queryKey: qk.depositAudit(pid) });
 }
 
 export function useDepositAccounts(pid: string) {
@@ -307,7 +327,7 @@ export function useCloseDepositAccount(pid: string) {
 }
 
 // Funds a deposit account and raises the bank's central-bank reserve in step,
-// so this also refreshes reserves.
+// so this also refreshes reserves and the central-bank audit log.
 export function useFundDeposit(pid: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -317,6 +337,7 @@ export function useFundDeposit(pid: string) {
       invalidateDeposits(qc, pid);
       qc.invalidateQueries({ queryKey: qk.reserves() });
       qc.invalidateQueries({ queryKey: qk.reserve(pid) });
+      qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
     },
   });
 }
@@ -349,7 +370,7 @@ export function useReleaseHold(pid: string) {
 }
 
 // Capturing posts a real ledger transaction, so it also refreshes the ledger
-// (transactions, account balances).
+// (transactions, account balances, ledger audit).
 export function useCaptureHold(pid: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -381,7 +402,27 @@ export function useTakeSnapshot(pid: string, did: string) {
       api.takeSnapshot(pid, did, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.snapshots(pid, did) });
+      qc.invalidateQueries({ queryKey: qk.depositAudit(pid) });
     },
+  });
+}
+
+// --- Deposit: audit -------------------------------------------------------
+
+export function useDepositAudit(pid: string, q: AuditQuery = {}) {
+  return useQuery({
+    queryKey: qk.depositAudit(pid, q),
+    queryFn: () => api.depositAudit(pid, q),
+    enabled: pid !== "",
+  });
+}
+
+// --- Payment: audit -------------------------------------------------------
+
+export function usePaymentAudit(q: AuditQuery = {}) {
+  return useQuery({
+    queryKey: qk.paymentAudit(q),
+    queryFn: () => api.paymentAudit(q),
   });
 }
 
@@ -403,7 +444,10 @@ export function useCreateMandate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: api.createMandate,
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.mandates() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+    },
   });
 }
 
@@ -411,7 +455,10 @@ export function useRevokeMandate() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (mid: string) => api.revokeMandate(mid),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.mandates() }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+    },
   });
 }
 
@@ -420,12 +467,15 @@ export function useRevokeMandate() {
 // A payment, clearing or settlement touches money across participants (deposit
 // balances, reserves) and links payments↔cycles↔settlements. Rather than thread
 // every affected id, invalidate the whole network plus all participant-scoped
-// data — the in-memory dataset is tiny and this is always correct.
+// data — the teaching dataset is tiny and this is always correct.
 function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
+  // qk.payments() is a prefix of qk.paymentAudit(), so the network's own audit
+  // trail is refreshed by the first line here.
   qc.invalidateQueries({ queryKey: qk.payments() });
   qc.invalidateQueries({ queryKey: qk.cycles() });
   qc.invalidateQueries({ queryKey: qk.settlements() });
   qc.invalidateQueries({ queryKey: qk.reserves() });
+  qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 

@@ -17,8 +17,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
       new QueryClient({
         defaultOptions: {
           queries: {
-            // The in-memory backend has no rate limits and resets on restart;
-            // short stale time keeps the teaching UI feeling live.
+            // The backend is a local teaching tool with no rate limits, so a
+            // short stale time is cheap and keeps the UI feeling live.
             staleTime: 5_000,
             retry: false,
             refetchOnWindowFocus: false,

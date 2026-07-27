@@ -1,5 +1,12 @@
 package api
 
+import (
+	"encoding/json"
+	"time"
+
+	"github.com/raphi011/cbs/ledger"
+)
+
 // This file defines the JSON wire format for the API. The domain packages use
 // integer enums (rendered here via their String() methods) and typed string
 // IDs (rendered as plain strings), so explicit DTOs keep the wire format
@@ -9,6 +16,34 @@ package api
 // Per-resource DTOs live in dto_ledger.go, dto_deposit.go, and dto_payment.go
 // (mirroring the handlers_*.go split). This file holds only the cross-cutting
 // types shared across resources.
+
+// auditEventDTO is the wire shape of an audit event. All three layers render
+// into it; scope says which one produced it.
+type auditEventDTO struct {
+	Seq       int64             `json:"seq"`
+	ID        string            `json:"id"`
+	Scope     string            `json:"scope"`
+	Timestamp time.Time         `json:"timestamp"`
+	Type      string            `json:"type"`
+	EntityID  string            `json:"entityId"`
+	Payload   json.RawMessage   `json:"payload,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// toAuditDTO renders an audit event from any layer onto the wire; Scope says
+// which one produced it.
+func toAuditDTO(e ledger.AuditEvent) auditEventDTO {
+	return auditEventDTO{
+		Seq:       e.Seq,
+		ID:        e.ID,
+		Scope:     string(e.Scope),
+		Timestamp: e.OccurredAt,
+		Type:      e.Type,
+		EntityID:  e.EntityID,
+		Payload:   e.Payload,
+		Metadata:  e.Metadata,
+	}
+}
 
 // nameRequest, descriptionRequest, and reasonRequest are generic single-field
 // request bodies reused across multiple resources.

@@ -1,11 +1,12 @@
 "use client";
 
 import { PageHeader } from "@/components/page-header";
+import { AuditTable, useAuditPager } from "@/components/audit-table";
 import { DataTable, type Column } from "@/components/data-table";
 import { AmountCell } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { ErrorState } from "@/components/error-state";
-import { useReserves } from "@/lib/api/hooks";
+import { useCentralBankAudit, useReserves } from "@/lib/api/hooks";
 import type { Reserve } from "@/lib/types";
 
 const reserveColumns: Column<Reserve>[] = [
@@ -25,6 +26,8 @@ const reserveColumns: Column<Reserve>[] = [
 
 export default function CentralBankPage() {
   const reserves = useReserves();
+  const pager = useAuditPager();
+  const audit = useCentralBankAudit(pager.query);
 
   return (
     <div className="space-y-8">
@@ -47,6 +50,20 @@ export default function CentralBankPage() {
             empty="No participants yet. Create one to see its reserve account."
           />
         )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          Audit trail
+        </h2>
+        <AuditTable
+          events={audit.data}
+          isLoading={audit.isLoading}
+          error={audit.error}
+          onRetry={() => audit.refetch()}
+          pager={pager}
+          empty="No central-bank activity yet. Fund a participant or settle a cycle to see reserve movements."
+        />
       </section>
     </div>
   );

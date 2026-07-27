@@ -1,6 +1,9 @@
 package payment
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // Scheme is the generic abstraction over a payment scheme. Concrete schemes
 // (SEPA Credit Transfer, SEPA Direct Debit, and later instant or card
@@ -34,14 +37,21 @@ type Scheme interface {
 
 	// Validate checks scheme-specific preconditions (funds, mandate, ...)
 	// before a payment is accepted.
-	Validate(p *Payment, ctx SchemeContext) error
+	Validate(ctx context.Context, p *Payment, sc SchemeContext) error
 }
 
 // SchemeContext gives a scheme read access to the rest of the network during
-// validation. It is constructed by the Network while it holds its own lock,
-// so schemes must not call back into mutating Network methods.
+// validation.
+//
+// It carries the Tx of the unit of work the payment is being accepted in, so a
+// scheme reads the same snapshot the postings will be made against — a funds
+// check that ran in its own transaction could be stale by the time the debit
+// posts. For the same reason schemes must drive Tx and the …Tx methods only,
+// never a plain Network or Register method: those open a second unit of work
+// inside this one.
 type SchemeContext struct {
 	Network *Network
+	Tx      Tx
 	Now     time.Time
 }
 
@@ -49,15 +59,15 @@ type SchemeContext struct {
 // deposit account exists at its bank and is permitted to withdraw the payment
 // amount. The deposit layer is the authority for the funds/status check; a
 // shortfall surfaces as deposit.ErrInsufficientAvailable.
-func validateFunds(p *Payment, ctx SchemeContext) error {
-	part, ok := ctx.Network.participants[p.Debtor.Participant]
-	if !ok {
+func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
+	part, err := sc.Network.participantTx(ctx, sc.Tx, p.Debtor.Participant)
+	if err != nil {
 		return ErrParticipantNotFound
 	}
-	if _, err := part.Deposit.GetAccount(p.Debtor.Account); err != nil {
+	if _, err := sc.Tx.GetDepositAccount(ctx, part.BookID, p.Debtor.Account); err != nil {
 		return ErrAccountNotInParticipant
 	}
-	return part.Deposit.CheckWithdrawal(p.Debtor.Account, p.Amount)
+	return part.Deposit.CheckWithdrawalTx(ctx, sc.Tx, p.Debtor.Account, p.Amount)
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +88,8 @@ func (SCT) RequiresMandate() bool            { return false }
 func (SCT) AllowsReturn() bool               { return true }
 func (SCT) SettlementDelay() time.Duration   { return 24 * time.Hour } // T+1
 
-func (SCT) Validate(p *Payment, ctx SchemeContext) error {
-	return validateFunds(p, ctx)
+func (SCT) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
+	return validateFunds(ctx, p, sc)
 }
 
 // ---------------------------------------------------------------------------
@@ -100,13 +110,13 @@ func (SDD) RequiresMandate() bool            { return true }
 func (SDD) AllowsReturn() bool               { return true }
 func (SDD) SettlementDelay() time.Duration   { return 48 * time.Hour } // T+2
 
-func (SDD) Validate(p *Payment, ctx SchemeContext) error {
+func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if p.MandateID == "" {
 		return ErrMandateRequired
 	}
-	m, ok := ctx.Network.mandates[p.MandateID]
-	if !ok {
-		return ErrMandateNotFound
+	m, err := sc.Tx.GetMandate(ctx, p.MandateID)
+	if err != nil {
+		return err
 	}
 	if m.Status == MandateRevoked {
 		return ErrMandateRevoked
@@ -117,5 +127,5 @@ func (SDD) Validate(p *Payment, ctx SchemeContext) error {
 	if m.MaxAmount > 0 && p.Amount > m.MaxAmount {
 		return ErrMandateExceeded
 	}
-	return validateFunds(p, ctx)
+	return validateFunds(ctx, p, sc)
 }
