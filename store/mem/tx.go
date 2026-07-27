@@ -134,6 +134,32 @@ func (t *tx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.S
 // Accounts
 // ---------------------------------------------------------------------------
 
+func (t *tx) PutAsset(ctx context.Context, book ledger.BookID, a ledger.AssetDef) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	t.state.insertSeq(book, kindAsset, string(a.Code))
+	bucket(t.state.assets, book)[a.Code] = a
+	return nil
+}
+
+func (t *tx) GetAsset(ctx context.Context, book ledger.BookID, code ledger.AssetCode) (ledger.AssetDef, error) {
+	a, ok := t.state.assets[book][code]
+	if !ok {
+		return ledger.AssetDef{}, ledger.ErrAssetNotFound
+	}
+	return a, nil
+}
+
+func (t *tx) ListAssets(ctx context.Context, book ledger.BookID) ([]ledger.AssetDef, error) {
+	out := make([]ledger.AssetDef, 0, len(t.state.assets[book]))
+	for _, a := range t.state.assets[book] {
+		out = append(out, a)
+	}
+	sortRows(t.state, out, book, kindAsset, func(a ledger.AssetDef) (time.Time, string) { return time.Time{}, string(a.Code) })
+	return out, nil
+}
+
 func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
 	if err := t.write(); err != nil {
 		return err

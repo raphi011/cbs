@@ -237,6 +237,85 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "accounts listed for book-a", len(listed), 1)
 	})
 
+	t.Run("AssetsAreScopedPerBook", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2})
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if _, err := tx.GetAsset(ctx, bookA, "EUR"); err != nil {
+				t.Errorf("GetAsset in bookA: %v", err)
+			}
+			// The interesting failure mode is an implementation that leaks
+			// state across books.
+			if _, err := tx.GetAsset(ctx, bookB, "EUR"); !errors.Is(err, ledger.ErrAssetNotFound) {
+				t.Errorf("GetAsset in bookB = %v, want ErrAssetNotFound", err)
+			}
+			return nil
+		})
+	})
+
+	t.Run("ListAssetsIsInsertionOrdered", func(t *testing.T) {
+		s := open(t, newStore)
+
+		codes := []ledger.AssetCode{"EUR", "BTC", "USD"}
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			for _, c := range codes {
+				if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: c, Name: string(c), Scale: 2}); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			got, err := tx.ListAssets(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(got) != len(codes) {
+				t.Fatalf("ListAssets returned %d assets, want %d", len(got), len(codes))
+			}
+			for i, want := range codes {
+				if got[i].Code != want {
+					t.Errorf("ListAssets[%d] = %s, want %s", i, got[i].Code, want)
+				}
+			}
+			return nil
+		})
+	})
+
+	t.Run("PutAssetUpsertsWithoutReissuingSeq", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if err := tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "EUR", Name: "Euro", Scale: 2}); err != nil {
+				return err
+			}
+			return tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "BTC", Name: "Bitcoin", Scale: 8})
+		})
+		// Editing a row must not move it to the end of the listing.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutAsset(ctx, bookA, ledger.AssetDef{Code: "EUR", Name: "Euro (renamed)", Scale: 2})
+		})
+
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			got, err := tx.ListAssets(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(got) != 2 || got[0].Code != "EUR" || got[1].Code != "BTC" {
+				t.Errorf("ListAssets = %+v, want EUR then BTC", got)
+			}
+			if got[0].Name != "Euro (renamed)" {
+				t.Errorf("upsert did not update name: %+v", got[0])
+			}
+			return nil
+		})
+	})
+
 	t.Run("GetOnMissingRowsReturnsSentinels", func(t *testing.T) {
 		s := open(t, newStore)
 

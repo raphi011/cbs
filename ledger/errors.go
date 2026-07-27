@@ -66,4 +66,18 @@ var (
 	// which fields this covers and why the rule is a domain rule rather
 	// than a per-store one.
 	ErrInvalidText = errors.New("text must be valid UTF-8 without control characters")
+
+	// ErrAssetNotFound is returned when an asset code is not registered in
+	// this book. Assets are per book: a bank that does not deal in BTC has
+	// no BTC in its chart of accounts.
+	ErrAssetNotFound = errors.New("asset not found")
+
+	// ErrDuplicateAsset is returned when registering an asset code that the
+	// book already has.
+	ErrDuplicateAsset = errors.New("asset already exists")
+
+	// ErrInvalidScale is returned when an asset's scale exceeds
+	// MaxAssetScale. Amount is an int64 and cannot represent 18 decimal
+	// places usefully.
+	ErrInvalidScale = errors.New("asset scale exceeds the maximum supported decimal places")
 )

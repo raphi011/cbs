@@ -306,6 +306,80 @@ func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Asset Registry
+// ---------------------------------------------------------------------------
+
+// CreateAsset registers an asset in this book.
+//
+// Assets are book-scoped rather than global because each participant owns its
+// own book: a bank that does not deal in BTC should not carry BTC in its chart
+// of accounts.
+//
+// Returns ErrDuplicateAsset if the code is already registered, and
+// ErrInvalidScale if scale exceeds MaxAssetScale.
+func (s *Book) CreateAsset(ctx context.Context, code AssetCode, name string, scale uint8, class AssetClass) (AssetDef, error) {
+	var out AssetDef
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.CreateAssetTx(ctx, tx, code, name, scale, class)
+		return err
+	})
+	return out, err
+}
+
+// CreateAssetTx is CreateAsset within a caller-supplied unit of work.
+func (s *Book) CreateAssetTx(ctx context.Context, tx Tx, code AssetCode, name string, scale uint8, class AssetClass) (AssetDef, error) {
+	if err := ValidateText("code", string(code)); err != nil {
+		return AssetDef{}, err
+	}
+	if err := ValidateText("name", name); err != nil {
+		return AssetDef{}, err
+	}
+	if scale > MaxAssetScale {
+		return AssetDef{}, ErrInvalidScale
+	}
+
+	switch _, err := tx.GetAsset(ctx, s.id, code); {
+	case err == nil:
+		return AssetDef{}, ErrDuplicateAsset
+	case !errors.Is(err, ErrAssetNotFound):
+		return AssetDef{}, err
+	}
+
+	a := AssetDef{Code: code, Name: name, Scale: scale, Class: class}
+	if err := tx.PutAsset(ctx, s.id, a); err != nil {
+		return AssetDef{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ScopeLedger, EventAssetCreated, string(a.Code), a); err != nil {
+		return AssetDef{}, err
+	}
+	return a, nil
+}
+
+// GetAsset retrieves an asset by its code.
+// Returns ErrAssetNotFound if the asset is not registered in this book.
+func (s *Book) GetAsset(ctx context.Context, code AssetCode) (AssetDef, error) {
+	var out AssetDef
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetAsset(ctx, s.id, code)
+		return err
+	})
+	return out, err
+}
+
+// ListAssets returns every asset registered in this book.
+func (s *Book) ListAssets(ctx context.Context) ([]AssetDef, error) {
+	var out []AssetDef
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListAssets(ctx, s.id)
+		return err
+	})
+	return out, err
+}
+
+// ---------------------------------------------------------------------------
 // Transaction Posting
 // ---------------------------------------------------------------------------
 

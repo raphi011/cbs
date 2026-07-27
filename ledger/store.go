@@ -31,6 +31,13 @@ type Tx interface {
 	NextSubledgerBlock(ctx context.Context, book BookID) (int, error)
 	NextAccountSeq(ctx context.Context, book BookID, typeBlock int, subledger SubledgerID) (int, error)
 
+	// Assets are per book. PutAsset is an upsert, like every other Put here;
+	// the duplicate check lives in Book.CreateAssetTx, so a store never has
+	// to know the difference between registering and correcting an asset.
+	PutAsset(ctx context.Context, book BookID, a AssetDef) error
+	GetAsset(ctx context.Context, book BookID, code AssetCode) (AssetDef, error)
+	ListAssets(ctx context.Context, book BookID) ([]AssetDef, error)
+
 	PutLedger(ctx context.Context, book BookID, l Ledger) error
 	GetLedger(ctx context.Context, book BookID, id LedgerID) (Ledger, error)
 	ListLedgers(ctx context.Context, book BookID) ([]Ledger, error)

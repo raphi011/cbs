@@ -25,7 +25,7 @@ type (
 //
 // The width is a real constraint, not an incidental one. int64 tops out
 // near 9.22e18, so an asset with 18 decimal places (wei) would hold only
-// 9.2 units. Asset.Scale is capped at 9 for exactly this reason.
+// 9.2 units. AssetDef.Scale is capped at 9 for exactly this reason.
 type Amount int64
 
 // AccountType classifies accounts in the chart of accounts.
@@ -83,6 +83,57 @@ func (t AccountType) codeBlock() int {
 	default:
 		return 0
 	}
+}
+
+// AssetCode is the natural key of an asset: "EUR", "USD", "BTC".
+type AssetCode string
+
+// AssetClass groups assets by what kind of thing they are. It carries no
+// behaviour today; it is what lets a chart of accounts and a UI tell a
+// currency from a token without pattern-matching on the code.
+type AssetClass int
+
+const (
+	Fiat AssetClass = iota
+	Crypto
+)
+
+func (c AssetClass) String() string {
+	switch c {
+	case Fiat:
+		return "Fiat"
+	case Crypto:
+		return "Crypto"
+	default:
+		return "Unknown"
+	}
+}
+
+// MaxAssetScale is the largest number of decimal places an asset may have.
+//
+// Amount is an int64, which tops out near 9.22e18. At 9 decimal places that
+// is still 9.2 billion whole units — more than enough for any fiat currency
+// and for BTC, whose entire 21M supply is 2.1e15 satoshis at 8 places. At 18
+// places (wei) an int64 would hold 9.2 units, so 18-decimal assets are held
+// at reduced precision rather than being silently truncated at runtime.
+const MaxAssetScale = 9
+
+// AssetDef is a unit of value that accounts are denominated in.
+//
+// Every GL account is bound to exactly one asset, fixed at creation. That is
+// how real core banking systems work — an account number and its currency
+// are inseparable, which is why IBANs are per-currency — and it is what keeps
+// a balance a scalar rather than a map.
+//
+// Named AssetDef rather than Asset because Asset is already taken: it is the
+// AccountType constant for the asset side of the balance sheet. That constant
+// keeps the name — it is the accounting term, and it appears throughout the
+// README, the quiz and every chart of accounts.
+type AssetDef struct {
+	Code  AssetCode
+	Name  string
+	Scale uint8 // decimal places; 2 for EUR, 8 for BTC
+	Class AssetClass
 }
 
 // Direction indicates whether an entry is a debit or credit.

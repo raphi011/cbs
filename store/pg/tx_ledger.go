@@ -284,6 +284,65 @@ func (t *tx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.S
 // Accounts
 // ---------------------------------------------------------------------------
 
+func (t *tx) PutAsset(ctx context.Context, book ledger.BookID, a ledger.AssetDef) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	if err := t.ensureBook(ctx, book); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO assets (book_id, code, name, scale, class) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (book_id, code) DO UPDATE
+		SET name = EXCLUDED.name, scale = EXCLUDED.scale, class = EXCLUDED.class`,
+		string(book), string(a.Code), a.Name, int16(a.Scale), int16(a.Class))
+	if err != nil {
+		return fmt.Errorf("pg: put asset %s: %w", a.Code, err)
+	}
+	return nil
+}
+
+func (t *tx) GetAsset(ctx context.Context, book ledger.BookID, code ledger.AssetCode) (ledger.AssetDef, error) {
+	var a ledger.AssetDef
+	var scale, class int16
+	err := t.tx.QueryRow(ctx,
+		`SELECT code, name, scale, class FROM assets WHERE book_id = $1 AND code = $2`,
+		string(book), string(code),
+	).Scan(&a.Code, &a.Name, &scale, &class)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ledger.AssetDef{}, ledger.ErrAssetNotFound
+	}
+	if err != nil {
+		return ledger.AssetDef{}, fmt.Errorf("pg: get asset %s: %w", code, err)
+	}
+	a.Scale = uint8(scale)
+	a.Class = ledger.AssetClass(class)
+	return a, nil
+}
+
+func (t *tx) ListAssets(ctx context.Context, book ledger.BookID) ([]ledger.AssetDef, error) {
+	rows, err := t.tx.Query(ctx,
+		`SELECT code, name, scale, class FROM assets WHERE book_id = $1 ORDER BY seq`,
+		string(book))
+	if err != nil {
+		return nil, fmt.Errorf("pg: list assets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]ledger.AssetDef, 0)
+	for rows.Next() {
+		var a ledger.AssetDef
+		var scale, class int16
+		if err := rows.Scan(&a.Code, &a.Name, &scale, &class); err != nil {
+			return nil, fmt.Errorf("pg: scan asset: %w", err)
+		}
+		a.Scale = uint8(scale)
+		a.Class = ledger.AssetClass(class)
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
 	if err := t.write(); err != nil {
 		return err
