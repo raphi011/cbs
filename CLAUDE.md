@@ -13,7 +13,7 @@ The banking/accounting/payments content is duplicated, by design, across:
 
 - `README.md` — the authoritative source.
 - `web/src/components/hint-content.ts` — distilled from the README.
-- `web/src/lib/quiz/chapters/*.ts` — the 16-chapter quiz.
+- `web/src/lib/quiz/chapters/*.ts` — the 18-chapter quiz.
 - `store/pg/schema/0001_init.sql` — the relational mapping, and the whole
   schema: there is one migration, because no database is deployed and the asset
   dimension was folded in rather than layered on. Its comments are domain

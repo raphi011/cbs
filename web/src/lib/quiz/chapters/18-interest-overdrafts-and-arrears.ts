@@ -3,7 +3,7 @@ import type { Chapter } from "../types";
 export const chapter: Chapter = {
   slug: "18-interest-overdrafts-and-arrears",
   number: 18,
-  part: "Part VI · Lending",
+  part: "Part VIII · Lending",
   title: "Interest, Overdrafts and Arrears",
   questions: [
     {
