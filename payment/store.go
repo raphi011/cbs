@@ -5,6 +5,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 )
 
 // Store owns the payment layer's persistent state. Like ledger.Store and
@@ -23,15 +24,18 @@ type Store interface {
 	Close() error
 }
 
-// Tx embeds deposit.Tx, which embeds ledger.Tx. One concrete transaction
-// therefore spans all three layers, which is what lets SettleCycle post across
-// every participant's book and the central bank's as a single unit of work.
+// Tx embeds deposit.Tx — and, through it, ledger.Tx — plus lending.Tx, so one
+// concrete transaction spans every layer a participant drives. That is what
+// lets Participant.RunEndOfDay accrue an overdraft and a loan in a single unit
+// of work: two batches, one commit, so a failure halfway cannot leave a bank
+// with a day of interest on its loans and none on its overdrafts.
 //
 // Network-scoped entities — participants, payments, mandates, cycles,
 // settlements — belong to no single bank and are stored under
 // ledger.NetworkBook.
 type Tx interface {
 	deposit.Tx
+	lending.Tx
 
 	PutParticipant(ctx context.Context, p Participant) error
 	GetParticipant(ctx context.Context, id ParticipantID) (Participant, error)
@@ -137,5 +141,19 @@ func (v depositView) Update(ctx context.Context, fn func(context.Context, deposi
 }
 
 func (v depositView) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
+	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+}
+
+// lendingView presents a payment.Store as a lending.Store, for the same reason
+// and in the same way as ledgerView and depositView.
+type lendingView struct{ Store }
+
+var _ lending.Store = lendingView{}
+
+func (v lendingView) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+}
+
+func (v lendingView) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
 	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
 }

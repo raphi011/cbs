@@ -7,6 +7,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 )
 
 // ParticipantAccounts are the internal accounts a participant needs for one
@@ -76,17 +77,26 @@ type Participant struct {
 
 	CreatedAt time.Time
 
-	// Ledger and Deposit are live handles bound to BookID over the network's
-	// store. They are NOT data and are not persisted: a Store returns a
-	// Participant with both nil, and the Network binds them on the way out (see
-	// Network.bind). Treat them as derived, exactly like a database row's
-	// association objects.
+	// Ledger, Deposit and Lending are live handles bound to BookID over the
+	// network's store. They are NOT data and are not persisted: a Store
+	// returns a Participant with all three nil, and the Network binds them on
+	// the way out (see Network.bind). Treat them as derived, exactly like a
+	// database row's association objects.
 	//
 	// json:"-" for the same reason: the participant.added audit payload is a
 	// snapshot of the stored row, and a handle is neither data nor meaningful
 	// once serialized.
 	Ledger  *ledger.Book      `json:"-"`
 	Deposit *deposit.Register `json:"-"`
+
+	// Lending is a live handle like Ledger and Deposit, bound by Network.bind.
+	//
+	// It manages this bank's term loans and revolving lines. It does NOT
+	// manage arranged overdrafts: those are priced on the deposit account
+	// itself, because an overdrawn account's drawn amount is its own negative
+	// balance viewed by sign and has no independent existence. See the
+	// lending package doc.
+	Lending *lending.Portfolio `json:"-"`
 }
 
 // AccountsFor returns the participant's internal accounts for an asset.
@@ -116,6 +126,31 @@ func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, 
 // which is also how to open an account with an overdraft limit.
 func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
 	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
+}
+
+// RunEndOfDay runs this bank's end-of-day batches for one business date: the
+// deposit layer accrues overdraft interest, the lending layer accrues facility
+// interest and recomputes arrears.
+//
+// There are two batches because the two layers own different products and
+// neither imports the other. They run in ONE unit of work, so a failure halfway
+// cannot leave a bank with a day of interest on its loans and none on its
+// overdrafts. This method is what the API exposes, so a caller cannot run one
+// batch without the other by accident.
+//
+// It does not charge or capitalize interest. Both are monthly events on their
+// own calendars.
+func (p *Participant) RunEndOfDay(ctx context.Context, date time.Time) error {
+	return p.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+		if err := p.Deposit.RunEndOfDayTx(ctx, tx, date); err != nil {
+			return err
+		}
+		lendingTx, ok := tx.(lending.Tx)
+		if !ok {
+			return fmt.Errorf("payment: store transaction does not span the lending layer")
+		}
+		return p.Lending.RunEndOfDayTx(ctx, lendingTx, date)
+	})
 }
 
 // glAccountTx resolves a customer deposit account ID to the backing GL account

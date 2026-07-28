@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
@@ -945,6 +946,75 @@ func TestSEPASchemesAreEuroSchemes(t *testing.T) {
 			t.Errorf("%s asset = %q, want EUR", sc.ID(), sc.Asset())
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Participant.RunEndOfDay: driving deposit and lending together
+// ---------------------------------------------------------------------------
+
+func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	bank, err := net.AddParticipant(ctx, "Aurora Bank", euroOnly)
+	assertNoError(t, err)
+
+	// An overdrawn current account with a priced overdraft.
+	bruno, err := bank.OpenCustomerAccount(ctx, "Bruno Bianchi", testAsset)
+	assertNoError(t, err)
+	_, err = bank.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	assertNoError(t, net.Deposit(ctx, bank.ID, bruno.ID, 5_000, "Opening deposit"))
+
+	// And a drawn revolving line.
+	line, err := bank.Lending.OpenRevolvingLine(ctx, bank.CustomerSubledger, "Bruno Line", testAsset, 250_000, 180_000, interest.ACT365, 20_000)
+	assertNoError(t, err)
+	brunoGL, err := bank.Deposit.GetAccount(ctx, bruno.ID)
+	assertNoError(t, err)
+	_, err = bank.Lending.Draw(ctx, line.ID, brunoGL.GLAccount, 100_000, "Draw")
+	assertNoError(t, err)
+
+	// Spend the account into overdraft.
+	merchant, err := bank.OpenCustomerAccount(ctx, "Merchant", testAsset)
+	assertNoError(t, err)
+	merchantGL, err := bank.Deposit.GetAccount(ctx, merchant.ID)
+	assertNoError(t, err)
+	_, err = bank.Ledger.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "Card payment",
+		Entries: []ledger.Entry{
+			{AccountID: brunoGL.GLAccount, Amount: 110_000, Direction: ledger.Debit},
+			{AccountID: merchantGL.GLAccount, Amount: 110_000, Direction: ledger.Credit},
+		},
+	})
+	assertNoError(t, err)
+
+	// One call runs both batches.
+	start := fixedTime
+	assertNoError(t, bank.RunEndOfDay(ctx, start))
+	assertNoError(t, bank.RunEndOfDay(ctx, start.AddDate(0, 0, 1)))
+
+	account, err := bank.Deposit.GetAccount(ctx, bruno.ID)
+	assertNoError(t, err)
+	if account.Accrued <= 0 {
+		t.Errorf("the overdraft did not accrue: %d", account.Accrued)
+	}
+
+	facility, err := bank.Lending.GetFacility(ctx, line.ID)
+	assertNoError(t, err)
+	if facility.Accrued <= 0 {
+		t.Errorf("the line did not accrue: %d", facility.Accrued)
+	}
+}
+
+// A bank with neither loans nor priced overdrafts must still run — over a real
+// portfolio that is most banks on most days.
+func TestParticipantRunEndOfDay_QuietBank(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	bank, err := net.AddParticipant(ctx, "Quiet Bank", euroOnly)
+	assertNoError(t, err)
+	assertNoError(t, bank.RunEndOfDay(ctx, fixedTime))
 }
 
 // ---------------------------------------------------------------------------
