@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 )
@@ -69,6 +70,68 @@ func TestArrearsFor(t *testing.T) {
 	current := lending.ArrearsFor(paid[:1], day(2025, time.March, 20))
 	if !current.OldestUnpaidDue.IsZero() {
 		t.Errorf("a current facility has an oldest unpaid date: %v", current.OldestUnpaidDue)
+	}
+}
+
+// TestArrearsFor_RevolvingLineOutOfOrderCycles is a regression test for a scan
+// that used to assume Seq order tracked DueDate order. A revolving line's
+// cycles are appended by Seq, but ChargeInterestTx takes each cycle's due date
+// from the caller's billing date — a backdated charge produces a later-Seq
+// cycle with an EARLIER due date than the one before it. The oldest UNPAID due
+// date must win regardless of where it sits in the slice.
+func TestArrearsFor_RevolvingLineOutOfOrderCycles(t *testing.T) {
+	ctx := context.Background()
+	p, _, sub, customer := newTestPortfolio(t)
+
+	line, err := p.OpenRevolvingLine(ctx, sub, "Out of order line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	if err != nil {
+		t.Fatalf("OpenRevolvingLine: %v", err)
+	}
+	if _, err := p.Draw(ctx, line.ID, customer, 100_000, "Draw"); err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+
+	// Cycle 1 (Seq 1), billed 1 June: due 1 July — in the future relative to
+	// the asOf date used below.
+	if _, err := p.ChargeInterest(ctx, line.ID, day(2025, time.June, 1)); err != nil {
+		t.Fatalf("ChargeInterest (cycle 1): %v", err)
+	}
+	// Cycle 2 (Seq 2), backdated to 1 February: due 1 March — EARLIER than
+	// cycle 1's due date, despite the higher Seq.
+	if _, err := p.ChargeInterest(ctx, line.ID, day(2025, time.February, 1)); err != nil {
+		t.Fatalf("ChargeInterest (cycle 2): %v", err)
+	}
+
+	schedule, err := p.Schedule(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if len(schedule) != 2 {
+		t.Fatalf("cycles = %d, want 2", len(schedule))
+	}
+	if !schedule[0].DueDate.Equal(day(2025, time.July, 1)) {
+		t.Fatalf("cycle 1 (Seq %d) due date = %v, want 1 July", schedule[0].Seq, schedule[0].DueDate)
+	}
+	if !schedule[1].DueDate.Equal(day(2025, time.March, 1)) {
+		t.Fatalf("cycle 2 (Seq %d) due date = %v, want 1 March", schedule[1].Seq, schedule[1].DueDate)
+	}
+
+	// asOf 1 April: cycle 1 (Seq 1, due 1 July) is not yet due. Cycle 2
+	// (Seq 2, due 1 March, LATER in the slice than cycle 1) is overdue. March
+	// has 31 days, so 1 March to 1 April is 31 calendar days — the 30-59
+	// bucket, not Current.
+	got := lending.ArrearsFor(schedule, day(2025, time.April, 1))
+	if got.DaysPastDue != 31 {
+		t.Errorf("days past due = %d, want 31", got.DaysPastDue)
+	}
+	if got.Bucket != lending.D30_59 {
+		t.Errorf("bucket = %s, want 30-59", got.Bucket)
+	}
+	if got.NonPerforming {
+		t.Error("non-performing = true, want false")
+	}
+	if !got.OldestUnpaidDue.Equal(day(2025, time.March, 1)) {
+		t.Errorf("oldest unpaid due = %v, want 1 March", got.OldestUnpaidDue)
 	}
 }
 

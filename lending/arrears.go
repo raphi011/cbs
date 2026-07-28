@@ -19,6 +19,17 @@ import (
 // next unpaid instalment; it does not reset it. That is what makes a borrower
 // who is permanently one instalment behind stay visibly one instalment behind.
 //
+// The scan visits every instalment rather than stopping at the first one not
+// yet due, because Seq order does not always track DueDate order. A term
+// loan's does — BuildSchedule assigns both together — but a revolving line's
+// cycles are appended by ChargeInterestTx with a due date taken from the
+// caller's billing date, not from Seq: a backdated charge produces a
+// later-Seq cycle whose due date is EARLIER than the cycle before it.
+// Stopping at the first not-yet-due row in Seq order would then walk past a
+// genuinely overdue cycle sitting behind it and silently report the facility
+// as current. Schedules are tens of rows, so scanning all of them costs
+// nothing.
+//
 // Days past due are ALWAYS actual calendar days, whatever day-count convention
 // the facility accrues interest under. A 30/360 loan is not 33/360 days late —
 // delinquency is a fact about the calendar, and every regulatory and management
@@ -28,24 +39,31 @@ import (
 // MARKS ONLY: it changes no accounting. Non-accrual and provisioning are
 // recorded as future work in docs/expansion-roadmap.md.
 func ArrearsFor(schedule []Installment, asOf time.Time) Arrears {
-	for _, inst := range schedule {
+	var oldest *Installment
+	for i := range schedule {
+		inst := &schedule[i]
 		if inst.Outstanding() <= 0 {
 			continue
 		}
-		days := calendarDays(inst.DueDate, asOf)
-		if days <= 0 {
-			// The oldest unpaid instalment is not due yet, so neither is any
-			// after it: the schedule is in due-date order.
-			break
+		if calendarDays(inst.DueDate, asOf) <= 0 {
+			// Not yet due. Unlike Seq, this is not necessarily the newest
+			// instalment, so a later one in the slice may still be overdue.
+			continue
 		}
-		return Arrears{
-			DaysPastDue:     days,
-			Bucket:          BucketFor(days),
-			NonPerforming:   days >= 90,
-			OldestUnpaidDue: inst.DueDate,
+		if oldest == nil || inst.DueDate.Before(oldest.DueDate) {
+			oldest = inst
 		}
 	}
-	return Arrears{Bucket: Current}
+	if oldest == nil {
+		return Arrears{Bucket: Current}
+	}
+	days := calendarDays(oldest.DueDate, asOf)
+	return Arrears{
+		DaysPastDue:     days,
+		Bucket:          BucketFor(days),
+		NonPerforming:   days >= 90,
+		OldestUnpaidDue: oldest.DueDate,
+	}
 }
 
 // sameArrears reports whether two Arrears describe the same state.
