@@ -8,6 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/storetest"
@@ -44,6 +45,17 @@ func TestDepositConformance(t *testing.T) {
 func TestPaymentConformance(t *testing.T) {
 	storetest.RunPayment(t, func(t *testing.T) payment.Store {
 		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Payment()
+	})
+}
+
+// TestLendingConformance runs the lending half of the suite against the same
+// implementation, through the lending.Store view of the store. It is the same
+// underlying *mem.Store and the same *tx — which is exactly what lets a
+// disbursement's facility write and its GL posting commit or roll back
+// together.
+func TestLendingConformance(t *testing.T) {
+	storetest.RunLending(t, func(t *testing.T) lending.Store {
+		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Lending()
 	})
 }
 

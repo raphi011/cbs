@@ -4,17 +4,21 @@ A simplified but functionally complete Go library modeling the core accounting e
 
 State lives behind a store interface with two implementations: `store/mem`, an in-memory reference implementation that needs no setup, and `store/pg`, which persists everything to Postgres. The Postgres backend is entirely optional — with no `DATABASE_URL` the server runs on `store/mem` — and it exists mostly as *curriculum*: it is where a double-entry ledger meets relational tables, and where a single process-wide mutex stops doing your concurrency control for you. See [Persistence](#persistence) for what that turns out to involve.
 
-## Three-Layer Architecture
+## Four-Layer Architecture
 
-The system is split into three layers, each in its own package and building on the one below it:
+The system is split into four layers, each in its own package, all of them resting on the first:
 
 1. **`ledger` — the general ledger.** The pure, double-entry accounting core: ledgers, subledgers, accounts, multi-legged transactions, postings, on-demand book balances, and an immutable audit log. Its top-level type is `ledger.Book`. It knows nothing about customers' account status, holds, available balance, or snapshots.
 
-2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits**, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
+2. **`deposit` — the demand-deposit (DDA) layer.** Layered on top of a `ledger.Book`, this is the customer-facing checking/current-account layer. Its top-level type is `deposit.Register`. It adds account **status and lifecycle**, **overdraft limits** and the credit terms priced on them, authorization **holds** and the **available balance** they reduce, and end-of-day **snapshots**. Each deposit account wraps a backing Liability GL account; the deposit layer never stores money itself — every movement of value is a real posting in the underlying `ledger.Book`.
 
-3. **`payment` — the interbank payment network.** Each participant bank gets its own `ledger.Book` plus a `deposit.Register` over it; funds and status checks for a payment run through that deposit layer, while the multi-leg GL postings (debtor leg, creditor leg, reserve movements) live in the payment layer. Its top-level type is `payment.Network`.
+3. **`lending` — the credit layer.** Layered on the same `ledger.Book` and deliberately **not** on `deposit`: a term loan does not need a current account behind it. Its top-level type is `lending.Portfolio`, and it owns credit **facilities** (term loans and revolving lines), their **amortization schedules**, daily **accrual**, **capitalization** and **arrears**. The third credit product — the arranged overdraft — lives in `deposit` instead, for reasons the [Lending](#lending) section is mostly about.
 
-The sections below are organized around these layers: general-ledger concepts first, then the deposit-layer concepts (holds, available balance, account lifecycle, snapshots), then the payment network.
+4. **`payment` — the interbank payment network.** Each participant bank gets its own `ledger.Book` plus a `deposit.Register` and a `lending.Portfolio` over it; funds and status checks for a payment run through that deposit layer, while the multi-leg GL postings (debtor leg, creditor leg, reserve movements) live in the payment layer. Its top-level type is `payment.Network`.
+
+There is a fifth package, `interest`, and it is deliberately **not** a layer: pure day-count, accrual and rounding arithmetic with no store, no `ledger.Book` and no notion of an account. Both credit-bearing layers use it, which is what keeps either from reimplementing a convention or a rounding rule.
+
+The sections below are organized around these layers: general-ledger concepts first, then the deposit-layer concepts (holds, available balance, account lifecycle, snapshots, overdraft), then lending (facilities, amortization, accrual, arrears), then settlement and the payment network.
 
 ## Table of Contents
 
@@ -46,6 +50,13 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Account States](#account-states)
   - [State Transitions](#state-transitions)
   - [Overdraft](#overdraft)
+- [Lending](#lending)
+  - [Three Products, and Why the Third Is Not a Facility](#three-products-and-why-the-third-is-not-a-facility)
+  - [Two GL Accounts Per Facility](#two-gl-accounts-per-facility)
+  - [Daily Accrual and the Precision Split](#daily-accrual-and-the-precision-split)
+  - [Two Amortization Methods](#two-amortization-methods)
+  - [Repayment: Against What Accrued, Not the Schedule](#repayment-against-what-accrued-not-the-schedule)
+  - [Arrears and Non-Performing](#arrears-and-non-performing)
 - [Settlement Cycles](#settlement-cycles)
   - [What Is Settlement](#what-is-settlement)
   - [Common Settlement Cycles](#common-settlement-cycles)
@@ -602,6 +613,81 @@ The available balance calculation with overdraft becomes:
 Available Balance = Book Balance + Overdraft Limit - Active Holds
 ```
 
+An overdraft is not free once a rate is set on it. Interest accrues **daily** on the drawn (negative) balance — the arranged rate up to the limit, and the higher **unarranged rate** on any amount beyond it, so that exceeding the limit is never cheaper than staying inside it. The unarranged rate is a *surcharge*, and an account priced without one charges the arranged rate on the excess instead: its absence never means the money beyond the limit is free, which would invert the whole point of having a limit. It is **charged to the account monthly** — capitalized into the debit balance the same way a credit facility's interest is capitalized (see [Daily Accrual and the Precision Split](#daily-accrual-and-the-precision-split)) — which is what makes an overdraft **compound**: next month accrues on a balance that already includes this month's interest.
+
+The load-bearing point is what does *not* happen. Once a customer is overdrawn, the bank's balance-sheet classification of that money flips: what was a liability (money the bank owes the customer) is now, from the bank's perspective, an asset (money the customer owes the bank). A real bank's general ledger reflects this with a posting — a nightly sweep or reclassification journal that moves the drawn amount onto an Asset-side receivable. **This system posts no such thing.** The overdrawn balance stays exactly where it always was, in the customer's Liability GL account, merely negative; and the Asset-side total — "how much is drawn on overdraft across the book" — is computed by aggregating `Σ max(0, −balance)` over every deposit account, the same on-demand aggregation that produces "total customer deposits". It is not stored, and no transaction ever posts the **drawn amount** to an Asset account (`deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this, over accounts with no rate set). The interest on that drawn amount is a different matter and does post: once a rate is set, each day's accrual debits an Asset account — the account's own accrued-interest receivable — because interest earned and not yet collected genuinely is a receivable. What never happens is the *balance* being reclassified.
+
+The reason is the same one that keeps a balance from being a stored column anywhere else in this system: the drawn amount **has no independent existence**. It is the negative balance of the customer's own account, read by sign — the same fact, viewed the other way — not a second fact that happens to agree with it. Storing it separately, even as a "derived" mirror kept in sync by a sweep, would be exactly the drift a unified ledger is built without: two numbers that are supposed to agree and that nothing but discipline keeps agreeing. See `docs/deposit-accounts-vs-subledger.md` §7 for the general pattern (a control account maintained by reconciliation, versus a total computed by aggregation) and the [Lending](#lending) section below for why this is also the reason an overdraft has no facility record of its own.
+
+## Lending
+
+> Lending is a **`deposit`**-and-**`lending`**-package concern (`deposit.Register` for the overdraft's terms, `lending.Portfolio` for the other two products), built on top of the same `ledger.Book` — the pure day-count and accrual math lives in a third package, `interest`, that neither of them owns exclusively.
+
+### Three Products, and Why the Third Is Not a Facility
+
+This system extends credit to a customer three ways:
+
+1. **Term loan** — a fixed principal, disbursed once, repaid on a schedule generated at disbursement.
+2. **Revolving line** — a reusable commitment the customer draws down and repays repeatedly, billed in cycles rather than against a fixed schedule.
+3. **Arranged overdraft** — a limit that lets a current account's balance go negative, covered above.
+
+The first two are `lending.Facility` records: each wraps two Asset GL accounts of its own (below), and its drawn principal is the book balance of one of them — a fact of its own, existing whether or not the customer holds any other account, because a €10,000 five-year loan is €10,000 owed independently of anything else. (A facility does not *store* that principal any more than anything else here stores a balance; what it stores is the contract — see below.)
+
+The overdraft is deliberately **not** a third facility. Its "drawn principal" is the current account's own negative balance, read by sign; giving it a facility record would store a number that already exists elsewhere, which is precisely the duplication this system's unified ledger design exists to avoid. That is also why an overdraft has no amortization schedule and no commitment record: `Commitment` and a schedule are contract artifacts a term loan and a revolving line need and an on-demand, repayable-any-time overdraft does not.
+
+### Two GL Accounts Per Facility
+
+Every `lending.Facility` carries exactly two Asset accounts:
+
+- **Principal** — what is owed on drawn money.
+- **Accrued interest receivable** — interest earned and not yet collected.
+
+They are separate because a repayment allocates **interest before principal**, and one account cannot express a split between two things it does not distinguish. Disbursing a term loan or drawing a revolving line debits Principal (and credits the customer's account, or wherever the money goes); a day's accrual debits the receivable and credits an Interest Income (Revenue) account; a repayment credits the receivable first, then whatever remains credits Principal.
+
+`Drawn` is never a stored field: it is the principal account's book balance, the same discipline every other derived balance in this system follows. `AccruedInterest` (in whole minor units) is `Minor()` of the facility's own exact accrued-interest record — which the receivable account's balance always equals, by the invariant the next section is about, so the two figures agree to the cent while the record is the one being read. `Commitment` (a term loan's original principal, or a revolving line's limit) is stored outright, because it is a fact about the contract rather than a fact about postings so far.
+
+### Daily Accrual and the Precision Split
+
+Interest accrues once per business day, on the **drawn** principal (an undrawn commitment costs nothing), under a day-count convention — `ACT/365`, `ACT/360`, or `30/360` — that is a real term of the contract, not an implementation detail: the same balance at the same rate accrues a different amount under each.
+
+A day's interest on a real balance is mostly fraction, and rounding it away daily is a measurable annual error. So a facility (and an overdraft) holds its accrued interest twice, at two precisions, and the split is the point:
+
+- The **record** holds it in **micro-minor-units** (`interest.Accrued`, minor units × 1,000,000) — exact, never rounded.
+- The **ledger** holds `Accrued.Minor()` — the record rounded to a whole minor unit, half away from zero — because a posting cannot be a fraction of a cent.
+
+Every day's posting is the **change** in the rounded value, not the day's raw interest, so the ledger and the record can never drift apart. A €10,000 five-year loan at 6% (`ACT/365`) accrues 164.383561 cents a day, exactly:
+
+| Day | Cumulative accrued (micro-minor-units) | `Minor()` (cents) | Posted that day |
+| --- | --- | --- | --- |
+| 1 | 164,383,561 | 164 | 164 |
+| 2 | 328,767,122 | 329 | 165 |
+| 15 | 2,465,753,415 | 2,466 | 165 (up from day 14's 2,301) |
+
+Most days post 164; some post 165 as the rounding ticks over — the record is exact throughout, and the ledger only ever holds its rounding. A revolving line's interest is not just held this way but **capitalized**: `ChargeInterest` charges the rounded receivable into principal at the end of a billing cycle, clearing it back toward zero and folding this cycle's interest into what next cycle accrues on — which is what makes a revolving balance **compound**. Charging the rounded figure rather than the exact one leaves the record with a residue of up to half a minor unit either way; a €1,000 draw at 18% accrues 1,479.452040 cents over 30 days, of which only 1,479 is capitalized (rounding down), leaving the record at **+452,040** micro-minor-units. `Minor()` of a residue that size is 0, so the ledger never sees it and the next cycle's accrual absorbs it — but that is not true of *every* residue: at an EXACT half of a minor unit, `Minor()` rounds away from zero to ±1 even though the receivable is already back to zero. That is why `Close`/`CloseTx`, on both `deposit` and `lending`, test the receivable's own ledger balance rather than the record — the record may legitimately disagree with the ledger by a sub-minor-unit amount, which is the entire reason it is kept at higher precision.
+
+### Two Amortization Methods
+
+A term loan's schedule is generated once, at disbursement, as a plan — one row per instalment with its own principal and interest due — chosen at opening between two methods:
+
+- **Annuity** — every instalment has the same total payment; the interest share falls and the principal share rises as the balance amortizes.
+- **Equal principal** — every instalment repays the same principal; the total payment falls as interest on a shrinking balance falls with it.
+
+Under either method the **last instalment** is not computed the same way as the rest: it repays whatever principal is actually left, so that the scheduled principal across every row sums to the disbursed principal exactly, however rounding fell along the way, rather than leaving a stray cent unaccounted for.
+
+A revolving line has no upfront schedule — there is nothing to generate one from until the customer draws. Its instalments are appended one per billing cycle, each one that cycle's interest charged plus a minimum-payment share of the drawn balance.
+
+### Repayment: Against What Accrued, Not the Schedule
+
+A repayment settles interest before principal — but the *interest* it settles is what actually **accrued**, not what the schedule projected for that instalment. On the €10,000 loan above, the schedule's first-month interest is a flat twelfth of 6%: €50.00. Thirty days of `ACT/365` accrual come to **€49.32**, not €50.00 — the calendar month is 30 or 31 actual days, never exactly a twelfth of a 365-day year. Paying the scheduled €193.33 instalment credits €49.32 to the receivable (what was actually earned) and the remaining €144.01 to principal — 68 cents more principal than the schedule's own €143.33 assumed, because the plan overstated the interest by exactly that much.
+
+This is exactly why the **30/360** day-count convention exists: under it, every calendar month is defined to be precisely a twelfth of a year, so the scheduled interest and the accrued interest always agree to the cent and a repayment never has to reconcile the two. Under `ACT/365` or `ACT/360` they generally do not, and the difference — small, and different every month — is absorbed silently by the principal portion of each payment. The schedule stays a **plan the facility is checked against**, never a statement of what is actually owed; that fact is always read from the accrued-interest record.
+
+### Arrears and Non-Performing
+
+A facility's delinquency is **computed from its schedule**, not stored as a stream of events: days-past-due is the calendar-day age of the *oldest* instalment that is still due and unpaid, and paying that instalment is what moves the clock forward — a borrower who is permanently one payment behind stays visibly one payment behind rather than looking current between due dates. Those days sort into five bands: `Current`, `1-29`, `30-59`, `60-89`, and `90+`.
+
+**Non-performing** is set once days-past-due reaches 90, and it **marks only**: nothing about how interest accrues, how it posts, or what the schedule says changes because of it. Non-accrual accounting (where a non-performing loan stops recognizing interest into income) and expected-credit-loss provisioning are both real next steps for a production system and both deliberately out of scope here — see `docs/expansion-roadmap.md`.
+
 ## Settlement Cycles
 
 ### What Is Settlement
@@ -862,13 +948,14 @@ The audit trail is an immutable, append-only log of every mutation in the system
 - The entity affected
 - The full event payload, as it was at the time
 
-All three layers write to the same log, told apart by **scope**:
+All four layers write to the same log, told apart by **scope**:
 
 | Scope | Book | Events |
 | --- | --- | --- |
 | `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
 | `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
 | `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+| `lending` | one bank's | facility opened, disbursed, drawn, accrued, charged, repaid, arrears changed, closed |
 
 An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes neither `cycle.settled` nor any of its `payment.settled` events.
 
@@ -981,25 +1068,25 @@ Four details carry more weight than they look like they should:
 
 ### The Asset Dimension in the Schema
 
-**There is no `assets` table.** [Asset definitions live in Go](#assets-what-an-account-is-denominated-in), so the schema holds no row saying what EUR *is* — only rows denominated in it. What the asset dimension costs the schema is therefore three columns and one child table, not a lookup table and five foreign keys.
+**There is no `assets` table.** [Asset definitions live in Go](#assets-what-an-account-is-denominated-in), so the schema holds no row saying what EUR *is* — only rows denominated in it. What the asset dimension costs the schema is therefore four columns and one child table, not a lookup table and five foreign keys.
 
 Three decisions in how the asset spreads from there.
 
 **The asset is on `accounts`, and deliberately not on `entries`.** An entry's asset is always its account's, so a column on `entries` would store the same fact a second time and create the one thing a second copy always creates: the possibility that the two disagree. `PostTransaction` derives it instead, and derivation is free here — the accounts have already been loaded to check [sufficient balance](#overdraft), so the per-asset balance check adds no reads at all.
 
-**`deposit_accounts.asset` is the one exception, duplicated on purpose.** The backing GL account's asset is immutable, so the two cannot drift, and deriving it would turn every listing of deposit accounts into a join for a value that can never change. `store/storetest` asserts the two always agree, which is what makes the duplication safe rather than merely convenient.
+**The two subtype tables — `deposit_accounts.asset` and `facilities.asset` — are the exception, duplicated on purpose.** A deposit account's backing GL account, and a facility's two, are all created in the asset the row records and cannot change asset afterwards, so the copies cannot drift; deriving them would turn every listing into a join for a value that can never change. `store/storetest` asserts the copies always agree — `DepositAccountAssetMatchesItsGLAccount` and `FacilityAssetMatchesItsGLAccounts` — which is what makes the duplication safe rather than merely convenient.
 
 **A participant's internal accounts are a child table, not columns.** Suspense, reserve and settlement are `participant_assets`, keyed `(participant_id, asset)`, rather than three columns on `participants`, because each of those accounts is denominated in exactly one asset and [a bank operating in two of them needs two of each](#the-multi-bank-model). Keying it this way makes adding a scheme in a new asset a *data* change rather than a schema change.
 
 #### The Constraint That Is Missing on Purpose
 
-Three columns hold an asset code out of a set of three known values, and there is deliberately **no `CHECK`** restricting any of them. Adding the "missing" one breaks the conformance suite.
+Four columns hold an asset code out of a set of three known values, and there is deliberately **no `CHECK`** restricting any of them. Adding the "missing" one breaks the conformance suite.
 
 The argument is the one from [Two Stores, One Conformance Suite](#two-stores-one-conformance-suite), pointed at a new case. A store is a per-table key/value layer; "the asset must be one the system knows" is a **domain** rule, and `ledger.Book.CreateAccountTx` enforces it against `ledger.LookupAsset` before it creates an account — precisely where "the parent must exist" already lives for ledgers and subledgers. Postgres could express that rule as a constraint and `store/mem` could not, so neither does: a `CHECK` here would make `store/pg` refuse a write `store/mem` performs, and the two stores accepting and refusing the same writes is the whole property `store/storetest` exists to hold. The subtest is `ParentReferencesAreNotEnforced`, whose fixtures write accounts with no asset set at all. An earlier composite FK on `subledgers (book_id, ledger_id)` broke that same subtest and was removed for the same reason.
 
 There is a second, more ordinary reason. The known assets are a one-line change to a Go slice; a `CHECK` enumerating them would make every such change a migration, and a database that had missed one would refuse writes the application considers valid.
 
-`0001_init.sql` writes this reasoning into the database itself with `COMMENT ON COLUMN`, next to the columns it explains. That is not ceremony. The absence of a constraint is invisible: the next author reads the schema, sees three TEXT columns holding `'EUR'` and `'BTC'`, concludes someone forgot, and helpfully adds a constraint. A comment on the column is the only place that warning can sit where it will actually be read.
+`0001_init.sql` writes this reasoning into the database itself with `COMMENT ON COLUMN`, next to the columns it explains. That is not ceremony. The absence of a constraint is invisible: the next author reads the schema, sees four TEXT columns holding `'EUR'` and `'BTC'`, concludes someone forgot, and helpfully adds a constraint. A comment on the column is the only place that warning can sit where it will actually be read.
 
 ### A Balance Is an Aggregate, Not a Column
 

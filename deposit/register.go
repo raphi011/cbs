@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -181,6 +182,161 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 	return acct, nil
 }
 
+// receivableSubledgerName is where per-account accrued-interest receivables are
+// filed. They are deliberately not in the customer-deposit subledger: that
+// folder is the one a bank's total customer deposits is an aggregation over,
+// and an Asset account sitting in it would be a permanent invitation to sum the
+// wrong set of rows.
+const receivableSubledgerName = "Accrued Interest"
+
+// incomeSubledgerName is where interest income is filed.
+const incomeSubledgerName = "Income"
+
+// interestIncomeName is the revenue account overdraft interest is earned into,
+// one per asset. The asset is in the name because an account and its asset are
+// inseparable, and a chart of accounts holding several of each needs to tell
+// them apart.
+func interestIncomeName(asset ledger.AssetCode) string {
+	return "Interest Income (" + string(asset) + ")"
+}
+
+// SetOverdraftTerms sets an account's overdraft limit and credit terms.
+//
+// It is the only way to change a limit after opening; OpenAccount takes one for
+// convenience but nothing else did until now.
+//
+// limit is a positive amount the balance may go below zero by, rate is the
+// annual rate charged on the drawn balance up to that limit, and unarranged is
+// the rate on anything beyond it. A zero rate means the facility is
+// interest-free, which is a real product and is what every account opened
+// before this method existed has.
+//
+// A zero unarranged rate does NOT mean the same thing for the excess. It is a
+// surcharge, and its absence means rate applies to the whole drawn balance,
+// inside the limit and beyond it alike — never that the part beyond the limit
+// is free, which would make exceeding a limit cheaper than respecting it. Hence
+// the one combination refused below: an unarranged rate with no arranged one,
+// which would price only the excess.
+//
+// The first non-zero rate creates the account's own accrued-interest-receivable
+// GL account. Setting terms again reuses it, including when the rate is set
+// back to zero: the account may already hold accrued interest, and discarding
+// the receivable would strand it.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount for a negative
+// limit, and ErrInvalidRate for a negative rate or an unarranged rate with no
+// arranged one.
+func (r *Register) SetOverdraftTerms(ctx context.Context, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
+	var out Account
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.SetOverdraftTermsTx(ctx, tx, id, limit, rate, unarranged, dc)
+		return err
+	})
+	return out, err
+}
+
+// SetOverdraftTermsTx is SetOverdraftTerms within a caller-supplied unit of work.
+func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
+	if limit < 0 {
+		return Account{}, ErrInvalidAmount
+	}
+	if rate < 0 || unarranged < 0 {
+		return Account{}, ErrInvalidRate
+	}
+	if rate == 0 && unarranged > 0 {
+		return Account{}, ErrInvalidRate
+	}
+
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return Account{}, err
+	}
+	if acct.Status == Closed {
+		return Account{}, ErrAccountClosed
+	}
+
+	if rate > 0 && acct.InterestGL == "" {
+		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
+		if err != nil {
+			return Account{}, err
+		}
+		acct.InterestGL = receivable
+	}
+
+	acct.OverdraftLimit = limit
+	acct.Rate = rate
+	acct.UnarrangedRate = unarranged
+	acct.DayCount = dc
+
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return Account{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftTermsSet, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
+	return acct, nil
+}
+
+// customerLedgerIDTx resolves the ledger an account's backing GL account
+// lives under, by way of its customer subledger. ensureReceivableTx and
+// interestIncomeTx both need this ledger ID to file a sibling subledger next
+// to the customer's own — resolving it is the one step they share before
+// diverging on which subledger and account to ensure.
+func (r *Register) customerLedgerIDTx(ctx context.Context, tx Tx, acct Account) (ledger.LedgerID, error) {
+	gl, err := tx.GetAccount(ctx, r.bookID, acct.GLAccount)
+	if err != nil {
+		return "", err
+	}
+	customerSub, err := tx.GetSubledger(ctx, r.bookID, gl.SubledgerID)
+	if err != nil {
+		return "", err
+	}
+	return customerSub.LedgerID, nil
+}
+
+// ensureReceivableTx creates this account's accrued-interest-receivable GL
+// account, in its own subledger and its own asset.
+//
+// One per deposit account, not one shared receivable per bank. A shared account
+// would be a stored total whose per-customer detail lives in Account.Accrued —
+// a control account, and the duplication this codebase is built without. See
+// docs/deposit-accounts-vs-subledger.md.
+func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+	ledgerID, err := r.customerLedgerIDTx(ctx, tx, acct)
+	if err != nil {
+		return "", err
+	}
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, receivableSubledgerName)
+	if err != nil {
+		return "", err
+	}
+	created, err := r.gl.CreateAccountTx(ctx, tx, sub.ID,
+		"Accrued Interest: "+acct.Name+" ("+string(acct.Asset)+")", ledger.Asset, acct.Asset)
+	if err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+// interestIncomeTx resolves the bank's interest-income account for an asset,
+// creating it and its subledger on first use.
+func (r *Register) interestIncomeTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+	ledgerID, err := r.customerLedgerIDTx(ctx, tx, acct)
+	if err != nil {
+		return "", err
+	}
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
+	if err != nil {
+		return "", err
+	}
+	income, err := r.gl.EnsureAccountTx(ctx, tx, sub.ID, interestIncomeName(acct.Asset), ledger.Revenue, acct.Asset)
+	if err != nil {
+		return "", err
+	}
+	return income.ID, nil
+}
+
 // GetAccount retrieves a deposit account by its ID.
 // Returns ErrAccountNotFound if the account does not exist.
 func (r *Register) GetAccount(ctx context.Context, id AccountID) (Account, error) {
@@ -279,13 +435,36 @@ func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, 
 
 // Close permanently closes an account. Closed is a terminal state.
 //
-// An account can only be closed when its backing GL book balance is zero;
-// otherwise ErrAccountNotEmpty is returned. Closing is permitted from any
-// non-Closed state.
+// An account can only be closed when it owes nothing in EITHER direction: its
+// backing GL book balance must be zero, and so must the receivable holding its
+// accrued overdraft interest. Otherwise ErrAccountNotEmpty is returned. Closing
+// is permitted from any non-Closed state.
+//
+// # Why the receivable counts
+//
+// An account that was overdrawn, accrued interest and then repaid to zero has a
+// zero book balance and a non-zero receivable: interest already recognized as
+// income and sitting as a debit in an Asset account. Closing there would strand
+// it forever — accrual afterwards skips a closed account and
+// ChargeOverdraftInterest refuses one — so the money could never be collected
+// and the Asset could never be cleared. The flow is charge, then repay, then
+// close. lending.CloseTx applies exactly the same rule to a facility's own
+// receivable, for exactly this reason.
+//
+// The test is the receivable's own book balance, not Accrued.Minor(). A
+// capitalization residue is bounded by half a minor unit in either direction
+// and is not collectable — Minor() of it rounds to zero, except at an EXACT
+// half, where Minor() rounds away from zero to ±1 even though the receivable
+// itself is already fully cleared (see ChargeOverdraftInterestTx). Testing
+// the record there would lock such an account shut forever: once the balance
+// stops moving, further accrual adds nothing and the residue never resolves.
+// The receivable's ledger balance is what actually must be settled before
+// closing; the record may legitimately disagree with it by a sub-minor-unit
+// amount, which is the entire reason Accrued exists at higher precision.
 //
 // Returns ErrAccountNotFound if the account does not exist,
 // ErrInvalidStatusTransition if the account is already Closed, or
-// ErrAccountNotEmpty if its balance is non-zero.
+// ErrAccountNotEmpty if its balance or its receivable is non-zero.
 func (r *Register) Close(ctx context.Context, id AccountID) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.CloseTx(ctx, tx, id)
@@ -308,6 +487,17 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 	}
 	if book != 0 {
 		return ErrAccountNotEmpty
+	}
+	// An account that never had a rate set has no receivable to settle: there
+	// is nothing to read a balance for.
+	if acct.InterestGL != "" {
+		receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
+		if err != nil {
+			return err
+		}
+		if receivable != 0 {
+			return ErrAccountNotEmpty
+		}
 	}
 
 	acct.Status = Closed
@@ -703,6 +893,304 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 		return err
 	})
 	return out, err
+}
+
+// ---------------------------------------------------------------------------
+// Overdraft Accrual
+// ---------------------------------------------------------------------------
+
+// AccrueOverdraft accrues interest on an overdrawn account up to a business
+// date, and posts the day's income to the general ledger.
+//
+// # What is posted
+//
+// The record holds exact interest in micro-minor-units; the ledger holds
+// Accrued.Minor() of it in the account's receivable. So the posting is the
+// CHANGE in the rounded value, not the period's exact interest:
+//
+//	day 1   exact 2.0548   rounded 2   post 2
+//	day 2   exact 4.1096   rounded 4   post 2
+//	day 3   exact 6.1644   rounded 6   post 2
+//
+// A day on which the rounding does not tick posts nothing at all, which is why
+// this returns no transaction: most days there is one, some days there is not,
+// and a caller that had to distinguish them would learn nothing useful.
+//
+// Income is recognized daily rather than at capitalization because accrued
+// interest is a real asset, and one that existed only on this record between
+// charge dates would understate both assets and income on every date in
+// between.
+//
+// # The accrual base
+//
+// The overdrawn magnitude of the BOOK balance — not the available balance. A
+// hold is not borrowed money. The base is tiered: the arranged rate up to
+// OverdraftLimit, the unarranged rate on anything beyond it.
+//
+// # Idempotency
+//
+// LastAccrualDate never moves backwards, so re-running an end-of-day for a date
+// already covered is a no-op rather than a second charge. A gap of several days
+// accrues at the CURRENT balance for the whole span, which is exact only if the
+// balance did not move; a bank accrues on each day's closing balance, and
+// running this daily makes the two identical.
+//
+// Returns ErrAccountNotFound.
+func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.AccrueOverdraftTx(ctx, tx, id, date)
+	})
+}
+
+// AccrueOverdraftTx is AccrueOverdraft within a caller-supplied unit of work.
+func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, date time.Time) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	return r.accrueOverdraftAccountTx(ctx, tx, acct, date)
+}
+
+// accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller
+// has already loaded. RunEndOfDay lists every account and would otherwise read
+// each one a second time.
+func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time) error {
+	if acct.Rate <= 0 || acct.Status == Closed {
+		return nil
+	}
+	// An account priced today has no history to accrue over; the first run
+	// establishes the date it accrues from.
+	if acct.LastAccrualDate.IsZero() {
+		acct.LastAccrualDate = date
+		return tx.PutDepositAccount(ctx, r.bookID, acct)
+	}
+	if acct.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
+		return nil
+	}
+
+	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	if err != nil {
+		return err
+	}
+
+	before := acct.Accrued.Minor()
+	acct.Accrued += overdraftAccrual(book, acct, date)
+	acct.LastAccrualDate = date
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+
+	delta := acct.Accrued.Minor() - before
+	if delta == 0 {
+		// The rounding did not tick. There is nothing to post, and a
+		// zero-amount entry is refused by the ledger anyway.
+		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	}
+
+	income, err := r.interestIncomeTx(ctx, tx, acct)
+	if err != nil {
+		return err
+	}
+	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Overdraft interest accrued: " + acct.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries: []ledger.Entry{
+			{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
+			{AccountID: income, Amount: delta, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+}
+
+// overdraftAccrual is the interest earned on an account's overdrawn balance
+// over one accrual period, tiered at the arranged limit.
+//
+// An account can be drawn beyond its limit despite CheckWithdrawal: a direct GL
+// posting does not pass through this layer, and capitalizing interest on a
+// fully-drawn overdraft pushes it over by itself.
+//
+// An unarranged rate is an optional SURCHARGE, so an account without one
+// accrues the excess at the arranged rate rather than at zero. Skipping the
+// excess entirely — which is what a plain `UnarrangedRate > 0` guard does —
+// would make the money drawn beyond the limit interest-FREE, and so literally
+// cheaper than the money drawn inside it. That is the exact opposite of what a
+// limit is for, and it is the configuration most accounts here are opened with.
+func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest.Accrued {
+	drawn := -book
+	if drawn <= 0 {
+		return 0
+	}
+	arranged := drawn
+	if arranged > acct.OverdraftLimit {
+		arranged = acct.OverdraftLimit
+	}
+	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, acct.LastAccrualDate, date)
+	if excess := drawn - arranged; excess > 0 {
+		rate := acct.UnarrangedRate
+		if rate == 0 {
+			rate = acct.Rate
+		}
+		total += interest.Accrue(excess, rate, acct.DayCount, acct.LastAccrualDate, date)
+	}
+	return total
+}
+
+// ChargeOverdraftInterest capitalizes accrued interest into the account,
+// clearing the receivable.
+//
+// This is the monthly event a customer actually sees. Charging the interest to
+// the account is also what makes an overdraft compound: the balance the next
+// period accrues on now includes this period's interest.
+//
+//	Dr  customer account (Liability)   62
+//	  Cr accrued interest receivable    62
+//
+// The amount charged is Accrued.Minor() — the receivable's balance — rather
+// than the exact accrual, because the ledger holds whole minor units. Charging
+// a rounded-up figure leaves the record NEGATIVE by up to half a minor unit:
+// 30 days accrue 61.64382 cents and 62 are charged, leaving −0.35618. That is
+// correct, not a leak. The residue is bounded by half a minor unit and Minor()
+// of it rounds to zero — except at an EXACT half, where Minor() rounds away
+// from zero to ±1 even though the receivable itself is already back to zero.
+// That is why CloseTx tests the receivable's own ledger balance rather than
+// the record: ordinarily the next day's accrual absorbs the residue as the
+// balance moves again, but a residue frozen at exactly half a minor unit never
+// would. Truncating instead would give away a fraction on every cycle.
+//
+// Nothing accrued means nothing posted, and a zero-value Transaction is
+// returned rather than an error: an end-of-month over a portfolio in credit is
+// an ordinary outcome, not a failure.
+//
+// Unlike RunEndOfDay's per-account accrual, a closed account is refused rather
+// than skipped: this is an explicitly-invoked single-account operation (a
+// caller asked to charge THIS account), and posting a debit to it would
+// reopen a balance on an account CloseTx only let through at zero.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed.
+func (r *Register) ChargeOverdraftInterest(ctx context.Context, id AccountID, date time.Time) (ledger.Transaction, error) {
+	var out ledger.Transaction
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.ChargeOverdraftInterestTx(ctx, tx, id, date)
+		return err
+	})
+	return out, err
+}
+
+// ChargeOverdraftInterestTx is ChargeOverdraftInterest within a caller-supplied
+// unit of work.
+func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id AccountID, date time.Time) (ledger.Transaction, error) {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+	if acct.Status == Closed {
+		return ledger.Transaction{}, ErrAccountClosed
+	}
+	charge := acct.Accrued.Minor()
+	if charge <= 0 || acct.InterestGL == "" {
+		return ledger.Transaction{}, nil
+	}
+
+	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Overdraft interest charged: " + acct.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries: []ledger.Entry{
+			{AccountID: acct.GLAccount, Amount: charge, Direction: ledger.Debit},
+			{AccountID: acct.InterestGL, Amount: charge, Direction: ledger.Credit},
+		},
+	})
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+
+	acct.Accrued -= interest.FromMinor(charge)
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return ledger.Transaction{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftInterestCharged, string(acct.ID), map[string]any{
+		"account_id":     string(acct.ID),
+		"amount":         charge,
+		"transaction_id": string(glTx.ID),
+		"residue":        int64(acct.Accrued),
+	}); err != nil {
+		return ledger.Transaction{}, err
+	}
+	return glTx, nil
+}
+
+// RunEndOfDay accrues overdraft interest on every account in the book for one
+// business date.
+//
+// It does not capitalize. Charging is a monthly event on its own cycle, and
+// which day of the month is a product decision this layer has no opinion about;
+// a caller runs ChargeOverdraftInterest when its calendar says to.
+//
+// Accounts with no rate, accounts in credit and closed accounts are skipped
+// rather than errored — over a real portfolio most accounts are all three.
+func (r *Register) RunEndOfDay(ctx context.Context, date time.Time) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.RunEndOfDayTx(ctx, tx, date)
+	})
+}
+
+// RunEndOfDayTx is RunEndOfDay within a caller-supplied unit of work, so a
+// participant can run its deposit and lending batches in one transaction.
+func (r *Register) RunEndOfDayTx(ctx context.Context, tx Tx, date time.Time) error {
+	accounts, err := tx.ListDepositAccounts(ctx, r.bookID)
+	if err != nil {
+		return err
+	}
+	for _, acct := range accounts {
+		if err := r.accrueOverdraftAccountTx(ctx, tx, acct, date); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Totals aggregates every customer account in the book into deposits and
+// overdrafts, per asset.
+//
+// See the Totals type for why the Asset-side figure is computed here rather
+// than posted anywhere.
+func (r *Register) Totals(ctx context.Context) (Totals, error) {
+	var out Totals
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.TotalsTx(ctx, tx)
+		return err
+	})
+	return out, err
+}
+
+// TotalsTx is Totals within a caller-supplied unit of work.
+func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
+	accounts, err := tx.ListDepositAccounts(ctx, r.bookID)
+	if err != nil {
+		return Totals{}, err
+	}
+	out := Totals{
+		Deposits:   make(map[ledger.AssetCode]ledger.Amount),
+		Overdrafts: make(map[ledger.AssetCode]ledger.Amount),
+	}
+	for _, acct := range accounts {
+		balance, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+		if err != nil {
+			return Totals{}, err
+		}
+		switch {
+		case balance > 0:
+			out.Deposits[acct.Asset] += balance
+		case balance < 0:
+			out.Overdrafts[acct.Asset] += -balance
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------

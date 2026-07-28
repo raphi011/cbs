@@ -36,6 +36,7 @@ import {
 } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { formatDate } from "@/lib/dates";
+import { formatRate } from "@/lib/rate";
 import type { DepositStatus, DepositStatusAction } from "@/lib/enums";
 import type { Asset, Hold, Snapshot } from "@/lib/types";
 
@@ -379,6 +380,14 @@ export default function DepositAccountDetailPage() {
             Backed by GL account <AccountRef pid={pid} id={account.glAccount} /> · overdraft
             limit <Money amount={account.overdraftLimit} asset={asset} />
             <Hint id="overdraft" />
+          </p>
+
+          <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+            Overdraft interest: {formatRate(account.overdraftRate, account.rateScale)} arranged
+            · {formatRate(account.unarrangedRate, account.rateScale)} unarranged
+            · {account.dayCount} · accrued{" "}
+            <Money amount={account.accruedInterest} asset={asset} />
+            <Hint id="overdraft-interest" />
           </p>
 
           <BalanceCard pid={pid} did={did} asset={asset} />

@@ -1,5 +1,5 @@
-// Package mem is the in-process implementation of ledger.Store, deposit.Store
-// and payment.Store.
+// Package mem is the in-process implementation of ledger.Store, deposit.Store,
+// payment.Store and lending.Store.
 //
 // It is the reference implementation: everything the system does works here
 // first, with maps and a mutex, and store/pg then has to match it — a match the
@@ -15,14 +15,15 @@
 //
 // # One transaction, several layers
 //
-// A single *tx implements ledger.Tx, deposit.Tx and payment.Tx, so a unit of
-// work spans all three layers: a deposit capture commits its hold write
-// together with its GL posting, and a settlement commits postings across every
-// participant's book, the central bank's, and its own record of the settlement.
-// Because Go cannot give one Store three Update methods with different callback
-// types, the deposit- and payment-shaped views of the store are thin adapters,
-// (*Store).Deposit and (*Store).Payment; all three views share the same state
-// and the same lock.
+// A single *tx implements ledger.Tx, deposit.Tx, payment.Tx and lending.Tx, so a
+// unit of work spans all four layers: a deposit capture commits its hold write
+// together with its GL posting, a settlement commits postings across every
+// participant's book, the central bank's, and its own record of the
+// settlement, and a disbursement commits a facility write with its GL posting.
+// Because Go cannot give one Store four Update methods with different callback
+// types, the deposit-, payment- and lending-shaped views of the store are thin
+// adapters, (*Store).Deposit, (*Store).Payment and (*Store).Lending; all four
+// views share the same state and the same lock.
 package mem
 
 import (
@@ -34,6 +35,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -205,6 +207,16 @@ type state struct {
 	// reject a duplicate client reference.
 	endToEnd map[string]payment.PaymentID
 
+	// The lending layer's own state, in the same store and under the same lock
+	// as the ledger's, which is what lets one Tx write both atomically — a
+	// disbursement's facility write and its GL posting commit or roll back
+	// together.
+	facilities map[ledger.BookID]map[lending.FacilityID]lending.Facility
+	// installments is keyed by (facility, seq) rather than nested per facility,
+	// so an upsert is a single map assignment — the same identity store/pg gets
+	// from a primary key on (book_id, facility_id, seq).
+	installments map[ledger.BookID]map[installmentKey]lending.Installment
+
 	// rowSeq is the insertion order of every book-scoped row, and the tie-break
 	// every List* uses when two rows share a CreatedAt.
 	//
@@ -230,6 +242,13 @@ type snapshotKey struct {
 	dateKey string
 }
 
+// installmentKey is an instalment's composite identity: its facility and its
+// position in that facility's schedule.
+type installmentKey struct {
+	facility lending.FacilityID
+	seq      int
+}
+
 // rowKind names the table a row belongs to, so sequences are per table.
 type rowKind string
 
@@ -246,6 +265,8 @@ const (
 	kindMandate        rowKind = "mandate"
 	kindCycle          rowKind = "cycle"
 	kindSettlement     rowKind = "settlement"
+	kindFacility       rowKind = "facility"
+	kindInstallment    rowKind = "installment"
 )
 
 // rowKey identifies one row for sequence purposes: its book, its table and its
@@ -280,6 +301,8 @@ func newState() *state {
 		cycles:          make(map[payment.CycleID]payment.ClearingCycle),
 		settlements:     make(map[payment.SettlementID]payment.Settlement),
 		endToEnd:        make(map[string]payment.PaymentID),
+		facilities:      make(map[ledger.BookID]map[lending.FacilityID]lending.Facility),
+		installments:    make(map[ledger.BookID]map[installmentKey]lending.Installment),
 		rowSeq:          make(map[rowKey]int64),
 		rowSeqCounter:   make(map[rowCounterKey]int64),
 	}
@@ -314,6 +337,8 @@ func (s *state) clone() *state {
 		cycles:          maps.Clone(s.cycles),
 		settlements:     maps.Clone(s.settlements),
 		endToEnd:        maps.Clone(s.endToEnd),
+		facilities:      cloneNested(s.facilities),
+		installments:    cloneNested(s.installments),
 		rowSeq:          maps.Clone(s.rowSeq),
 		rowSeqCounter:   maps.Clone(s.rowSeqCounter),
 	}
@@ -409,6 +434,38 @@ func (p paymentStore) Update(ctx context.Context, fn func(context.Context, payme
 func (p paymentStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
 	return p.Store.View(ctx, func(ctx context.Context, t ledger.Tx) error {
 		return fn(ctx, t.(payment.Tx))
+	})
+}
+
+// ---------------------------------------------------------------------------
+// The lending-shaped view of the same store
+// ---------------------------------------------------------------------------
+
+// Lending returns this store as a lending.Store.
+//
+// It is an adapter over the same state, the same lock and the same *tx as
+// Deposit and Payment, for the same reason: Go allows one Update method per
+// type, and lending.Store declares Update with its own callback type. Sharing
+// the *tx is what lets a disbursement's facility write and its GL posting land
+// in one unit of work.
+func (s *Store) Lending() lending.Store { return lendingStore{s} }
+
+// lendingStore re-types Store's Update and View; Reset and Close are promoted
+// unchanged from the embedded *Store.
+type lendingStore struct{ *Store }
+
+// compile-time check that the adapter satisfies the interface it exists for.
+var _ lending.Store = lendingStore{}
+
+func (l lendingStore) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.Update(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(lending.Tx))
+	})
+}
+
+func (l lendingStore) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.View(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(lending.Tx))
 	})
 }
 

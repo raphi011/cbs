@@ -3,6 +3,7 @@ package deposit
 import (
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -67,7 +68,45 @@ type Account struct {
 	Asset          ledger.AssetCode
 	Status         AccountStatus
 	OverdraftLimit ledger.Amount // positive amount the balance may go below zero by; 0 means none
-	CreatedAt      time.Time
+
+	// Credit terms for the arranged overdraft. A zero Rate means the account
+	// accrues no interest, the same convention a zero OverdraftLimit already
+	// follows for the facility itself.
+	//
+	// These live here rather than in the lending package for two reasons. An
+	// overdrawn account's drawn amount is the negative balance of its own GL
+	// account viewed by sign — it has no independent existence and therefore no
+	// loan account — so there is no facility record for them to belong to. And
+	// real core banking puts an arranged overdraft in the current-account module
+	// rather than in Loans, which is also what keeps deposit from depending on a
+	// package that depends on deposit.
+	Rate interest.Rate
+	// UnarrangedRate applies to any balance drawn beyond OverdraftLimit. An
+	// account can get there despite CheckWithdrawal: a direct GL posting does
+	// not pass through this layer, and capitalizing interest on a fully-drawn
+	// overdraft pushes it over by itself.
+	//
+	// It is an optional SURCHARGE, not a switch. Zero does not mean the excess
+	// is free — it means the same Rate applies throughout, because a facility
+	// on which exceeding the limit cost nothing would be cheaper outside the
+	// limit than inside it. Only a zero Rate makes an overdraft interest-free,
+	// and it makes the whole of it interest-free.
+	UnarrangedRate interest.Rate
+	DayCount       interest.DayCount
+	// Accrued is interest earned and not yet charged, at sub-minor-unit
+	// precision. The general ledger holds Accrued.Minor() in InterestGL; this
+	// field holds the residue the ledger cannot represent.
+	Accrued interest.Accrued
+	// LastAccrualDate is the business date accrual has been run through. It
+	// never moves backwards, which is what makes an end-of-day re-run a no-op
+	// rather than a second charge.
+	LastAccrualDate time.Time
+	// InterestGL is this account's own accrued-interest-receivable account, an
+	// Asset. It is created the first time a non-zero rate is set, so an account
+	// with no overdraft facility does not carry an empty one.
+	InterestGL ledger.AccountID
+
+	CreatedAt time.Time
 }
 
 // HoldStatus tracks the lifecycle of a hold.
@@ -122,4 +161,30 @@ type Snapshot struct {
 	Date      time.Time // the business day this snapshot represents
 	Balance   Balance
 	TakenAt   time.Time // when the snapshot was actually taken
+}
+
+// Totals is a bank's customer-deposit position, split by the sign of each
+// account's balance and keyed by asset.
+//
+// This split is the whole Asset-side classification of an overdraft, and it is
+// derived rather than stored. A debit balance on a current account is a loan
+// and advance to a customer, and a bank may not net it against the credit
+// balances — but the drawn amount has no independent existence. It IS the
+// negative balance, viewed by sign.
+//
+// In a real bank the same split falls out of subledger-to-GL summarization: the
+// nightly feed buckets accounts by the sign of their balance into two control
+// accounts. This system has no summarization step to hide it in, because it has
+// no control accounts — see docs/deposit-accounts-vs-subledger.md. So the split
+// is a query, exactly as "total customer deposits" already is, and no journal
+// posts it.
+//
+// Keyed by asset because a total across assets is not a number. Euro and
+// bitcoin do not add up.
+type Totals struct {
+	// Deposits is the sum of positive balances: what the bank owes customers.
+	Deposits map[ledger.AssetCode]ledger.Amount
+	// Overdrafts is the sum of the magnitudes of negative balances: what
+	// customers owe the bank.
+	Overdrafts map[ledger.AssetCode]ledger.Amount
 }

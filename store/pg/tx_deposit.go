@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -34,47 +35,85 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
-		INSERT INTO deposit_accounts (book_id, id, gl_account, name, asset, status, overdraft_limit, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO deposit_accounts (
+			book_id, id, gl_account, name, asset, status, overdraft_limit,
+			overdraft_rate, unarranged_rate, day_count, accrued_interest,
+			last_accrual_date, interest_gl, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (book_id, id) DO UPDATE SET
-			gl_account      = EXCLUDED.gl_account,
-			name            = EXCLUDED.name,
-			asset           = EXCLUDED.asset,
-			status          = EXCLUDED.status,
-			overdraft_limit = EXCLUDED.overdraft_limit,
-			created_at      = EXCLUDED.created_at`,
+			gl_account        = EXCLUDED.gl_account,
+			name              = EXCLUDED.name,
+			asset             = EXCLUDED.asset,
+			status            = EXCLUDED.status,
+			overdraft_limit   = EXCLUDED.overdraft_limit,
+			overdraft_rate    = EXCLUDED.overdraft_rate,
+			unarranged_rate   = EXCLUDED.unarranged_rate,
+			day_count         = EXCLUDED.day_count,
+			accrued_interest  = EXCLUDED.accrued_interest,
+			last_accrual_date = EXCLUDED.last_accrual_date,
+			interest_gl       = EXCLUDED.interest_gl,
+			created_at        = EXCLUDED.created_at`,
 		string(book), string(a.ID), string(a.GLAccount), a.Name, string(a.Asset),
-		int16(a.Status), a.OverdraftLimit, nullTime(a.CreatedAt))
+		int16(a.Status), a.OverdraftLimit,
+		int64(a.Rate), int64(a.UnarrangedRate), int16(a.DayCount), int64(a.Accrued),
+		nullTime(a.LastAccrualDate), string(a.InterestGL), nullTime(a.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put deposit account %s: %w", a.ID, err)
 	}
 	return nil
 }
 
-func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+// depositAccountColumns is the select list both readers use. Keeping it in one
+// place is what stops GetDepositAccount and ListDepositAccounts from scanning
+// different column sets, which is a whole class of "it round-trips one way".
+const depositAccountColumns = `
+	id, gl_account, name, asset, status, overdraft_limit,
+	overdraft_rate, unarranged_rate, day_count, accrued_interest,
+	last_accrual_date, interest_gl, created_at`
+
+// scanDepositAccount reads one row of depositAccountColumns. Both pgx.Row
+// (QueryRow) and pgx.Rows (Query) implement Scan(...any) error, so one function
+// serves both readers.
+func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, error) {
 	var (
-		a         deposit.Account
-		status    int16
-		createdAt *time.Time
+		a                      deposit.Account
+		status, dayCount       int16
+		rate, unarranged       int64
+		accrued                int64
+		lastAccrual, createdAt *time.Time
 	)
-	err := t.tx.QueryRow(ctx, `
-		SELECT id, gl_account, name, asset, status, overdraft_limit, created_at
+	if err := row.Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit,
+		&rate, &unarranged, &dayCount, &accrued, &lastAccrual, &a.InterestGL, &createdAt); err != nil {
+		return deposit.Account{}, err
+	}
+	a.Status = deposit.AccountStatus(status)
+	a.Rate = interest.Rate(rate)
+	a.UnarrangedRate = interest.Rate(unarranged)
+	a.DayCount = interest.DayCount(dayCount)
+	a.Accrued = interest.Accrued(accrued)
+	a.LastAccrualDate = readTime(lastAccrual)
+	a.CreatedAt = readTime(createdAt)
+	return a, nil
+}
+
+func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+	row := t.tx.QueryRow(ctx, `
+		SELECT `+depositAccountColumns+`
 		FROM deposit_accounts WHERE book_id = $1 AND id = $2`,
-		string(book), string(id)).Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit, &createdAt)
+		string(book), string(id))
+	a, err := scanDepositAccount(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return deposit.Account{}, deposit.ErrAccountNotFound
 	}
 	if err != nil {
 		return deposit.Account{}, fmt.Errorf("pg: get deposit account %s: %w", id, err)
 	}
-	a.Status = deposit.AccountStatus(status)
-	a.CreatedAt = readTime(createdAt)
 	return a, nil
 }
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
 	rows, err := t.tx.Query(ctx, `
-		SELECT id, gl_account, name, asset, status, overdraft_limit, created_at
+		SELECT `+depositAccountColumns+`
 		FROM deposit_accounts WHERE book_id = $1
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
 	if err != nil {
@@ -84,16 +123,10 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 
 	out := make([]deposit.Account, 0)
 	for rows.Next() {
-		var (
-			a         deposit.Account
-			status    int16
-			createdAt *time.Time
-		)
-		if err := rows.Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit, &createdAt); err != nil {
+		a, err := scanDepositAccount(rows)
+		if err != nil {
 			return nil, fmt.Errorf("pg: list deposit accounts: %w", err)
 		}
-		a.Status = deposit.AccountStatus(status)
-		a.CreatedAt = readTime(createdAt)
 		out = append(out, a)
 	}
 	return out, rows.Err()

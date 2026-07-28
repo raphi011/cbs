@@ -453,6 +453,78 @@ export function useDepositAudit(pid: string, q: AuditQuery = {}) {
   });
 }
 
+// --- Lending: facilities ----------------------------------------------------
+
+// Invalidate a participant's whole facilities subtree (list, every facility's
+// detail, and every facility's schedule) — the same broad-but-always-correct
+// approach invalidateDeposits takes.
+function invalidateFacilities(
+  qc: ReturnType<typeof useQueryClient>,
+  pid: string,
+) {
+  qc.invalidateQueries({ queryKey: qk.facilities(pid) });
+}
+
+export function useFacilities(pid: string) {
+  return useQuery({
+    queryKey: qk.facilities(pid),
+    queryFn: () => api.listFacilities(pid),
+    enabled: pid !== "",
+  });
+}
+
+export function useFacility(pid: string, fid: string) {
+  return useQuery({
+    queryKey: qk.facility(pid, fid),
+    queryFn: () => api.getFacility(pid, fid),
+    enabled: pid !== "" && fid !== "",
+  });
+}
+
+export function useFacilitySchedule(pid: string, fid: string) {
+  return useQuery({
+    queryKey: qk.facilitySchedule(pid, fid),
+    queryFn: () => api.getFacilitySchedule(pid, fid),
+    enabled: pid !== "" && fid !== "",
+  });
+}
+
+export function useOpenFacility(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").OpenFacilityRequest) =>
+      api.openFacility(pid, body),
+    onSuccess: () => invalidateFacilities(qc, pid),
+  });
+}
+
+// Charging a revolving line's interest capitalizes it into drawn principal and
+// bills a new instalment, so this refreshes the facility subtree; only a cycle
+// that actually POSTED touched the ledger (see api.chargeFacilityInterest —
+// billing and posting are independent), so the ledger is refreshed on that
+// alone, the same way useCaptureHold does for a hold capture.
+export function useChargeFacilityInterest(pid: string, fid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").ChargeFacilityInterestRequest) =>
+      api.chargeFacilityInterest(pid, fid, body),
+    onSuccess: (charge) => {
+      invalidateFacilities(qc, pid);
+      if (charge?.transaction) invalidateLedger(qc, pid);
+    },
+  });
+}
+
+// --- Lending: totals ---------------------------------------------------------
+
+export function useTotals(pid: string) {
+  return useQuery({
+    queryKey: qk.totals(pid),
+    queryFn: () => api.getTotals(pid),
+    enabled: pid !== "",
+  });
+}
+
 // --- Payment: audit -------------------------------------------------------
 
 export function usePaymentAudit(q: AuditQuery = {}) {

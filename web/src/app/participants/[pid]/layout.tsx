@@ -30,6 +30,7 @@ export default function ParticipantLayout({
     { href: `${base}/transactions`, label: "Transactions" },
     { href: `${base}/audit`, label: "Audit" },
     { href: `${base}/deposit-accounts`, label: "Deposit accounts" },
+    { href: `${base}/facilities`, label: "Facilities" },
     { href: `${base}/deposit-audit`, label: "Deposit audit" },
   ];
 

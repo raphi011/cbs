@@ -11,21 +11,26 @@ import type {
   Balance,
   BookBalance,
   CaptureHoldRequest,
+  Charge,
+  ChargeFacilityInterestRequest,
   ClearingCycle,
   CreateAccountRequest,
   CreateHoldRequest,
   CreateMandateRequest,
   DepositAccount,
   DescriptionRequest,
+  Facility,
   FundRequest,
   Hold,
   InitiatePaymentRequest,
+  Installment,
   Ledger,
   Mandate,
   AddParticipantRequest,
   NameRequest,
   OpenCycleRequest,
   OpenDepositAccountRequest,
+  OpenFacilityRequest,
   Participant,
   Payment,
   PostTransactionRequest,
@@ -37,6 +42,7 @@ import type {
   SnapshotRequest,
   StatusRequest,
   Subledger,
+  Totals,
   Transaction,
 } from "../types";
 
@@ -323,6 +329,60 @@ export function depositAudit(
   q: AuditQuery = {},
 ): Promise<AuditEvent[]> {
   return request("GET", `/participants/${pid}/deposit-audit${qs({ ...q })}`);
+}
+
+// --- Lending: facilities ----------------------------------------------------
+
+export function listFacilities(pid: string): Promise<Facility[]> {
+  return request("GET", `/participants/${pid}/facilities`);
+}
+
+export function getFacility(pid: string, fid: string): Promise<Facility> {
+  return request("GET", `/participants/${pid}/facilities/${fid}`);
+}
+
+export function openFacility(
+  pid: string,
+  body: OpenFacilityRequest,
+): Promise<Facility> {
+  return request("POST", `/participants/${pid}/facilities`, body);
+}
+
+export function getFacilitySchedule(
+  pid: string,
+  fid: string,
+): Promise<Installment[]> {
+  return request("GET", `/participants/${pid}/facilities/${fid}/schedule`);
+}
+
+// chargeFacilityInterest closes a revolving line's billing cycle.
+//
+// The result is a Charge, not a Transaction, because the two outcomes are
+// independent: a cycle whose accrued interest has not yet reached a whole
+// minor unit bills an instalment and posts nothing. A cycle on a line that is
+// undrawn and owes nothing does neither, and the backend answers 204 — so the
+// return type includes `undefined`. request()'s text-then-JSON.parse (it never
+// calls response.json()) already yields `undefined` for an empty body rather
+// than throwing; naming it here is what stops a caller treating the result as
+// a posted transaction without checking.
+export function chargeFacilityInterest(
+  pid: string,
+  fid: string,
+  body: ChargeFacilityInterestRequest,
+): Promise<Charge | undefined> {
+  return request(
+    "POST",
+    `/participants/${pid}/facilities/${fid}/interest-charge`,
+    body,
+  );
+}
+
+// --- Lending: totals ---------------------------------------------------------
+
+// A bank's customer-deposit position split into deposits and (derived)
+// overdrafts, per asset.
+export function getTotals(pid: string): Promise<Totals[]> {
+  return request("GET", `/participants/${pid}/totals`);
 }
 
 // --- Payment: mandates ----------------------------------------------------

@@ -49,6 +49,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -240,6 +241,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 var tables = []string{
 	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 	"deposit_accounts", "holds", "snapshots",
+	"facilities", "installments",
 	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions",
 	"audit_events", "id_sequences",
@@ -324,6 +326,25 @@ func (d depositStore) Update(ctx context.Context, fn func(context.Context, depos
 
 func (d depositStore) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
 	return d.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Lending returns this store as a lending.Store.
+//
+// Like Deposit, it is an adapter over the same *tx rather than a second
+// implementation: a facility write and its GL posting share one Postgres
+// transaction because both go through the same value.
+func (s *Store) Lending() lending.Store { return lendingStore{s} }
+
+type lendingStore struct{ *Store }
+
+var _ lending.Store = lendingStore{}
+
+func (l lendingStore) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (l lendingStore) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 // Payment returns this store as a payment.Store. It is the handle a

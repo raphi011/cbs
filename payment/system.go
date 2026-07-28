@@ -9,6 +9,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 )
 
 // Network is the payment processor. It owns one book of accounts per
@@ -48,12 +49,13 @@ type Network struct {
 	// entity it records.
 	store Store
 
-	// ledgers and deposits are the same store seen through the narrower
-	// interfaces the Book and Register types are written against. They are
-	// derived from store rather than injected beside it, so all three layers
-	// are guaranteed to address the same data.
+	// ledgers, deposits and lendings are the same store seen through the
+	// narrower interfaces the Book, Register and Portfolio types are written
+	// against. They are derived from store rather than injected beside it, so
+	// all layers are guaranteed to address the same data.
 	ledgers  ledger.Store
 	deposits deposit.Store
+	lendings lending.Store
 
 	// mu guards schemes, the only thing a Network holds in memory. Schemes are
 	// registered at startup and read on every payment.
@@ -114,6 +116,7 @@ func NewNetwork(store Store, clock func() time.Time) *Network {
 		store:       store,
 		ledgers:     ledgers,
 		deposits:    depositView{store},
+		lendings:    lendingView{store},
 		schemes:     make(map[SchemeID]Scheme),
 		centralBank: ledger.NewBook(ledgers, CentralBankBook, clock),
 	}
@@ -151,8 +154,8 @@ func (s *Network) scheme(id SchemeID) (Scheme, bool) {
 func (s *Network) CentralBank() *ledger.Book { return s.centralBank }
 
 // bind attaches the live handles a Participant record needs to be usable: its
-// own book of accounts and the deposit register over it, both scoped to its
-// BookID within the network's store.
+// own book of accounts, the deposit register and the lending portfolio over
+// it, all scoped to its BookID within the network's store.
 //
 // The handles are stateless, so binding is cheap and a bound Participant is
 // safe to hold; the record's data fields are a snapshot, as with every other
@@ -160,6 +163,7 @@ func (s *Network) CentralBank() *ledger.Book { return s.centralBank }
 func (s *Network) bind(p Participant) *Participant {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock)
+	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
 	return &p
 }
 

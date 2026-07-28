@@ -13,13 +13,13 @@ The banking/accounting/payments content is duplicated, by design, across:
 
 - `README.md` — the authoritative source.
 - `web/src/components/hint-content.ts` — distilled from the README.
-- `web/src/lib/quiz/chapters/*.ts` — the 16-chapter quiz.
+- `web/src/lib/quiz/chapters/*.ts` — the 18-chapter quiz.
 - `store/pg/schema/0001_init.sql` — the relational mapping, and the whole
   schema: there is one migration, because no database is deployed and the asset
   dimension was folded in rather than layered on. Its comments are domain
   content, not implementation notes: which key is composite and why, why no
   balance is stored, why `entries` needs an ordering column, why the audit table
-  has no foreign key, why the three `asset` columns carry no `CHECK` (recorded
+  has no foreign key, why the four `asset` columns carry no `CHECK` (recorded
   with `COMMENT ON COLUMN`, in the database, because a missing constraint is
   invisible in a schema dump). Chapters 15 and 16 and the README's _Persistence_
   section teach exactly these claims, so a schema change is a documentation

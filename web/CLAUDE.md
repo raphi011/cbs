@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Self-contained, educational Next.js frontend (in `web/`, own `package.json`, npm) for the Go ledger banking backend at the repo root (`github.com/raphi011/ledger`). It exposes all ~53 backend REST endpoints across three layers — general ledger → demand-deposit accounts → interbank payment network — plus a central bank. The whole point is teaching: explanatory `?` hints everywhere and a "how money moves" narrative.
+Self-contained, educational Next.js frontend (in `web/`, own `package.json`, npm) for the Go ledger banking backend at the repo root (`github.com/raphi011/ledger`). It exposes backend REST endpoints across four layers — general ledger → demand-deposit accounts → interbank payment network → lending — plus a central bank. The whole point is teaching: explanatory `?` hints everywhere and a "how money moves" narrative.
 
 ## Commands
 

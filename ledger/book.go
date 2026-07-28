@@ -308,6 +308,58 @@ func (s *Book) CreateAccountTx(ctx context.Context, tx Tx, subledgerID Subledger
 	return acct, nil
 }
 
+// EnsureSubledgerTx returns the subledger with this name under this ledger,
+// creating it if it is not there.
+//
+// It resolves by name on every call rather than caching an ID, which is the
+// same choice payment.centralBankChartTx documents: a cached ID is wrong after
+// a store reset, wrong for a process that did not create the row, and wrong the
+// moment there are two processes. Resolving is a listing of a chart of accounts
+// that has tens of rows, not millions.
+//
+// The name is the identity here, so two subledgers under one ledger may not
+// share one. Nothing enforces that for subledgers created directly; Ensure
+// simply takes the first match, in listing order.
+func (s *Book) EnsureSubledgerTx(ctx context.Context, tx Tx, ledgerID LedgerID, name string) (Subledger, error) {
+	if err := ValidateText("name", name); err != nil {
+		return Subledger{}, err
+	}
+	existing, err := tx.ListSubledgers(ctx, s.id)
+	if err != nil {
+		return Subledger{}, err
+	}
+	for _, sl := range existing {
+		if sl.LedgerID == ledgerID && sl.Name == name {
+			return sl, nil
+		}
+	}
+	return s.CreateSubledgerTx(ctx, tx, ledgerID, name)
+}
+
+// EnsureAccountTx returns the account with this name, type and asset in this
+// subledger, creating it if it is not there.
+//
+// The match is on all three, not on the name alone. An account and its asset
+// are inseparable, so "Interest Income" in euro and in dollars are two
+// accounts; and matching a name across types would hand a caller asking for an
+// Expense account a Revenue one, whose normal balance runs the other way — a
+// mismatch that would surface only as a balance with the wrong sign.
+func (s *Book) EnsureAccountTx(ctx context.Context, tx Tx, subledgerID SubledgerID, name string, accountType AccountType, asset AssetCode) (Account, error) {
+	if err := ValidateText("name", name); err != nil {
+		return Account{}, err
+	}
+	existing, err := tx.ListAccounts(ctx, s.id)
+	if err != nil {
+		return Account{}, err
+	}
+	for _, a := range existing {
+		if a.SubledgerID == subledgerID && a.Name == name && a.Type == accountType && a.Asset == asset {
+			return a, nil
+		}
+	}
+	return s.CreateAccountTx(ctx, tx, subledgerID, name, accountType, asset)
+}
+
 // GetAccount retrieves an account by its ID.
 // Returns ErrAccountNotFound if the account does not exist.
 func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {

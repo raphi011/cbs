@@ -32,6 +32,9 @@ interface DataTableProps<T> {
   isLoading?: boolean;
   empty?: React.ReactNode;
   onRowClick?: (row: T) => void;
+  // Optional per-row class (e.g. tinting an overdue instalment) — see
+  // amortization-schedule.tsx.
+  rowClassName?: (row: T) => string | undefined;
 }
 
 const alignClass = {
@@ -49,6 +52,7 @@ export function DataTable<T>({
   isLoading,
   empty = "Nothing here yet.",
   onRowClick,
+  rowClassName,
 }: DataTableProps<T>) {
   return (
     <div className="overflow-x-auto rounded-lg border">
@@ -93,7 +97,7 @@ export function DataTable<T>({
               <TableRow
                 key={rowKey(row)}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={cn(onRowClick && "cursor-pointer")}
+                className={cn(onRowClick && "cursor-pointer", rowClassName?.(row))}
               >
                 {columns.map((col) => (
                   <TableCell

@@ -192,15 +192,21 @@ CREATE INDEX entries_account_idx ON entries (book_id, account_id);
 -- it would turn every listing of deposit accounts into a join for a value that
 -- can never change. store/storetest asserts the two always agree.
 CREATE TABLE deposit_accounts (
-    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
-    id              TEXT NOT NULL,
-    gl_account      TEXT NOT NULL,
-    name            TEXT NOT NULL,
-    status          SMALLINT NOT NULL,
-    asset           TEXT NOT NULL,
-    overdraft_limit BIGINT NOT NULL,
-    created_at      TIMESTAMPTZ,
-    seq             BIGSERIAL NOT NULL,
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    id                TEXT NOT NULL,
+    gl_account        TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    status            SMALLINT NOT NULL,
+    asset             TEXT NOT NULL,
+    overdraft_limit   BIGINT NOT NULL,
+    overdraft_rate    BIGINT NOT NULL DEFAULT 0,
+    unarranged_rate   BIGINT NOT NULL DEFAULT 0,
+    day_count         SMALLINT NOT NULL DEFAULT 0,
+    accrued_interest  BIGINT NOT NULL DEFAULT 0,
+    last_accrual_date TIMESTAMPTZ,
+    interest_gl       TEXT NOT NULL DEFAULT '',
+    created_at        TIMESTAMPTZ,
+    seq               BIGSERIAL NOT NULL,
     PRIMARY KEY (book_id, id)
 );
 
@@ -234,6 +240,67 @@ CREATE TABLE snapshots (
     taken_at          TIMESTAMPTZ,
     seq               BIGSERIAL NOT NULL,
     PRIMARY KEY (book_id, account_id, date_key)
+);
+
+-- ---------------------------------------------------------------------------
+-- The lending layer
+-- ---------------------------------------------------------------------------
+
+-- A credit facility: a term loan or a revolving credit line. The mirror of a
+-- deposit account — it wraps two Asset GL accounts and stores no money itself.
+--
+-- There is no row here for an arranged overdraft, and that is the design rather
+-- than an omission. An overdrawn current account's drawn amount IS the negative
+-- balance of its own Liability account viewed by sign; it has no independent
+-- existence, so a facility row for it would store a number that already exists.
+-- Its terms live on deposit_accounts, and its Asset-side classification is an
+-- aggregation (deposit.Totals). See docs/deposit-accounts-vs-subledger.md.
+CREATE TABLE facilities (
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    id                TEXT NOT NULL,
+    kind              SMALLINT NOT NULL,
+    name              TEXT NOT NULL,
+    asset             TEXT NOT NULL,
+    principal_gl      TEXT NOT NULL,
+    interest_gl       TEXT NOT NULL,
+    commitment        BIGINT NOT NULL,
+    rate              BIGINT NOT NULL,
+    day_count         SMALLINT NOT NULL,
+    method            SMALLINT NOT NULL,
+    term_months       INTEGER NOT NULL,
+    min_payment       BIGINT NOT NULL,
+    accrued_interest  BIGINT NOT NULL,
+    last_accrual_date TIMESTAMPTZ,
+    days_past_due     INTEGER NOT NULL,
+    arrears_bucket    SMALLINT NOT NULL,
+    non_performing    BOOLEAN NOT NULL,
+    oldest_unpaid_due TIMESTAMPTZ,
+    status            SMALLINT NOT NULL,
+    opened_at         TIMESTAMPTZ,
+    maturity_at       TIMESTAMPTZ,
+    seq               BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, id)
+);
+
+-- One scheduled payment. A term loan's rows are generated in full at
+-- disbursement; a revolving line appends one per billing cycle, being that
+-- cycle's minimum payment, which is how a revolving facility actually falls
+-- into arrears.
+--
+-- principal and interest are the PLAN. What a repayment allocates to interest
+-- is the accrual, which under ACT/365 differs from a scheduled twelfth — see
+-- lending.Portfolio.Repay.
+CREATE TABLE installments (
+    book_id        TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    facility_id    TEXT NOT NULL,
+    seq_no         INTEGER NOT NULL,
+    due_date       TIMESTAMPTZ,
+    principal      BIGINT NOT NULL,
+    interest       BIGINT NOT NULL,
+    paid_principal BIGINT NOT NULL,
+    paid_interest  BIGINT NOT NULL,
+    seq            BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, facility_id, seq_no)
 );
 
 -- ---------------------------------------------------------------------------
@@ -420,7 +487,7 @@ CREATE TABLE id_sequences (
 -- ---------------------------------------------------------------------------
 --
 -- Recorded in the database rather than only in this file, because the absence
--- of a constraint is invisible in a schema dump: the next author reads three
+-- of a constraint is invisible in a schema dump: the next author reads four
 -- TEXT columns holding "EUR" and "BTC" and adds the "missing" CHECK.
 
 COMMENT ON COLUMN accounts.asset IS
@@ -451,3 +518,104 @@ COMMENT ON COLUMN participant_assets.asset IS
     'One row per asset this bank operates in, holding the three plumbing '
     'accounts that asset needs. Unconstrained, for the reason given on '
     'accounts.asset.';
+
+COMMENT ON COLUMN facilities.asset IS
+    'The asset this facility is denominated in, duplicated from the two GL '
+    'accounts named by principal_gl and interest_gl — both of which are '
+    'created in it and cannot change asset afterwards, so the three cannot '
+    'drift. Duplicated for the same reason deposit_accounts.asset is: '
+    'deriving it would turn every listing of facilities into a join for a '
+    'value that can never change, and store/storetest asserts the copies '
+    'always agree (FacilityAssetMatchesItsGLAccounts). Unconstrained, for the '
+    'reason given on accounts.asset.';
+
+COMMENT ON COLUMN deposit_accounts.accrued_interest IS
+    'Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset''s '
+    'minor unit multiplied by 1e6 (interest.AccruedScale). It is not a money '
+    'column and must never be compared with, or summed alongside, one. The '
+    'scale exists because a day''s interest on a small balance is mostly '
+    'fraction — 50 EUR overdrawn at 15% accrues 2.054794 cents a day, and '
+    'rounding that to 2 daily discards 0.054794 cents a day: 20.0 cents a '
+    'year against 750 cents of annual interest, a 2.67% error. The '
+    'general ledger holds the rounded figure in the account named by '
+    'interest_gl; this column holds the residue an integer of minor units '
+    'cannot represent, which is the same reason holds live outside the ledger. '
+    'Recorded here because a scale carried in an integer column is invisible '
+    'in a schema dump.';
+
+COMMENT ON COLUMN deposit_accounts.overdraft_rate IS
+    'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '
+    '100%, 150000 is 15% (interest.RateScale). Basis points would be too '
+    'coarse — retail rates are quoted in eighths of a percent. Zero means the '
+    'account accrues no interest, the same convention overdraft_limit already '
+    'uses for the facility itself. unarranged_rate is the same scale and '
+    'applies to any balance drawn beyond overdraft_limit.';
+
+COMMENT ON COLUMN deposit_accounts.interest_gl IS
+    'This account''s own accrued-interest-receivable GL account, an Asset. '
+    'Empty until a non-zero rate is first set. It is per deposit account, not '
+    'one shared receivable per bank, because a shared one would be a stored '
+    'total whose detail lives in accrued_interest — a control account, and the '
+    'duplication this schema exists without. There is deliberately NO foreign '
+    'key to accounts, for the reason given on accounts.asset.';
+
+COMMENT ON COLUMN facilities.accrued_interest IS
+    'Interest earned and not yet settled, in MICRO-MINOR-UNITS: the asset''s '
+    'minor unit multiplied by 1e6 (interest.AccruedScale). Not a money column; '
+    'never sum it alongside one. It is SIGNED and routinely negative: a '
+    'capitalization charges the rounded receivable, which can exceed what was '
+    'earned, and the residue is absorbed by the next day''s accrual. The '
+    'general ledger holds the rounded figure in interest_gl. Recorded here '
+    'because a scale carried in an integer column is invisible in a schema '
+    'dump, and because a reader who saw the negative values would otherwise '
+    'read them as corruption.';
+
+COMMENT ON COLUMN facilities.rate IS
+    'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '
+    '(interest.RateScale). min_payment is the same scale but is NOT a rate — '
+    'it is a dimensionless share of drawn principal added to a revolving '
+    'line''s minimum payment each cycle (interest.Fraction), and the Go types '
+    'are distinct so the compiler refuses to swap them.';
+
+COMMENT ON COLUMN facilities.commitment IS
+    'What the bank has committed: a term loan''s original principal, a '
+    'revolving line''s limit. One column rather than two because it plays the '
+    'same role in both — the amount beyond which drawing is refused. The '
+    'amount actually DRAWN is not stored: it is the book balance of '
+    'principal_gl, derived from the entries like every other balance here.';
+
+COMMENT ON COLUMN facilities.days_past_due IS
+    'The calendar-day age of the oldest instalment still due and unpaid. This '
+    'column, arrears_bucket, non_performing and oldest_unpaid_due are a CACHE: '
+    'all four are a pure function of this facility''s installments rows and a '
+    'date (lending.ArrearsFor), recomputed at end of day and after every '
+    'repayment, never accumulated from a stream of missed-payment events. '
+    'Stored anyway because they are what the API and the web layer read, and '
+    'recomputing four columns on every listing would make a delinquency report '
+    'a join over every schedule in the book. A stale value is therefore a '
+    'stale cache and not a lost fact: re-running the recompute repairs it. '
+    'Days are ALWAYS actual calendar days, whatever day_count this facility '
+    'accrues interest under — a 30/360 loan is not 33/360 days late.';
+
+COMMENT ON COLUMN facilities.arrears_bucket IS
+    'The band days_past_due falls in: Current, 1-29, 30-59, 60-89, 90+. Part '
+    'of the arrears cache described on days_past_due.';
+
+COMMENT ON COLUMN facilities.oldest_unpaid_due IS
+    'The due date days_past_due is measured from, NULL when the facility is '
+    'current. Part of the arrears cache described on days_past_due.';
+
+COMMENT ON COLUMN facilities.non_performing IS
+    'Set at 90+ days past due. It MARKS ONLY and changes no accounting. '
+    'Non-accrual — where a non-performing loan stops recognizing interest into '
+    'income — and expected-credit-loss provisioning are recorded as future '
+    'work in docs/expansion-roadmap.md. Part of the arrears cache described on '
+    'days_past_due.';
+
+COMMENT ON COLUMN installments.seq_no IS
+    'The instalment''s position in the contract, 1-based, and part of its '
+    'primary key. Distinct from the `seq` column, which is the row''s '
+    'monotonic insertion sequence used to break ordering ties everywhere else '
+    'in this schema. ListInstallments orders by seq_no, not by seq or by '
+    'due_date: seq_no is already a total order within a facility and a due '
+    'date is not.';

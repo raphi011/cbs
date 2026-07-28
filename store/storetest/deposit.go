@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -539,6 +540,77 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				return err
 			}
 			assertEqual(t, "active hold total after reset", total, ledger.Amount(0))
+			return nil
+		})
+	})
+
+	// The credit terms are the only fields on a deposit account that a store
+	// could plausibly drop without any other subtest noticing: nothing else in
+	// this suite writes them, and an accrual that silently starts from zero
+	// every day looks like a working system that charges no interest.
+	t.Run("OverdraftTermsRoundTrip", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+
+		accrual := time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC)
+		want := deposit.Account{
+			ID: "dep_1", GLAccount: "200.cust.001", Name: "Bruno", Asset: "EUR",
+			Status: deposit.Active, OverdraftLimit: 50_000,
+			Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.Thirty360,
+			Accrued: 61_643_835, LastAccrualDate: accrual,
+			InterestGL: "100.accr.001", CreatedAt: early,
+		}
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, want)
+		})
+
+		check := func(label string, got deposit.Account) {
+			t.Helper()
+			assertEqual(t, label+" limit", got.OverdraftLimit, want.OverdraftLimit)
+			assertEqual(t, label+" rate", got.Rate, want.Rate)
+			assertEqual(t, label+" unarranged rate", got.UnarrangedRate, want.UnarrangedRate)
+			assertEqual(t, label+" day count", got.DayCount, want.DayCount)
+			assertEqual(t, label+" accrued", got.Accrued, want.Accrued)
+			assertEqual(t, label+" interest gl", string(got.InterestGL), string(want.InterestGL))
+			if !got.LastAccrualDate.Equal(want.LastAccrualDate) {
+				t.Errorf("%s last accrual date: got %v, want %v", label, got.LastAccrualDate, want.LastAccrualDate)
+			}
+		}
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			one, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			check("GetDepositAccount", one)
+
+			listed, err := tx.ListDepositAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts listed", len(listed), 1)
+			check("ListDepositAccounts", listed[0])
+			return nil
+		})
+
+		// An account with no facility keeps zero terms and no receivable
+		// account, rather than an empty one nothing will ever post to.
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_2", GLAccount: "200.cust.002", Name: "Bella", Asset: "EUR",
+				Status: deposit.Active, CreatedAt: early,
+			})
+		})
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			plain, err := tx.GetDepositAccount(ctx, bookA, "dep_2")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "no-facility rate", plain.Rate, interest.Rate(0))
+			assertEqual(t, "no-facility accrued", plain.Accrued, interest.Accrued(0))
+			assertEqual(t, "no-facility interest gl", string(plain.InterestGL), "")
+			if !plain.LastAccrualDate.IsZero() {
+				t.Errorf("no-facility last accrual date = %v, want zero", plain.LastAccrualDate)
+			}
 			return nil
 		})
 	})

@@ -6,6 +6,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -36,13 +37,20 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrCycleNotFound),
 		errors.Is(err, payment.ErrSettlementNotFound),
 		errors.Is(err, payment.ErrSchemeNotFound),
-		errors.Is(err, payment.ErrAccountNotInParticipant):
+		errors.Is(err, payment.ErrAccountNotInParticipant),
+		errors.Is(err, lending.ErrFacilityNotFound):
 		return http.StatusNotFound
 
 	case errors.Is(err, ledger.ErrDuplicateIdempotencyKey),
 		errors.Is(err, ledger.ErrTransactionAlreadyReversed),
 		errors.Is(err, payment.ErrDuplicateEndToEndID),
-		errors.Is(err, payment.ErrCycleAlreadyOpen):
+		errors.Is(err, payment.ErrCycleAlreadyOpen),
+		// A billing cycle already on the schedule is the already-applied
+		// category exactly: the request is valid and the state already
+		// reflects it. 409 is what tells a retrying proxy that its first
+		// attempt landed, where 422 would read as "this line cannot be
+		// billed".
+		errors.Is(err, lending.ErrCycleAlreadyBilled):
 		return http.StatusConflict
 
 	case errors.Is(err, ledger.ErrInsufficientBalance),
@@ -66,7 +74,17 @@ func errorStatus(err error) int {
 		// POST /participants/{pid}/deposits and GET /central-bank/reserves/
 		// {pid}, and as "cycle not found" on POST /cycles/{id}/settle. 422
 		// matches the sibling underfunded-member failure.
-		errors.Is(err, payment.ErrParticipantAssetNotFound):
+		errors.Is(err, payment.ErrParticipantAssetNotFound),
+		errors.Is(err, lending.ErrFacilityClosed),
+		errors.Is(err, lending.ErrFacilityNotEmpty),
+		errors.Is(err, lending.ErrLimitExceeded),
+		errors.Is(err, lending.ErrAlreadyDisbursed),
+		errors.Is(err, lending.ErrNothingOutstanding),
+		// ErrWrongFacilityKind is 422 rather than 400 deliberately: the request
+		// is well formed and the field values are valid, but this facility is
+		// the wrong product for the operation — the same category as
+		// ErrCycleNotOpen.
+		errors.Is(err, lending.ErrWrongFacilityKind):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),
@@ -77,7 +95,11 @@ func errorStatus(err error) int {
 		// value like an unparseable account type — not a missing resource.
 		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrInvalidAmount),
-		errors.Is(err, payment.ErrInvalidPaymentAmount):
+		errors.Is(err, deposit.ErrInvalidRate),
+		errors.Is(err, payment.ErrInvalidPaymentAmount),
+		errors.Is(err, lending.ErrInvalidAmount),
+		errors.Is(err, lending.ErrInvalidRate),
+		errors.Is(err, lending.ErrInvalidTerm):
 		return http.StatusBadRequest
 
 	default:

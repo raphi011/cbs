@@ -36,6 +36,21 @@ export type MandateStatus = "Active" | "Revoked";
 
 export type CycleStatus = "Open" | "Closed" | "Settled";
 
+// --- Lending ----------------------------------------------------------------
+
+export type FacilityKind = "TermLoan" | "RevolvingLine";
+
+export type FacilityStatus = "Pending" | "Active" | "Closed";
+
+// The five days-past-due buckets a facility's arrears are sorted into (see
+// lending.BucketFor). "90+" also sets NonPerforming — see ArrearsBadge.
+export type ArrearsBucket = "Current" | "1-29" | "30-59" | "60-89" | "90+";
+
+export const FACILITY_KIND_LABEL: Record<FacilityKind, string> = {
+  TermLoan: "Term loan",
+  RevolvingLine: "Revolving line",
+};
+
 export type SchemeDirection = "Push" | "Pull";
 
 export type SettlementModel = "Net" | "Gross";
@@ -99,6 +114,19 @@ export const STATUS_TONE: Record<string, Tone> = {
   Revoked: "bad",
   // cycle
   Open: "info",
+  // facility (Active/Closed above are shared verbatim — Pending is new)
+  Pending: "info",
+};
+
+// Tone for a facility's arrears bucket, from Current (good) through 90+
+// (bad) — a separate map from STATUS_TONE because these keys ("1-29", …)
+// are not status strings and read oddly folded into that one.
+export const ARREARS_TONE: Record<ArrearsBucket, Tone> = {
+  Current: "good",
+  "1-29": "warn",
+  "30-59": "warn",
+  "60-89": "bad",
+  "90+": "bad",
 };
 
 // Account-type tone for the chart-of-accounts badges.

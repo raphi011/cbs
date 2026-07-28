@@ -67,6 +67,17 @@ export const qk = {
   depositAudit: (pid: string, q?: AuditQuery) =>
     auditKey(["participants", pid, "deposit-audit"], q),
 
+  // Lending layer. The schedule nests under the facility, which nests under
+  // the list, so one invalidate of facilities(pid) refreshes a facility's
+  // detail page and its schedule too — the same trick depositAccounts(pid)
+  // plays for holds and snapshots.
+  facilities: (pid: string) => ["participants", pid, "facilities"] as const,
+  facility: (pid: string, fid: string) =>
+    ["participants", pid, "facilities", fid] as const,
+  facilitySchedule: (pid: string, fid: string) =>
+    ["participants", pid, "facilities", fid, "schedule"] as const,
+  totals: (pid: string) => ["participants", pid, "totals"] as const,
+
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,
   mandate: (mid: string) => ["mandates", mid] as const,

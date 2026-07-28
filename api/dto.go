@@ -17,7 +17,7 @@ import (
 // (mirroring the handlers_*.go split). This file holds only the cross-cutting
 // types shared across resources.
 
-// auditEventDTO is the wire shape of an audit event. All three layers render
+// auditEventDTO is the wire shape of an audit event. All four layers render
 // into it; scope says which one produced it.
 type auditEventDTO struct {
 	Seq       int64             `json:"seq"`

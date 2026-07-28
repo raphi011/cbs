@@ -4,20 +4,36 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
 // Wire format for the demand-deposit layer: customer accounts, holds,
 // balances, snapshots, and their requests.
 
+// depositAccountDTO carries the arranged overdraft's credit terms alongside
+// the account. Rate crosses the wire as its millionths integer with RateScale
+// beside it, the same convention facilityDTO follows for the same reason: an
+// integer whose scale a client learns from documentation is an integer a
+// client renders wrong.
 type depositAccountDTO struct {
-	ID             string    `json:"id"`
-	GLAccount      string    `json:"glAccount"`
-	Name           string    `json:"name"`
-	Asset          string    `json:"asset"`
-	Status         string    `json:"status"`
-	OverdraftLimit int64     `json:"overdraftLimit"`
-	CreatedAt      time.Time `json:"createdAt"`
+	ID             string `json:"id"`
+	GLAccount      string `json:"glAccount"`
+	Name           string `json:"name"`
+	Asset          string `json:"asset"`
+	Status         string `json:"status"`
+	OverdraftLimit int64  `json:"overdraftLimit"`
+
+	OverdraftRate   int64  `json:"overdraftRate"`
+	UnarrangedRate  int64  `json:"unarrangedRate"`
+	RateScale       int64  `json:"rateScale"`
+	DayCount        string `json:"dayCount"`
+	AccruedInterest int64  `json:"accruedInterest"`
+	// InterestGLAccount is empty until the first non-zero rate is set — see
+	// deposit.Register.SetOverdraftTerms.
+	InterestGLAccount string `json:"interestGlAccount,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func toDepositAccountDTO(a deposit.Account) depositAccountDTO {
@@ -28,7 +44,15 @@ func toDepositAccountDTO(a deposit.Account) depositAccountDTO {
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
 		OverdraftLimit: int64(a.OverdraftLimit),
-		CreatedAt:      a.CreatedAt,
+
+		OverdraftRate:     int64(a.Rate),
+		UnarrangedRate:    int64(a.UnarrangedRate),
+		RateScale:         interest.RateScale,
+		DayCount:          a.DayCount.String(),
+		AccruedInterest:   int64(a.Accrued.Minor()),
+		InterestGLAccount: string(a.InterestGL),
+
+		CreatedAt: a.CreatedAt,
 	}
 }
 
@@ -122,4 +146,18 @@ type fundRequest struct {
 	Account     string `json:"account"`
 	Amount      int64  `json:"amount"`
 	Description string `json:"description"`
+}
+
+// setOverdraftTermsRequest carries an account's arranged overdraft limit and
+// credit terms. Rate and UnarrangedRate are millionths, the same wire
+// convention facilityDTO uses for a lending rate.
+type setOverdraftTermsRequest struct {
+	Limit          int64  `json:"limit"`
+	Rate           int64  `json:"rate"`
+	UnarrangedRate int64  `json:"unarrangedRate"`
+	DayCount       string `json:"dayCount"`
+}
+
+type chargeOverdraftInterestRequest struct {
+	Date string `json:"date"`
 }
