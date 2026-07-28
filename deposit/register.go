@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -179,6 +180,145 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		return Account{}, err
 	}
 	return acct, nil
+}
+
+// receivableSubledgerName is where per-account accrued-interest receivables are
+// filed. They are deliberately not in the customer-deposit subledger: that
+// folder is the one a bank's total customer deposits is an aggregation over,
+// and an Asset account sitting in it would be a permanent invitation to sum the
+// wrong set of rows.
+const receivableSubledgerName = "Accrued Interest"
+
+// incomeSubledgerName is where interest income is filed.
+const incomeSubledgerName = "Income"
+
+// interestIncomeName is the revenue account overdraft interest is earned into,
+// one per asset. The asset is in the name because an account and its asset are
+// inseparable, and a chart of accounts holding several of each needs to tell
+// them apart.
+func interestIncomeName(asset ledger.AssetCode) string {
+	return "Interest Income (" + string(asset) + ")"
+}
+
+// SetOverdraftTerms sets an account's overdraft limit and credit terms.
+//
+// It is the only way to change a limit after opening; OpenAccount takes one for
+// convenience but nothing else did until now.
+//
+// limit is a positive amount the balance may go below zero by, rate is the
+// annual rate charged on the drawn balance up to that limit, and unarranged is
+// the rate on anything beyond it. A zero rate means the facility is
+// interest-free, which is a real product and is what every account opened
+// before this method existed has.
+//
+// The first non-zero rate creates the account's own accrued-interest-receivable
+// GL account. Setting terms again reuses it, including when the rate is set
+// back to zero: the account may already hold accrued interest, and discarding
+// the receivable would strand it.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount for a negative
+// limit, and ErrInvalidRate for a negative rate or an unarranged rate with no
+// arranged one.
+func (r *Register) SetOverdraftTerms(ctx context.Context, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
+	var out Account
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.SetOverdraftTermsTx(ctx, tx, id, limit, rate, unarranged, dc)
+		return err
+	})
+	return out, err
+}
+
+// SetOverdraftTermsTx is SetOverdraftTerms within a caller-supplied unit of work.
+func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
+	if limit < 0 {
+		return Account{}, ErrInvalidAmount
+	}
+	if rate < 0 || unarranged < 0 {
+		return Account{}, ErrInvalidRate
+	}
+	if rate == 0 && unarranged > 0 {
+		return Account{}, ErrInvalidRate
+	}
+
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return Account{}, err
+	}
+	if acct.Status == Closed {
+		return Account{}, ErrAccountClosed
+	}
+
+	if rate > 0 && acct.InterestGL == "" {
+		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
+		if err != nil {
+			return Account{}, err
+		}
+		acct.InterestGL = receivable
+	}
+
+	acct.OverdraftLimit = limit
+	acct.Rate = rate
+	acct.UnarrangedRate = unarranged
+	acct.DayCount = dc
+
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return Account{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftTermsSet, string(acct.ID), acct); err != nil {
+		return Account{}, err
+	}
+	return acct, nil
+}
+
+// ensureReceivableTx creates this account's accrued-interest-receivable GL
+// account, in its own subledger and its own asset.
+//
+// One per deposit account, not one shared receivable per bank. A shared account
+// would be a stored total whose per-customer detail lives in Account.Accrued —
+// a control account, and the duplication this codebase is built without. See
+// docs/deposit-accounts-vs-subledger.md.
+func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+	gl, err := tx.GetAccount(ctx, r.bookID, acct.GLAccount)
+	if err != nil {
+		return "", err
+	}
+	customerSub, err := tx.GetSubledger(ctx, r.bookID, gl.SubledgerID)
+	if err != nil {
+		return "", err
+	}
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, customerSub.LedgerID, receivableSubledgerName)
+	if err != nil {
+		return "", err
+	}
+	created, err := r.gl.CreateAccountTx(ctx, tx, sub.ID,
+		"Accrued Interest: "+acct.Name+" ("+string(acct.Asset)+")", ledger.Asset, acct.Asset)
+	if err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+// interestIncomeTx resolves the bank's interest-income account for an asset,
+// creating it and its subledger on first use.
+func (r *Register) interestIncomeTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+	gl, err := tx.GetAccount(ctx, r.bookID, acct.GLAccount)
+	if err != nil {
+		return "", err
+	}
+	customerSub, err := tx.GetSubledger(ctx, r.bookID, gl.SubledgerID)
+	if err != nil {
+		return "", err
+	}
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, customerSub.LedgerID, incomeSubledgerName)
+	if err != nil {
+		return "", err
+	}
+	income, err := r.gl.EnsureAccountTx(ctx, tx, sub.ID, interestIncomeName(acct.Asset), ledger.Revenue, acct.Asset)
+	if err != nil {
+		return "", err
+	}
+	return income.ID, nil
 }
 
 // GetAccount retrieves a deposit account by its ID.

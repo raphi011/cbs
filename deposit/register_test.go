@@ -14,6 +14,7 @@ import (
 	"time"
 
 	. "github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -39,10 +40,10 @@ const (
 	otherAsset ledger.AssetCode = "BTC"
 )
 
-// testRegister creates a Register backed by a fresh ledger with a fixed clock,
-// returning the register, the customer-deposits subledger, and a counterparty
-// Asset account (cash) for capture postings.
-func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID) {
+// newTestRegister creates a Register backed by a fresh ledger with a fixed
+// clock, returning the register, its *ledger.Book, and the customer-deposits
+// subledger ID.
+func newTestRegister(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID) {
 	t.Helper()
 	ctx := context.Background()
 	clock := func() time.Time { return fixedTime }
@@ -54,23 +55,35 @@ func testRegister(t *testing.T) (*Register, ledger.SubledgerID, ledger.AccountID
 	assertNoError(t, err)
 	deposits, err := book.CreateSubledger(ctx, gl.ID, "Customer Deposits")
 	assertNoError(t, err)
-	assets, err := book.CreateSubledger(ctx, gl.ID, "Bank Assets")
+
+	return reg, book, deposits.ID
+}
+
+// newCashAccount creates a Bank Assets subledger alongside the register's
+// customer-deposits one, and a counterparty Asset account (cash) within it,
+// for tests that fund customer accounts via a capture posting.
+func newCashAccount(t *testing.T, book *ledger.Book, deposits ledger.SubledgerID) ledger.AccountID {
+	t.Helper()
+	ctx := context.Background()
+	dep, err := book.GetSubledger(ctx, deposits)
+	assertNoError(t, err)
+	assets, err := book.CreateSubledger(ctx, dep.LedgerID, "Bank Assets")
 	assertNoError(t, err)
 	cash, err := book.CreateAccount(ctx, assets.ID, "Cash", ledger.Asset, testAsset)
 	assertNoError(t, err)
-
-	return reg, deposits.ID, cash.ID
+	return cash.ID
 }
 
 // newFundedAccount opens a deposit account and funds it with 1000, returning the
 // register, the ledger beneath it and the account.
 func newFundedAccount(t *testing.T) (*Register, *ledger.Book, Account) {
 	t.Helper()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	acct, err := reg.OpenAccount(context.Background(), deposits, "Alice", testAsset, 0)
 	assertNoError(t, err)
 	fund(t, reg, cash, acct, 1000)
-	return reg, reg.Book(), acct
+	return reg, book, acct
 }
 
 // fund credits a deposit account's backing GL account from the cash asset,
@@ -114,7 +127,7 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 
 func TestOpenAccount_CreatesBackingGLAccount(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	acct, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	assertNoError(t, err)
@@ -137,7 +150,7 @@ func TestOpenAccount_CreatesBackingGLAccount(t *testing.T) {
 // default, it is an account in whatever asset it was opened in.
 func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	acct, err := reg.OpenAccount(ctx, deposits, "Anna BTC", otherAsset, 0)
 	assertNoError(t, err)
@@ -155,7 +168,7 @@ func TestOpenAccountRecordsAssetMatchingItsGLAccount(t *testing.T) {
 
 func TestOpenAccountRejectsUnregisteredAsset(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	_, err := reg.OpenAccount(ctx, deposits, "Anna DOGE", "DOGE", 0)
 	assertError(t, err, ledger.ErrAssetNotFound)
@@ -163,7 +176,7 @@ func TestOpenAccountRejectsUnregisteredAsset(t *testing.T) {
 
 func TestOpenAccount_SubledgerNotFound(t *testing.T) {
 	ctx := context.Background()
-	reg, _, _ := testRegister(t)
+	reg, _, _ := newTestRegister(t)
 
 	_, err := reg.OpenAccount(ctx, "bad_sub", "Alice", testAsset, 0)
 	assertError(t, err, ledger.ErrSubledgerNotFound)
@@ -171,7 +184,7 @@ func TestOpenAccount_SubledgerNotFound(t *testing.T) {
 
 func TestGetAccount_NotFound(t *testing.T) {
 	ctx := context.Background()
-	reg, _, _ := testRegister(t)
+	reg, _, _ := newTestRegister(t)
 
 	_, err := reg.GetAccount(ctx, "nonexistent")
 	assertError(t, err, ErrAccountNotFound)
@@ -183,7 +196,8 @@ func TestGetAccount_NotFound(t *testing.T) {
 
 func TestHold_ReducesAvailable(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -200,7 +214,8 @@ func TestHold_ReducesAvailable(t *testing.T) {
 
 func TestHold_Release_RestoresAvailable(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -217,13 +232,13 @@ func TestHold_Release_RestoresAvailable(t *testing.T) {
 
 func TestReleaseHold_NotFound(t *testing.T) {
 	ctx := context.Background()
-	reg, _, _ := testRegister(t)
+	reg, _, _ := newTestRegister(t)
 	assertError(t, reg.ReleaseHold(ctx, "nonexistent"), ErrHoldNotFound)
 }
 
 func TestCreateHold_Validation(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	_, err := reg.CreateHold(ctx, CreateHoldRequest{AccountID: "nonexistent", Amount: 100})
 	assertError(t, err, ErrAccountNotFound)
@@ -239,7 +254,8 @@ func TestCreateHold_Validation(t *testing.T) {
 
 func TestHold_Expiration(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -261,7 +277,7 @@ func TestHold_Expiration(t *testing.T) {
 
 func TestOverdraft_PermitsWithdrawal(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	// No overdraft: a withdrawal of 5000 on an empty account fails.
 	noLimit, _ := reg.OpenAccount(ctx, deposits, "NoLimit", testAsset, 0)
@@ -280,7 +296,7 @@ func TestOverdraft_PermitsWithdrawal(t *testing.T) {
 
 func TestCheckWithdrawal_NotFound(t *testing.T) {
 	ctx := context.Background()
-	reg, _, _ := testRegister(t)
+	reg, _, _ := newTestRegister(t)
 	assertError(t, reg.CheckWithdrawal(ctx, "nonexistent", 100), ErrAccountNotFound)
 }
 
@@ -290,7 +306,8 @@ func TestCheckWithdrawal_NotFound(t *testing.T) {
 
 func TestCaptureHold_PostsGLTransaction(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -313,7 +330,8 @@ func TestCaptureHold_PostsGLTransaction(t *testing.T) {
 
 func TestCaptureHold_DefaultsToHoldAmount(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -325,7 +343,8 @@ func TestCaptureHold_DefaultsToHoldAmount(t *testing.T) {
 
 func TestCaptureHold_Errors(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 
 	_, err := reg.CaptureHold(ctx, "nonexistent", cash, 100, "")
 	assertError(t, err, ErrHoldNotFound)
@@ -419,7 +438,8 @@ func TestCaptureHoldRollsBackWithTheCallersUnitOfWork(t *testing.T) {
 // it never has to implement on its own.
 func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 
 	acct, err := reg.OpenAccount(ctx, deposits, "Anna EUR", testAsset, 0)
 	assertNoError(t, err)
@@ -443,7 +463,8 @@ func TestCaptureHoldRejectsCrossAssetCounterparty(t *testing.T) {
 
 func TestFreeze_BlocksHolds(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -461,7 +482,7 @@ func TestFreeze_BlocksHolds(t *testing.T) {
 
 func TestDormantReactivate(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 
 	assertNoError(t, reg.MarkDormant(ctx, alice.ID))
@@ -475,7 +496,8 @@ func TestDormantReactivate(t *testing.T) {
 
 func TestClose_RequiresZeroBalance(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -499,7 +521,7 @@ func TestClose_RequiresZeroBalance(t *testing.T) {
 
 func TestIllegalStatusTransitions(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 
 	// Cannot unfreeze an active account, nor reactivate one.
@@ -521,7 +543,8 @@ func TestIllegalStatusTransitions(t *testing.T) {
 
 func TestSnapshot_RoundTrip(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, cash := testRegister(t)
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
 	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	fund(t, reg, cash, alice, 10000)
 
@@ -554,7 +577,7 @@ func TestSnapshot_RoundTrip(t *testing.T) {
 // carry both the scope that distinguishes them and the book that owns them.
 func TestAuditEventsAreScopedAndAttributedToTheBook(t *testing.T) {
 	ctx := context.Background()
-	reg, deposits, _ := testRegister(t)
+	reg, _, deposits := newTestRegister(t)
 
 	alice, err := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
 	assertNoError(t, err)
@@ -591,4 +614,78 @@ func TestStringers(t *testing.T) {
 	assertEqual(t, "hold released", HoldReleased.String(), "Released")
 	assertEqual(t, "hold captured", HoldCaptured.String(), "Captured")
 	assertEqual(t, "hold unknown", HoldStatus(99).String(), "Unknown")
+}
+
+// ---------------------------------------------------------------------------
+// Overdraft Terms
+// ---------------------------------------------------------------------------
+
+func TestSetOverdraftTerms_CreatesTheReceivableOnFirstRate(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
+	assertNoError(t, err)
+	if acct.InterestGL != "" {
+		t.Fatalf("a new account already has a receivable: %s", acct.InterestGL)
+	}
+
+	// A limit on its own does not create one: an interest-free overdraft is a
+	// real product, and an account that will never accrue should not carry an
+	// account nothing posts to.
+	withLimit, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 0, interest.ACT365)
+	assertNoError(t, err)
+	assertEqual(t, "limit", withLimit.OverdraftLimit, ledger.Amount(50_000))
+	if withLimit.InterestGL != "" {
+		t.Errorf("a zero rate created a receivable: %s", withLimit.InterestGL)
+	}
+
+	// A rate does.
+	priced, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 350_000, interest.Thirty360)
+	assertNoError(t, err)
+	if priced.InterestGL == "" {
+		t.Fatal("a non-zero rate created no receivable")
+	}
+	assertEqual(t, "rate", priced.Rate, interest.Rate(150_000))
+	assertEqual(t, "unarranged rate", priced.UnarrangedRate, interest.Rate(350_000))
+	assertEqual(t, "day count", priced.DayCount, interest.Thirty360)
+
+	// The receivable is an Asset in the account's own asset.
+	gl, err := book.GetAccount(ctx, priced.InterestGL)
+	assertNoError(t, err)
+	assertEqual(t, "receivable type", gl.Type.String(), ledger.Asset.String())
+	assertEqual(t, "receivable asset", string(gl.Asset), "EUR")
+
+	// Setting terms again reuses it rather than opening a second one.
+	again, err := reg.SetOverdraftTerms(ctx, acct.ID, 60_000, 160_000, 350_000, interest.Thirty360)
+	assertNoError(t, err)
+	assertEqual(t, "receivable reused", string(again.InterestGL), string(priced.InterestGL))
+}
+
+func TestSetOverdraftTerms_Rejects(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
+	assertNoError(t, err)
+
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, -1, 0, 0, interest.ACT365)
+	assertError(t, err, ErrInvalidAmount)
+
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, -1, 0, interest.ACT365)
+	assertError(t, err, ErrInvalidRate)
+
+	// An unarranged rate with no arranged rate is not a product.
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 350_000, interest.ACT365)
+	assertError(t, err, ErrInvalidRate)
+
+	_, err = reg.SetOverdraftTerms(ctx, "nonexistent", 0, 0, 0, interest.ACT365)
+	assertError(t, err, ErrAccountNotFound)
+
+	// A closed account takes no new terms.
+	closed, err := reg.OpenAccount(ctx, sub, "Gone", "EUR", 0)
+	assertNoError(t, err)
+	assertNoError(t, reg.Close(ctx, closed.ID))
+	_, err = reg.SetOverdraftTerms(ctx, closed.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertError(t, err, ErrAccountClosed)
 }

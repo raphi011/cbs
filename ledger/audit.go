@@ -33,16 +33,19 @@ const (
 	EventTransactionReversed = "transaction.reversed"
 
 	// ScopeDeposit
-	EventAccountOpened      = "account.opened"
-	EventAccountFrozen      = "account.frozen"
-	EventAccountUnfrozen    = "account.unfrozen"
-	EventAccountClosed      = "account.closed"
-	EventAccountDormant     = "account.dormant"
-	EventAccountReactivated = "account.reactivated"
-	EventHoldCreated        = "hold.created"
-	EventHoldReleased       = "hold.released"
-	EventHoldCaptured       = "hold.captured"
-	EventSnapshotTaken      = "snapshot.taken"
+	EventAccountOpened            = "account.opened"
+	EventAccountFrozen            = "account.frozen"
+	EventAccountUnfrozen          = "account.unfrozen"
+	EventAccountClosed            = "account.closed"
+	EventAccountDormant           = "account.dormant"
+	EventAccountReactivated       = "account.reactivated"
+	EventHoldCreated              = "hold.created"
+	EventHoldReleased             = "hold.released"
+	EventHoldCaptured             = "hold.captured"
+	EventSnapshotTaken            = "snapshot.taken"
+	EventOverdraftTermsSet        = "overdraft.terms_set"
+	EventOverdraftAccrued         = "overdraft.accrued"
+	EventOverdraftInterestCharged = "overdraft.interest_charged"
 
 	// ScopePayment. These are network-scoped: they describe entities that
 	// belong to no single bank, so they are recorded under NetworkBook.

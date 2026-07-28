@@ -25,6 +25,12 @@ var (
 	// ErrInvalidAmount is returned when a hold amount is zero or negative.
 	ErrInvalidAmount = errors.New("amount must be positive")
 
+	// ErrInvalidRate is returned when an interest rate is negative, or when an
+	// unarranged rate is set on an account that has no arranged rate — an
+	// account that accrues nothing inside its limit but something beyond it is
+	// not a product, it is a mistake.
+	ErrInvalidRate = errors.New("invalid interest rate")
+
 	// ErrInsufficientAvailable is returned when a hold or withdrawal would
 	// take the available balance below zero (accounting for the overdraft
 	// limit).
