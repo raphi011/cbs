@@ -1156,3 +1156,374 @@ func TestAuditLimitIsCapped(t *testing.T) {
 		t.Fatalf("returned %d events, want <= 1000", len(events))
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Lending and overdraft credit (Task 16)
+// ---------------------------------------------------------------------------
+
+// openTermLoan opens a EUR term loan at 6% ACT/365, annuity method, over
+// termMonths instalments, and returns the decoded facility.
+func openTermLoan(t *testing.T, h http.Handler, pid string, termMonths int) map[string]any {
+	t.Helper()
+	return doJSON(t, h, "POST", "/participants/"+pid+"/facilities", fmt.Sprintf(`{
+		"kind":"TermLoan","name":"Home Loan","asset":"EUR","commitment":1000000,
+		"rate":60000,"dayCount":"ACT/365","method":"Annuity","termMonths":%d
+	}`, termMonths), http.StatusCreated)
+}
+
+// openRevolvingLine opens a EUR revolving line at 18% ACT/365 with a 10%
+// minimum-payment fraction, and returns the decoded facility.
+func openRevolvingLine(t *testing.T, h http.Handler, pid string, commitment int64) map[string]any {
+	t.Helper()
+	return doJSON(t, h, "POST", "/participants/"+pid+"/facilities", fmt.Sprintf(`{
+		"kind":"RevolvingLine","name":"Credit Line","asset":"EUR","commitment":%d,
+		"rate":180000,"dayCount":"ACT/365","minPayment":100000
+	}`, commitment), http.StatusCreated)
+}
+
+// TestOpenTermLoanAndRevolvingLine pins that one route opens either product,
+// dispatched by the request's Kind field, and that a freshly-opened facility
+// reports zero drawn and zero accrued without a further round trip.
+func TestOpenTermLoanAndRevolvingLine(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	loan := openTermLoan(t, h, pid, 12)
+	assertEqual(t, "loan kind", loan["kind"].(string), "TermLoan")
+	assertEqual(t, "loan status", loan["status"].(string), "Pending")
+	assertEqual(t, "loan drawn", int64(loan["drawn"].(float64)), int64(0))
+	assertEqual(t, "loan accruedInterest", int64(loan["accruedInterest"].(float64)), int64(0))
+	assertEqual(t, "loan rateScale", int64(loan["rateScale"].(float64)), int64(1_000_000))
+	assertEqual(t, "loan method", loan["method"].(string), "Annuity")
+
+	line := openRevolvingLine(t, h, pid, 500000)
+	assertEqual(t, "line kind", line["kind"].(string), "RevolvingLine")
+	assertEqual(t, "line status", line["status"].(string), "Pending")
+	if _, ok := line["method"]; ok {
+		t.Errorf("revolving line carries a method field: %v", line["method"])
+	}
+
+	var facilities []facilityDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities", &facilities)
+	if len(facilities) != 2 {
+		t.Fatalf("facilities = %v, want 2", facilities)
+	}
+}
+
+// TestOpenFacilityRequiresAsset mirrors TestOpenDepositAccountRequiresAsset: a
+// facility's asset decides which asset its two GL accounts are denominated in,
+// and nothing here may pick one on the caller's behalf.
+func TestOpenFacilityRequiresAsset(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"No Asset","commitment":100000,"rate":50000,
+		"dayCount":"ACT/365","method":"Annuity","termMonths":12
+	}`, http.StatusBadRequest)
+}
+
+// TestOpenFacilityRejectsUnknownEnums pins that Kind, DayCount and Method are
+// parsed from their string forms exactly as the ledger handlers parse an
+// account type: an unknown value is a 400 before the domain is ever called.
+func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"Nonsense","name":"X","asset":"EUR","commitment":100000,"rate":50000,"dayCount":"ACT/365"
+	}`, http.StatusBadRequest)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"X","asset":"EUR","commitment":100000,"rate":50000,
+		"dayCount":"Nonsense","method":"Annuity","termMonths":12
+	}`, http.StatusBadRequest)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"X","asset":"EUR","commitment":100000,"rate":50000,
+		"dayCount":"ACT/365","method":"Nonsense","termMonths":12
+	}`, http.StatusBadRequest)
+}
+
+// TestDisburseTermLoanGeneratesSixtyRowSchedule covers disbursement end to
+// end: the counterparty's balance moves, the facility becomes Active and
+// reports its drawn principal, and a 60-month term generates 60 instalments.
+// A second disbursement is refused.
+func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	loan := openTermLoan(t, h, pid, 60)
+	fid := loan["id"].(string)
+
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement", `{
+		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+	}`, http.StatusCreated)
+	if tx["id"] == nil || tx["id"].(string) == "" {
+		t.Fatalf("disbursement did not return a transaction: %v", tx)
+	}
+
+	var schedule []installmentDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid+"/schedule", &schedule)
+	assertEqual(t, "schedule length", len(schedule), 60)
+
+	bal := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/balance", "", http.StatusOK)
+	assertEqual(t, "book balance after disbursement", int64(bal["book"].(float64)), int64(1000000))
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	assertEqual(t, "drawn after disbursement", int64(got["drawn"].(float64)), int64(1000000))
+	assertEqual(t, "status after disbursement", got["status"].(string), "Active")
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement", `{
+		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"again"
+	}`, http.StatusUnprocessableEntity)
+}
+
+// TestDrawPastCommitmentReturns422 covers a revolving line's draw path: a
+// draw within the commitment succeeds, a term loan refuses to be drawn at all
+// (ErrWrongFacilityKind), and a draw that would exceed the commitment is
+// refused without moving the drawn balance.
+func TestDrawPastCommitmentReturns422(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	line := openRevolvingLine(t, h, pid, 100000)
+	fid := line["id"].(string)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/draws", `{
+		"counterparty":"`+gl+`","amount":60000,"description":"draw 1"
+	}`, http.StatusCreated)
+
+	loan := openTermLoan(t, h, pid, 12)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/draws", `{
+		"counterparty":"`+gl+`","amount":1000,"description":"nope"
+	}`, http.StatusUnprocessableEntity)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/draws", `{
+		"counterparty":"`+gl+`","amount":60000,"description":"draw 2"
+	}`, http.StatusUnprocessableEntity)
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	assertEqual(t, "drawn after the refused draw", int64(got["drawn"].(float64)), int64(60000))
+}
+
+// TestRepayFromDepositAccount covers handleRepay, the one handler spanning the
+// deposit and lending layers: a repayment debits the customer's account and
+// credits the facility's drawn balance in the same request.
+func TestRepayFromDepositAccount(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	loan := openTermLoan(t, h, pid, 12)
+	fid := loan["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement", `{
+		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+	}`, http.StatusCreated)
+
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/repayments", `{
+		"accountId":"`+did+`","amount":100000,"date":"2025-02-01","description":"first payment"
+	}`, http.StatusCreated)
+	if tx["id"] == nil || tx["id"].(string) == "" {
+		t.Fatalf("repayment did not return a transaction: %v", tx)
+	}
+
+	bal := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/balance", "", http.StatusOK)
+	assertEqual(t, "book balance after repayment", int64(bal["book"].(float64)), int64(900000))
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	assertEqual(t, "drawn after repayment", int64(got["drawn"].(float64)), int64(900000))
+}
+
+// TestRepayExceedingAvailableBalanceReturns422 pins that the funds check runs
+// BEFORE the facility is ever touched: a repayment larger than the customer's
+// available balance is refused with deposit.ErrInsufficientAvailable, and
+// nothing moves on either side.
+func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	loan := openTermLoan(t, h, pid, 12)
+	fid := loan["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement", `{
+		"counterparty":"`+gl+`","firstDue":"2025-02-15","description":"payout"
+	}`, http.StatusCreated)
+
+	// Alice's account holds exactly the disbursed €10,000 and no overdraft —
+	// a repayment of €20,000 exceeds her available balance.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/repayments", `{
+		"accountId":"`+did+`","amount":2000000,"date":"2025-02-01","description":"too much"
+	}`, http.StatusUnprocessableEntity)
+
+	bal := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/balance", "", http.StatusOK)
+	assertEqual(t, "book balance unchanged", int64(bal["book"].(float64)), int64(1000000))
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	assertEqual(t, "drawn unchanged", int64(got["drawn"].(float64)), int64(1000000))
+}
+
+// TestChargeInterestOnRevolvingLine covers billing a revolving line's cycle:
+// interest is capitalized into drawn principal and one instalment (the
+// minimum payment) is appended to the schedule.
+func TestChargeInterestOnRevolvingLine(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	line := openRevolvingLine(t, h, pid, 500000)
+	fid := line["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/draws", `{
+		"counterparty":"`+gl+`","amount":200000,"description":"draw"
+	}`, http.StatusCreated)
+
+	// Accrue over a month, then bill the cycle.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-02-15"}`, http.StatusNoContent)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-charge", `{"date":"2025-02-15"}`, http.StatusOK)
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	if drawn := int64(got["drawn"].(float64)); drawn <= 200000 {
+		t.Fatalf("drawn after charging = %d, want > 200000 (interest capitalized into principal)", drawn)
+	}
+
+	var schedule []installmentDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid+"/schedule", &schedule)
+	if len(schedule) != 1 {
+		t.Fatalf("schedule after charging = %v, want 1 row (the billed cycle)", schedule)
+	}
+	if schedule[0].Interest <= 0 {
+		t.Fatalf("cycle interest = %d, want > 0", schedule[0].Interest)
+	}
+	if schedule[0].Principal <= 0 {
+		t.Fatalf("cycle minimum principal = %d, want > 0 (10%% of drawn)", schedule[0].Principal)
+	}
+
+	// Charging a term loan is refused: it settles interest through its
+	// scheduled instalments instead.
+	loan := openTermLoan(t, h, pid, 12)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/interest-charge",
+		`{"date":"2025-02-15"}`, http.StatusUnprocessableEntity)
+}
+
+// TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half
+// of payment.Participant.RunEndOfDay: one POST /end-of-day drives both credit
+// batches, so a facility and an overdrawn deposit account both accrue from a
+// single call. The deposit account's accrual baseline starts zero (it is only
+// set on its first end-of-day run), so a second run is what actually accrues
+// its interest; the facility's baseline is set at disbursement, so it accrues
+// on the first run already.
+func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
+		"limit":100000,"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"
+	}`, http.StatusOK)
+
+	glLedger := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	sub := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+glLedger+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	equity := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+sub+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	// Draw Alice's account into an overdraft via a direct GL posting — the
+	// same mechanism deposit.overdraftAccrual's own doc describes, since
+	// CheckWithdrawal is not the only way an account ends up overdrawn.
+	doJSON(t, h, "POST", "/participants/"+pid+"/transactions", `{
+		"entries":[
+			{"accountId":"`+gl+`","amount":50000,"direction":"Debit"},
+			{"accountId":"`+equity+`","amount":50000,"direction":"Credit"}
+		]
+	}`, http.StatusCreated)
+
+	loan := openTermLoan(t, h, pid, 12)
+	fid := loan["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement", `{
+		"counterparty":"`+equity+`","firstDue":"2025-02-15","description":"payout"
+	}`, http.StatusCreated)
+
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-16"}`, http.StatusNoContent)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-17"}`, http.StatusNoContent)
+
+	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
+	if got := int64(acct["accruedInterest"].(float64)); got <= 0 {
+		t.Fatalf("deposit account accrued interest = %d, want > 0", got)
+	}
+
+	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
+	if accrued := int64(got["accruedInterest"].(float64)); accrued <= 0 {
+		t.Fatalf("facility accrued interest = %d, want > 0", accrued)
+	}
+}
+
+// TestTotalsReportsDerivedOverdraft covers GET /totals: one bank with one
+// account in credit and one drawn into an overdraft (via a direct GL posting,
+// bypassing CheckWithdrawal) reports both figures, split by sign and keyed by
+// asset — no journal posts this number anywhere.
+func TestTotalsReportsDerivedOverdraft(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	alice := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","overdraftLimit":100000}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	aliceGL := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+alice, "", http.StatusOK)["glAccount"].(string)
+
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
+		`{"account":"`+bob+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	glLedger := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	sub := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+glLedger+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	equity := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+sub+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/transactions", `{
+		"entries":[
+			{"accountId":"`+aliceGL+`","amount":30000,"direction":"Debit"},
+			{"accountId":"`+equity+`","amount":30000,"direction":"Credit"}
+		]
+	}`, http.StatusCreated)
+
+	var totals []totalsDTO
+	getJSON(t, h, "/participants/"+pid+"/totals", &totals)
+	if len(totals) != 1 {
+		t.Fatalf("totals = %v, want exactly one EUR row", totals)
+	}
+	assertEqual(t, "asset", totals[0].Asset, "EUR")
+	assertEqual(t, "deposits", totals[0].Deposits, int64(100000))
+	assertEqual(t, "overdrafts", totals[0].Overdrafts, int64(30000))
+}
+
+// TestUnknownFacilityReturns404 covers the read and mutating routes alike. The
+// schedule route is deliberately excluded from the 404 set: ListInstallments
+// on an unknown facility is an empty listing by contract (see lending.Tx's
+// doc), not an error, the same rule an empty deposit-account holds list
+// follows.
+func TestUnknownFacilityReturns404(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	// A real, funded deposit account, so the repayments case below clears the
+	// available-funds check and 404s on the FACILITY lookup, not on the
+	// account or on insufficient funds.
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
+		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	assertStatus(t, h, "GET", "/participants/"+pid+"/facilities/nope", "", http.StatusNotFound)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/nope/draws",
+		`{"counterparty":"x","amount":100,"description":"x"}`, http.StatusNotFound)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/nope/repayments",
+		`{"accountId":"`+did+`","amount":100,"date":"2025-02-01","description":"x"}`, http.StatusNotFound)
+	assertStatus(t, h, "DELETE", "/participants/"+pid+"/facilities/nope", "", http.StatusNotFound)
+
+	var schedule []installmentDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/nope/schedule", &schedule)
+	assertEqual(t, "schedule of an unknown facility", len(schedule), 0)
+}

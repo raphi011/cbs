@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -15,6 +16,9 @@ func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/balance", s.handleDepositBalance)
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/status", s.handleDepositStatus)
 	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}", s.handleCloseDepositAccount)
+
+	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleSetOverdraftTerms)
+	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
 
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/holds", s.handleCreateHold)
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/holds", s.handleListHolds)
@@ -147,6 +151,72 @@ func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSetOverdraftTerms sets an account's arranged overdraft limit and
+// credit terms. It is the only way to change a limit after opening.
+func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req setOverdraftTermsRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	dc, err := dayCountFromString(req.DayCount)
+	if err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	did := deposit.AccountID(r.PathValue("did"))
+	acct, err := p.Deposit.SetOverdraftTerms(r.Context(), did, ledger.Amount(req.Limit),
+		interest.Rate(req.Rate), interest.Rate(req.UnarrangedRate), dc)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct))
+}
+
+// handleChargeOverdraftInterest capitalizes an account's accrued overdraft
+// interest, clearing the receivable — the monthly event a customer actually
+// sees. Nothing accrued means nothing posted: ChargeOverdraftInterest returns
+// a zero-value Transaction rather than an error, and this writes 200 with no
+// body rather than rendering a Transaction with an empty ID as though it were
+// a real posting.
+func (s *Server) handleChargeOverdraftInterest(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req chargeOverdraftInterestRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	date, err := time.Parse("2006-01-02", req.Date)
+	if err != nil {
+		writeBadRequest(w, "invalid date (want YYYY-MM-DD)")
+		return
+	}
+	did := deposit.AccountID(r.PathValue("did"))
+	tx, err := p.Deposit.ChargeOverdraftInterest(r.Context(), did, date)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if tx.ID == "" {
+		writeJSON(w, http.StatusOK, nil)
+		return
+	}
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toTransactionDTO(tx, assets))
 }
 
 func (s *Server) handleCreateHold(w http.ResponseWriter, r *http.Request) {
