@@ -941,6 +941,43 @@ func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
 	}
 }
 
+// TestChargeOverdraftInterest_RefusesClosedAccount covers the guard added
+// after review: CloseTx only checks the customer account's own book balance,
+// not the interest receivable's, so an account can be closed while it still
+// carries accrued interest. Charging that account afterwards must be refused
+// rather than posting a debit to a GL account CloseTx only let through at
+// zero, and reopening a balance on it.
+func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, acct, 5_000)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	for i := 0; i <= 5; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
+	}
+
+	accrued, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if accrued.Accrued <= 0 {
+		t.Fatalf("expected nonzero accrued interest before closing, got %d", accrued.Accrued)
+	}
+
+	// Repay the principal — not the accrued interest — to bring the
+	// customer account's own book balance back to zero, which is all
+	// CloseTx requires.
+	fundBy(t, book, sub, acct, 5_000)
+	assertNoError(t, reg.Close(ctx, acct.ID))
+
+	_, err = reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 6))
+	assertError(t, err, ErrAccountClosed)
+}
+
 func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub := newTestRegister(t)

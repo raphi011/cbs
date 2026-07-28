@@ -1010,7 +1010,12 @@ func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest
 // returned rather than an error: an end-of-month over a portfolio in credit is
 // an ordinary outcome, not a failure.
 //
-// Returns ErrAccountNotFound.
+// Unlike RunEndOfDay's per-account accrual, a closed account is refused rather
+// than skipped: this is an explicitly-invoked single-account operation (a
+// caller asked to charge THIS account), and posting a debit to it would
+// reopen a balance on an account CloseTx only let through at zero.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed.
 func (r *Register) ChargeOverdraftInterest(ctx context.Context, id AccountID, date time.Time) (ledger.Transaction, error) {
 	var out ledger.Transaction
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1027,6 +1032,9 @@ func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id Acco
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
 		return ledger.Transaction{}, err
+	}
+	if acct.Status == Closed {
+		return ledger.Transaction{}, ErrAccountClosed
 	}
 	charge := acct.Accrued.Minor()
 	if charge <= 0 || acct.InterestGL == "" {
