@@ -823,6 +823,44 @@ func TestAccrueOverdraft_TiersAtTheLimit(t *testing.T) {
 	assertEqual(t, "tiered accrual", got.Accrued, interest.Accrued(8_333_333))
 }
 
+// TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate covers the configuration
+// most accounts here are opened with: an arranged rate and NO unarranged one.
+// An unarranged rate is a surcharge, so its absence must mean the same rate
+// applies throughout — never that the part beyond the limit is free, which
+// would make exceeding a limit cheaper than respecting it.
+func TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
+	assertNoError(t, err)
+	// Arranged 12% up to €100, and no unarranged rate at all.
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 10_000, 120_000, 0, interest.ACT360)
+	assertNoError(t, err)
+
+	// €150 drawn: €100 inside the limit, €50 beyond it.
+	overdrawBy(t, book, sub, acct, 15_000)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, 1)))
+
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+
+	// The WHOLE €150 accrues at 12%. It is still computed tier by tier, and
+	// Accrue truncates each one, so the figure is one micro-minor-unit under
+	// the single-base 5_000_000:
+	//
+	//	arranged 10_000 × 120_000 / 360 = 3_333_333.33 -> 3_333_333
+	//	excess    5_000 × 120_000 / 360 = 1_666_666.67 -> 1_666_666
+	//	                                                 = 4_999_999
+	//
+	// Skipping the excess would leave 3_333_333 — the €50 beyond the limit
+	// costing nothing at all.
+	assertEqual(t, "excess accrual at the arranged rate", got.Accrued, interest.Accrued(4_999_999))
+}
+
 func TestAccrueOverdraft_IgnoresHoldsAndCredits(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub := newTestRegister(t)
@@ -941,12 +979,11 @@ func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
 	}
 }
 
-// TestChargeOverdraftInterest_RefusesClosedAccount covers the guard added
-// after review: CloseTx only checks the customer account's own book balance,
-// not the interest receivable's, so an account can be closed while it still
-// carries accrued interest. Charging that account afterwards must be refused
-// rather than posting a debit to a GL account CloseTx only let through at
-// zero, and reopening a balance on it.
+// TestChargeOverdraftInterest_RefusesClosedAccount pins the guard on an
+// explicitly-invoked charge: posting a debit to an account CloseTx only let
+// through at zero would reopen a balance on it. Reaching a closed account with
+// an overdraft history takes the whole flow — charge, repay, close — because
+// CloseTx now refuses an account whose receivable is still outstanding.
 func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub := newTestRegister(t)
@@ -968,14 +1005,67 @@ func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 		t.Fatalf("expected nonzero accrued interest before closing, got %d", accrued.Accrued)
 	}
 
-	// Repay the principal — not the accrued interest — to bring the
-	// customer account's own book balance back to zero, which is all
-	// CloseTx requires.
-	fundBy(t, book, sub, acct, 5_000)
+	// Charge the receivable into the balance, then repay the whole balance —
+	// principal and capitalized interest alike. 5 days × 2.054794 cents =
+	// 10.27397, charged as 10, so the account owes 5,010.
+	if _, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 5)); err != nil {
+		t.Fatalf("ChargeOverdraftInterest: %v", err)
+	}
+	fundBy(t, book, sub, acct, 5_010)
 	assertNoError(t, reg.Close(ctx, acct.ID))
 
 	_, err = reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 6))
 	assertError(t, err, ErrAccountClosed)
+}
+
+// TestClose_RefusesAStrandedReceivable is the guard that test now depends on.
+// An account that was overdrawn, accrued interest and repaid its principal has
+// a zero book balance and a live receivable: closing there would strand
+// recognized interest income as a debit in an Asset account nothing can ever
+// clear, because accrual afterwards skips a closed account and charging one is
+// refused outright. lending.CloseTx applies the same rule to a facility.
+func TestClose_RefusesAStrandedReceivable(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, acct, 5_000)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	for i := 0; i <= 5; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
+	}
+
+	// The customer account's own balance is back to zero, which is everything
+	// the old guard checked.
+	fundBy(t, book, sub, acct, 5_000)
+	balance, err := reg.GetBalance(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "book balance before closing", balance.Book, ledger.Amount(0))
+
+	before, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "receivable before closing", before.Accrued.Minor(), ledger.Amount(10))
+	assertError(t, reg.Close(ctx, acct.ID), ErrAccountNotEmpty)
+
+	// Charge, repay the capitalized 10, and the same close succeeds: the flow
+	// is charge -> repay -> close, exactly as lending already requires.
+	if _, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 5)); err != nil {
+		t.Fatalf("ChargeOverdraftInterest: %v", err)
+	}
+	fundBy(t, book, sub, acct, 10)
+
+	// The residue a capitalization leaves — here 10.27397 earned against 10
+	// charged — is not collectable and is not in the ledger, so it must not
+	// block a close. Only Minor() does.
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "residue after charging", after.Accrued, interest.Accrued(273_970))
+	assertEqual(t, "residue rounds to zero", after.Accrued.Minor(), ledger.Amount(0))
+	assertNoError(t, reg.Close(ctx, acct.ID))
 }
 
 func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {

@@ -85,6 +85,12 @@ type Account struct {
 	// account can get there despite CheckWithdrawal: a direct GL posting does
 	// not pass through this layer, and capitalizing interest on a fully-drawn
 	// overdraft pushes it over by itself.
+	//
+	// It is an optional SURCHARGE, not a switch. Zero does not mean the excess
+	// is free — it means the same Rate applies throughout, because a facility
+	// on which exceeding the limit cost nothing would be cheaper outside the
+	// limit than inside it. Only a zero Rate makes an overdraft interest-free,
+	// and it makes the whole of it interest-free.
 	UnarrangedRate interest.Rate
 	DayCount       interest.DayCount
 	// Accrued is interest earned and not yet charged, at sub-minor-unit

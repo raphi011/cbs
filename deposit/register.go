@@ -211,6 +211,13 @@ func interestIncomeName(asset ledger.AssetCode) string {
 // interest-free, which is a real product and is what every account opened
 // before this method existed has.
 //
+// A zero unarranged rate does NOT mean the same thing for the excess. It is a
+// surcharge, and its absence means rate applies to the whole drawn balance,
+// inside the limit and beyond it alike — never that the part beyond the limit
+// is free, which would make exceeding a limit cheaper than respecting it. Hence
+// the one combination refused below: an unarranged rate with no arranged one,
+// which would price only the excess.
+//
 // The first non-zero rate creates the account's own accrued-interest-receivable
 // GL account. Setting terms again reuses it, including when the rate is set
 // back to zero: the account may already hold accrued interest, and discarding
@@ -428,13 +435,30 @@ func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, 
 
 // Close permanently closes an account. Closed is a terminal state.
 //
-// An account can only be closed when its backing GL book balance is zero;
-// otherwise ErrAccountNotEmpty is returned. Closing is permitted from any
-// non-Closed state.
+// An account can only be closed when it owes nothing in EITHER direction: its
+// backing GL book balance must be zero, and so must the receivable holding its
+// accrued overdraft interest. Otherwise ErrAccountNotEmpty is returned. Closing
+// is permitted from any non-Closed state.
+//
+// # Why the receivable counts
+//
+// An account that was overdrawn, accrued interest and then repaid to zero has a
+// zero book balance and a non-zero receivable: interest already recognized as
+// income and sitting as a debit in an Asset account. Closing there would strand
+// it forever — accrual afterwards skips a closed account and
+// ChargeOverdraftInterest refuses one — so the money could never be collected
+// and the Asset could never be cleared. The flow is charge, then repay, then
+// close. lending.CloseTx applies exactly the same rule to a facility's own
+// receivable, for exactly this reason.
+//
+// The test is Accrued.Minor(), not Accrued: the residue a capitalization leaves
+// behind is up to half a minor unit in either direction, is not collectable,
+// and is not in the ledger. Refusing on it would make an account that had ever
+// been charged interest impossible to close.
 //
 // Returns ErrAccountNotFound if the account does not exist,
 // ErrInvalidStatusTransition if the account is already Closed, or
-// ErrAccountNotEmpty if its balance is non-zero.
+// ErrAccountNotEmpty if its balance or its receivable is non-zero.
 func (r *Register) Close(ctx context.Context, id AccountID) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.CloseTx(ctx, tx, id)
@@ -455,7 +479,7 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 	if err != nil {
 		return err
 	}
-	if book != 0 {
+	if book != 0 || acct.Accrued.Minor() != 0 {
 		return ErrAccountNotEmpty
 	}
 
@@ -969,9 +993,14 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 //
 // An account can be drawn beyond its limit despite CheckWithdrawal: a direct GL
 // posting does not pass through this layer, and capitalizing interest on a
-// fully-drawn overdraft pushes it over by itself. Charging the arranged rate on
-// the excess would make exceeding the limit free, which is the opposite of what
-// an unarranged overdraft is for.
+// fully-drawn overdraft pushes it over by itself.
+//
+// An unarranged rate is an optional SURCHARGE, so an account without one
+// accrues the excess at the arranged rate rather than at zero. Skipping the
+// excess entirely — which is what a plain `UnarrangedRate > 0` guard does —
+// would make the money drawn beyond the limit interest-FREE, and so literally
+// cheaper than the money drawn inside it. That is the exact opposite of what a
+// limit is for, and it is the configuration most accounts here are opened with.
 func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
@@ -982,8 +1011,12 @@ func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest
 		arranged = acct.OverdraftLimit
 	}
 	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, acct.LastAccrualDate, date)
-	if excess := drawn - arranged; excess > 0 && acct.UnarrangedRate > 0 {
-		total += interest.Accrue(excess, acct.UnarrangedRate, acct.DayCount, acct.LastAccrualDate, date)
+	if excess := drawn - arranged; excess > 0 {
+		rate := acct.UnarrangedRate
+		if rate == 0 {
+			rate = acct.Rate
+		}
+		total += interest.Accrue(excess, rate, acct.DayCount, acct.LastAccrualDate, date)
 	}
 	return total
 }
