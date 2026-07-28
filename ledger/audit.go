@@ -20,6 +20,7 @@ const (
 	ScopeLedger  Scope = "ledger"
 	ScopeDeposit Scope = "deposit"
 	ScopePayment Scope = "payment"
+	ScopeLending Scope = "lending"
 )
 
 // Audit event types. Grouped by scope; the values are the wire format and
@@ -61,6 +62,16 @@ const (
 	EventCycleOpened      = "cycle.opened"
 	EventCycleClosed      = "cycle.closed"
 	EventCycleSettled     = "cycle.settled"
+
+	// ScopeLending
+	EventFacilityOpened    = "facility.opened"
+	EventFacilityDisbursed = "facility.disbursed"
+	EventFacilityDrawn     = "facility.drawn"
+	EventFacilityAccrued   = "facility.accrued"
+	EventFacilityCharged   = "facility.interest_charged"
+	EventFacilityRepaid    = "facility.repaid"
+	EventFacilityArrears   = "facility.arrears_changed"
+	EventFacilityClosed    = "facility.closed"
 )
 
 // AuditEvent is an immutable record of one mutation.
