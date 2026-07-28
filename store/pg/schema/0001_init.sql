@@ -192,15 +192,21 @@ CREATE INDEX entries_account_idx ON entries (book_id, account_id);
 -- it would turn every listing of deposit accounts into a join for a value that
 -- can never change. store/storetest asserts the two always agree.
 CREATE TABLE deposit_accounts (
-    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
-    id              TEXT NOT NULL,
-    gl_account      TEXT NOT NULL,
-    name            TEXT NOT NULL,
-    status          SMALLINT NOT NULL,
-    asset           TEXT NOT NULL,
-    overdraft_limit BIGINT NOT NULL,
-    created_at      TIMESTAMPTZ,
-    seq             BIGSERIAL NOT NULL,
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    id                TEXT NOT NULL,
+    gl_account        TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    status            SMALLINT NOT NULL,
+    asset             TEXT NOT NULL,
+    overdraft_limit   BIGINT NOT NULL,
+    overdraft_rate    BIGINT NOT NULL DEFAULT 0,
+    unarranged_rate   BIGINT NOT NULL DEFAULT 0,
+    day_count         SMALLINT NOT NULL DEFAULT 0,
+    accrued_interest  BIGINT NOT NULL DEFAULT 0,
+    last_accrual_date TIMESTAMPTZ,
+    interest_gl       TEXT NOT NULL DEFAULT '',
+    created_at        TIMESTAMPTZ,
+    seq               BIGSERIAL NOT NULL,
     PRIMARY KEY (book_id, id)
 );
 
@@ -451,3 +457,32 @@ COMMENT ON COLUMN participant_assets.asset IS
     'One row per asset this bank operates in, holding the three plumbing '
     'accounts that asset needs. Unconstrained, for the reason given on '
     'accounts.asset.';
+
+COMMENT ON COLUMN deposit_accounts.accrued_interest IS
+    'Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset''s '
+    'minor unit multiplied by 1e6 (interest.AccruedScale). It is not a money '
+    'column and must never be compared with, or summed alongside, one. The '
+    'scale exists because a day''s interest on a small balance is mostly '
+    'fraction — 50 EUR overdrawn at 15% accrues 2.0548 cents a day, and '
+    'rounding that away daily is a 2.4% annual error on the interest. The '
+    'general ledger holds the rounded figure in the account named by '
+    'interest_gl; this column holds the residue an integer of minor units '
+    'cannot represent, which is the same reason holds live outside the ledger. '
+    'Recorded here because a scale carried in an integer column is invisible '
+    'in a schema dump.';
+
+COMMENT ON COLUMN deposit_accounts.overdraft_rate IS
+    'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '
+    '100%, 150000 is 15% (interest.RateScale). Basis points would be too '
+    'coarse — retail rates are quoted in eighths of a percent. Zero means the '
+    'account accrues no interest, the same convention overdraft_limit already '
+    'uses for the facility itself. unarranged_rate is the same scale and '
+    'applies to any balance drawn beyond overdraft_limit.';
+
+COMMENT ON COLUMN deposit_accounts.interest_gl IS
+    'This account''s own accrued-interest-receivable GL account, an Asset. '
+    'Empty until a non-zero rate is first set. It is per deposit account, not '
+    'one shared receivable per bank, because a shared one would be a stored '
+    'total whose detail lives in accrued_interest — a control account, and the '
+    'duplication this schema exists without. There is deliberately NO foreign '
+    'key to accounts, for the reason given on accounts.asset.';

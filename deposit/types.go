@@ -3,6 +3,7 @@ package deposit
 import (
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -67,7 +68,39 @@ type Account struct {
 	Asset          ledger.AssetCode
 	Status         AccountStatus
 	OverdraftLimit ledger.Amount // positive amount the balance may go below zero by; 0 means none
-	CreatedAt      time.Time
+
+	// Credit terms for the arranged overdraft. A zero Rate means the account
+	// accrues no interest, the same convention a zero OverdraftLimit already
+	// follows for the facility itself.
+	//
+	// These live here rather than in the lending package for two reasons. An
+	// overdrawn account's drawn amount is the negative balance of its own GL
+	// account viewed by sign — it has no independent existence and therefore no
+	// loan account — so there is no facility record for them to belong to. And
+	// real core banking puts an arranged overdraft in the current-account module
+	// rather than in Loans, which is also what keeps deposit from depending on a
+	// package that depends on deposit.
+	Rate interest.Rate
+	// UnarrangedRate applies to any balance drawn beyond OverdraftLimit. An
+	// account can get there despite CheckWithdrawal: a direct GL posting does
+	// not pass through this layer, and capitalizing interest on a fully-drawn
+	// overdraft pushes it over by itself.
+	UnarrangedRate interest.Rate
+	DayCount       interest.DayCount
+	// Accrued is interest earned and not yet charged, at sub-minor-unit
+	// precision. The general ledger holds Accrued.Minor() in InterestGL; this
+	// field holds the residue the ledger cannot represent.
+	Accrued interest.Accrued
+	// LastAccrualDate is the business date accrual has been run through. It
+	// never moves backwards, which is what makes an end-of-day re-run a no-op
+	// rather than a second charge.
+	LastAccrualDate time.Time
+	// InterestGL is this account's own accrued-interest-receivable account, an
+	// Asset. It is created the first time a non-zero rate is set, so an account
+	// with no overdraft facility does not carry an empty one.
+	InterestGL ledger.AccountID
+
+	CreatedAt time.Time
 }
 
 // HoldStatus tracks the lifecycle of a hold.
