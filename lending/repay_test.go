@@ -242,6 +242,86 @@ func TestClose_RefusesAnUnsettledReceivable(t *testing.T) {
 	}
 }
 
+// TestClose_SucceedsOnAnExactHalfMinorUnitResidue pins the one residue
+// Accrued.Minor() cannot represent as settled: exactly half a minor unit.
+// Minor() rounds half AWAY from zero, so Minor(500_000) is 1 and
+// Minor(-500_000) is -1 — never 0 — even though the receivable itself is
+// fully cleared. If CloseTx tested the record instead of the receivable's own
+// ledger balance, a facility that ever lands on this exact residue could
+// never be closed again: once drawn principal is zero, further accrual adds
+// nothing and the residue never resolves.
+//
+// €18.25 drawn at 10% (ACT/365), for exactly one day:
+//
+//	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
+//
+// Minor(500_000) = 1, so settling the loan credits 1 cent to the receivable
+// (clearing it, since that is exactly its book balance) and leaves the record
+// at 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1: the old guard's
+// test is nonzero, but the receivable is back to zero.
+func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, customer := newTestPortfolio(t)
+
+	loan, err := p.OpenTermLoan(ctx, sub, "Exact Half Loan", "EUR", 1_825, 100_000, interest.ACT365, lending.Annuity, 12)
+	if err != nil {
+		t.Fatalf("OpenTermLoan: %v", err)
+	}
+	// Disbursement sets LastAccrualDate from the (fixed) clock, 15 January.
+	if _, err := p.Disburse(ctx, loan.ID, customer, day(2025, time.April, 15), "advance"); err != nil {
+		t.Fatalf("Disburse: %v", err)
+	}
+	if err := p.Accrue(ctx, loan.ID, day(2025, time.January, 16)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+
+	before, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if before.Accrued != 500_000 {
+		t.Fatalf("accrued after one day = %d, want 500000", before.Accrued)
+	}
+
+	// Settle in full: 1,825 principal plus the capitalized 1-cent receivable.
+	if _, err := p.Repay(ctx, loan.ID, customer, 1_826, day(2025, time.January, 16), "settle in full"); err != nil {
+		t.Fatalf("Repay: %v", err)
+	}
+
+	after, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if after.Accrued != -500_000 {
+		t.Errorf("residue = %d, want -500000", after.Accrued)
+	}
+	if got := after.Accrued.Minor(); got != -1 {
+		t.Errorf("residue rounds to %d, want -1 (AWAY from zero, not to it)", got)
+	}
+
+	drawn, err := p.Drawn(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("Drawn: %v", err)
+	}
+	if drawn != 0 {
+		t.Fatalf("drawn principal = %d, want 0", drawn)
+	}
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	if receivable != 0 {
+		t.Fatalf("receivable account = %d, want 0 despite the nonzero residue", receivable)
+	}
+
+	// The old guard (Accrued.Minor() != 0) would refuse this close forever.
+	// The fixed guard reads the receivable's own ledger balance instead, which
+	// is zero, and lets it through.
+	if err := p.Close(ctx, loan.ID); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
 // Carried from the Task 11 review: DisburseTx and DrawTx both guard
 // ErrFacilityClosed, but nothing could close a facility before this task, so
 // no test could reach it. Now that Close exists, both are reachable.

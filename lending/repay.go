@@ -216,6 +216,13 @@ func (p *Portfolio) Outstanding(ctx context.Context, id FacilityID) (ledger.Amou
 // the bank says is over, and a stranded receivable would be recognized income
 // no one can ever collect.
 //
+// The interest test is the receivable's own book balance, not Accrued.Minor(),
+// for the same reason deposit.CloseTx tests its receivable that way: a
+// capitalization or repayment residue is bounded by half a minor unit and
+// Minor() of it rounds to zero, except at an EXACT half, where Minor() rounds
+// away from zero to ±1 even though the receivable itself is already cleared.
+// Testing the record there would lock a fully-settled facility shut forever.
+//
 // Closed is terminal — no further drawing, no further repayment, and no further
 // accrual.
 //
@@ -239,7 +246,14 @@ func (p *Portfolio) CloseTx(ctx context.Context, tx Tx, id FacilityID) error {
 	if err != nil {
 		return err
 	}
-	if drawn != 0 || f.Accrued.Minor() != 0 {
+	if drawn != 0 {
+		return ErrFacilityNotEmpty
+	}
+	receivable, err := p.receivableTx(ctx, tx, f)
+	if err != nil {
+		return err
+	}
+	if receivable != 0 {
 		return ErrFacilityNotEmpty
 	}
 

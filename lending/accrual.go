@@ -275,8 +275,12 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 			return Charge{}, err
 		}
 		// Charging the rounded receivable leaves the record off by up to half a
-		// minor unit, in either direction. Minor() of the residue is still 0, so
-		// record and ledger stay in step and the next day's accrual absorbs it.
+		// minor unit, in either direction. Minor() of that residue rounds to
+		// zero — except at an EXACT half, where it rounds away from zero to ±1
+		// even though the receivable itself is already back to zero, which is
+		// why CloseTx tests the receivable's book balance rather than the
+		// record. Ordinarily the next day's accrual absorbs the residue as the
+		// drawn balance moves again.
 		f.Accrued -= interest.FromMinor(charge)
 		drawn += charge
 	}

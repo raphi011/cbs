@@ -127,7 +127,7 @@ export const chapter: Chapter = {
       answer: 452040,
       tolerance: 0,
       explanation:
-        "1,479.452040 rounds DOWN to 1,479 — the customer is charged 0.452040 minor units LESS than actually accrued — so the record is left **+452,040** micro-minor-units, still owed. That is positive, not negative: capitalizing always leaves a residue of up to half a minor unit either way, and here the rounding fell down. `Minor()` of that residue is still 0, so the ledger and the record stay in step.",
+        "1,479.452040 rounds DOWN to 1,479 — the customer is charged 0.452040 minor units LESS than actually accrued — so the record is left **+452,040** micro-minor-units, still owed. That is positive, not negative: capitalizing always leaves a residue of up to half a minor unit either way, and here the rounding fell down. `Minor()` of a residue this size (below half a minor unit) is 0, so the ledger and the record stay in step — it would only round away from zero, to ±1, at an EXACT half.",
     },
     {
       kind: "truefalse",

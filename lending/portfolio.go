@@ -449,3 +449,10 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
 	return tx.BookBalance(ctx, p.bookID, f.PrincipalGL, ledger.Debit)
 }
+
+// receivableTx is the book balance of a facility's accrued-interest
+// receivable. It is an Asset like the principal account, created alongside it
+// in openTx, so it is never empty and its normal balance is Debit too.
+func (p *Portfolio) receivableTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
+	return tx.BookBalance(ctx, p.bookID, f.InterestGL, ledger.Debit)
+}

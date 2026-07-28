@@ -1068,6 +1068,68 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 	assertNoError(t, reg.Close(ctx, acct.ID))
 }
 
+// TestClose_SucceedsOnAnExactHalfMinorUnitResidue pins the one residue
+// Accrued.Minor() cannot represent as settled: exactly half a minor unit.
+// Minor() rounds half AWAY from zero, so Minor(500_000) is 1 and
+// Minor(-500_000) is -1 — never 0 — even though the receivable itself is
+// fully cleared. If CloseTx tested the record instead of the receivable's own
+// ledger balance, an account that ever lands on this exact residue could
+// never be closed again: once its balance stops moving, further accrual adds
+// nothing and the residue never resolves.
+//
+// €18.25 overdrawn at 10% (ACT/365), for exactly one day:
+//
+//	1_825 × 100_000 × 1 / 365 = 500_000 micro-minor-units, exactly half a cent.
+//
+// Minor(500_000) = 1, so charging capitalizes 1 cent and leaves the record at
+// 500_000 − 1_000_000 = −500_000. Minor(−500_000) = −1: the old guard's test
+// is nonzero, but the receivable — credited by the same 1 cent that was
+// debited into it during accrual — is back to zero.
+func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Dana", "EUR", 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 2_000, 100_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, acct, 1_825)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start))
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, 1)))
+
+	before, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued exactly half a minor unit", before.Accrued, interest.Accrued(500_000))
+
+	charged, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 1))
+	assertNoError(t, err)
+	if len(charged.Entries) != 2 {
+		t.Fatalf("charge posted %d entries, want 2", len(charged.Entries))
+	}
+
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "residue at exactly minus half a minor unit", after.Accrued, interest.Accrued(-500_000))
+	assertEqual(t, "residue rounds AWAY from zero, not to it", after.Accrued.Minor(), ledger.Amount(-1))
+
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	assertNoError(t, err)
+	assertEqual(t, "receivable is fully cleared despite the nonzero residue", receivable, ledger.Amount(0))
+
+	// Repay the 1,825 principal plus the capitalized cent: 1,826 in total.
+	fundBy(t, book, sub, acct, 1_826)
+	balance, err := reg.GetBalance(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "book balance before closing", balance.Book, ledger.Amount(0))
+
+	// The old guard (Accrued.Minor() != 0) would refuse this close forever.
+	// The fixed guard reads the receivable's own ledger balance instead, which
+	// is zero, and lets it through.
+	assertNoError(t, reg.Close(ctx, acct.ID))
+}
+
 func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub := newTestRegister(t)

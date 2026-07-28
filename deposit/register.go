@@ -451,10 +451,16 @@ func (r *Register) transitionTx(ctx context.Context, tx Tx, id AccountID, from, 
 // close. lending.CloseTx applies exactly the same rule to a facility's own
 // receivable, for exactly this reason.
 //
-// The test is Accrued.Minor(), not Accrued: the residue a capitalization leaves
-// behind is up to half a minor unit in either direction, is not collectable,
-// and is not in the ledger. Refusing on it would make an account that had ever
-// been charged interest impossible to close.
+// The test is the receivable's own book balance, not Accrued.Minor(). A
+// capitalization residue is bounded by half a minor unit in either direction
+// and is not collectable — Minor() of it rounds to zero, except at an EXACT
+// half, where Minor() rounds away from zero to ±1 even though the receivable
+// itself is already fully cleared (see ChargeOverdraftInterestTx). Testing
+// the record there would lock such an account shut forever: once the balance
+// stops moving, further accrual adds nothing and the residue never resolves.
+// The receivable's ledger balance is what actually must be settled before
+// closing; the record may legitimately disagree with it by a sub-minor-unit
+// amount, which is the entire reason Accrued exists at higher precision.
 //
 // Returns ErrAccountNotFound if the account does not exist,
 // ErrInvalidStatusTransition if the account is already Closed, or
@@ -479,8 +485,19 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 	if err != nil {
 		return err
 	}
-	if book != 0 || acct.Accrued.Minor() != 0 {
+	if book != 0 {
 		return ErrAccountNotEmpty
+	}
+	// An account that never had a rate set has no receivable to settle: there
+	// is nothing to read a balance for.
+	if acct.InterestGL != "" {
+		receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
+		if err != nil {
+			return err
+		}
+		if receivable != 0 {
+			return ErrAccountNotEmpty
+		}
 	}
 
 	acct.Status = Closed
@@ -1035,9 +1052,13 @@ func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest
 // than the exact accrual, because the ledger holds whole minor units. Charging
 // a rounded-up figure leaves the record NEGATIVE by up to half a minor unit:
 // 30 days accrue 61.64382 cents and 62 are charged, leaving −0.35618. That is
-// correct, not a leak. Minor() of the residue is still 0, so the receivable and
-// the record stay in step, and the next day's accrual absorbs it. Truncating
-// instead would give away a fraction on every cycle.
+// correct, not a leak. The residue is bounded by half a minor unit and Minor()
+// of it rounds to zero — except at an EXACT half, where Minor() rounds away
+// from zero to ±1 even though the receivable itself is already back to zero.
+// That is why CloseTx tests the receivable's own ledger balance rather than
+// the record: ordinarily the next day's accrual absorbs the residue as the
+// balance moves again, but a residue frozen at exactly half a minor unit never
+// would. Truncating instead would give away a fraction on every cycle.
 //
 // Nothing accrued means nothing posted, and a zero-value Transaction is
 // returned rather than an error: an end-of-month over a portfolio in credit is
