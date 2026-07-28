@@ -231,6 +231,93 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 	}
 }
 
+// TestChargeInterest_NegativeResidueStaysInStepWithTheLedger covers the other
+// side of the rounding from TestChargeInterest_CapitalizesAndBillsTheCycle: a
+// cycle whose fractional accrual is ABOVE half a minor unit, so Minor() rounds
+// UP and charging it leaves the record negative rather than positive. The
+// invariant under test is the same either way — Minor() of the residue is
+// still 0, so the GL and the record stay in step — but a clamp-to-zero
+// "cleanup" of the residue would only be caught by exercising this branch too.
+func TestChargeInterest_NegativeResidueStaysInStepWithTheLedger(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, customer := newTestPortfolio(t)
+
+	// €1,000 drawn at 20% ACT/365, minimum payment 2% of the balance.
+	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 200_000, interest.ACT365, 20_000)
+	if err != nil {
+		t.Fatalf("OpenRevolvingLine: %v", err)
+	}
+	if _, err := p.Draw(ctx, line.ID, customer, 100_000, "First draw"); err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+
+	// One day at 20% ACT/365: 100,000 × 200,000 × 1 / 365 = 20,000,000,000 /
+	// 365 = 54,794,520 (integer division truncates the remaining .5479... of
+	// a micro-minor-unit away) — i.e. 54.794520 minor units, a fraction ABOVE
+	// one half, unlike the 30-day, 18%-rate cycle in the capitalization test
+	// above (which lands on 0.45204, below one half).
+	if err := p.Accrue(ctx, line.ID, day(2025, time.January, 16)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+	before, err := p.GetFacility(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if before.Accrued != 54_794_520 {
+		t.Fatalf("accrued after one day = %d, want 54794520", before.Accrued)
+	}
+
+	// Minor(54,794,520): half away from zero rounds 54.794520 up to 55.
+	if _, err := p.ChargeInterest(ctx, line.ID, day(2025, time.January, 16)); err != nil {
+		t.Fatalf("ChargeInterest: %v", err)
+	}
+
+	// FromMinor(55) = 55,000,000, which is 205,480 MORE than the 54,794,520
+	// actually earned: the bank charged 0.205480 minor units more than it had
+	// earned, so the record goes negative by exactly that amount.
+	after, err := p.GetFacility(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if after.Accrued != -205_480 {
+		t.Errorf("residue = %d, want -205480", after.Accrued)
+	}
+	if after.Accrued.Minor() != 0 {
+		t.Errorf("residue rounds to %d, want 0", after.Accrued.Minor())
+	}
+
+	// The GL receivable must still equal Minor() of the (now negative) record
+	// — 0 — which is the whole point: the invariant holds on both sides of
+	// the rounding threshold, not just the one the capitalization test above
+	// happens to land on.
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	if receivable != 0 {
+		t.Errorf("receivable after capitalization = %d, want 0", receivable)
+	}
+
+	// Capitalization still moved 55 into principal: drawn = 100,000 + 55.
+	drawn, err := p.Drawn(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Drawn: %v", err)
+	}
+	if drawn != 100_055 {
+		t.Errorf("drawn after capitalization = %d, want 100055", drawn)
+	}
+	schedule, err := p.Schedule(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if len(schedule) != 1 {
+		t.Fatalf("instalments after one cycle = %d, want 1", len(schedule))
+	}
+	if schedule[0].Interest != 55 {
+		t.Errorf("cycle interest = %d, want 55", schedule[0].Interest)
+	}
+}
+
 func TestChargeInterest_TermLoansDoNotCapitalize(t *testing.T) {
 	ctx := context.Background()
 	p, _, loan, _ := disbursedLoan(t)
