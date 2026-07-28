@@ -17,6 +17,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/pg"
 	"github.com/raphi011/cbs/store/storetest"
@@ -54,6 +55,7 @@ func TestConformance(t *testing.T) {
 	storetest.RunLedger(t, func(t *testing.T) ledger.Store { return newStore(t) })
 	storetest.RunDeposit(t, func(t *testing.T) deposit.Store { return newStore(t).Deposit() })
 	storetest.RunPayment(t, func(t *testing.T) payment.Store { return newStore(t).Payment() })
+	storetest.RunLending(t, func(t *testing.T) lending.Store { return newStore(t).Lending() })
 }
 
 // A unit of work must never be opened inside another one on the same store.

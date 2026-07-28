@@ -243,6 +243,67 @@ CREATE TABLE snapshots (
 );
 
 -- ---------------------------------------------------------------------------
+-- The lending layer
+-- ---------------------------------------------------------------------------
+
+-- A credit facility: a term loan or a revolving credit line. The mirror of a
+-- deposit account — it wraps two Asset GL accounts and stores no money itself.
+--
+-- There is no row here for an arranged overdraft, and that is the design rather
+-- than an omission. An overdrawn current account's drawn amount IS the negative
+-- balance of its own Liability account viewed by sign; it has no independent
+-- existence, so a facility row for it would store a number that already exists.
+-- Its terms live on deposit_accounts, and its Asset-side classification is an
+-- aggregation (deposit.Totals). See docs/deposit-accounts-vs-subledger.md.
+CREATE TABLE facilities (
+    book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    id                TEXT NOT NULL,
+    kind              SMALLINT NOT NULL,
+    name              TEXT NOT NULL,
+    asset             TEXT NOT NULL,
+    principal_gl      TEXT NOT NULL,
+    interest_gl       TEXT NOT NULL,
+    commitment        BIGINT NOT NULL,
+    rate              BIGINT NOT NULL,
+    day_count         SMALLINT NOT NULL,
+    method            SMALLINT NOT NULL,
+    term_months       INTEGER NOT NULL,
+    min_payment       BIGINT NOT NULL,
+    accrued_interest  BIGINT NOT NULL,
+    last_accrual_date TIMESTAMPTZ,
+    days_past_due     INTEGER NOT NULL,
+    arrears_bucket    SMALLINT NOT NULL,
+    non_performing    BOOLEAN NOT NULL,
+    oldest_unpaid_due TIMESTAMPTZ,
+    status            SMALLINT NOT NULL,
+    opened_at         TIMESTAMPTZ,
+    maturity_at       TIMESTAMPTZ,
+    seq               BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, id)
+);
+
+-- One scheduled payment. A term loan's rows are generated in full at
+-- disbursement; a revolving line appends one per billing cycle, being that
+-- cycle's minimum payment, which is how a revolving facility actually falls
+-- into arrears.
+--
+-- principal and interest are the PLAN. What a repayment allocates to interest
+-- is the accrual, which under ACT/365 differs from a scheduled twelfth — see
+-- lending.Portfolio.Repay.
+CREATE TABLE installments (
+    book_id        TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    facility_id    TEXT NOT NULL,
+    seq_no         INTEGER NOT NULL,
+    due_date       TIMESTAMPTZ,
+    principal      BIGINT NOT NULL,
+    interest       BIGINT NOT NULL,
+    paid_principal BIGINT NOT NULL,
+    paid_interest  BIGINT NOT NULL,
+    seq            BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, facility_id, seq_no)
+);
+
+-- ---------------------------------------------------------------------------
 -- The payment layer
 -- ---------------------------------------------------------------------------
 --
@@ -486,3 +547,42 @@ COMMENT ON COLUMN deposit_accounts.interest_gl IS
     'total whose detail lives in accrued_interest — a control account, and the '
     'duplication this schema exists without. There is deliberately NO foreign '
     'key to accounts, for the reason given on accounts.asset.';
+
+COMMENT ON COLUMN facilities.accrued_interest IS
+    'Interest earned and not yet settled, in MICRO-MINOR-UNITS: the asset''s '
+    'minor unit multiplied by 1e6 (interest.AccruedScale). Not a money column; '
+    'never sum it alongside one. It is SIGNED and routinely negative: a '
+    'capitalization charges the rounded receivable, which can exceed what was '
+    'earned, and the residue is absorbed by the next day''s accrual. The '
+    'general ledger holds the rounded figure in interest_gl. Recorded here '
+    'because a scale carried in an integer column is invisible in a schema '
+    'dump, and because a reader who saw the negative values would otherwise '
+    'read them as corruption.';
+
+COMMENT ON COLUMN facilities.rate IS
+    'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '
+    '(interest.RateScale). min_payment is the same scale but is NOT a rate — '
+    'it is a dimensionless share of drawn principal added to a revolving '
+    'line''s minimum payment each cycle (interest.Fraction), and the Go types '
+    'are distinct so the compiler refuses to swap them.';
+
+COMMENT ON COLUMN facilities.commitment IS
+    'What the bank has committed: a term loan''s original principal, a '
+    'revolving line''s limit. One column rather than two because it plays the '
+    'same role in both — the amount beyond which drawing is refused. The '
+    'amount actually DRAWN is not stored: it is the book balance of '
+    'principal_gl, derived from the entries like every other balance here.';
+
+COMMENT ON COLUMN facilities.non_performing IS
+    'Set at 90+ days past due. It MARKS ONLY and changes no accounting. '
+    'Non-accrual — where a non-performing loan stops recognizing interest into '
+    'income — and expected-credit-loss provisioning are recorded as future '
+    'work in docs/expansion-roadmap.md.';
+
+COMMENT ON COLUMN installments.seq_no IS
+    'The instalment''s position in the contract, 1-based, and part of its '
+    'primary key. Distinct from the `seq` column, which is the row''s '
+    'monotonic insertion sequence used to break ordering ties everywhere else '
+    'in this schema. ListInstallments orders by seq_no, not by seq or by '
+    'due_date: seq_no is already a total order within a facility and a due '
+    'date is not.';
