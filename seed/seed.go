@@ -439,9 +439,18 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// accrueOverdraftAccountTx's zero-LastAccrualDate case — before the SCT
 	// actually draws him into it. The SCT overdraws him immediately: its
 	// debtor leg posts at InitiatePayment, so the balance moves right away
-	// without its clearing cycle needing to close or settle. Then days pass
-	// and interest accrues, a charge capitalizes it, and a few more days build
-	// a fresh, non-zero accrual on top of that.
+	// without its clearing cycle needing to close or settle. Then 45 days
+	// pass and interest accrues, a charge capitalizes it, and 15 more days
+	// build a fresh accrual on top.
+	//
+	// That is not the figure this phase ends on, though. RunEndOfDay drives a
+	// participant's whole book, not one facility, and Bella's line below
+	// shares this same book (Verde). Her own runDays(verde, 30) keeps Bruno's
+	// overdraft accruing for another 30 days after this phase returns, so the
+	// accrued interest the seed actually produces reflects 45 days
+	// post-capitalization (≈ EUR 3.77 on a EUR 203.70 balance at 15%
+	// ACT/365), not the 15 this phase runs on its own. Changing Bella's
+	// 30-day span, or moving her phase, changes Bruno's final number.
 	//
 	// It joins the SCT cycle Phase F left open (only one may be open per
 	// scheme at a time) rather than opening a second one, which is also why it
@@ -461,9 +470,15 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// EUR 2,500 limit, 18%, 2% minimum payment. Drawn EUR 1,000, accrued for a
 	// month, then charged: the accrued interest capitalizes into principal and
 	// the cycle's minimum payment is billed. This runs last among Verde's
-	// stories, and nothing touches Verde's book again afterwards, so the
-	// billed cycle — due a month out — stays Current rather than aging past
-	// due the way it would if Bruno's own accrual ran after it.
+	// stories, and nothing runs after it, so the billed cycle — due a month
+	// out — stays Current rather than aging past due the way it would if it
+	// ran before Bruno's own accrual instead of after.
+	//
+	// Its own 30-day accrual lands on that same book, though: RunEndOfDay
+	// drives a participant's whole book, not one facility, so this call also
+	// carries Bruno's overdraft forward another 30 days — which is where the
+	// 45 days behind his final figure above come from, not the 15 his own
+	// phase runs.
 	b.clock.advance(1 * time.Hour)
 	line := b.openLine(verde, bella, "Bella Card Line", 250_000, 180_000, 20_000, 100_000, "Card line draw")
 	b.runDays(verde, 30)
