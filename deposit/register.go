@@ -1099,6 +1099,46 @@ func (r *Register) RunEndOfDayTx(ctx context.Context, tx Tx, date time.Time) err
 	return nil
 }
 
+// Totals aggregates every customer account in the book into deposits and
+// overdrafts, per asset.
+//
+// See the Totals type for why the Asset-side figure is computed here rather
+// than posted anywhere.
+func (r *Register) Totals(ctx context.Context) (Totals, error) {
+	var out Totals
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.TotalsTx(ctx, tx)
+		return err
+	})
+	return out, err
+}
+
+// TotalsTx is Totals within a caller-supplied unit of work.
+func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
+	accounts, err := tx.ListDepositAccounts(ctx, r.bookID)
+	if err != nil {
+		return Totals{}, err
+	}
+	out := Totals{
+		Deposits:   make(map[ledger.AssetCode]ledger.Amount),
+		Overdrafts: make(map[ledger.AssetCode]ledger.Amount),
+	}
+	for _, acct := range accounts {
+		balance, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+		if err != nil {
+			return Totals{}, err
+		}
+		switch {
+		case balance > 0:
+			out.Deposits[acct.Asset] += balance
+		case balance < 0:
+			out.Overdrafts[acct.Asset] += -balance
+		}
+	}
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------

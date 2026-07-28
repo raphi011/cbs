@@ -156,3 +156,29 @@ type Snapshot struct {
 	Balance   Balance
 	TakenAt   time.Time // when the snapshot was actually taken
 }
+
+// Totals is a bank's customer-deposit position, split by the sign of each
+// account's balance and keyed by asset.
+//
+// This split is the whole Asset-side classification of an overdraft, and it is
+// derived rather than stored. A debit balance on a current account is a loan
+// and advance to a customer, and a bank may not net it against the credit
+// balances — but the drawn amount has no independent existence. It IS the
+// negative balance, viewed by sign.
+//
+// In a real bank the same split falls out of subledger-to-GL summarization: the
+// nightly feed buckets accounts by the sign of their balance into two control
+// accounts. This system has no summarization step to hide it in, because it has
+// no control accounts — see docs/deposit-accounts-vs-subledger.md. So the split
+// is a query, exactly as "total customer deposits" already is, and no journal
+// posts it.
+//
+// Keyed by asset because a total across assets is not a number. Euro and
+// bitcoin do not add up.
+type Totals struct {
+	// Deposits is the sum of positive balances: what the bank owes customers.
+	Deposits map[ledger.AssetCode]ledger.Amount
+	// Overdrafts is the sum of the magnitudes of negative balances: what
+	// customers owe the bank.
+	Overdrafts map[ledger.AssetCode]ledger.Amount
+}

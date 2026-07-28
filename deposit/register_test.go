@@ -1020,3 +1020,66 @@ func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued after a re-run", again.Accrued, got.Accrued)
 }
+
+// This test is the design, not a detail of it. An overdrawn current account is
+// a loan, and it reaches the Asset side of the balance sheet by AGGREGATION,
+// not by a posting: its drawn amount is the negative balance of its own
+// Liability account viewed by sign, and has no independent existence. A future
+// author who adds a reclassification journal or a sweep will fail here.
+func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	bruno, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 50_000)
+	assertNoError(t, err)
+	alice, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
+	assertNoError(t, err)
+	satoshi, err := reg.OpenAccount(ctx, sub, "Satoshi", "BTC", 0)
+	assertNoError(t, err)
+
+	fundBy(t, book, sub, alice, 20_000)
+	fundBy(t, book, sub, satoshi, 500_000)
+	overdrawBy(t, book, sub, bruno, 5_000)
+
+	// Overdrawing posted exactly one transaction against Bruno's account, and
+	// both of its legs are Liability: the debit to Bruno, the credit to the
+	// counterparty. No Asset account was touched, and no second transaction
+	// reclassified anything.
+	txs, err := book.ListTransactionsForAccount(ctx, bruno.GLAccount)
+	assertNoError(t, err)
+	assertEqual(t, "transactions against an overdrawn account", len(txs), 1)
+	for _, e := range txs[0].Entries {
+		gl, err := book.GetAccount(ctx, e.AccountID)
+		assertNoError(t, err)
+		if gl.Type == ledger.Asset {
+			t.Fatalf("overdrawing posted to an Asset account (%s): the drawn amount "+
+				"has no independent existence and must not be stored", gl.Name)
+		}
+	}
+
+	totals, err := reg.Totals(ctx)
+	assertNoError(t, err)
+
+	// Per asset, because summing euro and bitcoin is not a number.
+	assertEqual(t, "EUR deposits", totals.Deposits["EUR"], ledger.Amount(20_000))
+	assertEqual(t, "EUR overdrafts", totals.Overdrafts["EUR"], ledger.Amount(5_000))
+	assertEqual(t, "BTC deposits", totals.Deposits["BTC"], ledger.Amount(500_000))
+	assertEqual(t, "BTC overdrafts", totals.Overdrafts["BTC"], ledger.Amount(0))
+
+	// And the aggregate really is the sum of the negative balances, rather
+	// than a number maintained alongside them.
+	var drawn ledger.Amount
+	accounts, err := reg.ListAccounts(ctx)
+	assertNoError(t, err)
+	for _, a := range accounts {
+		if a.Asset != "EUR" {
+			continue
+		}
+		bal, err := reg.GetBalance(ctx, a.ID)
+		assertNoError(t, err)
+		if bal.Book < 0 {
+			drawn += -bal.Book
+		}
+	}
+	assertEqual(t, "derived equals the sum of negative balances", totals.Overdrafts["EUR"], drawn)
+}
