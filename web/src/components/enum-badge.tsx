@@ -14,7 +14,9 @@ const TONE_CLASS: Record<Tone, string> = {
   info: "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300",
 };
 
-function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+// Exported so other badges over a domain-specific tone map (e.g. ArrearsBadge)
+// render the same pill rather than a near-duplicate.
+export function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
   return (
     <span
       className={cn(

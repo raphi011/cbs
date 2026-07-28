@@ -906,6 +906,32 @@ Bank A
 
 There is deliberately **no fallback** to a default asset. Defaulting to euro would settle a dollar cycle in the wrong money, quietly, in the one place in the system where money becomes final.`,
   },
+  "credit-facility": {
+    title: "Credit facility",
+    body: `A **credit facility** is a bank's extension of credit to a customer, tracked outside the demand-deposit layer: a **term loan** (a fixed principal, disbursed once and repaid on a fixed schedule) or a **revolving line** (a reusable limit the customer draws down and repays repeatedly, billed in cycles).
+
+An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no separate GL account, no schedule and no commitment — it is priced credit layered onto an existing liability account, not a standalone [[account-type-asset|asset]].
+
+Every facility carries two GL [[account-type-asset|Asset]] accounts: a **principal** account (what is owed on drawn money) and an **interest** account (interest accrued and not yet collected). \`commitment\` is the ceiling the customer may draw against; \`drawn\` and \`accruedInterest\` are DERIVED from those two accounts' balances, never stored fields — the same discipline [[derived-balance|a book balance]] follows.`,
+  },
+  arrears: {
+    title: "Arrears and non-performing",
+    body: `A facility's **arrears** are computed from its schedule, not stored as events: days-past-due is the calendar-day age of the OLDEST instalment that is still due and unpaid, and the clock does not reset until that instalment is paid — a borrower permanently one payment behind stays visibly one payment behind rather than looking current between due dates.
+
+Those days sort into five buckets: \`Current\`, \`1-29\`, \`30-59\`, \`60-89\` and \`90+\`. **Non-performing** is set once days-past-due reaches 90 — and it MARKS ONLY: nothing about interest accrual, posting, or the [[amortization|schedule]] changes because of it. Provisioning and non-accrual accounting for a non-performing facility are deferred, not implemented here.`,
+  },
+  amortization: {
+    title: "Amortization schedule",
+    body: `A term loan's **amortization schedule** is generated once, at disbursement, as a plan: one row per instalment, each carrying its own principal and interest due. It is built two ways — **annuity** (a level total payment; the principal/interest split shifts over the term) and **equal principal** (principal is level; the total payment shrinks as interest falls on a shrinking balance) — chosen when the loan is opened.
+
+A row's outstanding amount is *that instalment's* unpaid remainder — (principal − paid principal) + (interest − paid interest) — not the loan's overall balance; the schedule is a plan the facility is compared against, and a repayment settles accrued interest before touching it. A revolving line has no upfront schedule: its instalments are appended one per billing cycle, as it is charged.`,
+  },
+  "overdraft-interest": {
+    title: "Overdraft interest",
+    body: `An [[overdraft|overdraft limit]] is not free once a rate is set: interest accrues daily on the account's debit balance — the arranged rate up to the limit, and a separate, higher **unarranged rate** on any balance beyond it — under a day-count convention (\`ACT/365\`, \`ACT/360\`, or \`30/360\`), the same way a [[credit-facility|facility]] does.
+
+Accrued interest is tracked at higher precision than the ledger posts (rounding to a whole minor unit every day would quietly lose a fraction of it); the account's accrued figure is the rounded amount the general ledger actually holds. It is charged to the account — capitalized into the debit balance — on a billing cycle, which is why an overdraft sitting at its limit is not costless the way a \`0\`-rate account is.`,
+  },
 } satisfies Record<string, HintEntry>;
 
 export type HintKey = keyof typeof hintContent;

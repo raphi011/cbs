@@ -11,11 +11,14 @@
 
 import type {
   AccountType,
+  ArrearsBucket,
   AssetClass,
   CycleStatus,
   DepositStatus,
   DepositStatusAction,
   Direction,
+  FacilityKind,
+  FacilityStatus,
   HoldStatus,
   MandateStatus,
   PaymentStatus,
@@ -121,6 +124,13 @@ export interface BookBalance {
 
 // --- Deposit layer --------------------------------------------------------
 
+// DepositAccount's overdraft interest terms mirror a Facility's rate fields
+// for the same reason: rate is millionths of rateScale (see web/src/lib/rate.ts),
+// never a hardcoded 1_000_000. unarrangedRate applies to any balance drawn
+// beyond overdraftLimit; accruedInterest is what the general ledger holds
+// (rounded to a whole minor unit), not the sub-minor-unit precision the
+// backend accrues at internally. interestGlAccount is empty until the first
+// non-zero rate is set (see api/dto_deposit.go).
 export interface DepositAccount {
   id: string;
   glAccount: string;
@@ -128,6 +138,12 @@ export interface DepositAccount {
   asset: string;
   status: DepositStatus;
   overdraftLimit: number;
+  overdraftRate: number;
+  unarrangedRate: number;
+  rateScale: number;
+  dayCount: string;
+  accruedInterest: number;
+  interestGlAccount?: string;
   createdAt: string;
 }
 
@@ -263,6 +279,67 @@ export interface Reserve {
   reserve: number;
 }
 
+// --- Lending layer ----------------------------------------------------------
+
+// Facility mirrors facilityDTO. `drawn` and `accruedInterest` are DERIVED —
+// the balances of `principalGlAccount` and `interestGlAccount` — not stored
+// fields; see api/dto_lending.go's toFacilityDTO. `rate` is millionths of
+// `rateScale` (render with web/src/lib/rate.ts's formatRate, never a
+// hardcoded 1_000_000). `method` is only present for a TermLoan (a
+// RevolvingLine has no amortization method); `minPayment` only for a
+// RevolvingLine, and shares `rateScale` rather than carrying its own scale
+// field — see rate.ts's header comment.
+export interface Facility {
+  id: string;
+  kind: FacilityKind;
+  name: string;
+  asset: string;
+  principalGlAccount: string;
+  interestGlAccount: string;
+  commitment: number;
+  drawn: number;
+  accruedInterest: number;
+  outstanding: number;
+  rate: number;
+  rateScale: number;
+  dayCount: string;
+  method?: string;
+  termMonths?: number;
+  minPayment?: number;
+  daysPastDue: number;
+  arrearsBucket: ArrearsBucket;
+  nonPerforming: boolean;
+  status: FacilityStatus;
+  openedAt: string;
+  maturityAt?: string;
+}
+
+// Installment mirrors installmentDTO — one row of a facility's amortization
+// schedule, as it was planned at disbursement (or, for a RevolvingLine,
+// appended one per billing cycle). `outstanding` is THIS instalment's own
+// unpaid remainder — (principal - paidPrincipal) + (interest - paidInterest)
+// — not the facility's overall remaining balance; see
+// lending.Installment.Outstanding.
+export interface Installment {
+  seq: number;
+  dueDate: string;
+  principal: number;
+  interest: number;
+  paidPrincipal: number;
+  paidInterest: number;
+  outstanding: number;
+}
+
+// Totals mirrors totalsDTO from GET /participants/{pid}/totals. `overdrafts`
+// is DERIVED — the sum of negative deposit-account balances by sign, not a
+// figure any posting produces — see deposit.Totals and
+// api/dto_lending.go's toTotalsDTOs.
+export interface Totals {
+  asset: string;
+  deposits: number;
+  overdrafts: number;
+}
+
 // --- Request bodies (match Go request DTOs exactly) -----------------------
 
 export interface NameRequest {
@@ -335,6 +412,26 @@ export interface FundRequest {
   account: string;
   amount: number;
   description?: string;
+}
+
+// openFacilityRequest opens either product behind one route: `kind` selects
+// which. `method`/`termMonths` apply only to a TermLoan; `minPayment` only to
+// a RevolvingLine — see api/dto_lending.go's openFacilityRequest.
+export interface OpenFacilityRequest {
+  kind: FacilityKind;
+  name: string;
+  asset: string;
+  commitment: number;
+  rate: number;
+  dayCount: string;
+  method?: string;
+  termMonths?: number;
+  minPayment?: number;
+}
+
+// date is a calendar day, "YYYY-MM-DD", like SnapshotRequest.
+export interface ChargeFacilityInterestRequest {
+  date: string;
 }
 
 export interface CreateMandateRequest {

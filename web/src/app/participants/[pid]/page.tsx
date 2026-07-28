@@ -12,7 +12,7 @@ import { Money } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { Hint } from "@/components/hint";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAssetLookup, useParticipant, useReserve } from "@/lib/api/hooks";
+import { useAssetLookup, useParticipant, useReserve, useTotals } from "@/lib/api/hooks";
 import type { HintKey } from "@/components/hint-content";
 
 export default function ParticipantOverview() {
@@ -20,6 +20,7 @@ export default function ParticipantOverview() {
   const pid = typeof params.pid === "string" ? params.pid : "";
   const { data: p } = useParticipant(pid);
   const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
+  const { data: totals, isLoading: totalsLoading } = useTotals(pid);
   const { byCode } = useAssetLookup();
 
   // A bank holds one suspense, reserve and settlement account per asset it
@@ -102,6 +103,50 @@ export default function ParticipantOverview() {
               <IdText id={a.id} />
             </div>
           ))}
+        </CardContent>
+      </Card>
+
+      <Card className="md:col-span-2">
+        <CardHeader>
+          <CardTitle className="text-base">Customer totals</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {totalsLoading ? (
+            <Skeleton className="h-8 w-48" />
+          ) : totals && totals.length > 0 ? (
+            totals.map((t) => {
+              const totalsAsset = byCode.get(t.asset);
+              return totalsAsset ? (
+                <div
+                  key={t.asset}
+                  className="flex items-center justify-between gap-3 text-sm"
+                >
+                  <span className="font-medium">{t.asset}</span>
+                  <span className="flex items-center gap-4">
+                    <span>
+                      <Money amount={t.deposits} asset={totalsAsset} />
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        deposits
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Money amount={t.overdrafts} asset={totalsAsset} />
+                      <span className="text-xs text-muted-foreground">
+                        overdrafts (derived)
+                      </span>
+                      <Hint id="derived-balance" />
+                    </span>
+                  </span>
+                </div>
+              ) : (
+                <Skeleton key={t.asset} className="h-8 w-48" />
+              );
+            })
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No customer deposits yet.
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
