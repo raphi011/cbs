@@ -11,6 +11,7 @@ import type {
   Balance,
   BookBalance,
   CaptureHoldRequest,
+  Charge,
   ChargeFacilityInterestRequest,
   ClearingCycle,
   CreateAccountRequest,
@@ -354,19 +355,21 @@ export function getFacilitySchedule(
   return request("GET", `/participants/${pid}/facilities/${fid}/schedule`);
 }
 
-// chargeFacilityInterest closes a revolving line's billing cycle. A cycle with
-// nothing accrued and nothing drawn posts nothing: the backend answers 200
-// with a completely empty body rather than a Transaction carrying an empty id
-// (see api/handlers_lending.go's handleChargeInterest) — a convention the rest
-// of this API uses 204 for instead. request()'s text-then-JSON.parse (it never
-// calls response.json()) already returns `undefined` for that body rather than
-// throwing; this return type names that explicitly so a caller cannot forget
-// to check for it before treating the result as a posted transaction.
+// chargeFacilityInterest closes a revolving line's billing cycle.
+//
+// The result is a Charge, not a Transaction, because the two outcomes are
+// independent: a cycle whose accrued interest has not yet reached a whole
+// minor unit bills an instalment and posts nothing. A cycle on a line that is
+// undrawn and owes nothing does neither, and the backend answers 204 — so the
+// return type includes `undefined`. request()'s text-then-JSON.parse (it never
+// calls response.json()) already yields `undefined` for an empty body rather
+// than throwing; naming it here is what stops a caller treating the result as
+// a posted transaction without checking.
 export function chargeFacilityInterest(
   pid: string,
   fid: string,
   body: ChargeFacilityInterestRequest,
-): Promise<Transaction | undefined> {
+): Promise<Charge | undefined> {
   return request(
     "POST",
     `/participants/${pid}/facilities/${fid}/interest-charge`,

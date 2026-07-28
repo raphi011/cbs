@@ -330,6 +330,18 @@ export interface Installment {
   outstanding: number;
 }
 
+// Charge mirrors chargeDTO from POST
+// /participants/{pid}/facilities/{fid}/interest-charge. Both halves are
+// optional and INDEPENDENT: a cycle whose accrued interest has not yet reached
+// a whole minor unit bills an instalment with no posting behind it, so a
+// caller must not read an absent `transaction` as "nothing happened". The
+// third case — nothing accrued and nothing drawn — is a 204 with no body at
+// all, which is why chargeFacilityInterest's return type includes `undefined`.
+export interface Charge {
+  transaction?: Transaction;
+  installment?: Installment;
+}
+
 // Totals mirrors totalsDTO from GET /participants/{pid}/totals. `overdrafts`
 // is DERIVED — the sum of negative deposit-account balances by sign, not a
 // figure any posting produces — see deposit.Totals and

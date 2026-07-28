@@ -182,10 +182,14 @@ func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request)
 
 // handleChargeOverdraftInterest capitalizes an account's accrued overdraft
 // interest, clearing the receivable — the monthly event a customer actually
-// sees. Nothing accrued means nothing posted: ChargeOverdraftInterest returns
-// a zero-value Transaction rather than an error, and this writes 200 with no
-// body rather than rendering a Transaction with an empty ID as though it were
-// a real posting.
+// sees.
+//
+// Nothing accrued means nothing posted, and nothing else happens either: unlike
+// a revolving line's cycle, this appends no instalment. So the empty case is
+// 204 No Content — the answer the rest of this API gives for "the request was
+// fine and there is nothing to say" — rather than a 200 whose empty body a
+// client has to guess at, or a Transaction with an empty ID rendered as though
+// it were a real posting.
 func (s *Server) handleChargeOverdraftInterest(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
@@ -208,7 +212,7 @@ func (s *Server) handleChargeOverdraftInterest(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if tx.ID == "" {
-		writeJSON(w, http.StatusOK, nil)
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})

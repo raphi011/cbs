@@ -44,7 +44,13 @@ func errorStatus(err error) int {
 	case errors.Is(err, ledger.ErrDuplicateIdempotencyKey),
 		errors.Is(err, ledger.ErrTransactionAlreadyReversed),
 		errors.Is(err, payment.ErrDuplicateEndToEndID),
-		errors.Is(err, payment.ErrCycleAlreadyOpen):
+		errors.Is(err, payment.ErrCycleAlreadyOpen),
+		// A billing cycle already on the schedule is the already-applied
+		// category exactly: the request is valid and the state already
+		// reflects it. 409 is what tells a retrying proxy that its first
+		// attempt landed, where 422 would read as "this line cannot be
+		// billed".
+		errors.Is(err, lending.ErrCycleAlreadyBilled):
 		return http.StatusConflict
 
 	case errors.Is(err, ledger.ErrInsufficientBalance),

@@ -103,12 +103,12 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
-		accrued, err := p.Lending.AccruedInterest(r.Context(), f.ID)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		out[i] = toFacilityDTO(f, drawn, accrued)
+		// Accrued interest comes off the facility already in hand rather than
+		// from Portfolio.AccruedInterest, which would re-read the same row in
+		// its own store transaction to return exactly this. Drawn cannot be
+		// had that way — it is the principal account's book balance, which is
+		// not on the record at all.
+		out[i] = toFacilityDTO(f, drawn, f.Accrued.Minor())
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -129,12 +129,9 @@ func (s *Server) handleGetFacility(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	accrued, err := p.Lending.AccruedInterest(r.Context(), fid)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toFacilityDTO(f, drawn, accrued))
+	// f.Accrued.Minor() rather than Portfolio.AccruedInterest, which would
+	// re-read the row already in hand — see handleListFacilities.
+	writeJSON(w, http.StatusOK, toFacilityDTO(f, drawn, f.Accrued.Minor()))
 }
 
 func (s *Server) handleFacilitySchedule(w http.ResponseWriter, r *http.Request) {
@@ -263,12 +260,15 @@ func (s *Server) handleRepay(w http.ResponseWriter, r *http.Request) {
 
 // handleChargeInterest closes a revolving line's billing cycle. It returns
 // ErrWrongFacilityKind for a term loan, which settles interest through its
-// scheduled instalments instead — see lending.Portfolio.ChargeInterest.
+// scheduled instalments instead, and 409 for a cycle already billed — see
+// lending.Portfolio.ChargeInterest.
 //
-// Nothing accrued and nothing drawn bills nothing: ChargeInterest returns a
-// zero-value Transaction rather than an error, and this writes 200 with no
-// body rather than rendering a Transaction with an empty ID as though it were
-// a real posting.
+// The response is a chargeDTO rather than a transaction, because a cycle can
+// bill an instalment without posting anything: reachable by drawing and
+// charging before the accrual has ticked a whole minor unit. Nothing accrued
+// AND nothing drawn does neither, and that alone is 204 No Content — the same
+// answer the deposit layer's charge endpoint gives, and what the rest of this
+// API already uses for "the request was fine and there is nothing to say".
 func (s *Server) handleChargeInterest(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
@@ -285,21 +285,24 @@ func (s *Server) handleChargeInterest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	tx, err := p.Lending.ChargeInterest(r.Context(), fid, date)
+	charge, err := p.Lending.ChargeInterest(r.Context(), fid, date)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if tx.ID == "" {
-		writeJSON(w, http.StatusOK, nil)
+	if !charge.Billed() && !charge.Posted() {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
-	if err != nil {
-		writeError(w, err)
-		return
+	var assets map[ledger.AccountID]ledger.AssetCode
+	if charge.Posted() {
+		assets, err = entryAssets(r.Context(), p.Ledger, []ledger.Transaction{charge.Transaction})
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, toTransactionDTO(tx, assets))
+	writeJSON(w, http.StatusOK, toChargeDTO(charge, assets))
 }
 
 func (s *Server) handleCloseFacility(w http.ResponseWriter, r *http.Request) {

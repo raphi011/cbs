@@ -103,6 +103,41 @@ func toFacilityDTO(f lending.Facility, drawn, accrued ledger.Amount) facilityDTO
 	return dto
 }
 
+// chargeDTO is the outcome of billing one of a revolving line's cycles, and it
+// carries BOTH halves because they are independent — see lending.Charge.
+//
+// A cycle whose accrued interest has not yet reached a whole minor unit posts
+// no transaction and still bills an instalment; a cycle on an undrawn line that
+// owes nothing does neither. A bare transaction cannot express the difference,
+// so a client rendering one would report "nothing happened" while the schedule
+// below it gained a row.
+//
+// Both fields are pointers rather than zero values: an absent posting is
+// genuinely absent, and a `transaction` rendered with an empty id would read as
+// a real posting the client failed to parse.
+type chargeDTO struct {
+	// Transaction is the capitalization posting, absent when nothing posted.
+	Transaction *transactionDTO `json:"transaction,omitempty"`
+	// Installment is the cycle that was billed, absent when no cycle was.
+	Installment *installmentDTO `json:"installment,omitempty"`
+}
+
+// toChargeDTO renders a charge. assets is the pre-resolved account-to-asset map
+// the transaction half needs (see entryAssets), so this does no I/O of its own,
+// the same convention toTransactionDTO and toFacilityDTO follow.
+func toChargeDTO(c lending.Charge, assets map[ledger.AccountID]ledger.AssetCode) chargeDTO {
+	var out chargeDTO
+	if c.Posted() {
+		tx := toTransactionDTO(c.Transaction, assets)
+		out.Transaction = &tx
+	}
+	if c.Billed() {
+		inst := toInstallmentDTO(c.Installment)
+		out.Installment = &inst
+	}
+	return out
+}
+
 type installmentDTO struct {
 	Seq           int       `json:"seq"`
 	DueDate       time.Time `json:"dueDate"`

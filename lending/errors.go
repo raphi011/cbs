@@ -36,10 +36,17 @@ var (
 	ErrInvalidRate = errors.New("invalid interest rate")
 
 	// ErrInvalidTerm is returned when a term loan's term is not a positive
-	// number of months.
-	ErrInvalidTerm = errors.New("term must be a positive number of months")
+	// number of months, or is longer than MaxTermMonths.
+	ErrInvalidTerm = errors.New("term must be a positive number of months, at most MaxTermMonths")
 
 	// ErrNothingOutstanding is returned when a repayment is made against a
 	// facility that owes nothing.
 	ErrNothingOutstanding = errors.New("facility has nothing outstanding")
+
+	// ErrCycleAlreadyBilled is returned when a revolving line's billing cycle
+	// is charged twice. Billing appends an instalment and capitalizes the
+	// receivable, so a retried request — a proxy retry, a double-submitted
+	// form — would leave the borrower owing two minimum payments for one
+	// cycle and drifting into arrears from an infrastructure event.
+	ErrCycleAlreadyBilled = errors.New("this billing cycle has already been charged")
 )

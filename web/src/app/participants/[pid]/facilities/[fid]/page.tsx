@@ -79,17 +79,22 @@ function ChargeInterestCard({ pid, fid }: { pid: string; fid: string }) {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const tx = await charge.mutateAsync({ date });
-      // A cycle with nothing accrued and nothing drawn posts nothing: the
-      // backend answers 200 with a completely empty body rather than a
-      // Transaction with an empty id (see api/handlers_lending.go's
-      // handleChargeInterest), and endpoints.ts's chargeFacilityInterest
-      // types that as `Transaction | undefined` rather than `Transaction` —
-      // check for it before treating the result as a posted transaction.
-      if (tx) {
-        toast.success(`Charged — posted ${tx.id}`);
+      const result = await charge.mutateAsync({ date });
+      // Three outcomes, and the message has to tell them apart. A cycle can
+      // be billed with no interest to capitalize — reachable by drawing and
+      // charging before the accrual has ticked a whole minor unit — and
+      // calling that "nothing to charge" would be wrong while the schedule
+      // below gains a row. Only an undrawn line owing nothing does neither,
+      // and the backend answers that with a body-less 204, which
+      // chargeFacilityInterest types as `undefined`.
+      if (result?.transaction) {
+        toast.success(`Charged — posted ${result.transaction.id}`);
+      } else if (result?.installment) {
+        toast.success(
+          `Cycle ${result.installment.seq} billed — no interest to capitalize yet`,
+        );
       } else {
-        toast.info("Nothing to charge this cycle");
+        toast.info("Nothing to bill this cycle");
       }
     } catch (err) {
       toast.error(describeError(err));

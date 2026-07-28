@@ -136,6 +136,30 @@ func (p *Portfolio) AccruedInterest(ctx context.Context, id FacilityID) (ledger.
 	return out, err
 }
 
+// Charge is the outcome of billing one of a revolving line's cycles.
+//
+// The two halves are independent, and that is the whole reason this is a struct
+// rather than a transaction: a cycle whose accrual has not yet reached a whole
+// minor unit bills an instalment with no posting behind it, and a cycle on a
+// line that is undrawn and owes nothing does neither. A caller that saw only
+// the transaction could not tell those two apart, and would report "nothing
+// happened" while the borrower's schedule gained a row.
+type Charge struct {
+	// Transaction is the capitalization posting. It is the zero value when
+	// nothing was posted, which is a whole minor unit of accrued interest, not
+	// an error — see ChargeInterest.
+	Transaction ledger.Transaction
+	// Installment is the cycle that was billed. It is the zero value — Seq 0,
+	// which no real instalment has — when no cycle was billed at all.
+	Installment Installment
+}
+
+// Billed reports whether a cycle was appended to the schedule.
+func (c Charge) Billed() bool { return c.Installment.Seq != 0 }
+
+// Posted reports whether interest was capitalized into principal.
+func (c Charge) Posted() bool { return c.Transaction.ID != "" }
+
 // ChargeInterest closes a revolving line's billing cycle: it capitalizes the
 // accrued interest into drawn principal and bills the cycle's minimum payment.
 //
@@ -160,13 +184,27 @@ func (p *Portfolio) AccruedInterest(ctx context.Context, id FacilityID) (ledger.
 // term loan is a real product feature, and it is part of the restructuring work
 // deferred in docs/expansion-roadmap.md.
 //
-// Nothing accrued and nothing drawn bills nothing, and a zero-value Transaction
-// is returned rather than an error: a cycle on an undrawn line is an ordinary
+// Nothing accrued and nothing drawn bills nothing, and a zero-value Charge is
+// returned rather than an error: a cycle on an undrawn line is an ordinary
 // outcome.
 //
-// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind.
-func (p *Portfolio) ChargeInterest(ctx context.Context, id FacilityID, date time.Time) (ledger.Transaction, error) {
-	var out ledger.Transaction
+// # One cycle, once
+//
+// A cycle whose due date is already on the schedule is refused with
+// ErrCycleAlreadyBilled. Unlike accrual — which LastAccrualDate makes a no-op
+// on a re-run — billing appends a row and capitalizes the receivable, so a
+// retried request would leave the borrower owing two minimum payments for one
+// cycle. deposit.ChargeOverdraftInterest is a no-op on a second call for the
+// same reason; the two credit layers behave the same way on the same operation.
+//
+// The guard is the DUE DATE, not chronology: billing cycles out of order is
+// explicitly supported (a backdated cycle produces a later Seq with an earlier
+// due date, which is exactly the case ArrearsFor scans the whole schedule for).
+//
+// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind,
+// ErrCycleAlreadyBilled.
+func (p *Portfolio) ChargeInterest(ctx context.Context, id FacilityID, date time.Time) (Charge, error) {
+	var out Charge
 	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		out, err = p.ChargeInterestTx(ctx, tx, id, date)
@@ -176,25 +214,43 @@ func (p *Portfolio) ChargeInterest(ctx context.Context, id FacilityID, date time
 }
 
 // ChargeInterestTx is ChargeInterest within a caller-supplied unit of work.
-func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, date time.Time) (ledger.Transaction, error) {
+func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, date time.Time) (Charge, error) {
 	f, err := tx.GetFacility(ctx, p.bookID, id)
 	if err != nil {
-		return ledger.Transaction{}, err
+		return Charge{}, err
 	}
 	if f.Status == Closed {
-		return ledger.Transaction{}, ErrFacilityClosed
+		return Charge{}, ErrFacilityClosed
 	}
 	if f.Kind != RevolvingLine {
-		return ledger.Transaction{}, ErrWrongFacilityKind
+		return Charge{}, ErrWrongFacilityKind
 	}
 
 	drawn, err := p.drawnTx(ctx, tx, f)
 	if err != nil {
-		return ledger.Transaction{}, err
+		return Charge{}, err
 	}
 	charge := f.Accrued.Minor()
 	if charge <= 0 && drawn <= 0 {
-		return ledger.Transaction{}, nil
+		return Charge{}, nil
+	}
+
+	// Read the schedule BEFORE anything is posted: the duplicate check has to
+	// refuse the retry rather than roll it back, and a caller that had already
+	// seen a second capitalization posted would not be helped by an error.
+	existing, err := tx.ListInstallments(ctx, p.bookID, f.ID)
+	if err != nil {
+		return Charge{}, err
+	}
+	due := AddMonths(date, 1)
+	for _, inst := range existing {
+		// Compared by calendar day rather than by instant: a due date that has
+		// been through a store carries whatever location that store hands back,
+		// and two calls on the same business date must collide however their
+		// timestamps were built.
+		if calendarDays(inst.DueDate, due) == 0 {
+			return Charge{}, ErrCycleAlreadyBilled
+		}
 	}
 
 	var glTx ledger.Transaction
@@ -209,7 +265,7 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 			},
 		})
 		if err != nil {
-			return ledger.Transaction{}, err
+			return Charge{}, err
 		}
 		// Charging the rounded receivable leaves the record off by up to half a
 		// minor unit, in either direction. Minor() of the residue is still 0, so
@@ -218,22 +274,18 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		drawn += charge
 	}
 
-	existing, err := tx.ListInstallments(ctx, p.bookID, f.ID)
-	if err != nil {
-		return ledger.Transaction{}, err
-	}
 	cycle := Installment{
 		FacilityID: f.ID,
 		Seq:        len(existing) + 1,
-		DueDate:    AddMonths(date, 1),
+		DueDate:    due,
 		Principal:  f.MinPayment.Of(drawn),
 		Interest:   charge,
 	}
 	if err := tx.PutInstallment(ctx, p.bookID, cycle); err != nil {
-		return ledger.Transaction{}, err
+		return Charge{}, err
 	}
 	if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
-		return ledger.Transaction{}, err
+		return Charge{}, err
 	}
 	if err := p.appendAuditTx(ctx, tx, ledger.EventFacilityCharged, string(f.ID), map[string]any{
 		"facility_id":    string(f.ID),
@@ -243,7 +295,7 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 		"minimum":        cycle.Total(),
 		"residue":        int64(f.Accrued),
 	}); err != nil {
-		return ledger.Transaction{}, err
+		return Charge{}, err
 	}
-	return glTx, nil
+	return Charge{Transaction: glTx, Installment: cycle}, nil
 }

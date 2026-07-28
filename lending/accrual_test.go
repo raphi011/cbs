@@ -147,12 +147,15 @@ func TestChargeInterest_CapitalizesAndBillsTheCycle(t *testing.T) {
 	}
 
 	statement := day(2025, time.February, 14)
-	txn, err := p.ChargeInterest(ctx, line.ID, statement)
+	charge, err := p.ChargeInterest(ctx, line.ID, statement)
 	if err != nil {
 		t.Fatalf("ChargeInterest: %v", err)
 	}
-	if len(txn.Entries) != 2 {
-		t.Fatalf("charge posted %d entries, want 2", len(txn.Entries))
+	if len(charge.Transaction.Entries) != 2 {
+		t.Fatalf("charge posted %d entries, want 2", len(charge.Transaction.Entries))
+	}
+	if !charge.Billed() || charge.Installment.Seq != 1 {
+		t.Fatalf("charge billed %+v, want the first cycle", charge.Installment)
 	}
 
 	// Capitalization moves the receivable into principal: the interest is now
@@ -336,12 +339,15 @@ func TestChargeInterest_NothingAccruedBillsNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
-	txn, err := p.ChargeInterest(ctx, line.ID, day(2025, time.February, 14))
+	charge, err := p.ChargeInterest(ctx, line.ID, day(2025, time.February, 14))
 	if err != nil {
 		t.Fatalf("ChargeInterest: %v", err)
 	}
-	if txn.ID != "" {
-		t.Errorf("charging an undrawn line posted transaction %s", txn.ID)
+	if charge.Posted() {
+		t.Errorf("charging an undrawn line posted transaction %s", charge.Transaction.ID)
+	}
+	if charge.Billed() {
+		t.Errorf("charging an undrawn line billed cycle %+v", charge.Installment)
 	}
 	schedule, err := p.Schedule(ctx, line.ID)
 	if err != nil {
@@ -349,5 +355,139 @@ func TestChargeInterest_NothingAccruedBillsNothing(t *testing.T) {
 	}
 	if len(schedule) != 0 {
 		t.Errorf("an undrawn line was billed %d instalments, want 0", len(schedule))
+	}
+}
+
+// TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle covers the third
+// outcome, between the two the name "charge interest" suggests: a line that is
+// drawn but whose accrual has not yet reached a whole minor unit posts NOTHING
+// and still bills a cycle. It is reachable by drawing and charging before the
+// first end-of-day, and it is why a bare transaction cannot describe the
+// result — a caller seeing no transaction would report that nothing happened
+// while the schedule below it gained a row.
+func TestChargeInterest_ADrawnLineWithNoInterestStillBillsACycle(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, customer := newTestPortfolio(t)
+
+	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	if err != nil {
+		t.Fatalf("OpenRevolvingLine: %v", err)
+	}
+	if _, err := p.Draw(ctx, line.ID, customer, 100_000, "First draw"); err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+
+	// Charged the same day it was drawn: nothing has accrued yet.
+	charge, err := p.ChargeInterest(ctx, line.ID, day(2025, time.January, 15))
+	if err != nil {
+		t.Fatalf("ChargeInterest: %v", err)
+	}
+	if charge.Posted() {
+		t.Errorf("capitalized %s with nothing accrued", charge.Transaction.ID)
+	}
+	if !charge.Billed() {
+		t.Fatal("a drawn line billed no cycle")
+	}
+	if charge.Installment.Interest != 0 {
+		t.Errorf("cycle interest = %d, want 0", charge.Installment.Interest)
+	}
+	// The minimum payment is still 2% of the €1,000 drawn.
+	if charge.Installment.Principal != 2_000 {
+		t.Errorf("cycle minimum = %d, want 2000", charge.Installment.Principal)
+	}
+
+	schedule, err := p.Schedule(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if len(schedule) != 1 {
+		t.Fatalf("instalments after the cycle = %d, want 1", len(schedule))
+	}
+
+	// Principal is untouched: there was nothing to capitalize into it.
+	drawn, err := p.Drawn(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Drawn: %v", err)
+	}
+	if drawn != 100_000 {
+		t.Errorf("drawn = %d, want 100000 (nothing capitalized)", drawn)
+	}
+	after, err := p.GetFacility(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	if receivable != 0 {
+		t.Errorf("receivable = %d, want 0", receivable)
+	}
+}
+
+// TestChargeInterest_RefusesACycleAlreadyBilled pins idempotency. Unlike
+// accrual, which LastAccrualDate makes a no-op on a re-run, billing appends a
+// row and capitalizes the receivable — so a retried request (a proxy retry, a
+// double-submitted form) would otherwise leave the borrower owing two minimum
+// payments for one cycle and drifting into arrears from an infrastructure
+// event.
+func TestChargeInterest_RefusesACycleAlreadyBilled(t *testing.T) {
+	ctx := context.Background()
+	p, _, sub, customer := newTestPortfolio(t)
+
+	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	if err != nil {
+		t.Fatalf("OpenRevolvingLine: %v", err)
+	}
+	if _, err := p.Draw(ctx, line.ID, customer, 100_000, "First draw"); err != nil {
+		t.Fatalf("Draw: %v", err)
+	}
+	for i := 1; i <= 30; i++ {
+		if err := p.Accrue(ctx, line.ID, day(2025, time.January, 15).AddDate(0, 0, i)); err != nil {
+			t.Fatalf("Accrue day %d: %v", i, err)
+		}
+	}
+
+	statement := day(2025, time.February, 14)
+	if _, err := p.ChargeInterest(ctx, line.ID, statement); err != nil {
+		t.Fatalf("ChargeInterest: %v", err)
+	}
+	drawn, err := p.Drawn(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Drawn: %v", err)
+	}
+
+	_, err = p.ChargeInterest(ctx, line.ID, statement)
+	assertErrorIs(t, err, lending.ErrCycleAlreadyBilled)
+
+	// Nothing moved on the retry: no second cycle, and no second
+	// capitalization into principal.
+	schedule, err := p.Schedule(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if len(schedule) != 1 {
+		t.Fatalf("instalments after the retry = %d, want 1", len(schedule))
+	}
+	again, err := p.Drawn(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Drawn: %v", err)
+	}
+	if again != drawn {
+		t.Errorf("drawn after the retry = %d, want %d", again, drawn)
+	}
+
+	// A DIFFERENT cycle on the same line is still billable, including a
+	// backdated one: charging out of chronological order is supported, and
+	// only the due date already on the schedule is refused.
+	if _, err := p.ChargeInterest(ctx, line.ID, day(2025, time.January, 14)); err != nil {
+		t.Fatalf("ChargeInterest for an earlier cycle: %v", err)
+	}
+	schedule, err = p.Schedule(ctx, line.ID)
+	if err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if len(schedule) != 2 {
+		t.Fatalf("instalments after a backdated cycle = %d, want 2", len(schedule))
 	}
 }

@@ -499,18 +499,18 @@ export function useOpenFacility(pid: string) {
 }
 
 // Charging a revolving line's interest capitalizes it into drawn principal and
-// bills a new instalment, so this refreshes the facility subtree; when
-// something actually posted (see api.chargeFacilityInterest's doc comment on
-// the empty-200 case) it also refreshes the ledger, the same way
-// useCaptureHold does for a hold capture.
+// bills a new instalment, so this refreshes the facility subtree; only a cycle
+// that actually POSTED touched the ledger (see api.chargeFacilityInterest —
+// billing and posting are independent), so the ledger is refreshed on that
+// alone, the same way useCaptureHold does for a hold capture.
 export function useChargeFacilityInterest(pid: string, fid: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: import("../types").ChargeFacilityInterestRequest) =>
       api.chargeFacilityInterest(pid, fid, body),
-    onSuccess: (tx) => {
+    onSuccess: (charge) => {
       invalidateFacilities(qc, pid);
-      if (tx) invalidateLedger(qc, pid);
+      if (charge?.transaction) invalidateLedger(qc, pid);
     },
   });
 }

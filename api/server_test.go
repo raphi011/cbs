@@ -468,6 +468,33 @@ func TestErrorMapping(t *testing.T) {
 	// 400: invalid enum value.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
 		`{"name":"Bad","type":"Nonsense"}`, http.StatusBadRequest)
+
+	// 400: a lending sentinel in the malformed-input category. A term past
+	// lending.MaxTermMonths is a bad field value, not a business-state
+	// conflict, so it maps beside a non-positive amount.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"Absurd","asset":"EUR","commitment":1000000,
+		"rate":60000,"dayCount":"ACT/365","method":"Annuity","termMonths":100000000
+	}`, http.StatusBadRequest)
+
+	// 422: a lending sentinel in the wrong-state category — charging a term
+	// loan, which settles interest through its scheduled instalments.
+	loan := openTermLoan(t, h, pid, 12)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/interest-charge",
+		`{"date":"2025-02-15"}`, http.StatusUnprocessableEntity)
+
+	// 409: a billing cycle already on the schedule. The request is valid and
+	// the state already reflects it, which is the already-applied category a
+	// duplicate idempotency key is in — not a 422.
+	line := openRevolvingLine(t, h, pid, 500000)
+	lid := line["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+lid+"/draws", `{
+		"counterparty":"`+other+`","amount":200000,"description":"draw"
+	}`, http.StatusCreated)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+lid+"/interest-charge",
+		`{"date":"2025-02-15"}`, http.StatusOK)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+lid+"/interest-charge",
+		`{"date":"2025-02-15"}`, http.StatusConflict)
 }
 
 // TestAuditEndpointIncludesPayloadAndSeq guards against the DTO silently
@@ -1384,9 +1411,19 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 		"counterparty":"`+gl+`","amount":200000,"description":"draw"
 	}`, http.StatusCreated)
 
-	// Accrue over a month, then bill the cycle.
+	// Accrue over a month, then bill the cycle. The response carries BOTH
+	// halves — the capitalization posting and the instalment billed — because
+	// a cycle can bill without posting; see chargeDTO.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-02-15"}`, http.StatusNoContent)
-	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-charge", `{"date":"2025-02-15"}`, http.StatusOK)
+	charged := doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-charge", `{"date":"2025-02-15"}`, http.StatusOK)
+	posting, ok := charged["transaction"].(map[string]any)
+	if !ok || posting["id"] == "" {
+		t.Fatalf("charge response = %v, want a posted transaction", charged)
+	}
+	billed, ok := charged["installment"].(map[string]any)
+	if !ok || int(billed["seq"].(float64)) != 1 {
+		t.Fatalf("charge response = %v, want the first cycle billed", charged)
+	}
 
 	got := doJSON(t, h, "GET", "/participants/"+pid+"/facilities/"+fid, "", http.StatusOK)
 	if drawn := int64(got["drawn"].(float64)); drawn <= 200000 {
@@ -1410,6 +1447,117 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 	loan := openTermLoan(t, h, pid, 12)
 	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/interest-charge",
 		`{"date":"2025-02-15"}`, http.StatusUnprocessableEntity)
+}
+
+// TestChargeInterestBillsACycleWithNothingToPost covers the outcome the old
+// bare-transaction response could not express: a line drawn and charged before
+// any accrual has ticked posts nothing and still bills a cycle. The response
+// must carry the instalment and no transaction — a client that saw only an
+// empty body would report "nothing to charge" while the schedule gained a row.
+func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	line := openRevolvingLine(t, h, pid, 500000)
+	fid := line["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/draws", `{
+		"counterparty":"`+gl+`","amount":200000,"description":"draw"
+	}`, http.StatusCreated)
+
+	// No end-of-day has run, so nothing has accrued.
+	charged := doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-charge", `{"date":"2025-01-15"}`, http.StatusOK)
+	if _, posted := charged["transaction"]; posted {
+		t.Fatalf("charge response = %v, want no transaction", charged)
+	}
+	billed, ok := charged["installment"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge response = %v, want a billed cycle", charged)
+	}
+	if int64(billed["interest"].(float64)) != 0 {
+		t.Fatalf("cycle interest = %v, want 0", billed["interest"])
+	}
+	if int64(billed["principal"].(float64)) != 20000 {
+		t.Fatalf("cycle minimum = %v, want 20000 (10%% of drawn)", billed["principal"])
+	}
+
+	var schedule []installmentDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid+"/schedule", &schedule)
+	if len(schedule) != 1 {
+		t.Fatalf("schedule = %v, want the one billed cycle", schedule)
+	}
+
+	// An undrawn line does neither, and THAT is 204 — the empty outcome the
+	// rest of this API already expresses that way.
+	empty := openRevolvingLine(t, h, pid, 500000)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+empty["id"].(string)+"/interest-charge",
+		`{"date":"2025-01-15"}`, http.StatusNoContent)
+}
+
+// TestChargeOverdraftInterestEndpoint covers POST
+// /participants/{pid}/deposit-accounts/{did}/interest-charge: the monthly
+// capitalization a customer actually sees, on the deposit side. Nothing
+// accrued is 204 — nothing posts and, unlike a revolving line's cycle,
+// nothing is billed either.
+func TestChargeOverdraftInterestEndpoint(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	// Nothing has accrued yet — an account that has never been overdrawn.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
+		`{"date":"2025-01-31"}`, http.StatusNoContent)
+
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
+		"limit":100000,"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"
+	}`, http.StatusOK)
+
+	glLedger := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	sub := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+glLedger+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	equity := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+sub+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	// Draw €500 into the overdraft with a direct GL posting, the mechanism
+	// deposit.overdraftAccrual's own doc describes.
+	doJSON(t, h, "POST", "/participants/"+pid+"/transactions", `{
+		"entries":[
+			{"accountId":"`+gl+`","amount":50000,"direction":"Debit"},
+			{"accountId":"`+equity+`","amount":50000,"direction":"Credit"}
+		]
+	}`, http.StatusCreated)
+
+	// The first end-of-day only establishes the accrual baseline; the second
+	// accrues a day. €500 at 12% ACT/365 is 50_000 × 120_000 / 365 =
+	// 16_438_356 micro-minor-units, which rounds to 16 cents.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-16"}`, http.StatusNoContent)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-17"}`, http.StatusNoContent)
+
+	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
+	assertEqual(t, "accrued before charging", int64(acct["accruedInterest"].(float64)), int64(16))
+
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
+		`{"date":"2025-01-17"}`, http.StatusOK)
+	if tx["id"] == nil || tx["id"].(string) == "" {
+		t.Fatalf("charge did not return a transaction: %v", tx)
+	}
+	entries, ok := tx["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("charge posted %v, want two entries", tx["entries"])
+	}
+
+	// Capitalized: the customer now owes the interest as part of the balance,
+	// and the receivable is back to nothing.
+	bal := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/balance", "", http.StatusOK)
+	assertEqual(t, "book balance after charging", int64(bal["book"].(float64)), int64(-50016))
+
+	after := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
+	assertEqual(t, "receivable after charging", int64(after["accruedInterest"].(float64)), int64(0))
+
+	// And charging again, with the receivable cleared, is the empty outcome.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
+		`{"date":"2025-01-17"}`, http.StatusNoContent)
 }
 
 // TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half
