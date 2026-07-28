@@ -281,9 +281,12 @@ export interface Reserve {
 
 // --- Lending layer ----------------------------------------------------------
 
-// Facility mirrors facilityDTO. `drawn` and `accruedInterest` are DERIVED —
-// the balances of `principalGlAccount` and `interestGlAccount` — not stored
-// fields; see api/dto_lending.go's toFacilityDTO. `rate` is millionths of
+// Facility mirrors facilityDTO. `drawn` is DERIVED — the principal GL
+// account's book balance, not a stored field. `accruedInterest` is `Minor()`
+// of the facility's own stored accrued figure — numerically equal to the
+// interest GL account's balance by the invariant the system maintains, but
+// read from the record rather than the account; see api/dto_lending.go's
+// toFacilityDTO. `rate` is millionths of
 // `rateScale` (render with web/src/lib/rate.ts's formatRate, never a
 // hardcoded 1_000_000). `method` is only present for a TermLoan (a
 // RevolvingLine has no amortization method); `minPayment` only for a

@@ -28,8 +28,10 @@ type facilityDTO struct {
 	InterestGL  string `json:"interestGlAccount"`
 
 	Commitment int64 `json:"commitment"`
-	// Drawn and AccruedInterest are derived, not stored — the balances of the
-	// two GL accounts.
+	// Drawn and AccruedInterest are derived, not stored: Drawn is the principal
+	// GL account's book balance; AccruedInterest is Minor() of the facility's
+	// own stored accrued figure, which the interest GL account's balance always
+	// equals but is not itself read from.
 	Drawn           int64 `json:"drawn"`
 	AccruedInterest int64 `json:"accruedInterest"`
 	Outstanding     int64 `json:"outstanding"`
@@ -50,11 +52,13 @@ type facilityDTO struct {
 	MaturityAt time.Time `json:"maturityAt,omitempty"`
 }
 
-// toFacilityDTO renders a facility. drawn and accrued are the current balances
-// of its two GL accounts — DERIVED, not stored on the Facility — resolved by
-// the caller (Portfolio.Drawn, Portfolio.AccruedInterest) so this function does
-// no I/O of its own, the same convention toTransactionDTO follows for entry
-// assets.
+// toFacilityDTO renders a facility. drawn and accrued are resolved by the
+// caller so this function does no I/O of its own, the same convention
+// toTransactionDTO follows for entry assets: drawn is the principal GL
+// account's book balance (Portfolio.Drawn), genuinely derived; accrued is
+// f.Accrued.Minor(), the facility's own stored figure, not a GL read — it
+// only agrees with the interest GL account's balance because the system
+// maintains that as an invariant.
 //
 // Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
 // is indistinguishable from an explicitly-set one, and a revolving line — which

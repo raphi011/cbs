@@ -948,13 +948,14 @@ The audit trail is an immutable, append-only log of every mutation in the system
 - The entity affected
 - The full event payload, as it was at the time
 
-All three layers write to the same log, told apart by **scope**:
+All four layers write to the same log, told apart by **scope**:
 
 | Scope | Book | Events |
 | --- | --- | --- |
 | `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
 | `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
 | `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+| `lending` | one bank's | facility opened, disbursed, drawn, accrued, charged, repaid, arrears changed, closed |
 
 An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes neither `cycle.settled` nor any of its `payment.settled` events.
 

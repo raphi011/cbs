@@ -201,6 +201,13 @@ func (c Charge) Posted() bool { return c.Transaction.ID != "" }
 // explicitly supported (a backdated cycle produces a later Seq with an earlier
 // due date, which is exactly the case ArrearsFor scans the whole schedule for).
 //
+// Because AddMonths clamps to the last day of the target month, charging on
+// the 29th, 30th and 31st of January all compute a due date of 28 February, so
+// a second charge inside that month-end window is refused as already-billed
+// even though no cycle actually collided. A normal monthly cadence never lands
+// there; an operator retrying a mistimed charge should pick a date a day either
+// side of the clamp rather than the same day again.
+//
 // Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind,
 // ErrCycleAlreadyBilled.
 func (p *Portfolio) ChargeInterest(ctx context.Context, id FacilityID, date time.Time) (Charge, error) {
