@@ -1041,6 +1041,17 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 	fundBy(t, book, sub, satoshi, 500_000)
 	overdrawBy(t, book, sub, bruno, 5_000)
 
+	// Run end-of-day before asserting anything. RunEndOfDayTx already loops
+	// every deposit account nightly, which is exactly where a future author
+	// would be tempted to add a reclassification posting or a sweep of drawn
+	// balances into an Asset account — the doc comment above even names "a
+	// nightly feed" as the real-bank analogue. None of these accounts has a
+	// non-zero Rate, so this must accrue and post nothing; if it does, that
+	// is a real finding, not something to relax below. Do not remove this
+	// call as unnecessary: it is what makes the EOD path a place this test
+	// actually pins, rather than one it happens to be silent about.
+	assertNoError(t, reg.RunEndOfDay(ctx, time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)))
+
 	// Overdrawing posted exactly one transaction against Bruno's account, and
 	// both of its legs are Liability: the debit to Bruno, the credit to the
 	// counterparty. No Asset account was touched, and no second transaction
