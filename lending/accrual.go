@@ -146,8 +146,8 @@ func (p *Portfolio) AccruedInterest(ctx context.Context, id FacilityID) (ledger.
 // happened" while the borrower's schedule gained a row.
 type Charge struct {
 	// Transaction is the capitalization posting. It is the zero value when
-	// nothing was posted, which is a whole minor unit of accrued interest, not
-	// an error — see ChargeInterest.
+	// nothing was posted — the cycle had not accrued a whole minor unit of
+	// interest to charge — which is an outcome, not an error.
 	Transaction ledger.Transaction
 	// Installment is the cycle that was billed. It is the zero value — Seq 0,
 	// which no real instalment has — when no cycle was billed at all.

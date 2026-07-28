@@ -224,7 +224,7 @@ export const chapter: Chapter = {
         "A facility's `Commitment` is derived the same way `drawn` and `accruedInterest` are — read from a GL account balance rather than stored.",
       answer: false,
       explanation:
-        "`Commitment` — a term loan's original principal, or a revolving line's limit — IS a stored field: it is a fact about the contract, not a fact about postings so far. `drawn` and `accruedInterest` are the two that are [[derived-balance|derived]] instead, from the facility's two GL accounts.",
+        "`Commitment` — a term loan's original principal, or a revolving line's limit — IS a stored field: it is a fact about the contract, not a fact about postings so far. `drawn` is the [[derived-balance|derived]] one, read from the Principal account. `accruedInterest` is stored, but as an exact sub-minor-unit [[accrued-interest|record]] whose `Minor()` the receivable account always equals — so the figure agrees with that account to the cent either way.",
     },
     {
       kind: "mc",

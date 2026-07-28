@@ -27,10 +27,10 @@ type Rate int64
 //
 // It exists because ledger.Amount is an integer of an asset's minor units and a
 // day's interest on a small balance is mostly fraction — €50 at 15% accrues
-// 2.0548 cents a day. Rounding that to 2 cents daily and discarding the rest is
-// a 2.4% annual error on the interest. Accrued holds what the ledger
-// structurally cannot; the ledger holds Accrued.Minor(), and the difference
-// between them is the residue.
+// 2.054794 cents a day. Rounding that to 2 cents daily discards 0.054794 cents
+// a day: 20.0 cents a year against 750 cents of annual interest, a 2.67% error.
+// Accrued holds what the ledger structurally cannot; the ledger holds
+// Accrued.Minor(), and the difference between them is the residue.
 //
 // int64 at this scale tops out near 9.2e12 minor units — €92 billion of accrued
 // interest — which is not a bound any book here approaches.

@@ -912,13 +912,13 @@ There is deliberately **no fallback** to a default asset. Defaulting to euro wou
     title: "Credit facility",
     body: `A **credit facility** is a bank's extension of credit to a customer, tracked outside the demand-deposit layer: a [[term-loan|term loan]] (a fixed principal, disbursed once and repaid on a fixed schedule) or a [[revolving-line|revolving line]] (a reusable limit the customer draws down and repays repeatedly, billed in cycles).
 
-An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no separate GL account, no schedule and no commitment — it is priced credit layered onto an existing liability account, not a standalone [[account-type-asset|asset]].
+An [[overdraft|overdraft limit]] extending a deposit account below zero is a THIRD form of credit in this system, but it is deliberately not a facility: it has no PRINCIPAL GL account, no schedule and no commitment — it is priced credit layered onto an existing liability account, not a standalone [[account-type-asset|asset]]. (It does get an accrued-interest receivable of its own, the moment a non-zero rate is set: interest earned is a real asset wherever it was earned.)
 
-Every facility carries two GL [[account-type-asset|Asset]] accounts: a **principal** account (what is owed on drawn money) and an **interest** account (interest accrued and not yet collected). \`commitment\` is the ceiling the customer may draw against; \`drawn\` and \`accruedInterest\` are DERIVED from those two accounts' balances, never stored fields — the same discipline [[derived-balance|a book balance]] follows.`,
+Every facility carries two GL [[account-type-asset|Asset]] accounts: a **principal** account (what is owed on drawn money) and an **interest** account (interest accrued and not yet collected). \`commitment\` is the ceiling the customer may draw against. \`drawn\` is DERIVED — the principal account's balance, never a stored field, the same discipline [[derived-balance|a book balance]] follows — and \`accruedInterest\` is \`Minor()\` of the facility's own exact [[accrued-interest|accrued-interest record]], which the interest account's balance always equals.`,
   },
   arrears: {
     title: "Arrears",
-    body: `A facility's **arrears** are computed from its [[amortization|schedule]] every time they're needed, not stored as a stream of events: recomputing is what lets a late payment, a corrected schedule, or a re-run end-of-day all just produce the right answer next time, rather than needing to be replayed.
+    body: `A facility's **arrears** are computed from its [[amortization|schedule]], not stored as a stream of events: they are a pure function of the schedule and a date, which is what lets a late payment, a corrected schedule, or a re-run end-of-day all just produce the right answer next time rather than needing to be replayed. The result IS stored — four fields on the facility, and the ones the API and this UI read — but as a cache recomputed at end of day and after every repayment, never as an accumulated tally.
 
 Those [[days-past-due|days past due]] sort into five buckets: \`Current\`, \`1-29\`, \`30-59\`, \`60-89\` and \`90+\`. Reaching the top bucket is what makes a facility [[non-performing]]. A revolving line falls into arrears the same way a term loan does — by missing a billing cycle's minimum payment rather than a scheduled instalment, because [[capitalization|its instalments are cycles, not a fixed plan]].`,
   },
@@ -1019,7 +1019,7 @@ A real bank's non-performing loan typically stops recognizing accrued interest i
     title: "Unarranged rate",
     body: `The **unarranged rate** is the interest charged on whatever part of an overdrawn balance sits BEYOND the arranged [[overdraft|overdraft limit]] — separate from, and higher than, the arranged rate charged up to it. An account can end up beyond its limit even though ordinary debits are checked against it: capitalizing interest can itself push a fully-drawn overdraft over, and a direct GL posting bypasses the check entirely.
 
-Charging the arranged rate on that excess would make exceeding the limit free, which defeats the point of having a limit at all — so the unarranged rate exists specifically to make it not free. See [[interest-accrual]] for how the two rates combine over one accrual period.`,
+Leaving that excess unpriced would make exceeding the limit free, which defeats the point of having a limit at all — so the unarranged rate exists specifically to make going beyond it cost MORE. It is a surcharge, not a switch: an account priced without one charges the arranged rate on the excess, never nothing. See [[interest-accrual]] for how the two rates combine over one accrual period.`,
   },
 } satisfies Record<string, HintEntry>;
 

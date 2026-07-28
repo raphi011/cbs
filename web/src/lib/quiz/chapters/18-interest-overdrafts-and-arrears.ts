@@ -256,7 +256,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "Nothing is posted, ever, to an Asset account for an overdrawn balance — `deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\".",
+        "Nothing is posted, ever, to an Asset account for the DRAWN AMOUNT — `deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this, over accounts with no rate set. The Asset-side total is a derived aggregate, the same on-demand shape that already produces \"total customer deposits\". The interest on that drawn amount does post to an Asset account, daily, into the account's own [[accrued-interest|accrued-interest receivable]] — but that is interest earned, not the balance reclassified.",
     },
     {
       kind: "truefalse",
@@ -283,7 +283,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "The [[unarranged-rate]] exists specifically so that exceeding the limit is never cheaper than staying inside it: the arranged rate applies up to the limit, and the higher unarranged rate applies to whatever sits beyond it — here, the €200 excess.",
+        "The [[unarranged-rate]] exists specifically so that exceeding the limit is never cheaper than staying inside it: the arranged rate applies up to the limit, and the higher unarranged rate applies to whatever sits beyond it — here, the €200 excess. An unarranged rate is a SURCHARGE, so an account that has none falls back to the arranged rate on the excess. The one thing that never happens is the first option: the money beyond the limit is never free.",
     },
   ],
 };
