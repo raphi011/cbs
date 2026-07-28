@@ -855,6 +855,140 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 }
 
 // ---------------------------------------------------------------------------
+// Overdraft Accrual
+// ---------------------------------------------------------------------------
+
+// AccrueOverdraft accrues interest on an overdrawn account up to a business
+// date, and posts the day's income to the general ledger.
+//
+// # What is posted
+//
+// The record holds exact interest in micro-minor-units; the ledger holds
+// Accrued.Minor() of it in the account's receivable. So the posting is the
+// CHANGE in the rounded value, not the period's exact interest:
+//
+//	day 1   exact 2.0548   rounded 2   post 2
+//	day 2   exact 4.1096   rounded 4   post 2
+//	day 3   exact 6.1644   rounded 6   post 2
+//
+// A day on which the rounding does not tick posts nothing at all, which is why
+// this returns no transaction: most days there is one, some days there is not,
+// and a caller that had to distinguish them would learn nothing useful.
+//
+// Income is recognized daily rather than at capitalization because accrued
+// interest is a real asset, and one that existed only on this record between
+// charge dates would understate both assets and income on every date in
+// between.
+//
+// # The accrual base
+//
+// The overdrawn magnitude of the BOOK balance — not the available balance. A
+// hold is not borrowed money. The base is tiered: the arranged rate up to
+// OverdraftLimit, the unarranged rate on anything beyond it.
+//
+// # Idempotency
+//
+// LastAccrualDate never moves backwards, so re-running an end-of-day for a date
+// already covered is a no-op rather than a second charge. A gap of several days
+// accrues at the CURRENT balance for the whole span, which is exact only if the
+// balance did not move; a bank accrues on each day's closing balance, and
+// running this daily makes the two identical.
+//
+// Returns ErrAccountNotFound.
+func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.AccrueOverdraftTx(ctx, tx, id, date)
+	})
+}
+
+// AccrueOverdraftTx is AccrueOverdraft within a caller-supplied unit of work.
+func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, date time.Time) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	return r.accrueOverdraftAccountTx(ctx, tx, acct, date)
+}
+
+// accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller
+// has already loaded. RunEndOfDay lists every account and would otherwise read
+// each one a second time.
+func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time) error {
+	if acct.Rate <= 0 || acct.Status == Closed {
+		return nil
+	}
+	// An account priced today has no history to accrue over; the first run
+	// establishes the date it accrues from.
+	if acct.LastAccrualDate.IsZero() {
+		acct.LastAccrualDate = date
+		return tx.PutDepositAccount(ctx, r.bookID, acct)
+	}
+	if acct.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
+		return nil
+	}
+
+	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	if err != nil {
+		return err
+	}
+
+	before := acct.Accrued.Minor()
+	acct.Accrued += overdraftAccrual(book, acct, date)
+	acct.LastAccrualDate = date
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+
+	delta := acct.Accrued.Minor() - before
+	if delta == 0 {
+		// The rounding did not tick. There is nothing to post, and a
+		// zero-amount entry is refused by the ledger anyway.
+		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	}
+
+	income, err := r.interestIncomeTx(ctx, tx, acct)
+	if err != nil {
+		return err
+	}
+	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Overdraft interest accrued: " + acct.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries: []ledger.Entry{
+			{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
+			{AccountID: income, Amount: delta, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+}
+
+// overdraftAccrual is the interest earned on an account's overdrawn balance
+// over one accrual period, tiered at the arranged limit.
+//
+// An account can be drawn beyond its limit despite CheckWithdrawal: a direct GL
+// posting does not pass through this layer, and capitalizing interest on a
+// fully-drawn overdraft pushes it over by itself. Charging the arranged rate on
+// the excess would make exceeding the limit free, which is the opposite of what
+// an unarranged overdraft is for.
+func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest.Accrued {
+	drawn := -book
+	if drawn <= 0 {
+		return 0
+	}
+	arranged := drawn
+	if arranged > acct.OverdraftLimit {
+		arranged = acct.OverdraftLimit
+	}
+	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, acct.LastAccrualDate, date)
+	if excess := drawn - arranged; excess > 0 && acct.UnarrangedRate > 0 {
+		total += interest.Accrue(excess, acct.UnarrangedRate, acct.DayCount, acct.LastAccrualDate, date)
+	}
+	return total
+}
+
+// ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------
 
