@@ -113,11 +113,22 @@ func TestOpenTermLoan_Rejects(t *testing.T) {
 		{"negative rate", 1_000_000, -1, 60, lending.ErrInvalidRate},
 		{"zero term", 1_000_000, 60_000, 0, lending.ErrInvalidTerm},
 		{"negative term", 1_000_000, 60_000, -1, lending.ErrInvalidTerm},
+		// The term is an allocation — BuildSchedule writes a row per month —
+		// so an unbounded one is an unbounded allocation driven by a request
+		// field. Fifty years is the last term accepted.
+		{"a term past the cap", 1_000_000, 60_000, lending.MaxTermMonths + 1, lending.ErrInvalidTerm},
+		{"an absurd term", 1_000_000, 60_000, 100_000_000, lending.ErrInvalidTerm},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := p.OpenTermLoan(ctx, sub, "Loan", "EUR", tt.principal, tt.rate, interest.ACT365, lending.Annuity, tt.months)
 			assertErrorIs(t, err, tt.want)
 		})
+	}
+
+	// The cap itself is accepted — the bound is on absurdity, not on long
+	// mortgages — so the guard cannot quietly become off-by-one.
+	if _, err := p.OpenTermLoan(ctx, sub, "Fifty Year", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, lending.MaxTermMonths); err != nil {
+		t.Fatalf("OpenTermLoan at MaxTermMonths: %v", err)
 	}
 
 	// An unknown asset is refused by the ledger before anything is written,

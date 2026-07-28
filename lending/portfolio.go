@@ -99,6 +99,14 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // principal is the committed amount; rate is the annual rate; dc is the
 // day-count convention interest accrues under.
 //
+// termMonths is bounded at MaxTermMonths as well as below at 1. The term is an
+// ALLOCATION: BuildSchedule writes one instalment row per month, so an
+// unbounded term is an unbounded allocation driven by a request field —
+// {"termMonths": 100000000} would try to build a hundred million rows and take
+// the process down past where recoverPanic can turn it into a 500. Fifty years
+// is longer than any amortizing retail loan (a Japanese multi-generation
+// mortgage tops out near it), so nothing real is refused.
+//
 // Returns ErrInvalidAmount, ErrInvalidRate, ErrInvalidTerm, and any error from
 // the ledger — ledger.ErrSubledgerNotFound, or ledger.ErrAssetNotFound if the
 // asset is not one the system knows.
@@ -112,9 +120,13 @@ func (p *Portfolio) OpenTermLoan(ctx context.Context, subledger ledger.Subledger
 	return out, err
 }
 
+// MaxTermMonths is the longest term a loan may be opened for: 600 months, or
+// fifty years. See OpenTermLoan for why a term needs an upper bound at all.
+const MaxTermMonths = 600
+
 // OpenTermLoanTx is OpenTermLoan within a caller-supplied unit of work.
 func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, principal ledger.Amount, rate interest.Rate, dc interest.DayCount, method AmortMethod, termMonths int) (Facility, error) {
-	if termMonths <= 0 {
+	if termMonths <= 0 || termMonths > MaxTermMonths {
 		return Facility{}, ErrInvalidTerm
 	}
 	return p.openTx(ctx, tx, Facility{
