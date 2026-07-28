@@ -265,7 +265,19 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 				seqs = append(seqs, itoa(i.Seq))
 			}
 			assertOrder(t, "ListInstallments", seqs, "1", "2", "3", "9", "10")
-			assertEqual(t, "first instalment principal", got[0].Principal, ledger.Amount(1001))
+
+			// Every field, for every row — not just the first. Interest and
+			// DueDate are exactly the sort of field a store can silently drop
+			// or mis-map (a wrong time zone, say) without any other assertion
+			// here noticing, since ordering is by Seq and neither is read back
+			// anywhere else.
+			for _, i := range got {
+				assertEqual(t, "instalment "+itoa(i.Seq)+" principal", i.Principal, ledger.Amount(1000+i.Seq))
+				assertEqual(t, "instalment "+itoa(i.Seq)+" interest", i.Interest, ledger.Amount(i.Seq))
+				if !i.DueDate.Equal(due(i.Seq)) {
+					t.Errorf("instalment %d due date: got %v, want %v", i.Seq, i.DueDate, due(i.Seq))
+				}
+			}
 
 			other, err := tx.ListInstallments(ctx, bookA, "fac_2")
 			if err != nil {
@@ -304,7 +316,25 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			}
 			assertEqual(t, "instalments after an upsert", len(got), 5)
 			assertEqual(t, "instalment 2 paid principal", got[1].PaidPrincipal, ledger.Amount(1002))
+			assertEqual(t, "instalment 2 paid interest", got[1].PaidInterest, ledger.Amount(2))
 			assertEqual(t, "instalment 2 outstanding", got[1].Outstanding(), ledger.Amount(0))
+			if !got[1].DueDate.Equal(due(2)) {
+				t.Errorf("instalment 2 due date after upsert: got %v, want %v", got[1].DueDate, due(2))
+			}
+
+			// A row the upsert never touched must keep its own fields. Interest
+			// is checked again here — not just before the upsert — because a
+			// store that rebuilds every row on any write to the same facility
+			// would pass the check above and still fail this one. PaidPrincipal
+			// and PaidInterest are checked on a row that was NEVER put with a
+			// non-zero payment, which is the only way to catch a store that
+			// drops those two columns on ordinary inserts: the rewritten row
+			// (Seq 2) would pass even with dropped columns if PutInstallment
+			// zero-filled them by coincidence, but an untouched row would not.
+			untouched := got[0] // Seq 1, never re-put.
+			assertEqual(t, "untouched instalment interest", untouched.Interest, ledger.Amount(1))
+			assertEqual(t, "untouched instalment paid principal", untouched.PaidPrincipal, ledger.Amount(0))
+			assertEqual(t, "untouched instalment paid interest", untouched.PaidInterest, ledger.Amount(0))
 			return nil
 		})
 	})
