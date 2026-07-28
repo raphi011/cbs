@@ -200,6 +200,21 @@ func TestRunEndOfDay_PayingClearsTheArrears(t *testing.T) {
 		t.Fatalf("Repay: %v", err)
 	}
 
+	// Immediately — not at the next end-of-day. Repay has the schedule and a
+	// date in hand, and a borrower who has caught up must not keep showing
+	// yesterday's bucket until a batch happens to run.
+	paid, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if paid.Arrears.Bucket != lending.Current {
+		t.Errorf("bucket straight after the repayment = %s, want Current", paid.Arrears.Bucket)
+	}
+	if paid.Arrears.DaysPastDue != 0 {
+		t.Errorf("days past due straight after the repayment = %d, want 0", paid.Arrears.DaysPastDue)
+	}
+
+	// And the next end-of-day agrees rather than undoing it.
 	if err := p.RunEndOfDay(ctx, day(2025, time.March, 21)); err != nil {
 		t.Fatalf("RunEndOfDay: %v", err)
 	}

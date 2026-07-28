@@ -39,6 +39,11 @@ import (
 // is capitalized into principal each cycle, so nothing is left in the
 // receivable — still have its minimum payments marked paid.
 //
+// Arrears are recomputed from the updated schedule before this returns, so a
+// borrower who has just caught up is current immediately rather than at the
+// next end-of-day. Recomputing is cheap and total — see ArrearsFor — which is
+// what makes doing it at both moments consistent rather than duplicated.
+//
 // counterparty is any GL account in the facility's asset. This layer does not
 // know what a deposit account is, so a repayment that must also respect one's
 // status and available balance is orchestrated a layer up, calling
@@ -121,6 +126,14 @@ func (p *Portfolio) RepayTx(ctx context.Context, tx Tx, id FacilityID, counterpa
 	if err := p.applyToScheduleTx(ctx, tx, f, amount); err != nil {
 		return ledger.Transaction{}, err
 	}
+	// Arrears are a pure function of the schedule, and the schedule has just
+	// changed — so recompute now rather than leaving a borrower who has caught
+	// up showing yesterday's bucket until the next end-of-day. It runs in this
+	// same unit of work, on the facility record this method has already
+	// written, so the recompute cannot survive a repayment that rolls back.
+	if _, err := p.recomputeArrearsFacilityTx(ctx, tx, f, date); err != nil {
+		return ledger.Transaction{}, err
+	}
 	if err := p.appendAuditTx(ctx, tx, ledger.EventFacilityRepaid, string(f.ID), map[string]any{
 		"facility_id":    string(f.ID),
 		"amount":         amount,
@@ -196,10 +209,12 @@ func (p *Portfolio) Outstanding(ctx context.Context, id FacilityID) (ledger.Amou
 	return out, err
 }
 
-// Close ends a facility. It refuses one that still owes anything, the same rule
-// deposit.CloseTx applies to an account with a non-zero balance: a closed
+// Close ends a facility. It refuses one that still owes anything — drawn
+// principal OR accrued interest — which is the same rule deposit.CloseTx
+// applies to an account's balance and its own interest receivable. A closed
 // facility that still had a balance would be money owed to a bank by a contract
-// the bank says is over.
+// the bank says is over, and a stranded receivable would be recognized income
+// no one can ever collect.
 //
 // Closed is terminal — no further drawing, no further repayment, and no further
 // accrual.
