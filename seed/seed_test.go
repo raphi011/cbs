@@ -80,8 +80,8 @@ func TestPaymentStatusCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list payments: %v", err)
 	}
-	if got := len(payments); got != 10 {
-		t.Fatalf("total payments = %d, want 10", got)
+	if got := len(payments); got != 11 {
+		t.Fatalf("total payments = %d, want 11", got)
 	}
 	byStatus := map[payment.PaymentStatus]int{}
 	for _, p := range payments {
@@ -91,7 +91,7 @@ func TestPaymentStatusCoverage(t *testing.T) {
 		payment.Settled:  4,
 		payment.Returned: 1,
 		payment.Cleared:  2,
-		payment.Accepted: 2,
+		payment.Accepted: 3,
 		payment.Rejected: 1,
 	}
 	for status, n := range want {

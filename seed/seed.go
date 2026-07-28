@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/mem"
 )
@@ -199,6 +201,34 @@ func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit
 	return a
 }
 
+// openLoan opens a term loan and disburses it in full into the borrower's own
+// account, so the caller is left with a facility that has begun accruing.
+func (b *builder) openLoan(p *payment.Participant, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
+	loan := must(p.Lending.OpenTermLoan(b.ctx, p.CustomerSubledger, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
+	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
+	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerGL, firstDue, description))
+	return must(p.Lending.GetFacility(b.ctx, loan.ID))
+}
+
+// openLine opens a revolving line and draws it once into the borrower's own
+// account, so the caller is left with a facility carrying a balance.
+func (b *builder) openLine(p *payment.Participant, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
+	line := must(p.Lending.OpenRevolvingLine(b.ctx, p.CustomerSubledger, name, seedAsset, limit, rate, interest.ACT365, minPayment))
+	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
+	must(p.Lending.Draw(b.ctx, line.ID, borrowerGL, draw, description))
+	return must(p.Lending.GetFacility(b.ctx, line.ID))
+}
+
+// runDays advances the clock a day at a time, driving RunEndOfDay through each
+// one — the same entry point payment.Participant exposes to the API — so the
+// seed's accrual and arrears move exactly as a running day would produce them.
+func (b *builder) runDays(p *payment.Participant, days int) {
+	for i := 0; i < days; i++ {
+		b.clock.advance(24 * time.Hour)
+		check(p.RunEndOfDay(b.ctx, b.clock.now()))
+	}
+}
+
 // ref builds a PartyRef for a customer deposit account using its canonical IBAN,
 // so the same account always produces an identical PartyRef.
 func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.PartyRef {
@@ -346,8 +376,98 @@ func (b *builder) build() {
 	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift")
 
+	// --- Lending: credit facilities across the network ---------------------
+	b.lendingShowcase(aurora, verde, nord, alice, bruno, bella, niklas)
+
 	// --- General-ledger primitives showcase on Aurora ----------------------
 	b.glShowcase(aurora, aaron)
+}
+
+// lendingShowcase exercises every state the credit sub-project introduces: a
+// priced overdraft, a term loan part-way through its schedule, a revolving
+// line with a billed cycle, a delinquent loan, and an overdraft that is
+// actually accruing rather than sitting at a limit that costs nothing. This is
+// the data the web app's facility pages, its arrears badge, and Bruno's
+// deposit page read.
+func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alice, bruno, bella, niklas deposit.Account) {
+	ctx := b.ctx
+	b.clock.advance(1 * time.Hour)
+
+	// --- Bruno's overdraft, priced ------------------------------------------
+	// He already has a 500.00 limit (openOverdraft, above); this is what makes
+	// drawing on it cost him something rather than nothing: 15% arranged, 35%
+	// on anything drawn beyond the limit.
+	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 350_000, interest.ACT365))
+
+	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
+	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day
+	// through two monthly instalments paid on time, then a little further so a
+	// fresh accrual is visible without reaching the third instalment. The
+	// result: accrued interest, a partly-paid schedule, Current arrears.
+	t1 := b.clock.now()
+	firstDue := t1.AddDate(0, 1, 0)
+	loan := b.openLoan(aurora, alice, "Alice Home Loan", 1_000_000, 60_000, 60, firstDue, "Home loan payout")
+	aliceGL := must(aurora.Deposit.GetAccount(ctx, alice.ID)).GLAccount
+
+	b.runDays(aurora, int(firstDue.Sub(t1)/(24*time.Hour)))
+	sched := must(aurora.Lending.Schedule(ctx, loan.ID))
+	must(aurora.Lending.Repay(ctx, loan.ID, aliceGL, sched[0].Total(), b.clock.now(), "Instalment 1"))
+
+	secondDue := t1.AddDate(0, 2, 0)
+	b.runDays(aurora, int(secondDue.Sub(firstDue)/(24*time.Hour)))
+	sched = must(aurora.Lending.Schedule(ctx, loan.ID))
+	must(aurora.Lending.Repay(ctx, loan.ID, aliceGL, sched[1].Total(), b.clock.now(), "Instalment 2"))
+
+	b.runDays(aurora, 10) // a fresh accrual builds up; the third instalment is not yet due
+
+	// --- A delinquent loan (Niklas, Nordhaven) -------------------------------
+	// A smaller loan than Alice's, disbursed and then left unpaid past two due
+	// dates: one month plus twenty days past the first instalment, comfortably
+	// inside the 30-59 bucket however the calendar months involved fall.
+	b.clock.advance(1 * time.Hour)
+	t3 := b.clock.now()
+	niklasFirstDue := t3.AddDate(0, 1, 0)
+	b.openLoan(nord, niklas, "Niklas Car Loan", 300_000, 90_000, 24, niklasFirstDue, "Car loan payout")
+	target := t3.AddDate(0, 2, 20)
+	b.runDays(nord, int(target.Sub(t3)/(24*time.Hour)))
+
+	// --- Bruno, pushed into overdraft and accruing --------------------------
+	// A card settlement pushes him into his priced overdraft. Nothing has run
+	// Verde's end-of-day since SetOverdraftTerms above (Niklas's story runs on
+	// Nordhaven's book, not Verde's), so this first RunEndOfDay call only
+	// establishes today as the date his overdraft starts accruing from — see
+	// accrueOverdraftAccountTx's zero-LastAccrualDate case — before the SCT
+	// actually draws him into it. The SCT overdraws him immediately: its
+	// debtor leg posts at InitiatePayment, so the balance moves right away
+	// without its clearing cycle needing to close or settle. Then days pass
+	// and interest accrues, a charge capitalizes it, and a few more days build
+	// a fresh, non-zero accrual on top of that.
+	//
+	// It joins the SCT cycle Phase F left open (only one may be open per
+	// scheme at a time) rather than opening a second one, which is also why it
+	// stays Accepted like SCT-020 rather than Settled.
+	b.clock.advance(1 * time.Hour)
+	check(verde.RunEndOfDay(ctx, b.clock.now()))
+
+	brunoBalance := must(verde.Deposit.GetBalance(ctx, bruno.ID))
+	overdrawBy := ledger.Amount(20_000) // EUR 200 into the EUR 500 arranged limit
+	b.initSCT(verde, bruno, aurora, alice, brunoBalance.Book+overdrawBy, "SCT-030", "Card settlement")
+
+	b.runDays(verde, 45)
+	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.now()))
+	b.runDays(verde, 15)
+
+	// --- A revolving line, partly drawn and billed (Bella, Verde) -----------
+	// EUR 2,500 limit, 18%, 2% minimum payment. Drawn EUR 1,000, accrued for a
+	// month, then charged: the accrued interest capitalizes into principal and
+	// the cycle's minimum payment is billed. This runs last among Verde's
+	// stories, and nothing touches Verde's book again afterwards, so the
+	// billed cycle — due a month out — stays Current rather than aging past
+	// due the way it would if Bruno's own accrual ran after it.
+	b.clock.advance(1 * time.Hour)
+	line := b.openLine(verde, bella, "Bella Card Line", 250_000, 180_000, 20_000, 100_000, "Card line draw")
+	b.runDays(verde, 30)
+	must(verde.Lending.ChargeInterest(ctx, line.ID, b.clock.now()))
 }
 
 // glShowcase exercises the raw general-ledger primitives on one bank so that all
