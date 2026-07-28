@@ -988,6 +988,109 @@ func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest
 	return total
 }
 
+// ChargeOverdraftInterest capitalizes accrued interest into the account,
+// clearing the receivable.
+//
+// This is the monthly event a customer actually sees. Charging the interest to
+// the account is also what makes an overdraft compound: the balance the next
+// period accrues on now includes this period's interest.
+//
+//	Dr  customer account (Liability)   62
+//	  Cr accrued interest receivable    62
+//
+// The amount charged is Accrued.Minor() — the receivable's balance — rather
+// than the exact accrual, because the ledger holds whole minor units. Charging
+// a rounded-up figure leaves the record NEGATIVE by up to half a minor unit:
+// 30 days accrue 61.64382 cents and 62 are charged, leaving −0.35618. That is
+// correct, not a leak. Minor() of the residue is still 0, so the receivable and
+// the record stay in step, and the next day's accrual absorbs it. Truncating
+// instead would give away a fraction on every cycle.
+//
+// Nothing accrued means nothing posted, and a zero-value Transaction is
+// returned rather than an error: an end-of-month over a portfolio in credit is
+// an ordinary outcome, not a failure.
+//
+// Returns ErrAccountNotFound.
+func (r *Register) ChargeOverdraftInterest(ctx context.Context, id AccountID, date time.Time) (ledger.Transaction, error) {
+	var out ledger.Transaction
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.ChargeOverdraftInterestTx(ctx, tx, id, date)
+		return err
+	})
+	return out, err
+}
+
+// ChargeOverdraftInterestTx is ChargeOverdraftInterest within a caller-supplied
+// unit of work.
+func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id AccountID, date time.Time) (ledger.Transaction, error) {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+	charge := acct.Accrued.Minor()
+	if charge <= 0 || acct.InterestGL == "" {
+		return ledger.Transaction{}, nil
+	}
+
+	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Overdraft interest charged: " + acct.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries: []ledger.Entry{
+			{AccountID: acct.GLAccount, Amount: charge, Direction: ledger.Debit},
+			{AccountID: acct.InterestGL, Amount: charge, Direction: ledger.Credit},
+		},
+	})
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+
+	acct.Accrued -= interest.FromMinor(charge)
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return ledger.Transaction{}, err
+	}
+	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftInterestCharged, string(acct.ID), map[string]any{
+		"account_id":     string(acct.ID),
+		"amount":         charge,
+		"transaction_id": string(glTx.ID),
+		"residue":        int64(acct.Accrued),
+	}); err != nil {
+		return ledger.Transaction{}, err
+	}
+	return glTx, nil
+}
+
+// RunEndOfDay accrues overdraft interest on every account in the book for one
+// business date.
+//
+// It does not capitalize. Charging is a monthly event on its own cycle, and
+// which day of the month is a product decision this layer has no opinion about;
+// a caller runs ChargeOverdraftInterest when its calendar says to.
+//
+// Accounts with no rate, accounts in credit and closed accounts are skipped
+// rather than errored — over a real portfolio most accounts are all three.
+func (r *Register) RunEndOfDay(ctx context.Context, date time.Time) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.RunEndOfDayTx(ctx, tx, date)
+	})
+}
+
+// RunEndOfDayTx is RunEndOfDay within a caller-supplied unit of work, so a
+// participant can run its deposit and lending batches in one transaction.
+func (r *Register) RunEndOfDayTx(ctx context.Context, tx Tx, date time.Time) error {
+	accounts, err := tx.ListDepositAccounts(ctx, r.bookID)
+	if err != nil {
+		return err
+	}
+	for _, acct := range accounts {
+		if err := r.accrueOverdraftAccountTx(ctx, tx, acct, date); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------

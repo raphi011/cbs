@@ -864,3 +864,122 @@ func TestAccrueOverdraft_NoRateAccruesNothing(t *testing.T) {
 	assertEqual(t, "accrued with no rate", got.Accrued, interest.Accrued(0))
 	assertEqual(t, "receivable still absent", string(got.InterestGL), "")
 }
+
+func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, acct, 5_000)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	for i := 0; i <= 30; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
+	}
+
+	before, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	// 30 days × 2.054794 cents = 61.643820 cents, which rounds to 62.
+	assertEqual(t, "accrued over 30 days", before.Accrued, interest.Accrued(61_643_820))
+	assertEqual(t, "receivable before charging", before.Accrued.Minor(), ledger.Amount(62))
+
+	charged, err := reg.ChargeOverdraftInterest(ctx, acct.ID, start.AddDate(0, 0, 30))
+	assertNoError(t, err)
+	if len(charged.Entries) != 2 {
+		t.Fatalf("charge posted %d entries, want 2", len(charged.Entries))
+	}
+
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+
+	// 62 was charged and 61.64382 was earned, so the record is left NEGATIVE by
+	// the rounding-up. That is correct: Minor() of it is still 0, so the
+	// receivable and the record agree, and tomorrow's accrual absorbs it.
+	assertEqual(t, "residue after charging", after.Accrued, interest.Accrued(-356_180))
+	assertEqual(t, "residue rounds to zero", after.Accrued.Minor(), ledger.Amount(0))
+
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	assertNoError(t, err)
+	assertEqual(t, "receivable cleared", receivable, ledger.Amount(0))
+
+	// The interest is now part of what the customer owes, which is what makes
+	// an overdraft compound: −5000 − 62.
+	balance, err := reg.GetBalance(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "book balance after charging", balance.Book, ledger.Amount(-5_062))
+
+	// The invariant survives the residue: keep accruing and the GL still
+	// tracks Minor() of the record exactly.
+	for i := 31; i <= 33; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, start.AddDate(0, 0, i)))
+		got, err := reg.GetAccount(ctx, acct.ID)
+		assertNoError(t, err)
+		gl, err := book.BookBalance(ctx, got.InterestGL)
+		assertNoError(t, err)
+		if gl != got.Accrued.Minor() {
+			t.Fatalf("day %d after charging: GL %d != Minor(accrued) %d", i, gl, got.Accrued.Minor())
+		}
+	}
+}
+
+func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub := newTestRegister(t)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+
+	txn, err := reg.ChargeOverdraftInterest(ctx, acct.ID, time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC))
+	assertNoError(t, err)
+	if txn.ID != "" {
+		t.Errorf("charging nothing posted transaction %s", txn.ID)
+	}
+}
+
+func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub := newTestRegister(t)
+
+	overdrawn, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
+	assertNoError(t, err)
+	overdrawn, err = reg.SetOverdraftTerms(ctx, overdrawn.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, overdrawn, 5_000)
+
+	inCredit, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
+	assertNoError(t, err)
+	inCredit, err = reg.SetOverdraftTerms(ctx, inCredit.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	fundBy(t, book, sub, inCredit, 20_000)
+
+	unpriced, err := reg.OpenAccount(ctx, sub, "Bella", "EUR", 50_000)
+	assertNoError(t, err)
+	overdrawBy(t, book, sub, unpriced, 5_000)
+
+	start := time.Date(2025, time.January, 15, 0, 0, 0, 0, time.UTC)
+	assertNoError(t, reg.RunEndOfDay(ctx, start))
+	assertNoError(t, reg.RunEndOfDay(ctx, start.AddDate(0, 0, 1)))
+
+	got, err := reg.GetAccount(ctx, overdrawn.ID)
+	assertNoError(t, err)
+	assertEqual(t, "overdrawn accrued", got.Accrued, interest.Accrued(2_054_794))
+
+	quiet, err := reg.GetAccount(ctx, inCredit.ID)
+	assertNoError(t, err)
+	assertEqual(t, "in-credit accrued", quiet.Accrued, interest.Accrued(0))
+
+	free, err := reg.GetAccount(ctx, unpriced.ID)
+	assertNoError(t, err)
+	assertEqual(t, "unpriced accrued", free.Accrued, interest.Accrued(0))
+
+	// A second run for the same date changes nothing.
+	assertNoError(t, reg.RunEndOfDay(ctx, start.AddDate(0, 0, 1)))
+	again, err := reg.GetAccount(ctx, overdrawn.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued after a re-run", again.Accrued, got.Accrued)
+}
