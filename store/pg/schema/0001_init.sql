@@ -487,7 +487,7 @@ CREATE TABLE id_sequences (
 -- ---------------------------------------------------------------------------
 --
 -- Recorded in the database rather than only in this file, because the absence
--- of a constraint is invisible in a schema dump: the next author reads three
+-- of a constraint is invisible in a schema dump: the next author reads four
 -- TEXT columns holding "EUR" and "BTC" and adds the "missing" CHECK.
 
 COMMENT ON COLUMN accounts.asset IS
@@ -519,13 +519,24 @@ COMMENT ON COLUMN participant_assets.asset IS
     'accounts that asset needs. Unconstrained, for the reason given on '
     'accounts.asset.';
 
+COMMENT ON COLUMN facilities.asset IS
+    'The asset this facility is denominated in, duplicated from the two GL '
+    'accounts named by principal_gl and interest_gl — both of which are '
+    'created in it and cannot change asset afterwards, so the three cannot '
+    'drift. Duplicated for the same reason deposit_accounts.asset is: '
+    'deriving it would turn every listing of facilities into a join for a '
+    'value that can never change, and store/storetest asserts the copies '
+    'always agree (FacilityAssetMatchesItsGLAccounts). Unconstrained, for the '
+    'reason given on accounts.asset.';
+
 COMMENT ON COLUMN deposit_accounts.accrued_interest IS
     'Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset''s '
     'minor unit multiplied by 1e6 (interest.AccruedScale). It is not a money '
     'column and must never be compared with, or summed alongside, one. The '
     'scale exists because a day''s interest on a small balance is mostly '
-    'fraction — 50 EUR overdrawn at 15% accrues 2.0548 cents a day, and '
-    'rounding that away daily is a 2.4% annual error on the interest. The '
+    'fraction — 50 EUR overdrawn at 15% accrues 2.054794 cents a day, and '
+    'rounding that to 2 daily discards 0.054794 a day: 20.0 cents a year '
+    'against 750 cents of annual interest, a 2.67% error. The '
     'general ledger holds the rounded figure in the account named by '
     'interest_gl; this column holds the residue an integer of minor units '
     'cannot represent, which is the same reason holds live outside the ledger. '
@@ -573,11 +584,33 @@ COMMENT ON COLUMN facilities.commitment IS
     'amount actually DRAWN is not stored: it is the book balance of '
     'principal_gl, derived from the entries like every other balance here.';
 
+COMMENT ON COLUMN facilities.days_past_due IS
+    'The calendar-day age of the oldest instalment still due and unpaid. This '
+    'column, arrears_bucket, non_performing and oldest_unpaid_due are a CACHE: '
+    'all four are a pure function of this facility''s installments rows and a '
+    'date (lending.ArrearsFor), recomputed at end of day and after every '
+    'repayment, never accumulated from a stream of missed-payment events. '
+    'Stored anyway because they are what the API and the web layer read, and '
+    'recomputing four columns on every listing would make a delinquency report '
+    'a join over every schedule in the book. A stale value is therefore a '
+    'stale cache and not a lost fact: re-running the recompute repairs it. '
+    'Days are ALWAYS actual calendar days, whatever day_count this facility '
+    'accrues interest under — a 30/360 loan is not 33/360 days late.';
+
+COMMENT ON COLUMN facilities.arrears_bucket IS
+    'The band days_past_due falls in: Current, 1-29, 30-59, 60-89, 90+. Part '
+    'of the arrears cache described on days_past_due.';
+
+COMMENT ON COLUMN facilities.oldest_unpaid_due IS
+    'The due date days_past_due is measured from, NULL when the facility is '
+    'current. Part of the arrears cache described on days_past_due.';
+
 COMMENT ON COLUMN facilities.non_performing IS
     'Set at 90+ days past due. It MARKS ONLY and changes no accounting. '
     'Non-accrual — where a non-performing loan stops recognizing interest into '
     'income — and expected-credit-loss provisioning are recorded as future '
-    'work in docs/expansion-roadmap.md.';
+    'work in docs/expansion-roadmap.md. Part of the arrears cache described on '
+    'days_past_due.';
 
 COMMENT ON COLUMN installments.seq_no IS
     'The instalment''s position in the contract, 1-based, and part of its '

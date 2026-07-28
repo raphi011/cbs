@@ -22,6 +22,54 @@ import (
 func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	t.Helper()
 
+	// A facility stores its asset even though the two GL accounts it wraps
+	// already carry it — the second fact this schema duplicates on purpose,
+	// after deposit_accounts.asset. Duplication is only safe while the copies
+	// agree, so the suite says so out loud for this column too.
+	t.Run("FacilityAssetMatchesItsGLAccounts", func(t *testing.T) {
+		s := openLending(t, newStore)
+
+		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			for _, a := range []ledger.Account{
+				{ID: "300.loan.001", SubledgerID: "loans", Name: "Loan Principal: Bruno", Type: ledger.Asset, Asset: "BTC"},
+				{ID: "300.accr.001", SubledgerID: "loans", Name: "Accrued Interest: Bruno", Type: ledger.Asset, Asset: "BTC"},
+			} {
+				if err := tx.PutAccount(ctx, bookA, a); err != nil {
+					return err
+				}
+			}
+			return tx.PutFacility(ctx, bookA, lending.Facility{
+				ID: "fac_1", Kind: lending.TermLoan, Name: "Bruno Loan", Asset: "BTC",
+				PrincipalGL: "300.loan.001", InterestGL: "300.accr.001",
+				Status: lending.Active, OpenedAt: early,
+			})
+		})
+
+		viewLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			f, err := tx.GetFacility(ctx, bookA, "fac_1")
+			if err != nil {
+				return err
+			}
+			for _, id := range []ledger.AccountID{f.PrincipalGL, f.InterestGL} {
+				gl, err := tx.GetAccount(ctx, bookA, id)
+				if err != nil {
+					return err
+				}
+				if f.Asset != gl.Asset {
+					t.Errorf("facility asset %q != %s asset %q", f.Asset, id, gl.Asset)
+				}
+			}
+			listed, err := tx.ListFacilities(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 || listed[0].Asset != "BTC" {
+				t.Errorf("ListFacilities = %+v, want one BTC facility", listed)
+			}
+			return nil
+		})
+	})
+
 	t.Run("FacilityRoundTripsEveryField", func(t *testing.T) {
 		s := openLending(t, newStore)
 
