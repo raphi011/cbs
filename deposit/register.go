@@ -271,14 +271,12 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 	return acct, nil
 }
 
-// ensureReceivableTx creates this account's accrued-interest-receivable GL
-// account, in its own subledger and its own asset.
-//
-// One per deposit account, not one shared receivable per bank. A shared account
-// would be a stored total whose per-customer detail lives in Account.Accrued —
-// a control account, and the duplication this codebase is built without. See
-// docs/deposit-accounts-vs-subledger.md.
-func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+// customerLedgerIDTx resolves the ledger an account's backing GL account
+// lives under, by way of its customer subledger. ensureReceivableTx and
+// interestIncomeTx both need this ledger ID to file a sibling subledger next
+// to the customer's own — resolving it is the one step they share before
+// diverging on which subledger and account to ensure.
+func (r *Register) customerLedgerIDTx(ctx context.Context, tx Tx, acct Account) (ledger.LedgerID, error) {
 	gl, err := tx.GetAccount(ctx, r.bookID, acct.GLAccount)
 	if err != nil {
 		return "", err
@@ -287,7 +285,22 @@ func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) 
 	if err != nil {
 		return "", err
 	}
-	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, customerSub.LedgerID, receivableSubledgerName)
+	return customerSub.LedgerID, nil
+}
+
+// ensureReceivableTx creates this account's accrued-interest-receivable GL
+// account, in its own subledger and its own asset.
+//
+// One per deposit account, not one shared receivable per bank. A shared account
+// would be a stored total whose per-customer detail lives in Account.Accrued —
+// a control account, and the duplication this codebase is built without. See
+// docs/deposit-accounts-vs-subledger.md.
+func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
+	ledgerID, err := r.customerLedgerIDTx(ctx, tx, acct)
+	if err != nil {
+		return "", err
+	}
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, receivableSubledgerName)
 	if err != nil {
 		return "", err
 	}
@@ -302,15 +315,11 @@ func (r *Register) ensureReceivableTx(ctx context.Context, tx Tx, acct Account) 
 // interestIncomeTx resolves the bank's interest-income account for an asset,
 // creating it and its subledger on first use.
 func (r *Register) interestIncomeTx(ctx context.Context, tx Tx, acct Account) (ledger.AccountID, error) {
-	gl, err := tx.GetAccount(ctx, r.bookID, acct.GLAccount)
+	ledgerID, err := r.customerLedgerIDTx(ctx, tx, acct)
 	if err != nil {
 		return "", err
 	}
-	customerSub, err := tx.GetSubledger(ctx, r.bookID, gl.SubledgerID)
-	if err != nil {
-		return "", err
-	}
-	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, customerSub.LedgerID, incomeSubledgerName)
+	sub, err := r.gl.EnsureSubledgerTx(ctx, tx, ledgerID, incomeSubledgerName)
 	if err != nil {
 		return "", err
 	}
