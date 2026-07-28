@@ -46,6 +46,13 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Account States](#account-states)
   - [State Transitions](#state-transitions)
   - [Overdraft](#overdraft)
+- [Lending](#lending)
+  - [Three Products, and Why the Third Is Not a Facility](#three-products-and-why-the-third-is-not-a-facility)
+  - [Two GL Accounts Per Facility](#two-gl-accounts-per-facility)
+  - [Daily Accrual and the Precision Split](#daily-accrual-and-the-precision-split)
+  - [Two Amortization Methods](#two-amortization-methods)
+  - [Repayment: Against What Accrued, Not the Schedule](#repayment-against-what-accrued-not-the-schedule)
+  - [Arrears and Non-Performing](#arrears-and-non-performing)
 - [Settlement Cycles](#settlement-cycles)
   - [What Is Settlement](#what-is-settlement)
   - [Common Settlement Cycles](#common-settlement-cycles)
@@ -601,6 +608,81 @@ The available balance calculation with overdraft becomes:
 ```
 Available Balance = Book Balance + Overdraft Limit - Active Holds
 ```
+
+An overdraft is not free once a rate is set on it. Interest accrues **daily** on the drawn (negative) balance — the arranged rate up to the limit, and the higher **unarranged rate** on any amount beyond it, so that exceeding the limit is never cheaper than staying inside it. It is **charged to the account monthly** — capitalized into the debit balance the same way a credit facility's interest is capitalized (see [Daily Accrual and the Precision Split](#daily-accrual-and-the-precision-split)) — which is what makes an overdraft **compound**: next month accrues on a balance that already includes this month's interest.
+
+The load-bearing point is what does *not* happen. Once a customer is overdrawn, the bank's balance-sheet classification of that money flips: what was a liability (money the bank owes the customer) is now, from the bank's perspective, an asset (money the customer owes the bank). A real bank's general ledger reflects this with a posting — a nightly sweep or reclassification journal that moves the drawn amount onto an Asset-side receivable. **This system posts no such thing.** The overdrawn balance stays exactly where it always was, in the customer's Liability GL account, merely negative; and the Asset-side total — "how much is drawn on overdraft across the book" — is computed by aggregating `Σ max(0, −balance)` over every deposit account, the same on-demand aggregation that produces "total customer deposits". It is not stored, and no transaction ever posts to an Asset account for it (`deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted` pins exactly this).
+
+The reason is the same one that keeps a balance from being a stored column anywhere else in this system: the drawn amount **has no independent existence**. It is the negative balance of the customer's own account, read by sign — the same fact, viewed the other way — not a second fact that happens to agree with it. Storing it separately, even as a "derived" mirror kept in sync by a sweep, would be exactly the drift a unified ledger is built without: two numbers that are supposed to agree and that nothing but discipline keeps agreeing. See `docs/deposit-accounts-vs-subledger.md` §7 for the general pattern (a control account maintained by reconciliation, versus a total computed by aggregation) and the [Lending](#lending) section below for why this is also the reason an overdraft has no facility record of its own.
+
+## Lending
+
+> Lending is a **`deposit`**-and-**`lending`**-package concern (`deposit.Register` for the overdraft's terms, `lending.Portfolio` for the other two products), built on top of the same `ledger.Book` — the pure day-count and accrual math lives in a third package, `interest`, that neither of them owns exclusively.
+
+### Three Products, and Why the Third Is Not a Facility
+
+This system extends credit to a customer three ways:
+
+1. **Term loan** — a fixed principal, disbursed once, repaid on a schedule generated at disbursement.
+2. **Revolving line** — a reusable commitment the customer draws down and repays repeatedly, billed in cycles rather than against a fixed schedule.
+3. **Arranged overdraft** — a limit that lets a current account's balance go negative, covered above.
+
+The first two are `lending.Facility` records: each wraps two Asset GL accounts of its own (below) and stores its own drawn principal, because that principal is a fact that exists whether or not the customer holds any other account — a €10,000 five-year loan is €10,000 owed, independently of anything else.
+
+The overdraft is deliberately **not** a third facility. Its "drawn principal" is the current account's own negative balance, read by sign; giving it a facility record would store a number that already exists elsewhere, which is precisely the duplication this system's unified ledger design exists to avoid. That is also why an overdraft has no amortization schedule and no commitment record: `Commitment` and a schedule are contract artifacts a term loan and a revolving line need and an on-demand, repayable-any-time overdraft does not.
+
+### Two GL Accounts Per Facility
+
+Every `lending.Facility` carries exactly two Asset accounts:
+
+- **Principal** — what is owed on drawn money.
+- **Accrued interest receivable** — interest earned and not yet collected.
+
+They are separate because a repayment allocates **interest before principal**, and one account cannot express a split between two things it does not distinguish. Disbursing a term loan or drawing a revolving line debits Principal (and credits the customer's account, or wherever the money goes); a day's accrual debits the receivable and credits an Interest Income (Revenue) account; a repayment credits the receivable first, then whatever remains credits Principal.
+
+`Drawn` and `AccruedInterest` (in whole minor units) are never stored fields — they are read from these two accounts' book balances, the same discipline every other derived balance in this system follows. `Commitment` (a term loan's original principal, or a revolving line's limit) is the one figure that *is* stored, because it is a fact about the contract rather than a fact about postings so far.
+
+### Daily Accrual and the Precision Split
+
+Interest accrues once per business day, on the **drawn** principal (an undrawn commitment costs nothing), under a day-count convention — `ACT/365`, `ACT/360`, or `30/360` — that is a real term of the contract, not an implementation detail: the same balance at the same rate accrues a different amount under each.
+
+A day's interest on a real balance is mostly fraction, and rounding it away daily is a measurable annual error. So a facility (and an overdraft) holds its accrued interest twice, at two precisions, and the split is the point:
+
+- The **record** holds it in **micro-minor-units** (`interest.Accrued`, minor units × 1,000,000) — exact, never rounded.
+- The **ledger** holds `Accrued.Minor()` — the record rounded to a whole minor unit, half away from zero — because a posting cannot be a fraction of a cent.
+
+Every day's posting is the **change** in the rounded value, not the day's raw interest, so the ledger and the record can never drift apart. A €10,000 five-year loan at 6% (`ACT/365`) accrues 164.383561 cents a day, exactly:
+
+| Day | Cumulative accrued (micro-minor-units) | `Minor()` (cents) | Posted that day |
+| --- | --- | --- | --- |
+| 1 | 164,383,561 | 164 | 164 |
+| 2 | 328,767,122 | 329 | 165 |
+| 15 | 2,465,753,415 | 2,466 | 165 (up from day 14's 2,301) |
+
+Most days post 164; some post 165 as the rounding ticks over — the record is exact throughout, and the ledger only ever holds its rounding. A revolving line's interest is not just held this way but **capitalized**: `ChargeInterest` charges the rounded receivable into principal at the end of a billing cycle, clearing it back toward zero and folding this cycle's interest into what next cycle accrues on — which is what makes a revolving balance **compound**. Charging the rounded figure rather than the exact one leaves the record with a residue of up to half a minor unit either way; a €1,000 draw at 18% accrues 1,479.452040 cents over 30 days, of which only 1,479 is capitalized (rounding down), leaving the record at **+452,040** micro-minor-units — still absorbed as 0 by the next `Minor()`, so the ledger never sees it.
+
+### Two Amortization Methods
+
+A term loan's schedule is generated once, at disbursement, as a plan — one row per instalment with its own principal and interest due — chosen at opening between two methods:
+
+- **Annuity** — every instalment has the same total payment; the interest share falls and the principal share rises as the balance amortizes.
+- **Equal principal** — every instalment repays the same principal; the total payment falls as interest on a shrinking balance falls with it.
+
+Under either method the **last instalment** is not computed the same way as the rest: it repays whatever principal is actually left, so that the scheduled principal across every row sums to the disbursed principal exactly, however rounding fell along the way, rather than leaving a stray cent unaccounted for.
+
+A revolving line has no upfront schedule — there is nothing to generate one from until the customer draws. Its instalments are appended one per billing cycle, each one that cycle's interest charged plus a minimum-payment share of the drawn balance.
+
+### Repayment: Against What Accrued, Not the Schedule
+
+A repayment settles interest before principal — but the *interest* it settles is what actually **accrued**, not what the schedule projected for that instalment. On the €10,000 loan above, the schedule's first-month interest is a flat twelfth of 6%: €50.00. Thirty days of `ACT/365` accrual come to **€49.32**, not €50.00 — the calendar month is 30 or 31 actual days, never exactly a twelfth of a 365-day year. Paying the scheduled €193.33 instalment credits €49.32 to the receivable (what was actually earned) and the remaining €144.01 to principal — 68 cents more principal than the schedule's own €143.33 assumed, because the plan overstated the interest by exactly that much.
+
+This is exactly why the **30/360** day-count convention exists: under it, every calendar month is defined to be precisely a twelfth of a year, so the scheduled interest and the accrued interest always agree to the cent and a repayment never has to reconcile the two. Under `ACT/365` or `ACT/360` they generally do not, and the difference — small, and different every month — is absorbed silently by the principal portion of each payment. The schedule stays a **plan the facility is checked against**, never a statement of what is actually owed; that fact is always read from the accrued-interest record.
+
+### Arrears and Non-Performing
+
+A facility's delinquency is **computed from its schedule**, not stored as a stream of events: days-past-due is the calendar-day age of the *oldest* instalment that is still due and unpaid, and paying that instalment is what moves the clock forward — a borrower who is permanently one payment behind stays visibly one payment behind rather than looking current between due dates. Those days sort into five bands: `Current`, `1-29`, `30-59`, `60-89`, and `90+`.
+
+**Non-performing** is set once days-past-due reaches 90, and it **marks only**: nothing about how interest accrues, how it posts, or what the schedule says changes because of it. Non-accrual accounting (where a non-performing loan stops recognizing interest into income) and expected-credit-loss provisioning are both real next steps for a production system and both deliberately out of scope here — see `docs/expansion-roadmap.md`.
 
 ## Settlement Cycles
 

@@ -16,6 +16,8 @@ import { chapter as ch13 } from "./chapters/13-card-transactions";
 import { chapter as ch14 } from "./chapters/14-snapshots-audit-and-statements";
 import { chapter as ch15 } from "./chapters/15-persistence-and-durability";
 import { chapter as ch16 } from "./chapters/16-multi-asset-accounting";
+import { chapter as ch17 } from "./chapters/17-lending-and-amortization";
+import { chapter as ch18 } from "./chapters/18-interest-overdrafts-and-arrears";
 
 /** Network-level explorer routes a question may deep-link to. */
 export const EXPLORE_ROUTES = [
@@ -31,7 +33,7 @@ export const EXPLORE_ROUTES = [
 export const chapters: Chapter[] = [
   ch01, ch02, ch03, ch04, ch05, ch06, ch07,
   ch08, ch09, ch10, ch11, ch12, ch13, ch14,
-  ch15, ch16,
+  ch15, ch16, ch17, ch18,
 ];
 
 export function getChapter(slug: string): Chapter | undefined {
