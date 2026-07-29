@@ -1213,9 +1213,75 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		}
 	})
 
+	// ValueDatedSeriesExcludesZeroValueDateEntries is the movement-bucketing
+	// half of ValueDateBalanceExcludesZeroValueDateEntries above, and it needs
+	// its own subtest: Series.Opening inherits that ruling by delegating to the
+	// same balance query, but the per-day buckets are built by separate code in
+	// each store, and only one of them has to do anything to get this right.
+	//
+	// store/pg gets it free — a zero value date is stored as NULL, and NULL is
+	// excluded from a date_trunc grouping, so there is simply no row to bucket.
+	// store/mem has to skip it explicitly, and would otherwise bucket the entry
+	// onto time.Time{}'s day — year 1 — emitting a movement pg has no row for.
+	// That skip is the most divergence-prone line on this path, and deleting it
+	// is what this pins.
+	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
+		s := open(t, newStore)
+		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+		postValueDatedSeriesFixture(t, s, day)
+
+		// Same shape as the fixture's own postings, into the same accounts, but
+		// with the value date deliberately left zero on both the transaction
+		// and its entries.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:     "txn_vds_zero",
+				Status: ledger.Posted,
+				Entries: []ledger.Entry{
+					{ID: "ent_vds_zero_d", AccountID: "901.001.001", Amount: 700, Direction: ledger.Debit},
+					{ID: "ent_vds_zero_c", AccountID: "901.001.002", Amount: 700, Direction: ledger.Credit},
+				},
+			})
+		})
+
+		// A window that starts before the year-1 day the naive bucketing would
+		// produce would not distinguish it from a legitimate movement, so read
+		// the same [4th, 9th) window every other subtest uses: the three
+		// movements it contains must be exactly the three the fixture seeds,
+		// and Opening must not have absorbed the 700 either.
+		var got ledger.Series
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(4), day(9))
+			return err
+		})
+		assertEqual(t, "opening (unchanged by an entry that is not value-dated)", got.Opening, ledger.Amount(100))
+		if len(got.Movements) != 3 {
+			t.Fatalf("movements = %+v, want the fixture's 3 (a zero value date is not a day)", got.Movements)
+		}
+
+		// And from the beginning of time, where the year-1 bucket would be in
+		// range rather than merely before the window.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, time.Time{}, day(9))
+			return err
+		})
+		assertEqual(t, "opening from the beginning of time", got.Opening, ledger.Amount(0))
+		if len(got.Movements) != 4 {
+			t.Fatalf("movements from the beginning of time = %+v, want 4 (the 1st, 4th, 5th, 7th)", got.Movements)
+		}
+		if !got.Movements[0].Day.Equal(day(1)) {
+			t.Errorf("first movement = %+v, want the 1st — a zero value date must not bucket onto year 1", got.Movements[0])
+		}
+	})
+
 	t.Run("ValueDatedSeriesOfUnknownAccountIsEmpty", func(t *testing.T) {
 		s := open(t, newStore)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+		// Seeded, so an empty result means "this account has none" rather than
+		// "there is no data at all" — which an unseeded store cannot tell apart.
+		postValueDatedSeriesFixture(t, s, day)
 
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
