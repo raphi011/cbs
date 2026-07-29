@@ -112,14 +112,20 @@ export interface AuditEvent {
   metadata?: Record<string, string>;
 }
 
-// GET .../accounts/{aid}/balance. `balance` is an integer in the minor units of
-// the account's asset — cents for EUR, satoshi for BTC — and `asset` is the
-// code whose scale renders it. The two travel together so displaying a balance
-// is one request, not three.
+// GET .../accounts/{aid}/balance[?asOf=<RFC3339>]. `balance` is an integer in
+// the minor units of the account's asset — cents for EUR, satoshi for BTC —
+// and `asset` is the code whose scale renders it. The two travel together so
+// displaying a balance is one request, not three.
+//
+// `valueDateBalance` is the same account as of the end of the requested day,
+// counting only entries that have taken economic effect. It is what interest
+// is computed from, and it differs from `balance` whenever a posting is
+// value-dated away from its booking date. `asOf` defaults to now.
 export interface BookBalance {
   accountId: string;
   asset: string;
   balance: number;
+  valueDateBalance: number;
 }
 
 // --- Deposit layer --------------------------------------------------------

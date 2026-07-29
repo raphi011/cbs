@@ -133,11 +133,19 @@ export function createAccount(
   return request("POST", `/participants/${pid}/subledgers/${sid}/accounts`, body);
 }
 
+// asOf is an RFC 3339 timestamp and governs only `valueDateBalance` — the
+// booking-date `balance` is always as of now. Omitted, the backend defaults it
+// to now, so the two agree unless something is value-dated away from its
+// booking date.
 export function getBookBalance(
   pid: string,
   aid: string,
+  asOf?: string,
 ): Promise<BookBalance> {
-  return request("GET", `/participants/${pid}/accounts/${aid}/balance`);
+  return request(
+    "GET",
+    `/participants/${pid}/accounts/${aid}/balance${qs({ asOf })}`,
+  );
 }
 
 // A GL account flattened with its ledger/subledger names, for pickers.
