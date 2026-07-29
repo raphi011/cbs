@@ -50,6 +50,7 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Transaction Reversal](#transaction-reversal)
 - [Account Lifecycle](#account-lifecycle)
   - [Account States](#account-states)
+    - [What This Implementation Actually Enforces](#what-this-implementation-actually-enforces)
   - [State Transitions](#state-transitions)
   - [Overdraft](#overdraft)
 - [Lending](#lending)
@@ -584,6 +585,25 @@ In a real banking system, accounts are not simply created and then used forever.
 | **Frozen** | Temporarily restricted, usually due to a court order, fraud investigation, or regulatory action. | View balance only. All debits, credits, and holds blocked. The freeze may be partial (e.g., allowing credits but blocking debits). |
 | **Closed** | Permanently shut down. The account no longer accepts any transactions. | None. Balance must be zero before closing. Historical data retained for audit and regulatory purposes. |
 
+#### What This Implementation Actually Enforces
+
+The table above is the real-world model. This system implements one specific reading of it, and the two differ in one place worth naming:
+
+| State | Money out (withdrawal, new hold) | Money in (credit) |
+|---|---|---|
+| **Active** | permitted | permitted |
+| **Dormant** | `ErrAccountDormant` | permitted |
+| **Frozen** | `ErrAccountFrozen` | **permitted** |
+| **Closed** | `ErrAccountClosed` | `ErrAccountClosed` |
+
+**The freeze here is a debit block, not a full freeze.** That is the partial freeze the table's `Frozen` row mentions, and it is the common retail case: a garnishment or a fraud investigation stops the customer taking money out while their salary keeps arriving. A **sanctions** freeze is the other kind — funds must not be accepted into the account at all — and one boolean status cannot express both. Separating them is a debit-block and credit-block pair, which real systems carry and this one does not.
+
+**The two directions are asymmetric on purpose, and not symmetric functions.** `CheckWithdrawalTx` takes an amount and can fail for want of money; `CheckCreditTx` takes none and cannot. The only question a credit can answer is whether this account is still somewhere money may land, so `Closed` is the sole state that refuses one.
+
+**`Closed` refusing credits is what keeps `Close`'s own invariant true.** Closing requires a zero balance. A credit landing afterwards leaves a Closed account holding money that no withdrawal can reach, that closing again cannot clear because `Closed` is terminal, and that contradicts the precondition `Close` had just enforced — stranded money, not a restriction.
+
+The enforcement point is worth being precise about, because this layer has **no credit method of its own**. Money reaches a deposit account's GL account from the layers above: a bank funding a customer, a settlement's creditor leg, a lending counterparty. Each posts straight into the general ledger, which knows nothing about account status by design. So the guard is a *callable* check rather than something the register can impose — `Register.CheckCreditTx`, the mirror of `CheckWithdrawalTx` — and it binds only where a caller invokes it. Funding does. See [Next Work](#next-work) for the path that does not.
+
 ### State Transitions
 
 ```
@@ -964,7 +984,7 @@ Separately from the scheme wiring above, four more gaps are worth listing:
 
 - **Re-disbursement drops the outstanding span instead of double-charging it.** `DisburseTx` clamps `LastAccrualDate` forward to the wall clock (or later, if accrual already ran ahead of it) before reopening the accrual window on a facility repaid and re-drawn without being closed. That clamp exists to stop the window from re-accruing a span it already charged — but it also throws away any span between the real last accrual and the re-disbursement moment: that interest is never charged at all. It is the mirror image of the double-charge this branch fixed, reachable through the same re-disbursement path, and closing it means accruing through "now" before clamping rather than skipping straight to it.
 - **Effective-dated product terms.** `SetOverdraftTerms` overwrites the rate in place, so an accrual posted six months ago cannot be reproduced from stored state — only recovered by replaying the audit log, which nothing does. It is also what bounds the retroactive-accrual window to the last repricing rather than to account opening.
-- **The creditor leg at settlement** bypasses the deposit layer: `SettleCycleTx` posts straight into the GL account, so a payee whose account was frozen or closed between initiation and settlement is credited anyway. The suspense account an unapplicable credit should land in already exists.
+- **The creditor leg at settlement does not check that the payee can be credited.** `SettleCycleTx` resolves the payee's deposit account to its GL account and posts straight into it, so a payee whose account was **closed** between initiation and settlement is credited anyway — leaving exactly the stranded balance that [`CheckCreditTx`](#what-this-implementation-actually-enforces) exists to prevent, and that funding now refuses. (A *frozen* payee being credited is deliberate, not a gap: the freeze here is a debit block.) Settlement already holds the deposit account id, so calling the check is trivial; what makes this more than a one-line fix is where a refused credit goes. Settlement is all-or-nothing, so refusing inside the batch would fail the whole clearing cycle for one closed account — every other member's positions with it, which is the failure mode `ErrAssetMismatch` exists to avoid. The credit needs a suspense destination and something that later resolves it. `Clearing Suspense (<asset>)` exists per bank per asset, but it means "a payment leg in flight"; an unapplicable-credits account should be its own, or the two balances answer different questions from one number.
 - **The recompute window is unbounded.** It opens at the last repricing for a deposit overdraft, or at first advance for a lending facility (the same bound today, since nothing reprices a facility yet), and nothing else resets it — so a long-lived account or facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
 
 ## Reporting and Compliance

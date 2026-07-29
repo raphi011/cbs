@@ -16,7 +16,7 @@ export const chapter: Chapter = {
       options: ["Dormant", "Frozen", "Active", "Closed"],
       answer: 2,
       explanation:
-        "An [[account-status|Active]] account is the fully operational state. [[account-status|Dormant]] restricts to credits only; [[account-status|Frozen]] permits only balance viewing; [[account-status|Closed]] accepts no transactions at all.",
+        "An [[account-status|Active]] account is the fully operational state. [[account-status|Dormant]] restricts to credits only; [[account-status|Frozen]] blocks debits and new holds (the freeze implemented here is a debit block, so credits still land); [[account-status|Closed]] accepts no transactions at all, in either direction.",
     },
     {
       kind: "mc",

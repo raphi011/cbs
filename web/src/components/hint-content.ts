@@ -322,12 +322,14 @@ This is the correct path when an authorization was placed in error, the merchant
 |--------|-------------------|
 | **Active** | All: debits, credits, holds, statements |
 | **Dormant** | Credits only — an incoming payment reactivates it |
-| **Frozen** | View balance only — set by legal/fraud action |
+| **Frozen** | Credits only — set by legal/fraud action |
 | **Closed** | None — terminal, requires zero balance |
 
 Transitions: Active ↔ Dormant (inactivity timer / incoming credit), any state → Frozen (freeze action), Frozen → prior state (unfreeze), Active → Closed (zero balance, no pending holds). **Closed is terminal** — the account cannot be reopened.
 
-A **Frozen** account blocks card authorizations ([[holds]]), debits, and credits. The freeze preserves the previous state so that unfreeze returns to Active or Dormant correctly.`,
+A **Frozen** account blocks card authorizations ([[holds]]) and every debit, but still accepts credits — the freeze implemented here is a **debit block**, which is the garnishment and fraud-investigation case: the customer cannot take money out while money owed to them keeps arriving. A *full* freeze, the sanctions case, blocks credits too; one status cannot express both, and this system implements the debit block. The freeze preserves the previous state so that unfreeze returns to Active or Dormant correctly.
+
+The two directions are not mirror images. A debit can fail for want of money, so it is checked with an amount; a credit cannot, so the only question it answers is whether the account is still somewhere money may land — which makes **Closed** the one state that refuses one. Crediting a closed account would leave it holding money no withdrawal could reach and no second close could clear.`,
   },
   "scheme-direction-push": {
     title: "Push scheme",
