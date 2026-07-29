@@ -29,11 +29,30 @@ type Period func(balance ledger.Amount, from, to time.Time) Accrued
 //
 // The series is folded into runs of constant balance and Period is called
 // once per run, so the cost is the number of days the balance moved rather
-// than the number of days in the window. Splitting a window into runs can
-// still differ from one call over the whole of it by up to one Accrued unit
-// per split point, because Accrue truncates its integer division per call;
-// that is the more accurate answer, since the balance genuinely differed
-// across the runs.
+// than the number of days in the window. This per-slot decomposition — one
+// call per run, at that run's own endpoints — is authoritative: it is what
+// makes a daily run identical to the single-balance call production already
+// makes for that one day, which the deposit and lending accrual engines
+// depend on. It comes at a real, convention-dependent cost against one call
+// over the whole window:
+//
+//   - Under ACT365/ACT360, a split costs at most one Accrued unit per split
+//     point, to Accrue's per-call integer-division truncation, and only ever
+//     loses relative to the unsplit total — the days themselves add up
+//     exactly, so only the rounding differs.
+//   - Under Thirty360, that bound does not hold. 30/360-US day counts are
+//     not additive across a run boundary that lands on the 31st, or on the
+//     1st of the month after a 31-day one: Days(a, 31st) + Days(31st, b) can
+//     differ from Days(a, b) by a whole day, in either direction. A split at
+//     such a boundary can therefore gain or lose a full day's interest, not
+//     a truncation unit — and a Thirty360 window's total is consequently
+//     not invariant to where it is split. The per-slot answer this function
+//     computes is still the correct one, because it is the one that agrees
+//     with production day by day; it is the whole-window total that is not
+//     a stable reference point under this convention.
+//
+// AccrueSeries also assumes s.Movements is ascending by Day, as documented
+// on ledger.Series; it does not sort or validate that itself.
 func AccrueSeries(s ledger.Series, from, to time.Time, p Period) Accrued {
 	from = ledger.DayStart(from)
 	to = ledger.DayStart(to)

@@ -55,8 +55,12 @@ func TestAccrueSeriesSplitsAtAMovement(t *testing.T) {
 
 	p := flat(50_000, interest.ACT365)
 	got := interest.AccrueSeries(s, from, to, p)
-	want := p(100_000, day(2026, time.January, 2), day(2026, time.January, 6)) +
-		p(150_000, day(2026, time.January, 6), day(2026, time.January, 12))
+	// Each run is charged at its own literal endpoints — the coordinate
+	// AccrueSeries actually calls Period with — not at NextDay-shifted ones:
+	// the first run is [from, Jan5] (the day before the movement) and the
+	// second is [Jan5, to].
+	want := p(100_000, from, day(2026, time.January, 5)) +
+		p(150_000, day(2026, time.January, 5), to)
 	if got != want {
 		t.Errorf("AccrueSeries = %d, want %d", got, want)
 	}
@@ -210,6 +214,14 @@ func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
 	// directional: diff < 0 would mean a split over-accrued, which is a real
 	// bug, not a rounding artifact, and must fail loudly rather than being
 	// hidden behind an absolute-value check.
+	//
+	// That directional, one-unit bound holds *because* this split point (the
+	// 15th) is mid-month, not adjacent to a 31st. A run boundary landing on
+	// the 31st itself, or on the 1st of the month after a 31-day one, is a
+	// different case: 30/360-US day counts are not additive there, and a
+	// split at such a boundary can gain or lose a whole day's interest
+	// rather than a truncation unit (see AccrueSeries's doc comment). This
+	// test does not exercise that case.
 	if diff := whole - split; diff < 0 || diff > 1 {
 		t.Errorf("split series = %d, whole = %d; a zero movement may cost at most "+
 			"one unit of truncation, not %d", split, whole, diff)
