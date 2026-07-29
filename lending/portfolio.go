@@ -251,8 +251,9 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, subledger led
 // money not yet paid out earns nothing.
 //
 // Returns ErrFacilityNotFound, ErrFacilityClosed, ErrWrongFacilityKind for a
-// revolving line, ErrAlreadyDisbursed for a second call, and any ledger error —
-// notably ledger.ErrUnbalancedTransaction if the counterparty is in a different
+// revolving line, ErrAlreadyDisbursed for a second call while principal is
+// still outstanding, and any ledger error — notably
+// ledger.ErrUnbalancedTransaction if the counterparty is in a different
 // asset, which is how a cross-asset disbursement is caught.
 func (p *Portfolio) Disburse(ctx context.Context, id FacilityID, counterparty ledger.AccountID, firstDue time.Time, description string) (ledger.Transaction, error) {
 	var out ledger.Transaction

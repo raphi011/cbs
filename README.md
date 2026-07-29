@@ -936,8 +936,9 @@ Two schemes are designed for but not yet implemented. They are the reason the `S
 
 Both motivate a natural follow-on: **reserve-adequacy** checks before a bank's net settlement is allowed to post.
 
-Separately from the scheme wiring above, three more gaps are worth listing:
+Separately from the scheme wiring above, four more gaps are worth listing:
 
+- **Re-disbursement drops the outstanding span instead of double-charging it.** `DisburseTx` clamps `LastAccrualDate` forward to the wall clock (or later, if accrual already ran ahead of it) before reopening the accrual window on a facility repaid and re-drawn without being closed. That clamp exists to stop the window from re-accruing a span it already charged — but it also throws away any span between the real last accrual and the re-disbursement moment: that interest is never charged at all. It is the mirror image of the double-charge this branch fixed, reachable through the same re-disbursement path, and closing it means accruing through "now" before clamping rather than skipping straight to it.
 - **Effective-dated product terms.** `SetOverdraftTerms` overwrites the rate in place, so an accrual posted six months ago cannot be reproduced from stored state — only recovered by replaying the audit log, which nothing does. It is also what bounds the retroactive-accrual window to the last repricing rather than to account opening.
 - **The creditor leg at settlement** bypasses the deposit layer: `SettleCycleTx` posts straight into the GL account, so a payee whose account was frozen or closed between initiation and settlement is credited anyway. The suspense account an unapplicable credit should land in already exists.
 - **The recompute window is unbounded.** It opens at the last repricing for a deposit overdraft, or at first advance for a lending facility (the same bound today, since nothing reprices a facility yet), and nothing else resets it — so a long-lived account or facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
@@ -952,7 +953,7 @@ Separately from the scheme wiring above, three more gaps are worth listing:
 
 At the end of each business day, the system captures a snapshot of each account's balance. In the model this document describes, these snapshots would serve multiple purposes:
 
-- **Interest accrual:** daily interest is calculated on the end-of-day, value-dated balance. For a savings account earning 4% APR, the daily interest on a $10,000 balance is: $10,000 * 0.04 / 365 = $1.10.
+- **Interest accrual:** daily interest is calculated on the end-of-day balance. For a savings account earning 4% APR, the daily interest on a $10,000 balance is: $10,000 * 0.04 / 365 = $1.10.
 
 - **Statement generation:** monthly statements show the balance at the end of each day, transaction activity, and opening/closing balances.
 
@@ -1033,7 +1034,7 @@ Because booking dates and value dates can differ, the listed transactions may no
 
 Most retail bank statements show both dates per transaction when they differ, so the customer can see why the figures may not seem to reconcile at first glance.
 
-A statement's opening and closing figures are therefore value-dated, while its listing is booking-dated, and the two are read from the entry list directly. End-of-day snapshots are not what supplies either: they record the ordinary **booking-date** book balance, and nothing reads them back — see [End-of-Day Snapshots](#end-of-day-snapshots). In a system that had built the checkpointing they exist for, a statement's daily balances would come from them.
+In the model this document describes, a statement's opening and closing figures would therefore be value-dated while its listing is booking-dated, both read from the entry list directly. The one statement projection this repository actually has, `web/src/lib/statement.ts`, builds neither figure: it sorts entries by value date, stamps each row's displayed date with that value date, and reduces the whole account history into a single running balance with no period boundary at all — there is no separate opening or closing figure yet, and no booking-date filtering of the listing either. End-of-day snapshots are not what would supply them: they record the ordinary **booking-date** book balance, and nothing reads them back — see [End-of-Day Snapshots](#end-of-day-snapshots). In a system that had built the checkpointing they exist for, a statement's daily balances would come from them.
 
 ## Persistence
 

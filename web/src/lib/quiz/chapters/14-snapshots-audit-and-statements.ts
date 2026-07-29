@@ -96,7 +96,7 @@ export const chapter: Chapter = {
       unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
-        "Daily interest = $36,500 × 0.04 / 365 = $1,460 / 365 = **$4.00**. In the snapshot model the prompt names, the end-of-day [[snapshot]] would supply the principal each day's calculation runs on — that is one of the four purposes snapshots exist for, once the checkpointing is built. It is not what this system does: accrual reads the value-dated entry list fresh on every run and never consults a snapshot. The arithmetic is the same either way; what differs is where the principal comes from.",
+        "Daily interest = $36,500 × 0.04 / 365 = $1,460 / 365 = **$4.00**. In the snapshot model the prompt names, the end-of-day [[snapshot]] would supply the principal each day's calculation runs on — that is one of the four purposes snapshots exist for, once the checkpointing is built. It is not what this system does: accrual reads the value-dated entry list fresh on every run and never consults a snapshot. The arithmetic is the same either way, but the principal is not: on any day this account's booking-date and value-date balances diverge, a booking-dated snapshot would hand the calculation a different principal than the value-dated series does — not just a different source for the same number.",
     },
     {
       kind: "mc",

@@ -440,8 +440,10 @@ type PostTransactionRequest struct {
 
 	// ValueDate is the date when the transaction takes economic effect.
 	// This determines which business day the transaction "belongs to"
-	// for interest calculations, settlement, and end-of-day snapshots.
-	// If zero, the BookingDate is used.
+	// for interest calculations and settlement. End-of-day snapshots use
+	// BookingDate instead, not this field — see
+	// deposit.Register.TakeEndOfDaySnapshotTx. If zero, the BookingDate
+	// is used.
 	ValueDate time.Time
 
 	// Description is a human-readable description of the transaction.
