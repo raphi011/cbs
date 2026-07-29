@@ -73,10 +73,16 @@ const (
 	EventFacilityDisbursed = "facility.disbursed"
 	EventFacilityDrawn     = "facility.drawn"
 	EventFacilityAccrued   = "facility.accrued"
-	EventFacilityCharged   = "facility.interest_charged"
-	EventFacilityRepaid    = "facility.repaid"
-	EventFacilityArrears   = "facility.arrears_changed"
-	EventFacilityClosed    = "facility.closed"
+	// EventFacilityAccrualCorrected is a true-up of facility interest after a
+	// backdated posting changed the drawn balance a past day accrued on.
+	// Distinct from EventFacilityAccrued so a correction is visible as one in
+	// the log rather than hiding inside the ordinary daily stream, and it is
+	// the deposit layer's EventOverdraftAccrualCorrected for a credit facility.
+	EventFacilityAccrualCorrected = "facility.accrual_corrected"
+	EventFacilityCharged          = "facility.interest_charged"
+	EventFacilityRepaid           = "facility.repaid"
+	EventFacilityArrears          = "facility.arrears_changed"
+	EventFacilityClosed           = "facility.closed"
 )
 
 // AuditEvent is an immutable record of one mutation.

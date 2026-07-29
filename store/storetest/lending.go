@@ -82,7 +82,9 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			PrincipalGL: "100.loans.001", InterestGL: "100.accr.001",
 			Commitment: 250_000, Rate: 180_000, DayCount: interest.ACT360,
 			Method: lending.EqualPrincipal, TermMonths: 60, MinPayment: 20_000,
-			Accrued: -356_180, LastAccrualDate: time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC),
+			Accrued: -356_180, AccruedGross: 1_479_452_040,
+			TermsEffectiveFrom: time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
+			LastAccrualDate:    time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC),
 			Arrears: lending.Arrears{
 				DaysPastDue: 45, Bucket: lending.D30_59, NonPerforming: false,
 				OldestUnpaidDue: time.Date(2025, 1, 18, 0, 0, 0, 0, time.UTC),
@@ -109,10 +111,20 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			// A negative residue is the ordinary state after a capitalization
 			// that rounded up, so an unsigned column would corrupt it.
 			assertEqual(t, label+" accrued", got.Accrued, want.Accrued)
+			// AccruedGross and TermsEffectiveFrom are the recompute window, and
+			// a store that dropped either would re-derive the whole window as a
+			// fresh delta every night and charge the same interest over and
+			// over. Nothing else in this suite would notice: they are not
+			// derivable from any other column, and Accrued alone round-trips
+			// fine without them.
+			assertEqual(t, label+" accrued gross", got.AccruedGross, want.AccruedGross)
 			assertEqual(t, label+" days past due", got.Arrears.DaysPastDue, want.Arrears.DaysPastDue)
 			assertEqual(t, label+" bucket", got.Arrears.Bucket, want.Arrears.Bucket)
 			assertEqual(t, label+" non performing", got.Arrears.NonPerforming, want.Arrears.NonPerforming)
 			assertEqual(t, label+" status", got.Status, want.Status)
+			if !got.TermsEffectiveFrom.Equal(want.TermsEffectiveFrom) {
+				t.Errorf("%s terms effective from: got %v, want %v", label, got.TermsEffectiveFrom, want.TermsEffectiveFrom)
+			}
 			if !got.LastAccrualDate.Equal(want.LastAccrualDate) {
 				t.Errorf("%s last accrual date: got %v, want %v", label, got.LastAccrualDate, want.LastAccrualDate)
 			}
@@ -159,6 +171,14 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			if !open.LastAccrualDate.IsZero() {
 				t.Errorf("never-accrued date = %v, want zero", open.LastAccrualDate)
 			}
+			// An undrawn facility has no accrual window, and the zero time is
+			// what accrueFacilityTx tests to decide there is nothing to accrue
+			// over. A store that read it back as an epoch would open a window
+			// at 1970 and re-derive fifty-five years of interest.
+			if !open.TermsEffectiveFrom.IsZero() {
+				t.Errorf("undrawn terms effective from = %v, want zero", open.TermsEffectiveFrom)
+			}
+			assertEqual(t, "undrawn accrued gross", open.AccruedGross, interest.Accrued(0))
 			return nil
 		})
 	})

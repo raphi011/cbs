@@ -13,6 +13,16 @@ import (
 // disbursedLoan is a €10,000 five-year annuity at 6%, paid out on 15 January.
 func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.AccountID) {
 	t.Helper()
+	p, book, _, loan, customer := disbursedLoanIn(t)
+	return p, book, loan, customer
+}
+
+// disbursedLoanIn is disbursedLoan plus the subledger the loan was filed in.
+// postTo has to create its counterparty accounts somewhere, and a fixture that
+// kept the subledger to itself would make every backdating test below build its
+// own loan by hand.
+func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, lending.Facility, ledger.AccountID) {
+	t.Helper()
 	ctx := context.Background()
 	p, book, sub, customer := newTestPortfolio(t)
 
@@ -27,11 +37,80 @@ func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Faci
 	if err != nil {
 		t.Fatalf("GetFacility: %v", err)
 	}
-	return p, book, after, customer
+	return p, book, sub, after, customer
 }
 
 func day(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// drawdown is the day disbursedLoan's money reaches the borrower, and so the
+// day its accrual window opens: the test portfolio's clock reads 15 January.
+var drawdown = day(2025, time.January, 15)
+
+// postTo posts a movement onto one of a facility's GL accounts against a
+// throwaway counterparty, value-dated as given.
+//
+// It stands in for a posting that reached the ledger without passing through
+// this layer — a repayment keyed in late and backdated to the day it took
+// effect, an advance value-dated forward — which is the only way to produce the
+// case the recompute exists for. deposit's test package has the same helper for
+// the same reason; the two are not shared because neither package imports the
+// other.
+func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, account ledger.AccountID, asset ledger.AssetCode, amount ledger.Amount, dir ledger.Direction, value time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	// The contra is picked so that it absorbs the movement rather than being
+	// driven below zero, which the ledger refuses for Asset and Expense
+	// accounts: a Liability is credited, an Asset debited.
+	contraType, other := ledger.Liability, ledger.Credit
+	if dir == ledger.Credit {
+		contraType, other = ledger.Asset, ledger.Debit
+	}
+	contra, err := book.CreateAccount(ctx, sub, "Counterparty "+string(account), contraType, asset)
+	if err != nil {
+		t.Fatalf("counterparty: %v", err)
+	}
+	if _, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "test movement",
+		ValueDate:   value,
+		Entries: []ledger.Entry{
+			{AccountID: account, Amount: amount, Direction: dir},
+			{AccountID: contra.ID, Amount: amount, Direction: other},
+		},
+	}); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+}
+
+// accrueDays runs the daily accrual for days 1..n after drawdown, the way an
+// end-of-day batch would.
+func accrueDays(t *testing.T, p *lending.Portfolio, id lending.FacilityID, n int) {
+	t.Helper()
+	ctx := context.Background()
+	for i := 1; i <= n; i++ {
+		if err := p.Accrue(ctx, id, drawdown.AddDate(0, 0, i)); err != nil {
+			t.Fatalf("Accrue day %d: %v", i, err)
+		}
+	}
+}
+
+func facility(t *testing.T, p *lending.Portfolio, id lending.FacilityID) lending.Facility {
+	t.Helper()
+	f, err := p.GetFacility(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	return f
+}
+
+func bookBalance(t *testing.T, book *ledger.Book, id ledger.AccountID) ledger.Amount {
+	t.Helper()
+	bal, err := book.BookBalance(context.Background(), id)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	return bal
 }
 
 func TestAccrue_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
@@ -489,5 +568,229 @@ func TestChargeInterest_RefusesACycleAlreadyBilled(t *testing.T) {
 	}
 	if len(schedule) != 2 {
 		t.Fatalf("instalments after a backdated cycle = %d, want 2", len(schedule))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The recompute: backdated postings, and the corrections they produce
+// ---------------------------------------------------------------------------
+
+func TestAccrue_CorrectsABackdatedRepayment(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, loan, _ := disbursedLoanIn(t)
+
+	accrueDays(t, p, loan.ID, 10)
+	ten := facility(t, p, loan.ID)
+	// €10,000 at 6% ACT/365 is 164.383561 cents a day.
+	if ten.Accrued != 1_643_835_610 {
+		t.Fatalf("accrued over ten drawn days = %d, want 1643835610", ten.Accrued)
+	}
+	if got := bookBalance(t, book, loan.InterestGL); got != 1644 {
+		t.Fatalf("receivable after ten days = %d, want 1644", got)
+	}
+
+	// Half the principal was repaid on day 3 and only reaches the ledger now:
+	// from day 3 onward less was owed than the accrual assumed.
+	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 500_000, ledger.Credit, drawdown.AddDate(0, 0, 3))
+
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 11)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+	got := facility(t, p, loan.ID)
+	if got.Accrued >= ten.Accrued {
+		t.Errorf("accrued after the backdated repayment = %d, want less than %d", got.Accrued, ten.Accrued)
+	}
+
+	// "Less than before" is not enough on its own: the whole window is
+	// re-derived at the balance each day actually carried, and only a recompute
+	// reaches this figure.
+	//
+	//	days 1-2   at 1_000_000  2 × 164_383_561 =   328_767_122
+	//	days 3-11  at   500_000  9 ×  82_191_780 =   739_726_020
+	//	                                         = 1_068_493_142 -> 1068 cents
+	if got.Accrued != 1_068_493_142 {
+		t.Errorf("accrued after the backdated repayment = %d, want 1068493142", got.Accrued)
+	}
+	// AccruedGross is that whole window total. Accrued equals it here only
+	// because nothing has been settled off the record yet.
+	if got.AccruedGross != 1_068_493_142 {
+		t.Errorf("gross = %d, want 1068493142", got.AccruedGross)
+	}
+	// The correction credited the receivable, which still holds Minor() of the
+	// record — the invariant every caller in this package depends on.
+	if recv := bookBalance(t, book, loan.InterestGL); recv != got.Accrued.Minor() {
+		t.Errorf("receivable = %d, accrued = %d; the two must agree", recv, got.Accrued.Minor())
+	}
+	if recv := bookBalance(t, book, loan.InterestGL); recv != 1068 {
+		t.Errorf("receivable = %d, want 1068", recv)
+	}
+}
+
+func TestAccrue_IgnoresAForwardValueDatedAdvance(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, loan, _ := disbursedLoanIn(t)
+
+	accrueDays(t, p, loan.ID, 1)
+	baseline := facility(t, p, loan.ID).Accrued
+
+	// A second advance, booked today but value-dated five days out. It has not
+	// taken economic effect, so it is not part of any day being accrued.
+	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Debit, drawdown.AddDate(0, 0, 5))
+
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 2)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+	oneMoreDay := facility(t, p, loan.ID).Accrued
+
+	// Day 2 accrued on the original €10,000, so its increment matches day 1's.
+	if got, want := oneMoreDay-baseline, baseline; got != want {
+		t.Errorf("second day accrued %d, want %d; the forward-dated advance has not taken effect", got, want)
+	}
+}
+
+// TestAccrue_CorrectionRefundsToPrincipal covers the case the receivable cannot
+// absorb: interest the borrower has already paid, which a backdated repayment
+// then shows was never owed. It is credited to principal — they owe less — and
+// that is what makes the following day accrue on a smaller basis.
+func TestAccrue_CorrectionRefundsToPrincipal(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, loan, customer := disbursedLoanIn(t)
+
+	accrueDays(t, p, loan.ID, 30)
+	// Settle the accrued interest, emptying the receivable.
+	settled, err := p.AccruedInterest(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("AccruedInterest: %v", err)
+	}
+	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
+		t.Fatalf("Repay: %v", err)
+	}
+	if recv := bookBalance(t, book, loan.InterestGL); recv != 0 {
+		t.Fatalf("receivable after repayment = %d, want 0", recv)
+	}
+	principalBefore := bookBalance(t, book, loan.PrincipalGL)
+
+	// All but €1,000 of the loan was repaid on day one, backdated.
+	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 900_000, ledger.Credit, drawdown)
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+
+	recv := bookBalance(t, book, loan.InterestGL)
+	if recv < 0 {
+		t.Errorf("receivable = %d; the correction must clamp rather than drive an Asset negative", recv)
+	}
+	principalAfter := bookBalance(t, book, loan.PrincipalGL)
+	// 31 days on €1,000 is 509_589_036, against 4_931_506_830 charged on
+	// €10,000 — 4422 cents of it already paid, so 4422 comes back off what is
+	// still owed.
+	if want := principalBefore - 900_000 - 4_422; principalAfter != want {
+		t.Errorf("principal %d -> %d, want %d; the unabsorbed correction must reduce what the borrower owes",
+			principalBefore, principalAfter, want)
+	}
+	// The refunded part has been settled in cash, so it comes back on to the
+	// record: leaving the record negative by it would suppress the next 4422
+	// cents of interest genuinely owed and hand the borrower the money twice.
+	got := facility(t, p, loan.ID)
+	if recv != got.Accrued.Minor() {
+		t.Errorf("receivable = %d, accrued = %d; a refund left on the record is money given back twice",
+			recv, got.Accrued.Minor())
+	}
+}
+
+// TestAccrue_CorrectionClampsToWhatTheFacilityOwes is the far end of the same
+// case. Principal is an Asset too, so a correction bigger than everything still
+// outstanding cannot be posted anywhere: the borrower has overpaid the bank
+// outright, and this layer has no account to pay one from. It must clamp rather
+// than refuse — a refusal inside an end-of-day batch takes the whole book's run
+// down — and the record must still end up agreeing with the receivable.
+func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, loan, customer := disbursedLoanIn(t)
+
+	accrueDays(t, p, loan.ID, 30)
+	settled, err := p.AccruedInterest(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("AccruedInterest: %v", err)
+	}
+	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
+		t.Fatalf("Repay: %v", err)
+	}
+
+	// The whole loan was repaid on day one, backdated: no interest was ever
+	// owed, and there is nothing left to credit the correction to.
+	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Credit, drawdown)
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+
+	if drawn := bookBalance(t, book, loan.PrincipalGL); drawn != 0 {
+		t.Errorf("principal = %d, want 0; the correction must not drive it negative", drawn)
+	}
+	recv := bookBalance(t, book, loan.InterestGL)
+	if recv != 0 {
+		t.Errorf("receivable = %d, want 0", recv)
+	}
+	if got := facility(t, p, loan.ID); got.Accrued.Minor() != recv {
+		t.Errorf("receivable = %d, accrued = %d; the two must agree even when nothing could be given back",
+			recv, got.Accrued.Minor())
+	}
+	// Nothing is stranded: the facility can be closed.
+	if err := p.Close(ctx, loan.ID); err != nil {
+		t.Errorf("Close after a clamped correction: %v", err)
+	}
+}
+
+// TestAccrue_RefundFeedsTheFollowingDaysBasis pins the one feedback loop in
+// this design: a refund credits PrincipalGL, which IS the accrual basis, so the
+// days after it accrue on less.
+func TestAccrue_RefundFeedsTheFollowingDaysBasis(t *testing.T) {
+	ctx := context.Background()
+	p, book, sub, loan, customer := disbursedLoanIn(t)
+
+	accrueDays(t, p, loan.ID, 30)
+	settled, err := p.AccruedInterest(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("AccruedInterest: %v", err)
+	}
+	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
+		t.Fatalf("Repay: %v", err)
+	}
+
+	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 900_000, ledger.Credit, drawdown)
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
+		t.Fatalf("Accrue day 31: %v", err)
+	}
+	drawnAfterCorrection := bookBalance(t, book, loan.PrincipalGL)
+	if drawnAfterCorrection >= 100_000 {
+		t.Fatalf("principal after the correction = %d, want less than 100000", drawnAfterCorrection)
+	}
+
+	// Day 32 is the run that absorbs the correction's own value date. The
+	// refund is value-dated day 31, and a movement value-dated on a day is in
+	// force for the day ENDING on it (ledger.Series and interest.AccrueSeries
+	// are both explicit about this), so day 31 — already accrued at the old
+	// basis — is re-derived here too. That is ordinary behaviour for any
+	// posting made after a day's end-of-day, not something the correction does
+	// specially, and it is why the clean single-day comparison is day 33.
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 32)); err != nil {
+		t.Fatalf("Accrue day 32: %v", err)
+	}
+	before := facility(t, p, loan.ID).Accrued
+	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 33)); err != nil {
+		t.Fatalf("Accrue day 33: %v", err)
+	}
+	after := facility(t, p, loan.ID).Accrued
+
+	want := interest.Accrue(drawnAfterCorrection, loan.Rate, loan.DayCount,
+		drawdown.AddDate(0, 0, 32), drawdown.AddDate(0, 0, 33))
+	if got := after - before; got != want {
+		t.Errorf("day 33 accrued %d, want %d on the post-refund principal %d", got, want, drawnAfterCorrection)
+	}
+	// And that is strictly less than a day on the basis before the refund.
+	full := interest.Accrue(100_000, loan.Rate, loan.DayCount,
+		drawdown.AddDate(0, 0, 32), drawdown.AddDate(0, 0, 33))
+	if want >= full {
+		t.Errorf("post-refund day = %d, want less than %d; the refund must reduce the basis", want, full)
 	}
 }

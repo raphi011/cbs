@@ -35,34 +35,38 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 		INSERT INTO facilities (
 			book_id, id, kind, name, asset, principal_gl, interest_gl,
 			commitment, rate, day_count, method, term_months, min_payment,
-			accrued_interest, last_accrual_date, days_past_due, arrears_bucket,
+			accrued_interest, accrued_gross, terms_effective_from,
+			last_accrual_date, days_past_due, arrears_bucket,
 			non_performing, oldest_unpaid_due, status, opened_at, maturity_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
 		ON CONFLICT (book_id, id) DO UPDATE SET
-			kind              = EXCLUDED.kind,
-			name              = EXCLUDED.name,
-			asset             = EXCLUDED.asset,
-			principal_gl      = EXCLUDED.principal_gl,
-			interest_gl       = EXCLUDED.interest_gl,
-			commitment        = EXCLUDED.commitment,
-			rate              = EXCLUDED.rate,
-			day_count         = EXCLUDED.day_count,
-			method            = EXCLUDED.method,
-			term_months       = EXCLUDED.term_months,
-			min_payment       = EXCLUDED.min_payment,
-			accrued_interest  = EXCLUDED.accrued_interest,
-			last_accrual_date = EXCLUDED.last_accrual_date,
-			days_past_due     = EXCLUDED.days_past_due,
-			arrears_bucket    = EXCLUDED.arrears_bucket,
-			non_performing    = EXCLUDED.non_performing,
-			oldest_unpaid_due = EXCLUDED.oldest_unpaid_due,
-			status            = EXCLUDED.status,
-			opened_at         = EXCLUDED.opened_at,
-			maturity_at       = EXCLUDED.maturity_at`,
+			kind                 = EXCLUDED.kind,
+			name                 = EXCLUDED.name,
+			asset                = EXCLUDED.asset,
+			principal_gl         = EXCLUDED.principal_gl,
+			interest_gl          = EXCLUDED.interest_gl,
+			commitment           = EXCLUDED.commitment,
+			rate                 = EXCLUDED.rate,
+			day_count            = EXCLUDED.day_count,
+			method               = EXCLUDED.method,
+			term_months          = EXCLUDED.term_months,
+			min_payment          = EXCLUDED.min_payment,
+			accrued_interest     = EXCLUDED.accrued_interest,
+			accrued_gross        = EXCLUDED.accrued_gross,
+			terms_effective_from = EXCLUDED.terms_effective_from,
+			last_accrual_date    = EXCLUDED.last_accrual_date,
+			days_past_due        = EXCLUDED.days_past_due,
+			arrears_bucket       = EXCLUDED.arrears_bucket,
+			non_performing       = EXCLUDED.non_performing,
+			oldest_unpaid_due    = EXCLUDED.oldest_unpaid_due,
+			status               = EXCLUDED.status,
+			opened_at            = EXCLUDED.opened_at,
+			maturity_at          = EXCLUDED.maturity_at`,
 		string(book), string(f.ID), int16(f.Kind), f.Name, string(f.Asset),
 		string(f.PrincipalGL), string(f.InterestGL),
 		f.Commitment, int64(f.Rate), int16(f.DayCount), int16(f.Method), f.TermMonths, int64(f.MinPayment),
-		int64(f.Accrued), nullTime(f.LastAccrualDate), f.Arrears.DaysPastDue, int16(f.Arrears.Bucket),
+		int64(f.Accrued), int64(f.AccruedGross), nullTime(f.TermsEffectiveFrom),
+		nullTime(f.LastAccrualDate), f.Arrears.DaysPastDue, int16(f.Arrears.Bucket),
 		f.Arrears.NonPerforming, nullTime(f.Arrears.OldestUnpaidDue), int16(f.Status),
 		nullTime(f.OpenedAt), nullTime(f.MaturityAt))
 	if err != nil {
@@ -77,7 +81,8 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 const facilityColumns = `
 	id, kind, name, asset, principal_gl, interest_gl,
 	commitment, rate, day_count, method, term_months, min_payment,
-	accrued_interest, last_accrual_date, days_past_due, arrears_bucket,
+	accrued_interest, accrued_gross, terms_effective_from,
+	last_accrual_date, days_past_due, arrears_bucket,
 	non_performing, oldest_unpaid_due, status, opened_at, maturity_at`
 
 // scanFacility reads one row of facilityColumns. Both pgx.Row (QueryRow) and
@@ -88,13 +93,16 @@ func scanFacility(row interface{ Scan(...any) error }) (lending.Facility, error)
 		f                         lending.Facility
 		kind, dayCount, method    int16
 		rate, minPayment, accrued int64
+		gross                     int64
 		bucket, status            int16
+		termsFrom                 *time.Time
 		lastAccrual, oldestUnpaid *time.Time
 		openedAt, maturityAt      *time.Time
 	)
 	if err := row.Scan(&f.ID, &kind, &f.Name, &f.Asset, &f.PrincipalGL, &f.InterestGL,
 		&f.Commitment, &rate, &dayCount, &method, &f.TermMonths, &minPayment,
-		&accrued, &lastAccrual, &f.Arrears.DaysPastDue, &bucket,
+		&accrued, &gross, &termsFrom,
+		&lastAccrual, &f.Arrears.DaysPastDue, &bucket,
 		&f.Arrears.NonPerforming, &oldestUnpaid, &status, &openedAt, &maturityAt); err != nil {
 		return lending.Facility{}, err
 	}
@@ -104,6 +112,8 @@ func scanFacility(row interface{ Scan(...any) error }) (lending.Facility, error)
 	f.Rate = interest.Rate(rate)
 	f.MinPayment = interest.Fraction(minPayment)
 	f.Accrued = interest.Accrued(accrued)
+	f.AccruedGross = interest.Accrued(gross)
+	f.TermsEffectiveFrom = readTime(termsFrom)
 	f.LastAccrualDate = readTime(lastAccrual)
 	f.Arrears.Bucket = lending.Bucket(bucket)
 	f.Arrears.OldestUnpaidDue = readTime(oldestUnpaid)

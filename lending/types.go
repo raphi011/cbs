@@ -201,8 +201,35 @@ type Facility struct {
 	// precision. InterestGL holds Accrued.Minor(); this holds the residue the
 	// ledger cannot represent.
 	Accrued interest.Accrued
+	// AccruedGross is the interest the current terms window has produced in
+	// total, recomputed from the facility's value-dated drawn balance on every
+	// run. Accrued moves by the CHANGE in it, which is what lets a backdated
+	// posting correct the interest charged on the days it takes effect over:
+	// those days are re-derived with it in place, this figure moves, and the
+	// next run posts the difference.
+	//
+	// Unlike Accrued it is never decremented by a repayment or a
+	// capitalization — those settle the receivable, not the window — and it
+	// resets when the window does, which today is the first advance.
+	AccruedGross interest.Accrued
+	// TermsEffectiveFrom is the start of the recompute window: where the
+	// current terms took effect, which for a facility is its first advance.
+	// Money not yet paid out earns nothing, so there is nothing earlier to
+	// re-derive.
+	//
+	// It is bounded there rather than at origination for the same reason
+	// deposit.Account.TermsEffectiveFrom is bounded at the last repricing: Rate
+	// and DayCount are mutable columns on this very row, so a window reaching
+	// back past a change to them would re-derive past days at a rate that was
+	// not in force on them. Nothing in this package reprices a facility yet;
+	// whatever does must move this field, and reset AccruedGross with it.
+	//
+	// Zero means nothing has been advanced and the facility accrues nothing.
+	TermsEffectiveFrom time.Time
 	// LastAccrualDate never moves backwards, which is what makes re-running an
-	// end-of-day a no-op rather than a second day's interest.
+	// end-of-day a no-op rather than a second day's interest — and why a
+	// backdated posting is corrected by the next day's run rather than by
+	// rewinding this one.
 	LastAccrualDate time.Time
 
 	Arrears Arrears

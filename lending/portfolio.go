@@ -288,7 +288,13 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	}
 
 	f.Status = Active
-	f.LastAccrualDate = p.now()
+	// Disbursement opens the accrual window. Nothing was owed before it, so
+	// there is no earlier span for the recompute to reach back over and none
+	// can fall between two windows: this is the first one.
+	now := p.now()
+	f.LastAccrualDate = now
+	f.TermsEffectiveFrom = now
+	f.AccruedGross = 0
 	if n := len(schedule); n > 0 {
 		f.MaturityAt = schedule[n-1].DueDate
 	}
@@ -354,8 +360,13 @@ func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterpar
 	if f.Status == Pending {
 		f.Status = Active
 		// A line accrues from its first draw, not from opening: an undrawn
-		// commitment costs the borrower nothing.
-		f.LastAccrualDate = p.now()
+		// commitment costs the borrower nothing. That first draw is therefore
+		// also where the recompute window opens, and a later draw leaves it
+		// alone — the window spans the whole drawn history, which is the point.
+		now := p.now()
+		f.LastAccrualDate = now
+		f.TermsEffectiveFrom = now
+		f.AccruedGross = 0
 		if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
 			return ledger.Transaction{}, err
 		}
@@ -448,6 +459,19 @@ func (p *Portfolio) Drawn(ctx context.Context, id FacilityID) (ledger.Amount, er
 // principal account is an Asset, so its normal balance is Debit.
 func (p *Portfolio) drawnTx(ctx context.Context, tx Tx, f Facility) (ledger.Amount, error) {
 	return tx.BookBalance(ctx, p.bookID, f.PrincipalGL, ledger.Debit)
+}
+
+// drawnSeriesTx is the value-dated history of what the borrower owed over
+// [from, to]. Like drawnTx it reads PrincipalGL, whose normal balance is Debit
+// because a loan is an Asset; unlike drawnTx it returns each day's own figure
+// rather than today's, which is what lets the accrual re-derive a past day with
+// a posting that only reached the ledger after it.
+//
+// The bounds are snapped here: from is inclusive and to is exclusive, so a
+// window that is to accrue THROUGH to must read the day to falls in.
+func (p *Portfolio) drawnSeriesTx(ctx context.Context, tx Tx, f Facility, from, to time.Time) (ledger.Series, error) {
+	return tx.ValueDatedSeries(ctx, p.bookID, f.PrincipalGL, ledger.Debit,
+		ledger.DayStart(from), ledger.NextDay(to))
 }
 
 // receivableTx is the book balance of a facility's accrued-interest

@@ -285,6 +285,8 @@ CREATE TABLE facilities (
     term_months       INTEGER NOT NULL,
     min_payment       BIGINT NOT NULL,
     accrued_interest  BIGINT NOT NULL,
+    accrued_gross     BIGINT NOT NULL DEFAULT 0,
+    terms_effective_from TIMESTAMPTZ,
     last_accrual_date TIMESTAMPTZ,
     days_past_due     INTEGER NOT NULL,
     arrears_bucket    SMALLINT NOT NULL,
@@ -607,6 +609,31 @@ COMMENT ON COLUMN facilities.accrued_interest IS
     'because a scale carried in an integer column is invisible in a schema '
     'dump, and because a reader who saw the negative values would otherwise '
     'read them as corruption.';
+
+COMMENT ON COLUMN facilities.accrued_gross IS
+    'What the CURRENT terms window has accrued in total, same scale as '
+    'accrued_interest. Facility interest is recomputed rather than '
+    'incremented: every end-of-day re-derives the whole window from the '
+    'VALUE-DATED balance of principal_gl, and accrued_interest moves by the '
+    'change in this column. That is what makes a backdated repayment or '
+    'advance correct itself — the days it takes effect over are re-derived '
+    'with it in place, this figure moves, and the next run posts the '
+    'difference. Unlike accrued_interest it is never decremented by a '
+    'repayment or a capitalization, which settle the receivable rather than '
+    'the window. A store that dropped this column would re-derive the whole '
+    'window as a fresh delta every night and charge the same interest over '
+    'and over.';
+
+COMMENT ON COLUMN facilities.terms_effective_from IS
+    'The start of the recompute window: where the current terms took effect, '
+    'which for a facility is its FIRST ADVANCE — money not yet paid out earns '
+    'nothing, so there is nothing earlier to re-derive. It is bounded there '
+    'rather than at origination for the same reason '
+    'deposit_accounts.terms_effective_from is bounded at the last repricing: '
+    'rate and day_count are mutable columns on this very row, and a window '
+    'reaching back past a change to them would re-derive past days at a rate '
+    'that was not in force on them. NULL means nothing has been advanced and '
+    'the facility accrues nothing.';
 
 COMMENT ON COLUMN facilities.rate IS
     'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '

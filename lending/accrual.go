@@ -23,15 +23,28 @@ import (
 // A day on which the rounding does not tick posts nothing, which is why this
 // returns no transaction.
 //
-// The base is the DRAWN principal, derived from the principal account's
-// balance. An open but undrawn commitment costs the borrower nothing, which is
-// why a facility can sit at Pending accruing zero indefinitely.
+// The base is the DRAWN principal — each day's own VALUE-DATED closing balance
+// of the principal account, not today's applied backwards. An open but undrawn
+// commitment costs the borrower nothing, which is why a facility can sit at
+// Pending accruing zero indefinitely.
+//
+// A gap of several days is therefore exact rather than approximate: every day
+// in the span accrues on the balance that was actually in force on it, which is
+// what a bank does and what a missed end-of-day used to get wrong.
+//
+// # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
-// already covered is a no-op rather than a second day's interest. A gap of
-// several days accrues at the CURRENT drawn balance for the whole span, which
-// is exact only if nothing was drawn or repaid in between; a bank accrues on
-// each day's closing balance, and running this daily makes the two identical.
+// already covered is a no-op rather than a second day's interest.
+//
+// That is also why a posting which arrives backdated is trued up by the NEXT
+// day's run rather than by rewinding this one. Each run recomputes the whole
+// terms window from the value-dated drawn balance, so the days the posting
+// takes effect over are re-derived with it in place; the difference between the
+// window's new total and its old one is what gets posted. Interest that turns
+// out never to have been owed comes back as a correction — see
+// correctFacilityAccrualTx, which is where a facility differs from a deposit
+// account: what the receivable cannot absorb comes off principal.
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) Accrue(ctx context.Context, id FacilityID, date time.Time) error {
@@ -51,32 +64,49 @@ func (p *Portfolio) AccrueTx(ctx context.Context, tx Tx, id FacilityID, date tim
 
 // accrueFacilityTx is AccrueTx against a facility the caller has already
 // loaded. RunEndOfDay lists every facility and would otherwise read each twice.
+//
+// Like the deposit layer's overdraft accrual, this is a recomputation rather
+// than an increment: every run re-derives the whole terms window from the
+// facility's value-dated drawn balance and posts the change in the rounded
+// value. On an ordinary day that is the same delta the incremental version
+// posted, arrived at differently. The difference shows when a repayment or an
+// advance lands backdated: the days it takes effect over are re-derived with it
+// in place, gross moves, and the delta trues up what was charged on the old
+// figure. No accrual is reversed and no date is rewound — the original posting
+// was a correct statement of what the ledger knew at the time.
 func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, date time.Time) error {
 	if f.Status == Closed || f.Rate <= 0 {
 		return nil
 	}
-	if f.LastAccrualDate.IsZero() {
-		// Nothing has been advanced yet, so there is no period to accrue over.
+	if f.TermsEffectiveFrom.IsZero() {
+		// Nothing has been advanced yet, so there is no window to accrue over.
 		return nil
 	}
 	if f.DayCount.Days(f.LastAccrualDate, date) <= 0 {
 		return nil
 	}
 
-	drawn, err := p.drawnTx(ctx, tx, f)
+	series, err := p.drawnSeriesTx(ctx, tx, f, f.TermsEffectiveFrom, date)
 	if err != nil {
 		return err
 	}
+	gross := interest.AccrueSeries(series, f.TermsEffectiveFrom, date,
+		func(drawn ledger.Amount, from, to time.Time) interest.Accrued {
+			return dailyFacilityAccrual(drawn, f, from, to)
+		})
 
 	before := f.Accrued.Minor()
-	f.Accrued += interest.Accrue(drawn, f.Rate, f.DayCount, f.LastAccrualDate, date)
+	f.Accrued += gross - f.AccruedGross
+	f.AccruedGross = gross
 	f.LastAccrualDate = date
-	if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
-		return err
-	}
 
 	delta := f.Accrued.Minor() - before
 	if delta == 0 {
+		// The rounding did not tick. There is nothing to post, and the ledger
+		// refuses a zero-amount entry anyway.
+		if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
+			return err
+		}
 		return p.appendAuditTx(ctx, tx, ledger.EventFacilityAccrued, string(f.ID), f)
 	}
 
@@ -84,6 +114,13 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 	if err != nil {
 		return err
 	}
+	// A correction can settle part of the record against principal, which moves
+	// Accrued again, so it owns the write — the same shape ChargeInterestTx has
+	// for the same reason. Only it knows what was actually given back.
+	if delta < 0 {
+		return p.correctFacilityAccrualTx(ctx, tx, &f, income, -delta, date)
+	}
+
 	if _, err := p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: "Interest accrued: " + f.Name,
 		BookingDate: date,
@@ -95,7 +132,135 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 	}); err != nil {
 		return err
 	}
+	if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
+		return err
+	}
 	return p.appendAuditTx(ctx, tx, ledger.EventFacilityAccrued, string(f.ID), f)
+}
+
+// correctFacilityAccrualTx gives back interest a backdated posting has shown
+// was never owed. amount is positive.
+//
+// It is not a reversal. The original accrual was a correct statement of what
+// the ledger knew at the time, and reversing it would say otherwise; this is a
+// new, linked event that posts what actually changed.
+//
+// The credit goes to the receivable as far as it reaches. Anything beyond it is
+// interest the borrower has already settled, and it is credited to PRINCIPAL:
+// they have paid the bank money they did not owe, so they now owe less of what
+// they borrowed. That reduces the accrual basis, so the following days accrue
+// on the smaller figure — the one feedback loop in this design, and the correct
+// outcome.
+//
+// # Both credits are clamped
+//
+// Principal and the receivable are both Assets, and the ledger refuses a
+// posting that would drive either below zero — inside an end-of-day batch that
+// takes the whole book's run down with it. So the correction is bounded by what
+// the facility still owes.
+//
+// Beyond that bound the borrower has overpaid the bank outright, and this layer
+// has no account to pay one from: it does not know what a deposit account is,
+// by design. The excess is left uncorrected rather than refused, and refunding
+// it is an operator's job. What it must NOT do is stay on the record: see below.
+//
+// # Why the unabsorbed part comes back on to the record
+//
+// Only the part the receivable absorbed has left the record — that is the
+// account Accrued mirrors. The rest either left in cash against principal or
+// was never given back at all, and in both cases Accrued has to be credited by
+// it or the facility carries a permanent negative against a receivable that
+// does not share it. That breaks the invariant interest/accrue.go states for
+// every caller here — the accrued-interest account's book balance equals
+// Minor() of the record — and hands the borrower the money a second time,
+// because the next interest genuinely owed is swallowed paying off a negative
+// that should not exist. api/dto_lending.go reports that record straight
+// through.
+//
+// It takes f by pointer for that reason and writes the facility itself. Only
+// this function knows the split.
+func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Facility, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
+	receivable, err := p.receivableTx(ctx, tx, *f)
+	if err != nil {
+		return err
+	}
+	absorbed := min(amount, max(receivable, 0))
+
+	refund := amount - absorbed
+	if refund > 0 {
+		drawn, err := p.drawnTx(ctx, tx, *f)
+		if err != nil {
+			return err
+		}
+		refund = min(refund, max(drawn, 0))
+	}
+
+	var glTx ledger.Transaction
+	if posted := absorbed + refund; posted > 0 {
+		entries := []ledger.Entry{{AccountID: income, Amount: posted, Direction: ledger.Debit}}
+		if absorbed > 0 {
+			entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: absorbed, Direction: ledger.Credit})
+		}
+		if refund > 0 {
+			entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: refund, Direction: ledger.Credit})
+		}
+		glTx, err = p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+			Description: "Interest corrected: " + f.Name,
+			BookingDate: date,
+			ValueDate:   date,
+			Entries:     entries,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
+	f.Accrued += interest.FromMinor(amount - absorbed)
+	if err := tx.PutFacility(ctx, p.bookID, *f); err != nil {
+		return err
+	}
+	return p.appendAuditTx(ctx, tx, ledger.EventFacilityAccrualCorrected, string(f.ID), map[string]any{
+		"facility_id":    string(f.ID),
+		"amount":         amount,
+		"absorbed":       absorbed,
+		"refund":         refund,
+		"transaction_id": string(glTx.ID),
+		"residue":        int64(f.Accrued),
+	})
+}
+
+// dailyFacilityAccrual is a facility's interest applied one day at a time
+// across a run of constant drawn balance. It is the interest.Period this
+// product accrues by.
+//
+// AccrueSeries hands a Period a whole run at once, and interest.Accrue over an
+// N-day span is NOT the sum of its N single days: it divides once per call, so
+// one call over N days truncates once where N calls truncate N times. That
+// difference is the whole reason this walk exists. Facility interest has always
+// been accrued a business day at a time, and every receivable in the book was
+// built up that way — 30 days on €1,000 at 18% is 1_479_452_040 day by day
+// against 1_479_452_054 in one call. Recomputing a window with one long call
+// would restate the record of every facility the first night it ran. Walking
+// the days is what makes the recompute reproduce the increment it replaces,
+// which is the only thing that makes it a safe swap.
+//
+// It matters more than truncation under Thirty360, where a day is not always a
+// day: the 31st collapses onto the 30th and accrues nothing. What "the interest
+// over this window" comes to there depends on how the window is cut, so the
+// only answer worth reproducing is the one that was actually charged — day by
+// day. That is also why this cannot be shortened to one call times the day
+// count.
+//
+// The cost is arithmetic, not I/O: AccrueSeries still reads the window in one
+// query, and this loop adds no round trips. deposit.dailyOverdraftAccrual is
+// the same function over a tiered rate.
+func dailyFacilityAccrual(drawn ledger.Amount, f Facility, from, to time.Time) interest.Accrued {
+	var total interest.Accrued
+	end := ledger.DayStart(to)
+	for d := ledger.DayStart(from); d.Before(end); d = d.AddDate(0, 0, 1) {
+		total += interest.Accrue(drawn, f.Rate, f.DayCount, d, d.AddDate(0, 0, 1))
+	}
+	return total
 }
 
 // interestIncomeTx resolves the bank's interest-income account for a
