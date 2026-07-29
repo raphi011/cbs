@@ -33,18 +33,19 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO facilities (
-			book_id, id, kind, name, asset, principal_gl, interest_gl,
+			book_id, id, kind, name, asset, principal_gl, interest_gl, refund_gl,
 			commitment, rate, day_count, method, term_months, min_payment,
 			accrued_interest, accrued_gross, terms_effective_from,
 			last_accrual_date, days_past_due, arrears_bucket,
 			non_performing, oldest_unpaid_due, status, opened_at, maturity_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
 		ON CONFLICT (book_id, id) DO UPDATE SET
 			kind                 = EXCLUDED.kind,
 			name                 = EXCLUDED.name,
 			asset                = EXCLUDED.asset,
 			principal_gl         = EXCLUDED.principal_gl,
 			interest_gl          = EXCLUDED.interest_gl,
+			refund_gl            = EXCLUDED.refund_gl,
 			commitment           = EXCLUDED.commitment,
 			rate                 = EXCLUDED.rate,
 			day_count            = EXCLUDED.day_count,
@@ -63,7 +64,7 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 			opened_at            = EXCLUDED.opened_at,
 			maturity_at          = EXCLUDED.maturity_at`,
 		string(book), string(f.ID), int16(f.Kind), f.Name, string(f.Asset),
-		string(f.PrincipalGL), string(f.InterestGL),
+		string(f.PrincipalGL), string(f.InterestGL), string(f.RefundGL),
 		f.Commitment, int64(f.Rate), int16(f.DayCount), int16(f.Method), f.TermMonths, int64(f.MinPayment),
 		int64(f.Accrued), int64(f.AccruedGross), nullTime(f.TermsEffectiveFrom),
 		nullTime(f.LastAccrualDate), f.Arrears.DaysPastDue, int16(f.Arrears.Bucket),
@@ -79,7 +80,7 @@ func (t *tx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Faci
 // is what stops GetFacility and ListFacilities from scanning different column
 // sets, which is a whole class of "it round-trips one way".
 const facilityColumns = `
-	id, kind, name, asset, principal_gl, interest_gl,
+	id, kind, name, asset, principal_gl, interest_gl, refund_gl,
 	commitment, rate, day_count, method, term_months, min_payment,
 	accrued_interest, accrued_gross, terms_effective_from,
 	last_accrual_date, days_past_due, arrears_bucket,
@@ -99,7 +100,7 @@ func scanFacility(row interface{ Scan(...any) error }) (lending.Facility, error)
 		lastAccrual, oldestUnpaid *time.Time
 		openedAt, maturityAt      *time.Time
 	)
-	if err := row.Scan(&f.ID, &kind, &f.Name, &f.Asset, &f.PrincipalGL, &f.InterestGL,
+	if err := row.Scan(&f.ID, &kind, &f.Name, &f.Asset, &f.PrincipalGL, &f.InterestGL, &f.RefundGL,
 		&f.Commitment, &rate, &dayCount, &method, &f.TermMonths, &minPayment,
 		&accrued, &gross, &termsFrom,
 		&lastAccrual, &f.Arrears.DaysPastDue, &bucket,

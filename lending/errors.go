@@ -43,6 +43,13 @@ var (
 	// facility that owes nothing.
 	ErrNothingOutstanding = errors.New("facility has nothing outstanding")
 
+	// ErrNoRefundOutstanding is returned when an interest refund is paid against
+	// a facility the bank owes nothing on. It is ErrNothingOutstanding with the
+	// money running the other way, and it is a separate sentinel because the two
+	// mean opposite things to a caller: one says the borrower has already
+	// settled, the other says the bank has.
+	ErrNoRefundOutstanding = errors.New("facility has no interest refund outstanding")
+
 	// ErrCycleAlreadyBilled is returned when a revolving line's billing cycle
 	// is charged twice. Billing appends an instalment and capitalizes the
 	// receivable, so a retried request — a proxy retry, a double-submitted

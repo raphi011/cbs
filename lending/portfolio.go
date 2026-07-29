@@ -33,8 +33,25 @@ func interestIncomeName(asset ledger.AssetCode) string {
 // summed with the wrong sign by anything that totals a folder.
 const payablesSubledgerName = "Payables"
 
-func interestRefundPayableName(asset ledger.AssetCode) string {
-	return "Interest Refunds Payable (" + string(asset) + ")"
+// interestRefundPayableName names a facility's own refunds-payable account, and
+// is keyed on the facility rather than only on its asset — unlike
+// interestIncomeName above, which is one account per asset however many
+// facilities feed it.
+//
+// The difference is what each balance has to answer. Interest income is a
+// bank-wide total and nothing ever needs it split by borrower. A refund payable
+// is a debt to ONE borrower that somebody eventually has to pay back, so the
+// figure only means anything per facility: pooled, the account holds one number
+// that cannot say who is owed what, and a discharge against it is unbounded —
+// it could pay one borrower out of another's money and still balance, because a
+// Liability is never caught by the sufficiency check.
+//
+// It is a subsidiary ledger, in other words, with the Payables folder's total as
+// the control figure. It shares the naming of a facility's other two accounts
+// ("Loan Principal: …", "Accrued Interest: …") because it is the same kind of
+// thing: an account belonging to one facility.
+func interestRefundPayableName(name string, asset ledger.AssetCode) string {
+	return "Interest Refunds Payable: " + name + " (" + string(asset) + ")"
 }
 
 // Portfolio is the lending layer over a general ledger. It manages credit

@@ -278,6 +278,7 @@ CREATE TABLE facilities (
     asset             TEXT NOT NULL,
     principal_gl      TEXT NOT NULL,
     interest_gl       TEXT NOT NULL,
+    refund_gl         TEXT NOT NULL DEFAULT '',
     commitment        BIGINT NOT NULL,
     rate              BIGINT NOT NULL,
     day_count         SMALLINT NOT NULL,
@@ -537,14 +538,34 @@ COMMENT ON COLUMN participant_assets.asset IS
     'accounts.asset.';
 
 COMMENT ON COLUMN facilities.asset IS
-    'The asset this facility is denominated in, duplicated from the two GL '
-    'accounts named by principal_gl and interest_gl — both of which are '
-    'created in it and cannot change asset afterwards, so the three cannot '
-    'drift. Duplicated for the same reason deposit_accounts.asset is: '
+    'The asset this facility is denominated in, duplicated from the GL '
+    'accounts named by principal_gl, interest_gl and refund_gl — every one of '
+    'which is created in it and cannot change asset afterwards, so they '
+    'cannot drift. Duplicated for the same reason deposit_accounts.asset is: '
     'deriving it would turn every listing of facilities into a join for a '
     'value that can never change, and store/storetest asserts the copies '
     'always agree (FacilityAssetMatchesItsGLAccounts). Unconstrained, for the '
     'reason given on accounts.asset.';
+
+COMMENT ON COLUMN facilities.refund_gl IS
+    'The Liability account holding interest this bank charged on THIS '
+    'facility and never earned, and so owes the borrower back. Unlike '
+    'principal_gl and interest_gl it is empty on almost every row: the '
+    'account is created lazily, only when a backdated posting cuts accrued '
+    'interest below what the borrower has already settled in cash and '
+    'neither the receivable nor the drawn principal can absorb the whole '
+    'correction. Empty therefore means no correction has ever overshot, and '
+    'is read as a zero obligation rather than as a missing account — which '
+    'is why the read path checks this column before touching the ledger. '
+    'It is per facility rather than one pooled account per asset (which is '
+    'what interest income is) because the balance answers "what does the '
+    'bank owe THIS borrower": pooled, one balance cannot say who is owed '
+    'what, and a refund against it could pay one borrower out of another''s '
+    'money and still balance, since a Liability is never caught by the '
+    'sufficiency check. The Payables subledger''s total is the control '
+    'figure over these subsidiary rows. Stored as an ID rather than resolved '
+    'by account name because name is a mutable column on this row and a '
+    'rename would otherwise orphan the obligation.';
 
 COMMENT ON COLUMN deposit_accounts.accrued_interest IS
     'Interest earned and not yet charged, in MICRO-MINOR-UNITS: the asset''s '

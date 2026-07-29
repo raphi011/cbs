@@ -79,6 +79,15 @@ const (
 	// the log rather than hiding inside the ordinary daily stream, and it is
 	// the deposit layer's EventOverdraftAccrualCorrected for a credit facility.
 	EventFacilityAccrualCorrected = "facility.accrual_corrected"
+	// EventFacilityInterestRefunded discharges what a correction left in a
+	// facility's interest-refunds-payable account: the bank paying the borrower
+	// back interest it took and never earned.
+	//
+	// Distinct from EventFacilityRepaid because the money runs the other way. A
+	// repayment settles what the borrower owes the bank; this settles what the
+	// bank owes the borrower, and a log that called both "repaid" would net two
+	// opposite movements into one figure.
+	EventFacilityInterestRefunded = "facility.interest_refunded"
 	EventFacilityCharged          = "facility.interest_charged"
 	EventFacilityRepaid           = "facility.repaid"
 	EventFacilityArrears          = "facility.arrears_changed"

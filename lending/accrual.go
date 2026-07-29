@@ -161,13 +161,18 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 // bounded by what is actually still drawn.
 //
 // Past that bound the borrower has overpaid the bank outright: they owe nothing
-// and are owed money. That is a LIABILITY, and it goes to the bank's
+// and are owed money. That is a LIABILITY, and it goes to this facility's own
 // interest-refunds-payable account, which is what the bank owing a customer
 // money looks like in a ledger. It needs no knowledge of what a deposit account
 // is — no more than interest income does — and being a Liability it can never
 // be refused by the sufficiency check, so the remainder always has somewhere
-// correct to go. Settling it is an operator's job, out of this layer: the
-// obligation is recorded here, not discharged here.
+// correct to go.
+//
+// Recording the obligation and discharging it are two operations, and only the
+// first happens here: this runs inside an end-of-day batch, which has no
+// borrower account to pay into and no business choosing one. RefundInterest is
+// the second half — see refund.go, and RefundPayable for reading what is still
+// owed.
 //
 // The alternative — posting nothing and keeping the difference — leaves
 // interest income overstated by money the bank is not owed, with no account
@@ -226,7 +231,10 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 		entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: refund, Direction: ledger.Credit})
 	}
 	if payable > 0 {
-		owed, err := p.interestRefundPayableTx(ctx, tx, *f)
+		// Resolving this also sets f.RefundGL, which the PutFacility below
+		// persists: the obligation has to be findable afterwards by something
+		// that is not this function. See interestRefundPayableTx.
+		owed, err := p.interestRefundPayableTx(ctx, tx, f)
 		if err != nil {
 			return err
 		}
@@ -301,24 +309,44 @@ func (p *Portfolio) interestIncomeTx(ctx context.Context, tx Tx, f Facility) (le
 		interestIncomeName(f.Asset), ledger.Revenue)
 }
 
-// interestRefundPayableTx resolves the bank's interest-refunds-payable account
-// for a facility's asset, creating it and its subledger on first use. It is
-// interestIncomeTx with a Liability in a different folder, and it exists for
-// correctFacilityAccrualTx — see there for what lands in it.
-func (p *Portfolio) interestRefundPayableTx(ctx context.Context, tx Tx, f Facility) (ledger.AccountID, error) {
-	return p.bankAccountTx(ctx, tx, f, payablesSubledgerName,
-		interestRefundPayableName(f.Asset), ledger.Liability)
+// interestRefundPayableTx resolves a facility's interest-refunds-payable
+// account, creating it and the Payables subledger on first use, and returns the
+// ID it also writes back to f.RefundGL. It exists for correctFacilityAccrualTx —
+// see there for what lands in it.
+//
+// It takes f by pointer so the caller persists the ID rather than re-deriving it
+// by name later: a facility can be renamed, and a name-resolved obligation would
+// be orphaned by that. Once set the field is stable, and every read path uses it
+// instead of coming back through here — which matters because this function
+// CREATES, and a read must not.
+func (p *Portfolio) interestRefundPayableTx(ctx context.Context, tx Tx, f *Facility) (ledger.AccountID, error) {
+	if f.RefundGL != "" {
+		return f.RefundGL, nil
+	}
+	id, err := p.bankAccountTx(ctx, tx, *f, payablesSubledgerName,
+		interestRefundPayableName(f.Name, f.Asset), ledger.Liability)
+	if err != nil {
+		return "", err
+	}
+	f.RefundGL = id
+	return id, nil
 }
 
-// bankAccountTx resolves one of the BANK's own accounts — as opposed to a
-// facility's two — in the same ledger the facility is filed in, creating it and
-// its folder on first use.
+// bankAccountTx resolves an account that is not one of the two a facility is
+// opened with, in the same ledger the facility is filed in, creating it and its
+// folder on first use.
 //
 // The lookup starts from the facility's principal account because that is the
 // only handle a facility has on where it lives: the account knows its
-// subledger, and the subledger knows the ledger everything else hangs off. So a
-// bank ends up with one such account per asset however many facilities it
-// writes, in the same tree as the facilities that produced it.
+// subledger, and the subledger knows the ledger everything else hangs off. So
+// whatever it resolves lands in the same tree as the facilities that produced
+// it.
+//
+// Whether one account serves the whole bank or one serves each facility is
+// decided entirely by the name the caller passes: interestIncomeName keys on the
+// asset alone and so collapses every facility onto one account, while
+// interestRefundPayableName keys on the facility too and so gives each its own.
+// See interestRefundPayableName for why the two differ.
 func (p *Portfolio) bankAccountTx(ctx context.Context, tx Tx, f Facility, folder, name string, t ledger.AccountType) (ledger.AccountID, error) {
 	principal, err := tx.GetAccount(ctx, p.bookID, f.PrincipalGL)
 	if err != nil {

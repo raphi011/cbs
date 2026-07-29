@@ -178,6 +178,24 @@ type Facility struct {
 	PrincipalGL ledger.AccountID
 	// InterestGL is accrued interest receivable, an Asset account.
 	InterestGL ledger.AccountID
+	// RefundGL is interest the bank owes this borrower back, a Liability
+	// account. Unlike the two above it is created LAZILY — on the first
+	// backdated correction that cuts accrued interest below what the borrower
+	// has already settled in cash, and never on the ordinary path — so it is
+	// empty on almost every facility. Zero means no correction has ever
+	// overshot, which is indistinguishable from a zero balance and is why
+	// RefundPayable reports 0 for it rather than reading a GL account.
+	//
+	// It is per facility rather than one pooled account per asset because the
+	// balance is the answer to "what does the bank owe THIS borrower": a pooled
+	// account has one balance and so cannot say who is owed what, which leaves
+	// a discharge unbounded — able to pay one borrower out of another's money
+	// and still balance. The Payables subledger's total is the pooled figure.
+	//
+	// Stored as an ID for the same reason PrincipalGL is, and not derived by
+	// name: Name is a mutable column on this row, so a rename would otherwise
+	// orphan the obligation.
+	RefundGL ledger.AccountID
 
 	// Commitment is what the bank has committed: a term loan's original
 	// principal, a revolving line's limit. One field rather than two because it

@@ -779,8 +779,14 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	}
 
 	// The whole 4932 the borrower paid and never owed is now a debt the bank
-	// records against itself, and income is back to nothing earned.
-	payable := accountNamed(t, book, "Interest Refunds Payable (EUR)")
+	// records against itself, and income is back to nothing earned. The account
+	// is this FACILITY's — a pooled one per asset could not say which borrower
+	// is owed the 4932 — and its ID is on the facility, which is the only handle
+	// anything has on the obligation afterwards.
+	payable := accountNamed(t, book, "Interest Refunds Payable: Alice Home Loan (EUR)")
+	if got := facility(t, p, loan.ID).RefundGL; got != payable {
+		t.Errorf("facility RefundGL = %q, want %q; an unrecorded account is an obligation nothing can find", got, payable)
+	}
 	if got := bookBalance(t, book, payable); got != 4_932 {
 		t.Errorf("interest refunds payable = %d, want 4932; the overpayment must be recorded, not kept", got)
 	}
