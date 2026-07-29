@@ -40,13 +40,28 @@ const (
 	otherAsset ledger.AssetCode = "BTC"
 )
 
+// mutableClock is a test clock a test can move. The rest of this package runs
+// on the frozen one above, which is the stronger fixture for row ordering — but
+// an accrual window opens at the instant terms are set, so a test that reprices
+// an account has to be able to say when that happened.
+type mutableClock struct{ at time.Time }
+
+func (c *mutableClock) set(t time.Time) { c.at = t }
+func (c *mutableClock) now() time.Time  { return c.at }
+
 // newTestRegister creates a Register backed by a fresh ledger with a fixed
 // clock, returning the register, its *ledger.Book, and the customer-deposits
 // subledger ID.
 func newTestRegister(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID) {
 	t.Helper()
+	return newTestRegisterOn(t, func() time.Time { return fixedTime })
+}
+
+// newTestRegisterOn is newTestRegister on a caller-supplied clock, for the
+// tests where WHEN an operation happened is the thing under test.
+func newTestRegisterOn(t *testing.T, clock func() time.Time) (*Register, *ledger.Book, ledger.SubledgerID) {
+	t.Helper()
 	ctx := context.Background()
-	clock := func() time.Time { return fixedTime }
 	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, "bank", clock)
 	reg := NewRegister(store.Deposit(), book, book.ID(), clock)
@@ -1245,4 +1260,198 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 		}
 	}
 	assertEqual(t, "derived equals the sum of negative balances", totals.Overdrafts["EUR"], drawn)
+}
+
+// ---------------------------------------------------------------------------
+// Value-dated overdraft accrual
+// ---------------------------------------------------------------------------
+
+// accrualStart is the day the value-dated accrual tests open their terms window
+// on. It is a midnight because a window opens at the clock's instant, and these
+// tests want that instant to be a business date.
+var accrualStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// postTo moves amount against acct's backing GL account at the given value
+// date, with a fresh counterparty as the contra leg — overdrawBy and fundBy
+// with the direction and the value date spelled out, which is what a backdated
+// posting needs. The contra is typed so the book keeps its classification: a
+// debit to the customer is funded by another Liability, a credit to them by an
+// Asset, exactly as those two helpers already do.
+func postTo(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, dir ledger.Direction, value time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	contraType, other := ledger.Liability, ledger.Credit
+	if dir == ledger.Credit {
+		contraType, other = ledger.Asset, ledger.Debit
+	}
+	contra, err := book.CreateAccount(ctx, sub, "Counterparty "+string(acct.ID), contraType, acct.Asset)
+	if err != nil {
+		t.Fatalf("counterparty: %v", err)
+	}
+	if _, err := book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "test movement",
+		ValueDate:   value,
+		Entries: []ledger.Entry{
+			{AccountID: acct.GLAccount, Amount: amount, Direction: dir},
+			{AccountID: contra.ID, Amount: amount, Direction: other},
+		},
+	}); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+}
+
+// newOverdraftAccount opens a priced overdraft account on a movable clock, with
+// the window opening at accrualStart: EUR 500 arranged at 15% ACT/365.
+func newOverdraftAccount(t *testing.T) (*Register, *ledger.Book, ledger.SubledgerID, Account, *mutableClock) {
+	t.Helper()
+	ctx := context.Background()
+	clock := &mutableClock{}
+	clock.set(accrualStart)
+	reg, book, sub := newTestRegisterOn(t, clock.now)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	assertNoError(t, err)
+	return reg, book, sub, acct, clock
+}
+
+func TestOverdraftAccrualCorrectsABackdatedCredit(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, _ := newOverdraftAccount(t)
+
+	// Overdrawn by EUR 200 on day 1, then accrue ten days.
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	for i := 1; i <= 10; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
+	}
+	ten, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	after := ten.Accrued.Minor()
+	if after <= 0 {
+		t.Fatalf("accrued nothing over ten overdrawn days: %d", after)
+	}
+
+	// A salary credit arrives on day 11, backdated to day 3: from day 3 the
+	// account was never overdrawn, so most of that interest was never owed.
+	postTo(t, book, sub, acct, 20_000, ledger.Credit, accrualStart.AddDate(0, 0, 3))
+
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	corrected := got.Accrued.Minor()
+	if corrected >= after {
+		t.Errorf("accrued after backdated credit = %d, want less than %d", corrected, after)
+	}
+
+	// And the receivable's ledger balance agrees with the record.
+	recv, err := book.BookBalance(ctx, got.InterestGL)
+	assertNoError(t, err)
+	if recv != corrected {
+		t.Errorf("receivable = %d, accrued = %d; the two must agree", recv, corrected)
+	}
+}
+
+func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, _ := newOverdraftAccount(t)
+
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	for i := 1; i <= 10; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
+	}
+	ten, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	after := ten.Accrued.Minor()
+
+	// A card settlement lands late, backdated to day 3: he was more overdrawn
+	// than the ledger knew.
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 3))
+
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if corrected := got.Accrued.Minor(); corrected <= after {
+		t.Errorf("accrued after backdated debit = %d, want more than %d", corrected, after)
+	}
+}
+
+func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, _ := newOverdraftAccount(t)
+
+	// Booked today, value-dated five days out. It has not taken effect yet.
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 5))
+
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 1)))
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if got.Accrued != 0 {
+		t.Errorf("accrued = %d on a debit that has not taken effect, want 0", got.Accrued)
+	}
+}
+
+func TestOverdraftAccrualFreezesPriorAccrualOnARepricing(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, clock := newOverdraftAccount(t)
+
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	for i := 1; i <= 10; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
+	}
+	ten, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	atReprice := ten.Accrued.Minor()
+
+	// Reprice to triple the rate on day 10, then look at the window.
+	clock.set(accrualStart.AddDate(0, 0, 10))
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	assertNoError(t, err)
+
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if after.AccruedGross != 0 {
+		t.Errorf("AccruedGross = %d after repricing, want 0 (a new window)", after.AccruedGross)
+	}
+	if after.Accrued.Minor() != atReprice {
+		t.Errorf("accrued = %d after repricing, want %d unchanged; prior accrual is frozen, not rewritten",
+			after.Accrued.Minor(), atReprice)
+	}
+}
+
+func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, _ := newOverdraftAccount(t)
+
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	for i := 1; i <= 30; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
+	}
+	// Capitalise, emptying the receivable.
+	_, err := reg.ChargeOverdraftInterest(ctx, acct.ID, accrualStart.AddDate(0, 0, 30))
+	assertNoError(t, err)
+	charged, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	recvAfterCharge, err := book.BookBalance(ctx, charged.InterestGL)
+	assertNoError(t, err)
+	if recvAfterCharge != 0 {
+		t.Fatalf("receivable after capitalisation = %d, want 0", recvAfterCharge)
+	}
+	balBefore, err := book.BookBalance(ctx, acct.GLAccount)
+	assertNoError(t, err)
+
+	// Now say he was never overdrawn at all: a credit backdated to day 1.
+	postTo(t, book, sub, acct, 20_000, ledger.Credit, accrualStart)
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 31)))
+
+	recv, err := book.BookBalance(ctx, charged.InterestGL)
+	assertNoError(t, err)
+	if recv < 0 {
+		t.Errorf("receivable = %d; the correction must clamp rather than drive an asset negative", recv)
+	}
+	balAfter, err := book.BookBalance(ctx, acct.GLAccount)
+	assertNoError(t, err)
+	if balAfter <= balBefore {
+		t.Errorf("customer balance %d -> %d; the unabsorbed correction must be refunded to them", balBefore, balAfter)
+	}
 }

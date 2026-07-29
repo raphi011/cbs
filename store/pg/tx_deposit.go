@@ -38,24 +38,28 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 		INSERT INTO deposit_accounts (
 			book_id, id, gl_account, name, asset, status, overdraft_limit,
 			overdraft_rate, unarranged_rate, day_count, accrued_interest,
-			last_accrual_date, interest_gl, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			accrued_gross, terms_effective_from, last_accrual_date, interest_gl,
+			created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (book_id, id) DO UPDATE SET
-			gl_account        = EXCLUDED.gl_account,
-			name              = EXCLUDED.name,
-			asset             = EXCLUDED.asset,
-			status            = EXCLUDED.status,
-			overdraft_limit   = EXCLUDED.overdraft_limit,
-			overdraft_rate    = EXCLUDED.overdraft_rate,
-			unarranged_rate   = EXCLUDED.unarranged_rate,
-			day_count         = EXCLUDED.day_count,
-			accrued_interest  = EXCLUDED.accrued_interest,
-			last_accrual_date = EXCLUDED.last_accrual_date,
-			interest_gl       = EXCLUDED.interest_gl,
-			created_at        = EXCLUDED.created_at`,
+			gl_account           = EXCLUDED.gl_account,
+			name                 = EXCLUDED.name,
+			asset                = EXCLUDED.asset,
+			status               = EXCLUDED.status,
+			overdraft_limit      = EXCLUDED.overdraft_limit,
+			overdraft_rate       = EXCLUDED.overdraft_rate,
+			unarranged_rate      = EXCLUDED.unarranged_rate,
+			day_count            = EXCLUDED.day_count,
+			accrued_interest     = EXCLUDED.accrued_interest,
+			accrued_gross        = EXCLUDED.accrued_gross,
+			terms_effective_from = EXCLUDED.terms_effective_from,
+			last_accrual_date    = EXCLUDED.last_accrual_date,
+			interest_gl          = EXCLUDED.interest_gl,
+			created_at           = EXCLUDED.created_at`,
 		string(book), string(a.ID), string(a.GLAccount), a.Name, string(a.Asset),
 		int16(a.Status), a.OverdraftLimit,
 		int64(a.Rate), int64(a.UnarrangedRate), int16(a.DayCount), int64(a.Accrued),
+		int64(a.AccruedGross), nullTime(a.TermsEffectiveFrom),
 		nullTime(a.LastAccrualDate), string(a.InterestGL), nullTime(a.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put deposit account %s: %w", a.ID, err)
@@ -69,7 +73,8 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 const depositAccountColumns = `
 	id, gl_account, name, asset, status, overdraft_limit,
 	overdraft_rate, unarranged_rate, day_count, accrued_interest,
-	last_accrual_date, interest_gl, created_at`
+	accrued_gross, terms_effective_from, last_accrual_date, interest_gl,
+	created_at`
 
 // scanDepositAccount reads one row of depositAccountColumns. Both pgx.Row
 // (QueryRow) and pgx.Rows (Query) implement Scan(...any) error, so one function
@@ -79,11 +84,13 @@ func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, e
 		a                      deposit.Account
 		status, dayCount       int16
 		rate, unarranged       int64
-		accrued                int64
+		accrued, gross         int64
+		termsFrom              *time.Time
 		lastAccrual, createdAt *time.Time
 	)
 	if err := row.Scan(&a.ID, &a.GLAccount, &a.Name, &a.Asset, &status, &a.OverdraftLimit,
-		&rate, &unarranged, &dayCount, &accrued, &lastAccrual, &a.InterestGL, &createdAt); err != nil {
+		&rate, &unarranged, &dayCount, &accrued, &gross, &termsFrom, &lastAccrual,
+		&a.InterestGL, &createdAt); err != nil {
 		return deposit.Account{}, err
 	}
 	a.Status = deposit.AccountStatus(status)
@@ -91,6 +98,8 @@ func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, e
 	a.UnarrangedRate = interest.Rate(unarranged)
 	a.DayCount = interest.DayCount(dayCount)
 	a.Accrued = interest.Accrued(accrued)
+	a.AccruedGross = interest.Accrued(gross)
+	a.TermsEffectiveFrom = readTime(termsFrom)
 	a.LastAccrualDate = readTime(lastAccrual)
 	a.CreatedAt = readTime(createdAt)
 	return a, nil

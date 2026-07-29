@@ -1528,14 +1528,18 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 		]
 	}`, http.StatusCreated)
 
-	// The first end-of-day only establishes the accrual baseline; the second
-	// accrues a day. €500 at 12% ACT/365 is 50_000 × 120_000 / 365 =
-	// 16_438_356 micro-minor-units, which rounds to 16 cents.
+	// The accrual window opens when the terms are set — here the test clock's
+	// 15 January — not on the first end-of-day, so both runs below accrue.
+	// €500 at 12% ACT/365 is 50_000 × 120_000 / 365 = 16_438_356
+	// micro-minor-units a day; two days is 32_876_712, which rounds to 33
+	// cents. The value-dated recompute is what makes the first day count: the
+	// increment it replaced took its first run as the baseline and charged
+	// nothing for it, dropping a day of interest on every account ever priced.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-16"}`, http.StatusNoContent)
 	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day", `{"date":"2025-01-17"}`, http.StatusNoContent)
 
 	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
-	assertEqual(t, "accrued before charging", int64(acct["accruedInterest"].(float64)), int64(16))
+	assertEqual(t, "accrued before charging", int64(acct["accruedInterest"].(float64)), int64(33))
 
 	tx := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
 		`{"date":"2025-01-17"}`, http.StatusOK)
@@ -1550,7 +1554,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	// Capitalized: the customer now owes the interest as part of the balance,
 	// and the receivable is back to nothing.
 	bal := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/balance", "", http.StatusOK)
-	assertEqual(t, "book balance after charging", int64(bal["book"].(float64)), int64(-50016))
+	assertEqual(t, "book balance after charging", int64(bal["book"].(float64)), int64(-50033))
 
 	after := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
 	assertEqual(t, "receivable after charging", int64(after["accruedInterest"].(float64)), int64(0))

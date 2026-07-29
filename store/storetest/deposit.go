@@ -552,11 +552,13 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		s := openDeposit(t, newStore)
 
 		accrual := time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC)
+		termsFrom := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
 		want := deposit.Account{
 			ID: "dep_1", GLAccount: "200.cust.001", Name: "Bruno", Asset: "EUR",
 			Status: deposit.Active, OverdraftLimit: 50_000,
 			Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.Thirty360,
-			Accrued: 61_643_835, LastAccrualDate: accrual,
+			Accrued: 61_643_835, AccruedGross: 123_287_670,
+			TermsEffectiveFrom: termsFrom, LastAccrualDate: accrual,
 			InterestGL: "100.accr.001", CreatedAt: early,
 		}
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -570,7 +572,14 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			assertEqual(t, label+" unarranged rate", got.UnarrangedRate, want.UnarrangedRate)
 			assertEqual(t, label+" day count", got.DayCount, want.DayCount)
 			assertEqual(t, label+" accrued", got.Accrued, want.Accrued)
+			// A store that drops these two silently re-derives the whole terms
+			// window as a fresh delta every night and charges the same interest
+			// over and over, which no other subtest would notice.
+			assertEqual(t, label+" accrued gross", got.AccruedGross, want.AccruedGross)
 			assertEqual(t, label+" interest gl", string(got.InterestGL), string(want.InterestGL))
+			if !got.TermsEffectiveFrom.Equal(want.TermsEffectiveFrom) {
+				t.Errorf("%s terms effective from: got %v, want %v", label, got.TermsEffectiveFrom, want.TermsEffectiveFrom)
+			}
 			if !got.LastAccrualDate.Equal(want.LastAccrualDate) {
 				t.Errorf("%s last accrual date: got %v, want %v", label, got.LastAccrualDate, want.LastAccrualDate)
 			}
@@ -607,7 +616,11 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			assertEqual(t, "no-facility rate", plain.Rate, interest.Rate(0))
 			assertEqual(t, "no-facility accrued", plain.Accrued, interest.Accrued(0))
+			assertEqual(t, "no-facility accrued gross", plain.AccruedGross, interest.Accrued(0))
 			assertEqual(t, "no-facility interest gl", string(plain.InterestGL), "")
+			if !plain.TermsEffectiveFrom.IsZero() {
+				t.Errorf("no-facility terms effective from = %v, want zero", plain.TermsEffectiveFrom)
+			}
 			if !plain.LastAccrualDate.IsZero() {
 				t.Errorf("no-facility last accrual date = %v, want zero", plain.LastAccrualDate)
 			}

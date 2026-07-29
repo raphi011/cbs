@@ -216,6 +216,8 @@ CREATE TABLE deposit_accounts (
     unarranged_rate   BIGINT NOT NULL DEFAULT 0,
     day_count         SMALLINT NOT NULL DEFAULT 0,
     accrued_interest  BIGINT NOT NULL DEFAULT 0,
+    accrued_gross     BIGINT NOT NULL DEFAULT 0,
+    terms_effective_from TIMESTAMPTZ,
     last_accrual_date TIMESTAMPTZ,
     interest_gl       TEXT NOT NULL DEFAULT '',
     created_at        TIMESTAMPTZ,
@@ -555,6 +557,29 @@ COMMENT ON COLUMN deposit_accounts.accrued_interest IS
     'cannot represent, which is the same reason holds live outside the ledger. '
     'Recorded here because a scale carried in an integer column is invisible '
     'in a schema dump.';
+
+COMMENT ON COLUMN deposit_accounts.accrued_gross IS
+    'What the CURRENT terms window has accrued in total, same scale as '
+    'accrued_interest. Overdraft interest is recomputed rather than '
+    'incremented: every end-of-day re-derives the whole window from the '
+    'account''s value-dated balance, and accrued_interest moves by the change '
+    'in this column. That is what makes a backdated posting correct itself — '
+    'the day it takes effect on is re-derived with it in place, this figure '
+    'moves, and the next run posts the difference. Unlike accrued_interest it '
+    'is never decremented by capitalization, and it resets to zero whenever '
+    'terms are set, because that is where the window starts. A store that '
+    'dropped this column would re-derive the whole window as a fresh delta '
+    'every night and charge the same interest over and over.';
+
+COMMENT ON COLUMN deposit_accounts.terms_effective_from IS
+    'The start of the recompute window: when the current terms took effect. '
+    'The window is bounded here rather than at account opening because the '
+    'terms are mutable columns on this very row — recomputing across a '
+    'repricing would re-derive every earlier day at today''s rate and post the '
+    'difference, rewriting accrual history on every repricing. Prior accrual '
+    'is frozen instead; widening this window to account inception is what an '
+    'effective-dated terms table would buy. NULL means the account has no '
+    'priced overdraft and accrues nothing.';
 
 COMMENT ON COLUMN deposit_accounts.overdraft_rate IS
     'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '

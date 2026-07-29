@@ -97,9 +97,31 @@ type Account struct {
 	// precision. The general ledger holds Accrued.Minor() in InterestGL; this
 	// field holds the residue the ledger cannot represent.
 	Accrued interest.Accrued
-	// LastAccrualDate is the business date accrual has been run through. It
-	// never moves backwards, which is what makes an end-of-day re-run a no-op
-	// rather than a second charge.
+	// AccruedGross is the interest the current terms window has produced in
+	// total, recomputed from the account's value-dated balance on every run.
+	// Accrued moves by the change in it, which is what makes a backdated
+	// posting correct itself: the day it lands on is recomputed, gross moves,
+	// and the next run posts the difference.
+	//
+	// Unlike Accrued it is never decremented by capitalisation. It resets to
+	// zero whenever terms are set, because that is where the window starts.
+	AccruedGross interest.Accrued
+	// TermsEffectiveFrom is the start of the recompute window: the date the
+	// current terms took effect.
+	//
+	// The window is bounded there rather than at account opening because the
+	// terms are stored as mutable columns. Recomputing across a repricing would
+	// re-derive every earlier day at today's rate and post the difference,
+	// rewriting accrual history every time an account is repriced. Prior
+	// accrual is frozen instead, and widening this window to account inception
+	// is what an effective-dated terms record would buy.
+	//
+	// Zero means the account has no priced overdraft and accrues nothing.
+	TermsEffectiveFrom time.Time
+	// LastAccrualDate is the business date accrual has been recomputed through.
+	// It never moves backwards, which is what makes an end-of-day re-run a
+	// no-op rather than a second charge — and it is why a backdated posting is
+	// corrected by the next day's run rather than the same day's.
 	LastAccrualDate time.Time
 	// InterestGL is this account's own accrued-interest-receivable account, an
 	// Asset. It is created the first time a non-zero rate is set, so an account

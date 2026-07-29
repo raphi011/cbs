@@ -269,6 +269,15 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 	acct.UnarrangedRate = unarranged
 	acct.DayCount = dc
 
+	// A repricing starts a new recompute window. Prior accrual stays exactly
+	// where it is — Accrued is untouched — and only days from here are
+	// recomputed, so no past day is ever re-derived at a rate that was not in
+	// force on it.
+	now := r.now()
+	acct.TermsEffectiveFrom = now
+	acct.AccruedGross = 0
+	acct.LastAccrualDate = now
+
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return Account{}, err
 	}
@@ -830,6 +839,19 @@ func (r *Register) bookBalanceTx(ctx context.Context, tx Tx, id ledger.AccountID
 	return tx.BookBalance(ctx, r.bookID, id, gl.Type.NormalBalance())
 }
 
+// valueDatedSeriesTx is the value-dated movement history of a GL account over
+// [from, to], signed by the account's normal direction. It is the same two
+// steps bookBalanceTx takes — read the account for its type, then aggregate —
+// done through the caller's Tx.
+func (r *Register) valueDatedSeriesTx(ctx context.Context, tx Tx, id ledger.AccountID, from, to time.Time) (ledger.Series, error) {
+	gl, err := tx.GetAccount(ctx, r.bookID, id)
+	if err != nil {
+		return ledger.Series{}, err
+	}
+	return tx.ValueDatedSeries(ctx, r.bookID, id, gl.Type.NormalBalance(),
+		ledger.DayStart(from), ledger.NextDay(to))
+}
+
 // ---------------------------------------------------------------------------
 // End-of-Day Balance Snapshots
 // ---------------------------------------------------------------------------
@@ -923,17 +945,27 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 //
 // # The accrual base
 //
-// The overdrawn magnitude of the BOOK balance — not the available balance. A
-// hold is not borrowed money. The base is tiered: the arranged rate up to
-// OverdraftLimit, the unarranged rate on anything beyond it.
+// The overdrawn magnitude of each day's own VALUE-DATED book balance — not the
+// available balance, and not today's balance applied backwards. A hold is not
+// borrowed money. The base is tiered: the arranged rate up to OverdraftLimit,
+// the unarranged rate on anything beyond it.
 //
-// # Idempotency
+// A gap of several days is therefore exact rather than approximate: every day
+// in the span accrues on the balance that was actually in force on it, which is
+// what a bank does and what a missed end-of-day used to get wrong.
+//
+// # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
-// already covered is a no-op rather than a second charge. A gap of several days
-// accrues at the CURRENT balance for the whole span, which is exact only if the
-// balance did not move; a bank accrues on each day's closing balance, and
-// running this daily makes the two identical.
+// already covered is a no-op rather than a second charge.
+//
+// That is also why a posting which arrives backdated is trued up by the NEXT
+// day's run rather than by rewinding this one. Each run recomputes the whole
+// terms window from the value-dated balance, so the day the posting takes
+// effect on is re-derived with it in place; the difference between the window's
+// new total and its old one is what gets posted. Interest that turns out never
+// to have been owed comes back as a correction — a new event, not a reversal:
+// the original accrual was a correct statement of what the ledger knew then.
 //
 // Returns ErrAccountNotFound.
 func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {
@@ -954,27 +986,39 @@ func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, d
 // accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller
 // has already loaded. RunEndOfDay lists every account and would otherwise read
 // each one a second time.
+//
+// The accrual is a recomputation rather than an increment. Every run re-derives
+// the whole terms window from the account's value-dated balance and posts the
+// change in the rounded value — which is the same delta the incremental version
+// posted, arrived at differently. The difference shows when a posting lands
+// backdated: the day it takes effect on is recomputed with it in place, gross
+// moves, and the delta trues up the interest that was charged on the old
+// figure. No accrual is ever reversed and no date is ever rewound.
 func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time) error {
 	if acct.Rate <= 0 || acct.Status == Closed {
 		return nil
 	}
-	// An account priced today has no history to accrue over; the first run
-	// establishes the date it accrues from.
-	if acct.LastAccrualDate.IsZero() {
-		acct.LastAccrualDate = date
-		return tx.PutDepositAccount(ctx, r.bookID, acct)
+	// No priced overdraft has been set, so there is no window to accrue over.
+	if acct.TermsEffectiveFrom.IsZero() {
+		return nil
 	}
 	if acct.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
 		return nil
 	}
 
-	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	series, err := r.valueDatedSeriesTx(ctx, tx, acct.GLAccount, acct.TermsEffectiveFrom, date)
 	if err != nil {
 		return err
 	}
+	terms := acct
+	gross := interest.AccrueSeries(series, acct.TermsEffectiveFrom, date,
+		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
+			return dailyOverdraftAccrual(balance, terms, from, to)
+		})
 
 	before := acct.Accrued.Minor()
-	acct.Accrued += overdraftAccrual(book, acct, date)
+	acct.Accrued += gross - acct.AccruedGross
+	acct.AccruedGross = gross
 	acct.LastAccrualDate = date
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return err
@@ -991,18 +1035,95 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
+	if delta > 0 {
+		if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+			Description: "Overdraft interest accrued: " + acct.Name,
+			BookingDate: date,
+			ValueDate:   date,
+			Entries: []ledger.Entry{
+				{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
+				{AccountID: income, Amount: delta, Direction: ledger.Credit},
+			},
+		}); err != nil {
+			return err
+		}
+		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	}
+	return r.correctOverdraftAccrualTx(ctx, tx, acct, income, -delta, date)
+}
+
+// correctOverdraftAccrualTx gives back interest that a backdated posting has
+// shown was never owed. amount is positive.
+//
+// It is not a reversal. The original accrual was a correct statement of what
+// the ledger knew at the time, and reversing it would say otherwise; this is a
+// new, linked event that posts what actually changed.
+//
+// The credit goes to the receivable as far as the receivable can absorb it. If
+// interest has already been capitalised out of it, the rest is money the
+// customer has actually paid, so it is refunded to their account rather than
+// driving an Asset balance negative — which the ledger would refuse, inside an
+// end-of-day batch, taking the whole book's run down with it.
+func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct Account, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
+	receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
+	if err != nil {
+		return err
+	}
+	absorbed := amount
+	if absorbed > receivable {
+		absorbed = receivable
+	}
+	if absorbed < 0 {
+		absorbed = 0
+	}
+
+	entries := []ledger.Entry{{AccountID: income, Amount: amount, Direction: ledger.Debit}}
+	if absorbed > 0 {
+		entries = append(entries, ledger.Entry{AccountID: acct.InterestGL, Amount: absorbed, Direction: ledger.Credit})
+	}
+	if refund := amount - absorbed; refund > 0 {
+		entries = append(entries, ledger.Entry{AccountID: acct.GLAccount, Amount: refund, Direction: ledger.Credit})
+	}
+
 	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		Description: "Overdraft interest accrued: " + acct.Name,
+		Description: "Overdraft interest corrected: " + acct.Name,
 		BookingDate: date,
 		ValueDate:   date,
-		Entries: []ledger.Entry{
-			{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
-			{AccountID: income, Amount: delta, Direction: ledger.Credit},
-		},
+		Entries:     entries,
 	}); err != nil {
 		return err
 	}
-	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrualCorrected, string(acct.ID), acct)
+}
+
+// dailyOverdraftAccrual is overdraftAccrual applied one day at a time across a
+// run of constant balance. It is the interest.Period this product accrues by.
+//
+// AccrueSeries hands a Period a whole run at once, and overdraftAccrual over an
+// N-day span is NOT the sum of its N single days: interest.Accrue divides once
+// per call, so one call over N days truncates once where N calls truncate N
+// times. That difference is the whole reason this walk exists. Overdraft
+// interest has always been accrued a business day at a time, and the receivable
+// every account carries was built up that way; recomputing a window with one
+// long call would restate the record of every account the first night it ran.
+// Walking the days is what makes the recompute reproduce the increment it
+// replaces, which is the only thing that makes it a safe swap.
+//
+// It matters more than truncation under Thirty360, where a day is not always a
+// day: the 31st collapses onto the 30th and accrues nothing. What "the interest
+// over this window" comes to there depends on how the window is cut, so the
+// only answer worth reproducing is the one that was actually charged — day by
+// day.
+//
+// The cost is arithmetic, not I/O: AccrueSeries still reads the window in one
+// query, and this loop adds no round trips.
+func dailyOverdraftAccrual(balance ledger.Amount, acct Account, from, to time.Time) interest.Accrued {
+	var total interest.Accrued
+	end := ledger.DayStart(to)
+	for d := ledger.DayStart(from); d.Before(end); d = d.AddDate(0, 0, 1) {
+		total += overdraftAccrual(balance, acct, d, d.AddDate(0, 0, 1))
+	}
+	return total
 }
 
 // overdraftAccrual is the interest earned on an account's overdrawn balance
@@ -1018,7 +1139,12 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 // would make the money drawn beyond the limit interest-FREE, and so literally
 // cheaper than the money drawn inside it. That is the exact opposite of what a
 // limit is for, and it is the configuration most accounts here are opened with.
-func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest.Accrued {
+//
+// It takes from and to explicitly rather than reading the account's
+// LastAccrualDate, so that AccrueSeries can call it once per run of constant
+// balance within one accrual window — through dailyOverdraftAccrual, which is
+// what a Period for this product has to be.
+func overdraftAccrual(book ledger.Amount, acct Account, from, to time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
 		return 0
@@ -1027,13 +1153,13 @@ func overdraftAccrual(book ledger.Amount, acct Account, date time.Time) interest
 	if arranged > acct.OverdraftLimit {
 		arranged = acct.OverdraftLimit
 	}
-	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, acct.LastAccrualDate, date)
+	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, from, to)
 	if excess := drawn - arranged; excess > 0 {
 		rate := acct.UnarrangedRate
 		if rate == 0 {
 			rate = acct.Rate
 		}
-		total += interest.Accrue(excess, rate, acct.DayCount, acct.LastAccrualDate, date)
+		total += interest.Accrue(excess, rate, acct.DayCount, from, to)
 	}
 	return total
 }
