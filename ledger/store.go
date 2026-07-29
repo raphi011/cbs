@@ -104,6 +104,22 @@ type Tx interface {
 	// constructing an Entry directly, as store/storetest's fixtures do.
 	ValueDateBalance(ctx context.Context, book BookID, id AccountID, normal Direction, before time.Time) (Amount, error)
 
+	// ValueDatedSeries returns the balance carried into from, plus the net
+	// movement on each value date in [from, to) that had any.
+	//
+	// from and to are UTC midnights the caller has already snapped, to
+	// exclusive. Movements are ascending and days with no movement are omitted.
+	// Opening is exactly ValueDateBalance at from, and the same two rules apply:
+	// reversed transactions count, and an unknown account is empty rather than
+	// an error.
+	//
+	// Like ValueDateBalance, an entry with a zero ValueDate is not value-dated
+	// and takes no day: store/pg stores a zero date as NULL, which fails every
+	// comparison including the day grouping, so store/mem excludes it
+	// explicitly rather than bucketing it into a year-1 day store/pg has no row
+	// for.
+	ValueDatedSeries(ctx context.Context, book BookID, id AccountID, normal Direction, from, to time.Time) (Series, error)
+
 	AppendAudit(ctx context.Context, e AuditEvent) error
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
 

@@ -1126,6 +1126,75 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "balance after the reversal, read on the original's day", netted, ledger.Amount(0))
 	})
 
+	t.Run("ValueDatedSeriesBucketsByDayAndCarriesAnOpening", func(t *testing.T) {
+		s := open(t, newStore)
+		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+		postValueDatedSeriesFixture(t, s, day)
+
+		// The window starts on the 4th, so the 1st is opening and the 9th is
+		// outside it.
+		var got ledger.Series
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(4), day(9))
+			return err
+		})
+
+		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
+		if len(got.Movements) != 1 {
+			t.Fatalf("movements = %d, want 1 (only the 5th; the 9th is outside the window)", len(got.Movements))
+		}
+		if !got.Movements[0].Day.Equal(day(5)) {
+			t.Errorf("movement day = %v, want %v", got.Movements[0].Day, day(5))
+		}
+		assertEqual(t, "movement amount (both of the 5th's postings, netted)", got.Movements[0].Amount, ledger.Amount(400))
+	})
+
+	t.Run("ValueDatedSeriesSignsByNormalDirection", func(t *testing.T) {
+		s := open(t, newStore)
+		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+		postValueDatedSeriesFixture(t, s, day)
+
+		// The credit side of the same postings, read with Credit as normal.
+		var got ledger.Series
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.002", ledger.Credit, day(4), day(9))
+			return err
+		})
+		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
+		if len(got.Movements) != 1 || got.Movements[0].Amount != 400 {
+			t.Errorf("movements = %+v, want one of 400", got.Movements)
+		}
+
+		// And read against the wrong normal, everything inverts.
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.002", ledger.Debit, day(4), day(9))
+			return err
+		})
+		if got.Opening != -100 || got.Movements[0].Amount != -400 {
+			t.Errorf("inverted series = %+v / opening %d, want -400 / -100", got.Movements, got.Opening)
+		}
+	})
+
+	t.Run("ValueDatedSeriesOfEmptyWindowIsEmpty", func(t *testing.T) {
+		s := open(t, newStore)
+		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+		postValueDatedSeriesFixture(t, s, day)
+
+		var got ledger.Series
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(6), day(9))
+			return err
+		})
+		assertEqual(t, "opening (the 1st and both of the 5th)", got.Opening, ledger.Amount(500))
+		if len(got.Movements) != 0 {
+			t.Errorf("movements = %+v, want none", got.Movements)
+		}
+	})
+
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {
 		s := open(t, newStore)
 
@@ -1589,6 +1658,40 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 			{ID: ledger.EntryID(string(id) + "_b"), AccountID: "200.100.001", Amount: 100, Direction: ledger.Credit},
 		},
 	}
+}
+
+// postValueDatedSeriesFixture seeds the postings the ValueDatedSeries*
+// subtests share: debits of 100 on the 1st, 200 twice on the 5th (one
+// carrying a time of day), and 400 on the 9th, each posted as a balanced
+// debit/credit pair between 901.001.001 and 901.001.002.
+func postValueDatedSeriesFixture(t *testing.T, s ledger.Store, day func(int) time.Time) {
+	t.Helper()
+	posts := []struct {
+		id     string
+		when   time.Time
+		amount ledger.Amount
+	}{
+		{"a", day(1), 100},
+		{"b", day(5), 200},
+		{"c", day(5).Add(17 * time.Hour), 200},
+		{"d", day(9), 400},
+	}
+	update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		for _, p := range posts {
+			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:        ledger.TransactionID("txn_vds_" + p.id),
+				ValueDate: p.when,
+				Entries: []ledger.Entry{
+					{ID: ledger.EntryID("ent_vds_d" + p.id), AccountID: "901.001.001", Amount: p.amount, Direction: ledger.Debit, ValueDate: p.when},
+					{ID: ledger.EntryID("ent_vds_c" + p.id), AccountID: "901.001.002", Amount: p.amount, Direction: ledger.Credit, ValueDate: p.when},
+				},
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func sliceString[T any](s []T) string {

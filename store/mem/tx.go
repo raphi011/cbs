@@ -318,6 +318,44 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 	return balance, nil
 }
 
+// ValueDatedSeries buckets an account's entries by value date. See ledger.Tx
+// for the contract.
+func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+	opening, err := t.ValueDateBalance(ctx, book, id, normal, from)
+	if err != nil {
+		return ledger.Series{}, err
+	}
+
+	byDay := make(map[time.Time]ledger.Amount)
+	for _, txn := range t.state.transactions[book] {
+		for _, e := range txn.Entries {
+			// Same exclusion as ValueDateBalance, and for the same reason: a
+			// zero ValueDate is not value-dated, not a date before every
+			// bound. Without this skip, store/mem would bucket such an entry
+			// into a year-1 day that store/pg — where the zero date is NULL
+			// and NULL never lands in any date_trunc group — has no row for.
+			if e.AccountID != id || e.ValueDate.IsZero() || e.ValueDate.Before(from) || !e.ValueDate.Before(to) {
+				continue
+			}
+			day := ledger.DayStart(e.ValueDate)
+			if e.Direction == normal {
+				byDay[day] += e.Amount
+			} else {
+				byDay[day] -= e.Amount
+			}
+		}
+	}
+
+	out := ledger.Series{Opening: opening, Movements: make([]ledger.DayMovement, 0, len(byDay))}
+	for day, amount := range byDay {
+		out.Movements = append(out.Movements, ledger.DayMovement{Day: day, Amount: amount})
+	}
+	sort.Slice(out.Movements, func(i, j int) bool {
+		return out.Movements[i].Day.Before(out.Movements[j].Day)
+	})
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------

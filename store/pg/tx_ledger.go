@@ -659,3 +659,53 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 	}
 	return balance, nil
 }
+
+// ValueDatedSeries buckets an account's entries by value date in SQL. See
+// ledger.Tx for the contract.
+//
+// date_trunc runs on the value read as UTC, and the result is snapped again
+// with ledger.DayStart on the way out, so the day a movement lands on is
+// decided by the same rule store/mem uses rather than by the session timezone.
+// A zero ValueDate is stored as NULL (see nullTime), and NULL fails the
+// date_trunc grouping and every comparison here, so such an entry falls out of
+// every group rather than landing in one for year 1 — the same exclusion
+// store/mem makes explicit with e.ValueDate.IsZero().
+func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+	opening, err := t.ValueDateBalance(ctx, book, id, normal, from)
+	if err != nil {
+		return ledger.Series{}, err
+	}
+
+	rows, err := t.tx.Query(ctx, `
+		SELECT date_trunc('day', e.value_date AT TIME ZONE 'UTC') AS day,
+		       SUM(CASE WHEN e.direction = $3 THEN e.amount ELSE -e.amount END)
+		FROM entries e
+		WHERE e.book_id = $1 AND e.account_id = $2
+		  AND e.value_date >= $4 AND e.value_date < $5
+		GROUP BY 1
+		ORDER BY 1`,
+		string(book), string(id), int16(normal), from, to)
+	if err != nil {
+		return ledger.Series{}, fmt.Errorf("pg: value dated series %s: %w", id, err)
+	}
+	defer rows.Close()
+
+	out := ledger.Series{Opening: opening, Movements: make([]ledger.DayMovement, 0)}
+	for rows.Next() {
+		var (
+			day    time.Time
+			amount ledger.Amount
+		)
+		if err := rows.Scan(&day, &amount); err != nil {
+			return ledger.Series{}, fmt.Errorf("pg: value dated series %s: %w", id, err)
+		}
+		out.Movements = append(out.Movements, ledger.DayMovement{
+			Day:    ledger.DayStart(day.UTC()),
+			Amount: amount,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return ledger.Series{}, fmt.Errorf("pg: value dated series %s: %w", id, err)
+	}
+	return out, nil
+}

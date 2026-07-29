@@ -210,6 +210,25 @@ type Entry struct {
 	ValueDate time.Time
 }
 
+// DayMovement is an account's net movement on one value date, signed by the
+// account's normal direction.
+type DayMovement struct {
+	Day    time.Time // UTC midnight
+	Amount Amount
+}
+
+// Series is an account's value-dated balance history over a window: the balance
+// carried into it, and the net movement on each day inside it that had any.
+//
+// It exists so that interest can be computed on each day's own closing balance
+// without one query per day. Days with no movement are omitted, because the
+// balance did not change on them — a consumer folds Opening forward and applies
+// each movement as it reaches its day.
+type Series struct {
+	Opening   Amount
+	Movements []DayMovement // ascending by Day
+}
+
 // TransactionStatus tracks the lifecycle of a transaction.
 type TransactionStatus int
 
