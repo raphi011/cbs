@@ -28,13 +28,17 @@ type Period func(balance ledger.Amount, from, to time.Time) Accrued
 // 31st's collapse on the same day as an unsplit one.
 //
 // The series is folded into runs of constant balance and Period is called
-// once per run, so the cost is the number of days the balance moved rather
-// than the number of days in the window. This per-slot decomposition — one
-// call per run, at that run's own endpoints — is authoritative: it is what
-// makes a daily run identical to the single-balance call production already
-// makes for that one day, which the deposit and lending accrual engines
-// depend on. It comes at a real, convention-dependent cost against one call
-// over the whole window:
+// once per run, so this function's own cost is the number of days the balance
+// moved rather than the number of days in the window. Whether the whole
+// accrual costs that is up to the Period: deposit's re-decomposes each run
+// into its days and is O(days) by choice, because the per-call truncation
+// below is not something an engine replacing an existing day-by-day
+// increment can absorb. See deposit.dailyOverdraftAccrual.
+//
+// This per-slot decomposition — one call per run, at that run's own
+// endpoints — is authoritative: it is what makes a daily run identical to the
+// single-balance call production already makes for that one day. It comes at
+// a real, convention-dependent cost against one call over the whole window:
 //
 //   - Under ACT365/ACT360, a split costs at most one Accrued unit per split
 //     point, to Accrue's per-call integer-division truncation, and only ever

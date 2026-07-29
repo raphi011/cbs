@@ -256,6 +256,25 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 		return Account{}, ErrAccountClosed
 	}
 
+	// The span between the last accrual and now belongs to the OUTGOING terms,
+	// so it is charged at them before the window moves. Without this the day
+	// ending now falls between two windows and is never charged at all: the old
+	// window's AccruedGross freezes where its last end-of-day left it, and the
+	// new one starts here.
+	//
+	// It is a no-op for an account being priced for the first time — which has
+	// no window to close, so the seed's figures do not move — and for one
+	// repriced on a date already accrued through.
+	now := r.now()
+	if err := r.accrueOverdraftAccountTx(ctx, tx, acct, now); err != nil {
+		return Account{}, err
+	}
+	// That wrote the account it accrued, so re-read it rather than carrying a
+	// stale Accrued into the new terms.
+	if acct, err = tx.GetDepositAccount(ctx, r.bookID, id); err != nil {
+		return Account{}, err
+	}
+
 	if rate > 0 && acct.InterestGL == "" {
 		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
 		if err != nil {
@@ -270,10 +289,9 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 	acct.DayCount = dc
 
 	// A repricing starts a new recompute window. Prior accrual stays exactly
-	// where it is — Accrued is untouched — and only days from here are
-	// recomputed, so no past day is ever re-derived at a rate that was not in
-	// force on it.
-	now := r.now()
+	// where it is — Accrued is untouched, including the span just closed above
+	// at the outgoing terms — and only days from here are recomputed, so no
+	// past day is ever re-derived at a rate that was not in force on it.
 	acct.TermsEffectiveFrom = now
 	acct.AccruedGross = 0
 	acct.LastAccrualDate = now
@@ -1010,24 +1028,23 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
-	terms := acct
 	gross := interest.AccrueSeries(series, acct.TermsEffectiveFrom, date,
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
-			return dailyOverdraftAccrual(balance, terms, from, to)
+			return dailyOverdraftAccrual(balance, acct, from, to)
 		})
 
 	before := acct.Accrued.Minor()
 	acct.Accrued += gross - acct.AccruedGross
 	acct.AccruedGross = gross
 	acct.LastAccrualDate = date
-	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
-		return err
-	}
 
 	delta := acct.Accrued.Minor() - before
 	if delta == 0 {
 		// The rounding did not tick. There is nothing to post, and a
 		// zero-amount entry is refused by the ledger anyway.
+		if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+			return err
+		}
 		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
 	}
 
@@ -1035,21 +1052,27 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
-	if delta > 0 {
-		if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-			Description: "Overdraft interest accrued: " + acct.Name,
-			BookingDate: date,
-			ValueDate:   date,
-			Entries: []ledger.Entry{
-				{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
-				{AccountID: income, Amount: delta, Direction: ledger.Credit},
-			},
-		}); err != nil {
-			return err
-		}
-		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	// A correction can settle part of the record in cash, which moves Accrued
+	// again, so it owns the write the way ChargeOverdraftInterestTx does.
+	if delta < 0 {
+		return r.correctOverdraftAccrualTx(ctx, tx, &acct, income, -delta, date)
 	}
-	return r.correctOverdraftAccrualTx(ctx, tx, acct, income, -delta, date)
+
+	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Overdraft interest accrued: " + acct.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries: []ledger.Entry{
+			{AccountID: acct.InterestGL, Amount: delta, Direction: ledger.Debit},
+			{AccountID: income, Amount: delta, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		return err
+	}
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
 }
 
 // correctOverdraftAccrualTx gives back interest that a backdated posting has
@@ -1064,7 +1087,22 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 // customer has actually paid, so it is refunded to their account rather than
 // driving an Asset balance negative — which the ledger would refuse, inside an
 // end-of-day batch, taking the whole book's run down with it.
-func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct Account, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
+//
+// # Why the refund comes back off the record
+//
+// The refunded part is settled: it has left in cash and the receivable never
+// held it. Leaving it in Accrued would break the invariant every caller here
+// maintains — that the receivable's balance is Minor() of the record — and the
+// account would carry a permanent negative that the customer gets the benefit
+// of a second time, because the next interest genuinely owed is swallowed
+// paying it off before a cent reaches the receivable. So Accrued is credited
+// back by exactly the refund, and by exactly the refund: the absorbed part
+// stays on the record, because the receivable it came out of tracks it.
+//
+// It takes acct by pointer for that reason, and writes the account itself —
+// the same shape as ChargeOverdraftInterestTx, which also posts, moves Accrued
+// by what settled, and persists. Only this function knows the split.
+func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
 	receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
 	if err != nil {
 		return err
@@ -1076,24 +1114,38 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct Ac
 	if absorbed < 0 {
 		absorbed = 0
 	}
+	refund := amount - absorbed
 
 	entries := []ledger.Entry{{AccountID: income, Amount: amount, Direction: ledger.Debit}}
 	if absorbed > 0 {
 		entries = append(entries, ledger.Entry{AccountID: acct.InterestGL, Amount: absorbed, Direction: ledger.Credit})
 	}
-	if refund := amount - absorbed; refund > 0 {
+	if refund > 0 {
 		entries = append(entries, ledger.Entry{AccountID: acct.GLAccount, Amount: refund, Direction: ledger.Credit})
 	}
 
-	if _, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: "Overdraft interest corrected: " + acct.Name,
 		BookingDate: date,
 		ValueDate:   date,
 		Entries:     entries,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
-	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrualCorrected, string(acct.ID), acct)
+
+	acct.Accrued += interest.FromMinor(refund)
+	if err := tx.PutDepositAccount(ctx, r.bookID, *acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrualCorrected, string(acct.ID), map[string]any{
+		"account_id":     string(acct.ID),
+		"amount":         amount,
+		"absorbed":       absorbed,
+		"refund":         refund,
+		"transaction_id": string(glTx.ID),
+		"residue":        int64(acct.Accrued),
+	})
 }
 
 // dailyOverdraftAccrual is overdraftAccrual applied one day at a time across a

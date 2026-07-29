@@ -1374,6 +1374,20 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 	if corrected := got.Accrued.Minor(); corrected <= after {
 		t.Errorf("accrued after backdated debit = %d, want more than %d", corrected, after)
 	}
+
+	// "More than before" is not enough: simply accruing one more day on today's
+	// balance is also more than before, which is exactly what the incrementing
+	// version this replaced would do — 82 cents plus a day at −400 is 99. The
+	// recompute goes back and re-derives days 3 to 11 at the balance the
+	// backdated debit gave them:
+	//
+	//	days 1-2   at −200   2 × 8_219_178  =  16_438_356
+	//	days 3-11  at −400   9 × 16_438_356 = 147_945_204
+	//	                                    = 164_383_560 -> 164 cents
+	//
+	// 164 is the figure only a recompute reaches.
+	assertEqual(t, "accrued after backdated debit", got.Accrued, interest.Accrued(164_383_560))
+	assertEqual(t, "receivable after backdated debit", got.Accrued.Minor(), ledger.Amount(164))
 }
 
 func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
@@ -1454,4 +1468,130 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	if balAfter <= balBefore {
 		t.Errorf("customer balance %d -> %d; the unabsorbed correction must be refunded to them", balBefore, balAfter)
 	}
+
+	// The refunded part left in cash, so it must leave the record too. If it
+	// does not, the account carries a permanent negative that the customer gets
+	// the benefit of twice: the next interest genuinely owed is swallowed
+	// paying it off, and at a tenth of a cent a day it never unwinds. This is
+	// the same assertion the unclamped sibling above makes, and it is the one
+	// that catches it.
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if recv != got.Accrued.Minor() {
+		t.Errorf("receivable = %d, accrued = %d; a refund that stays on the record is money given back twice",
+			recv, got.Accrued.Minor())
+	}
+
+	// And the account goes on working. Overdraw him again and accrue: the
+	// receivable and the record must still agree afterwards. With the refund
+	// left on the record they do not — the delta is a difference of rounded
+	// values, so the posting still lands, but the record it is supposed to
+	// mirror is 247 cents adrift and stays that way. api/dto_deposit.go
+	// reports that record straight through.
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart.AddDate(0, 0, 32))
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 33)))
+	next, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	nextRecv, err := book.BookBalance(ctx, next.InterestGL)
+	assertNoError(t, err)
+	if nextRecv <= 0 {
+		t.Errorf("receivable = %d after two freshly overdrawn days, want it to have moved", nextRecv)
+	}
+	if nextRecv != next.Accrued.Minor() {
+		t.Errorf("receivable = %d, accrued = %d; the refund was left on the record", nextRecv, next.Accrued.Minor())
+	}
+}
+
+// TestOverdraftRepricingChargesTheOutgoingTermsFirst pins the day a repricing
+// used to swallow. Freezing the old window and opening the new one at the same
+// instant leaves the span since the last end-of-day belonging to neither: the
+// old window's AccruedGross stops where its last run left it, and the new one
+// starts today.
+func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, clock := newOverdraftAccount(t)
+
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+	for i := 1; i <= 9; i++ {
+		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, i)))
+	}
+	nine, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	// Nine days at 15% on €200: 9 × 8_219_178.
+	assertEqual(t, "accrued through day 9", nine.Accrued, interest.Accrued(73_972_602))
+
+	// Reprice to triple the rate on day 10, with day 10 not yet accrued.
+	clock.set(accrualStart.AddDate(0, 0, 10))
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	assertNoError(t, err)
+
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+
+	// Day 10 belongs to the OUTGOING terms and must be charged at them before
+	// the window moves. Three outcomes are distinguishable here, which is the
+	// point of tripling the rate rather than nudging it:
+	//
+	//	73_972_602  the day was dropped between the two windows
+	//	82_191_780  charged at the outgoing 15%   <- correct
+	//	98_630_136  charged at the incoming 45%
+	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(82_191_780))
+
+	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	assertNoError(t, err)
+	assertEqual(t, "receivable after repricing", receivable, ledger.Amount(82))
+	if receivable != got.Accrued.Minor() {
+		t.Errorf("receivable %d != Minor(accrued) %d across a repricing", receivable, got.Accrued.Minor())
+	}
+
+	// And the new window prices at the new rate: a day at 45% is 24_657_534.
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued a day into the new window", after.Accrued, interest.Accrued(106_849_314))
+}
+
+// TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on
+// the deposit path, and dailyOverdraftAccrual leans on that convention for its
+// justification: under 30/360-US the 31st collapses onto the 30th, so a day can
+// count as no days at all, and what a window comes to depends on how it is cut.
+func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
+	ctx := context.Background()
+	clock := &mutableClock{}
+	start := time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC)
+	clock.set(start)
+	reg, book, sub := newTestRegisterOn(t, clock.now)
+
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	assertNoError(t, err)
+	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.Thirty360)
+	assertNoError(t, err)
+	postTo(t, book, sub, acct, 10_000, ledger.Debit, start)
+
+	// €100 at 15% over a 360-day year: 10_000 × 150_000 / 360 = 4_166_666.67,
+	// truncated to 4_166_666 a day.
+	day := func(d int) time.Time { return time.Date(2026, 1, d, 0, 0, 0, 0, time.UTC) }
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(30)))
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued 29 -> 30 January", got.Accrued, interest.Accrued(4_166_666))
+
+	// The 31st is free: Days(30th, 31st) is zero under this convention, so the
+	// run is refused before it starts and nothing is added.
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(31)))
+	got, err = reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued 30 -> 31 January", got.Accrued, interest.Accrued(4_166_666))
+
+	// 1 February charges one day, not two: Days(31st, 1st) is 1, and the 31st
+	// still counts for nothing.
+	//
+	// 8_333_332 is also what pins the day-by-day walk. One call over the whole
+	// window would be 10_000 × 150_000 × 2 / 360 = 8_333_333 — a unit more,
+	// because Accrue divides once per call and this balance truncates upward
+	// when the days are taken together.
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)))
+	got, err = reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued 31 January -> 1 February", got.Accrued, interest.Accrued(8_333_332))
 }
