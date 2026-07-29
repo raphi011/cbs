@@ -79,6 +79,24 @@ type entryDTO struct {
 	// posts in is decided by the account it debits or credits — so this is
 	// populated only when rendering a response.
 	Asset string `json:"asset,omitempty"`
+	// ValueDate is when THIS LEG takes economic effect, which is not always the
+	// transaction's: the SEPA debtor posting value-dates the payer's leg to the
+	// debit date and the suspense leg to settlement, days apart. See
+	// ledger.Entry.ValueDate.
+	//
+	// It travels in both directions, and the pointer is what makes that work.
+	// Absent on a request means "the transaction's", which is the domain's own
+	// rule for a zero value date — sending the transaction's date on every leg
+	// instead would be indistinguishable from deliberately pinning them
+	// together, and a client that simply does not care about per-leg dates
+	// should not have to compute one. On a response it is always populated:
+	// PostTransaction resolves every leg's date before storing it, so no reader
+	// has to fall back to the parent.
+	//
+	// Rendering only the transaction-level date, as this used to, showed one
+	// date for a posting whose legs disagree — the one place the ledger's
+	// per-leg value dating was invisible from outside Go.
+	ValueDate *time.Time `json:"valueDate,omitempty"`
 }
 
 type transactionDTO struct {
@@ -148,6 +166,13 @@ func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 			Amount:    int64(e.Amount),
 			Direction: e.Direction.String(),
 			Asset:     string(assets[e.AccountID]),
+			// Taken per leg, not from tx.ValueDate: on a payment's debtor
+			// posting the two differ by the settlement delay, and collapsing
+			// them here is exactly the bug this field fixes. A stored entry
+			// always carries a concrete date, so the address is never of a zero
+			// time — but a leg written before this field existed would render
+			// as an absent valueDate rather than as 0001-01-01.
+			ValueDate: valueDatePtr(e.ValueDate),
 		}
 	}
 	return transactionDTO{
@@ -162,6 +187,17 @@ func toTransactionDTO(tx ledger.Transaction, assets map[ledger.AccountID]ledger.
 		ReversalOf:     string(tx.ReversalOf),
 		CreatedAt:      tx.CreatedAt,
 	}
+}
+
+// valueDatePtr renders an entry's value date, or nothing at all for a zero one.
+// A zero time.Time marshals as "0001-01-01T00:00:00Z", which reads as a real
+// date a client would render and compare against; absent says what is actually
+// true, that this leg has no date of its own to report.
+func valueDatePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // createAccountRequest carries a required asset. There is no default: an
@@ -186,6 +222,12 @@ type postTransactionRequest struct {
 // toDomain converts the request to a ledger.PostTransactionRequest, parsing
 // each entry's direction. A bad direction string yields an error that the
 // handler maps to 400.
+//
+// An entry's value date is passed through as given, INCLUDING absent: a zero
+// ValueDate is what the domain reads as "inherit the transaction's", and
+// PostTransaction resolves it there. Substituting req.ValueDate here would
+// duplicate that rule in a second place, and would keep working right up until
+// the two disagreed.
 func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, error) {
 	entries := make([]ledger.Entry, len(req.Entries))
 	for i, e := range req.Entries {
@@ -197,6 +239,9 @@ func (req postTransactionRequest) toDomain() (ledger.PostTransactionRequest, err
 			AccountID: ledger.AccountID(e.AccountID),
 			Amount:    ledger.Amount(e.Amount),
 			Direction: dir,
+		}
+		if e.ValueDate != nil {
+			entries[i].ValueDate = *e.ValueDate
 		}
 	}
 	out := ledger.PostTransactionRequest{

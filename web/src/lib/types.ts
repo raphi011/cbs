@@ -71,6 +71,17 @@ export interface Entry {
   // by a client — a transaction request names accounts, not assets; see
   // EntryInput below).
   asset: string;
+  // When THIS LEG takes economic effect, which is not always the
+  // transaction's. A SEPA transfer's debtor posting value-dates the payer's
+  // leg to the day of the debit and the suspense leg to settlement, days
+  // apart — and the transaction-level `valueDate` is the settlement one, so
+  // reading it for the payer's leg overstates when the customer's money
+  // actually moved.
+  //
+  // Always populated on a response: the server resolves every leg's date
+  // before storing it. Optional only because a leg written before the field
+  // existed has none to report. See EntryInput for the input side.
+  valueDate?: string;
 }
 
 export interface Transaction {
@@ -305,10 +316,29 @@ export interface Facility {
   asset: string;
   principalGlAccount: string;
   interestGlAccount: string;
+  // The facility's interest-refunds-payable account, absent until a backdated
+  // correction has overshot on it. See `refundPayable`.
+  refundGlAccount?: string;
   commitment: number;
   drawn: number;
   accruedInterest: number;
   outstanding: number;
+  // Interest the bank owes THIS borrower back, because a backdated posting
+  // showed it charged interest that was never earned and the borrower had
+  // already paid it in cash. Derived, like `drawn`: the book balance of
+  // `refundGlAccount`, and 0 when there is no such account (the ordinary case).
+  //
+  // It is NOT part of `outstanding`, which is what the borrower owes the bank.
+  // The money runs the other way, and netting it in would render a smaller loan
+  // instead of an obligation.
+  //
+  // Discharging it is `POST /participants/{pid}/facilities/{fid}/
+  // interest-refunds`, and every outstanding one across a bank is
+  // `GET /participants/{pid}/interest-refunds-payable`. Neither is mirrored in
+  // endpoints.ts, for the same reason disbursement, draws and repayments are
+  // not: this client calls the routes the UI needs, and money moving out of the
+  // bank is driven from the API rather than the browser.
+  refundPayable: number;
   rate: number;
   rateScale: number;
   dayCount: string;
@@ -385,11 +415,17 @@ export interface CreateAccountRequest {
   asset: string;
 }
 
-// Entries on input carry only accountId/amount/direction (no id).
+// Entries on input carry accountId/amount/direction (no id, no asset — the
+// asset a leg posts in is decided by the account it names).
 export interface EntryInput {
   accountId: string;
   amount: number;
   direction: Direction;
+  // Optional per-leg value date. OMITTED means "the transaction's", which is
+  // the server's own rule for an unset one — so a client that does not care
+  // about per-leg dates sends nothing rather than computing a date, and one
+  // that does can pin a single leg without touching the others.
+  valueDate?: string;
 }
 
 export interface PostTransactionRequest {

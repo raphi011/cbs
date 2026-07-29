@@ -1782,3 +1782,300 @@ func TestUnknownFacilityReturns404(t *testing.T) {
 	getJSON(t, h, "/participants/"+pid+"/facilities/nope/schedule", &schedule)
 	assertEqual(t, "schedule of an unknown facility", len(schedule), 0)
 }
+
+// TestEntryDTOCarriesItsOwnValueDate pins the per-leg value date in both
+// directions, which is the one place the ledger's central claim about value
+// dating was invisible from outside Go.
+//
+// The transaction is value-dated today and one of its two legs is pinned three
+// days out. The request has to be able to say that, and the response has to
+// report each leg's own date rather than the transaction's — a listing that
+// rendered only the transaction-level date showed one date for a posting whose
+// legs deliberately disagree.
+func TestEntryDTOCarriesItsOwnValueDate(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	today := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	settles := today.AddDate(0, 0, 3)
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/transactions", fmt.Sprintf(`{
+		"entries":[
+			{"accountId":%q,"amount":100,"direction":"Debit"},
+			{"accountId":%q,"amount":100,"direction":"Credit","valueDate":%q}
+		],
+		"valueDate":%q
+	}`, acct, other, settles.Format(time.RFC3339), today.Format(time.RFC3339)), http.StatusCreated)
+
+	// Read it back through the listing rather than trusting the create
+	// response: the point is that a client polling for postings can see the
+	// split, and the listing is the route that renders many at once.
+	var listed []transactionDTO
+	getJSON(t, h, "/participants/"+pid+"/transactions", &listed)
+	if len(listed) != 1 {
+		t.Fatalf("listed %d transactions, want 1", len(listed))
+	}
+	got := listed[0]
+	if !got.ValueDate.Equal(today) {
+		t.Errorf("transaction valueDate = %s, want %s", got.ValueDate, today)
+	}
+	if len(got.Entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(got.Entries))
+	}
+	for _, e := range got.Entries {
+		if e.ValueDate == nil {
+			t.Fatalf("entry %s has no valueDate; a stored leg always carries one", e.ID)
+		}
+	}
+	// The leg that said nothing inherits the transaction's; the leg that pinned
+	// a date keeps it. Both are concrete, and they differ.
+	byAccount := map[string]time.Time{}
+	for _, e := range got.Entries {
+		byAccount[e.AccountID] = *e.ValueDate
+	}
+	if d := byAccount[acct]; !d.Equal(today) {
+		t.Errorf("debit leg valueDate = %s, want the transaction's %s", d, today)
+	}
+	if d := byAccount[other]; !d.Equal(settles) {
+		t.Errorf("credit leg valueDate = %s, want its own %s", d, settles)
+	}
+	if byAccount[acct].Equal(byAccount[other]) {
+		t.Error("both legs render the same value date; the per-leg date is not on the wire")
+	}
+	// And the create response says the same thing as the listing.
+	created := tx["entries"].([]any)
+	for _, e := range created {
+		if _, ok := e.(map[string]any)["valueDate"]; !ok {
+			t.Error("create response omits an entry's valueDate")
+		}
+	}
+}
+
+// TestSEPADebtorLegsValueDateApart is the same property on the posting that
+// actually depends on it, rather than one a test constructed. Initiating an SCT
+// value-dates the payer's leg to the debit and the suspense leg to settlement,
+// and until entryDTO carried a value date the API reported one date for both.
+func TestSEPADebtorLegsValueDateApart(t *testing.T) {
+	h := newTestServer(t)
+	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
+		`{"account":"`+alice["id"].(string)+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice["id"].(string)+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":25000,
+		"endToEndId":"e2e-1"
+	}`, http.StatusCreated)
+
+	var listed []transactionDTO
+	getJSON(t, h, "/participants/"+a+"/transactions", &listed)
+
+	// Find the debtor posting: the one that debits Alice's GL account. The
+	// opening deposit touches it too, so match on having a leg that is NOT
+	// value-dated with the rest.
+	payerGL := alice["glAccount"].(string)
+	var found bool
+	for _, tx := range listed {
+		var payerDate, suspenseDate time.Time
+		for _, e := range tx.Entries {
+			if e.ValueDate == nil {
+				t.Fatalf("entry %s has no valueDate", e.ID)
+			}
+			if e.AccountID == payerGL {
+				payerDate = *e.ValueDate
+			} else {
+				suspenseDate = *e.ValueDate
+			}
+		}
+		if payerDate.IsZero() || suspenseDate.IsZero() || payerDate.Equal(suspenseDate) {
+			continue
+		}
+		found = true
+		if !suspenseDate.After(payerDate) {
+			t.Errorf("suspense leg value-dated %s, want after the payer's %s (the settlement delay)",
+				suspenseDate, payerDate)
+		}
+		// The transaction-level date is the SUSPENSE leg's — the payment's own
+		// value date, which is settlement — and the payer's leg is pulled back
+		// to the debit date. So the transaction-level date is the WRONG answer
+		// for the leg a customer cares about: reporting only it told a client
+		// Alice's account takes effect at settlement when it took effect on the
+		// day she was debited. That is what the per-leg field fixes.
+		if !tx.ValueDate.Equal(suspenseDate) {
+			t.Errorf("transaction valueDate = %s, want the suspense leg's %s", tx.ValueDate, suspenseDate)
+		}
+		if !tx.ValueDate.After(payerDate) {
+			t.Errorf("transaction valueDate = %s is not after the payer leg's %s; the whole point is that it overstates when the debit takes effect",
+				tx.ValueDate, payerDate)
+		}
+	}
+	if !found {
+		t.Error("no posting in the payer's book has legs value-dated apart; the SCT debtor leg should")
+	}
+}
+
+// overpaidFacilityViaAPI drives the whole scenario that leaves the bank owing a
+// borrower interest, through the HTTP API only, and returns the participant, the
+// facility id, the borrower's deposit account id and what is owed.
+//
+// There is no shortcut: the payable is credited only by a backdated correction,
+// which needs interest accrued, then settled in cash, then a posting backdated
+// behind both. Doing it through the API is the point — it is what proves the
+// obligation is reachable and dischargeable from outside Go.
+func overpaidFacilityViaAPI(t *testing.T, h http.Handler) (pid, fid, did string, owed int64) {
+	t.Helper()
+	pid = doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
+	did = acct["id"].(string)
+	aliceGL := acct["glAccount"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
+		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	loan := doJSON(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"Alice Home Loan","asset":"EUR",
+		"commitment":1000000,"rate":60000,"dayCount":"ACT/365",
+		"method":"Annuity","termMonths":60
+	}`, http.StatusCreated)
+	fid = loan["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/disbursement",
+		`{"counterparty":"`+aliceGL+`","firstDue":"2025-02-15","description":"advance"}`, http.StatusCreated)
+
+	// Ten days of interest, then the borrower pays exactly that in cash — so the
+	// receivable is empty and the money has left the record.
+	drawdown := time.Date(2025, 1, 15, 0, 0, 0, 0, time.UTC)
+	for i := 1; i <= 10; i++ {
+		assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day",
+			`{"date":"`+drawdown.AddDate(0, 0, i).Format("2006-01-02")+`"}`, http.StatusNoContent)
+	}
+	var facility facilityDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid, &facility)
+	if facility.AccruedInterest <= 0 {
+		t.Fatalf("accrued interest after ten days = %d, want positive", facility.AccruedInterest)
+	}
+	settled := facility.AccruedInterest
+	doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/repayments", fmt.Sprintf(
+		`{"accountId":%q,"amount":%d,"date":"2025-01-25","description":"Interest"}`, did, settled),
+		http.StatusCreated)
+
+	// A posting backdated to the drawdown, clearing the principal: the loan was
+	// repaid on day one and no interest was ever owed. Nothing is left to absorb
+	// the correction, so the whole of it becomes a refund the bank owes.
+	doJSON(t, h, "POST", "/participants/"+pid+"/transactions", fmt.Sprintf(`{
+		"description":"backdated settlement",
+		"valueDate":%q,
+		"entries":[
+			{"accountId":%q,"amount":1000000,"direction":"Credit"},
+			{"accountId":%q,"amount":1000000,"direction":"Debit"}
+		]
+	}`, drawdown.Format(time.RFC3339), facility.PrincipalGL, aliceGL), http.StatusCreated)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/end-of-day",
+		`{"date":"`+drawdown.AddDate(0, 0, 11).Format("2006-01-02")+`"}`, http.StatusNoContent)
+
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid, &facility)
+	if facility.RefundPayable <= 0 {
+		t.Fatalf("refundPayable = %d after the correction, want positive; the fixture needs a debt to discharge",
+			facility.RefundPayable)
+	}
+	if facility.RefundGL == "" {
+		t.Error("refundGlAccount is empty on a facility with an outstanding refund")
+	}
+	// It is not netted into what the borrower owes: the money runs the other way.
+	if facility.Outstanding != 0 {
+		t.Errorf("outstanding = %d, want 0; a refund the bank owes is not part of it", facility.Outstanding)
+	}
+	return pid, fid, did, facility.RefundPayable
+}
+
+// TestInterestRefundIsListedAndDischargeable is the second gap this closes: the
+// payable could be credited and no endpoint could see it or settle it.
+func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
+	h := newTestServer(t)
+	pid, fid, did, owed := overpaidFacilityViaAPI(t, h)
+	aliceGL := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
+
+	var list []refundPayableDTO
+	getJSON(t, h, "/participants/"+pid+"/interest-refunds-payable", &list)
+	if len(list) != 1 {
+		t.Fatalf("listed %d refunds, want 1: %+v", len(list), list)
+	}
+	if list[0].FacilityID != fid || list[0].Amount != owed {
+		t.Errorf("listed %+v, want facility %s owing %d", list[0], fid, owed)
+	}
+	if list[0].Asset != "EUR" || list[0].Name != "Alice Home Loan" {
+		t.Errorf("listed %+v, want the facility's name and asset", list[0])
+	}
+	if list[0].FacilityStatus == "" {
+		t.Error("facilityStatus is empty; a client must be able to tell a closed facility's refund apart")
+	}
+
+	// Paying out more than is owed is a 400, and leaves the obligation intact.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-refunds", fmt.Sprintf(
+		`{"counterparty":%q,"amount":%d,"date":"2025-02-01"}`, aliceGL, owed+1), http.StatusBadRequest)
+	var facility facilityDTO
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid, &facility)
+	if facility.RefundPayable != owed {
+		t.Fatalf("refundPayable = %d after a refused refund, want %d untouched", facility.RefundPayable, owed)
+	}
+
+	// Pay it, and the obligation is gone from both the facility and the listing.
+	tx := doJSON(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-refunds", fmt.Sprintf(
+		`{"counterparty":%q,"amount":%d,"date":"2025-02-01","description":"overcharged interest"}`, aliceGL, owed),
+		http.StatusCreated)
+	if len(tx["entries"].([]any)) != 2 {
+		t.Errorf("refund posting has %d entries, want 2", len(tx["entries"].([]any)))
+	}
+	getJSON(t, h, "/participants/"+pid+"/facilities/"+fid, &facility)
+	if facility.RefundPayable != 0 {
+		t.Errorf("refundPayable = %d after paying it, want 0", facility.RefundPayable)
+	}
+	getJSON(t, h, "/participants/"+pid+"/interest-refunds-payable", &list)
+	if len(list) != 0 {
+		t.Errorf("listed %+v after settling, want nothing owed", list)
+	}
+
+	// And a second attempt is 422: the same status as its mirror, a repayment
+	// against a facility that owes nothing.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/interest-refunds", fmt.Sprintf(
+		`{"counterparty":%q,"amount":1,"date":"2025-02-01"}`, aliceGL), http.StatusUnprocessableEntity)
+}
+
+// TestInterestRefundsPayableIsEmptyForAnOrdinaryBank pins the common case: the
+// listing is an empty array, not an error and not null, and an ordinary facility
+// reports no refund and no refund account.
+func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	loan := doJSON(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"Bob Loan","asset":"EUR",
+		"commitment":500000,"rate":60000,"dayCount":"ACT/365",
+		"method":"Annuity","termMonths":24
+	}`, http.StatusCreated)
+
+	if got := loan["refundPayable"]; got != float64(0) {
+		t.Errorf("refundPayable on a fresh facility = %v, want 0", got)
+	}
+	if _, ok := loan["refundGlAccount"]; ok {
+		t.Error("refundGlAccount is rendered on a facility that has no such account")
+	}
+
+	res := do(t, h, "GET", "/participants/"+pid+"/interest-refunds-payable", "")
+	if got := strings.TrimSpace(res.Body.String()); got != "[]" {
+		t.Errorf("listing = %s, want []", got)
+	}
+
+	// And refunding one is 422, not a 500 and not a silent no-op.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/interest-refunds",
+		`{"counterparty":"x","amount":100,"date":"2025-02-01"}`, http.StatusUnprocessableEntity)
+}
