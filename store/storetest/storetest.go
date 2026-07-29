@@ -1024,6 +1024,108 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "balance", got, ledger.Amount(0))
 	})
 
+	// ValueDateBalanceExcludesZeroValueDateEntries pins the resolution to a
+	// plan-internal contradiction: store/mem's obvious implementation
+	// (!ValueDate.Before(before)) counts a zero time.Time{}, which is before
+	// every real bound, while store/pg stores a zero date as NULL (see
+	// nullTime) and "NULL < $4" is never true — the two stores would
+	// otherwise disagree on every entry posted with no value date, and this
+	// fixture's own transaction() helper creates exactly that shape.
+	//
+	// The ruling: a zero ValueDate means "not value-dated", so it is excluded
+	// from every bound rather than included in all of them. Book resolves
+	// every entry it posts (see PostTransaction), so this only arises from a
+	// Tx caller constructing an Entry directly, as this test does.
+	t.Run("ValueDateBalanceExcludesZeroValueDateEntries", func(t *testing.T) {
+		s := open(t, newStore)
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:        "txn_vdb_zero",
+				Status:    ledger.Posted,
+				CreatedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC),
+				// ValueDate deliberately left zero on both the transaction and
+				// its entries.
+				Entries: []ledger.Entry{
+					{ID: "ent_vdb_zero_d", AccountID: "900.001.003", Amount: 100, Direction: ledger.Debit},
+					{ID: "ent_vdb_zero_c", AccountID: "900.001.004", Amount: 100, Direction: ledger.Credit},
+				},
+			})
+		})
+
+		var got ledger.Amount
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			// A bound far in the future would catch this entry were a zero
+			// ValueDate treated as "before everything", exactly the failure
+			// mode store/mem's naive check has.
+			got, err = tx.ValueDateBalance(ctx, bookA, "900.001.003", ledger.Debit,
+				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+			return err
+		})
+		assertEqual(t, "balance", got, ledger.Amount(0))
+	})
+
+	// ValueDateBalanceNetsAReversalOnTheOriginalsDay exercises the contract
+	// line in Tx.ValueDateBalance directly: a reversal posts its own mirrored
+	// entries, value-dated onto the original leg's day (ReverseTransactionTx),
+	// and those are what cancel the original — so a bound falling after the
+	// original's value date must see the net, zero, not the gross.
+	t.Run("ValueDateBalanceNetsAReversalOnTheOriginalsDay", func(t *testing.T) {
+		s := open(t, newStore)
+
+		const cash ledger.AccountID = "900.001.005"
+		originalValue := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
+		before := ledger.NextDay(originalValue) // a bound after the original's day
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:        "txn_vdb_rev_orig",
+				Status:    ledger.Posted,
+				CreatedAt: time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC),
+				ValueDate: originalValue,
+				Entries: []ledger.Entry{
+					{ID: "ent_vdb_rev_orig", AccountID: cash, Amount: 10_000, Direction: ledger.Debit, ValueDate: originalValue},
+				},
+			})
+		})
+
+		var gross ledger.Amount
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			gross, err = tx.ValueDateBalance(ctx, bookA, cash, ledger.Debit, before)
+			return err
+		})
+		assertEqual(t, "balance before the reversal", gross, ledger.Amount(10_000))
+
+		// Mark the original Reversed, then post the reversal's own mirrored
+		// entry, value-dated onto the same day as the leg it corrects — what
+		// ReverseTransactionTx actually does.
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			if err := tx.MarkReversed(ctx, bookA, "txn_vdb_rev_orig"); err != nil {
+				return err
+			}
+			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:         "txn_vdb_rev_reversal",
+				Status:     ledger.Posted,
+				ReversalOf: "txn_vdb_rev_orig",
+				CreatedAt:  time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC),
+				ValueDate:  originalValue,
+				Entries: []ledger.Entry{
+					{ID: "ent_vdb_rev_reversal", AccountID: cash, Amount: 10_000, Direction: ledger.Credit, ValueDate: originalValue},
+				},
+			})
+		})
+
+		var netted ledger.Amount
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			netted, err = tx.ValueDateBalance(ctx, bookA, cash, ledger.Debit, before)
+			return err
+		})
+		assertEqual(t, "balance after the reversal, read on the original's day", netted, ledger.Amount(0))
+	})
+
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {
 		s := open(t, newStore)
 

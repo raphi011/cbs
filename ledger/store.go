@@ -95,6 +95,13 @@ type Tx interface {
 	// reversal posts its own mirrored entries and those are what cancel the
 	// original. An account with no entries is 0, including one that does not
 	// exist; callers wanting ErrAccountNotFound read the account first.
+	//
+	// An entry with a zero ValueDate is excluded from every bound, not
+	// included in all of them: it has not been assigned economic effect, so it
+	// cannot be said to have taken effect before any date. Book resolves every
+	// entry it posts (Task 1's PostTransaction), so no entry written through
+	// the ledger is ever in this case — it can only arise from a Tx caller
+	// constructing an Entry directly, as store/storetest's fixtures do.
 	ValueDateBalance(ctx context.Context, book BookID, id AccountID, normal Direction, before time.Time) (Amount, error)
 
 	AppendAudit(ctx context.Context, e AuditEvent) error

@@ -642,6 +642,11 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 
 // ValueDateBalance is BookBalance restricted to entries whose value date falls
 // strictly before the bound. See ledger.Tx for the contract.
+//
+// A zero ValueDate is stored as NULL (see nullTime), and NULL < $4 is unknown
+// rather than true, so such an entry is excluded here without a separate
+// IS NOT NULL check. That is deliberate, not incidental: it is what keeps
+// this in step with store/mem's explicit IsZero exclusion.
 func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
 	var balance ledger.Amount
 	err := t.tx.QueryRow(ctx, `

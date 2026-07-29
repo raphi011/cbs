@@ -1010,6 +1010,81 @@ func TestBookBalance_AllAccountTypes(t *testing.T) {
 	}
 }
 
+func TestValueDateBalance_AccountNotFound(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	_, err := book.ValueDateBalance(ctx, "nonexistent", testClock())
+	assertError(t, err, ErrAccountNotFound)
+}
+
+// TestValueDateBalance_AsOfDayBoundary pins the NextDay conversion:
+// Book.ValueDateBalance takes an inclusive asOf and must convert it to an
+// exclusive bound one day later, so an entry value-dated on asOf itself
+// counts and one value-dated the day after does not. Off by one day in
+// either direction is the easiest mistake in this task to make and the
+// hardest to notice, since it only shows up at a day boundary.
+func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, cash, _ := setupChartOfAccounts(t, book)
+
+	asOf := time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
+
+	// Entry value-dated on asOf itself: a day's interest accrues on that
+	// day's closing balance, so this must be included. Alice (Liability,
+	// normal=Credit) is credited, so her balance goes to +1000.
+	_, err := book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "value-dated on asOf",
+		ValueDate:   asOf,
+		Entries: []Entry{
+			{AccountID: cash.ID, Amount: 1_000, Direction: Debit},
+			{AccountID: alice.ID, Amount: 1_000, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+
+	bal, err := book.ValueDateBalance(ctx, alice.ID, asOf)
+	assertNoError(t, err)
+	assertEqual(t, "balance including asOf's own entry", bal, Amount(1_000))
+
+	// Entry value-dated the day after asOf: not yet in effect as of asOf, so
+	// it must be excluded.
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "value-dated the day after asOf",
+		ValueDate:   asOf.AddDate(0, 0, 1),
+		Entries: []Entry{
+			{AccountID: cash.ID, Amount: 500, Direction: Debit},
+			{AccountID: alice.ID, Amount: 500, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+
+	bal, err = book.ValueDateBalance(ctx, alice.ID, asOf)
+	assertNoError(t, err)
+	assertEqual(t, "balance excluding the next day's entry", bal, Amount(1_000))
+
+	// The aggregate goes negative when the account's own normal direction is
+	// the one being subtracted from: Bob (Liability, normal=Credit) is
+	// debited here with no offsetting credit of his own, so his balance is
+	// -300, not clamped to zero. Liability accounts are not balance-checked
+	// (see TestPostTransaction_InsufficientBalance_LiabilityNotChecked), so
+	// this posts without error.
+	_, err = book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "debit Bob with no prior balance",
+		ValueDate:   asOf,
+		Entries: []Entry{
+			{AccountID: bob.ID, Amount: 300, Direction: Debit},
+			{AccountID: cash.ID, Amount: 300, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+
+	bobBal, err := book.ValueDateBalance(ctx, bob.ID, asOf)
+	assertNoError(t, err)
+	assertEqual(t, "balance goes negative", bobBal, Amount(-300))
+}
+
 // ---------------------------------------------------------------------------
 // Integration Test: Full Ledger Workflow
 // ---------------------------------------------------------------------------

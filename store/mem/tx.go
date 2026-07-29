@@ -301,7 +301,11 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 	var balance ledger.Amount
 	for _, txn := range t.state.transactions[book] {
 		for _, e := range txn.Entries {
-			if e.AccountID != id || !e.ValueDate.Before(before) {
+			// A zero ValueDate means "not value-dated", not "before every
+			// bound": excluding it here is what keeps this in step with
+			// store/pg, which stores a zero date as NULL and NULL < $4 is
+			// never true.
+			if e.AccountID != id || e.ValueDate.IsZero() || !e.ValueDate.Before(before) {
 				continue
 			}
 			if e.Direction == normal {
