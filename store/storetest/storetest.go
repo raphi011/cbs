@@ -169,6 +169,71 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 	})
 
+	t.Run("EntryValueDateDefaultsToTransaction", func(t *testing.T) {
+		s := open(t, newStore)
+
+		ctx := context.Background()
+		value := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		var got ledger.Transaction
+		if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:        "txn_vd_default",
+				ValueDate: value,
+				Entries: []ledger.Entry{
+					{ID: "ent_1", AccountID: "100.001.001", Amount: 500, Direction: ledger.Debit, ValueDate: value},
+					{ID: "ent_2", AccountID: "200.001.001", Amount: 500, Direction: ledger.Credit, ValueDate: value},
+				},
+			})
+			if err != nil {
+				return err
+			}
+			got, err = tx.GetTransaction(ctx, bookA, "txn_vd_default")
+			return err
+		}); err != nil {
+			t.Fatalf("put/get: %v", err)
+		}
+		for i, e := range got.Entries {
+			if !e.ValueDate.Equal(value) {
+				t.Errorf("entry %d value date = %v, want %v", i, e.ValueDate, value)
+			}
+		}
+	})
+
+	t.Run("EntriesKeepDivergentValueDates", func(t *testing.T) {
+		s := open(t, newStore)
+
+		ctx := context.Background()
+		early := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+		late := time.Date(2026, 3, 17, 0, 0, 0, 0, time.UTC)
+		var got ledger.Transaction
+		if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+				ID:        "txn_vd_split",
+				ValueDate: late,
+				Entries: []ledger.Entry{
+					{ID: "ent_3", AccountID: "100.001.001", Amount: 500, Direction: ledger.Debit, ValueDate: early},
+					{ID: "ent_4", AccountID: "200.001.001", Amount: 500, Direction: ledger.Credit, ValueDate: late},
+				},
+			})
+			if err != nil {
+				return err
+			}
+			got, err = tx.GetTransaction(ctx, bookA, "txn_vd_split")
+			return err
+		}); err != nil {
+			t.Fatalf("put/get: %v", err)
+		}
+		if len(got.Entries) != 2 {
+			t.Fatalf("entries = %d, want 2", len(got.Entries))
+		}
+		if !got.Entries[0].ValueDate.Equal(early) {
+			t.Errorf("leg 0 value date = %v, want %v", got.Entries[0].ValueDate, early)
+		}
+		if !got.Entries[1].ValueDate.Equal(late) {
+			t.Errorf("leg 1 value date = %v, want %v", got.Entries[1].ValueDate, late)
+		}
+	})
+
 	t.Run("NextAccountSeqResetsPerTypeAndSubledger", func(t *testing.T) {
 		s := open(t, newStore)
 

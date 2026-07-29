@@ -189,13 +189,25 @@ type Account struct {
 	CreatedAt   time.Time
 }
 
-// Entry is a single leg of a transaction, representing a debit or credit
-// to an account.
+// Entry is one leg of a transaction: an amount in one direction against one
+// account.
 type Entry struct {
 	ID        EntryID
 	AccountID AccountID
 	Amount    Amount
 	Direction Direction
+
+	// ValueDate is when this leg takes economic effect. Zero on input means
+	// the transaction's; PostTransaction resolves it, so a stored entry always
+	// carries a concrete date and no reader has to fall back to the parent.
+	//
+	// It lives here rather than only on the Transaction because the two legs of
+	// one event can legitimately value-date differently — an outbound transfer
+	// debits the customer on the day it is debited, while the bank's clearing
+	// position settles days later. Unlike an entry's asset, which is always its
+	// account's and so would only create disagreement if stored twice, an
+	// entry's value date is genuinely not derivable from its transaction.
+	ValueDate time.Time
 }
 
 // TransactionStatus tracks the lifecycle of a transaction.

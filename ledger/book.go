@@ -584,7 +584,7 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 		valueDate = bookingDate
 	}
 
-	// Assign IDs to entries.
+	// Assign IDs to entries, and resolve each leg's value date.
 	entries := make([]Entry, len(req.Entries))
 	for i, e := range req.Entries {
 		id, err := tx.NextID(ctx, s.id, "ent")
@@ -592,6 +592,9 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 			return Transaction{}, err
 		}
 		e.ID = EntryID(id)
+		if e.ValueDate.IsZero() {
+			e.ValueDate = valueDate
+		}
 		entries[i] = e
 	}
 

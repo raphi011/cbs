@@ -472,6 +472,50 @@ func TestPostTransaction_DefaultDates(t *testing.T) {
 	assertEqual(t, "value date", tx.ValueDate, expectedTime)
 }
 
+func TestPostTransactionDefaultsEntryValueDate(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	value := time.Date(2026, 5, 4, 9, 30, 0, 0, time.UTC)
+	posted, err := book.PostTransaction(ctx, PostTransactionRequest{
+		ValueDate: value,
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 1_000, Direction: Debit},
+			{AccountID: bob.ID, Amount: 1_000, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+	for i, e := range posted.Entries {
+		if !e.ValueDate.Equal(value) {
+			t.Errorf("entry %d value date = %v, want %v", i, e.ValueDate, value)
+		}
+	}
+}
+
+func TestPostTransactionKeepsExplicitEntryValueDate(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	txValue := time.Date(2026, 5, 6, 0, 0, 0, 0, time.UTC)
+	legValue := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	posted, err := book.PostTransaction(ctx, PostTransactionRequest{
+		ValueDate: txValue,
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 1_000, Direction: Debit, ValueDate: legValue},
+			{AccountID: bob.ID, Amount: 1_000, Direction: Credit},
+		},
+	})
+	assertNoError(t, err)
+	if !posted.Entries[0].ValueDate.Equal(legValue) {
+		t.Errorf("explicit leg value date = %v, want %v", posted.Entries[0].ValueDate, legValue)
+	}
+	if !posted.Entries[1].ValueDate.Equal(txValue) {
+		t.Errorf("defaulted leg value date = %v, want %v", posted.Entries[1].ValueDate, txValue)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Transaction Validation Tests
 // ---------------------------------------------------------------------------

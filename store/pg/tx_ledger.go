@@ -392,7 +392,7 @@ func (t *tx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.
 const transactionColumns = `
 	t.id, t.idempotency_key, t.booking_date, t.value_date, t.status,
 	t.description, t.metadata, t.reversal_of, t.created_at,
-	e.id, e.account_id, e.amount, e.direction`
+	e.id, e.account_id, e.amount, e.direction, e.value_date`
 
 // PutTransaction stores a transaction, its ordered entries and its idempotency
 // claim.
@@ -458,9 +458,10 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 	}
 	for i, e := range txn.Entries {
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO entries (book_id, transaction_id, position, id, account_id, amount, direction)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+			INSERT INTO entries (book_id, transaction_id, position, id, account_id, amount, direction, value_date)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
 			string(book), string(txn.ID), i, string(e.ID), string(e.AccountID), e.Amount, int16(e.Direction),
+			nullTime(e.ValueDate),
 		); err != nil {
 			return fmt.Errorf("pg: put transaction %s entry %d: %w", txn.ID, i, err)
 		}
@@ -549,11 +550,12 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 			entryID, accountID     *string
 			amount                 *int64
 			direction              *int16
+			entryValue             *time.Time
 		)
 		if err := rows.Scan(
 			&txn.ID, &txn.IdempotencyKey, &booking, &value, &status,
 			&txn.Description, &metadata, &txn.ReversalOf, &create,
-			&entryID, &accountID, &amount, &direction,
+			&entryID, &accountID, &amount, &direction, &entryValue,
 		); err != nil {
 			return nil, fmt.Errorf("pg: query transactions: %w", err)
 		}
@@ -577,6 +579,7 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 				AccountID: ledger.AccountID(*accountID),
 				Amount:    ledger.Amount(*amount),
 				Direction: ledger.Direction(*direction),
+				ValueDate: readTime(entryValue),
 			})
 		}
 	}

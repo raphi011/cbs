@@ -166,6 +166,16 @@ CREATE UNIQUE INDEX transactions_idempotency_key_idx
 -- entries.position is explicit because Transaction.Entries is an ordered slice
 -- and a table has no order. entries.account_id carries no foreign key, for the
 -- same reason accounts.subledger_id does not.
+--
+-- entries.value_date is the one date that is NOT a copy. An entry's asset is
+-- always its account's, which is why accounts.asset exists and entries.asset
+-- does not — a second copy could only disagree. An entry's value date is a
+-- different case: the two legs of one event can legitimately take economic
+-- effect on different days. An outbound transfer debits the payer's account on
+-- the day it is debited, while the credit into the bank's clearing suspense
+-- carries the interbank settlement date. Storing only transactions.value_date
+-- would force one of those two to be wrong, and interest is computed from this
+-- column.
 CREATE TABLE entries (
     book_id        TEXT NOT NULL,
     transaction_id TEXT NOT NULL,
@@ -174,12 +184,15 @@ CREATE TABLE entries (
     account_id     TEXT NOT NULL,
     amount         BIGINT NOT NULL,
     direction      SMALLINT NOT NULL,
+    value_date     TIMESTAMPTZ,
     PRIMARY KEY (book_id, transaction_id, position),
     FOREIGN KEY (book_id, transaction_id) REFERENCES transactions (book_id, id) ON DELETE CASCADE
 );
 
--- Index 1: BookBalance and ListTransactionsForAccount both start here.
-CREATE INDEX entries_account_idx ON entries (book_id, account_id);
+-- The value_date suffix serves the value-dated balance and the per-day movement
+-- series. The (book_id, account_id) prefix is unchanged, so BookBalance keeps
+-- the index it always had.
+CREATE INDEX entries_account_idx ON entries (book_id, account_id, value_date);
 
 -- ---------------------------------------------------------------------------
 -- The deposit layer
