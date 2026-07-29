@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -961,6 +962,66 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return err
 		})
 		assertEqual(t, "transactions for the account", len(all), 2)
+	})
+
+	t.Run("ValueDateBalanceCountsOnlyEntriesBeforeTheBound", func(t *testing.T) {
+		s := open(t, newStore)
+
+		day := func(d int) time.Time { return time.Date(2026, 4, d, 0, 0, 0, 0, time.UTC) }
+
+		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			// Three debits on three consecutive days, one carrying a time of day.
+			for i, when := range []time.Time{
+				day(10),
+				day(11).Add(23 * time.Hour),
+				day(12),
+			} {
+				err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
+					ID:        ledger.TransactionID("txn_vdb_" + strconv.Itoa(i)),
+					ValueDate: when,
+					Entries: []ledger.Entry{
+						{ID: ledger.EntryID("ent_vdb_d" + strconv.Itoa(i)), AccountID: "900.001.001", Amount: 100, Direction: ledger.Debit, ValueDate: when},
+						{ID: ledger.EntryID("ent_vdb_c" + strconv.Itoa(i)), AccountID: "900.001.002", Amount: 100, Direction: ledger.Credit, ValueDate: when},
+					},
+				})
+				if err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		cases := []struct {
+			before time.Time
+			want   ledger.Amount
+		}{
+			{day(10), 0},   // nothing value-dated before the 10th
+			{day(11), 100}, // the 10th only
+			{day(12), 200}, // the 10th and the 11th, time of day included
+			{day(13), 300},
+		}
+		for _, c := range cases {
+			var got ledger.Amount
+			view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+				var err error
+				got, err = tx.ValueDateBalance(ctx, bookA, "900.001.001", ledger.Debit, c.before)
+				return err
+			})
+			assertEqual(t, fmt.Sprintf("balance before %v", c.before), got, c.want)
+		}
+	})
+
+	t.Run("ValueDateBalanceOfUnknownAccountIsZero", func(t *testing.T) {
+		s := open(t, newStore)
+
+		var got ledger.Amount
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDateBalance(ctx, bookA, "999.999.001", ledger.Debit,
+				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+			return err
+		})
+		assertEqual(t, "balance", got, ledger.Amount(0))
 	})
 
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {

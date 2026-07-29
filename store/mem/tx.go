@@ -295,6 +295,25 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 	return balance, nil
 }
 
+// ValueDateBalance is BookBalance restricted to entries whose value date falls
+// strictly before the bound. See ledger.Tx for the contract.
+func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+	var balance ledger.Amount
+	for _, txn := range t.state.transactions[book] {
+		for _, e := range txn.Entries {
+			if e.AccountID != id || !e.ValueDate.Before(before) {
+				continue
+			}
+			if e.Direction == normal {
+				balance += e.Amount
+			} else {
+				balance -= e.Amount
+			}
+		}
+	}
+	return balance, nil
+}
+
 // ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------

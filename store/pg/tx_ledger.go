@@ -639,3 +639,18 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 	}
 	return balance, nil
 }
+
+// ValueDateBalance is BookBalance restricted to entries whose value date falls
+// strictly before the bound. See ledger.Tx for the contract.
+func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+	var balance ledger.Amount
+	err := t.tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN e.direction = $3 THEN e.amount ELSE -e.amount END), 0)
+		FROM entries e
+		WHERE e.book_id = $1 AND e.account_id = $2 AND e.value_date < $4`,
+		string(book), string(id), int16(normal), before).Scan(&balance)
+	if err != nil {
+		return 0, fmt.Errorf("pg: value date balance %s: %w", id, err)
+	}
+	return balance, nil
+}

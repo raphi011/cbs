@@ -875,6 +875,30 @@ func (s *Book) BookBalance(ctx context.Context, accountID AccountID) (Amount, er
 	return out, err
 }
 
+// ValueDateBalance computes an account's balance as of the end of asOf's day —
+// the balance the book's interest engines consume.
+//
+// The book balance answers "what has been recorded"; this answers "what has
+// taken economic effect". They differ whenever a posting is value-dated away
+// from its booking date, which an outbound payment's clearing leg always is.
+//
+// Entries value-dated on asOf itself count: a day's interest accrues on that
+// day's closing balance.
+//
+// Returns ErrAccountNotFound if the account does not exist.
+func (s *Book) ValueDateBalance(ctx context.Context, accountID AccountID, asOf time.Time) (Amount, error) {
+	var out Amount
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		acct, err := tx.GetAccount(ctx, s.id, accountID)
+		if err != nil {
+			return err
+		}
+		out, err = tx.ValueDateBalance(ctx, s.id, accountID, acct.Type.NormalBalance(), NextDay(asOf))
+		return err
+	})
+	return out, err
+}
+
 // ---------------------------------------------------------------------------
 // Audit Trail
 // ---------------------------------------------------------------------------

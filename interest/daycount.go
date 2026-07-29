@@ -1,6 +1,10 @@
 package interest
 
-import "time"
+import (
+	"time"
+
+	"github.com/raphi011/cbs/ledger"
+)
 
 // DayCount is the convention for turning a pair of dates into a fraction of a
 // year. It is a real product parameter, not an implementation detail: the same
@@ -62,10 +66,7 @@ func (d DayCount) Days(from, to time.Time) int {
 	return int(t.Sub(f).Hours() / 24)
 }
 
-func truncateToDay(t time.Time) time.Time {
-	u := t.UTC()
-	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
-}
+func truncateToDay(t time.Time) time.Time { return ledger.DayStart(t) }
 
 // thirty360Days is the US/NASD form of the convention: the 31st collapses onto
 // the 30th, which is what makes every month exactly 30 days.

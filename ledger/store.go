@@ -83,6 +83,20 @@ type Tx interface {
 	// the account type's normal direction; entries in that direction add.
 	BookBalance(ctx context.Context, book BookID, id AccountID, normal Direction) (Amount, error)
 
+	// ValueDateBalance is BookBalance restricted to entries that take economic
+	// effect before the bound: it aggregates entries whose value date is
+	// strictly less than before.
+	//
+	// before is an exclusive UTC-midnight bound the caller has already snapped
+	// with NextDay. Stores compare raw timestamps against it and do no
+	// truncation of their own — see DayStart.
+	//
+	// It obeys BookBalance's two rules. Reversed transactions count, because a
+	// reversal posts its own mirrored entries and those are what cancel the
+	// original. An account with no entries is 0, including one that does not
+	// exist; callers wanting ErrAccountNotFound read the account first.
+	ValueDateBalance(ctx context.Context, book BookID, id AccountID, normal Direction, before time.Time) (Amount, error)
+
 	AppendAudit(ctx context.Context, e AuditEvent) error
 	ListAudit(ctx context.Context, f AuditFilter) ([]AuditEvent, error)
 
