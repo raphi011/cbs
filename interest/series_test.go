@@ -106,9 +106,12 @@ func TestAccrueSeriesEmptyWindowAccruesNothing(t *testing.T) {
 	}
 }
 
-func TestAccrueSeriesThirty360TotalsAcrossAMonthEnd(t *testing.T) {
+func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
 	// 30/360 collapses the 31st. Splitting a month into runs must not change
-	// the month's total, only which slot the collapse lands on.
+	// the month's total beyond the per-call truncation AccrueSeries documents:
+	// one Accrued unit — 1e-6 of a minor unit — per split point, never more.
+	// This test has exactly one split point, hence the bound of 1; a second
+	// movement would need the bound widened to 2.
 	from, to := day(2026, time.January, 1), day(2026, time.February, 1)
 	p := flat(60_000, interest.Thirty360)
 
@@ -118,8 +121,13 @@ func TestAccrueSeriesThirty360TotalsAcrossAMonthEnd(t *testing.T) {
 		Movements: []ledger.DayMovement{{Day: day(2026, time.January, 15), Amount: 0}},
 	}, from, to, p)
 
-	if whole != split {
-		t.Errorf("split series = %d, whole = %d; a zero movement must not change the total", split, whole)
+	// Splitting can only lose to truncation, never gain, so the bound is
+	// directional: diff < 0 would mean a split over-accrued, which is a real
+	// bug, not a rounding artifact, and must fail loudly rather than being
+	// hidden behind an absolute-value check.
+	if diff := whole - split; diff < 0 || diff > 1 {
+		t.Errorf("split series = %d, whole = %d; a zero movement may cost at most "+
+			"one unit of truncation, not %d", split, whole, diff)
 	}
 }
 
