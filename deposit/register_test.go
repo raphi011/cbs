@@ -1387,7 +1387,13 @@ func TestOverdraftAccrualCorrectsABackdatedDebit(t *testing.T) {
 	//
 	// 164 is the figure only a recompute reaches.
 	assertEqual(t, "accrued after backdated debit", got.Accrued, interest.Accrued(164_383_560))
-	assertEqual(t, "receivable after backdated debit", got.Accrued.Minor(), ledger.Amount(164))
+
+	// And the receivable really holds it: the ledger balance, not Accrued.Minor()
+	// restated. Reading the GL account is what proves the recompute's delta was
+	// posted rather than only recorded on the account row.
+	receivable, err := book.BookBalance(ctx, got.InterestGL)
+	assertNoError(t, err)
+	assertEqual(t, "receivable after backdated debit", receivable, ledger.Amount(164))
 }
 
 func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
@@ -1549,6 +1555,62 @@ func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "accrued a day into the new window", after.Accrued, interest.Accrued(106_849_314))
+}
+
+// TestOverdraftRepricingDoesNotRewindTheAccrualWindow pins the other direction
+// of the same seam: a repricing that happens while LastAccrualDate is already
+// AHEAD of the wall clock.
+//
+// End-of-day is callable for any date — POST /participants/{pid}/end-of-day
+// takes the date from the request body — so a run for a date in the future is
+// reachable, and it charges the whole span up to that date. Opening the new
+// terms window at the wall clock would then put TermsEffectiveFrom and
+// LastAccrualDate BEHIND a span already charged, with AccruedGross reset to
+// zero; every subsequent run would recompute that overlap from scratch and add
+// it to Accrued a second time. Account.LastAccrualDate documents that it never
+// moves backwards, and this is the test of that claim on this path.
+func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
+	ctx := context.Background()
+	reg, book, sub, acct, clock := newOverdraftAccount(t)
+
+	postTo(t, book, sub, acct, 20_000, ledger.Debit, accrualStart)
+
+	// An end-of-day run for day 100, while the clock still reads day 0. One
+	// hundred days at 15% on €200: 100 × 8_219_178 = 821_917_800 -> 821 cents.
+	ahead := accrualStart.AddDate(0, 0, 100)
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, ahead))
+	charged, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued through day 100", charged.Accrued, interest.Accrued(821_917_800))
+
+	// Reprice at the wall clock, which is a hundred days behind what has been
+	// charged. The span is already accrued, so the outgoing-terms close is a
+	// no-op — but the window must not reopen behind it.
+	clock.set(accrualStart)
+	repriced, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	assertNoError(t, err)
+
+	if repriced.LastAccrualDate.Before(ahead) {
+		t.Errorf("LastAccrualDate rewound to %s, want no earlier than %s",
+			repriced.LastAccrualDate, ahead)
+	}
+	if repriced.TermsEffectiveFrom.Before(ahead) {
+		t.Errorf("TermsEffectiveFrom opened at %s, behind the charged-through date %s",
+			repriced.TermsEffectiveFrom, ahead)
+	}
+	assertEqual(t, "accrued across the repricing", repriced.Accrued, interest.Accrued(821_917_800))
+
+	// The proof it is not double-charged: one more day at the new 45% rate adds
+	// exactly one day, not a hundred and one. €200 at 45%: 24_657_534.
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, ahead.AddDate(0, 0, 1)))
+	after, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(846_575_334))
+
+	receivable, err := book.BookBalance(ctx, after.InterestGL)
+	assertNoError(t, err)
+	// 846_575_334 sub-minor units rounds to 847 cents.
+	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(847))
 }
 
 // TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on

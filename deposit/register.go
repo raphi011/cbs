@@ -265,7 +265,18 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 	// It is a no-op for an account being priced for the first time — which has
 	// no window to close, so the seed's figures do not move — and for one
 	// repriced on a date already accrued through.
+	//
+	// The instant is clamped forward to LastAccrualDate first. An end-of-day
+	// may legitimately be run for a date ahead of the wall clock, which charges
+	// the span and leaves LastAccrualDate in front of now; opening the new
+	// window at now would then put it BEHIND a span already charged, with
+	// AccruedGross reset to zero, and every later run would add that overlap to
+	// Accrued a second time. LastAccrualDate never moves backwards (see
+	// Account.LastAccrualDate), and this is what keeps that true here.
 	now := r.now()
+	if now.Before(acct.LastAccrualDate) {
+		now = acct.LastAccrualDate
+	}
 	if err := r.accrueOverdraftAccountTx(ctx, tx, acct, now); err != nil {
 		return Account{}, err
 	}

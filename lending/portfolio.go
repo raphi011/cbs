@@ -301,7 +301,20 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	// Disbursement opens the accrual window. Nothing was owed before it, so
 	// there is no earlier span for the recompute to reach back over and none
 	// can fall between two windows: this is the first one.
+	//
+	// "First" is not quite guaranteed, though: the guard above is on drawn
+	// principal, not on status, so a term loan repaid in full and not closed
+	// can be disbursed again. If interest had by then been accrued through a
+	// date ahead of the wall clock — end-of-day takes its date from the caller
+	// — reopening the window at now would put it BEHIND a charged span with
+	// AccruedGross zeroed, and the next run would add that span to Accrued a
+	// second time. Clamping forward keeps LastAccrualDate's documented
+	// never-backwards invariant true, and is a no-op on the ordinary first
+	// advance, where LastAccrualDate is still zero.
 	now := p.now()
+	if now.Before(f.LastAccrualDate) {
+		now = f.LastAccrualDate
+	}
 	f.LastAccrualDate = now
 	f.TermsEffectiveFrom = now
 	f.AccruedGross = 0
@@ -373,6 +386,11 @@ func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterpar
 		// commitment costs the borrower nothing. That first draw is therefore
 		// also where the recompute window opens, and a later draw leaves it
 		// alone — the window spans the whole drawn history, which is the point.
+		//
+		// No clamp is needed here, unlike in DisburseTx: this branch only runs
+		// while the line is still Pending, which means nothing has ever been
+		// advanced and so nothing has ever been accrued. LastAccrualDate is
+		// zero, and now cannot be before it.
 		now := p.now()
 		f.LastAccrualDate = now
 		f.TermsEffectiveFrom = now

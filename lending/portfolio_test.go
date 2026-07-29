@@ -267,6 +267,75 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 	}
 }
 
+// TestDisburse_DoesNotRewindTheAccrualWindow pins the one path on which a
+// facility's window can reopen behind interest it has already been charged.
+//
+// ErrAlreadyDisbursed is guarded on drawn principal, not on status, so a term
+// loan repaid in full and not closed can be disbursed a second time. End-of-day
+// takes its date from the caller, so accrual can legitimately have run through
+// a date ahead of the wall clock by then. Reopening the window at the clock
+// would leave LastAccrualDate behind a charged span with AccruedGross zeroed,
+// and the next run would recompute that span and add it to Accrued again.
+func TestDisburse_DoesNotRewindTheAccrualWindow(t *testing.T) {
+	ctx := context.Background()
+	p, _, loan, customer := disbursedLoan(t)
+
+	// An end-of-day for a date five years ahead of the test clock.
+	ahead := day(2030, time.January, 1)
+	if err := p.Accrue(ctx, loan.ID, ahead); err != nil {
+		t.Fatalf("Accrue: %v", err)
+	}
+	charged, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	accrued := charged.Accrued
+
+	// Repay it to zero, which is what unlocks a second disbursement.
+	owed, err := p.Outstanding(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("Outstanding: %v", err)
+	}
+	if _, err := p.Repay(ctx, loan.ID, customer, owed, ahead, "full"); err != nil {
+		t.Fatalf("Repay: %v", err)
+	}
+	if _, err := p.Disburse(ctx, loan.ID, customer, day(2030, time.March, 15), "second advance"); err != nil {
+		t.Fatalf("second Disburse: %v", err)
+	}
+
+	after, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	if after.LastAccrualDate.Before(ahead) {
+		t.Errorf("LastAccrualDate rewound to %s, want no earlier than %s",
+			after.LastAccrualDate, ahead)
+	}
+	if after.TermsEffectiveFrom.Before(ahead) {
+		t.Errorf("TermsEffectiveFrom opened at %s, behind the charged-through date %s",
+			after.TermsEffectiveFrom, ahead)
+	}
+
+	// The proof it is not double-charged: a run on the day after the window
+	// opens adds one day of interest, not five years of it. A repayment settles
+	// Accrued.Minor(), so what survives it is the sub-minor residue the ledger
+	// cannot represent — the base the single day is added to.
+	residue := after.Accrued
+	if err := p.Accrue(ctx, loan.ID, ahead.AddDate(0, 0, 1)); err != nil {
+		t.Fatalf("Accrue after re-disbursement: %v", err)
+	}
+	next, err := p.GetFacility(ctx, loan.ID)
+	if err != nil {
+		t.Fatalf("GetFacility: %v", err)
+	}
+	// €10,000 at 6% ACT/365 for one day: 1_000_000 × 60_000 / 365 = 164_383_561.
+	want := residue + 164_383_561
+	if next.Accrued != want {
+		t.Errorf("accrued a day past the second advance = %d, want %d (five years' interest is %d)",
+			next.Accrued, want, accrued)
+	}
+}
+
 func TestPortfolio_UnknownFacility(t *testing.T) {
 	ctx := context.Background()
 	p, _, _, customer := newTestPortfolio(t)
