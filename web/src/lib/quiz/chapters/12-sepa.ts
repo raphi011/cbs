@@ -107,7 +107,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation/acceptance**, value-dated to the settlement date. Clearing later computes net positions; settlement posts the creditor leg. No debit to the customer's account occurs at clearing itself.",
+        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation/acceptance**. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any later), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; settlement posts the creditor leg. No debit to the customer's account occurs at clearing itself.",
       explore: { label: "View payments", href: "/payments" },
     },
     {

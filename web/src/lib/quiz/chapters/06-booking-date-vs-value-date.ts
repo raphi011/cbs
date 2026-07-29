@@ -280,16 +280,16 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "snapshot",
       prompt:
-        "Which of the following are true of end-of-day balance snapshots? Select all that apply.",
+        "Which of the following are true of end-of-day balance snapshots in this system? Select all that apply.",
       options: [
-        "They are calculated using value dates, not booking dates",
-        "They form the basis for the bank's interest accrual calculations",
-        "They include forward-value-dated transactions not yet in economic effect",
-        "They determine the opening balance for the following statement period",
+        "They record the book balance — computed from booking dates — not the value-date balance",
+        "Interest accrual reads a stored snapshot instead of recomputing the balance from entries",
+        "They are written by TakeEndOfDaySnapshot and read back only by GetSnapshot and ListSnapshots",
+        "A backdated posting automatically invalidates any snapshot it falsifies",
       ],
-      answers: [0, 1, 3],
+      answers: [0, 2],
       explanation:
-        "[[snapshot|End-of-day snapshots]] record an account's [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]] balances on a **value-date** basis — the economically real position (option 0). That is why they are the authoritative basis for daily interest accrual (option 1) and supply the opening/closing figures for the next statement period (option 3). Option 2 is wrong: precisely because the snapshot uses the value-date balance, a forward-value-dated transaction is *excluded* until its value date arrives and it becomes economically effective.",
+        "[[snapshot|End-of-day snapshots]] record the deposit layer's book/holds/available figures, computed the same way [[balance-book|book balance]] always is — from booking dates, not value dates (option 0). Interest accrual does the opposite: it computes `ledger.Book.ValueDateBalance` fresh from the entry list on every run, so it never reads a snapshot (option 1 is wrong). Snapshots are written by `TakeEndOfDaySnapshot` and read back only by `GetSnapshot` and `ListSnapshots` — no balance query of any kind consults one (option 2), which is also why a backdated posting does not invalidate the snapshots it falsifies (option 3 is wrong) — nothing is watching them to know they are now stale. The checkpointing snapshots would enable — a query starting from the nearest one instead of replaying every entry — is described but not built.",
     },
     {
       kind: "numeric",
@@ -303,6 +303,23 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "The [[statement-amount|closing balance]] is computed from [[value-date|value dates]]. The $200 credit has value date February 1 — within February — raising the balance to $700. The $100 credit has value date March 1 — outside February — so it does not affect February's closing balance. Result: $500 + $200 = **$700**.",
+    },
+    {
+      kind: "mc",
+      id: "ch6-q21",
+      difficulty: "challenge",
+      concept: "interest-accrual",
+      prompt:
+        "A salary credit is booked Friday but value-dated Wednesday — three days after the account's last accrual run already posted interest for Wednesday and Thursday. What does the next accrual run do to correct those two days?",
+      options: [
+        "It reverses Wednesday's and Thursday's accrual postings and re-posts corrected ones in their place",
+        "It recomputes interest for its whole terms window from the account's value-dated movement series and posts the change against what was posted before, as a true-up",
+        "It leaves Wednesday's and Thursday's postings untouched; only interest from Friday onward reflects the correction",
+        "It rewrites the historical ledger entries for Wednesday and Thursday to reflect the corrected balance",
+      ],
+      answer: 1,
+      explanation:
+        "Accrual never reverses a prior posting. Each run recomputes gross interest for its whole terms window from the account's [[value-date|value-dated]] movement series and posts only the **change** in the rounded value against what it posted last time — the delta is the true-up. The backdated credit moves Wednesday's and Thursday's closing balances, the recomputed gross moves with them, and the next run's posting captures exactly that difference. Nothing is rewound and no earlier accrual is deleted: each was a correct statement of what the ledger knew when it was made, and the correction is a new, linked event.",
     },
   ],
 };

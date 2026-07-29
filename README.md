@@ -42,6 +42,7 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Entries, Legs, and Postings](#entries-legs-and-postings)
   - [Booking Date vs. Value Date](#booking-date-vs-value-date)
   - [Balance Types](#balance-types)
+  - [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves)
   - [Multi-Legged Transactions](#multi-legged-transactions)
   - [Holds (Authorization / Pending Transactions)](#holds-authorization--pending-transactions)
   - [Idempotency](#idempotency)
@@ -357,6 +358,8 @@ General Ledger
 
 In practice, the General Ledger might show one line item for "Total Customer Deposits" ($10M), while the Customer Deposits subledger contains 50,000 individual customer accounts that sum to that total.
 
+Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subledger, and an **`Interest Refunds Payable`** (Liability) account inside it, the first time a backdated correction needs to refund interest but a facility's principal is already zero — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Nothing in the seed data ever walks that path, so a freshly seeded ledger has no `Payables` subledger until one is created lazily.
+
 ### Amounts and Precision
 
 All monetary amounts are integers in the smallest unit of their [asset](#assets-what-an-account-is-denominated-in) — cents for EUR and USD, satoshi for BTC. This is the approach Stripe, most banks and most payment processors use, generalized here to any asset rather than to a single currency.
@@ -457,7 +460,9 @@ In practice, most core banking systems have a rules engine upstream of the ledge
 
 A single account carries three distinct balances at any point in time:
 
-- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from transactions whose value date has passed. This is what the bank uses to calculate interest, generate end-of-day snapshots, and produce regulatory reports. It represents the economic reality of the account.
+- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from entries whose value date has passed. This is what the bank uses to calculate interest. It is `ledger.Book.ValueDateBalance(ctx, accountID, asOf)`, and both interest engines consume it.
+
+  A day boundary here is a UTC day, and a day's interest accrues on that day's **closing** balance: entries value-dated on the day itself count. A business date is a date, so an end-of-day run at 23:00 covers the same day as one at 09:00 — `ledger.DayStart` is where that rule lives, and it lives in Go rather than in either store, because two stores that each decide what a day is are one DST-adjacent edge case away from disagreeing.
 
 - **Book balance** (also called the **ledger balance**): The balance computed from all posted transactions based on their booking date, regardless of value date. It reflects everything that has been recorded in the system.
 
@@ -467,11 +472,21 @@ For example, a single account might show all three balances simultaneously:
 
 | Balance | Amount | What drives it |
 |---------|--------|----------------|
-| Value-date balance | $9,500 | Only transactions whose value date has passed |
+| Value-date balance | $9,500 | Only entries whose value date has passed |
 | Book balance | $10,000 | All posted transactions |
 | Available balance | $9,200 | Book balance minus $800 in active holds |
 
 The value-date balance can be lower than the book balance if a forward-dated transaction has been booked but its value date has not yet arrived. It can be higher if a back-dated correction added economic value to a past date.
+
+### Backdated Postings Correct Themselves
+
+A posting can arrive value-dated to a day that has already been accrued for — a salary credit booked Friday and value-dated Wednesday. The interest charged for Wednesday and Thursday was computed on a balance that is now known to be wrong.
+
+Accrual handles this without reversing anything. Every run recomputes the interest for its whole terms window from the account's value-dated movement series, and posts the change in the rounded value against what it posted last time. A backdated entry moves a historical day's balance, the recomputed gross moves with it, and the next run's delta is the true-up. Nothing is rewound and no earlier accrual is reversed: each of those was a correct statement of what the ledger knew when it was made, and the correction is a new, linked event.
+
+A negative true-up credits the accrued-interest receivable. If interest has already been capitalised out of it, the receivable cannot absorb the whole correction — that money has left it — so the remainder is refunded to the customer's account, or credited to principal on a loan. If principal is already zero too, even that has nothing left to absorb it into, and the remainder is credited to a lazily-created **`Interest Refunds Payable`** account in a new **`Payables`** subledger: the borrower is still owed that money, and the bank cannot simply keep it. Neither the subledger nor the account exists until this path creates them — the seed data never touches it, so a fresh seeded ledger has no `Payables` subledger at all.
+
+The window starts at the last repricing, not at account opening. Product terms are still mutable columns, so recomputing across a repricing would re-derive every earlier day at today's rate and post the difference — rewriting accrual history every time an account is repriced. Prior accrual is frozen instead. Widening this window to account inception is what an effective-dated terms record would buy, and that is not built yet.
 
 ### Multi-Legged Transactions
 
@@ -774,7 +789,7 @@ type Scheme interface {
     Asset() ledger.AssetCode          // the one asset this scheme carries
     RequiresMandate() bool
     AllowsReturn() bool
-    SettlementDelay() time.Duration   // determines the value date
+    SettlementDelay() time.Duration   // determines the clearing-suspense leg's value date
     Validate(p *Payment, ctx SchemeContext) error
 }
 ```
@@ -835,7 +850,7 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
               Rejected                  Returned
 ```
 
-- **Initiated → Accepted**: the scheme validates the payment (funds available, mandate valid) and the **debtor leg** is posted — the payer's money leaves their account into the bank's clearing suspense, value-dated to the settlement date.
+- **Initiated → Accepted**: the scheme validates the payment (funds available, mandate valid) and the **debtor leg** is posted — the payer's money leaves their account into the bank's clearing suspense. The two sides value-date differently: the customer's side value-dates to the debit itself (PSD2 Art. 87(2): no earlier than the debit), the suspense side to the settlement date.
 - **Accepted → Cleared**: the clearing cycle reaches its cut-off and net positions are computed.
 - **Cleared → Settled**: reserves move at the central bank and the **creditor leg** is posted, paying the payee.
 - **Rejected**: before clearing, the debtor leg is reversed.
@@ -845,12 +860,14 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
 
 Alice (at Bank A) pays Bob (at Bank B) €30.00 (`3000` cents).
 
-**1. Initiation** — in Bank A's ledger, value-dated to settlement:
+**1. Initiation** — in Bank A's ledger:
 
 ```
-Bank A:  Debit  Alice (Liability)            3000     // Alice's deposit falls
-         Credit Clearing Suspense (Liability) 3000    // Bank A now owes the network
+Bank A:  Debit  Alice (Liability)            3000     // Alice's deposit falls, value-dated to the debit itself
+         Credit Clearing Suspense (Liability) 3000    // Bank A now owes the network, value-dated to settlement
 ```
+
+The two entries take effect on different days. PSD2 Art. 87(2) puts the payer's debit value date no earlier than the moment the money leaves — value-dating it to settlement instead would hand Alice the settlement delay's worth of interest-free credit. The clearing-suspense leg carries the settlement date because that is when Bank A's position against the scheme actually settles.
 
 **2. Clearing (cut-off)** — net positions computed; no money moves. Here `net[A] = -3000`, `net[B] = +3000`.
 
@@ -917,7 +934,11 @@ Two schemes are designed for but not yet implemented. They are the reason the `S
 
 - **Card transactions** — an **authorise → capture → clear → settle** flow. The authorisation is a `deposit` **hold** (`CreateHold`) that reserves the cardholder's available balance; capture (`CaptureHold`) turns it into the debtor leg; clearing and settlement then reuse the existing net machinery, since card networks net much like SEPA. This slots in cleanly now that holds live in the `deposit` layer: a card scheme drives `deposit` holds while the `payment` network clears and settles the captured amounts.
 
-Both motivate two natural follow-ons: enforcing **account status** on the debit path (a `Frozen` deposit account should block a card authorisation), and **reserve-adequacy** checks before a bank's net settlement is allowed to post.
+Both motivate a natural follow-on: **reserve-adequacy** checks before a bank's net settlement is allowed to post.
+
+- **Effective-dated product terms.** `SetOverdraftTerms` overwrites the rate in place, so an accrual posted six months ago cannot be reproduced from stored state — only recovered by replaying the audit log, which nothing does. It is also what bounds the retroactive-accrual window to the last repricing rather than to account opening.
+- **The creditor leg at settlement** bypasses the deposit layer: `SettleCycleTx` posts straight into the GL account, so a payee whose account was frozen or closed between initiation and settlement is credited anyway. The suspense account an unapplicable credit should land in already exists.
+- **The recompute window is unbounded.** It starts at the last repricing and nothing else resets it, so a long-lived facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
 
 ## Reporting and Compliance
 
@@ -925,15 +946,17 @@ Both motivate two natural follow-ons: enforcing **account status** on the debit 
 
 > Snapshots are captured by the **`deposit`** layer (`deposit.Register.TakeEndOfDaySnapshot` / `GetSnapshot`), since they record the three-part deposit balance (book, holds, available). The pure `ledger.Book` computes book balances on demand and does not store snapshots.
 
-At the end of each business day, the system captures a snapshot of each account's balance. These snapshots serve multiple purposes:
+At the end of each business day, the system captures a snapshot of each account's balance. In the model this document describes, these snapshots would serve multiple purposes:
 
-- **Interest accrual:** Daily interest is calculated on the end-of-day balance. For a savings account earning 4% APR, the daily interest on a $10,000 balance is: $10,000 * 0.04 / 365 = $1.10.
+- **Interest accrual:** daily interest is calculated on the end-of-day, value-dated balance. For a savings account earning 4% APR, the daily interest on a $10,000 balance is: $10,000 * 0.04 / 365 = $1.10.
 
-- **Statement generation:** Monthly statements show the balance at the end of each day, transaction activity, and opening/closing balances.
+- **Statement generation:** monthly statements show the balance at the end of each day, transaction activity, and opening/closing balances.
 
-- **Regulatory reporting:** Banks must report their positions to regulators. End-of-day balances are the standard reporting granularity.
+- **Regulatory reporting:** banks must report their positions to regulators. End-of-day balances are the standard reporting granularity.
 
-- **Performance optimization:** Instead of replaying all transactions from account creation, balance queries can start from the most recent snapshot and only replay subsequent transactions.
+- **Performance optimization:** instead of replaying all transactions from account creation, balance queries could start from the most recent snapshot and only replay subsequent transactions.
+
+None of this is implemented yet. Interest accrual computes `ledger.Book.ValueDateBalance` fresh from the entry list on every run rather than reading a stored snapshot, and no balance query of any kind consults one either — see [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column). What is captured today is the raw material a checkpoint would read from.
 
 ### Audit Trail
 
@@ -1106,6 +1129,8 @@ Two consequences follow:
 
 - The query does **not** filter on transaction status. A [reversal](#transaction-reversal) is a new, equal-and-opposite posting rather than a deletion, so both sets of entries are summed and net to zero. Excluding reversed transactions would double-count the correction.
 - Reading a balance costs an aggregate over every entry the account has ever had. The remedy is not to add the column back; it is to **checkpoint**. That is precisely what an [end-of-day snapshot](#end-of-day-snapshots) is for: a query starts from the nearest snapshot and replays only what came after it.
+
+That checkpointing is described here and not built: `deposit.Snapshot` is written by `TakeEndOfDaySnapshot` and read only by `GetSnapshot` and `ListSnapshots`. No balance query consults one, and a backdated posting does not invalidate the snapshots it falsifies.
 
 ### The Unit of Work
 
@@ -1295,6 +1320,7 @@ Representative endpoints:
 | `POST` / `GET /participants`, `GET /participants/{id}` | create / list / get a bank |
 | `POST /participants/{id}/deposits` | fund a customer account |
 | `POST` / `GET /participants/{id}/deposit-accounts` | open / list customer accounts |
+| `GET /participants/{id}/accounts/{aid}/balance` | book balance and value-dated balance for a GL account; `?asOf=` (RFC 3339, default now) picks the day the value-dated figure is computed through |
 | `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
 | `POST /participants/{id}/deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
 | `POST` / `GET .../holds`, `POST .../holds/{hid}/release\|capture` | authorization holds |

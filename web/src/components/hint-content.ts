@@ -197,7 +197,7 @@ Common cases where the two dates diverge:
 
 - **Weekend processing:** wire booked Friday, value-dated Monday
 - **Check deposits:** booked today, value-dated T+2 or T+3 while the check clears
-- **Back-dated corrections:** operations books today, value-dates to the correct past date so interest calculations are right
+- **Back-dated corrections:** operations books today, value-dates to the correct past date. Interest accrual recomputes its window on the next run, so the days that correction covers are re-derived and the difference is posted as a true-up
 - **Scheduled payments:** instruction booked now, value date is the 1st of next month
 
 For [[payment-lifecycle|interbank payments]], the value date is determined by the [[settlement-delay]] of the scheme (T+1 for SEPA Credit Transfer, T+2 for SEPA Direct Debit). Interest accrual always uses value date — using the wrong date would cause customers to earn too much or too little interest.`,
@@ -212,7 +212,7 @@ Available Balance = Book Balance − Active Holds + Overdraft Limit
 
 Book balance can differ from [[balance-available|available balance]] when there are active [[holds]]: a €100 authorization hold reduces what you can spend but doesn't change the book balance until the hold is [[hold-capture|captured]] as a real posting.
 
-It can also differ from the value-date balance: a forward-dated transaction may be in the book balance before its economic effect begins. The [[snapshot|end-of-day snapshot]] records the book balance alongside holds and available balance for each business day.`,
+It can also differ from the value-date balance: a forward-dated transaction is in the book balance before its economic effect begins. The balance endpoint returns both, and interest accrues on the value-dated one. The [[snapshot|end-of-day snapshot]] records the book balance alongside holds and available balance for each business day.`,
   },
   "balance-holds": {
     title: "Holds",
@@ -442,9 +442,12 @@ These are the model's fixed delays. SEPA Credit Transfer really does settle by T
 
 \`\`\`
 Payment initiated today (T):
-  Debtor leg value date   = T + settlement delay
-  Creditor leg value date = T + settlement delay
+  Debtor leg, customer side  = T           (PSD2 Art. 87(2): no earlier than the debit)
+  Debtor leg, suspense side  = T + settlement delay
+  Creditor leg               = T + settlement delay
 \`\`\`
+
+The two sides of the debtor posting take effect on different days, which is why a [[value-date]] lives on the entry and not only on the transaction. The payer's money is gone the moment it is debited; the bank's clearing position settles days later.
 
 During the settlement window the payment is in a **pending** state — the booking exists but reserves haven't moved. The [[payment-lifecycle]] moves from Accepted → Cleared → Settled as the cycle progresses. The [[balance-available|available balance]] reflects this gap via the [[holds|hold]] mechanism for card-style flows, or directly via the posted debtor leg for credit-transfer flows.`,
   },
@@ -476,7 +479,7 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
               Rejected                Returned
 \`\`\`
 
-- **Initiated → Accepted:** scheme validates (funds, [[mandate]] if needed); [[debtor-leg]] posted — payer's money moves into [[clearing-suspense]], value-dated to settlement date.
+- **Initiated → Accepted:** scheme validates (funds, [[mandate]] if needed); [[debtor-leg]] posted — payer's money moves into [[clearing-suspense]], the customer's side value-dated to the debit, the suspense side to settlement.
 - **Accepted → Cleared:** clearing cycle closes; [[netting|net positions]] computed across all payments in the cycle. No money moves yet.
 - **Cleared → Settled:** reserves move at the [[central-bank-reserves|central bank]]; [[creditor-leg]] posted — payee receives funds.
 - **Rejected:** before clearing; [[reversal]] of the debtor leg restores the payer's balance.
@@ -486,7 +489,7 @@ See [[clearing-vs-settlement]] for why clearing and settlement are distinct phas
   },
   "debtor-leg": {
     title: "Debtor leg",
-    body: `The **debtor leg** is the ledger entry that moves money out of the payer's account. It is posted at **acceptance** (when the scheme validates the payment), value-dated to the settlement date.
+    body: `The **debtor leg** is the ledger entry that moves money out of the payer's account. It is posted at **acceptance** (when the scheme validates the payment), value-dated to the debit itself on the customer's side, and to the settlement date on the clearing-suspense side.
 
 \`\`\`
 Bank A — debtor leg (Alice pays €300 to Bob):

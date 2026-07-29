@@ -432,16 +432,18 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	b.runDays(nord, int(target.Sub(t3)/(24*time.Hour)))
 
 	// --- Bruno, pushed into overdraft and accruing --------------------------
-	// A card settlement pushes him into his priced overdraft. Nothing has run
-	// Verde's end-of-day since SetOverdraftTerms above (Niklas's story runs on
-	// Nordhaven's book, not Verde's), so this first RunEndOfDay call only
-	// establishes today as the date his overdraft starts accruing from — see
-	// accrueOverdraftAccountTx's zero-LastAccrualDate case — before the SCT
-	// actually draws him into it. The SCT overdraws him immediately: its
-	// debtor leg posts at InitiatePayment, so the balance moves right away
-	// without its clearing cycle needing to close or settle. Then 45 days
-	// pass and interest accrues, a charge capitalizes it, and 15 more days
-	// build a fresh accrual on top.
+	// A card settlement pushes him into his priced overdraft. His accrual
+	// window already opened back when SetOverdraftTerms ran, above — that is
+	// what sets TermsEffectiveFrom, and it is not moved by this first
+	// RunEndOfDay call. Nothing has run Verde's end-of-day since then
+	// (Niklas's story runs on Nordhaven's book, not Verde's), so this call
+	// recomputes across every day since TermsEffectiveFrom, but the days
+	// between it and the SCT below accrue zero: he isn't overdrawn yet, so
+	// the drawn balance those days recompute against is zero. The SCT
+	// overdraws him immediately: its debtor leg posts at InitiatePayment, so
+	// the balance moves right away without its clearing cycle needing to
+	// close or settle. Then 45 days pass and interest accrues, a charge
+	// capitalizes it, and 15 more days build a fresh accrual on top.
 	//
 	// That is not the figure this phase ends on, though. RunEndOfDay drives a
 	// participant's whole book, not one facility, and Bella's line below
