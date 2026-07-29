@@ -73,13 +73,13 @@ export const chapter: Chapter = {
         "What is the value-date balance (also called the interest-bearing balance) primarily used for?",
       options: [
         "Approving or declining card payments at the point of sale",
-        "Calculating interest and generating end-of-day regulatory snapshots",
+        "Calculating interest and producing regulatory reports",
         "Tracking the total amount currently reserved in active holds",
         "Determining how much of the book balance has been captured from holds",
       ],
       answer: 1,
       explanation:
-        "The [[value-date]] balance includes only transactions whose value date has passed — the economic reality of the account. The bank uses it to calculate interest, generate end-of-day [[snapshot|snapshots]], and produce regulatory reports. Card approvals check the [[balance-available|available balance]] instead.",
+        "The [[value-date]] balance includes only entries whose value date has passed — the economic reality of the account. The bank uses it to calculate interest and to produce regulatory reports. Card approvals check the [[balance-available|available balance]] instead — end-of-day [[snapshot|snapshots]] are a separate, booking-date figure that neither of those reads.",
     },
     {
       kind: "mc",

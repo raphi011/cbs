@@ -450,7 +450,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// shares this same book (Verde). Her own runDays(verde, 30) keeps Bruno's
 	// overdraft accruing for another 30 days after this phase returns, so the
 	// accrued interest the seed actually produces reflects 45 days
-	// post-capitalization (≈ EUR 3.77 on a EUR 203.70 balance at 15%
+	// post-capitalization (≈ EUR 3.77 on a EUR 203.78 balance at 15%
 	// ACT/365), not the 15 this phase runs on its own. Changing Bella's
 	// 30-day span, or moving her phase, changes Bruno's final number.
 	//

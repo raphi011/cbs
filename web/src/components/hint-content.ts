@@ -200,7 +200,7 @@ Common cases where the two dates diverge:
 - **Back-dated corrections:** operations books today, value-dates to the correct past date. Interest accrual recomputes its window on the next run, so the days that correction covers are re-derived and the difference is posted as a true-up
 - **Scheduled payments:** instruction booked now, value date is the 1st of next month
 
-For [[payment-lifecycle|interbank payments]], the value date is determined by the [[settlement-delay]] of the scheme (T+1 for SEPA Credit Transfer, T+2 for SEPA Direct Debit). Interest accrual always uses value date — using the wrong date would cause customers to earn too much or too little interest.`,
+For [[payment-lifecycle|interbank payments]], the [[settlement-delay]] of the scheme (T+1 for SEPA Credit Transfer, T+2 for SEPA Direct Debit) determines the value date of the bank's own clearing-suspense leg — not the customer's, which value-dates to the debit itself regardless of scheme. Interest accrual always uses value date — using the wrong date would cause customers to earn too much or too little interest.`,
   },
   "balance-book": {
     title: "Book balance",

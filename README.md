@@ -358,7 +358,7 @@ General Ledger
 
 In practice, the General Ledger might show one line item for "Total Customer Deposits" ($10M), while the Customer Deposits subledger contains 50,000 individual customer accounts that sum to that total.
 
-Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subledger, and an **`Interest Refunds Payable`** (Liability) account inside it, the first time a backdated correction needs to refund interest but a facility's principal is already zero — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Nothing in the seed data ever walks that path, so a freshly seeded ledger has no `Payables` subledger until one is created lazily.
+Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subledger, and an **`Interest Refunds Payable`** (Liability) account inside it, the first time a backdated correction needs to refund interest but a facility's drawn principal cannot absorb the whole remainder — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Nothing in the seed data ever walks that path, so a freshly seeded ledger has no `Payables` subledger until one is created lazily.
 
 ### Amounts and Precision
 
@@ -460,7 +460,7 @@ In practice, most core banking systems have a rules engine upstream of the ledge
 
 A single account carries three distinct balances at any point in time:
 
-- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from entries whose value date has passed. This is what the bank uses to calculate interest. It is `ledger.Book.ValueDateBalance(ctx, accountID, asOf)`, and both interest engines consume it.
+- **Value-date balance** (also called the **interest-bearing balance**): The balance computed from entries whose value date has passed. This is what the bank uses to calculate interest. It is `ledger.Book.ValueDateBalance(ctx, accountID, asOf)` — the balance endpoint's one non-test caller — and it is also exactly what `Tx.ValueDatedSeries` opens on at the start of its window; both interest engines read the series rather than calling `ValueDateBalance` directly.
 
   A day boundary here is a UTC day, and a day's interest accrues on that day's **closing** balance: entries value-dated on the day itself count. A business date is a date, so an end-of-day run at 23:00 covers the same day as one at 09:00 — `ledger.DayStart` is where that rule lives, and it lives in Go rather than in either store, because two stores that each decide what a day is are one DST-adjacent edge case away from disagreeing.
 
@@ -484,9 +484,9 @@ A posting can arrive value-dated to a day that has already been accrued for — 
 
 Accrual handles this without reversing anything. Every run recomputes the interest for its whole terms window from the account's value-dated movement series, and posts the change in the rounded value against what it posted last time. A backdated entry moves a historical day's balance, the recomputed gross moves with it, and the next run's delta is the true-up. Nothing is rewound and no earlier accrual is reversed: each of those was a correct statement of what the ledger knew when it was made, and the correction is a new, linked event.
 
-A negative true-up credits the accrued-interest receivable. If interest has already been capitalised out of it, the receivable cannot absorb the whole correction — that money has left it — so the remainder is refunded to the customer's account, or credited to principal on a loan. If principal is already zero too, even that has nothing left to absorb it into, and the remainder is credited to a lazily-created **`Interest Refunds Payable`** account in a new **`Payables`** subledger: the borrower is still owed that money, and the bank cannot simply keep it. Neither the subledger nor the account exists until this path creates them — the seed data never touches it, so a fresh seeded ledger has no `Payables` subledger at all.
+A negative true-up credits the accrued-interest receivable. If interest has already been capitalised out of it, the receivable cannot absorb the whole correction — that money has left it — so the remainder is refunded to the customer's account, or credited to principal on a loan. When the drawn principal cannot absorb the whole remainder either — including when it is already zero — whatever is left over is credited to a lazily-created **`Interest Refunds Payable`** account in a new **`Payables`** subledger: the borrower is still owed that money, and the bank cannot simply keep it. Neither the subledger nor the account exists until this path creates them — the seed data never touches it, so a fresh seeded ledger has no `Payables` subledger at all.
 
-The window starts at the last repricing, not at account opening. Product terms are still mutable columns, so recomputing across a repricing would re-derive every earlier day at today's rate and post the difference — rewriting accrual history every time an account is repriced. Prior accrual is frozen instead. Widening this window to account inception is what an effective-dated terms record would buy, and that is not built yet.
+The window starts at the last repricing, not at account opening — for a deposit overdraft, wherever `SetOverdraftTerms` last ran; for a lending facility, at its first advance (nothing reprices a facility yet, so that bound and its opening coincide today). Product terms are still mutable columns, so recomputing across a repricing would re-derive every earlier day at today's rate and post the difference — rewriting accrual history every time an account is repriced. Prior accrual is frozen instead. Widening this window to account inception is what an effective-dated terms record would buy, and that is not built yet.
 
 ### Multi-Legged Transactions
 
@@ -936,9 +936,11 @@ Two schemes are designed for but not yet implemented. They are the reason the `S
 
 Both motivate a natural follow-on: **reserve-adequacy** checks before a bank's net settlement is allowed to post.
 
+Separately from the scheme wiring above, three more gaps are worth listing:
+
 - **Effective-dated product terms.** `SetOverdraftTerms` overwrites the rate in place, so an accrual posted six months ago cannot be reproduced from stored state — only recovered by replaying the audit log, which nothing does. It is also what bounds the retroactive-accrual window to the last repricing rather than to account opening.
 - **The creditor leg at settlement** bypasses the deposit layer: `SettleCycleTx` posts straight into the GL account, so a payee whose account was frozen or closed between initiation and settlement is credited anyway. The suspense account an unapplicable credit should land in already exists.
-- **The recompute window is unbounded.** It starts at the last repricing and nothing else resets it, so a long-lived facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
+- **The recompute window is unbounded.** It opens at the last repricing for a deposit overdraft, or at first advance for a lending facility (the same bound today, since nothing reprices a facility yet), and nothing else resets it — so a long-lived account or facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
 
 ## Reporting and Compliance
 
@@ -956,7 +958,7 @@ At the end of each business day, the system captures a snapshot of each account'
 
 - **Performance optimization:** instead of replaying all transactions from account creation, balance queries could start from the most recent snapshot and only replay subsequent transactions.
 
-None of this is implemented yet. Interest accrual computes `ledger.Book.ValueDateBalance` fresh from the entry list on every run rather than reading a stored snapshot, and no balance query of any kind consults one either — see [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column). What is captured today is the raw material a checkpoint would read from.
+None of this is implemented yet. Interest accrual reads `Tx.ValueDatedSeries` fresh from the entry list on every run — its opening figure is exactly `ValueDateBalance` at the window's start — rather than reading a stored snapshot, and no balance query of any kind consults one either — see [A Balance Is an Aggregate, Not a Column](#a-balance-is-an-aggregate-not-a-column). What is captured today is the raw material a checkpoint would read from.
 
 ### Audit Trail
 

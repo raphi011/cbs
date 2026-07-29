@@ -14,14 +14,14 @@ export const chapter: Chapter = {
       prompt:
         "What does an end-of-day snapshot record for each deposit account?",
       options: [
-        "The value-date book balance, holds, and available balance at close of business",
+        "The booking-date book balance, holds, and available balance at close of business",
         "Only the transactions posted since the previous business day",
-        "The booking-date book balance only",
+        "The value-date book balance only",
         "The account's full transaction history since opening",
       ],
       answer: 0,
       explanation:
-        "A [[snapshot]] captures the three-part deposit balance — value-date book balance, holds, and available balance — at close of business. The value-date balance is used (not the booking-date balance) because it is the economically real position that drives interest accrual and regulatory reporting.",
+        "A [[snapshot]] captures the three-part deposit balance — book, holds, and available — at close of business, using the same **booking-date** book balance an ordinary balance read uses. It is not the value-date balance: interest accrual reads value dates directly from the entry list every run and never consults a snapshot.",
     },
     {
       kind: "multi",
@@ -47,9 +47,9 @@ export const chapter: Chapter = {
       concept: "snapshot",
       prompt:
         "An end-of-day snapshot records the value-date balance, not the booking-date balance.",
-      answer: true,
+      answer: false,
       explanation:
-        "[[snapshot|Snapshots]] capture the **value-date** balance — the economically real position. Interest and regulation care about when money is economically effective, not merely when an entry was logged. The booking-date balance can differ when a posting is recorded before its value date arrives.",
+        "The reverse is true: [[snapshot|snapshots]] capture the **booking-date** book balance — the same aggregation an ordinary balance read uses — not the value-date balance. It is interest accrual that cares about value dates, and it computes them directly from the entry list on every run rather than through a snapshot. The booking-date balance can still differ from the value-date one, which is exactly why a snapshot is not a stand-in for it.",
     },
     {
       kind: "mc",
