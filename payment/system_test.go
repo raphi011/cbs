@@ -174,6 +174,12 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	assertNoError(t, err)
 	debtorGL := debtorAcct.GLAccount
 
+	// The two-way split below only names the legs correctly if there are
+	// exactly two of them: with a third, "not the debtor's account" would
+	// silently pick whichever came last.
+	if len(posted.Entries) != 2 {
+		t.Fatalf("debtor leg has %d entries, want 2 (customer and suspense)", len(posted.Entries))
+	}
 	var customer, suspense ledger.Entry
 	for _, e := range posted.Entries {
 		if e.AccountID == debtorGL {

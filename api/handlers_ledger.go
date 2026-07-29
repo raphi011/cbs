@@ -186,6 +186,20 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	aid := ledger.AccountID(r.PathValue("aid"))
+	// Parsed before anything is read: a malformed asOf is a 400 whatever the
+	// store says, so validating it first keeps a bad request from costing two
+	// store round trips before being refused. Omitted, it defaults to now, and
+	// the value-dated figure agrees with the book balance unless something is
+	// value-dated away from its booking date.
+	asOf := time.Now()
+	if raw := r.URL.Query().Get("asOf"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeBadRequest(w, "asOf must be an RFC 3339 timestamp")
+			return
+		}
+		asOf = parsed
+	}
 	// The asset comes back with the number. It is an integer in the account's
 	// minor units and cannot be rendered without the scale its code implies;
 	// leaving it out would make displaying one balance cost three requests,
@@ -200,15 +214,6 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, err)
 		return
-	}
-	asOf := time.Now()
-	if raw := r.URL.Query().Get("asOf"); raw != "" {
-		parsed, err := time.Parse(time.RFC3339, raw)
-		if err != nil {
-			writeBadRequest(w, "asOf must be an RFC 3339 timestamp")
-			return
-		}
-		asOf = parsed
 	}
 	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), aid, asOf)
 	if err != nil {

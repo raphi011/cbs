@@ -1284,6 +1284,13 @@ func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id Acco
 		return ledger.Transaction{}, nil
 	}
 
+	// Value-dated at date, which means the day ENDING on it is re-priced at the
+	// capitalised balance: the recompute walks the value-dated series, and this
+	// debit is in the series from date onwards, so the span [date-1, date] is
+	// derived over a balance that already includes the charge. That is interest
+	// on interest earned the same day. lending does the same at its own
+	// capitalisation, and it is sub-minor per cycle, so it is recorded here
+	// rather than corrected: value-dating to the NEXT day would be the fix.
 	glTx, err := r.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: "Overdraft interest charged: " + acct.Name,
 		BookingDate: date,

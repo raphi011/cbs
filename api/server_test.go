@@ -319,6 +319,47 @@ func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 	}
 }
 
+// TestBalanceEndpointDefaultsAsOfToNow covers the other half of the parameter:
+// omitted entirely, asOf is now, so a movement value-dated in the past counts
+// and one value-dated in the future does not. The book balance carries both
+// either way, which is what makes the two figures distinguishable here.
+func TestBalanceEndpointDefaultsAsOfToNow(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	post := func(amount int, valueDate time.Time) {
+		doJSON(t, h, "POST", "/participants/"+pid+"/transactions", fmt.Sprintf(`{
+			"entries":[
+				{"accountId":%q,"amount":%d,"direction":"Debit"},
+				{"accountId":%q,"amount":%d,"direction":"Credit"}
+			],
+			"valueDate":%q
+		}`, acct, amount, other, amount, valueDate.Format(time.RFC3339)), http.StatusCreated)
+	}
+	now := time.Now()
+	post(10_000, now.AddDate(0, 0, -3))
+	post(5_000, now.AddDate(0, 0, 30))
+
+	var got struct {
+		Balance          int64 `json:"balance"`
+		ValueDateBalance int64 `json:"valueDateBalance"`
+	}
+	getJSON(t, h, "/participants/"+pid+"/accounts/"+acct+"/balance", &got)
+
+	if got.Balance != 15_000 {
+		t.Errorf("balance = %d, want 15000", got.Balance)
+	}
+	if got.ValueDateBalance != 10_000 {
+		t.Errorf("valueDateBalance with no asOf = %d, want 10000 (asOf defaults to now)", got.ValueDateBalance)
+	}
+}
+
 // TestBalanceEndpointRejectsAnUnparseableAsOf pins the 400 on a malformed
 // ?asOf=: it must not panic and must not silently fall back to now.
 func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
@@ -330,6 +371,12 @@ func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
 		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
 
 	assertStatus(t, h, "GET", "/participants/"+pid+"/accounts/"+acct+"/balance?asOf=not-a-date", "", http.StatusBadRequest)
+
+	// And the parse happens before the account is read: an unknown account with
+	// a malformed asOf is still a 400, not the 404 the first store call would
+	// have produced. That ordering is what keeps a bad request from costing two
+	// store round trips before being refused.
+	assertStatus(t, h, "GET", "/participants/"+pid+"/accounts/nope/balance?asOf=not-a-date", "", http.StatusBadRequest)
 }
 
 // TestCreateParticipantWithAssets pins the optional assets array on

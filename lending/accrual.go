@@ -481,6 +481,14 @@ func (p *Portfolio) ChargeInterestTx(ctx context.Context, tx Tx, id FacilityID, 
 
 	var glTx ledger.Transaction
 	if charge > 0 {
+		// Value-dated at date, which means the day ENDING on it is re-priced at
+		// the capitalised balance: the recompute walks the value-dated drawn
+		// series, and this debit is in it from date onwards, so the span
+		// [date-1, date] is derived over a principal that already includes the
+		// charge. That is interest on interest earned the same day. deposit
+		// does the same at its own capitalisation, and it is sub-minor per
+		// cycle, so it is recorded here rather than corrected: value-dating to
+		// the NEXT day would be the fix.
 		glTx, err = p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 			Description: "Interest charged: " + f.Name,
 			BookingDate: date,
