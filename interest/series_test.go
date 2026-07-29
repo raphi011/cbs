@@ -104,6 +104,91 @@ func TestAccrueSeriesEmptyWindowAccruesNothing(t *testing.T) {
 	if got := interest.AccrueSeries(s, d, d.AddDate(0, 0, -1), flat(50_000, interest.ACT365)); got != 0 {
 		t.Errorf("AccrueSeries over a backwards window = %d, want 0", got)
 	}
+	// Same day, different time of day: still a zero-length window, not a
+	// one-slot one. The emptiness check must compare day boundaries, not raw
+	// instants.
+	sameDayLater := time.Date(2026, time.January, 10, 6, 0, 0, 0, time.UTC)
+	if got := interest.AccrueSeries(s, d, sameDayLater, flat(50_000, interest.ACT365)); got != 0 {
+		t.Errorf("AccrueSeries over a same-day window with differing times of day = %d, want 0", got)
+	}
+}
+
+func TestAccrueSeriesMovementTimeOfDayIsIgnoredAtTo(t *testing.T) {
+	// DayMovement.Day is documented as UTC midnight, but the comparisons here
+	// must not depend on that: a movement timestamped later in the day than
+	// `to` must still be treated as landing on `to`'s slot, not dropped by a
+	// raw (non-truncated) instant comparison.
+	from, to := day(2026, time.January, 10), day(2026, time.January, 11)
+	s := ledger.Series{
+		Opening:   100_000,
+		Movements: []ledger.DayMovement{{Day: time.Date(2026, time.January, 11, 13, 0, 0, 0, time.UTC), Amount: 50_000}},
+	}
+
+	got := interest.AccrueSeries(s, from, to, flat(50_000, interest.ACT365))
+	want := interest.Accrue(150_000, 50_000, interest.ACT365, from, to)
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (a movement timestamped later in the day than `to` must still land on `to`)", got, want)
+	}
+}
+
+func TestAccrueSeriesIgnoresMovementsAfterTo(t *testing.T) {
+	from, to := day(2026, time.January, 1), day(2026, time.January, 10)
+	s := ledger.Series{
+		Opening:   100_000,
+		Movements: []ledger.DayMovement{{Day: day(2026, time.January, 20), Amount: 50_000}},
+	}
+
+	p := flat(50_000, interest.ACT365)
+	got := interest.AccrueSeries(s, from, to, p)
+	want := p(100_000, from, to)
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (a movement after `to` must not affect this window)", got, want)
+	}
+}
+
+func TestAccrueSeriesMultipleMovementsAdvanceThroughEachRun(t *testing.T) {
+	from, to := day(2026, time.January, 1), day(2026, time.January, 20)
+	s := ledger.Series{
+		Opening: 100_000,
+		Movements: []ledger.DayMovement{
+			{Day: day(2026, time.January, 6), Amount: 50_000},
+			{Day: day(2026, time.January, 12), Amount: 25_000},
+		},
+	}
+
+	p := flat(50_000, interest.ACT365)
+	got := interest.AccrueSeries(s, from, to, p)
+	want := p(100_000, from, day(2026, time.January, 5)) +
+		p(150_000, day(2026, time.January, 5), day(2026, time.January, 11)) +
+		p(175_000, day(2026, time.January, 11), to)
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (the cursor must advance through both runs, not just the first)", got, want)
+	}
+}
+
+func TestAccrueSeriesBalanceCrossingZeroStopsAccruingOnTheZeroSide(t *testing.T) {
+	// TestAccrueSeriesHandlesNegativeBalances above holds a constant negative
+	// opening, so the Period's balance>=0 guard never actually fires there.
+	// Here the balance clears to zero mid-window, which is the only way that
+	// branch runs.
+	from, to := day(2026, time.January, 1), day(2026, time.January, 11)
+	s := ledger.Series{
+		Opening:   -100_000,
+		Movements: []ledger.DayMovement{{Day: day(2026, time.January, 6), Amount: 100_000}},
+	}
+
+	p := func(balance ledger.Amount, f, t2 time.Time) interest.Accrued {
+		if balance >= 0 {
+			return 0
+		}
+		return interest.Accrue(-balance, 150_000, interest.ACT365, f, t2)
+	}
+
+	got := interest.AccrueSeries(s, from, to, p)
+	want := interest.Accrue(100_000, 150_000, interest.ACT365, from, day(2026, time.January, 5))
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (the run after the balance clears to zero must accrue nothing)", got, want)
+	}
 }
 
 func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
@@ -128,6 +213,36 @@ func TestAccrueSeriesThirty360NearlyTotalsAcrossAMonthEnd(t *testing.T) {
 	if diff := whole - split; diff < 0 || diff > 1 {
 		t.Errorf("split series = %d, whole = %d; a zero movement may cost at most "+
 			"one unit of truncation, not %d", split, whole, diff)
+	}
+}
+
+func TestAccrueSeriesThirty360ConstantBalanceMatchesAccrue(t *testing.T) {
+	// The no-movement case must be exactly Accrue's own answer under every
+	// convention, Thirty360 included. Thirty360's day count depends on which
+	// day of the month a date falls on, not just the gap between two dates,
+	// so this is the test that would catch a run expressed in the wrong
+	// coordinate (e.g. one shifted by NextDay/PrevDay against `from`/`to`).
+	from, to := day(2026, time.January, 1), day(2026, time.January, 31)
+	s := ledger.Series{Opening: 100_000}
+
+	got := interest.AccrueSeries(s, from, to, flat(60_000, interest.Thirty360))
+	want := interest.Accrue(100_000, 60_000, interest.Thirty360, from, to)
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (a series with no movement is one run, exact under every convention)", got, want)
+	}
+}
+
+func TestAccrueSeriesThirty360DailyRunAcrossMonthEnd(t *testing.T) {
+	// The day the 31st collapses onto the 30th under 30/360: production's
+	// daily run charges zero days for Jan 31 alone. AccrueSeries must land
+	// that collapse on the same day, not shift it under the hood.
+	from, to := day(2026, time.January, 30), day(2026, time.January, 31)
+	s := ledger.Series{Opening: 100_000}
+
+	got := interest.AccrueSeries(s, from, to, flat(60_000, interest.Thirty360))
+	want := interest.Accrue(100_000, 60_000, interest.Thirty360, from, to)
+	if got != want {
+		t.Errorf("AccrueSeries = %d, want %d (Jan 31 alone must accrue what Accrue does, zero under 30/360)", got, want)
 	}
 }
 
