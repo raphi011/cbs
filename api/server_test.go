@@ -2079,3 +2079,91 @@ func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 	assertStatus(t, h, "POST", "/participants/"+pid+"/facilities/"+loan["id"].(string)+"/interest-refunds",
 		`{"counterparty":"x","amount":100,"date":"2025-02-01"}`, http.StatusUnprocessableEntity)
 }
+
+// TestFundingRespectsAccountStatus pins the status matrix from the receiving
+// side, over HTTP, and closes a hole that stranded money.
+//
+// Funding a CLOSED account used to return 200. Close requires a zero balance, so
+// the credit landed in an account no withdrawal could reach (they report
+// ErrAccountClosed), that closing again could not clear (Closed is terminal),
+// and that contradicted the very invariant Close had just enforced.
+//
+// Dormant and Frozen still accept credits, deliberately. An incoming payment is
+// what revives a dormant account, and a freeze here is a DEBIT block — the
+// garnishment case, where money owed to the customer keeps arriving while they
+// cannot take any out.
+func TestFundingRespectsAccountStatus(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	open := func(name string) string {
+		return doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+			`{"name":"`+name+`","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	}
+	fund := func(did string, amount int) *httptest.ResponseRecorder {
+		return do(t, h, "POST", "/participants/"+pid+"/deposits",
+			fmt.Sprintf(`{"account":%q,"amount":%d}`, did, amount))
+	}
+
+	// Active, dormant and frozen all take a credit.
+	active := open("Active")
+	assertEqual(t, "credit into an active account", fund(active, 500).Code, http.StatusOK)
+
+	dormant := open("Dormant")
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+dormant+"/status",
+		`{"action":"markDormant"}`, http.StatusOK)
+	assertEqual(t, "credit into a dormant account", fund(dormant, 500).Code, http.StatusOK)
+
+	frozen := open("Frozen")
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+frozen+"/status",
+		`{"action":"freeze"}`, http.StatusOK)
+	assertEqual(t, "credit into a frozen account", fund(frozen, 500).Code, http.StatusOK)
+
+	// A closed account does not, and the refusal names the status.
+	closed := open("Closed")
+	assertStatus(t, h, "DELETE", "/participants/"+pid+"/deposit-accounts/"+closed, "", http.StatusNoContent)
+	res := fund(closed, 500)
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("credit into a closed account = %d, want 422; the money would strand: %s", res.Code, res.Body)
+	}
+	if !strings.Contains(res.Body.String(), "closed") {
+		t.Errorf("refusal body = %s, want it to name the closed account", res.Body)
+	}
+
+	// And nothing posted — the closed account is still at zero, which is the
+	// invariant Close enforced and that a landed credit would have broken.
+	var bal struct {
+		Book int64 `json:"book"`
+	}
+	getJSON(t, h, "/participants/"+pid+"/deposit-accounts/"+closed+"/balance", &bal)
+	if bal.Book != 0 {
+		t.Errorf("closed account book balance = %d, want 0", bal.Book)
+	}
+}
+
+// TestDormantDebitNamesDormancy is the error-text half, over HTTP: a repayment
+// out of a dormant account is refused as dormant rather than as an "invalid
+// account status transition", and it is a 422 like its frozen sibling.
+func TestDormantDebitNamesDormancy(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
+		`{"account":"`+did+`","amount":100000}`, http.StatusOK)
+	fid := doJSON(t, h, "POST", "/participants/"+pid+"/facilities", `{
+		"kind":"TermLoan","name":"L","asset":"EUR","commitment":1000,
+		"rate":60000,"dayCount":"ACT/365","method":"Annuity","termMonths":12
+	}`, http.StatusCreated)["id"].(string)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/status",
+		`{"action":"markDormant"}`, http.StatusOK)
+
+	res := do(t, h, "POST", "/participants/"+pid+"/facilities/"+fid+"/repayments",
+		`{"accountId":"`+did+`","amount":100,"date":"2025-02-01"}`)
+	if res.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("repayment from a dormant account = %d, want 422: %s", res.Code, res.Body)
+	}
+	if !strings.Contains(res.Body.String(), "dormant") {
+		t.Errorf("refusal body = %s, want it to name dormancy", res.Body)
+	}
+}

@@ -40,6 +40,17 @@ var (
 	// account.
 	ErrAccountFrozen = errors.New("account is frozen")
 
+	// ErrAccountDormant is returned when money is taken OUT of a dormant
+	// account — a withdrawal or a new hold. Credits are permitted and are what
+	// brings such an account back to life, so this is never returned for one.
+	//
+	// It exists because a blocked debit on a dormant account used to fall
+	// through requireActive's default branch and report
+	// ErrInvalidStatusTransition — an error about changing a status, raised by
+	// an operation that was not changing one. Dormancy is an ordinary state with
+	// an ordinary rule, and the error a caller sees should say so.
+	ErrAccountDormant = errors.New("account is dormant")
+
 	// ErrAccountClosed is returned when an operation is attempted on a closed
 	// account.
 	ErrAccountClosed = errors.New("account is closed")

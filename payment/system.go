@@ -445,6 +445,14 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err != nil {
 		return ErrAccountNotInParticipant
 	}
+	// A closed account is not somewhere money may land. Without this the cash
+	// posts cleanly and strands: Close required a zero balance, no withdrawal
+	// can reach the credit afterwards, and closing again cannot clear it because
+	// Closed is terminal. Checked in this same Tx as the postings below, so an
+	// account cannot close between the check and the credit.
+	if err := p.Deposit.CheckCreditTx(ctx, tx, account); err != nil {
+		return err
+	}
 	gl, asset := funded.GLAccount, funded.Asset
 	accts, err := p.AccountsFor(asset)
 	if err != nil {

@@ -56,6 +56,10 @@ func errorStatus(err error) int {
 	case errors.Is(err, ledger.ErrInsufficientBalance),
 		errors.Is(err, deposit.ErrInsufficientAvailable),
 		errors.Is(err, deposit.ErrAccountFrozen),
+		// Dormancy is an ordinary account state with an ordinary rule — credits
+		// revive it, debits wait for a reactivation — so a refused debit is a
+		// business-state violation like a frozen one, not malformed input.
+		errors.Is(err, deposit.ErrAccountDormant),
 		errors.Is(err, deposit.ErrAccountClosed),
 		errors.Is(err, deposit.ErrAccountNotEmpty),
 		errors.Is(err, deposit.ErrHoldNotActive),

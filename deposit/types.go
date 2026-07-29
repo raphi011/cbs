@@ -26,10 +26,17 @@ const (
 	// period. A credit (or explicit reactivation) returns it to Active.
 	Dormant
 	// Frozen indicates the account is temporarily restricted (e.g. a court
-	// order or fraud investigation). New holds are blocked until unfrozen.
+	// order or fraud investigation). Withdrawals and new holds are blocked
+	// until unfrozen; CREDITS still land, because the freeze modelled here is a
+	// debit block — the garnishment case, where money owed to the customer
+	// keeps arriving while they cannot take any out. A sanctions freeze blocks
+	// credits too and this single status cannot express both; see
+	// requireCreditable.
 	Frozen
 	// Closed is the terminal state: the account is permanently shut down and
-	// accepts no further activity.
+	// accepts no further activity, in either direction. It is the only status
+	// that refuses a credit, and it must: Close requires a zero balance, so a
+	// credit landing afterwards would strand money no withdrawal can reach.
 	Closed
 )
 

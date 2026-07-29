@@ -1657,3 +1657,61 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued 31 January -> 1 February", got.Accrued, interest.Accrued(8_333_332))
 }
+
+// TestCheckCredit_RefusesOnlyAClosedAccount is the whole status matrix from the
+// receiving side, and it is deliberately far more permissive than
+// CheckWithdrawal's.
+//
+// A credit cannot fail for want of money, so the only question it can answer is
+// whether this account is still somewhere money may land. Dormant is — an
+// incoming payment is exactly what revives it. Frozen is, because a freeze here
+// is a DEBIT block: the garnishment and fraud-investigation case, where money
+// owed to the customer keeps arriving while they cannot take any out.
+func TestCheckCredit_RefusesOnlyAClosedAccount(t *testing.T) {
+	ctx := context.Background()
+	reg, _, deposits := newTestRegister(t)
+
+	active, _ := reg.OpenAccount(ctx, deposits, "Active", testAsset, 0)
+	assertNoError(t, reg.CheckCredit(ctx, active.ID))
+
+	dormant, _ := reg.OpenAccount(ctx, deposits, "Dormant", testAsset, 0)
+	assertNoError(t, reg.MarkDormant(ctx, dormant.ID))
+	assertNoError(t, reg.CheckCredit(ctx, dormant.ID))
+
+	frozen, _ := reg.OpenAccount(ctx, deposits, "Frozen", testAsset, 0)
+	assertNoError(t, reg.Freeze(ctx, frozen.ID))
+	assertNoError(t, reg.CheckCredit(ctx, frozen.ID))
+
+	closed, _ := reg.OpenAccount(ctx, deposits, "Closed", testAsset, 0)
+	assertNoError(t, reg.Close(ctx, closed.ID))
+	assertError(t, reg.CheckCredit(ctx, closed.ID), ErrAccountClosed)
+
+	// An unknown account is not creditable either, and says so as itself.
+	assertError(t, reg.CheckCredit(ctx, "dep_nope"), ErrAccountNotFound)
+}
+
+// TestCheckWithdrawal_NamesDormancy pins the error a blocked debit on a dormant
+// account reports. It used to fall through requireActive's default branch and
+// come back as ErrInvalidStatusTransition — an error about changing a status,
+// raised by an operation that was not changing one.
+func TestCheckWithdrawal_NamesDormancy(t *testing.T) {
+	ctx := context.Background()
+	reg, book, deposits := newTestRegister(t)
+	cash := newCashAccount(t, book, deposits)
+	alice, _ := reg.OpenAccount(ctx, deposits, "Alice", testAsset, 0)
+	fund(t, reg, cash, alice, 10000)
+
+	assertNoError(t, reg.MarkDormant(ctx, alice.ID))
+
+	// Money out is blocked, and names dormancy rather than a status transition.
+	assertError(t, reg.CheckWithdrawal(ctx, alice.ID, 1000), ErrAccountDormant)
+	_, err := reg.CreateHold(ctx, CreateHoldRequest{AccountID: alice.ID, Amount: 1000})
+	assertError(t, err, ErrAccountDormant)
+
+	// Money in is not: it is what revives the account.
+	assertNoError(t, reg.CheckCredit(ctx, alice.ID))
+
+	// And a real status-transition error is still that error, so the two have
+	// not been collapsed.
+	assertError(t, reg.Unfreeze(ctx, alice.ID), ErrInvalidStatusTransition)
+}

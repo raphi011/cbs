@@ -779,9 +779,43 @@ func (r *Register) GetBalance(ctx context.Context, id AccountID) (Balance, error
 	return out, err
 }
 
+// CheckCredit reports whether the account may currently RECEIVE money. It is
+// the counterpart of CheckWithdrawal and refuses only a Closed account, with
+// ErrAccountClosed; see requireCreditable for why Dormant and Frozen do not.
+//
+// There is no amount and no funds test, because a credit cannot fail for want
+// of money — the only question a credit can answer is whether this account is
+// still somewhere money may land.
+//
+// It exists because this layer has no credit method of its own. Money reaches a
+// deposit account's GL account from the layers ABOVE — a bank funding a customer,
+// a settlement's creditor leg, a lending counterparty — each posting straight
+// into the general ledger, which knows nothing about account status by design.
+// So the check has to be callable rather than enforced from in here, exactly as
+// CheckWithdrawalTx is for the other direction.
+//
+// Returns ErrAccountNotFound if the account does not exist.
+func (r *Register) CheckCredit(ctx context.Context, id AccountID) error {
+	return r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		return r.CheckCreditTx(ctx, tx, id)
+	})
+}
+
+// CheckCreditTx is CheckCredit within a caller-supplied unit of work, so a
+// caller can check the status and post the credit atomically. Checking in one
+// unit of work and posting in another would let an account close in between.
+func (r *Register) CheckCreditTx(ctx context.Context, tx Tx, id AccountID) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	return requireCreditable(acct)
+}
+
 // CheckWithdrawal reports whether the account may currently support a
-// withdrawal of amount. It is status-aware: a frozen account returns
-// ErrAccountFrozen and a closed account returns ErrAccountClosed.
+// withdrawal of amount. It is status-aware: a dormant account returns
+// ErrAccountDormant, a frozen account ErrAccountFrozen and a closed account
+// ErrAccountClosed.
 //
 // The withdrawal is permitted only if Available - amount >= 0, where
 // Available = Book - Holds + OverdraftLimit; otherwise
@@ -816,10 +850,18 @@ func (r *Register) CheckWithdrawalTx(ctx context.Context, tx Tx, id AccountID, a
 }
 
 // requireActive returns a status-specific error if the account is not Active.
+// It guards money going OUT — a withdrawal or a new hold — which is why every
+// status other than Active fails it, dormancy included.
+//
+// Dormant names itself rather than falling through to
+// ErrInvalidStatusTransition, which is what it used to do: that error is about
+// changing a status, and a refused withdrawal is not changing one.
 func requireActive(acct Account) error {
 	switch acct.Status {
 	case Active:
 		return nil
+	case Dormant:
+		return ErrAccountDormant
 	case Frozen:
 		return ErrAccountFrozen
 	case Closed:
@@ -827,6 +869,31 @@ func requireActive(acct Account) error {
 	default:
 		return ErrInvalidStatusTransition
 	}
+}
+
+// requireCreditable returns an error if the account may not RECEIVE money. It is
+// requireActive's counterpart, and it is deliberately far more permissive,
+// because the two questions are not symmetric.
+//
+//   - Dormant accepts credits. An incoming payment is precisely what revives a
+//     dormant account; refusing it would strand a salary run for want of a
+//     customer login.
+//   - Frozen accepts credits. A freeze here is a DEBIT block — the garnishment
+//     and fraud-investigation case, where money owed to the customer keeps
+//     arriving while they cannot take any out. A sanctions freeze does block
+//     credits too, and this single status cannot express both; see the Account
+//     States table in README.md, which says as much.
+//   - Closed accepts nothing. Close requires a zero balance, so a credit
+//     afterwards leaves a Closed account holding money that no withdrawal can
+//     reach (requireActive refuses it), that closing again cannot clear (Closed
+//     is terminal), and that contradicts the very invariant CloseTx enforced.
+//     That is not a restriction, it is stranded money, and it is the one case
+//     this function exists for.
+func requireCreditable(acct Account) error {
+	if acct.Status == Closed {
+		return ErrAccountClosed
+	}
+	return nil
 }
 
 // balanceTx computes an account's three balances within a unit of work.
