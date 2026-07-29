@@ -147,6 +147,54 @@ func TestSCT_HappyPath(t *testing.T) {
 	assertEqual(t, "status settled", got.Status, Settled)
 }
 
+// PSD2 Art. 87(2): the payer's debit value date may be no earlier than the
+// moment the amount leaves the account, so the customer's leg must not share
+// the suspense leg's settlement-date value date.
+func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme:      SchemeSEPACT,
+		Debtor:      PartyRef{Participant: a.ID, Account: alice},
+		Creditor:    PartyRef{Participant: b.ID, Account: bob},
+		Amount:      10000,
+		Description: "Rent",
+	})
+	assertNoError(t, err)
+
+	posted, err := a.Ledger.GetTransaction(ctx, p.DebtorLegTx)
+	assertNoError(t, err)
+	assertEqual(t, "transaction value date is the settlement date", posted.ValueDate, p.ValueDate)
+
+	debtorAcct, err := a.Deposit.GetAccount(ctx, alice)
+	assertNoError(t, err)
+	debtorGL := debtorAcct.GLAccount
+
+	var customer, suspense ledger.Entry
+	for _, e := range posted.Entries {
+		if e.AccountID == debtorGL {
+			customer = e
+		} else {
+			suspense = e
+		}
+	}
+
+	if !customer.ValueDate.Equal(posted.BookingDate) {
+		t.Errorf("customer leg value date = %v, want the booking date %v (PSD2 Art. 87(2))",
+			customer.ValueDate, posted.BookingDate)
+	}
+	if !suspense.ValueDate.Equal(p.ValueDate) {
+		t.Errorf("suspense leg value date = %v, want the settlement date %v", suspense.ValueDate, p.ValueDate)
+	}
+	if customer.ValueDate.Equal(suspense.ValueDate) {
+		t.Fatal("the two legs must not share a value date; that is the whole point")
+	}
+}
+
 func TestSCT_Netting(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)

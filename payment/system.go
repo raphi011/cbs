@@ -1038,6 +1038,17 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if err != nil {
 		return Payment{}, err
 	}
+	// The two legs of this one event take economic effect on different days,
+	// which is why an entry carries its own value date.
+	//
+	// The customer's leg value-dates to the debit itself: PSD2 Art. 87(2) puts
+	// the payer's debit value date no earlier than the moment the amount leaves
+	// the account, and the money is gone from the moment this posts. Value-dating
+	// it to settlement instead would hand the payer the settlement delay's worth
+	// of interest-free credit, which is precisely what the article forbids.
+	//
+	// The clearing-suspense leg carries the settlement date, because that is
+	// when the bank's position against the scheme actually settles.
 	posted, err := debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":debit",
 		Description:    p.Description,
@@ -1045,8 +1056,8 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 		ValueDate:      p.ValueDate,
 		Metadata:       paymentMetadata(&p),
 		Entries: []ledger.Entry{
-			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: debtorAccts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
+			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit, ValueDate: now},
+			{AccountID: debtorAccts.Suspense, Amount: p.Amount, Direction: ledger.Credit, ValueDate: p.ValueDate},
 		},
 	})
 	if err != nil {
