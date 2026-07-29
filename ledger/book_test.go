@@ -705,6 +705,48 @@ func TestReverseTransaction(t *testing.T) {
 	assertEqual(t, "bob balance after reversal", bobBal, Amount(0))
 }
 
+// TestReverseTransactionMirrorsPerLegValueDates asserts that a reversal's
+// entries carry the SAME per-leg value dates as the original's entries — not
+// the reversal transaction's own value date, and not zero. A value-dated
+// balance only nets a reversal against the original transaction it corrects
+// if the two mirrored legs land on the same day; dating the reversal leg by
+// the reversal transaction (or leaving it zero) would leave the original's
+// impact on the books on its original value date with nothing canceling it
+// there.
+func TestReverseTransactionMirrorsPerLegValueDates(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, bob, _, _ := setupChartOfAccounts(t, book)
+
+	aliceValue := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+	bobValue := time.Date(2026, 5, 6, 0, 0, 0, 0, time.UTC)
+	tx, err := book.PostTransaction(ctx, PostTransactionRequest{
+		Description: "Transfer with divergent leg value dates",
+		Entries: []Entry{
+			{AccountID: alice.ID, Amount: 5000, Direction: Debit, ValueDate: aliceValue},
+			{AccountID: bob.ID, Amount: 5000, Direction: Credit, ValueDate: bobValue},
+		},
+	})
+	assertNoError(t, err)
+
+	reversal, err := book.ReverseTransaction(ctx, tx.ID, "Reversal")
+	assertNoError(t, err)
+	if !reversal.ValueDate.Equal(tx.ValueDate) {
+		t.Fatalf("reversal transaction value date = %v, want %v", reversal.ValueDate, tx.ValueDate)
+	}
+
+	if len(reversal.Entries) != 2 {
+		t.Fatalf("reversal entries = %d, want 2", len(reversal.Entries))
+	}
+	for i, e := range reversal.Entries {
+		want := tx.Entries[i].ValueDate
+		if !e.ValueDate.Equal(want) {
+			t.Errorf("reversal leg %d value date = %v, want %v (the original leg's, not the reversal transaction's %v, and not zero)",
+				i, e.ValueDate, want, reversal.ValueDate)
+		}
+	}
+}
+
 func TestReverseTransaction_NotFound(t *testing.T) {
 	ctx := context.Background()
 	book := testBook(t)

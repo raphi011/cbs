@@ -801,6 +801,10 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 			AccountID: e.AccountID,
 			Amount:    e.Amount,
 			Direction: e.Direction.Opposite(),
+			// Mirrors the original leg's value date, not the reversal
+			// transaction's: a value-dated balance nets a reversal against the
+			// original only if the two legs land on the same day.
+			ValueDate: e.ValueDate,
 		}
 	}
 
