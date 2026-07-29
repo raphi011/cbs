@@ -94,7 +94,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "The cost is read cost — the sum walks every entry on the account. The remedy is not to add the column back but to checkpoint: an [[snapshot|end-of-day snapshot]] records a day's figure so a query starts from the nearest checkpoint and replays only what came after. Drift is what [[derived-balance|deriving]] *prevents*, and amounts stay [[minor-units|integer minor units]] either way.",
+        "The cost is read cost — the sum walks every entry on the account. The remedy is not to add the column back but to checkpoint: a query would start from the nearest checkpoint and replay only what came after, and an [[snapshot|end-of-day snapshot]] records a day's figure so that it can. That remedy is described and not built here — no balance query in this system consults a snapshot. Drift is what [[derived-balance|deriving]] *prevents*, and amounts stay [[minor-units|integer minor units]] either way.",
     },
     {
       kind: "numeric",

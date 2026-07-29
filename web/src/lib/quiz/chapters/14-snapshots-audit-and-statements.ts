@@ -84,7 +84,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "A [[statement]] shows three things: the transaction listing (booking date), opening/closing balances (value date), and daily balances from [[snapshot|snapshots]]. Holds never appear — a hold posts nothing to the ledger until captured, so a ledger-derived statement is blind to it. The overdraft limit is a deposit-layer config, not a statement line.",
+        "A [[statement]] shows three things: the transaction listing (booking date), opening/closing balances (value date), and a daily balance series — which in the model this system describes is what [[snapshot|snapshots]] would supply, though nothing reads one back today. Holds never appear — a hold posts nothing to the ledger until captured, so a ledger-derived statement is blind to it. The overdraft limit is a deposit-layer config, not a statement line.",
     },
     {
       kind: "numeric",
@@ -96,7 +96,7 @@ export const chapter: Chapter = {
       unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
-        "Daily interest = $36,500 × 0.04 / 365 = $1,460 / 365 = **$4.00**. The end-of-day [[snapshot]] provides the exact principal for each day's accrual calculation. Without a captured end-of-day figure there is nothing to accrue against.",
+        "Daily interest = $36,500 × 0.04 / 365 = $1,460 / 365 = **$4.00**. In the snapshot model the prompt names, the end-of-day [[snapshot]] would supply the principal each day's calculation runs on — that is one of the four purposes snapshots exist for, once the checkpointing is built. It is not what this system does: accrual reads the value-dated entry list fresh on every run and never consults a snapshot. The arithmetic is the same either way; what differs is where the principal comes from.",
     },
     {
       kind: "mc",
@@ -119,7 +119,7 @@ export const chapter: Chapter = {
         "A transaction booked on February 25 with a value date of March 1 appears in the February statement's transaction listing but does NOT affect February's closing balance. This is correct behavior.",
       answer: true,
       explanation:
-        "The [[statement-amount|closing balance]] is built from value-date snapshots. The transaction appears in February's listing because the customer performed it in February (booking date); it does not affect February's closing balance because it becomes economically real only on March 1 (value date). This design is why most statements print both dates when they differ.",
+        "The [[statement-amount|closing balance]] counts postings by [[value-date]], not by booking date. The transaction appears in February's listing because the customer performed it in February (booking date); it does not affect February's closing balance because it becomes economically real only on March 1 (value date). This design is why most statements print both dates when they differ.",
     },
     {
       kind: "mc",
@@ -136,7 +136,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "The February [[statement]] lists transactions by booking date. This posting was booked January 31, so it does not appear in February's listing. However, its [[value-date]] is February 1, which makes it economically real in February — so it is reflected in the February opening balance. (The January 31 end-of-day snapshot captures only value dates ≤ January 31; this February 1-valued posting falls outside that snapshot and lands in the February 1 daily balance, which is the effective opening of the February period.)",
+        "The February [[statement]] lists transactions by booking date. This posting was booked January 31, so it does not appear in February's listing. However, its [[value-date]] is February 1, which makes it economically real in February — so it is reflected in the February opening balance. (January's closing figure counts only value dates ≤ January 31; this February 1-valued posting falls outside it and lands in the February 1 daily balance, which is the effective opening of the February period.)",
     },
     {
       kind: "mc",
@@ -161,12 +161,12 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "statement-amount",
       prompt:
-        "An account's end-of-January snapshot shows a value-date book balance of $1,500. In February, three credits land with February value dates: $200, $350, and $100. One debit of $400 also posts with a February value date. What is the February closing balance in dollars?",
+        "An account's value-dated book balance at the close of January is $1,500. In February, three credits land with February value dates: $200, $350, and $100. One debit of $400 also posts with a February value date. What is the February closing balance in dollars?",
       answer: 1750,
       unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
-        "[[statement-amount|Closing balance]] = opening snapshot + credits − debits, measured by value date. $1,500 + ($200 + $350 + $100) − $400 = $1,500 + $650 − $400 = **$1,750**.",
+        "[[statement-amount|Closing balance]] = opening balance + credits − debits, measured by value date. $1,500 + ($200 + $350 + $100) − $400 = $1,500 + $650 − $400 = **$1,750**.",
     },
     {
       kind: "mc",
@@ -269,12 +269,12 @@ export const chapter: Chapter = {
       id: "ch14-q18",
       difficulty: "challenge",
       prompt:
-        "An account's April 30 end-of-day snapshot shows a value-date book balance of $3,000. In May, the following postings occur: a $100 credit booked April 28 with value date May 2; a $500 credit with value date May 3; a $200 debit with value date May 10; a $150 credit with value date May 20. What is the May closing balance in dollars?",
+        "An account's value-dated book balance at the close of April 30 is $3,000. In May, the following postings occur: a $100 credit booked April 28 with value date May 2; a $500 credit with value date May 3; a $200 debit with value date May 10; a $150 credit with value date May 20. What is the May closing balance in dollars?",
       answer: 3550,
       unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
-        "The April 30 snapshot captures balances for value dates ≤ April 30 only. The April 28-booked / May 2-value credit was NOT in the snapshot — its value date is in May, so it contributes to May. May closing = $3,000 + $100 + $500 − $200 + $150 = **$3,550**. This is a concrete example of why the statement-amount calculation counts postings by value date, not booking date.",
+        "The April 30 figure counts value dates ≤ April 30 only. The April 28-booked / May 2-value credit was NOT in it — its value date is in May, so it contributes to May. May closing = $3,000 + $100 + $500 − $200 + $150 = **$3,550**. This is a concrete example of why the statement-amount calculation counts postings by value date, not booking date.",
     },
     {
       kind: "truefalse",

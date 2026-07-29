@@ -1031,7 +1031,7 @@ Because booking dates and value dates can differ, the listed transactions may no
 
 Most retail bank statements show both dates per transaction when they differ, so the customer can see why the figures may not seem to reconcile at first glance.
 
-End-of-day snapshots use value date for this reason — they are the foundation for the balance figures that appear on statements and for interest accrual.
+A statement's opening and closing figures are therefore value-dated, while its listing is booking-dated, and the two are read from the entry list directly. End-of-day snapshots are not what supplies either: they record the ordinary **booking-date** book balance, and nothing reads them back — see [End-of-Day Snapshots](#end-of-day-snapshots). In a system that had built the checkpointing they exist for, a statement's daily balances would come from them.
 
 ## Persistence
 
@@ -1130,7 +1130,7 @@ A stored balance is a **cache of a derivable fact**. It has to be updated in loc
 Two consequences follow:
 
 - The query does **not** filter on transaction status. A [reversal](#transaction-reversal) is a new, equal-and-opposite posting rather than a deletion, so both sets of entries are summed and net to zero. Excluding reversed transactions would double-count the correction.
-- Reading a balance costs an aggregate over every entry the account has ever had. The remedy is not to add the column back; it is to **checkpoint**. That is precisely what an [end-of-day snapshot](#end-of-day-snapshots) is for: a query starts from the nearest snapshot and replays only what came after it.
+- Reading a balance costs an aggregate over every entry the account has ever had. The remedy is not to add the column back; it is to **checkpoint**. That is precisely what an [end-of-day snapshot](#end-of-day-snapshots) is for: a query would start from the nearest snapshot and replay only what came after it.
 
 That checkpointing is described here and not built: `deposit.Snapshot` is written by `TakeEndOfDaySnapshot` and read only by `GetSnapshot` and `ListSnapshots`. No balance query consults one, and a backdated posting does not invalidate the snapshots it falsifies.
 

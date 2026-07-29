@@ -656,14 +656,16 @@ The trail enables: regulatory compliance (banks must maintain complete records),
   },
   snapshot: {
     title: "End-of-day snapshot",
-    body: `An **end-of-day snapshot** captures an account's three balances — [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]] — at the close of a business day. It is taken by the deposit layer, not the general ledger (which only computes book balance on demand).
+    body: `An **end-of-day snapshot** captures an account's three balances — [[balance-book|book]], [[balance-holds|holds]], and [[balance-available|available]] — at the close of a business day. It is taken by the deposit layer, not the general ledger (which only computes book balance on demand). The figure it records is the ordinary **booking-date** book balance, not the [[value-date|value-dated]] one.
 
-Snapshots serve four purposes:
+In the model this system describes, snapshots would serve four purposes — once the checkpointing they exist for is built:
 
-1. **Interest accrual** — daily interest is calculated on the end-of-day balance. For 4% APR on €10,000: \`€10,000 × 0.04 / 365 = €1.10/day\`.
-2. **Statement generation** — monthly statements show end-of-day balances, opening, and closing figures.
+1. **Interest accrual** — daily interest calculated on the end-of-day balance. For 4% APR on €10,000: \`€10,000 × 0.04 / 365 = €1.10/day\`.
+2. **Statement generation** — monthly statements showing end-of-day balances, opening, and closing figures.
 3. **Regulatory reporting** — regulators require daily position data.
-4. **Performance** — balance queries can start from the latest snapshot and replay only subsequent transactions, rather than replaying the full history.
+4. **Performance** — balance queries starting from the latest snapshot and replaying only subsequent transactions, rather than the full history.
+
+**What actually happens today:** a snapshot is written by \`TakeEndOfDaySnapshot\` and read back only by \`GetSnapshot\` and \`ListSnapshots\`. Interest accrual reads the value-dated entry list fresh on every run and never consults one; no balance query consults one either. What is captured today is the raw material a checkpoint would read from.
 
 \`\`\`
 Snapshot for 2024-03-01:
@@ -714,7 +716,7 @@ Hardcoding \`debit\` there would be right for every asset and expense account an
 
 A stored balance is a **cache of a derivable fact**, and caches go stale: any bug, crash or concurrent write that updates one of the two without the other leaves a number no one can reconcile. Deriving it means the [[audit-trail|append-only history]] is the single source of truth and the balance cannot disagree with it.
 
-The cost is that reading a balance is an aggregate over every entry ever posted. The standard answer is not to add the column back but to checkpoint: the [[snapshot|end-of-day snapshot]] records a day's figure so a query starts from the nearest checkpoint and replays only what came after.
+The cost is that reading a balance is an aggregate over every entry ever posted. The standard answer is not to add the column back but to checkpoint: a query would start from the nearest checkpoint and replay only what came after. The [[snapshot|end-of-day snapshot]] records a day's figure so that it *can* — but that is the design, not the current behaviour. No balance query in this system consults a snapshot; every one still sums the whole entry list.
 
 Note also that a reversal is a *new, opposite* posting ([[reversal]]), so the sum still includes both — which is why the balance of a reversed transaction's account nets out rather than the row disappearing.`,
   },
