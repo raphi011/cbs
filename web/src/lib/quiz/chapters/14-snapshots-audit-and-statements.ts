@@ -28,7 +28,7 @@ export const chapter: Chapter = {
       id: "ch14-q2",
       difficulty: "intro",
       prompt:
-        "Which of the following are purposes served by end-of-day snapshots? (Select all that apply.)",
+        "In the model this document describes, end-of-day snapshots would serve several purposes once the checkpointing they exist for is actually built. Which of the following are among them? (Select all that apply.)",
       options: [
         "Daily interest accrual — balance × rate / 365",
         "Monthly statement generation",
@@ -38,7 +38,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2, 3],
       explanation:
-        "[[snapshot|Snapshots]] serve four purposes: interest accrual, statement generation, regulatory reporting, and query performance (balance at any date is read from the nearest snapshot plus subsequent transactions). Snapshots do not block payment processing — payments post to the ledger independently.",
+        "In the design this system describes, [[snapshot|snapshots]] would serve four purposes: interest accrual, statement generation, regulatory reporting, and query performance (a balance query starting from the nearest snapshot and replaying only what's newer). None of this is built yet, though — it's a description of what the checkpoint is *for*, not of current behavior. Interest accrual actually reads the entry list fresh every run rather than a snapshot, and no balance query of any kind consults one. Snapshots never block payment processing either way — payments post to the ledger independently.",
     },
     {
       kind: "truefalse",
