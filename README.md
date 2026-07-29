@@ -43,6 +43,7 @@ The sections below are organized around these layers: general-ledger concepts fi
   - [Booking Date vs. Value Date](#booking-date-vs-value-date)
   - [Balance Types](#balance-types)
   - [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves)
+    - [Recording the Refund and Paying It Are Two Operations](#recording-the-refund-and-paying-it-are-two-operations)
   - [Multi-Legged Transactions](#multi-legged-transactions)
   - [Holds (Authorization / Pending Transactions)](#holds-authorization--pending-transactions)
   - [Idempotency](#idempotency)
@@ -358,7 +359,9 @@ General Ledger
 
 In practice, the General Ledger might show one line item for "Total Customer Deposits" ($10M), while the Customer Deposits subledger contains 50,000 individual customer accounts that sum to that total.
 
-Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subledger, and an **`Interest Refunds Payable`** (Liability) account inside it, the first time a backdated correction needs to refund interest but a facility's drawn principal cannot absorb the whole remainder — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Nothing in the seed data ever walks that path, so a freshly seeded ledger has no `Payables` subledger until one is created lazily.
+Not every subledger is seeded. `lending.Portfolio` creates a **`Payables`** subledger, and an **`Interest Refunds Payable: <facility> (<asset>)`** (Liability) account inside it, the first time a backdated correction needs to refund interest but a facility's drawn principal cannot absorb the whole remainder — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Nothing in the seed data ever walks that path, so a freshly seeded ledger has no `Payables` subledger until one is created lazily.
+
+That folder is also the one place this system keeps a **subsidiary ledger**: one account per facility that has ever been over-refunded, with the folder's total as the control figure. Every other lazily-created account here is one per asset — `Interest Income (EUR)` serves every facility in the book — and the difference is what each balance has to answer. Interest income is a bank-wide total that nothing needs split by borrower. A refund payable is a debt to *one* borrower that somebody eventually has to pay back, so pooled it would hold a single number that cannot say who is owed what, and a payout against it would be unbounded: nothing would stop it paying one borrower out of another's money, because the ledger's balance check guards Asset and Expense accounts only and a Liability is never caught by it.
 
 ### Amounts and Precision
 
@@ -484,7 +487,24 @@ A posting can arrive value-dated to a day that has already been accrued for — 
 
 Accrual handles this without reversing anything. Every run recomputes the interest for its whole terms window from the account's value-dated movement series, and posts the change in the rounded value against what it posted last time. A backdated entry moves a historical day's balance, the recomputed gross moves with it, and the next run's delta is the true-up. Nothing is rewound and no earlier accrual is reversed: each of those was a correct statement of what the ledger knew when it was made, and the correction is a new, linked event.
 
-A negative true-up credits the accrued-interest receivable. If interest has already been capitalised out of it, the receivable cannot absorb the whole correction — that money has left it — so the remainder is refunded to the customer's account, or credited to principal on a loan. When the drawn principal cannot absorb the whole remainder either — including when it is already zero — whatever is left over is credited to a lazily-created **`Interest Refunds Payable`** account in a new **`Payables`** subledger: the borrower is still owed that money, and the bank cannot simply keep it. Neither the subledger nor the account exists until this path creates them — the seed data never touches it, so a fresh seeded ledger has no `Payables` subledger at all.
+A negative true-up credits the accrued-interest receivable. If interest has already been capitalised out of it, the receivable cannot absorb the whole correction — that money has left it — so the remainder is refunded to the customer's account, or credited to principal on a loan. When the drawn principal cannot absorb the whole remainder either — including when it is already zero — whatever is left over is credited to a lazily-created **`Interest Refunds Payable: <facility> (<asset>)`** account in a new **`Payables`** subledger: the borrower is still owed that money, and the bank cannot simply keep it. Neither the subledger nor the account exists until this path creates them — the seed data never touches it, so a fresh seeded ledger has no `Payables` subledger at all.
+
+#### Recording the Refund and Paying It Are Two Operations
+
+Only the first of them happens in the accrual. The correction runs inside an end-of-day batch, over every facility in the book, with no borrower account in hand and no business choosing one — so it records the obligation and stops. `Portfolio.RefundInterest` is the other half:
+
+```
+                        Dr  Interest Refunds Payable: Alice Home Loan (EUR)   4_932
+                          Cr Alice's current account                            4_932
+```
+
+It is the mirror of a repayment, and every difference between the two follows from the money running the other way.
+
+- **It touches neither principal, nor the receivable, nor the schedule.** A repayment allocates across two accounts and then across instalments, because it settles a debt the schedule is a plan for. This settles a debt with no schedule and no components: the correction already decided what the borrower owes, crediting principal as far as principal could absorb, and only the overflow reached the payable. Putting any of this refund back onto the loan would undo that split and hand the borrower money the correction had already spent reducing what they owed. Arrears are untouched for the same reason — they are a pure function of a schedule this does not change.
+- **A closed facility can still be refunded.** `Repay` refuses `ErrFacilityClosed`; this deliberately does not. Closed means the *borrower* owes nothing and no more will be lent — a statement about their obligations, not the bank's. A bank that discovers it overcharged interest on a loan settled last year still owes that money, and refusing to pay it because the contract is over would strand the obligation in a Liability account with nothing left that could ever discharge it: the facility accrues no more, is never billed again, and takes no more repayments.
+- **The amount is bounded rather than clamped.** Over-refunding would post cleanly — the ledger's balance check guards Asset and Expense accounts only — and leave the payable *negative*, an account asserting that the borrower owes the bank a refund. Partial refunds are fine; paying out more than was ever owed is `ErrInvalidAmount`. It is bounded rather than silently clamped because nothing here runs inside an end-of-day batch, which is precisely why the correction upstream clamps and this does not: there is no batch to take down by refusing.
+
+`Portfolio.ListRefundsPayable` is the worklist — every borrower the bank still owes, across the whole book, closed facilities included. Leaving those out would hide exactly the obligations nothing else surfaces.
 
 The window starts at the last repricing, not at account opening — for a deposit overdraft, wherever `SetOverdraftTerms` last ran; for a lending facility, at its first advance (nothing reprices a facility yet, so that bound and its opening coincide today). Product terms are still mutable columns, so recomputing across a repricing would re-derive every earlier day at today's rate and post the difference — rewriting accrual history every time an account is repriced. Prior accrual is frozen instead. Widening this window to account inception is what an effective-dated terms record would buy, and that is not built yet.
 
@@ -869,6 +889,10 @@ Bank A:  Debit  Alice (Liability)            3000     // Alice's deposit falls, 
 
 The two entries take effect on different days. PSD2 Art. 87(2) puts the payer's debit value date no earlier than the moment the money leaves — value-dating it to settlement instead would hand Alice the settlement delay's worth of interest-free credit. The clearing-suspense leg carries the settlement date because that is when Bank A's position against the scheme actually settles.
 
+This is why an entry carries a value date of its own, and not only its transaction: `ledger.Entry.ValueDate` is genuinely not derivable from the parent, unlike an entry's asset (which is always its account's, and so would only create disagreement if stored twice). `PostTransaction` resolves a zero one to the transaction's, so every stored leg carries a concrete date and no reader has to fall back.
+
+The transaction-level date here is the **settlement** one, which makes the pair worth reading carefully: it is the payment's own value date, and it is the *wrong* answer for the leg a customer cares about. Reporting only it — which the transaction API used to do — told a client that Alice's account took effect at settlement when it took effect on the day she was debited. `entryDTO` therefore carries `valueDate` per leg in both directions, and it is the only field on the wire that can express a posting whose legs deliberately disagree.
+
 **2. Clearing (cut-off)** — net positions computed; no money moves. Here `net[A] = -3000`, `net[B] = +3000`.
 
 **3. Settlement** — three postings make the money final:
@@ -942,8 +966,6 @@ Separately from the scheme wiring above, four more gaps are worth listing:
 - **Effective-dated product terms.** `SetOverdraftTerms` overwrites the rate in place, so an accrual posted six months ago cannot be reproduced from stored state — only recovered by replaying the audit log, which nothing does. It is also what bounds the retroactive-accrual window to the last repricing rather than to account opening.
 - **The creditor leg at settlement** bypasses the deposit layer: `SettleCycleTx` posts straight into the GL account, so a payee whose account was frozen or closed between initiation and settlement is credited anyway. The suspense account an unapplicable credit should land in already exists.
 - **The recompute window is unbounded.** It opens at the last repricing for a deposit overdraft, or at first advance for a lending facility (the same bound today, since nothing reprices a facility yet), and nothing else resets it — so a long-lived account or facility walks more days of arithmetic every night. Effective-dated product terms — the item above — are what would let it start at account inception instead.
-- **The per-leg value date is not on the wire.** `ledger.Entry` carries its own value date, and the SEPA debtor posting deliberately uses it: the payer's leg takes effect on the debit date while the suspense leg takes effect at settlement (see [Booking Date vs. Value Date](#booking-date-vs-value-date)). The transaction API does not express this. `GET .../transactions` renders only the transaction-level `valueDate`, so a client sees one date for a posting whose legs disagree, and `POST .../transactions` accepts no per-entry value date, so a client cannot construct one. Widening `entryDTO` in both directions is the fix; nothing in the domain has to change.
-- **Nothing discharges `Interest Refunds Payable`.** When a backdated posting cuts accrued interest below what has already been settled in cash, the excess is booked to a per-facility `Interest Refunds Payable` (a Liability) rather than silently kept — see [Backdated Postings Correct Themselves](#backdated-postings-correct-themselves). Paying it back to the borrower is deliberately out of the `lending` layer, but no method, endpoint or documented operating procedure picks it up, so the balance sits there indefinitely. What is missing is a settlement path that debits the payable and credits the borrower's account, and a way to list the outstanding ones.
 
 ## Reporting and Compliance
 
@@ -1102,7 +1124,7 @@ Three decisions in how the asset spreads from there.
 
 **The asset is on `accounts`, and deliberately not on `entries`.** An entry's asset is always its account's, so a column on `entries` would store the same fact a second time and create the one thing a second copy always creates: the possibility that the two disagree. `PostTransaction` derives it instead, and derivation is free here — the accounts have already been loaded to check [sufficient balance](#overdraft), so the per-asset balance check adds no reads at all.
 
-**The two subtype tables — `deposit_accounts.asset` and `facilities.asset` — are the exception, duplicated on purpose.** A deposit account's backing GL account, and a facility's two, are all created in the asset the row records and cannot change asset afterwards, so the copies cannot drift; deriving them would turn every listing into a join for a value that can never change. `store/storetest` asserts the copies always agree — `DepositAccountAssetMatchesItsGLAccount` and `FacilityAssetMatchesItsGLAccounts` — which is what makes the duplication safe rather than merely convenient.
+**The two subtype tables — `deposit_accounts.asset` and `facilities.asset` — are the exception, duplicated on purpose.** A deposit account's backing GL account, and every one of a facility's — the two it is opened with plus the refunds-payable account it may later be given — are all created in the asset the row records and cannot change asset afterwards, so the copies cannot drift; deriving them would turn every listing into a join for a value that can never change. `store/storetest` asserts the copies always agree — `DepositAccountAssetMatchesItsGLAccount` and `FacilityAssetMatchesItsGLAccounts` — which is what makes the duplication safe rather than merely convenient.
 
 **A participant's internal accounts are a child table, not columns.** Suspense, reserve and settlement are `participant_assets`, keyed `(participant_id, asset)`, rather than three columns on `participants`, because each of those accounts is denominated in exactly one asset and [a bank operating in two of them needs two of each](#the-multi-bank-model). Keying it this way makes adding a scheme in a new asset a *data* change rather than a schema change.
 
@@ -1329,10 +1351,13 @@ Representative endpoints:
 | `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
 | `POST /participants/{id}/deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
 | `POST` / `GET .../holds`, `POST .../holds/{hid}/release\|capture` | authorization holds |
-| `POST` / `GET /participants/{id}/transactions`, `.../{tid}/reversal` | general-ledger postings |
+| `POST` / `GET /participants/{id}/transactions`, `.../{tid}/reversal` | general-ledger postings. Each entry carries its own optional `valueDate` in both directions — omitted on input it inherits the transaction's, and on output it is always the leg's own resolved date, which is [not always the transaction's](#posting-choreography-sepa-credit-transfer) |
 | `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
 | `POST` / `GET /cycles`, `POST /cycles/{id}/close\|settle` | clearing & settlement |
 | `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
+| `POST` / `GET /participants/{id}/facilities`, `.../disbursement`, `.../draws`, `.../repayments`, `.../interest-charge`, `.../schedule` | credit facilities |
+| `POST /participants/{id}/facilities/{fid}/interest-refunds` | pay a borrower back interest the bank charged and never earned |
+| `GET /participants/{id}/interest-refunds-payable` | every borrower this bank still owes, closed facilities included |
 | `GET /central-bank/reserves`, `GET /schemes` | central-bank reserves, registered schemes |
 
 Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` conflict/duplicate, `422` business-state violation, `400` malformed input) and returned as `{"error": "..."}`.
