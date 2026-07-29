@@ -91,17 +91,16 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 	if err != nil {
 		return err
 	}
-	gross := interest.AccrueSeries(series, f.TermsEffectiveFrom, date,
+	next, delta := interest.Recompute(series, f.TermsEffectiveFrom, date,
+		interest.State{Accrued: f.Accrued, Gross: f.AccruedGross},
 		func(drawn ledger.Amount, from, to time.Time) interest.Accrued {
-			return dailyFacilityAccrual(drawn, f, from, to)
+			return interest.Accrue(drawn, f.Rate, f.DayCount, from, to)
 		})
 
-	before := f.Accrued.Minor()
-	f.Accrued += gross - f.AccruedGross
-	f.AccruedGross = gross
+	f.Accrued = next.Accrued
+	f.AccruedGross = next.Gross
 	f.LastAccrualDate = date
 
-	delta := f.Accrued.Minor() - before
 	if delta == 0 {
 		// The rounding did not tick. There is nothing to post, and the ledger
 		// refuses a zero-amount entry anyway.
@@ -266,40 +265,6 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 		"transaction_id": string(glTx.ID),
 		"residue":        int64(f.Accrued),
 	})
-}
-
-// dailyFacilityAccrual is a facility's interest applied one day at a time
-// across a run of constant drawn balance. It is the interest.Period this
-// product accrues by.
-//
-// AccrueSeries hands a Period a whole run at once, and interest.Accrue over an
-// N-day span is NOT the sum of its N single days: it divides once per call, so
-// one call over N days truncates once where N calls truncate N times. That
-// difference is the whole reason this walk exists. Facility interest has always
-// been accrued a business day at a time, and every receivable in the book was
-// built up that way — 30 days on €1,000 at 18% is 1_479_452_040 day by day
-// against 1_479_452_054 in one call. Recomputing a window with one long call
-// would restate the record of every facility the first night it ran. Walking
-// the days is what makes the recompute reproduce the increment it replaces,
-// which is the only thing that makes it a safe swap.
-//
-// It matters more than truncation under Thirty360, where a day is not always a
-// day: the 31st collapses onto the 30th and accrues nothing. What "the interest
-// over this window" comes to there depends on how the window is cut, so the
-// only answer worth reproducing is the one that was actually charged — day by
-// day. That is also why this cannot be shortened to one call times the day
-// count.
-//
-// The cost is arithmetic, not I/O: AccrueSeries still reads the window in one
-// query, and this loop adds no round trips. deposit.dailyOverdraftAccrual is
-// the same function over a tiered rate.
-func dailyFacilityAccrual(drawn ledger.Amount, f Facility, from, to time.Time) interest.Accrued {
-	var total interest.Accrued
-	end := ledger.DayStart(to)
-	for d := ledger.DayStart(from); d.Before(end); d = d.AddDate(0, 0, 1) {
-		total += interest.Accrue(drawn, f.Rate, f.DayCount, d, d.AddDate(0, 0, 1))
-	}
-	return total
 }
 
 // interestIncomeTx resolves the bank's interest-income account for a

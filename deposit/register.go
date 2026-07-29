@@ -519,7 +519,7 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 		return ErrInvalidStatusTransition
 	}
 
-	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
 	if err != nil {
 		return err
 	}
@@ -529,7 +529,7 @@ func (r *Register) CloseTx(ctx context.Context, tx Tx, id AccountID) error {
 	// An account that never had a rate set has no receivable to settle: there
 	// is nothing to read a balance for.
 	if acct.InterestGL != "" {
-		receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
+		receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL)
 		if err != nil {
 			return err
 		}
@@ -898,7 +898,7 @@ func requireCreditable(acct Account) error {
 
 // balanceTx computes an account's three balances within a unit of work.
 func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance, error) {
-	book, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
 	if err != nil {
 		return Balance{}, err
 	}
@@ -921,31 +921,6 @@ func (r *Register) availableTx(ctx context.Context, tx Tx, acct Account) (ledger
 		return 0, err
 	}
 	return bal.Available, nil
-}
-
-// bookBalanceTx reads the GL book balance of a backing account within a unit of
-// work. It reads the GL account first for its normal direction — the same two
-// steps Book.BookBalance takes, done here through the caller's Tx rather than by
-// opening a second one.
-func (r *Register) bookBalanceTx(ctx context.Context, tx Tx, id ledger.AccountID) (ledger.Amount, error) {
-	gl, err := tx.GetAccount(ctx, r.bookID, id)
-	if err != nil {
-		return 0, err
-	}
-	return tx.BookBalance(ctx, r.bookID, id, gl.Type.NormalBalance())
-}
-
-// valueDatedSeriesTx is the value-dated movement history of a GL account over
-// [from, to], signed by the account's normal direction. It is the same two
-// steps bookBalanceTx takes — read the account for its type, then aggregate —
-// done through the caller's Tx.
-func (r *Register) valueDatedSeriesTx(ctx context.Context, tx Tx, id ledger.AccountID, from, to time.Time) (ledger.Series, error) {
-	gl, err := tx.GetAccount(ctx, r.bookID, id)
-	if err != nil {
-		return ledger.Series{}, err
-	}
-	return tx.ValueDatedSeries(ctx, r.bookID, id, gl.Type.NormalBalance(),
-		ledger.DayStart(from), ledger.NextDay(to))
 }
 
 // ---------------------------------------------------------------------------
@@ -1102,21 +1077,20 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		return nil
 	}
 
-	series, err := r.valueDatedSeriesTx(ctx, tx, acct.GLAccount, acct.TermsEffectiveFrom, date)
+	series, err := r.gl.SeriesTx(ctx, tx, acct.GLAccount, acct.TermsEffectiveFrom, date)
 	if err != nil {
 		return err
 	}
-	gross := interest.AccrueSeries(series, acct.TermsEffectiveFrom, date,
+	next, delta := interest.Recompute(series, acct.TermsEffectiveFrom, date,
+		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
-			return dailyOverdraftAccrual(balance, acct, from, to)
+			return overdraftAccrual(balance, acct, from, to)
 		})
 
-	before := acct.Accrued.Minor()
-	acct.Accrued += gross - acct.AccruedGross
-	acct.AccruedGross = gross
+	acct.Accrued = next.Accrued
+	acct.AccruedGross = next.Gross
 	acct.LastAccrualDate = date
 
-	delta := acct.Accrued.Minor() - before
 	if delta == 0 {
 		// The rounding did not tick. There is nothing to post, and a
 		// zero-amount entry is refused by the ledger anyway.
@@ -1181,7 +1155,7 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 // the same shape as ChargeOverdraftInterestTx, which also posts, moves Accrued
 // by what settled, and persists. Only this function knows the split.
 func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *Account, income ledger.AccountID, amount ledger.Amount, date time.Time) error {
-	receivable, err := r.bookBalanceTx(ctx, tx, acct.InterestGL)
+	receivable, err := r.gl.BookBalanceTx(ctx, tx, acct.InterestGL)
 	if err != nil {
 		return err
 	}
@@ -1226,36 +1200,6 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *A
 	})
 }
 
-// dailyOverdraftAccrual is overdraftAccrual applied one day at a time across a
-// run of constant balance. It is the interest.Period this product accrues by.
-//
-// AccrueSeries hands a Period a whole run at once, and overdraftAccrual over an
-// N-day span is NOT the sum of its N single days: interest.Accrue divides once
-// per call, so one call over N days truncates once where N calls truncate N
-// times. That difference is the whole reason this walk exists. Overdraft
-// interest has always been accrued a business day at a time, and the receivable
-// every account carries was built up that way; recomputing a window with one
-// long call would restate the record of every account the first night it ran.
-// Walking the days is what makes the recompute reproduce the increment it
-// replaces, which is the only thing that makes it a safe swap.
-//
-// It matters more than truncation under Thirty360, where a day is not always a
-// day: the 31st collapses onto the 30th and accrues nothing. What "the interest
-// over this window" comes to there depends on how the window is cut, so the
-// only answer worth reproducing is the one that was actually charged — day by
-// day.
-//
-// The cost is arithmetic, not I/O: AccrueSeries still reads the window in one
-// query, and this loop adds no round trips.
-func dailyOverdraftAccrual(balance ledger.Amount, acct Account, from, to time.Time) interest.Accrued {
-	var total interest.Accrued
-	end := ledger.DayStart(to)
-	for d := ledger.DayStart(from); d.Before(end); d = d.AddDate(0, 0, 1) {
-		total += overdraftAccrual(balance, acct, d, d.AddDate(0, 0, 1))
-	}
-	return total
-}
-
 // overdraftAccrual is the interest earned on an account's overdrawn balance
 // over one accrual period, tiered at the arranged limit.
 //
@@ -1271,9 +1215,9 @@ func dailyOverdraftAccrual(balance ledger.Amount, acct Account, from, to time.Ti
 // limit is for, and it is the configuration most accounts here are opened with.
 //
 // It takes from and to explicitly rather than reading the account's
-// LastAccrualDate, so that AccrueSeries can call it once per run of constant
-// balance within one accrual window — through dailyOverdraftAccrual, which is
-// what a Period for this product has to be.
+// LastAccrualDate, so that it can be called once per day within one accrual
+// window. It is the interest.Period this product accrues by; interest.Recompute
+// is what applies it a day at a time across each run of constant balance.
 func overdraftAccrual(book ledger.Amount, acct Account, from, to time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
@@ -1442,7 +1386,7 @@ func (r *Register) TotalsTx(ctx context.Context, tx Tx) (Totals, error) {
 		Overdrafts: make(map[ledger.AssetCode]ledger.Amount),
 	}
 	for _, acct := range accounts {
-		balance, err := r.bookBalanceTx(ctx, tx, acct.GLAccount)
+		balance, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
 		if err != nil {
 			return Totals{}, err
 		}

@@ -1305,11 +1305,7 @@ func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset le
 		if err != nil {
 			return err
 		}
-		acct, err := tx.GetAccount(ctx, CentralBankBook, accts.Settlement)
-		if err != nil {
-			return err
-		}
-		out, err = tx.BookBalance(ctx, CentralBankBook, accts.Settlement, acct.Type.NormalBalance())
+		out, err = s.centralBank.BookBalanceTx(ctx, tx, accts.Settlement)
 		return err
 	})
 	return out, err

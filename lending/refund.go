@@ -61,8 +61,9 @@ func (p *Portfolio) RefundPayableFor(ctx context.Context, id FacilityID) (ledger
 }
 
 // refundPayableTx is RefundPayableFor against a facility the caller has already
-// loaded. The refunds-payable account is a Liability, so its normal balance is
-// Credit — the opposite of the facility's other two accounts.
+// loaded. The refunds-payable account is a Liability, so its balance runs the
+// opposite way to the facility's other two accounts — which is the ledger's
+// business, not this layer's, and is why the direction is not named here.
 //
 // An empty RefundGL short-circuits to 0 rather than reading anything. That is
 // not just an optimisation: the account does not exist yet, and resolving it by
@@ -72,7 +73,7 @@ func (p *Portfolio) refundPayableTx(ctx context.Context, tx Tx, f Facility) (led
 	if f.RefundGL == "" {
 		return 0, nil
 	}
-	return tx.BookBalance(ctx, p.bookID, f.RefundGL, ledger.Credit)
+	return p.gl.BookBalanceTx(ctx, tx, f.RefundGL)
 }
 
 // ListRefundsPayable returns every outstanding interest refund in the book,

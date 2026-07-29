@@ -1085,6 +1085,128 @@ func TestValueDateBalance_AsOfDayBoundary(t *testing.T) {
 	assertEqual(t, "balance goes negative", bobBal, Amount(-300))
 }
 
+// TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork is why the derived reads have
+// a …Tx form at all: a layer that posts inside a unit of work has to be able to
+// read the result of that posting without opening a second one, which
+// Store.Update refuses.
+//
+// It also pins the property that made the direction argument worth removing.
+// Both balances come back POSITIVE from one call each: Cash is an Asset debited
+// 1000, Alice a Liability credited 1000, and each is signed by its own account's
+// normal direction. A caller passing one direction for both — which is what the
+// deposit and lending helpers used to do — would have to get one of them wrong.
+func TestDerivedReadsTx_SeeWritesInTheSameUnitOfWork(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, book)
+
+	valueDate := time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
+
+	var aliceBal, cashBal, aliceAsOf Amount
+	var series Series
+	err := book.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := book.PostTransactionTx(ctx, tx, PostTransactionRequest{
+			Description: "funding, read back in the same unit of work",
+			ValueDate:   valueDate,
+			Entries: []Entry{
+				{AccountID: cash.ID, Amount: 1_000, Direction: Debit},
+				{AccountID: alice.ID, Amount: 1_000, Direction: Credit},
+			},
+		}); err != nil {
+			return err
+		}
+
+		var err error
+		if aliceBal, err = book.BookBalanceTx(ctx, tx, alice.ID); err != nil {
+			return err
+		}
+		if cashBal, err = book.BookBalanceTx(ctx, tx, cash.ID); err != nil {
+			return err
+		}
+		if aliceAsOf, err = book.ValueDateBalanceTx(ctx, tx, alice.ID, valueDate); err != nil {
+			return err
+		}
+		series, err = book.SeriesTx(ctx, tx, alice.ID, valueDate, valueDate)
+		return err
+	})
+	assertNoError(t, err)
+
+	assertEqual(t, "liability credited, signed by its own normal direction", aliceBal, Amount(1_000))
+	assertEqual(t, "asset debited, signed by its own normal direction", cashBal, Amount(1_000))
+	assertEqual(t, "value-dated balance inside the unit of work", aliceAsOf, Amount(1_000))
+
+	if len(series.Movements) != 1 {
+		t.Fatalf("expected 1 movement in the series, got %d", len(series.Movements))
+	}
+	assertEqual(t, "the movement's own day", series.Movements[0].Amount, Amount(1_000))
+	assertEqual(t, "nothing carried into the window", series.Opening, Amount(0))
+}
+
+// TestSeriesTx_SnapsTheWindowBounds pins the snapping that used to be done by
+// each caller: from is inclusive, and to is inclusive of the whole day it falls
+// in, so a window that accrues THROUGH to reads to's own movement. Both bounds
+// are handed in mid-afternoon here, which is what a caller's clock actually
+// gives you and what every consumer would otherwise have to remember to
+// truncate.
+func TestSeriesTx_SnapsTheWindowBounds(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+	alice, _, cash, _ := setupChartOfAccounts(t, book)
+
+	day1 := time.Date(2026, 6, 10, 0, 0, 0, 0, time.UTC)
+	day3 := day1.AddDate(0, 0, 2)
+
+	for _, d := range []time.Time{day1, day3} {
+		_, err := book.PostTransaction(ctx, PostTransactionRequest{
+			Description: "value-dated movement",
+			ValueDate:   d,
+			Entries: []Entry{
+				{AccountID: cash.ID, Amount: 100, Direction: Debit},
+				{AccountID: alice.ID, Amount: 100, Direction: Credit},
+			},
+		})
+		assertNoError(t, err)
+	}
+
+	afternoon := func(d time.Time) time.Time { return d.Add(15 * time.Hour) }
+
+	var through3, through2 Series
+	err := book.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		if through3, err = book.SeriesTx(ctx, tx, alice.ID, afternoon(day1), afternoon(day3)); err != nil {
+			return err
+		}
+		through2, err = book.SeriesTx(ctx, tx, alice.ID, afternoon(day1), afternoon(day1.AddDate(0, 0, 1)))
+		return err
+	})
+	assertNoError(t, err)
+
+	assertEqual(t, "movements through day 3", len(through3.Movements), 2)
+	assertEqual(t, "day 1 included despite an afternoon from", through3.Movements[0].Amount, Amount(100))
+	assertEqual(t, "day 3 included despite an afternoon to", through3.Movements[1].Amount, Amount(100))
+
+	assertEqual(t, "day 3 excluded from a window ending day 2", len(through2.Movements), 1)
+}
+
+func TestDerivedReadsTx_AccountNotFound(t *testing.T) {
+	ctx := context.Background()
+	book := testBook(t)
+
+	err := book.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := book.BookBalanceTx(ctx, tx, "nonexistent"); !errors.Is(err, ErrAccountNotFound) {
+			t.Errorf("BookBalanceTx: expected ErrAccountNotFound, got %v", err)
+		}
+		if _, err := book.ValueDateBalanceTx(ctx, tx, "nonexistent", testClock()); !errors.Is(err, ErrAccountNotFound) {
+			t.Errorf("ValueDateBalanceTx: expected ErrAccountNotFound, got %v", err)
+		}
+		if _, err := book.SeriesTx(ctx, tx, "nonexistent", testClock(), testClock()); !errors.Is(err, ErrAccountNotFound) {
+			t.Errorf("SeriesTx: expected ErrAccountNotFound, got %v", err)
+		}
+		return nil
+	})
+	assertNoError(t, err)
+}
+
 // ---------------------------------------------------------------------------
 // Integration Test: Full Ledger Workflow
 // ---------------------------------------------------------------------------

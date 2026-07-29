@@ -1614,9 +1614,10 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 }
 
 // TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on
-// the deposit path, and dailyOverdraftAccrual leans on that convention for its
-// justification: under 30/360-US the 31st collapses onto the 30th, so a day can
-// count as no days at all, and what a window comes to depends on how it is cut.
+// the deposit path, and interest.Recompute's day-at-a-time walk leans on that
+// convention for its justification: under 30/360-US the 31st collapses onto the
+// 30th, so a day can count as no days at all, and what a window comes to depends
+// on how it is cut.
 func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{}

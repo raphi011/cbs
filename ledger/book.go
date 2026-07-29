@@ -30,6 +30,13 @@ import (
 // Tx instead, so the deposit and payment layers can compose several operations
 // across layers into one atomic unit of work.
 //
+// The derived reads — BookBalanceTx, ValueDateBalanceTx, SeriesTx — come in the
+// same two forms, and for the same reason: a layer that has just posted inside a
+// unit of work must be able to read the result of that posting without opening a
+// second one. Each of them resolves the account's normal direction itself, so
+// that the sign convention lives only in AccountType.NormalBalance() and a
+// caller never has to name Debit or Credit to read a balance.
+//
 // Because Update is exclusive, a …Tx method must never be handed a Tx and then
 // call a plain method: that would open a second unit of work inside the first
 // and, on store/mem, deadlock on the store's write lock.
@@ -867,18 +874,28 @@ func (s *Book) ReverseTransactionTx(ctx context.Context, tx Tx, txID Transaction
 func (s *Book) BookBalance(ctx context.Context, accountID AccountID) (Amount, error) {
 	var out Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		acct, err := tx.GetAccount(ctx, s.id, accountID)
-		if err != nil {
-			return err
-		}
-		out, err = tx.BookBalance(ctx, s.id, accountID, acct.Type.NormalBalance())
+		var err error
+		out, err = s.BookBalanceTx(ctx, tx, accountID)
 		return err
 	})
 	return out, err
 }
 
-// ValueDateBalance computes an account's balance as of the end of asOf's day —
-// the balance the book's interest engines consume.
+// BookBalanceTx is BookBalance within a caller-supplied unit of work.
+//
+// It reads the account for its type, then asks the store to aggregate against
+// that type's normal direction. A caller must not pass the direction in: which
+// way an account's balance runs is a property of the account, and a caller that
+// supplies it is asserting something it cannot check.
+func (s *Book) BookBalanceTx(ctx context.Context, tx Tx, accountID AccountID) (Amount, error) {
+	acct, err := tx.GetAccount(ctx, s.id, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return tx.BookBalance(ctx, s.id, accountID, acct.Type.NormalBalance())
+}
+
+// ValueDateBalance computes an account's balance as of the end of asOf's day.
 //
 // The book balance answers "what has been recorded"; this answers "what has
 // taken economic effect". They differ whenever a posting is value-dated away
@@ -887,18 +904,54 @@ func (s *Book) BookBalance(ctx context.Context, accountID AccountID) (Amount, er
 // Entries value-dated on asOf itself count: a day's interest accrues on that
 // day's closing balance.
 //
+// The interest engines consume SeriesTx rather than this, because they recompute
+// a whole window day by day rather than asking about one day.
+//
 // Returns ErrAccountNotFound if the account does not exist.
 func (s *Book) ValueDateBalance(ctx context.Context, accountID AccountID, asOf time.Time) (Amount, error) {
 	var out Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		acct, err := tx.GetAccount(ctx, s.id, accountID)
-		if err != nil {
-			return err
-		}
-		out, err = tx.ValueDateBalance(ctx, s.id, accountID, acct.Type.NormalBalance(), NextDay(asOf))
+		var err error
+		out, err = s.ValueDateBalanceTx(ctx, tx, accountID, asOf)
 		return err
 	})
 	return out, err
+}
+
+// ValueDateBalanceTx is ValueDateBalance within a caller-supplied unit of work.
+//
+// The exclusive upper bound the store wants is derived here, from asOf, so that
+// no caller has to remember to snap it.
+func (s *Book) ValueDateBalanceTx(ctx context.Context, tx Tx, accountID AccountID, asOf time.Time) (Amount, error) {
+	acct, err := tx.GetAccount(ctx, s.id, accountID)
+	if err != nil {
+		return 0, err
+	}
+	return tx.ValueDateBalance(ctx, s.id, accountID, acct.Type.NormalBalance(), NextDay(asOf))
+}
+
+// SeriesTx is an account's value-dated movement history over [from, to], signed
+// by the account's normal direction, within a caller-supplied unit of work.
+//
+// Where ValueDateBalanceTx answers "what had taken effect by this day", this
+// returns each day's own figure, which is what lets an accrual re-derive a past
+// day whose posting only reached the ledger afterwards.
+//
+// The bounds are snapped here: from is inclusive and to is exclusive of the day
+// after to, so a window that is to accrue THROUGH to reads the day to falls in.
+// Snapping in one place is the point — the store compares raw timestamps and
+// truncates nothing itself, so a caller that snapped differently would get a
+// silently different answer.
+//
+// There is no plain form. Every consumer is an interest engine already inside a
+// unit of work, and an unused wrapper is surface with no caller to justify it.
+func (s *Book) SeriesTx(ctx context.Context, tx Tx, accountID AccountID, from, to time.Time) (Series, error) {
+	acct, err := tx.GetAccount(ctx, s.id, accountID)
+	if err != nil {
+		return Series{}, err
+	}
+	return tx.ValueDatedSeries(ctx, s.id, accountID, acct.Type.NormalBalance(),
+		DayStart(from), NextDay(to))
 }
 
 // ---------------------------------------------------------------------------
