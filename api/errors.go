@@ -80,6 +80,10 @@ func errorStatus(err error) int {
 		errors.Is(err, lending.ErrLimitExceeded),
 		errors.Is(err, lending.ErrAlreadyDisbursed),
 		errors.Is(err, lending.ErrNothingOutstanding),
+		// Its mirror: the bank owes this facility nothing to refund. Same
+		// category and so the same status — a well-formed request against state
+		// that has nothing for it to do.
+		errors.Is(err, lending.ErrNoRefundOutstanding),
 		// ErrWrongFacilityKind is 422 rather than 400 deliberately: the request
 		// is well formed and the field values are valid, but this facility is
 		// the wrong product for the operation — the same category as

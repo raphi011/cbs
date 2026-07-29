@@ -27,6 +27,10 @@ type facilityDTO struct {
 	PrincipalGL string `json:"principalGlAccount"`
 	InterestGL  string `json:"interestGlAccount"`
 
+	// RefundGL is the facility's interest-refunds-payable account, absent until
+	// a backdated correction has overshot on it — see lending.Facility.RefundGL.
+	RefundGL string `json:"refundGlAccount,omitempty"`
+
 	Commitment int64 `json:"commitment"`
 	// Drawn and AccruedInterest are derived, not stored: Drawn is the principal
 	// GL account's book balance; AccruedInterest is Minor() of the facility's
@@ -35,6 +39,14 @@ type facilityDTO struct {
 	Drawn           int64 `json:"drawn"`
 	AccruedInterest int64 `json:"accruedInterest"`
 	Outstanding     int64 `json:"outstanding"`
+	// RefundPayable is interest the bank owes THIS borrower back, and it is not
+	// part of Outstanding: it runs the other way. Outstanding is what the
+	// borrower owes the bank, and netting a debt the bank owes into it would
+	// report a smaller loan rather than an obligation.
+	//
+	// Derived, like Drawn: the book balance of RefundGL, and 0 when there is no
+	// such account. See lending.RefundPayableFor.
+	RefundPayable int64 `json:"refundPayable"`
 
 	Rate       int64  `json:"rate"`
 	RateScale  int64  `json:"rateScale"`
@@ -52,18 +64,19 @@ type facilityDTO struct {
 	MaturityAt time.Time `json:"maturityAt,omitempty"`
 }
 
-// toFacilityDTO renders a facility. drawn and accrued are resolved by the
-// caller so this function does no I/O of its own, the same convention
+// toFacilityDTO renders a facility. drawn, accrued and refund are resolved by
+// the caller so this function does no I/O of its own, the same convention
 // toTransactionDTO follows for entry assets: drawn is the principal GL
 // account's book balance (Portfolio.Drawn), genuinely derived; accrued is
 // f.Accrued.Minor(), the facility's own stored figure, not a GL read — it
 // only agrees with the interest GL account's balance because the system
-// maintains that as an invariant.
+// maintains that as an invariant; refund is the refunds-payable account's
+// balance (Portfolio.RefundPayableFor), 0 when there is no such account.
 //
 // Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
 // is indistinguishable from an explicitly-set one, and a revolving line — which
 // has no amortization method — would otherwise render a misleading "Annuity".
-func toFacilityDTO(f lending.Facility, drawn, accrued ledger.Amount) facilityDTO {
+func toFacilityDTO(f lending.Facility, drawn, accrued, refund ledger.Amount) facilityDTO {
 	outstanding := drawn
 	if accrued > 0 {
 		outstanding += accrued
@@ -76,12 +89,14 @@ func toFacilityDTO(f lending.Facility, drawn, accrued ledger.Amount) facilityDTO
 		Asset:       string(f.Asset),
 		PrincipalGL: string(f.PrincipalGL),
 		InterestGL:  string(f.InterestGL),
+		RefundGL:    string(f.RefundGL),
 
 		Commitment: int64(f.Commitment),
 
 		Drawn:           int64(drawn),
 		AccruedInterest: int64(accrued),
 		Outstanding:     int64(outstanding),
+		RefundPayable:   int64(refund),
 
 		Rate:      int64(f.Rate),
 		RateScale: interest.RateScale,
@@ -248,6 +263,53 @@ type repayFacilityRequest struct {
 
 type chargeFacilityInterestRequest struct {
 	Date string `json:"date"`
+}
+
+// refundPayableDTO is one outstanding interest refund: what the bank owes one
+// borrower back because a backdated correction showed it charged interest the
+// borrower had already paid and never owed. See lending.RefundPayable.
+//
+// FacilityStatus is rendered because it may be `Closed` and a client should not
+// read that as stale data. A refund outlives the lending contract — closing a
+// facility is a statement about what the BORROWER owes — so a settled loan with
+// an outstanding refund is an ordinary row here, not a contradiction.
+type refundPayableDTO struct {
+	FacilityID     string `json:"facilityId"`
+	Name           string `json:"name"`
+	Asset          string `json:"asset"`
+	Account        string `json:"account"`
+	Amount         int64  `json:"amount"`
+	FacilityStatus string `json:"facilityStatus"`
+}
+
+func toRefundPayableDTO(r lending.RefundPayable) refundPayableDTO {
+	return refundPayableDTO{
+		FacilityID:     string(r.FacilityID),
+		Name:           r.Name,
+		Asset:          string(r.Asset),
+		Account:        string(r.Account),
+		Amount:         int64(r.Amount),
+		FacilityStatus: r.FacilityStatus.String(),
+	}
+}
+
+// refundFacilityInterestRequest pays an interest refund out to a GL account.
+//
+// Counterparty is a GL account rather than a deposit account id, which is what
+// disburseFacilityRequest and drawFacilityRequest also take and the opposite of
+// repayFacilityRequest. The asymmetry is real: a repayment has to be checked
+// against a deposit account's available balance and status before it can post,
+// so that route spans both layers; money going OUT to the customer has no such
+// check to make, and the lending layer does not know what a deposit account is.
+//
+// Amount is required and bounded by what is owed — a partial refund is fine, an
+// over-refund is a 400. There is no "pay it all" default: an amount the caller
+// did not state is an amount the caller did not check.
+type refundFacilityInterestRequest struct {
+	Counterparty string `json:"counterparty"`
+	Amount       int64  `json:"amount"`
+	Date         string `json:"date"`
+	Description  string `json:"description"`
 }
 
 // endOfDayRequest is shared by POST /participants/{pid}/end-of-day.

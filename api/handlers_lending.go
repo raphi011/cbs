@@ -21,7 +21,14 @@ func (s *Server) registerLendingRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/draws", s.handleDraw)
 	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/repayments", s.handleRepay)
 	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/interest-charge", s.handleChargeInterest)
+	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/interest-refunds", s.handleRefundInterest)
 	mux.HandleFunc("DELETE /participants/{pid}/facilities/{fid}", s.handleCloseFacility)
+
+	// Outstanding refunds are listed per BANK rather than per facility: the
+	// question an operator has is "who do we still owe?", and a per-facility
+	// route can only answer it by walking every facility. The per-facility
+	// figure is already on facilityDTO.
+	mux.HandleFunc("GET /participants/{pid}/interest-refunds-payable", s.handleListRefundsPayable)
 
 	mux.HandleFunc("POST /participants/{pid}/end-of-day", s.handleRunEndOfDay)
 	mux.HandleFunc("GET /participants/{pid}/totals", s.handleTotals)
@@ -80,10 +87,10 @@ func (s *Server) handleOpenFacility(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// A freshly-opened facility is Pending: nothing has been advanced and
-	// nothing has accrued, so the two derived figures are 0 without a further
-	// round trip to read the balances back.
-	writeJSON(w, http.StatusCreated, toFacilityDTO(f, 0, 0))
+	// A freshly-opened facility is Pending: nothing has been advanced, nothing
+	// has accrued and no correction can have overshot, so all three derived
+	// figures are 0 without a further round trip to read the balances back.
+	writeJSON(w, http.StatusCreated, toFacilityDTO(f, 0, 0, 0))
 }
 
 func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
@@ -103,12 +110,17 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+		refund, err := p.Lending.RefundPayableFor(r.Context(), f.ID)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 		// Accrued interest comes off the facility already in hand rather than
 		// from Portfolio.AccruedInterest, which would re-read the same row in
 		// its own store transaction to return exactly this. Drawn cannot be
 		// had that way — it is the principal account's book balance, which is
-		// not on the record at all.
-		out[i] = toFacilityDTO(f, drawn, f.Accrued.Minor())
+		// not on the record at all, and nor can the refund payable.
+		out[i] = toFacilityDTO(f, drawn, f.Accrued.Minor(), refund)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -129,9 +141,14 @@ func (s *Server) handleGetFacility(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	refund, err := p.Lending.RefundPayableFor(r.Context(), fid)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	// f.Accrued.Minor() rather than Portfolio.AccruedInterest, which would
 	// re-read the row already in hand — see handleListFacilities.
-	writeJSON(w, http.StatusOK, toFacilityDTO(f, drawn, f.Accrued.Minor()))
+	writeJSON(w, http.StatusOK, toFacilityDTO(f, drawn, f.Accrued.Minor(), refund))
 }
 
 func (s *Server) handleFacilitySchedule(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +320,68 @@ func (s *Server) handleChargeInterest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, toChargeDTO(charge, assets))
+}
+
+// handleRefundInterest pays a borrower back interest the bank charged and never
+// earned — the discharge half of what a backdated correction records. See
+// lending.Portfolio.RefundInterest.
+//
+// It returns 422 for a facility the bank owes nothing on
+// (ErrNoRefundOutstanding — the same status as its mirror
+// ErrNothingOutstanding) and 400 for an amount that is not positive or that
+// exceeds what is owed. It does NOT refuse a closed facility: the lending
+// contract ending says nothing about a debt running the other way.
+func (s *Server) handleRefundInterest(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req refundFacilityInterestRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	date, err := time.Parse("2006-01-02", req.Date)
+	if err != nil {
+		writeBadRequest(w, "invalid date (want YYYY-MM-DD)")
+		return
+	}
+	fid := lending.FacilityID(r.PathValue("fid"))
+	tx, err := p.Lending.RefundInterest(r.Context(), fid, ledger.AccountID(req.Counterparty),
+		ledger.Amount(req.Amount), date, req.Description)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	assets, err := entryAssets(r.Context(), p.Ledger, []ledger.Transaction{tx})
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toTransactionDTO(tx, assets))
+}
+
+// handleListRefundsPayable serves GET
+// /participants/{pid}/interest-refunds-payable: every borrower this bank still
+// owes interest back to. An empty array is the ordinary answer.
+//
+// Closed facilities appear — see lending.ListRefundsPayable for why leaving them
+// out would hide exactly the obligations nothing else surfaces.
+func (s *Server) handleListRefundsPayable(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	payables, err := p.Lending.ListRefundsPayable(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]refundPayableDTO, len(payables))
+	for i, rp := range payables {
+		out[i] = toRefundPayableDTO(rp)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleCloseFacility(w http.ResponseWriter, r *http.Request) {
