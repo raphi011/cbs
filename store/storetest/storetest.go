@@ -1131,8 +1131,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
-		// The window starts on the 4th, so the 1st is opening and the 9th is
-		// outside it.
+		// The window is [4th, 9th): the 1st is opening; the 4th, 5th and 7th
+		// are movements; the 9th is outside it (to is exclusive).
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
@@ -1140,14 +1140,25 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return err
 		})
 
-		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
-		if len(got.Movements) != 1 {
-			t.Fatalf("movements = %d, want 1 (only the 5th; the 9th is outside the window)", len(got.Movements))
+		// Opening is only the 1st: the 4th sits exactly ON from, and the
+		// movement check just below is what actually pins that from is
+		// inclusive. An implementation that used > instead of >= for the
+		// lower bound would silently drop the 4th out of both Opening (still
+		// 100, so this line alone would not catch it) and Movements (now 2
+		// instead of 3, which the length check below does catch).
+		assertEqual(t, "opening (only the 1st; the 4th is a movement, not opening)", got.Opening, ledger.Amount(100))
+		if len(got.Movements) != 3 {
+			t.Fatalf("movements = %d, want 3 (the 4th, the 5th, the 7th)", len(got.Movements))
 		}
-		if !got.Movements[0].Day.Equal(day(5)) {
-			t.Errorf("movement day = %v, want %v", got.Movements[0].Day, day(5))
+		if !got.Movements[0].Day.Equal(day(4)) || got.Movements[0].Amount != 50 {
+			t.Errorf("movement[0] = %+v, want {%v 50} (from is inclusive)", got.Movements[0], day(4))
 		}
-		assertEqual(t, "movement amount (both of the 5th's postings, netted)", got.Movements[0].Amount, ledger.Amount(400))
+		if !got.Movements[1].Day.Equal(day(5)) || got.Movements[1].Amount != 400 {
+			t.Errorf("movement[1] = %+v, want {%v 400} (both of the 5th's postings, netted)", got.Movements[1], day(5))
+		}
+		if !got.Movements[2].Day.Equal(day(7)) || got.Movements[2].Amount != 0 {
+			t.Errorf("movement[2] = %+v, want {%v 0} (equal and opposite postings still emit a zero movement, not none)", got.Movements[2], day(7))
+		}
 	})
 
 	t.Run("ValueDatedSeriesSignsByNormalDirection", func(t *testing.T) {
@@ -1163,18 +1174,21 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return err
 		})
 		assertEqual(t, "opening", got.Opening, ledger.Amount(100))
-		if len(got.Movements) != 1 || got.Movements[0].Amount != 400 {
-			t.Errorf("movements = %+v, want one of 400", got.Movements)
+		if len(got.Movements) != 3 ||
+			got.Movements[0].Amount != 50 || got.Movements[1].Amount != 400 || got.Movements[2].Amount != 0 {
+			t.Errorf("movements = %+v, want 50, 400, 0", got.Movements)
 		}
 
-		// And read against the wrong normal, everything inverts.
+		// And read against the wrong normal, everything inverts — including
+		// the 7th, which stays 0 either way (there is no negative zero).
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
 			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.002", ledger.Debit, day(4), day(9))
 			return err
 		})
-		if got.Opening != -100 || got.Movements[0].Amount != -400 {
-			t.Errorf("inverted series = %+v / opening %d, want -400 / -100", got.Movements, got.Opening)
+		if got.Opening != -100 || len(got.Movements) != 3 ||
+			got.Movements[0].Amount != -50 || got.Movements[1].Amount != -400 || got.Movements[2].Amount != 0 {
+			t.Errorf("inverted series = %+v / opening %d, want -50, -400, 0 / -100", got.Movements, got.Opening)
 		}
 	})
 
@@ -1183,13 +1197,33 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
+		// [8th, 9th): past the 7th's net-zero pair (it contributes nothing
+		// to Opening either way) and before the 9th. Nothing at all falls in
+		// this window, so Movements is genuinely empty — unlike the 7th
+		// above, which is a movement that happens to net to zero.
 		var got ledger.Series
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(6), day(9))
+			got, err = tx.ValueDatedSeries(ctx, bookA, "901.001.001", ledger.Debit, day(8), day(9))
 			return err
 		})
-		assertEqual(t, "opening (the 1st and both of the 5th)", got.Opening, ledger.Amount(500))
+		assertEqual(t, "opening (the 1st, the 4th, both of the 5th, and the 7th's net-zero pair)", got.Opening, ledger.Amount(550))
+		if len(got.Movements) != 0 {
+			t.Errorf("movements = %+v, want none", got.Movements)
+		}
+	})
+
+	t.Run("ValueDatedSeriesOfUnknownAccountIsEmpty", func(t *testing.T) {
+		s := open(t, newStore)
+		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
+
+		var got ledger.Series
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			got, err = tx.ValueDatedSeries(ctx, bookA, "999.999.001", ledger.Debit, day(1), day(9))
+			return err
+		})
+		assertEqual(t, "opening", got.Opening, ledger.Amount(0))
 		if len(got.Movements) != 0 {
 			t.Errorf("movements = %+v, want none", got.Movements)
 		}
@@ -1661,29 +1695,55 @@ func transaction(id ledger.TransactionID, key string) ledger.Transaction {
 }
 
 // postValueDatedSeriesFixture seeds the postings the ValueDatedSeries*
-// subtests share: debits of 100 on the 1st, 200 twice on the 5th (one
-// carrying a time of day), and 400 on the 9th, each posted as a balanced
-// debit/credit pair between 901.001.001 and 901.001.002.
+// subtests share, between 901.001.001 ("acct1") and 901.001.002 ("acct2"),
+// each posting a balanced debit/credit pair:
+//
+//   - the 1st:  100, acct1 debited — before every from used below, so it is
+//     always opening, never a movement.
+//   - the 4th:   50, acct1 debited — sits exactly ON a from used below, to
+//     pin that from is inclusive: it must appear as its own movement and
+//     never fold into Opening.
+//   - the 5th:  200 + 200 (one carrying a time of day), both acct1 debited —
+//     nets into one movement of 400, pinning that same-day postings are
+//     netted rather than listed separately.
+//   - the 7th:  300 acct1 debited, 300 acct2 debited (i.e. acct1 credited) —
+//     equal and opposite on both accounts, netting to zero on either. Pins
+//     that a net-zero day is still emitted as a movement (Amount 0) rather
+//     than filtered out.
+//   - the 9th:  400, acct1 debited — outside every window used below (to is
+//     exclusive), so it never appears in Opening or Movements.
 func postValueDatedSeriesFixture(t *testing.T, s ledger.Store, day func(int) time.Time) {
 	t.Helper()
+	const (
+		acct1 ledger.AccountID = "901.001.001"
+		acct2 ledger.AccountID = "901.001.002"
+	)
 	posts := []struct {
 		id     string
 		when   time.Time
 		amount ledger.Amount
+		debit  ledger.AccountID // the other account is credited
 	}{
-		{"a", day(1), 100},
-		{"b", day(5), 200},
-		{"c", day(5).Add(17 * time.Hour), 200},
-		{"d", day(9), 400},
+		{"a", day(1), 100, acct1},
+		{"e", day(4), 50, acct1},
+		{"b", day(5), 200, acct1},
+		{"c", day(5).Add(17 * time.Hour), 200, acct1},
+		{"f", day(7), 300, acct1},
+		{"g", day(7), 300, acct2},
+		{"d", day(9), 400, acct1},
 	}
 	update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 		for _, p := range posts {
+			credit := acct2
+			if p.debit == acct2 {
+				credit = acct1
+			}
 			err := tx.PutTransaction(ctx, bookA, ledger.Transaction{
 				ID:        ledger.TransactionID("txn_vds_" + p.id),
 				ValueDate: p.when,
 				Entries: []ledger.Entry{
-					{ID: ledger.EntryID("ent_vds_d" + p.id), AccountID: "901.001.001", Amount: p.amount, Direction: ledger.Debit, ValueDate: p.when},
-					{ID: ledger.EntryID("ent_vds_c" + p.id), AccountID: "901.001.002", Amount: p.amount, Direction: ledger.Credit, ValueDate: p.when},
+					{ID: ledger.EntryID("ent_vds_d" + p.id), AccountID: p.debit, Amount: p.amount, Direction: ledger.Debit, ValueDate: p.when},
+					{ID: ledger.EntryID("ent_vds_c" + p.id), AccountID: credit, Amount: p.amount, Direction: ledger.Credit, ValueDate: p.when},
 				},
 			})
 			if err != nil {
