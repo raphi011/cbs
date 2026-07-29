@@ -276,6 +276,62 @@ func TestAccountResponseIncludesAsset(t *testing.T) {
 	}
 }
 
+// TestBalanceEndpointReportsTheValueDatedBalance pins Task 8: the balance
+// endpoint now reports the value-dated balance alongside the book balance,
+// and the two diverge whenever a posting's value date is forward of its
+// booking date. Two movements land on the same account — one value-dated
+// today, one three days out — so the book balance carries both but the
+// value-dated balance, read back with ?asOf=today, carries only the first.
+func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	other := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Equity","type":"Equity","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	today := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	post := func(amount int, valueDate time.Time) {
+		doJSON(t, h, "POST", "/participants/"+pid+"/transactions", fmt.Sprintf(`{
+			"entries":[
+				{"accountId":%q,"amount":%d,"direction":"Debit"},
+				{"accountId":%q,"amount":%d,"direction":"Credit"}
+			],
+			"valueDate":%q
+		}`, acct, amount, other, amount, valueDate.Format(time.RFC3339)), http.StatusCreated)
+	}
+	post(10_000, today)
+	post(5_000, today.AddDate(0, 0, 3))
+
+	var got struct {
+		Balance          int64 `json:"balance"`
+		ValueDateBalance int64 `json:"valueDateBalance"`
+	}
+	getJSON(t, h, "/participants/"+pid+"/accounts/"+acct+"/balance?asOf="+today.Format(time.RFC3339), &got)
+
+	if got.Balance != 15_000 {
+		t.Errorf("balance = %d, want 15000", got.Balance)
+	}
+	if got.ValueDateBalance != 10_000 {
+		t.Errorf("valueDateBalance = %d, want 10000 (the forward-dated movement has not taken effect)", got.ValueDateBalance)
+	}
+}
+
+// TestBalanceEndpointRejectsAnUnparseableAsOf pins the 400 on a malformed
+// ?asOf=: it must not panic and must not silently fall back to now.
+func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	gl := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
+	slid := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/subledgers/"+slid+"/accounts",
+		`{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+
+	assertStatus(t, h, "GET", "/participants/"+pid+"/accounts/"+acct+"/balance?asOf=not-a-date", "", http.StatusBadRequest)
+}
+
 // TestCreateParticipantWithAssets pins the optional assets array on
 // participant creation: given, it is forwarded to AddParticipant instead of
 // the default EUR-only set.

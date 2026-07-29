@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/raphi011/cbs/ledger"
 )
@@ -200,10 +201,25 @@ func (s *Server) handleBookBalance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	asOf := time.Now()
+	if raw := r.URL.Query().Get("asOf"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeBadRequest(w, "asOf must be an RFC 3339 timestamp")
+			return
+		}
+		asOf = parsed
+	}
+	valueDated, err := p.Ledger.ValueDateBalance(r.Context(), aid, asOf)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, accountBalanceDTO{
-		AccountID: string(aid),
-		Asset:     string(acct.Asset),
-		Balance:   int64(bal),
+		AccountID:        string(aid),
+		Asset:            string(acct.Asset),
+		Balance:          int64(bal),
+		ValueDateBalance: int64(valueDated),
 	})
 }
 

@@ -62,6 +62,11 @@ type accountBalanceDTO struct {
 	AccountID string `json:"accountId"`
 	Asset     string `json:"asset"`
 	Balance   int64  `json:"balance"`
+	// ValueDateBalance is the balance as of the end of the requested day,
+	// counting only entries that have taken economic effect. It is what
+	// interest is computed from, and it differs from Balance whenever a
+	// posting is value-dated away from its booking date.
+	ValueDateBalance int64 `json:"valueDateBalance"`
 }
 
 type entryDTO struct {
