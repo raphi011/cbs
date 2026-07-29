@@ -104,6 +104,37 @@ func facility(t *testing.T, p *lending.Portfolio, id lending.FacilityID) lending
 	return f
 }
 
+// accountNamed finds one of the bank's own accounts by the name the lending
+// layer creates it under, walking the book because those accounts are
+// materialised lazily and no caller is handed their ID.
+func accountNamed(t *testing.T, book *ledger.Book, name string) ledger.AccountID {
+	t.Helper()
+	ctx := context.Background()
+	ledgers, err := book.ListLedgers(ctx)
+	if err != nil {
+		t.Fatalf("ListLedgers: %v", err)
+	}
+	for _, l := range ledgers {
+		subs, err := book.ListSubledgers(ctx, l.ID)
+		if err != nil {
+			t.Fatalf("ListSubledgers: %v", err)
+		}
+		for _, s := range subs {
+			accounts, err := book.ListAccounts(ctx, s.ID)
+			if err != nil {
+				t.Fatalf("ListAccounts: %v", err)
+			}
+			for _, a := range accounts {
+				if a.Name == name {
+					return a.ID
+				}
+			}
+		}
+	}
+	t.Fatalf("no account named %q in the book", name)
+	return ""
+}
+
 func bookBalance(t *testing.T, book *ledger.Book, id ledger.AccountID) ledger.Amount {
 	t.Helper()
 	bal, err := book.BookBalance(context.Background(), id)
@@ -700,10 +731,12 @@ func TestAccrue_CorrectionRefundsToPrincipal(t *testing.T) {
 
 // TestAccrue_CorrectionClampsToWhatTheFacilityOwes is the far end of the same
 // case. Principal is an Asset too, so a correction bigger than everything still
-// outstanding cannot be posted anywhere: the borrower has overpaid the bank
-// outright, and this layer has no account to pay one from. It must clamp rather
-// than refuse — a refusal inside an end-of-day batch takes the whole book's run
-// down — and the record must still end up agreeing with the receivable.
+// outstanding cannot go there either: the borrower has overpaid the bank
+// outright. It must clamp rather than refuse — a refusal inside an end-of-day
+// batch takes the whole book's run down — and what is left over is a debt the
+// bank owes a customer, so it lands in the interest-refunds-payable account. It
+// must not simply be dropped, which leaves income overstated by money the bank
+// is not owed and no account anywhere recording the obligation.
 func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	ctx := context.Background()
 	p, book, sub, loan, customer := disbursedLoanIn(t)
@@ -713,12 +746,21 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AccruedInterest: %v", err)
 	}
+	if settled != 4_932 {
+		t.Fatalf("interest settled after 30 days = %d, want 4932", settled)
+	}
 	if _, err := p.Repay(ctx, loan.ID, customer, settled, drawdown.AddDate(0, 0, 30), "Interest"); err != nil {
 		t.Fatalf("Repay: %v", err)
 	}
+	// The bank has recognised the whole 4932 as income at this point.
+	income := accountNamed(t, book, "Interest Income (EUR)")
+	if got := bookBalance(t, book, income); got != 4_932 {
+		t.Fatalf("interest income before the correction = %d, want 4932", got)
+	}
 
 	// The whole loan was repaid on day one, backdated: no interest was ever
-	// owed, and there is nothing left to credit the correction to.
+	// owed, and neither the receivable nor principal has anything left to take
+	// the correction.
 	postTo(t, book, sub, loan.PrincipalGL, loan.Asset, 1_000_000, ledger.Credit, drawdown)
 	if err := p.Accrue(ctx, loan.ID, drawdown.AddDate(0, 0, 31)); err != nil {
 		t.Fatalf("Accrue: %v", err)
@@ -732,10 +774,20 @@ func TestAccrue_CorrectionClampsToWhatTheFacilityOwes(t *testing.T) {
 		t.Errorf("receivable = %d, want 0", recv)
 	}
 	if got := facility(t, p, loan.ID); got.Accrued.Minor() != recv {
-		t.Errorf("receivable = %d, accrued = %d; the two must agree even when nothing could be given back",
+		t.Errorf("receivable = %d, accrued = %d; the two must agree wherever the correction was settled",
 			recv, got.Accrued.Minor())
 	}
-	// Nothing is stranded: the facility can be closed.
+
+	// The whole 4932 the borrower paid and never owed is now a debt the bank
+	// records against itself, and income is back to nothing earned.
+	payable := accountNamed(t, book, "Interest Refunds Payable (EUR)")
+	if got := bookBalance(t, book, payable); got != 4_932 {
+		t.Errorf("interest refunds payable = %d, want 4932; the overpayment must be recorded, not kept", got)
+	}
+	if got := bookBalance(t, book, income); got != 0 {
+		t.Errorf("interest income after the correction = %d, want 0; no interest was ever owed", got)
+	}
+	// And nothing is stranded on the facility: it can be closed.
 	if err := p.Close(ctx, loan.ID); err != nil {
 		t.Errorf("Close after a clamped correction: %v", err)
 	}

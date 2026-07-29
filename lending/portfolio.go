@@ -27,6 +27,16 @@ func interestIncomeName(asset ledger.AssetCode) string {
 	return "Interest Income (" + string(asset) + ")"
 }
 
+// payablesSubledgerName is where the bank's own obligations to customers are
+// filed. Its own folder rather than Income or Loans and Advances: those two are
+// aggregated as revenue and as assets, and a Liability filed in either would be
+// summed with the wrong sign by anything that totals a folder.
+const payablesSubledgerName = "Payables"
+
+func interestRefundPayableName(asset ledger.AssetCode) string {
+	return "Interest Refunds Payable (" + string(asset) + ")"
+}
+
 // Portfolio is the lending layer over a general ledger. It manages credit
 // facilities, their schedules, their interest and their arrears.
 //

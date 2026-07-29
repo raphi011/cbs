@@ -44,7 +44,8 @@ import (
 // window's new total and its old one is what gets posted. Interest that turns
 // out never to have been owed comes back as a correction — see
 // correctFacilityAccrualTx, which is where a facility differs from a deposit
-// account: what the receivable cannot absorb comes off principal.
+// account: what the receivable cannot absorb comes off principal, and what
+// principal cannot absorb either becomes a payable.
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) Accrue(ctx context.Context, id FacilityID, date time.Time) error {
@@ -152,30 +153,42 @@ func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, dat
 // on the smaller figure — the one feedback loop in this design, and the correct
 // outcome.
 //
-// # Both credits are clamped
+// # Why the credit to principal is clamped, and where the rest goes
 //
 // Principal and the receivable are both Assets, and the ledger refuses a
 // posting that would drive either below zero — inside an end-of-day batch that
-// takes the whole book's run down with it. So the correction is bounded by what
-// the facility still owes.
+// takes the whole book's run down with it. So the credit to principal is
+// bounded by what is actually still drawn.
 //
-// Beyond that bound the borrower has overpaid the bank outright, and this layer
-// has no account to pay one from: it does not know what a deposit account is,
-// by design. The excess is left uncorrected rather than refused, and refunding
-// it is an operator's job. What it must NOT do is stay on the record: see below.
+// Past that bound the borrower has overpaid the bank outright: they owe nothing
+// and are owed money. That is a LIABILITY, and it goes to the bank's
+// interest-refunds-payable account, which is what the bank owing a customer
+// money looks like in a ledger. It needs no knowledge of what a deposit account
+// is — no more than interest income does — and being a Liability it can never
+// be refused by the sufficiency check, so the remainder always has somewhere
+// correct to go. Settling it is an operator's job, out of this layer: the
+// obligation is recorded here, not discharged here.
 //
-// # Why the unabsorbed part comes back on to the record
+// The alternative — posting nothing and keeping the difference — leaves
+// interest income overstated by money the bank is not owed, with no account
+// anywhere recording the obligation. That is a bank quietly keeping a
+// customer's overpayment.
+//
+// # Why everything the receivable did not absorb comes off the record
 //
 // Only the part the receivable absorbed has left the record — that is the
-// account Accrued mirrors. The rest either left in cash against principal or
-// was never given back at all, and in both cases Accrued has to be credited by
-// it or the facility carries a permanent negative against a receivable that
-// does not share it. That breaks the invariant interest/accrue.go states for
-// every caller here — the accrued-interest account's book balance equals
-// Minor() of the record — and hands the borrower the money a second time,
-// because the next interest genuinely owed is swallowed paying off a negative
-// that should not exist. api/dto_lending.go reports that record straight
-// through.
+// account Accrued mirrors, and the invariant interest/accrue.go states for
+// every caller here is that the two are equal. Everything else has been settled
+// somewhere the record does not track: against principal, or into the payable.
+// So Accrued is credited back by exactly that, and the record goes on holding
+// what the receivable holds.
+//
+// Leaving it on the record instead would be worse than untidy. A facility
+// carrying a permanent negative Accrued is not a liability at all — it is a
+// discount coupon, dischargeable only by swallowing the next interest the
+// borrower genuinely owes, which hands them the money a second time. And a
+// facility repaid in full is then closed, stranding it. api/dto_lending.go
+// reports that record straight through.
 //
 // It takes f by pointer for that reason and writes the facility itself. Only
 // this function knows the split.
@@ -186,7 +199,14 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 	}
 	absorbed := min(amount, max(receivable, 0))
 
-	refund := amount - absorbed
+	// offRecord is everything the receivable could not take. It leaves the
+	// record whatever happens to it; the only question is which account settles
+	// it, and it is split between the two below. deposit's equivalent adds back
+	// its `refund` because there the remainder goes one place and nothing
+	// clamps it; here it goes two, and `refund` is only the clamped first part.
+	offRecord := amount - absorbed
+
+	refund := offRecord
 	if refund > 0 {
 		drawn, err := p.drawnTx(ctx, tx, *f)
 		if err != nil {
@@ -194,36 +214,47 @@ func (p *Portfolio) correctFacilityAccrualTx(ctx context.Context, tx Tx, f *Faci
 		}
 		refund = min(refund, max(drawn, 0))
 	}
+	payable := offRecord - refund
 
-	var glTx ledger.Transaction
-	if posted := absorbed + refund; posted > 0 {
-		entries := []ledger.Entry{{AccountID: income, Amount: posted, Direction: ledger.Debit}}
-		if absorbed > 0 {
-			entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: absorbed, Direction: ledger.Credit})
-		}
-		if refund > 0 {
-			entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: refund, Direction: ledger.Credit})
-		}
-		glTx, err = p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-			Description: "Interest corrected: " + f.Name,
-			BookingDate: date,
-			ValueDate:   date,
-			Entries:     entries,
-		})
+	// Credits total amount however it splits, so this always balances and
+	// always posts: amount is positive by contract.
+	entries := []ledger.Entry{{AccountID: income, Amount: amount, Direction: ledger.Debit}}
+	if absorbed > 0 {
+		entries = append(entries, ledger.Entry{AccountID: f.InterestGL, Amount: absorbed, Direction: ledger.Credit})
+	}
+	if refund > 0 {
+		entries = append(entries, ledger.Entry{AccountID: f.PrincipalGL, Amount: refund, Direction: ledger.Credit})
+	}
+	if payable > 0 {
+		owed, err := p.interestRefundPayableTx(ctx, tx, *f)
 		if err != nil {
 			return err
 		}
+		entries = append(entries, ledger.Entry{AccountID: owed, Amount: payable, Direction: ledger.Credit})
 	}
 
-	f.Accrued += interest.FromMinor(amount - absorbed)
+	glTx, err := p.gl.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description: "Interest corrected: " + f.Name,
+		BookingDate: date,
+		ValueDate:   date,
+		Entries:     entries,
+	})
+	if err != nil {
+		return err
+	}
+
+	f.Accrued += interest.FromMinor(offRecord)
 	if err := tx.PutFacility(ctx, p.bookID, *f); err != nil {
 		return err
 	}
+	// The full split, so an operator reading one event can reconstruct the
+	// posting without deriving a figure: absorbed + refund + payable = amount.
 	return p.appendAuditTx(ctx, tx, ledger.EventFacilityAccrualCorrected, string(f.ID), map[string]any{
 		"facility_id":    string(f.ID),
 		"amount":         amount,
 		"absorbed":       absorbed,
 		"refund":         refund,
+		"payable":        payable,
 		"transaction_id": string(glTx.ID),
 		"residue":        int64(f.Accrued),
 	})
@@ -266,6 +297,29 @@ func dailyFacilityAccrual(drawn ledger.Amount, f Facility, from, to time.Time) i
 // interestIncomeTx resolves the bank's interest-income account for a
 // facility's asset, creating it and its subledger on first use.
 func (p *Portfolio) interestIncomeTx(ctx context.Context, tx Tx, f Facility) (ledger.AccountID, error) {
+	return p.bankAccountTx(ctx, tx, f, incomeSubledgerName,
+		interestIncomeName(f.Asset), ledger.Revenue)
+}
+
+// interestRefundPayableTx resolves the bank's interest-refunds-payable account
+// for a facility's asset, creating it and its subledger on first use. It is
+// interestIncomeTx with a Liability in a different folder, and it exists for
+// correctFacilityAccrualTx — see there for what lands in it.
+func (p *Portfolio) interestRefundPayableTx(ctx context.Context, tx Tx, f Facility) (ledger.AccountID, error) {
+	return p.bankAccountTx(ctx, tx, f, payablesSubledgerName,
+		interestRefundPayableName(f.Asset), ledger.Liability)
+}
+
+// bankAccountTx resolves one of the BANK's own accounts — as opposed to a
+// facility's two — in the same ledger the facility is filed in, creating it and
+// its folder on first use.
+//
+// The lookup starts from the facility's principal account because that is the
+// only handle a facility has on where it lives: the account knows its
+// subledger, and the subledger knows the ledger everything else hangs off. So a
+// bank ends up with one such account per asset however many facilities it
+// writes, in the same tree as the facilities that produced it.
+func (p *Portfolio) bankAccountTx(ctx context.Context, tx Tx, f Facility, folder, name string, t ledger.AccountType) (ledger.AccountID, error) {
 	principal, err := tx.GetAccount(ctx, p.bookID, f.PrincipalGL)
 	if err != nil {
 		return "", err
@@ -274,15 +328,15 @@ func (p *Portfolio) interestIncomeTx(ctx context.Context, tx Tx, f Facility) (le
 	if err != nil {
 		return "", err
 	}
-	sub, err := p.gl.EnsureSubledgerTx(ctx, tx, loansSub.LedgerID, incomeSubledgerName)
+	sub, err := p.gl.EnsureSubledgerTx(ctx, tx, loansSub.LedgerID, folder)
 	if err != nil {
 		return "", err
 	}
-	income, err := p.gl.EnsureAccountTx(ctx, tx, sub.ID, interestIncomeName(f.Asset), ledger.Revenue, f.Asset)
+	acct, err := p.gl.EnsureAccountTx(ctx, tx, sub.ID, name, t, f.Asset)
 	if err != nil {
 		return "", err
 	}
-	return income.ID, nil
+	return acct.ID, nil
 }
 
 // AccruedInterest is a facility's receivable in whole minor units — the balance
