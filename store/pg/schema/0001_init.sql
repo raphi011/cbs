@@ -544,7 +544,7 @@ CREATE TABLE audit_events (
     occurred_at TIMESTAMPTZ
 );
 
--- Indexes 6 and 7: the two shapes every audit query has. Book+scope is what a
+-- Indexes 7 and 8: the two shapes every audit query has. Book+scope is what a
 -- Book's own log and the participant endpoints ask for; entity is what a
 -- "history of this account" view asks for. Both carry seq so the cursor and the
 -- ordering come out of the index.
