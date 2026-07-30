@@ -22,6 +22,11 @@ var (
 	// the given account and date.
 	ErrSnapshotNotFound = errors.New("snapshot not found")
 
+	// ErrTermsNotFound is returned when no overdraft terms are in force on a
+	// day. Every account gets an opening terms row at OpenAccount, so the only
+	// way to miss is to ask about a day before the account existed.
+	ErrTermsNotFound = errors.New("no overdraft terms in force on that day")
+
 	// ErrInvalidAmount is returned when a hold amount is zero or negative.
 	ErrInvalidAmount = errors.New("amount must be positive")
 
