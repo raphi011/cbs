@@ -1631,8 +1631,12 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 		]
 	}`, http.StatusCreated)
 
-	// The accrual window opens when the terms are set — here the test clock's
-	// 15 January — not on the first end-of-day, so both runs below accrue.
+	// The accrual window opens when the ACCOUNT is opened — the opening terms
+	// row every account gets — not on the first end-of-day, so both runs below
+	// accrue. Here that is the same 15 January the terms were set on, because
+	// the test clock is frozen and the account was opened and priced on it; on
+	// a real timeline the window would reach back further and the days before
+	// pricing would accrue nothing, carrying the opening row's zero rate.
 	// €500 at 12% ACT/365 is 50_000 × 120_000 / 365 = 16_438_356
 	// micro-minor-units a day; two days is 32_876_712, which rounds to 33
 	// cents. The value-dated recompute is what makes the first day count: the
@@ -1670,10 +1674,10 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 // TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half
 // of payment.Participant.RunEndOfDay: one POST /end-of-day drives both credit
 // batches, so a facility and an overdrawn deposit account both accrue from a
-// single call. The deposit account's accrual baseline starts zero (it is only
-// set on its first end-of-day run), so a second run is what actually accrues
-// its interest; the facility's baseline is set at disbursement, so it accrues
-// on the first run already.
+// single call. The deposit account's window opens at account opening — the
+// opening terms row — and the facility's at disbursement, so both accrue on
+// the first run; the second is here because the first covers a single day and
+// this test is about both batches running, not about either figure.
 func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)

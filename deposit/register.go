@@ -165,17 +165,40 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 	}
 
 	acct := Account{
-		ID:             AccountID(id),
-		GLAccount:      gl.ID,
-		Name:           name,
-		Asset:          gl.Asset,
-		Status:         Active,
-		OverdraftLimit: overdraftLimit,
-		CreatedAt:      r.now(),
+		ID:        AccountID(id),
+		GLAccount: gl.ID,
+		Name:      name,
+		Asset:     gl.Asset,
+		Status:    Active,
+		CreatedAt: r.now(),
 	}
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return Account{}, err
 	}
+
+	// Every account gets a terms row from birth, carrying the limit it was
+	// opened with and zero rates.
+	//
+	// This is cleaner than treating "no rows" as a state the resolver has to
+	// model: it makes the recompute window start uniform, it means the timeline
+	// answers for every day the account has existed, and it costs nothing to
+	// specify — interest.DayCount's zero value is already ACT365, so the
+	// opening row needs no invented default, and a zero rate accrues nothing.
+	// An account opened before any pricing existed therefore keeps exactly the
+	// behaviour it had.
+	opening := OverdraftTerms{
+		AccountID:      acct.ID,
+		EffectiveFrom:  ledger.DayStart(acct.CreatedAt),
+		OverdraftLimit: overdraftLimit,
+		CreatedAt:      acct.CreatedAt,
+	}
+	if err := opening.Validate(); err != nil {
+		return Account{}, err
+	}
+	if err := tx.PutOverdraftTerms(ctx, r.bookID, opening); err != nil {
+		return Account{}, err
+	}
+
 	if err := r.appendAuditTx(ctx, tx, ledger.EventAccountOpened, string(acct.ID), acct); err != nil {
 		return Account{}, err
 	}
@@ -200,10 +223,13 @@ func interestIncomeName(asset ledger.AssetCode) string {
 	return "Interest Income (" + string(asset) + ")"
 }
 
-// SetOverdraftTerms sets an account's overdraft limit and credit terms.
+// SetOverdraftTerms APPENDS an account's overdraft limit and credit terms to
+// its effective-dated timeline. It does not overwrite anything: one immutable
+// row per repricing, and the terms in force on a day are resolved from the
+// timeline whenever a day has to be priced.
 //
 // It is the only way to change a limit after opening; OpenAccount takes one for
-// convenience but nothing else did until now.
+// convenience, and writes the account's opening row with it.
 //
 // limit is a positive amount the balance may go below zero by, rate is the
 // annual rate charged on the drawn balance up to that limit, and unarranged is
@@ -215,8 +241,37 @@ func interestIncomeName(asset ledger.AssetCode) string {
 // surcharge, and its absence means rate applies to the whole drawn balance,
 // inside the limit and beyond it alike — never that the part beyond the limit
 // is free, which would make exceeding a limit cheaper than respecting it. Hence
-// the one combination refused below: an unarranged rate with no arranged one,
-// which would price only the excess.
+// the one combination refused: an unarranged rate with no arranged one, which
+// would price only the excess. See OverdraftTerms.Validate.
+//
+// # effectiveFrom, and the two directions it may point
+//
+// effectiveFrom is the day the terms take economic effect, day-truncated here;
+// CreatedAt on the returned row is when they were entered. A ZERO effectiveFrom
+// means today on the register's clock, exactly as a zero BookingDate does in
+// ledger.PostTransactionRequest — the caller that has no opinion about the date
+// gets the system's, rather than the wall clock of whichever process is holding
+// the HTTP request. Both directions are allowed, because both happen:
+//
+//   - A BACKDATED row — a repricing agreed on the 1st and entered on the 15th —
+//     is picked up by the next end-of-day exactly as a backdated posting is.
+//     The days it takes effect over are re-derived at it, gross moves, and the
+//     difference is posted as ordinary delta interest. Nothing is rewritten and
+//     no accrual is reversed: the earlier postings were correct statements of
+//     what the bank knew at the time.
+//   - A FUTURE-DATED row is inert until the end-of-day runs reach its day,
+//     which is scheduled repricing for free.
+//
+// The risk in the first of those is real and is not hidden: a retroactive
+// repricing MOVES INTEREST THAT HAS ALREADY BEEN CHARGED TO A CUSTOMER, and the
+// audit log is the only control on it. Every call appends an
+// EventOverdraftTermsSet event carrying the row, effective date and entry date
+// alike, and that record is what makes "who repriced this account backwards,
+// and when" answerable.
+//
+// The value returned is the row that was WRITTEN, which is not necessarily the
+// row in force now — a future-dated repricing returns terms nothing is being
+// priced at yet. Use GetAccountWithTerms for the row in force today.
 //
 // The first non-zero rate creates the account's own accrued-interest-receivable
 // GL account. Setting terms again reuses it, including when the rate is set
@@ -226,94 +281,67 @@ func interestIncomeName(asset ledger.AssetCode) string {
 // Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount for a negative
 // limit, and ErrInvalidRate for a negative rate or an unarranged rate with no
 // arranged one.
-func (r *Register) SetOverdraftTerms(ctx context.Context, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
-	var out Account
+func (r *Register) SetOverdraftTerms(ctx context.Context, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (OverdraftTerms, error) {
+	var out OverdraftTerms
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = r.SetOverdraftTermsTx(ctx, tx, id, limit, rate, unarranged, dc)
+		out, err = r.SetOverdraftTermsTx(ctx, tx, id, limit, rate, unarranged, dc, effectiveFrom)
 		return err
 	})
 	return out, err
 }
 
 // SetOverdraftTermsTx is SetOverdraftTerms within a caller-supplied unit of work.
-func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount) (Account, error) {
-	if limit < 0 {
-		return Account{}, ErrInvalidAmount
-	}
-	if rate < 0 || unarranged < 0 {
-		return Account{}, ErrInvalidRate
-	}
-	if rate == 0 && unarranged > 0 {
-		return Account{}, ErrInvalidRate
-	}
-
+func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (OverdraftTerms, error) {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
-		return Account{}, err
+		return OverdraftTerms{}, err
 	}
 	if acct.Status == Closed {
-		return Account{}, ErrAccountClosed
+		return OverdraftTerms{}, ErrAccountClosed
 	}
 
-	// The span between the last accrual and now belongs to the OUTGOING terms,
-	// so it is charged at them before the window moves. Without this the day
-	// ending now falls between two windows and is never charged at all: the old
-	// window's AccruedGross freezes where its last end-of-day left it, and the
-	// new one starts here.
-	//
-	// It is a no-op for an account being priced for the first time — which has
-	// no window to close, so the seed's figures do not move — and for one
-	// repriced on a date already accrued through.
-	//
-	// The instant is clamped forward to LastAccrualDate first. An end-of-day
-	// may legitimately be run for a date ahead of the wall clock, which charges
-	// the span and leaves LastAccrualDate in front of now; opening the new
-	// window at now would then put it BEHIND a span already charged, with
-	// AccruedGross reset to zero, and every later run would add that overlap to
-	// Accrued a second time. LastAccrualDate never moves backwards (see
-	// Account.LastAccrualDate), and this is what keeps that true here.
 	now := r.now()
-	if now.Before(acct.LastAccrualDate) {
-		now = acct.LastAccrualDate
+	if effectiveFrom.IsZero() {
+		effectiveFrom = now
 	}
-	if err := r.accrueOverdraftAccountTx(ctx, tx, acct, now); err != nil {
-		return Account{}, err
+	row := OverdraftTerms{
+		AccountID:      id,
+		EffectiveFrom:  ledger.DayStart(effectiveFrom),
+		OverdraftLimit: limit,
+		Rate:           rate,
+		UnarrangedRate: unarranged,
+		DayCount:       dc,
+		CreatedAt:      now,
 	}
-	// That wrote the account it accrued, so re-read it rather than carrying a
-	// stale Accrued into the new terms.
-	if acct, err = tx.GetDepositAccount(ctx, r.bookID, id); err != nil {
-		return Account{}, err
+	if err := row.Validate(); err != nil {
+		return OverdraftTerms{}, err
 	}
 
+	// The receivable is created on the first non-zero rate ever set and reused
+	// afterwards, including when a rate goes back to zero: the account may
+	// already hold accrued interest, and discarding the receivable would
+	// strand it. It stays on the account rather than moving to the terms row
+	// for the same reason — there is one receivable per account, not one per
+	// repricing.
 	if rate > 0 && acct.InterestGL == "" {
 		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
 		if err != nil {
-			return Account{}, err
+			return OverdraftTerms{}, err
 		}
 		acct.InterestGL = receivable
+		if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+			return OverdraftTerms{}, err
+		}
 	}
 
-	acct.OverdraftLimit = limit
-	acct.Rate = rate
-	acct.UnarrangedRate = unarranged
-	acct.DayCount = dc
-
-	// A repricing starts a new recompute window. Prior accrual stays exactly
-	// where it is — Accrued is untouched, including the span just closed above
-	// at the outgoing terms — and only days from here are recomputed, so no
-	// past day is ever re-derived at a rate that was not in force on it.
-	acct.TermsEffectiveFrom = now
-	acct.AccruedGross = 0
-	acct.LastAccrualDate = now
-
-	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
-		return Account{}, err
+	if err := tx.PutOverdraftTerms(ctx, r.bookID, row); err != nil {
+		return OverdraftTerms{}, err
 	}
-	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftTermsSet, string(acct.ID), acct); err != nil {
-		return Account{}, err
+	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftTermsSet, string(id), row); err != nil {
+		return OverdraftTerms{}, err
 	}
-	return acct, nil
+	return row, nil
 }
 
 // customerLedgerIDTx resolves the ledger an account's backing GL account
@@ -383,6 +411,68 @@ func (r *Register) GetAccount(ctx context.Context, id AccountID) (Account, error
 		var err error
 		out, err = tx.GetDepositAccount(ctx, r.bookID, id)
 		return err
+	})
+	return out, err
+}
+
+// OverdraftTermsHistory returns an account's whole terms timeline, oldest
+// first. It is the point of making terms effective-dated: the history is
+// inspectable rather than merely recoverable by replaying the audit log.
+//
+// Returns ErrAccountNotFound.
+func (r *Register) OverdraftTermsHistory(ctx context.Context, id AccountID) ([]OverdraftTerms, error) {
+	var out []OverdraftTerms
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetDepositAccount(ctx, r.bookID, id); err != nil {
+			return err
+		}
+		var err error
+		out, err = tx.ListOverdraftTermsForAccount(ctx, r.bookID, id)
+		return err
+	})
+	return out, err
+}
+
+// GetAccountWithTerms returns an account alongside the terms in force today.
+// Returns ErrAccountNotFound, and ErrTermsNotFound only for an account that
+// somehow has no opening row.
+func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (AccountWithTerms, error) {
+	var out AccountWithTerms
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+		if err != nil {
+			return err
+		}
+		terms, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, id, ledger.DayStart(r.now()))
+		if err != nil {
+			return err
+		}
+		out = AccountWithTerms{Account: acct, Terms: terms}
+		return nil
+	})
+	return out, err
+}
+
+// ListAccountsWithTerms is GetAccountWithTerms over the whole book, in ONE unit
+// of work. Resolving each account through its own View would make a listing N
+// units of work over a store whose mem implementation refuses to nest them.
+func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerms, error) {
+	var out []AccountWithTerms
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		accounts, err := tx.ListDepositAccounts(ctx, r.bookID)
+		if err != nil {
+			return err
+		}
+		today := ledger.DayStart(r.now())
+		out = make([]AccountWithTerms, 0, len(accounts))
+		for _, acct := range accounts {
+			terms, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, acct.ID, today)
+			if err != nil {
+				return err
+			}
+			out = append(out, AccountWithTerms{Account: acct, Terms: terms})
+		}
+		return nil
 	})
 	return out, err
 }
@@ -763,7 +853,8 @@ func (r *Register) GetHold(ctx context.Context, id HoldID) (Hold, error) {
 //
 //   - Book: the GL book balance of the backing Liability account.
 //   - Holds: the sum of active, non-expired holds.
-//   - Available: Book - Holds + OverdraftLimit.
+//   - Available: Book - Holds + the overdraft limit in force today, resolved
+//     from the account's effective-dated terms timeline.
 //
 // Returns ErrAccountNotFound if the account does not exist.
 func (r *Register) GetBalance(ctx context.Context, id AccountID) (Balance, error) {
@@ -818,7 +909,7 @@ func (r *Register) CheckCreditTx(ctx context.Context, tx Tx, id AccountID) error
 // ErrAccountClosed.
 //
 // The withdrawal is permitted only if Available - amount >= 0, where
-// Available = Book - Holds + OverdraftLimit; otherwise
+// Available = Book - Holds + the limit in force today; otherwise
 // ErrInsufficientAvailable is returned.
 //
 // Returns ErrAccountNotFound if the account does not exist.
@@ -897,6 +988,21 @@ func requireCreditable(acct Account) error {
 }
 
 // balanceTx computes an account's three balances within a unit of work.
+//
+// The overdraft limit is RESOLVED from the account's terms timeline rather than
+// read off the row, because it is effective-dated like the rate beside it: what
+// a customer could spend last March is as much a fact about that March as what
+// they were charged for it.
+//
+// It is the bounded as-of lookup rather than the whole timeline, because this
+// runs on every withdrawal check and should not pay for history —
+// ActiveHoldTotal above is a bounded aggregate for the same reason.
+//
+// ErrTermsNotFound is propagated rather than treated as a zero limit. Every
+// account gets an opening row at OpenAccount, so the only way to miss is to ask
+// about a day before the account existed, and silently reporting a spendable
+// balance of Book - Holds for an account that has a facility is the kind of
+// wrong answer that reads as a working system.
 func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance, error) {
 	book, err := r.gl.BookBalanceTx(ctx, tx, acct.GLAccount)
 	if err != nil {
@@ -906,15 +1012,19 @@ func (r *Register) balanceTx(ctx context.Context, tx Tx, acct Account) (Balance,
 	if err != nil {
 		return Balance{}, err
 	}
+	terms, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, acct.ID, ledger.DayStart(r.now()))
+	if err != nil {
+		return Balance{}, err
+	}
 	return Balance{
 		Book:      book,
 		Holds:     holds,
-		Available: book - holds + acct.OverdraftLimit,
+		Available: book - holds + terms.OverdraftLimit,
 	}, nil
 }
 
 // availableTx computes the available balance of an account:
-// Book - Holds + OverdraftLimit.
+// Book - Holds + the overdraft limit in force today.
 func (r *Register) availableTx(ctx context.Context, tx Tx, acct Account) (ledger.Amount, error) {
 	bal, err := r.balanceTx(ctx, tx, acct)
 	if err != nil {
@@ -1018,8 +1128,9 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 //
 // The overdrawn magnitude of each day's own VALUE-DATED book balance — not the
 // available balance, and not today's balance applied backwards. A hold is not
-// borrowed money. The base is tiered: the arranged rate up to OverdraftLimit,
-// the unarranged rate on anything beyond it.
+// borrowed money. The base is tiered: the arranged rate up to the limit in
+// force on that day, the unarranged rate on anything beyond it. Both, and the
+// limit itself, come from the terms row in force on the day being accrued.
 //
 // A gap of several days is therefore exact rather than approximate: every day
 // in the span accrues on the balance that was actually in force on it, which is
@@ -1028,15 +1139,25 @@ func (r *Register) GetSnapshot(ctx context.Context, id AccountID, date time.Time
 // # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
-// already covered is a no-op rather than a second charge.
+// already covered is a no-op rather than a second charge. It is also a no-op by
+// arithmetic now: the same date over the same history produces the same gross
+// and therefore a zero delta, so the guard has one fewer reason behind it than
+// it used to.
 //
-// That is also why a posting which arrives backdated is trued up by the NEXT
-// day's run rather than by rewinding this one. Each run recomputes the whole
-// terms window from the value-dated balance, so the day the posting takes
-// effect on is re-derived with it in place; the difference between the window's
-// new total and its old one is what gets posted. Interest that turns out never
-// to have been owed comes back as a correction — a new event, not a reversal:
-// the original accrual was a correct statement of what the ledger knew then.
+// A posting which arrives backdated is trued up by the NEXT day's run rather
+// than by rewinding this one. Each run recomputes the whole of the account's
+// LIFE from the value-dated balance — the window opens at the account's opening
+// terms row — so the days the posting takes effect over are re-derived with it
+// in place; the difference between the new total and the old one is what gets
+// posted. Interest that turns out never to have been owed comes back as a
+// correction — a new event, not a reversal: the original accrual was a correct
+// statement of what the ledger knew then.
+//
+// Because the window opens at inception rather than at the last repricing, a
+// backdated posting is trued up WHEREVER it lands, including on days before a
+// repricing: each of those days is re-derived at the terms that were actually
+// in force on it, not at today's. Under the mutable-columns model those days
+// were behind the window and were silently never corrected.
 //
 // Returns ErrAccountNotFound.
 func (r *Register) AccrueOverdraft(ctx context.Context, id AccountID, date time.Time) error {
@@ -1059,32 +1180,83 @@ func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, d
 // each one a second time.
 //
 // The accrual is a recomputation rather than an increment. Every run re-derives
-// the whole terms window from the account's value-dated balance and posts the
+// the whole of the account's life from its value-dated balance and posts the
 // change in the rounded value — which is the same delta the incremental version
 // posted, arrived at differently. The difference shows when a posting lands
-// backdated: the day it takes effect on is recomputed with it in place, gross
-// moves, and the delta trues up the interest that was charged on the old
+// backdated: the days it takes effect over are recomputed with it in place,
+// gross moves, and the delta trues up the interest that was charged on the old
 // figure. No accrual is ever reversed and no date is ever rewound.
+//
+// The terms are resolved PER DAY from the account's timeline rather than read
+// off the account, which is what lets the window reach back past a repricing
+// without re-deriving an earlier day at a rate that was never in force on it.
 func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time) error {
-	if acct.Rate <= 0 || acct.Status == Closed {
-		return nil
-	}
-	// No priced overdraft has been set, so there is no window to accrue over.
-	if acct.TermsEffectiveFrom.IsZero() {
-		return nil
-	}
-	if acct.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
+	if acct.Status == Closed {
 		return nil
 	}
 
-	series, err := r.gl.SeriesTx(ctx, tx, acct.GLAccount, acct.TermsEffectiveFrom, date)
+	// The whole timeline, in one read, resolved per day in Go below. The three
+	// guards that used to sit here do not survive as a trio, and lumping them
+	// together is how this would acquire a bug:
+	//
+	//   - Status == Closed is unchanged, above.
+	//   - TermsEffectiveFrom.IsZero() meant "no window", and there is always a
+	//     window now: the opening row. It is replaced by "no terms row in force
+	//     on this day", below.
+	//   - Rate <= 0 cannot survive as an early return, because an early return
+	//     skips the whole run and a zero rate is now a property of a DAY. An
+	//     account unpriced for its first year and priced thereafter is a case
+	//     the previous model could not express at all. Two things replace it:
+	//     the closure returns zero for a day whose resolved rate is zero, and
+	//     the run is skipped entirely when NO row carries a non-zero rate —
+	//     a scan over rows already in memory, which is what keeps a
+	//     never-priced account from reading a series every night.
+	rows, err := tx.ListOverdraftTermsForAccount(ctx, r.bookID, acct.ID)
 	if err != nil {
 		return err
 	}
-	next, delta := interest.Recompute(series, acct.TermsEffectiveFrom, date,
+	if !anyPriced(rows) {
+		return nil
+	}
+
+	// The window opens at the earliest row, which is the opening row, which is
+	// inception. Every nightly run therefore re-derives every day the account
+	// has had: O(days) per account per night, accepted deliberately at this
+	// scale. The cost is arithmetic rather than I/O — the series is still one
+	// query over the window — and checkpointing is the named successor.
+	window := rows[0].EffectiveFrom
+
+	// The advancement guard resolves its day count on `date`, because after
+	// this change there is no single DayCount to ask: it is a terms field, and
+	// the conventions genuinely disagree about whether a window advanced. Under
+	// Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero
+	// while ACT365 says one — a run on the 31st is a no-op under one convention
+	// and a real day under the other. `date` is the right answer: it is the
+	// convention the customer's product is on for the day being accrued, and it
+	// is the same figure the walk itself will use for that day.
+	current, ok := termsAt(rows, date)
+	if !ok {
+		return nil
+	}
+	if current.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
+		return nil
+	}
+
+	series, err := r.gl.SeriesTx(ctx, tx, acct.GLAccount, window, date)
+	if err != nil {
+		return err
+	}
+	next, delta := interest.Recompute(series, window, date,
 		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
-			return overdraftAccrual(balance, acct, from, to)
+			// perDay has already cut the window to single days before any
+			// Period runs, so `from` IS the day: this closure is a function of
+			// the day as well as the balance, which is what a Period is for.
+			day, ok := termsAt(rows, from)
+			if !ok {
+				return 0
+			}
+			return overdraftAccrual(balance, day, from, to)
 		})
 
 	acct.Accrued = next.Accrued
@@ -1215,25 +1387,30 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *A
 // limit is for, and it is the configuration most accounts here are opened with.
 //
 // It takes from and to explicitly rather than reading the account's
-// LastAccrualDate, so that it can be called once per day within one accrual
-// window. It is the interest.Period this product accrues by; interest.Recompute
+// LastAccrualDate, so that it can be called once per day across the account's
+// life. It is the interest.Period this product accrues by; interest.Recompute
 // is what applies it a day at a time across each run of constant balance.
-func overdraftAccrual(book ledger.Amount, acct Account, from, to time.Time) interest.Accrued {
+//
+// It takes the TERMS IN FORCE ON THE DAY it is accruing rather than the
+// account, because the limit and both rates are effective-dated: the day it is
+// called for is the day whose terms apply, and the caller resolves them from
+// the account's timeline before each call.
+func overdraftAccrual(book ledger.Amount, t OverdraftTerms, from, to time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
 		return 0
 	}
 	arranged := drawn
-	if arranged > acct.OverdraftLimit {
-		arranged = acct.OverdraftLimit
+	if arranged > t.OverdraftLimit {
+		arranged = t.OverdraftLimit
 	}
-	total := interest.Accrue(arranged, acct.Rate, acct.DayCount, from, to)
+	total := interest.Accrue(arranged, t.Rate, t.DayCount, from, to)
 	if excess := drawn - arranged; excess > 0 {
-		rate := acct.UnarrangedRate
+		rate := t.UnarrangedRate
 		if rate == 0 {
-			rate = acct.Rate
+			rate = t.Rate
 		}
-		total += interest.Accrue(excess, rate, acct.DayCount, from, to)
+		total += interest.Accrue(excess, rate, t.DayCount, from, to)
 	}
 	return total
 }
@@ -1337,8 +1514,11 @@ func (r *Register) ChargeOverdraftInterestTx(ctx context.Context, tx Tx, id Acco
 // which day of the month is a product decision this layer has no opinion about;
 // a caller runs ChargeOverdraftInterest when its calendar says to.
 //
-// Accounts with no rate, accounts in credit and closed accounts are skipped
-// rather than errored — over a real portfolio most accounts are all three.
+// Accounts never priced at all, accounts in credit and closed accounts are
+// skipped rather than errored — over a real portfolio most accounts are all
+// three. "Never priced" is a property of the whole timeline, not of a column:
+// an account priced only from next month still has a run tonight, and it
+// accrues nothing because the day it is accruing carries a zero rate.
 func (r *Register) RunEndOfDay(ctx context.Context, date time.Time) error {
 	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return r.RunEndOfDayTx(ctx, tx, date)

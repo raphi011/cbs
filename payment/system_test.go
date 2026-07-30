@@ -1016,7 +1016,7 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	// An overdrawn current account with a priced overdraft.
 	bruno, err := bank.OpenCustomerAccount(ctx, "Bruno Bianchi", testAsset)
 	assertNoError(t, err)
-	_, err = bank.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = bank.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	assertNoError(t, net.Deposit(ctx, bank.ID, bruno.ID, 5_000, "Opening deposit"))
 

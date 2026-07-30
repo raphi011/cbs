@@ -211,13 +211,8 @@ CREATE TABLE deposit_accounts (
     name              TEXT NOT NULL,
     status            SMALLINT NOT NULL,
     asset             TEXT NOT NULL,
-    overdraft_limit   BIGINT NOT NULL,
-    overdraft_rate    BIGINT NOT NULL DEFAULT 0,
-    unarranged_rate   BIGINT NOT NULL DEFAULT 0,
-    day_count         SMALLINT NOT NULL DEFAULT 0,
     accrued_interest  BIGINT NOT NULL DEFAULT 0,
     accrued_gross     BIGINT NOT NULL DEFAULT 0,
-    terms_effective_from TIMESTAMPTZ,
     last_accrual_date TIMESTAMPTZ,
     interest_gl       TEXT NOT NULL DEFAULT '',
     created_at        TIMESTAMPTZ,
@@ -309,7 +304,7 @@ CREATE INDEX overdraft_terms_account_idx ON overdraft_terms (book_id, account_id
 -- than an omission. An overdrawn current account's drawn amount IS the negative
 -- balance of its own Liability account viewed by sign; it has no independent
 -- existence, so a facility row for it would store a number that already exists.
--- Its terms live on deposit_accounts, and its Asset-side classification is an
+-- Its terms live in overdraft_terms, and its Asset-side classification is an
 -- aggregation (deposit.Totals). See docs/deposit-accounts-vs-subledger.md.
 CREATE TABLE facilities (
     book_id           TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
@@ -652,35 +647,20 @@ COMMENT ON COLUMN deposit_accounts.accrued_interest IS
     'in a schema dump.';
 
 COMMENT ON COLUMN deposit_accounts.accrued_gross IS
-    'What the CURRENT terms window has accrued in total, same scale as '
+    'What this account has accrued over its WHOLE LIFE, same scale as '
     'accrued_interest. Overdraft interest is recomputed rather than '
-    'incremented: every end-of-day re-derives the whole window from the '
-    'account''s value-dated balance, and accrued_interest moves by the change '
-    'in this column. That is what makes a backdated posting correct itself — '
-    'the day it takes effect on is re-derived with it in place, this figure '
-    'moves, and the next run posts the difference. Unlike accrued_interest it '
-    'is never decremented by capitalization, and it resets to zero whenever '
-    'terms are set, because that is where the window starts. A store that '
-    'dropped this column would re-derive the whole window as a fresh delta '
-    'every night and charge the same interest over and over.';
-
-COMMENT ON COLUMN deposit_accounts.terms_effective_from IS
-    'The start of the recompute window: when the current terms took effect. '
-    'The window is bounded here rather than at account opening because the '
-    'terms are mutable columns on this very row — recomputing across a '
-    'repricing would re-derive every earlier day at today''s rate and post the '
-    'difference, rewriting accrual history on every repricing. Prior accrual '
-    'is frozen instead; widening this window to account inception is what an '
-    'effective-dated terms table would buy. NULL means the account has no '
-    'priced overdraft and accrues nothing.';
-
-COMMENT ON COLUMN deposit_accounts.overdraft_rate IS
-    'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '
-    '100%, 150000 is 15% (interest.RateScale). Basis points would be too '
-    'coarse — retail rates are quoted in eighths of a percent. Zero means the '
-    'account accrues no interest, the same convention overdraft_limit already '
-    'uses for the facility itself. unarranged_rate is the same scale and '
-    'applies to any balance drawn beyond overdraft_limit.';
+    'incremented: every end-of-day re-derives every day since the account''s '
+    'opening terms row from its value-dated balance, and accrued_interest '
+    'moves by the change in this column. That is what makes a backdated '
+    'posting correct itself — the days it takes effect over are re-derived '
+    'with it in place, this figure moves, and the next run posts the '
+    'difference. Unlike accrued_interest it is never decremented by '
+    'capitalization, and unlike before terms became effective-dated it is '
+    'never RESET: there is no window to restart, because every day is '
+    're-derived at the terms that were actually in force on it (see the '
+    'overdraft_terms table). A store that dropped this column would re-derive '
+    'the account''s whole life as a fresh delta every night and charge the '
+    'same interest over and over.';
 
 COMMENT ON COLUMN deposit_accounts.interest_gl IS
     'This account''s own accrued-interest-receivable GL account, an Asset. '
@@ -765,13 +745,16 @@ COMMENT ON COLUMN facilities.accrued_gross IS
 COMMENT ON COLUMN facilities.terms_effective_from IS
     'The start of the recompute window: where the current terms took effect, '
     'which for a facility is its FIRST ADVANCE — money not yet paid out earns '
-    'nothing, so there is nothing earlier to re-derive. It is bounded there '
-    'rather than at origination for the same reason '
-    'deposit_accounts.terms_effective_from is bounded at the last repricing: '
-    'rate and day_count are mutable columns on this very row, and a window '
-    'reaching back past a change to them would re-derive past days at a rate '
-    'that was not in force on them. NULL means nothing has been advanced and '
-    'the facility accrues nothing.';
+    'nothing, so there is nothing earlier to re-derive. It is ALSO bounded at '
+    'the last repricing, which is the constraint the deposit side has already '
+    'shed: rate and day_count are still mutable columns on this very row, and '
+    'a window reaching back past a change to them would re-derive past days at '
+    'a rate that was not in force on them. deposit_accounts used to carry the '
+    'same column for the same reason and no longer does — its terms became the '
+    'effective-dated overdraft_terms table, and its recompute window now opens '
+    'at account inception. The facility_terms table is the same move for this '
+    'side. NULL means nothing has been advanced and the facility accrues '
+    'nothing.';
 
 COMMENT ON COLUMN facilities.rate IS
     'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '

@@ -397,7 +397,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// He already has a 500.00 limit (openOverdraft, above); this is what makes
 	// drawing on it cost him something rather than nothing: 15% arranged, 35%
 	// on anything drawn beyond the limit.
-	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 350_000, interest.ACT365))
+	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 350_000, interest.ACT365, b.clock.now()))
 
 	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
 	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day
@@ -433,13 +433,14 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 
 	// --- Bruno, pushed into overdraft and accruing --------------------------
 	// A card settlement pushes him into his priced overdraft. His accrual
-	// window already opened back when SetOverdraftTerms ran, above — that is
-	// what sets TermsEffectiveFrom, and it is not moved by this first
-	// RunEndOfDay call. Nothing has run Verde's end-of-day since then
+	// window opens at ACCOUNT OPENING — the opening terms row every account
+	// gets — and every end-of-day re-derives every day since, each at the
+	// terms that were in force on it. Nothing has run Verde's end-of-day yet
 	// (Niklas's story runs on Nordhaven's book, not Verde's), so this call
-	// recomputes across every day since TermsEffectiveFrom, but the days
-	// between it and the SCT below accrue zero: he isn't overdrawn yet, so
-	// the drawn balance those days recompute against is zero. The SCT
+	// recomputes his whole life to date, and all of it accrues zero: the days
+	// before SetOverdraftTerms ran carry the opening row's zero rate, and the
+	// days between that and the SCT below recompute against a drawn balance of
+	// zero, because he isn't overdrawn yet. The SCT
 	// overdraws him immediately: its debtor leg posts at InitiatePayment, so
 	// the balance moves right away without its clearing cycle needing to
 	// close or settle. Then 45 days pass and interest accrues, a charge

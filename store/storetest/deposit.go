@@ -75,7 +75,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: shared, GLAccount: "200.100.001", Name: "Alice at A",
-				Status: deposit.Active, OverdraftLimit: 500, CreatedAt: early,
+				Status: deposit.Active, CreatedAt: early,
 			}); err != nil {
 				return err
 			}
@@ -104,7 +104,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		// Every field round-trips, not just the name.
 		assertEqual(t, "gl account", string(inA.GLAccount), "200.100.001")
 		assertEqual(t, "status", inA.Status.String(), deposit.Active.String())
-		assertEqual(t, "overdraft limit", inA.OverdraftLimit, ledger.Amount(500))
 		assertEqual(t, "created at", inA.CreatedAt.Equal(early), true)
 		assertEqual(t, "book-b status is its own", inB.Status.String(), deposit.Frozen.String())
 
@@ -556,22 +555,24 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
-	// The credit terms are the only fields on a deposit account that a store
+	// The accrual state is the set of fields on a deposit account that a store
 	// could plausibly drop without any other subtest noticing: nothing else in
 	// this suite writes them, and an accrual that silently starts from zero
 	// every day looks like a working system that charges no interest.
-	t.Run("OverdraftTermsRoundTrip", func(t *testing.T) {
+	//
+	// The credit terms are no longer among them — they are rows in their own
+	// table now, covered by OverdraftTermsTimeline below. What is left on the
+	// account is what an accrual carries FORWARD rather than what prices it.
+	t.Run("AccrualStateRoundTrip", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 
 		accrual := time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC)
-		termsFrom := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
 		want := deposit.Account{
 			ID: "dep_1", GLAccount: "200.cust.001", Name: "Bruno", Asset: "EUR",
-			Status: deposit.Active, OverdraftLimit: 50_000,
-			Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.Thirty360,
+			Status:  deposit.Active,
 			Accrued: 61_643_835, AccruedGross: 123_287_670,
-			TermsEffectiveFrom: termsFrom, LastAccrualDate: accrual,
-			InterestGL: "100.accr.001", CreatedAt: early,
+			LastAccrualDate: accrual,
+			InterestGL:      "100.accr.001", CreatedAt: early,
 		}
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, want)
@@ -579,19 +580,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 
 		check := func(label string, got deposit.Account) {
 			t.Helper()
-			assertEqual(t, label+" limit", got.OverdraftLimit, want.OverdraftLimit)
-			assertEqual(t, label+" rate", got.Rate, want.Rate)
-			assertEqual(t, label+" unarranged rate", got.UnarrangedRate, want.UnarrangedRate)
-			assertEqual(t, label+" day count", got.DayCount, want.DayCount)
 			assertEqual(t, label+" accrued", got.Accrued, want.Accrued)
-			// A store that drops these two silently re-derives the whole terms
-			// window as a fresh delta every night and charges the same interest
-			// over and over, which no other subtest would notice.
+			// A store that drops accrued_gross silently re-derives the whole of
+			// the account's life as a fresh delta every night and charges the
+			// same interest over and over, which no other subtest would notice.
 			assertEqual(t, label+" accrued gross", got.AccruedGross, want.AccruedGross)
 			assertEqual(t, label+" interest gl", string(got.InterestGL), string(want.InterestGL))
-			if !got.TermsEffectiveFrom.Equal(want.TermsEffectiveFrom) {
-				t.Errorf("%s terms effective from: got %v, want %v", label, got.TermsEffectiveFrom, want.TermsEffectiveFrom)
-			}
 			if !got.LastAccrualDate.Equal(want.LastAccrualDate) {
 				t.Errorf("%s last accrual date: got %v, want %v", label, got.LastAccrualDate, want.LastAccrualDate)
 			}
@@ -613,7 +607,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			return nil
 		})
 
-		// An account with no facility keeps zero terms and no receivable
+		// An account that has never accrued keeps zero state and no receivable
 		// account, rather than an empty one nothing will ever post to.
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -626,13 +620,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "no-facility rate", plain.Rate, interest.Rate(0))
 			assertEqual(t, "no-facility accrued", plain.Accrued, interest.Accrued(0))
 			assertEqual(t, "no-facility accrued gross", plain.AccruedGross, interest.Accrued(0))
 			assertEqual(t, "no-facility interest gl", string(plain.InterestGL), "")
-			if !plain.TermsEffectiveFrom.IsZero() {
-				t.Errorf("no-facility terms effective from = %v, want zero", plain.TermsEffectiveFrom)
-			}
 			if !plain.LastAccrualDate.IsZero() {
 				t.Errorf("no-facility last accrual date = %v, want zero", plain.LastAccrualDate)
 			}

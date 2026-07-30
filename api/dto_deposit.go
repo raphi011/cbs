@@ -16,6 +16,14 @@ import (
 // beside it, the same convention facilityDTO follows for the same reason: an
 // integer whose scale a client learns from documentation is an integer a
 // client renders wrong.
+//
+// OverdraftLimit, OverdraftRate, UnarrangedRate and DayCount are RESOLVED AS OF
+// TODAY from the account's effective-dated terms timeline rather than read off
+// the account row — the account has no such columns any more. So this is what
+// the product costs today and nothing else: a future-dated repricing is not
+// visible here until it takes effect, and a past one is not visible here at
+// all. GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms is what
+// shows the whole timeline.
 type depositAccountDTO struct {
 	ID             string `json:"id"`
 	GLAccount      string `json:"glAccount"`
@@ -36,19 +44,19 @@ type depositAccountDTO struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toDepositAccountDTO(a deposit.Account) depositAccountDTO {
+func toDepositAccountDTO(a deposit.Account, t deposit.OverdraftTerms) depositAccountDTO {
 	return depositAccountDTO{
 		ID:             string(a.ID),
 		GLAccount:      string(a.GLAccount),
 		Name:           a.Name,
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
-		OverdraftLimit: int64(a.OverdraftLimit),
+		OverdraftLimit: int64(t.OverdraftLimit),
 
-		OverdraftRate:     int64(a.Rate),
-		UnarrangedRate:    int64(a.UnarrangedRate),
+		OverdraftRate:     int64(t.Rate),
+		UnarrangedRate:    int64(t.UnarrangedRate),
 		RateScale:         interest.RateScale,
-		DayCount:          a.DayCount.String(),
+		DayCount:          t.DayCount.String(),
 		AccruedInterest:   int64(a.Accrued.Minor()),
 		InterestGLAccount: string(a.InterestGL),
 
@@ -151,11 +159,19 @@ type fundRequest struct {
 // setOverdraftTermsRequest carries an account's arranged overdraft limit and
 // credit terms. Rate and UnarrangedRate are millionths, the same wire
 // convention facilityDTO uses for a lending rate.
+//
+// effectiveFrom is the day the terms take economic effect, RFC3339, and may be
+// in the past or the future: a repricing agreed on the 1st and entered on the
+// 15th is the ordinary case, and a row effective next month is inert until the
+// end-of-day runs reach it. Absent or null means today, which is what every
+// caller before this field existed meant. A backdated row moves interest that
+// has already been charged; the audit log is the only control on that.
 type setOverdraftTermsRequest struct {
-	Limit          int64  `json:"limit"`
-	Rate           int64  `json:"rate"`
-	UnarrangedRate int64  `json:"unarrangedRate"`
-	DayCount       string `json:"dayCount"`
+	Limit          int64      `json:"limit"`
+	Rate           int64      `json:"rate"`
+	UnarrangedRate int64      `json:"unarrangedRate"`
+	DayCount       string     `json:"dayCount"`
+	EffectiveFrom  *time.Time `json:"effectiveFrom"`
 }
 
 type chargeOverdraftInterestRequest struct {

@@ -235,11 +235,15 @@ type Facility struct {
 	// Money not yet paid out earns nothing, so there is nothing earlier to
 	// re-derive.
 	//
-	// It is bounded there rather than at origination for the same reason
-	// deposit.Account.TermsEffectiveFrom is bounded at the last repricing: Rate
-	// and DayCount are mutable columns on this very row, so a window reaching
-	// back past a change to them would re-derive past days at a rate that was
-	// not in force on them. Nothing in this package reprices a facility yet;
+	// It is ALSO bounded at the last repricing, which is the constraint the
+	// deposit side has already shed: Rate and DayCount are still mutable
+	// columns on this very row, so a window reaching back past a change to them
+	// would re-derive past days at a rate that was not in force on them.
+	// deposit.Account carried the same field for the same reason and no longer
+	// does — its terms became the effective-dated deposit.OverdraftTerms
+	// timeline, resolved per accrual day, and its recompute window now opens at
+	// account inception. lending.FacilityTerms is the same move for this side,
+	// not yet consumed here. Nothing in this package reprices a facility yet;
 	// whatever does must move this field, and reset AccruedGross with it.
 	//
 	// Zero means nothing has been advanced and the facility accrues nothing.

@@ -42,8 +42,8 @@ const (
 
 // mutableClock is a test clock a test can move. The rest of this package runs
 // on the frozen one above, which is the stronger fixture for row ordering — but
-// an accrual window opens at the instant terms are set, so a test that reprices
-// an account has to be able to say when that happened.
+// a terms row records WHEN it was entered as well as when it takes effect, and
+// a test about the pair has to be able to move the first of them.
 type mutableClock struct{ at time.Time }
 
 func (c *mutableClock) set(t time.Time) { c.at = t }
@@ -648,17 +648,25 @@ func TestSetOverdraftTerms_CreatesTheReceivableOnFirstRate(t *testing.T) {
 	// A limit on its own does not create one: an interest-free overdraft is a
 	// real product, and an account that will never accrue should not carry an
 	// account nothing posts to.
-	withLimit, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 0, interest.ACT365)
+	//
+	// The receivable stays on the ACCOUNT — there is one per account, not one
+	// per repricing — so it is read back from the account rather than from the
+	// terms row the call now returns.
+	withLimit, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	assertEqual(t, "limit", withLimit.OverdraftLimit, ledger.Amount(50_000))
-	if withLimit.InterestGL != "" {
-		t.Errorf("a zero rate created a receivable: %s", withLimit.InterestGL)
+	unpriced, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if unpriced.InterestGL != "" {
+		t.Errorf("a zero rate created a receivable: %s", unpriced.InterestGL)
 	}
 
 	// A rate does.
-	priced, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 350_000, interest.Thirty360)
+	priced, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 350_000, interest.Thirty360, time.Time{})
 	assertNoError(t, err)
-	if priced.InterestGL == "" {
+	withRate, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	if withRate.InterestGL == "" {
 		t.Fatal("a non-zero rate created no receivable")
 	}
 	assertEqual(t, "rate", priced.Rate, interest.Rate(150_000))
@@ -666,15 +674,28 @@ func TestSetOverdraftTerms_CreatesTheReceivableOnFirstRate(t *testing.T) {
 	assertEqual(t, "day count", priced.DayCount, interest.Thirty360)
 
 	// The receivable is an Asset in the account's own asset.
-	gl, err := book.GetAccount(ctx, priced.InterestGL)
+	gl, err := book.GetAccount(ctx, withRate.InterestGL)
 	assertNoError(t, err)
 	assertEqual(t, "receivable type", gl.Type.String(), ledger.Asset.String())
 	assertEqual(t, "receivable asset", string(gl.Asset), "EUR")
 
 	// Setting terms again reuses it rather than opening a second one.
-	again, err := reg.SetOverdraftTerms(ctx, acct.ID, 60_000, 160_000, 350_000, interest.Thirty360)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 60_000, 160_000, 350_000, interest.Thirty360, time.Time{})
 	assertNoError(t, err)
-	assertEqual(t, "receivable reused", string(again.InterestGL), string(priced.InterestGL))
+	again, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "receivable reused", string(again.InterestGL), string(withRate.InterestGL))
+
+	// All three calls landed on the same effective DAY — the frozen test clock
+	// — and so did the opening row OpenAccount wrote, since the account was
+	// opened on that same day. Four writes, ONE row: a terms row is identified
+	// by (account, day), which is what makes "the terms in force on day D"
+	// unique by construction rather than by a validation rule.
+	history, err := reg.OverdraftTermsHistory(ctx, acct.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline length after three same-day calls", len(history), 1)
+	assertEqual(t, "the surviving row is the last one written", history[0].Rate, interest.Rate(160_000))
+	assertEqual(t, "and its limit", history[0].OverdraftLimit, ledger.Amount(60_000))
 }
 
 func TestSetOverdraftTerms_Rejects(t *testing.T) {
@@ -684,24 +705,24 @@ func TestSetOverdraftTerms_Rejects(t *testing.T) {
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
 
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, -1, 0, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, -1, 0, 0, interest.ACT365, time.Time{})
 	assertError(t, err, ErrInvalidAmount)
 
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, -1, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, -1, 0, interest.ACT365, time.Time{})
 	assertError(t, err, ErrInvalidRate)
 
 	// An unarranged rate with no arranged rate is not a product.
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 350_000, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 0, 350_000, interest.ACT365, time.Time{})
 	assertError(t, err, ErrInvalidRate)
 
-	_, err = reg.SetOverdraftTerms(ctx, "nonexistent", 0, 0, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, "nonexistent", 0, 0, 0, interest.ACT365, time.Time{})
 	assertError(t, err, ErrAccountNotFound)
 
 	// A closed account takes no new terms.
 	closed, err := reg.OpenAccount(ctx, sub, "Gone", "EUR", 0)
 	assertNoError(t, err)
 	assertNoError(t, reg.Close(ctx, closed.ID))
-	_, err = reg.SetOverdraftTerms(ctx, closed.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, closed.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertError(t, err, ErrAccountClosed)
 }
 
@@ -723,6 +744,73 @@ func overdrawBy(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Ac
 	}); err != nil {
 		t.Fatalf("overdraw: %v", err)
 	}
+}
+
+// overdrawValueDated is overdrawBy with explicit dates. A BACK-DATED posting is
+// one whose booking date is today and whose value date is a day already accrued
+// through, which is the case every acceptance test below turns on and which
+// overdrawBy — value-dated at the clock — cannot express.
+func overdrawValueDated(t *testing.T, book *ledger.Book, sub ledger.SubledgerID, acct Account, amount ledger.Amount, booking, value time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	counterparty, err := book.CreateAccount(ctx, sub,
+		"Counterparty "+string(acct.ID)+" "+value.Format("2006-01-02"), ledger.Liability, acct.Asset)
+	assertNoError(t, err)
+	_, err = book.PostTransaction(ctx, ledger.PostTransactionRequest{
+		Description: "overdraw",
+		BookingDate: booking,
+		ValueDate:   value,
+		Entries: []ledger.Entry{
+			{AccountID: acct.GLAccount, Amount: amount, Direction: ledger.Debit},
+			{AccountID: counterparty.ID, Amount: amount, Direction: ledger.Credit},
+		},
+	})
+	assertNoError(t, err)
+}
+
+// expectedFromTimeline sums what the account SHOULD have accrued, day by day,
+// from functions the test states rather than from the implementation under
+// test. drawnOn and rateOn are the two things a timeline decides, and every
+// acceptance figure below is computed this way — never copied out of what the
+// code happens to print.
+//
+// It is deliberately the same shape as interest.perDay: one Accrue call per
+// day, so the per-call integer truncation lands identically.
+//
+// d indexes the SPAN [start+d, start+d+1), and the two closures are indexed by
+// it on the two different conventions the engine actually uses, which do not
+// coincide and which a caller writing an expectation has to keep apart:
+//
+//   - rateOn(d) is the terms in force on start+d, the day the span BEGINS.
+//     accrueOverdraftAccountTx resolves termsAt on the span's `from`.
+//   - drawnOn(d) is the value-dated balance in force over the span, and a
+//     movement value-dated V is in force from span V-1 — the day ENDING on V.
+//     That is interest.AccrueSeries's run decomposition (a movement at day D
+//     ends the run at D-1) and it long predates effective-dated terms; the
+//     figures in TestOverdraftAccrualCorrectsABackdatedDebit are written on
+//     the same convention.
+func expectedFromTimeline(start time.Time, days int, dc interest.DayCount,
+	drawnOn func(d int) ledger.Amount, rateOn func(d int) interest.Rate) interest.Accrued {
+	var total interest.Accrued
+	for d := 0; d < days; d++ {
+		from := start.AddDate(0, 0, d)
+		total += interest.Accrue(drawnOn(d), rateOn(d), dc, from, from.AddDate(0, 0, 1))
+	}
+	return total
+}
+
+// countingTx wraps a Tx and counts value-dated series reads, so a test can
+// assert that a run was skipped BEFORE any I/O rather than that it happened to
+// produce zero. The two are indistinguishable from the balance alone, and only
+// one of them is the guard doing its job.
+type countingTx struct {
+	Tx
+	series *int
+}
+
+func (t countingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+	*t.series++
+	return t.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
 }
 
 // fundBy posts the mirror-image transaction to overdrawBy: it credits the
@@ -752,7 +840,7 @@ func TestAccrueOverdraft_PostsTheDeltaOfTheRoundedValue(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 
 	// €50 overdrawn at 15% ACT/365 accrues 2.054794 cents a day.
@@ -790,7 +878,7 @@ func TestAccrueOverdraft_IsIdempotentPerDate(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, acct, 5_000)
 
@@ -821,7 +909,7 @@ func TestAccrueOverdraft_TiersAtTheLimit(t *testing.T) {
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
 	// Arranged 12% up to €100, unarranged 36% beyond it.
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 10_000, 120_000, 360_000, interest.ACT360)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 10_000, 120_000, 360_000, interest.ACT360, time.Time{})
 	assertNoError(t, err)
 
 	// €150 drawn: €100 arranged, €50 unarranged.
@@ -850,7 +938,7 @@ func TestAccrueOverdraft_ExcessFallsBackToTheArrangedRate(t *testing.T) {
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
 	// Arranged 12% up to €100, and no unarranged rate at all.
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 10_000, 120_000, 0, interest.ACT360)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 10_000, 120_000, 0, interest.ACT360, time.Time{})
 	assertNoError(t, err)
 
 	// €150 drawn: €100 inside the limit, €50 beyond it.
@@ -882,7 +970,7 @@ func TestAccrueOverdraft_IgnoresHoldsAndCredits(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 
 	// In credit, with a hold that takes available below zero. Interest accrues
@@ -924,7 +1012,7 @@ func TestChargeOverdraftInterest_CapitalizesAndLeavesANegativeResidue(t *testing
 
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, acct, 5_000)
 
@@ -984,7 +1072,7 @@ func TestChargeOverdraftInterest_NothingAccruedPostsNothing(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 
 	txn, err := reg.ChargeOverdraftInterest(ctx, acct.ID, time.Date(2025, time.February, 1, 0, 0, 0, 0, time.UTC))
@@ -1005,7 +1093,7 @@ func TestChargeOverdraftInterest_RefusesClosedAccount(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, acct, 5_000)
 
@@ -1045,7 +1133,7 @@ func TestClose_RefusesAStrandedReceivable(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Carla", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, acct, 5_000)
 
@@ -1106,7 +1194,7 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Dana", "EUR", 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 2_000, 100_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 2_000, 100_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, acct, 1_825)
 
@@ -1151,13 +1239,13 @@ func TestRunEndOfDay_AccruesEveryOverdrawnAccount(t *testing.T) {
 
 	overdrawn, err := reg.OpenAccount(ctx, sub, "Bruno", "EUR", 0)
 	assertNoError(t, err)
-	overdrawn, err = reg.SetOverdraftTerms(ctx, overdrawn.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, overdrawn.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	overdrawBy(t, book, sub, overdrawn, 5_000)
 
 	inCredit, err := reg.OpenAccount(ctx, sub, "Alice", "EUR", 0)
 	assertNoError(t, err)
-	inCredit, err = reg.SetOverdraftTerms(ctx, inCredit.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, inCredit.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	fundBy(t, book, sub, inCredit, 20_000)
 
@@ -1266,9 +1354,10 @@ func TestTotals_OverdraftsAreDerivedAndNothingIsPosted(t *testing.T) {
 // Value-dated overdraft accrual
 // ---------------------------------------------------------------------------
 
-// accrualStart is the day the value-dated accrual tests open their terms window
-// on. It is a midnight because a window opens at the clock's instant, and these
-// tests want that instant to be a business date.
+// accrualStart is the day the value-dated accrual tests open their accounts on,
+// and therefore the day their recompute window opens: the window starts at the
+// account's opening terms row. It is a midnight because these tests want that
+// day to be a business date.
 var accrualStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // postTo moves amount against acct's backing GL account at the given value
@@ -1311,7 +1400,7 @@ func newOverdraftAccount(t *testing.T) (*Register, *ledger.Book, ledger.Subledge
 
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
 	assertNoError(t, err)
 	return reg, book, sub, acct, clock
 }
@@ -1411,7 +1500,21 @@ func TestOverdraftAccrualIgnoresAForwardValueDatedDebit(t *testing.T) {
 	}
 }
 
-func TestOverdraftAccrualFreezesPriorAccrualOnARepricing(t *testing.T) {
+// TestSettingOverdraftTermsAccruesAndResetsNothing pins what a repricing costs
+// the accrual state: nothing at all.
+//
+// This test used to be TestOverdraftAccrualFreezesPriorAccrualOnARepricing, and
+// it asserted the opposite of one line: that AccruedGross was reset to ZERO,
+// because a repricing started a fresh recompute window and prior accrual had to
+// be frozen out of reach of it. That reset is exactly what effective-dated
+// terms removed. There is no window boundary to protect any more — every day is
+// re-derived at the terms that were in force on it — so the run this call used
+// to make, the gross it used to discard and the LastAccrualDate it used to move
+// have all gone with it. Appending a row is now a pure write.
+//
+// The surviving half of the old claim is the important one and is still here:
+// prior accrual is not rewritten by entering a repricing.
+func TestSettingOverdraftTermsAccruesAndResetsNothing(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
 
@@ -1421,21 +1524,24 @@ func TestOverdraftAccrualFreezesPriorAccrualOnARepricing(t *testing.T) {
 	}
 	ten, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	atReprice := ten.Accrued.Minor()
 
-	// Reprice to triple the rate on day 10, then look at the window.
+	// Reprice to triple the rate from day 10, then look at the account.
 	clock.set(accrualStart.AddDate(0, 0, 10))
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	row, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365,
+		accrualStart.AddDate(0, 0, 10))
 	assertNoError(t, err)
+	assertEqual(t, "the row that was written carries the new rate", row.Rate, interest.Rate(450_000))
 
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	if after.AccruedGross != 0 {
-		t.Errorf("AccruedGross = %d after repricing, want 0 (a new window)", after.AccruedGross)
+	assertEqual(t, "accrued after repricing", after.Accrued, ten.Accrued)
+	assertEqual(t, "accrued gross after repricing", after.AccruedGross, ten.AccruedGross)
+	if after.AccruedGross == 0 {
+		t.Error("AccruedGross was reset by a repricing; there is no window to restart")
 	}
-	if after.Accrued.Minor() != atReprice {
-		t.Errorf("accrued = %d after repricing, want %d unchanged; prior accrual is frozen, not rewritten",
-			after.Accrued.Minor(), atReprice)
+	if !after.LastAccrualDate.Equal(ten.LastAccrualDate) {
+		t.Errorf("last accrual date moved on a repricing: %v then %v",
+			ten.LastAccrualDate, after.LastAccrualDate)
 	}
 }
 
@@ -1509,10 +1615,15 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 }
 
 // TestOverdraftRepricingChargesTheOutgoingTermsFirst pins the day a repricing
-// used to swallow. Freezing the old window and opening the new one at the same
-// instant leaves the span since the last end-of-day belonging to neither: the
-// old window's AccruedGross stops where its last run left it, and the new one
-// starts today.
+// used to swallow: the span between the last end-of-day and the repricing,
+// which under a moving window belonged to neither side of it.
+//
+// The mechanism is gone and the answer is the same, which is the point. The
+// window no longer moves, so there is no boundary for the day to fall between:
+// nothing is charged at the moment the row is entered, and the next run derives
+// day 9 -> 10 at the terms in force ON DAY 9 — the outgoing 15% — because a row
+// effective on day 10 governs the day STARTING on day 10. What was a special
+// case defended by a pre-accrual is now the ordinary reading of the timeline.
 func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
@@ -1526,21 +1637,27 @@ func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 	// Nine days at 15% on €200: 9 × 8_219_178.
 	assertEqual(t, "accrued through day 9", nine.Accrued, interest.Accrued(73_972_602))
 
-	// Reprice to triple the rate on day 10, with day 10 not yet accrued.
+	// Reprice to triple the rate from day 10, with day 10 not yet accrued.
 	clock.set(accrualStart.AddDate(0, 0, 10))
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365,
+		accrualStart.AddDate(0, 0, 10))
 	assertNoError(t, err)
 
-	got, err := reg.GetAccount(ctx, acct.ID)
+	entered, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
+	// MOVED, and this is the change: entering the row posts nothing. It used to
+	// pre-accrue the outgoing span here, landing on 82_191_780 before any run.
+	assertEqual(t, "accrued when the row is merely entered", entered.Accrued, interest.Accrued(73_972_602))
 
-	// Day 10 belongs to the OUTGOING terms and must be charged at them before
-	// the window moves. Three outcomes are distinguishable here, which is the
-	// point of tripling the rate rather than nudging it:
+	// The next run charges day 9 -> 10. Three outcomes are distinguishable
+	// here, which is the point of tripling the rate rather than nudging it:
 	//
 	//	73_972_602  the day was dropped between the two windows
 	//	82_191_780  charged at the outgoing 15%   <- correct
 	//	98_630_136  charged at the incoming 45%
+	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 10)))
+	got, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
 	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(82_191_780))
 
 	receivable, err := book.BookBalance(ctx, got.InterestGL)
@@ -1550,25 +1667,34 @@ func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 		t.Errorf("receivable %d != Minor(accrued) %d across a repricing", receivable, got.Accrued.Minor())
 	}
 
-	// And the new window prices at the new rate: a day at 45% is 24_657_534.
+	// And the day after prices at the new rate: a day at 45% is 24_657_534.
+	// Unchanged from before this design: the total across the repricing is the
+	// same figure the pre-accrual arrived at, reached without one.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	assertEqual(t, "accrued a day into the new window", after.Accrued, interest.Accrued(106_849_314))
+	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(106_849_314))
 }
 
 // TestOverdraftRepricingDoesNotRewindTheAccrualWindow pins the other direction
-// of the same seam: a repricing that happens while LastAccrualDate is already
-// AHEAD of the wall clock.
+// of the same seam: a repricing entered while LastAccrualDate is already AHEAD
+// of the wall clock.
 //
 // End-of-day is callable for any date — POST /participants/{pid}/end-of-day
 // takes the date from the request body — so a run for a date in the future is
-// reachable, and it charges the whole span up to that date. Opening the new
-// terms window at the wall clock would then put TermsEffectiveFrom and
-// LastAccrualDate BEHIND a span already charged, with AccruedGross reset to
-// zero; every subsequent run would recompute that overlap from scratch and add
-// it to Accrued a second time. Account.LastAccrualDate documents that it never
-// moves backwards, and this is the test of that claim on this path.
+// reachable, and it charges the whole span up to that date. Under the old
+// mutable-columns model this was the dangerous case: opening the new window at
+// the wall clock put TermsEffectiveFrom and LastAccrualDate BEHIND a span
+// already charged, with AccruedGross reset to zero, and every subsequent run
+// recomputed that overlap from scratch and added it to Accrued a second time.
+// A clamp forward to LastAccrualDate is what stopped it.
+//
+// The clamp is gone, along with the window it protected: a repricing writes a
+// row and touches no accrual state at all, so LastAccrualDate cannot rewind
+// because nothing writes it here. The double-charge this test exists for cannot
+// happen for a stronger reason than the clamp gave — AccruedGross is never
+// reset, so an overlap re-derived is an overlap already counted in the gross it
+// is compared against.
 func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
@@ -1583,20 +1709,24 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "accrued through day 100", charged.Accrued, interest.Accrued(821_917_800))
 
-	// Reprice at the wall clock, which is a hundred days behind what has been
-	// charged. The span is already accrued, so the outgoing-terms close is a
-	// no-op — but the window must not reopen behind it.
+	// Reprice from day 100, entered while the wall clock reads day 0 — the
+	// entry date is a hundred days behind the effective date, and behind what
+	// has already been charged.
 	clock.set(accrualStart)
-	repriced, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365)
+	row, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365, ahead)
 	assertNoError(t, err)
+	if !row.EffectiveFrom.Equal(ahead) {
+		t.Errorf("row effective from %s, want %s", row.EffectiveFrom, ahead)
+	}
+	if !row.CreatedAt.Equal(accrualStart) {
+		t.Errorf("row created at %s, want the wall clock %s", row.CreatedAt, accrualStart)
+	}
 
+	repriced, err := reg.GetAccount(ctx, acct.ID)
+	assertNoError(t, err)
 	if repriced.LastAccrualDate.Before(ahead) {
 		t.Errorf("LastAccrualDate rewound to %s, want no earlier than %s",
 			repriced.LastAccrualDate, ahead)
-	}
-	if repriced.TermsEffectiveFrom.Before(ahead) {
-		t.Errorf("TermsEffectiveFrom opened at %s, behind the charged-through date %s",
-			repriced.TermsEffectiveFrom, ahead)
 	}
 	assertEqual(t, "accrued across the repricing", repriced.Accrued, interest.Accrued(821_917_800))
 
@@ -1627,7 +1757,7 @@ func TestOverdraftAccrualUnderThirty360SkipsThe31st(t *testing.T) {
 
 	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
 	assertNoError(t, err)
-	acct, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.Thirty360)
+	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 150_000, 0, interest.Thirty360, time.Time{})
 	assertNoError(t, err)
 	postTo(t, book, sub, acct, 10_000, ledger.Debit, start)
 

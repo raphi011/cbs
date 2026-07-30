@@ -49,7 +49,16 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toDepositAccountDTO(acct))
+	// The limit reaches the response through the account's opening terms row
+	// rather than through the value returned above: it is a terms field now,
+	// and reading it back is what keeps the created body and a later GET the
+	// same shape.
+	withTerms, err := p.Deposit.GetAccountWithTerms(r.Context(), acct.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toDepositAccountDTO(withTerms.Account, withTerms.Terms))
 }
 
 func (s *Server) handleListDepositAccounts(w http.ResponseWriter, r *http.Request) {
@@ -57,14 +66,14 @@ func (s *Server) handleListDepositAccounts(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	accts, err := p.Deposit.ListAccounts(r.Context())
+	accts, err := p.Deposit.ListAccountsWithTerms(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	out := make([]depositAccountDTO, len(accts))
 	for i, a := range accts {
-		out[i] = toDepositAccountDTO(a)
+		out[i] = toDepositAccountDTO(a.Account, a.Terms)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -74,12 +83,12 @@ func (s *Server) handleGetDepositAccount(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	acct, err := p.Deposit.GetAccount(r.Context(), deposit.AccountID(r.PathValue("did")))
+	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), deposit.AccountID(r.PathValue("did")))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct))
+	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
 }
 
 func (s *Server) handleDepositBalance(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +142,12 @@ func (s *Server) handleDepositStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	acct, err := p.Deposit.GetAccount(r.Context(), did)
+	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct))
+	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
 }
 
 func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Request) {
@@ -153,8 +162,19 @@ func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSetOverdraftTerms sets an account's arranged overdraft limit and
-// credit terms. It is the only way to change a limit after opening.
+// handleSetOverdraftTerms APPENDS a row to an account's effective-dated terms
+// timeline. It is the only way to change a limit after opening.
+//
+// An absent effectiveFrom is passed through as the zero time, which the deposit
+// layer resolves to today on ITS clock rather than on this process's wall
+// clock — the same default ledger.PostTransactionRequest gives a zero booking
+// date, and the reason a request that says nothing about when still lands on
+// the day the rest of the system thinks it is.
+//
+// The 200 body is the account re-read WITH its terms rather than the row that
+// was just written, so the response shape is the same one every other deposit
+// endpoint returns — and so a future-dated repricing does not come back as
+// though it were already in force.
 func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
@@ -170,14 +190,22 @@ func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request)
 		writeBadRequest(w, err.Error())
 		return
 	}
+	var effectiveFrom time.Time
+	if req.EffectiveFrom != nil {
+		effectiveFrom = *req.EffectiveFrom
+	}
 	did := deposit.AccountID(r.PathValue("did"))
-	acct, err := p.Deposit.SetOverdraftTerms(r.Context(), did, ledger.Amount(req.Limit),
-		interest.Rate(req.Rate), interest.Rate(req.UnarrangedRate), dc)
+	if _, err := p.Deposit.SetOverdraftTerms(r.Context(), did, ledger.Amount(req.Limit),
+		interest.Rate(req.Rate), interest.Rate(req.UnarrangedRate), dc, effectiveFrom); err != nil {
+		writeError(w, err)
+		return
+	}
+	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct))
+	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
 }
 
 // handleChargeOverdraftInterest capitalizes an account's accrued overdraft
