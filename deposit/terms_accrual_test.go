@@ -500,29 +500,59 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	assertEqual(t, "receivable after an unadvanced re-run", receivable, before.Accrued.Minor())
 }
 
-// The advancement guard resolves its day count on `date`.
+// The advancement guard resolves its day count on `date` — meaning on the ROW
+// in force on the day being accrued, not on the row the recompute window opens
+// at.
 //
-// There is no single DayCount to ask any more — it is a terms field — and the
-// conventions genuinely disagree about whether a window advanced. Under
-// Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero while
-// ACT365 says one: a run on the 31st is a no-op under one convention and a real
-// day under the other. Resolving on the day being accrued is the right answer,
-// and it is otherwise invisible.
+// There is no single DayCount to ask any more: it is a terms field, one per
+// row, and the conventions genuinely disagree about whether a window advanced.
+// Under Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero
+// while ACT365 says one — a run on the 31st is a no-op under one convention and
+// a real day under the other.
+//
+// Three cases, because the first two only pin half the claim. They hold the
+// timeline to a SINGLE row, so they discriminate which CONVENTION the guard
+// applies but not which row supplies it — with only those two, taking the day
+// count from rows[0] instead of from the accrual date's row passes. The third
+// gives one account two rows differing in nothing but their convention, so the
+// row choice is the only thing that can move the figure.
+//
+// Only one direction of that third case is observable, which is worth knowing
+// before someone adds its mirror image expecting symmetry. When the guard
+// wrongly REFUSES a run the day is never accrued and the difference shows; when
+// it wrongly ALLOWS one, the per-day closure resolves the row the guard should
+// have used and prices that span at zero days anyway, so the delta is zero and
+// the mistake hides. The guard's row choice matters exactly where a real day
+// would otherwise be silently dropped.
 func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	ctx := context.Background()
+	jan1 := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
 	the30th := time.Date(2025, time.January, 30, 0, 0, 0, 0, time.UTC)
 	the31st := time.Date(2025, time.January, 31, 0, 0, 0, 0, time.UTC)
 
-	run := func(dc interest.DayCount) interest.Accrued {
+	const (
+		rate  interest.Rate = 120_000
+		drawn ledger.Amount = 100_000
+	)
+
+	// open puts a drawn, priced account on its own register, so a case can add
+	// rows of its own before running any days.
+	open := func(dc interest.DayCount) (*Register, Account, *mutableClock) {
 		t.Helper()
-		clock := &mutableClock{at: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)}
+		clock := &mutableClock{at: jan1}
 		reg, book, sub := newTestRegisterOn(t, clock.now)
 		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
 		assertNoError(t, err)
-		_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, 120_000, 0, dc, clock.now())
+		_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, rate, 0, dc, jan1)
 		assertNoError(t, err)
-		overdrawValueDated(t, book, sub, acct, 100_000, clock.now(), clock.now())
+		overdrawValueDated(t, book, sub, acct, drawn, jan1, jan1)
+		return reg, acct, clock
+	}
 
+	// movedOnThe31st runs the 30th and then the 31st, and reports what the
+	// second run added.
+	movedOnThe31st := func(reg *Register, acct Account, clock *mutableClock) interest.Accrued {
+		t.Helper()
 		clock.set(the30th)
 		assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, the30th))
 		through30, err := reg.GetAccount(ctx, acct.ID)
@@ -535,12 +565,37 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 		return through31.Accrued - through30.Accrued
 	}
 
-	if moved := run(interest.Thirty360); moved != 0 {
+	// One row, Thirty360 throughout: the 31st is not a day.
+	if moved := movedOnThe31st(open(interest.Thirty360)); moved != 0 {
 		t.Errorf("Thirty360 accrued %d on the 31st, want 0: the 31st collapses onto the 30th", moved)
 	}
-	if moved := run(interest.ACT365); moved <= 0 {
+	// One row, ACT365 throughout: it is.
+	if moved := movedOnThe31st(open(interest.ACT365)); moved <= 0 {
 		t.Errorf("ACT365 accrued %d on the 31st, want a real day", moved)
 	}
+
+	// Two rows, same limit and same rate, differing ONLY in convention:
+	// Thirty360 from 1 January, ACT365 from the 31st. The window opens on the
+	// Thirty360 row and the day being accrued belongs to the ACT365 one, so the
+	// two candidate readings of the guard disagree about whether the 31st is a
+	// day at all:
+	//
+	//	rows[0]        Thirty360  Days(30th, 31st) = 0  -> the run is refused
+	//	termsAt(date)  ACT365     Days(30th, 31st) = 1  -> the run happens
+	//
+	// A convention change mid-life is a sharp fixture rather than a common
+	// product event; it is the cleanest way to make the row choice the only
+	// variable, since everything else about the two rows is identical.
+	reg, acct, clock := open(interest.Thirty360)
+	_, err := reg.SetOverdraftTerms(ctx, acct.ID, 500_000, rate, 0, interest.ACT365, the31st)
+	assertNoError(t, err)
+
+	// Exactly one ACT/365 day on the drawn balance, and no more: the 31st is
+	// the span [30th, 31st), which resolves to the row effective the 31st.
+	// Derived from the timeline, not read off the run.
+	want := interest.Accrue(drawn, rate, interest.ACT365, the30th, the31st)
+	assertEqual(t, "the 31st, priced by the row in force on it",
+		movedOnThe31st(reg, acct, clock), want)
 }
 
 // Thirty360, terms effective on a 31st: the row is in force from the 31st and
