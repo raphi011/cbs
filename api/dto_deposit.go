@@ -110,6 +110,38 @@ func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
 	}
 }
 
+// overdraftTermsDTO is one row of an account's effective-dated terms timeline.
+//
+// effectiveFrom is the day the row takes economic effect and createdAt is when
+// it was entered: the booking-date/value-date distinction applied to
+// configuration, and the reason a repricing agreed on the 1st and entered on
+// the 15th can be recorded honestly. A row whose effectiveFrom is in the future
+// appears here before it applies; the account's own resolved fields show the
+// row in force today.
+type overdraftTermsDTO struct {
+	AccountID      string    `json:"accountId"`
+	EffectiveFrom  time.Time `json:"effectiveFrom"`
+	OverdraftLimit int64     `json:"overdraftLimit"`
+	Rate           int64     `json:"rate"`
+	UnarrangedRate int64     `json:"unarrangedRate"`
+	RateScale      int64     `json:"rateScale"`
+	DayCount       string    `json:"dayCount"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+func toOverdraftTermsDTO(t deposit.OverdraftTerms) overdraftTermsDTO {
+	return overdraftTermsDTO{
+		AccountID:      string(t.AccountID),
+		EffectiveFrom:  t.EffectiveFrom,
+		OverdraftLimit: int64(t.OverdraftLimit),
+		Rate:           int64(t.Rate),
+		UnarrangedRate: int64(t.UnarrangedRate),
+		RateScale:      interest.RateScale,
+		DayCount:       t.DayCount.String(),
+		CreatedAt:      t.CreatedAt,
+	}
+}
+
 type snapshotDTO struct {
 	AccountID string     `json:"accountId"`
 	Date      time.Time  `json:"date"`

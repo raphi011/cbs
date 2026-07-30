@@ -941,6 +941,16 @@ A row's outstanding amount is *that instalment's* unpaid remainder — (principa
 
 [[accrued-interest|Accrued interest]] is tracked at higher precision than the ledger posts (rounding to a whole minor unit every day would quietly lose a fraction of it); the account's accrued figure is the rounded amount the general ledger actually holds. It is charged to the account — [[capitalization|capitalized]] into the debit balance — on a billing cycle, which is why an overdraft sitting at its limit is not costless the way a \`0\`-rate account is.`,
   },
+  "effective-dated-terms": {
+    title: "Effective-dated terms",
+    body: `A product's terms are a **timeline**, not a set of columns: one row per repricing, each carrying the day it takes effect, and none ever overwritten.
+
+The reason is that every interest figure is a function of three things — account state, event history, and configuration. The first two are immutable and replayable here. If the third could be edited in place, that whole investment is undone, because "what did this account's product say on 15 July?" stops having a stable answer.
+
+There is a sharper consequence than an audit weakness. While terms were mutable, the [[interest-accrual|accrual]] recompute could only reach back to the last repricing — reaching further would re-derive old days at *today's* rate. So a [[booking-date|back-dated]] posting landing before the last repricing was silently never trued up. With a timeline, every day is re-derived at the terms actually in force on it, so the window opens at account inception and the correction always lands.
+
+Each row carries **two** dates, and the pair is the [[booking-date|booking-date/value-date]] distinction applied to configuration: when the repricing was *entered*, and when it takes *economic effect*. They can differ in either direction — a rate agreed on the 1st and keyed in on the 15th is backdated; a rate agreed for next month is future-dated and simply sits inert until the end-of-day runs reach it.`,
+  },
   lending: {
     title: "Lending",
     body: `**Lending** is this system's third kind of credit relationship, alongside a plain deposit and an [[overdraft|overdraft limit]]: a [[credit-facility|facility]] whose drawn amount exists as a fact of its own rather than as another account's balance read by sign.

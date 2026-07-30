@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
@@ -70,6 +71,24 @@ func doJSON(t *testing.T, h http.Handler, method, path, body string, wantStatus 
 		return nil
 	}
 	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
+	}
+	return out
+}
+
+// doJSONArray is doJSON's counterpart for an endpoint that returns a JSON
+// array rather than an object — a timeline or a list.
+func doJSONArray(t *testing.T, h http.Handler, method, path, body string, wantStatus int) []any {
+	t.Helper()
+	rec := do(t, h, method, path, body)
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s: got status %d, want %d (body: %s)", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	if rec.Body.Len() == 0 {
+		return nil
+	}
+	var out []any
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decoding body %q: %v", rec.Body.String(), err)
 	}
@@ -1669,6 +1688,55 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	// And charging again, with the receivable cleared, is the empty outcome.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
 		`{"date":"2025-01-17"}`, http.StatusNoContent)
+}
+
+// TestOverdraftTermsTimelineEndpoint covers GET
+// /participants/{pid}/deposit-accounts/{did}/overdraft-terms: the account's
+// whole effective-dated timeline, oldest first, including the opening row
+// every account gets at OpenAccount.
+//
+// It is the endpoint the change exists to make possible — before terms were
+// rows, "what did this account's product say on 15 July?" had no answer to
+// serve — so it also asserts that a FUTURE-dated row is on the timeline while
+// the account's own resolved-as-of-today fields still show the current ones.
+func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","overdraftLimit":50000}`, http.StatusCreated)["id"].(string)
+
+	// The opening row alone.
+	first := doJSONArray(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", "", http.StatusOK)
+	assertEqual(t, "opening timeline length", len(first), 1)
+	opening := first[0].(map[string]any)
+	assertEqual(t, "opening limit", int64(opening["overdraftLimit"].(float64)), int64(50_000))
+	assertEqual(t, "opening rate", int64(opening["rate"].(float64)), int64(0))
+
+	// A priced row today, and a future-dated one. fixedTime (the test clock)
+	// is 2025-01-15, the same day the account above was just opened on, so
+	// this priced row's effectiveFrom shares the opening row's day key and
+	// REPLACES it in place — one row per (account, day) by construction,
+	// see deposit.TermsDayKey — rather than appending a third row. The
+	// timeline below is 2 long: the collapsed today's-row, then the future
+	// one.
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
+		"limit":50000,"rate":150000,"unarrangedRate":350000,"dayCount":"ACT/365",
+		"effectiveFrom":"2025-01-15T00:00:00Z"
+	}`, http.StatusOK)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
+		"limit":50000,"rate":180000,"unarrangedRate":350000,"dayCount":"ACT/365",
+		"effectiveFrom":"2099-01-01T00:00:00Z"
+	}`, http.StatusOK)
+
+	rows := doJSONArray(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", "", http.StatusOK)
+	assertEqual(t, "timeline length", len(rows), 2)
+	last := rows[len(rows)-1].(map[string]any)
+	assertEqual(t, "the future row is on the timeline", int64(last["rate"].(float64)), int64(180_000))
+	assertEqual(t, "rate scale is on the wire", int64(last["rateScale"].(float64)), int64(interest.RateScale))
+
+	// …but the account itself still reports the rate in force TODAY.
+	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
+	assertEqual(t, "resolved as of today", int64(acct["overdraftRate"].(float64)), int64(150_000))
 }
 
 // TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half

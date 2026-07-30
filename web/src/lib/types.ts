@@ -164,6 +164,22 @@ export interface DepositAccount {
   createdAt: string;
 }
 
+// One row of an account's effective-dated overdraft terms timeline. rate and
+// unarrangedRate are millionths of rateScale, the same convention
+// DepositAccount uses. effectiveFrom is when the row takes economic effect and
+// createdAt is when it was entered — the two can differ in either direction, so
+// a row whose effectiveFrom is in the future is on this list before it applies.
+export interface OverdraftTerms {
+  accountId: string;
+  effectiveFrom: string;
+  overdraftLimit: number;
+  rate: number;
+  unarrangedRate: number;
+  rateScale: number;
+  dayCount: string;
+  createdAt: string;
+}
+
 export interface Hold {
   id: string;
   accountId: string;

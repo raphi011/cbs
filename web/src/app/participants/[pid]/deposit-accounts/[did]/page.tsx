@@ -22,6 +22,7 @@ import { CreateHoldForm } from "@/components/forms/create-hold-form";
 import { CaptureHoldForm } from "@/components/forms/capture-hold-form";
 import { FundParticipantForm } from "@/components/forms/fund-participant-form";
 import { StatementCard } from "@/components/statement/statement-card";
+import { OverdraftTermsCard } from "@/components/overdraft-terms-card";
 import { AccountRef } from "@/components/account-ref";
 import {
   useAssetLookup,
@@ -393,6 +394,7 @@ export default function DepositAccountDetailPage() {
           <BalanceCard pid={pid} did={did} asset={asset} />
           <HoldsCard pid={pid} did={did} asset={asset} />
           <SnapshotsCard pid={pid} did={did} asset={asset} />
+          <OverdraftTermsCard pid={pid} did={did} asset={asset} />
           <StatementCard pid={pid} did={did} account={account} asset={asset} />
         </>
       )}

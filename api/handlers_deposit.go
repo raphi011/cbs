@@ -18,6 +18,7 @@ func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}", s.handleCloseDepositAccount)
 
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleSetOverdraftTerms)
+	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleListOverdraftTerms)
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
 
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/holds", s.handleCreateHold)
@@ -206,6 +207,26 @@ func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, toDepositAccountDTO(acct.Account, acct.Terms))
+}
+
+// handleListOverdraftTerms returns an account's whole effective-dated terms
+// timeline, oldest first — including the opening row every account gets at
+// OpenAccount, which carries the limit it was opened with and zero rates.
+func (s *Server) handleListOverdraftTerms(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	rows, err := p.Deposit.OverdraftTermsHistory(r.Context(), deposit.AccountID(r.PathValue("did")))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]overdraftTermsDTO, len(rows))
+	for i, t := range rows {
+		out[i] = toOverdraftTermsDTO(t)
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // handleChargeOverdraftInterest capitalizes an account's accrued overdraft

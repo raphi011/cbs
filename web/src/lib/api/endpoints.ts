@@ -31,6 +31,7 @@ import type {
   OpenCycleRequest,
   OpenDepositAccountRequest,
   OpenFacilityRequest,
+  OverdraftTerms,
   Participant,
   Payment,
   PostTransactionRequest,
@@ -306,6 +307,18 @@ export function captureHold(
   body: CaptureHoldRequest,
 ): Promise<Transaction> {
   return request("POST", `/participants/${pid}/holds/${hid}/capture`, body);
+}
+
+// --- Deposit: overdraft terms ----------------------------------------------
+
+export function listOverdraftTerms(
+  pid: string,
+  did: string,
+): Promise<OverdraftTerms[]> {
+  return request(
+    "GET",
+    `/participants/${pid}/deposit-accounts/${did}/overdraft-terms`,
+  );
 }
 
 // --- Deposit: snapshots ---------------------------------------------------

@@ -64,6 +64,8 @@ export const qk = {
     ["participants", pid, "holds", hid] as const,
   snapshots: (pid: string, did: string) =>
     ["participants", pid, "deposit-accounts", did, "snapshots"] as const,
+  overdraftTerms: (pid: string, did: string) =>
+    ["participants", pid, "deposit-accounts", did, "overdraft-terms"] as const,
   depositAudit: (pid: string, q?: AuditQuery) =>
     auditKey(["participants", pid, "deposit-audit"], q),
 

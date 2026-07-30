@@ -421,6 +421,16 @@ export function useCaptureHold(pid: string) {
   });
 }
 
+// --- Deposit: overdraft terms -----------------------------------------------
+
+export function useOverdraftTerms(pid: string, did: string) {
+  return useQuery({
+    queryKey: qk.overdraftTerms(pid, did),
+    queryFn: () => api.listOverdraftTerms(pid, did),
+    enabled: pid !== "" && did !== "",
+  });
+}
+
 // --- Deposit: snapshots ---------------------------------------------------
 
 export function useSnapshots(pid: string, did: string) {
