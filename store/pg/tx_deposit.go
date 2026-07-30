@@ -325,3 +325,113 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 	}
 	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// Effective-dated overdraft terms
+// ---------------------------------------------------------------------------
+
+// PutOverdraftTerms upserts under (account, effective day). The day key is
+// derived with deposit.TermsDayKey — the same function store/mem keys its map
+// with, and the same one GetOverdraftTermsAsOf compares against — so the two
+// stores agree on which day a repricing landed in by construction.
+func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row deposit.OverdraftTerms) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	if err := t.ensureBook(ctx, book); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO overdraft_terms (
+			book_id, account_id, day_key, effective_from, overdraft_limit,
+			rate, unarranged_rate, day_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (book_id, account_id, day_key) DO UPDATE SET
+			effective_from  = EXCLUDED.effective_from,
+			overdraft_limit = EXCLUDED.overdraft_limit,
+			rate            = EXCLUDED.rate,
+			unarranged_rate = EXCLUDED.unarranged_rate,
+			day_count       = EXCLUDED.day_count,
+			created_at      = EXCLUDED.created_at`,
+		string(book), string(row.AccountID), deposit.TermsDayKey(row.EffectiveFrom),
+		nullTime(row.EffectiveFrom), row.OverdraftLimit,
+		int64(row.Rate), int64(row.UnarrangedRate), int16(row.DayCount), nullTime(row.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("pg: put overdraft terms %s/%s: %w",
+			row.AccountID, deposit.TermsDayKey(row.EffectiveFrom), err)
+	}
+	return nil
+}
+
+// overdraftTermsColumns is the select list both readers use, for the reason
+// depositAccountColumns exists: it stops the two from scanning different
+// column sets, which is a whole class of "it round-trips one way".
+const overdraftTermsColumns = `
+	account_id, effective_from, overdraft_limit, rate, unarranged_rate,
+	day_count, created_at`
+
+func scanOverdraftTerms(row interface{ Scan(...any) error }) (deposit.OverdraftTerms, error) {
+	var (
+		out                deposit.OverdraftTerms
+		rate, unarranged   int64
+		dayCount           int16
+		effective, created *time.Time
+	)
+	if err := row.Scan(&out.AccountID, &effective, &out.OverdraftLimit,
+		&rate, &unarranged, &dayCount, &created); err != nil {
+		return deposit.OverdraftTerms{}, err
+	}
+	out.Rate = interest.Rate(rate)
+	out.UnarrangedRate = interest.Rate(unarranged)
+	out.DayCount = interest.DayCount(dayCount)
+	out.EffectiveFrom = readTime(effective)
+	out.CreatedAt = readTime(created)
+	return out, nil
+}
+
+// ListOverdraftTermsForAccount returns the whole timeline ascending by day_key,
+// which is an ISO day and therefore lexicographically ordered. Ascending is
+// load-bearing: deposit.termsAt binary-searches the slice this returns.
+func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
+	rows, err := t.tx.Query(ctx, `
+		SELECT `+overdraftTermsColumns+`
+		FROM overdraft_terms WHERE book_id = $1 AND account_id = $2
+		ORDER BY day_key ASC, seq`, string(book), string(id))
+	if err != nil {
+		return nil, fmt.Errorf("pg: list overdraft terms: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]deposit.OverdraftTerms, 0)
+	for rows.Next() {
+		row, err := scanOverdraftTerms(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list overdraft terms: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// GetOverdraftTermsAsOf is the row in force on a day. It compares day_key
+// rather than effective_from so that the bound is a DAY on both sides — the
+// caller's instant is truncated by deposit.TermsDayKey in Go, and the column it
+// is compared against was written the same way, so no timestamp arithmetic
+// happens in the database at all.
+func (t *tx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
+	row := t.tx.QueryRow(ctx, `
+		SELECT `+overdraftTermsColumns+`
+		FROM overdraft_terms
+		WHERE book_id = $1 AND account_id = $2 AND day_key <= $3
+		ORDER BY day_key DESC
+		LIMIT 1`, string(book), string(id), deposit.TermsDayKey(day))
+	out, err := scanOverdraftTerms(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return deposit.OverdraftTerms{}, deposit.ErrTermsNotFound
+	}
+	if err != nil {
+		return deposit.OverdraftTerms{}, fmt.Errorf("pg: overdraft terms for %s as of %s: %w",
+			id, deposit.TermsDayKey(day), err)
+	}
+	return out, nil
+}

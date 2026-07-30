@@ -240,7 +240,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 // TRUNCATE takes them all in one statement.
 var tables = []string{
 	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
-	"deposit_accounts", "holds", "snapshots",
+	"deposit_accounts", "holds", "snapshots", "overdraft_terms",
 	"facilities", "installments",
 	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions",

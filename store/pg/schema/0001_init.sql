@@ -257,6 +257,47 @@ CREATE TABLE snapshots (
     PRIMARY KEY (book_id, account_id, date_key)
 );
 
+-- An account's arranged overdraft terms from one day onwards: one row per
+-- repricing, never overwritten.
+--
+-- These four values used to be mutable columns on deposit_accounts, and that is
+-- the one place this schema broke its own rule. Every financial calculation
+-- here is a function of account state, event history and configuration; the
+-- first two are immutable and replayable, and a configuration that could be
+-- edited in place undermined that entirely, because "what did this account's
+-- product say on 15 July 2027?" had no stable answer. It also bounded the
+-- interest recompute window at the last repricing, so a backdated posting
+-- landing before it was silently never trued up.
+--
+-- These are PER-INSTANCE terms: one timeline per account, not a catalogue
+-- shared across them. There is no product/product_version table, no content
+-- hash, no pinned-versus-floating parameter binding and no overlays. Those are
+-- the full machinery a real product engine needs and are far beyond this
+-- schema's scope; the effective-dated record is not.
+CREATE TABLE overdraft_terms (
+    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    account_id      TEXT NOT NULL,
+    day_key         TEXT NOT NULL,
+    effective_from  TIMESTAMPTZ,
+    overdraft_limit BIGINT NOT NULL,
+    rate            BIGINT NOT NULL,
+    unarranged_rate BIGINT NOT NULL,
+    day_count       SMALLINT NOT NULL,
+    created_at      TIMESTAMPTZ,
+    seq             BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, account_id, day_key)
+);
+
+-- Index 3: the timeline read that accrual makes once per account per run, and
+-- the bounded as-of lookup balanceTx makes on every withdrawal check. Both
+-- filter on (book_id, account_id) and order by day_key, so one index serves
+-- both — the as-of lookup is an ORDER BY day_key DESC LIMIT 1 over the same
+-- prefix. It is not redundant with the primary key: the PK's leading columns
+-- are the same, so Postgres can in fact serve both from it, and this index is
+-- declared anyway so that a future change to the primary key (an id column,
+-- say) does not silently turn every accrual into a sequential scan.
+CREATE INDEX overdraft_terms_account_idx ON overdraft_terms (book_id, account_id, day_key);
+
 -- ---------------------------------------------------------------------------
 -- The lending layer
 -- ---------------------------------------------------------------------------
@@ -619,6 +660,53 @@ COMMENT ON COLUMN deposit_accounts.interest_gl IS
     'total whose detail lives in accrued_interest — a control account, and the '
     'duplication this schema exists without. There is deliberately NO foreign '
     'key to accounts, for the reason given on accounts.asset.';
+
+COMMENT ON COLUMN overdraft_terms.day_key IS
+    'The UTC calendar day these terms first apply, as YYYY-MM-DD, and part of '
+    'the primary key: a terms row is identified by (account, DAY), so a second '
+    'row entered for the same effective day replaces the first and "the terms '
+    'in force on day D" is unique by construction rather than by a validation '
+    'rule. Go does the truncating (deposit.TermsDayKey over ledger.DayStart) '
+    'and this column is what both the listing and the as-of lookup order and '
+    'compare on — an ISO day is lexicographically ordered, so a text compare '
+    'is a day compare. The key is a day rather than a timestamp because '
+    'accrual iterates whole UTC days: terms changing part-way through a day '
+    'would have no well-defined meaning, since the day is the unit the '
+    'arithmetic is expressed in. Neither store truncates for itself, which is '
+    'one DST-adjacent edge case away from store/pg and store/mem disagreeing '
+    'about which day a repricing landed in. Compare snapshots.date_key, which '
+    'is the same pattern for the same reason.';
+
+COMMENT ON COLUMN overdraft_terms.effective_from IS
+    'The same day as day_key, as a timestamp, and the value Go reads back. It '
+    'is stored beside the key rather than derived from it so that a reader of '
+    'this table sees a date rather than a string, and so that ORDER BY '
+    'effective_from and ORDER BY day_key can never disagree.';
+
+COMMENT ON COLUMN overdraft_terms.created_at IS
+    'When this repricing was ENTERED, as against effective_from, which is when '
+    'it takes economic effect. The pair is the booking-date/value-date '
+    'distinction applied to configuration, for exactly the reasons the README '
+    'gives for money: a repricing agreed on the 1st and entered on the 15th is '
+    'the ordinary case, and refusing it would leave the agreed date with no '
+    'representation. Both directions are allowed — a row effective in the past '
+    'is picked up by the next recompute the same way a backdated posting is, '
+    'and one effective next month is inert until the runs reach it, which is '
+    'scheduled repricing for free.';
+
+COMMENT ON COLUMN overdraft_terms.rate IS
+    'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '
+    '100%, 150000 is 15% (interest.RateScale). Zero makes the WHOLE overdraft '
+    'interest-free, which is a real product. unarranged_rate is the same scale '
+    'and applies to any balance drawn beyond overdraft_limit; it is an optional '
+    'SURCHARGE, so zero there means rate applies throughout rather than that '
+    'the excess is free. There is deliberately NO CHECK on either column, and '
+    'none on day_count: a CHECK enumerating the valid day-count conventions '
+    'would make store/pg refuse a write store/mem performs — which '
+    'store/storetest exists to prevent — and would turn a one-line change to a '
+    'Go constant into a migration. This is the same reasoning recorded on the '
+    'four asset columns, applied to a new case, and it is recorded in the '
+    'database because a missing constraint is invisible in a schema dump.';
 
 COMMENT ON COLUMN facilities.accrued_interest IS
     'Interest earned and not yet settled, in MICRO-MINOR-UNITS: the asset''s '

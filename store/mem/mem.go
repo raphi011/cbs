@@ -193,6 +193,11 @@ type state struct {
 	// store/pg gets from a primary key on (book_id, account_id, date_key).
 	snapshots map[ledger.BookID]map[snapshotKey]deposit.Snapshot
 
+	// overdraftTerms is the effective-dated terms timeline, keyed by (account,
+	// effective day) rather than nested per account, so an upsert is a single
+	// map assignment — the same shape snapshots has, for the same reason.
+	overdraftTerms map[ledger.BookID]map[termsKey]deposit.OverdraftTerms
+
 	// The payment layer's state. These maps are NOT nested per book: the
 	// entities are network-scoped — a payment belongs to no single bank — so
 	// they are sequenced under ledger.NetworkBook and keyed by their ID alone.
@@ -242,6 +247,14 @@ type snapshotKey struct {
 	dateKey string
 }
 
+// termsKey identifies one overdraft terms row within a book: the account and
+// the effective DAY, which is the same identity store/pg gets from a primary
+// key on (book_id, account_id, day_key).
+type termsKey struct {
+	account deposit.AccountID
+	dayKey  string
+}
+
 // installmentKey is an instalment's composite identity: its facility and its
 // position in that facility's schedule.
 type installmentKey struct {
@@ -260,6 +273,7 @@ const (
 	kindDepositAccount rowKind = "deposit_account"
 	kindHold           rowKind = "hold"
 	kindSnapshot       rowKind = "snapshot"
+	kindOverdraftTerms rowKind = "overdraft_terms"
 	kindParticipant    rowKind = "participant"
 	kindPayment        rowKind = "payment"
 	kindMandate        rowKind = "mandate"
@@ -295,6 +309,7 @@ func newState() *state {
 		depositAccounts: make(map[ledger.BookID]map[deposit.AccountID]deposit.Account),
 		holds:           make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
 		snapshots:       make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
+		overdraftTerms:  make(map[ledger.BookID]map[termsKey]deposit.OverdraftTerms),
 		participants:    make(map[payment.ParticipantID]payment.Participant),
 		payments:        make(map[payment.PaymentID]payment.Payment),
 		mandates:        make(map[payment.MandateID]payment.Mandate),
@@ -331,6 +346,7 @@ func (s *state) clone() *state {
 		depositAccounts: cloneNested(s.depositAccounts),
 		holds:           cloneNested(s.holds),
 		snapshots:       cloneNested(s.snapshots),
+		overdraftTerms:  cloneNested(s.overdraftTerms),
 		participants:    maps.Clone(s.participants),
 		payments:        maps.Clone(s.payments),
 		mandates:        maps.Clone(s.mandates),

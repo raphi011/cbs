@@ -43,6 +43,17 @@ type Tx interface {
 	// date. Not in the brief's set, but Register.ListSnapshots — a public method
 	// that predates the store — has no other way to enumerate them.
 	ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Snapshot, error)
+
+	// The account's effective-dated terms timeline. Three methods rather than
+	// two, because the two callers want different things: accrual wants the
+	// whole timeline in one read and resolves per day in Go, while balanceTx
+	// wants exactly one row — the limit in force now — and should not pay for
+	// history on a path that runs on every withdrawal check. A bounded lookup
+	// as a store method is already this repo's idiom; ActiveHoldTotal and
+	// ValueDateBalance are both aggregates with bounds, for the same reason.
+	PutOverdraftTerms(ctx context.Context, book ledger.BookID, t OverdraftTerms) error
+	ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]OverdraftTerms, error)
+	GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id AccountID, day time.Time) (OverdraftTerms, error)
 }
 
 // SnapshotDateKey is the business-date key a snapshot is stored under. A
@@ -74,3 +85,19 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     upsert keyed by (account, SnapshotDateKey(s.Date)).
 //   - Writes roll back with the surrounding Update, deposit rows and ledger rows
 //     together — that is the whole point of Tx embedding ledger.Tx.
+//   - PutOverdraftTerms is an upsert keyed by (account, TermsDayKey(t.EffectiveFrom)),
+//     the same identity PutSnapshot has. Two rows entered for the same account
+//     and the same effective DAY are the same row, and the later one wins —
+//     which is what makes "the terms in force on day D" unique by construction
+//     rather than by a validation rule.
+//   - ListOverdraftTermsForAccount orders by effective day ASCENDING, ties
+//     broken by the row's insertion sequence for form. Ascending is not a
+//     convenience: deposit.termsAt binary-searches the slice it is handed.
+//   - GetOverdraftTermsAsOf returns the row with the greatest effective day not
+//     after `day`, or ErrTermsNotFound when the day precedes the account's
+//     first row. It is book- and account-scoped like everything else here, and
+//     unlike ActiveHoldTotal it is NOT an aggregate: an unknown account has no
+//     terms, which is ErrTermsNotFound rather than a zero row that would read
+//     as a real interest-free product.
+//   - The store truncates nothing. Callers pass an already-DayStart-ed instant
+//     and both stores key on deposit.TermsDayKey of it.
