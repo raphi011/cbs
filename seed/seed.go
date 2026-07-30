@@ -444,16 +444,23 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// overdraws him immediately: its debtor leg posts at InitiatePayment, so
 	// the balance moves right away without its clearing cycle needing to
 	// close or settle. Then 45 days pass and interest accrues, a charge
-	// capitalizes it, and 15 more days build a fresh accrual on top.
+	// capitalizes it, a backdated repricing lands (see below), and 15 more
+	// days build a fresh accrual on top of both.
 	//
 	// That is not the figure this phase ends on, though. RunEndOfDay drives a
 	// participant's whole book, not one facility, and Bella's line below
 	// shares this same book (Verde). Her own runDays(verde, 30) keeps Bruno's
 	// overdraft accruing for another 30 days after this phase returns, so the
 	// accrued interest the seed actually produces reflects 45 days
-	// post-capitalization (≈ EUR 3.77 on a EUR 203.78 balance at 15%
-	// ACT/365), not the 15 this phase runs on its own. Changing Bella's
-	// 30-day span, or moving her phase, changes Bruno's final number.
+	// post-capitalization, all at the 18% the repricing below has already put
+	// in force by then, not the 15 this phase runs on its own. The repricing
+	// also reaches backwards: twenty of the days that already elapsed BEFORE
+	// the charge, accrued at 15% when they ran, are repriced to 18% by the
+	// very next end-of-day. Bruno's final figure blends both — 15% ACT/365 up
+	// to the repricing's effective date, 18% from it — on the EUR 203.78
+	// balance (≈ EUR 4.87), not the single-rate ≈ EUR 3.77 a pure-15% run
+	// would give. Changing Bella's 30-day span, or the repricing's twenty-day
+	// offset, changes Bruno's final number.
 	//
 	// It joins the SCT cycle Phase F left open (only one may be open per
 	// scheme at a time) rather than opening a second one, which is also why it
@@ -467,6 +474,24 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 
 	b.runDays(verde, 45)
 	must(verde.Deposit.ChargeOverdraftInterest(ctx, bruno.ID, b.clock.now()))
+
+	// --- Bruno, repriced mid-life -------------------------------------------
+	// The arranged rate moves from 15% to 18%, effective TWENTY DAYS AGO — a
+	// repricing agreed on one date and entered on another, which is the
+	// ordinary case and the one mutable terms could not represent at all.
+	//
+	// This is the seed's demonstration of the whole change. The next end-of-day
+	// re-derives every day since Bruno's account opened, charges the last
+	// twenty of them at 18% instead of 15%, and posts the difference as
+	// ordinary delta interest. Nothing is rewritten and both terms rows stay on
+	// the timeline, which the account page now renders.
+	//
+	// Before terms were effective-dated this could not happen: the recompute
+	// window would have been reset to today and the twenty days behind it would
+	// have kept the old rate forever.
+	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 180_000, 350_000,
+		interest.ACT365, b.clock.now().AddDate(0, 0, -20)))
+
 	b.runDays(verde, 15)
 
 	// --- A revolving line, partly drawn and billed (Bella, Verde) -----------
