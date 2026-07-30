@@ -1231,9 +1231,14 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	// the conventions genuinely disagree about whether a window advanced. Under
 	// Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero
 	// while ACT365 says one — a run on the 31st is a no-op under one convention
-	// and a real day under the other. `date` is the right answer: it is the
-	// convention the customer's product is on for the day being accrued, and it
-	// is the same figure the walk itself will use for that day.
+	// and a real day under the other.
+	//
+	// `date` is exactly the right day, and for a sharper reason than "the day
+	// being accrued": a span is named by its END (see the closure below), so the
+	// last span this run adds is [date-1, date), which is the span NAMED date.
+	// termsAt(rows, date) is therefore the very row that will price that span —
+	// the guard asks its question of the same row the walk will answer it with,
+	// rather than of a neighbouring day's.
 	current, ok := termsAt(rows, date)
 	if !ok {
 		return nil
@@ -1250,9 +1255,19 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
 			// perDay has already cut the window to single days before any
-			// Period runs, so `from` IS the day: this closure is a function of
-			// the day as well as the balance, which is what a Period is for.
-			day, ok := termsAt(rows, from)
+			// Period runs, so this closure is a function of the DAY as well as
+			// the balance, which is what a Period is for. The day is `to`, not
+			// `from`: interest.AccrueSeries names a span by its END date,
+			// because a movement value-dated V ends the preceding run at V-1
+			// and so first bites on [V-1, V). That is why the pre-existing
+			// TestOverdraftAccrualCorrectsABackdatedDebit calls that span
+			// "day 3" for a debit value-dated day 3.
+			//
+			// Resolving terms on `to` is what puts the rate on the same day
+			// axis as the balance it is charged against. On `from` they would
+			// be a day apart — day D's rate applied to day D+1's balance — and
+			// a repricing effective day 30 would not bite until day 31.
+			day, ok := termsAt(rows, to)
 			if !ok {
 				return 0
 			}

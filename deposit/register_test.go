@@ -777,24 +777,24 @@ func overdrawValueDated(t *testing.T, book *ledger.Book, sub ledger.SubledgerID,
 // It is deliberately the same shape as interest.perDay: one Accrue call per
 // day, so the per-call integer truncation lands identically.
 //
-// d indexes the SPAN [start+d, start+d+1), and the two closures are indexed by
-// it on the two different conventions the engine actually uses, which do not
-// coincide and which a caller writing an expectation has to keep apart:
+// Both closures are indexed by the same thing, on the one day axis the engine
+// uses: a span is NAMED BY ITS END DATE, so span n is [start+n-1, start+n) and
+// n runs 1..days. interest.AccrueSeries is what fixes that — a movement
+// value-dated V ends the preceding run at V-1 and so first bites on [V-1, V) —
+// and deposit's accrual resolves termsAt on the same `to`. So both closures
+// read straight off the dates a test states:
 //
-//   - rateOn(d) is the terms in force on start+d, the day the span BEGINS.
-//     accrueOverdraftAccountTx resolves termsAt on the span's `from`.
-//   - drawnOn(d) is the value-dated balance in force over the span, and a
-//     movement value-dated V is in force from span V-1 — the day ENDING on V.
-//     That is interest.AccrueSeries's run decomposition (a movement at day D
-//     ends the run at D-1) and it long predates effective-dated terms; the
-//     figures in TestOverdraftAccrualCorrectsABackdatedDebit are written on
-//     the same convention.
+//   - drawnOn(n) is the balance a movement value-dated start+n puts in force.
+//   - rateOn(n) is the terms a row effective from start+n puts in force.
+//
+// No off-by-one to keep straight in either direction, which is the point of
+// making the two agree.
 func expectedFromTimeline(start time.Time, days int, dc interest.DayCount,
-	drawnOn func(d int) ledger.Amount, rateOn func(d int) interest.Rate) interest.Accrued {
+	drawnOn func(n int) ledger.Amount, rateOn func(n int) interest.Rate) interest.Accrued {
 	var total interest.Accrued
-	for d := 0; d < days; d++ {
-		from := start.AddDate(0, 0, d)
-		total += interest.Accrue(drawnOn(d), rateOn(d), dc, from, from.AddDate(0, 0, 1))
+	for n := 1; n <= days; n++ {
+		from := start.AddDate(0, 0, n-1)
+		total += interest.Accrue(drawnOn(n), rateOn(n), dc, from, from.AddDate(0, 0, 1))
 	}
 	return total
 }
@@ -1614,17 +1614,26 @@ func TestOverdraftCorrectionRefundsWhatTheReceivableCannotAbsorb(t *testing.T) {
 	}
 }
 
-// TestOverdraftRepricingChargesTheOutgoingTermsFirst pins the day a repricing
-// used to swallow: the span between the last end-of-day and the repricing,
-// which under a moving window belonged to neither side of it.
+// TestARepricingPricesItsOwnEffectiveDay is what used to be
+// TestOverdraftRepricingChargesTheOutgoingTermsFirst, and it now pins the
+// opposite answer at the boundary — deliberately.
 //
-// The mechanism is gone and the answer is the same, which is the point. The
-// window no longer moves, so there is no boundary for the day to fall between:
-// nothing is charged at the moment the row is entered, and the next run derives
-// day 9 -> 10 at the terms in force ON DAY 9 — the outgoing 15% — because a row
-// effective on day 10 governs the day STARTING on day 10. What was a special
-// case defended by a pre-accrual is now the ordinary reading of the timeline.
-func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
+// The old test guarded a day a moving window could swallow: freezing the old
+// window and opening the new one at the same instant left the span since the
+// last end-of-day belonging to neither, so SetOverdraftTerms pre-accrued it at
+// the OUTGOING terms before moving the boundary. There is no boundary now, so
+// there is nothing to fall between and nothing to pre-accrue.
+//
+// What remains is a question the old design never had to answer cleanly: which
+// day does a row effective from day 10 first price? A day is named by the date
+// its span ENDS on — interest.AccrueSeries fixes that, because a movement
+// value-dated V first bites on [V-1, V) — so day 10 is the span [9, 10) and the
+// row effective day 10 prices it. Terms and balances then move on the same day
+// axis, which is the whole reason the resolution is on `to`.
+//
+// The day is still not dropped, which is what the original test was really
+// protecting, and the three-way discrimination that proves it is kept.
+func TestARepricingPricesItsOwnEffectiveDay(t *testing.T) {
 	ctx := context.Background()
 	reg, book, sub, acct, clock := newOverdraftAccount(t)
 
@@ -1634,7 +1643,7 @@ func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 	}
 	nine, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	// Nine days at 15% on €200: 9 × 8_219_178.
+	// Days 1-9 at 15% on €200: 9 × 8_219_178. Unchanged.
 	assertEqual(t, "accrued through day 9", nine.Accrued, interest.Accrued(73_972_602))
 
 	// Reprice to triple the rate from day 10, with day 10 not yet accrued.
@@ -1645,35 +1654,36 @@ func TestOverdraftRepricingChargesTheOutgoingTermsFirst(t *testing.T) {
 
 	entered, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	// MOVED, and this is the change: entering the row posts nothing. It used to
-	// pre-accrue the outgoing span here, landing on 82_191_780 before any run.
+	// Entering the row posts nothing. It used to pre-accrue the outgoing span
+	// here, landing on 82_191_780 before any run had asked for day 10.
 	assertEqual(t, "accrued when the row is merely entered", entered.Accrued, interest.Accrued(73_972_602))
 
-	// The next run charges day 9 -> 10. Three outcomes are distinguishable
-	// here, which is the point of tripling the rate rather than nudging it:
+	// The next run adds day 10. Three outcomes are distinguishable, which is
+	// the point of tripling the rate rather than nudging it:
 	//
 	//	73_972_602  the day was dropped between the two windows
-	//	82_191_780  charged at the outgoing 15%   <- correct
-	//	98_630_136  charged at the incoming 45%
+	//	82_191_780  charged at the outgoing 15% — what the moving window did,
+	//	            and what resolving terms on the span's START would still do
+	//	98_630_136  charged at the incoming 45%   <- correct
+	//
+	// 73_972_602 + 20_000 × 450_000 / 365 = 73_972_602 + 24_657_534.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 10)))
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(82_191_780))
+	assertEqual(t, "accrued after repricing", got.Accrued, interest.Accrued(98_630_136))
 
 	receivable, err := book.BookBalance(ctx, got.InterestGL)
 	assertNoError(t, err)
-	assertEqual(t, "receivable after repricing", receivable, ledger.Amount(82))
+	assertEqual(t, "receivable after repricing", receivable, ledger.Amount(99))
 	if receivable != got.Accrued.Minor() {
 		t.Errorf("receivable %d != Minor(accrued) %d across a repricing", receivable, got.Accrued.Minor())
 	}
 
-	// And the day after prices at the new rate: a day at 45% is 24_657_534.
-	// Unchanged from before this design: the total across the repricing is the
-	// same figure the pre-accrual arrived at, reached without one.
+	// Day 11 is a second day at the new rate: 98_630_136 + 24_657_534.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, accrualStart.AddDate(0, 0, 11)))
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(106_849_314))
+	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(123_287_670))
 }
 
 // TestOverdraftRepricingDoesNotRewindTheAccrualWindow pins the other direction
@@ -1711,7 +1721,8 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 
 	// Reprice from day 100, entered while the wall clock reads day 0 — the
 	// entry date is a hundred days behind the effective date, and behind what
-	// has already been charged.
+	// has already been charged. Day 100 has been accrued, so the row is
+	// retroactive by exactly one day and the next run trues that day up.
 	clock.set(accrualStart)
 	row, err := reg.SetOverdraftTerms(ctx, acct.ID, 50_000, 450_000, 0, interest.ACT365, ahead)
 	assertNoError(t, err)
@@ -1730,17 +1741,27 @@ func TestOverdraftRepricingDoesNotRewindTheAccrualWindow(t *testing.T) {
 	}
 	assertEqual(t, "accrued across the repricing", repriced.Accrued, interest.Accrued(821_917_800))
 
-	// The proof it is not double-charged: one more day at the new 45% rate adds
-	// exactly one day, not a hundred and one. €200 at 45%: 24_657_534.
+	// The proof it is not double-charged: the next run adds ONE day and reprices
+	// ONE day, not a hundred and one of either. €200 at 45% is 24_657_534 a
+	// day, at 15% it is 8_219_178:
+	//
+	//	days   1-99  at 15%  99 ×  8_219_178 = 813_698_622
+	//	days 100-101 at 45%   2 × 24_657_534 =  49_315_068
+	//	                                       863_013_690
+	//
+	// Day 100 moves from 15% to 45% because the row is effective from it — the
+	// retroactive true-up, worth 16_438_356 — and day 101 is the new day. A
+	// window that had rewound would instead re-derive all hundred days as a
+	// fresh delta and add them to Accrued a second time.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, ahead.AddDate(0, 0, 1)))
 	after, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
-	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(846_575_334))
+	assertEqual(t, "accrued a day past the repricing", after.Accrued, interest.Accrued(863_013_690))
 
 	receivable, err := book.BookBalance(ctx, after.InterestGL)
 	assertNoError(t, err)
-	// 846_575_334 sub-minor units rounds to 847 cents.
-	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(847))
+	// 863_013_690 sub-minor units rounds to 863 cents.
+	assertEqual(t, "receivable after the repricing", receivable, ledger.Amount(863))
 }
 
 // TestOverdraftAccrualUnderThirty360SkipsThe31st is the only 30/360 coverage on

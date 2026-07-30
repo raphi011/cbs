@@ -68,24 +68,27 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	clock.set(day(46))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(46)))
 
-	// Spans 0-8 on 1,000 at R1; spans 9-29 on 2,000 at R1 — the stretch that
-	// was silently never corrected; spans 30-45 on 2,000 at R2.
+	// Days 1-9 on 1,000 at R1; days 10-29 on 2,000 at R1 — the stretch that was
+	// silently never corrected; days 30-46 on 2,000 at R2. Both boundaries read
+	// straight off the dates above, because a day is named by the date its span
+	// ends on and both the value date and the effective date are on that axis:
 	//
-	// The balance boundary is span 9 rather than span 10 because the extra draw
-	// is value-dated day 10 and a movement takes effect on the day ENDING on
-	// its value date — interest.AccrueSeries ends the preceding run at day 9.
-	// The rate boundary is span 30, because terms are resolved on the day a
-	// span BEGINS. The two conventions are not the same one and the test says
-	// which is which rather than tuning a number until it agrees.
+	//	 9 × 100_000 × 120_000 / 365 =  9 × 32_876_712 =   295_890_408
+	//	20 × 200_000 × 120_000 / 365 = 20 × 65_753_424 = 1_315_068_480
+	//	17 × 200_000 × 180_000 / 365 = 17 × 98_630_136 = 1_676_712_312
+	//	                                                 3_287_671_200
+	//
+	// Truncation is per day, not per span-group, which is why this is computed
+	// rather than written down: Accrue divides once per call.
 	want := expectedFromTimeline(day(0), 46, interest.ACT365,
-		func(d int) ledger.Amount {
-			if d < 9 {
+		func(n int) ledger.Amount {
+			if n < 10 {
 				return opening
 			}
 			return opening + extra
 		},
-		func(d int) interest.Rate {
-			if d < 30 {
+		func(n int) interest.Rate {
+			if n < 30 {
 				return r1
 			}
 			return r2
@@ -148,8 +151,8 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 
 	want := expectedFromTimeline(day(0), 60, interest.ACT365,
 		func(int) ledger.Amount { return drawn },
-		func(d int) interest.Rate {
-			if d < 30 {
+		func(n int) interest.Rate {
+			if n < 30 {
 				return r1
 			}
 			return r2
@@ -218,8 +221,8 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 
 	want := expectedFromTimeline(day(0), 46, interest.ACT365,
 		func(int) ledger.Amount { return drawn },
-		func(d int) interest.Rate {
-			if d < 30 {
+		func(n int) interest.Rate {
+			if n < 30 {
 				return r1
 			}
 			return r2
@@ -304,8 +307,8 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 
 	want := expectedFromTimeline(day(0), 40, interest.ACT365,
 		func(int) ledger.Amount { return drawn },
-		func(d int) interest.Rate {
-			if d < 30 {
+		func(n int) interest.Rate {
+			if n < 30 {
 				return r1
 			}
 			return r2
@@ -358,12 +361,24 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	clock.set(day(400))
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(400)))
 
-	// Days 365-399 only. The free year is re-derived on every run, as every
-	// other day is, and contributes nothing because the rate in force on those
-	// days was zero.
-	want := expectedFromTimeline(day(365), 35, interest.ACT365,
+	// Days 365-400 only — the whole 400-day life is stated, and the free year
+	// falls out at zero rather than being excluded by hand, because that is
+	// what the code does: every day is re-derived on every run, and days 1-364
+	// contribute nothing because the row in force on them carries a zero rate.
+	//
+	// The priced stretch is 36 days, not 35: a day is named by the date its
+	// span ends on, so the row effective day 365 prices day 365 — the span
+	// [364, 365) — and the last day accrued is day 400.
+	//
+	//	36 × 100_000 × 120_000 / 365 = 36 × 32_876_712 = 1_183_561_632
+	want := expectedFromTimeline(day(0), 400, interest.ACT365,
 		func(int) ledger.Amount { return drawn },
-		func(int) interest.Rate { return r1 })
+		func(n int) interest.Rate {
+			if n < 365 {
+				return 0
+			}
+			return r1
+		})
 
 	got, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
@@ -528,14 +543,21 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	}
 }
 
-// Thirty360, terms effective on a 31st: the row takes effect on the 1st,
-// because the 31st accrues nothing under the convention.
+// Thirty360, terms effective on a 31st: the row is in force from the 31st and
+// the first money it moves is on 1 February, because the 31st accrues nothing
+// under the convention.
 //
-// That follows from the convention rather than from this change, and it is
-// pinned rather than asserted away: it is surprising enough that someone will
-// read it as a bug, and a test saying "this is correct and here is why" is
+// The two are different claims and the name says the second, which is the one a
+// customer could notice. The row IS in force on the 31st — that day's span,
+// [30th, 31st), resolves to it — but 30/360-US collapses the 31st onto the 30th
+// so the span is worth zero days. The first day it prices for money is the one
+// named 1 February, the span [31st, 1 Feb).
+//
+// That follows from the convention rather than from effective-dated terms, and
+// it is pinned rather than asserted away: it is surprising enough that someone
+// will read it as a bug, and a test saying "this is correct and here is why" is
 // cheaper than the investigation.
-func TestUnderThirty360ATermsRowEffectiveOnA31stTakesEffectOnThe1st(t *testing.T) {
+func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{at: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)}
 	reg, book, sub := newTestRegisterOn(t, clock.now)
@@ -565,11 +587,17 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stTakesEffectOnThe1st(t *testing.T
 	throughFeb1, err := reg.GetAccount(ctx, acct.ID)
 	assertNoError(t, err)
 
-	// One day of 30/360 accrued between the 30th and 1 February — the 31st
-	// collapsed onto the 30th and accrued nothing — and that one day is the
-	// 31st's, charged at the NEW rate, because the row was in force on it.
+	// Two spans were added, worth one 30/360 day between them:
+	//
+	//	[30th, 31st)  the day named the 31st   — new rate, Days = 0, accrues 0
+	//	[31st, 1 Feb) the day named 1 February — new rate, Days = 1
+	//
+	// So the whole movement is the second span, at the NEW rate, and it is the
+	// same figure under either day the terms might have been resolved on —
+	// which is exactly why this test pins the convention rather than
+	// discriminating between two of them.
 	want := interest.Accrue(100_000, 240_000, interest.Thirty360, the31st, feb1)
-	assertEqual(t, "the 31st accrues one 30/360 day at the new rate",
+	assertEqual(t, "one 30/360 day, charged at the new rate",
 		throughFeb1.Accrued-through30.Accrued, want)
 
 	receivable, err := book.BookBalance(ctx, throughFeb1.InterestGL)
@@ -639,14 +667,13 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(366)))
 
 	// The whole life re-derived at 2%. The capitalisation is value-dated day
-	// 365, and a movement takes effect on the day ENDING on its value date, so
-	// spans 0-363 are on the principal alone and spans 364-365 include the
-	// capitalised charge. That is also why capitalisation compounds a day early
-	// — ChargeOverdraftInterestTx's own doc says so and calls value-dating to
-	// the next day the fix.
+	// 365, so days 1-364 are on the principal alone and days 365-366 include
+	// the capitalised charge. That is also why capitalisation compounds a day
+	// early — ChargeOverdraftInterestTx's own doc says so and calls
+	// value-dating to the next day the fix.
 	atCheap := expectedFromTimeline(day(0), 366, interest.ACT365,
-		func(d int) ledger.Amount {
-			if d < 364 {
+		func(n int) ledger.Amount {
+			if n < 365 {
 				return drawn
 			}
 			return drawn + charge
