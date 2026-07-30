@@ -1747,6 +1747,11 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	assertEqual(t, "backdated effectiveFrom", backdated["effectiveFrom"].(string), "2025-01-01T00:00:00Z")
 	assertEqual(t, "backdated dayCount", backdated["dayCount"].(string), "ACT/360")
 	assertEqual(t, "backdated unarrangedRate", int64(backdated["unarrangedRate"].(float64)), int64(300_000))
+	// createdAt is the OTHER half of the two-dates pair, and the test clock is
+	// frozen, so it is fixedTime regardless of this row's effectiveFrom — that
+	// gap (entered 2025-01-15, effective 2025-01-01) is what makes this row
+	// backdated at all.
+	assertEqual(t, "backdated createdAt", backdated["createdAt"].(string), "2025-01-15T12:00:00Z")
 
 	last := rows[len(rows)-1].(map[string]any)
 	assertEqual(t, "the future row is on the timeline", int64(last["rate"].(float64)), int64(180_000))
