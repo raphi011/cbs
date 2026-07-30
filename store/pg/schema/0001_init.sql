@@ -441,7 +441,7 @@ CREATE TABLE payments (
     seq                  BIGSERIAL NOT NULL
 );
 
--- Index 3: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
+-- Index 4: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
 -- InitiatePaymentTx — and a store that refused one where mem accepted it would
 -- be the two implementations disagreeing.
@@ -462,7 +462,7 @@ CREATE TABLE cycles (
     seq           BIGSERIAL NOT NULL
 );
 
--- Index 4: GetOpenCycle. Partial on the open status, which is the only one it
+-- Index 5: GetOpenCycle. Partial on the open status, which is the only one it
 -- ever asks for. status 0 is payment.CycleOpen.
 CREATE INDEX cycles_open_idx ON cycles (scheme) WHERE status = 0;
 
@@ -515,7 +515,7 @@ CREATE TABLE audit_events (
     occurred_at TIMESTAMPTZ
 );
 
--- Indexes 5 and 6: the two shapes every audit query has. Book+scope is what a
+-- Indexes 6 and 7: the two shapes every audit query has. Book+scope is what a
 -- Book's own log and the participant endpoints ask for; entity is what a
 -- "history of this account" view asks for. Both carry seq so the cursor and the
 -- ordering come out of the index.
