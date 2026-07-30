@@ -360,8 +360,12 @@ import (
 // The four fields used to be mutable columns on Account. An accrual posted six
 // months ago could not then be reproduced from stored state: the inputs it used
 // were gone, overwritten by the current ones. Worse, it bounded the recompute
-// window at the last repricing, so a backdated posting landing before it was
-// silently never trued up.
+// window at the last repricing. A repricing closed the old window out and
+// opened a new one at itself, so a backdated posting landing behind it was
+// trued up only from the repricing forward — the window's opening balance is
+// value-dated, so the posting did move it — while the days between where it
+// took economic effect and the repricing kept the interest computed without it,
+// permanently. The repricing was a line the correction stopped at.
 //
 // # Two dates, and what the pair means
 //
@@ -832,8 +836,11 @@ In `store/pg/schema/0001_init.sql`, after the `snapshots` table and its index (b
 -- first two are immutable and replayable, and a configuration that could be
 -- edited in place undermined that entirely, because "what did this account's
 -- product say on 15 July 2027?" had no stable answer. It also bounded the
--- interest recompute window at the last repricing, so a backdated posting
--- landing before it was silently never trued up.
+-- interest recompute window at the last repricing: a repricing closed the old
+-- window out and opened a new one at itself, so a backdated posting landing
+-- behind it was trued up only from the repricing forward, and the days between
+-- where it took effect and the repricing kept the interest computed without it,
+-- permanently.
 --
 -- These are PER-INSTANCE terms: one timeline per account, not a catalogue
 -- shared across them. There is no product/product_version table, no content
@@ -2952,7 +2959,7 @@ put it next to `overdraft-interest`):
 
 The reason is that every interest figure is a function of three things — account state, event history, and configuration. The first two are immutable and replayable here. If the third could be edited in place, that whole investment is undone, because "what did this account's product say on 15 July?" stops having a stable answer.
 
-There is a sharper consequence than an audit weakness. While terms were mutable, the [[interest-accrual|accrual]] recompute could only reach back to the last repricing — reaching further would re-derive old days at *today's* rate. So a [[booking-date-vs-value-date|back-dated]] posting landing before the last repricing was silently never trued up. With a timeline, every day is re-derived at the terms actually in force on it, so the window opens at account inception and the correction always lands.
+There is a sharper consequence than an audit weakness. While terms were mutable, the [[interest-accrual|accrual]] recompute could only reach back to the last repricing — reaching further would re-derive old days at *today's* rate. A repricing closed the old window out and opened a new one at itself, so a [[booking-date-vs-value-date|back-dated]] posting landing behind it was trued up only from the repricing forward, while the days between where it took effect and the repricing kept the interest computed without it, permanently — the repricing was a line the correction stopped at. With a timeline, every day is re-derived at the terms actually in force on it, so the window opens at account inception and the correction always lands.
 
 Each row carries **two** dates, and the pair is the [[booking-date-vs-value-date|booking-date/value-date]] distinction applied to configuration: when the repricing was *entered*, and when it takes *economic effect*. They can differ in either direction — a rate agreed on the 1st and keyed in on the 15th is backdated; a rate agreed for next month is future-dated and simply sits inert until the end-of-day runs reach it.`,
   },
@@ -3191,7 +3198,11 @@ place, the gross moves, and the difference is posted as a true-up.
 How far back "whole history" reaches is decided by the product terms. While terms were mutable
 columns, the window had to start at the last repricing: reaching further would have re-derived old
 days at *today's* rate. That bound was an accident of the storage, and it had a cost the customer
-could not see — a back-value landing before the last repricing was **never trued up at all**.
+could not see. A repricing closed the old window out and opened a new one at itself, so a back-value
+landing behind it was trued up only **from the repricing forward** — the window's opening balance is
+value-dated, so the posting did move it — while the days between where it took effect and the
+repricing kept the interest computed without it, permanently. **The repricing was a line the
+correction stopped at.**
 
 Because terms are now a timeline, every day can be re-derived at the terms that were actually in
 force on it, and the window opens at account opening (or, for a facility, at origination). The days
@@ -3236,7 +3247,7 @@ without qualification. It **needs checking rather than rewriting** — this chan
 true where it used to be window-bounded. Read it, confirm nothing in it is now wrong, and append:
 
 ```
-Both the limit and the rates are [[effective-dated-terms|effective-dated]], which is what lets the recompute reach all the way back to account opening: every day is re-derived at the terms that were actually in force on it, so a back-dated posting is trued up wherever it lands — including before a repricing, which used to be a line the correction silently stopped at.
+Both the limit and the rates are [[effective-dated-terms|effective-dated]], and every night's accrual is a RECOMPUTATION of the whole account rather than an increment. That is what lets it reach all the way back to account opening: every day is re-derived at the terms that were actually in force on it, so a back-dated posting is trued up wherever it lands — including before a repricing, which used to be a line the correction silently stopped at.
 ```
 
 Check `web/src/components/concept-links.ts` for whether new keys need registering anywhere beyond
@@ -3273,8 +3284,10 @@ count. Add:
 - A `truefalse`, difficulty `core`, tagged `interest-accrual`: *"A posting that arrives value-dated
   to a day before the account's last repricing is trued up by the next accrual run, the same way any
   other back-dated posting is."* → **True**, and note that this is true *because* terms are
-  effective-dated: with mutable terms the recompute window started at the last repricing, and a
-  back-value landing behind it was silently never corrected.
+  effective-dated: with mutable terms the recompute window started at the last repricing, so a
+  back-value landing behind it was trued up only from the repricing forward, and the days between
+  where it took effect and the repricing kept the interest computed without it, permanently — the
+  repricing was a line the correction stopped at.
 - A `numeric`, difficulty `challenge`, tagged `interest-accrual`: an account overdrawn by a fixed
   amount, priced at one rate for a stated number of days and repriced to another for the rest,
   asking for the total accrual over the whole span in micro-minor-units. Compute the expected value
