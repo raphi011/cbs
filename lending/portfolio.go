@@ -479,6 +479,16 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 // same way a backdated posting is, and the difference is posted as ordinary
 // delta interest, while a future-dated row is inert until the runs reach it.
 //
+// A ZERO effectiveFrom means today on the PORTFOLIO'S clock, the same mapping
+// deposit.SetOverdraftTerms makes and for the same reason: it follows
+// ledger.Book.PostTransaction's zero-BookingDate precedent, and it has to be
+// the injected clock rather than the wall clock because api and seed run on a
+// frozen one — a wall-clock day would be a future-dated row nothing those runs
+// ever price at. Leaving the zero unmapped would be worse still: it truncates
+// to 0001-01-01, sorts first in the timeline, and becomes the day accrual opens
+// its recompute window at, which is two millennia of days walked per facility
+// per nightly run.
+//
 // The risk in the first of those is real and is not hidden: a retroactive
 // repricing MOVES INTEREST THAT HAS ALREADY BEEN CHARGED TO A BORROWER, and the
 // audit log is the only control on it. Every call appends an
@@ -566,6 +576,9 @@ func (p *Portfolio) SetFacilityTermsTx(ctx context.Context, tx Tx, id FacilityID
 	}
 
 	now := p.now()
+	if effectiveFrom.IsZero() {
+		effectiveFrom = now
+	}
 	from := ledger.DayStart(effectiveFrom)
 	if f.Kind == TermLoan {
 		schedule, err := tx.ListInstallments(ctx, p.bookID, id)

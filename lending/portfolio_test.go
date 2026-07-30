@@ -458,6 +458,39 @@ func TestSetFacilityTermsRefusesAFutureDatedTermLoanRepricing(t *testing.T) {
 	assertEqual(t, "a line's timeline takes a future-dated row", len(lineRows), 2)
 }
 
+// A zero effectiveFrom means TODAY on the portfolio's clock, the same mapping
+// deposit.SetOverdraftTermsTx makes.
+//
+// It is load-bearing rather than tidy. An unmapped zero time day-truncates to
+// 0001-01-01, sorts to the FRONT of the timeline, and becomes the day accrual
+// opens its recompute window at — so one such row turns every nightly run into a
+// walk over two millennia of days for that facility. Reading the INJECTED clock
+// rather than the wall clock is the other half: api and seed run frozen, and a
+// wall-clock day would be a future-dated row nothing those runs ever price at.
+func TestSetFacilityTermsMapsAZeroEffectiveDateToToday(t *testing.T) {
+	ctx := context.Background()
+
+	clock := &mutableClock{at: day(2025, time.March, 10)}
+	p, _, sub, _ := newTestPortfolioOn(t, clock.now)
+	line := openLine(t, p, sub)
+
+	// Part-way through a later day, so the truncation is exercised too and the
+	// row cannot collide with the opening one's day key.
+	clock.set(time.Date(2025, time.March, 20, 14, 30, 0, 0, time.UTC))
+
+	row, err := p.SetFacilityTerms(ctx, line.ID, 90_000, interest.ACT365, time.Time{})
+	assertNoError(t, err)
+	assertDate(t, "a zero effective date resolves to today", row.EffectiveFrom, day(2025, time.March, 20))
+
+	// And it lands at the END of the timeline rather than in front of the
+	// opening row, which is what year 1 would have done.
+	rows, err := p.FacilityTermsHistory(ctx, line.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline length after a zero-dated repricing", len(rows), 2)
+	assertDate(t, "the opening row is still first", rows[0].EffectiveFrom, day(2025, time.March, 10))
+	assertDate(t, "the new row is last", rows[1].EffectiveFrom, day(2025, time.March, 20))
+}
+
 // A line stays repriceable after its first billing cycle, which is what keying
 // the guard on Kind before the schedule buys: a charged line DOES have
 // instalment rows, and a guard that only counted them would have locked every
