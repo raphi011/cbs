@@ -56,4 +56,24 @@ var (
 	// form — would leave the borrower owing two minimum payments for one
 	// cycle and drifting into arrears from an infrastructure event.
 	ErrCycleAlreadyBilled = errors.New("this billing cycle has already been charged")
+
+	// ErrTermsNotFound is returned when no facility terms are in force on a
+	// day. Every facility gets an opening terms row at origination, so the only
+	// way to miss is to ask about a day before the facility existed.
+	ErrTermsNotFound = errors.New("no facility terms in force on that day")
+
+	// ErrScheduleWouldDiverge is returned when a term loan that already has a
+	// generated schedule is repriced.
+	//
+	// A term loan's instalments are generated once, at disbursement, from the
+	// rate in force then, and stored as rows. If accrual followed a timeline
+	// and the schedule did not, the plan and the actual accrual would drift
+	// apart — beyond the ordinary plan-versus-actual divergence this package
+	// already teaches, which 30/360 exists to keep small — and the final
+	// instalment would silently absorb the difference, unnoticed until
+	// maturity. Regenerating a schedule against repayments already posted
+	// against it needs versioned schedule rows and open-item allocation, which
+	// is its own topic. Repricing is allowed freely on a revolving line (no
+	// schedule) and on an undisbursed term loan (none yet).
+	ErrScheduleWouldDiverge = errors.New("repricing a term loan with a generated schedule would diverge from it")
 )

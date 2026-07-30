@@ -235,3 +235,106 @@ func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lendin
 	}
 	return out, rows.Err()
 }
+
+// ---------------------------------------------------------------------------
+// Effective-dated facility terms
+// ---------------------------------------------------------------------------
+
+// PutFacilityTerms upserts under (facility, effective day). The day key is
+// derived with lending.TermsDayKey — the same function store/mem keys its map
+// with, and the same one GetFacilityTermsAsOf compares against — so the two
+// stores agree on which day a repricing landed in by construction.
+func (t *tx) PutFacilityTerms(ctx context.Context, book ledger.BookID, row lending.FacilityTerms) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	if err := t.ensureBook(ctx, book); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO facility_terms (
+			book_id, facility_id, day_key, effective_from, rate, day_count, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (book_id, facility_id, day_key) DO UPDATE SET
+			effective_from = EXCLUDED.effective_from,
+			rate           = EXCLUDED.rate,
+			day_count      = EXCLUDED.day_count,
+			created_at     = EXCLUDED.created_at`,
+		string(book), string(row.FacilityID), lending.TermsDayKey(row.EffectiveFrom),
+		nullTime(row.EffectiveFrom), int64(row.Rate), int16(row.DayCount), nullTime(row.CreatedAt))
+	if err != nil {
+		return fmt.Errorf("pg: put facility terms %s/%s: %w",
+			row.FacilityID, lending.TermsDayKey(row.EffectiveFrom), err)
+	}
+	return nil
+}
+
+// facilityTermsColumns is the select list both readers use, for the reason
+// facilityColumns exists: it stops the two from scanning different column
+// sets, which is a whole class of "it round-trips one way".
+const facilityTermsColumns = `
+	facility_id, effective_from, rate, day_count, created_at`
+
+func scanFacilityTerms(row interface{ Scan(...any) error }) (lending.FacilityTerms, error) {
+	var (
+		out                lending.FacilityTerms
+		rate               int64
+		dayCount           int16
+		effective, created *time.Time
+	)
+	if err := row.Scan(&out.FacilityID, &effective, &rate, &dayCount, &created); err != nil {
+		return lending.FacilityTerms{}, err
+	}
+	out.Rate = interest.Rate(rate)
+	out.DayCount = interest.DayCount(dayCount)
+	out.EffectiveFrom = readTime(effective)
+	out.CreatedAt = readTime(created)
+	return out, nil
+}
+
+// ListFacilityTerms returns the whole timeline ascending by day_key, which is
+// an ISO day and therefore lexicographically ordered. Ascending is
+// load-bearing: lending.termsAt binary-searches the slice this returns.
+func (t *tx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.FacilityTerms, error) {
+	rows, err := t.tx.Query(ctx, `
+		SELECT `+facilityTermsColumns+`
+		FROM facility_terms WHERE book_id = $1 AND facility_id = $2
+		ORDER BY day_key ASC, seq`, string(book), string(id))
+	if err != nil {
+		return nil, fmt.Errorf("pg: list facility terms: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]lending.FacilityTerms, 0)
+	for rows.Next() {
+		row, err := scanFacilityTerms(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list facility terms: %w", err)
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
+// GetFacilityTermsAsOf is the row in force on a day. It compares day_key
+// rather than effective_from so that the bound is a DAY on both sides — the
+// caller's instant is truncated by lending.TermsDayKey in Go, and the column it
+// is compared against was written the same way, so no timestamp arithmetic
+// happens in the database at all.
+func (t *tx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
+	row := t.tx.QueryRow(ctx, `
+		SELECT `+facilityTermsColumns+`
+		FROM facility_terms
+		WHERE book_id = $1 AND facility_id = $2 AND day_key <= $3
+		ORDER BY day_key DESC
+		LIMIT 1`, string(book), string(id), lending.TermsDayKey(day))
+	out, err := scanFacilityTerms(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return lending.FacilityTerms{}, lending.ErrTermsNotFound
+	}
+	if err != nil {
+		return lending.FacilityTerms{}, fmt.Errorf("pg: facility terms for %s as of %s: %w",
+			id, lending.TermsDayKey(day), err)
+	}
+	return out, nil
+}

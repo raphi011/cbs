@@ -222,6 +222,11 @@ type state struct {
 	// from a primary key on (book_id, facility_id, seq).
 	installments map[ledger.BookID]map[installmentKey]lending.Installment
 
+	// facilityTerms is the effective-dated terms timeline, keyed by (facility,
+	// effective day) rather than nested per facility, so an upsert is a single
+	// map assignment — the same shape overdraftTerms has, for the same reason.
+	facilityTerms map[ledger.BookID]map[facilityTermsKey]lending.FacilityTerms
+
 	// rowSeq is the insertion order of every book-scoped row, and the tie-break
 	// every List* uses when two rows share a CreatedAt.
 	//
@@ -262,6 +267,14 @@ type installmentKey struct {
 	seq      int
 }
 
+// facilityTermsKey identifies one facility terms row within a book: the
+// facility and the effective DAY, which is the same identity store/pg gets
+// from a primary key on (book_id, facility_id, day_key).
+type facilityTermsKey struct {
+	facility lending.FacilityID
+	dayKey   string
+}
+
 // rowKind names the table a row belongs to, so sequences are per table.
 type rowKind string
 
@@ -281,6 +294,7 @@ const (
 	kindSettlement     rowKind = "settlement"
 	kindFacility       rowKind = "facility"
 	kindInstallment    rowKind = "installment"
+	kindFacilityTerms  rowKind = "facility_terms"
 )
 
 // rowKey identifies one row for sequence purposes: its book, its table and its
@@ -318,6 +332,7 @@ func newState() *state {
 		endToEnd:        make(map[string]payment.PaymentID),
 		facilities:      make(map[ledger.BookID]map[lending.FacilityID]lending.Facility),
 		installments:    make(map[ledger.BookID]map[installmentKey]lending.Installment),
+		facilityTerms:   make(map[ledger.BookID]map[facilityTermsKey]lending.FacilityTerms),
 		rowSeq:          make(map[rowKey]int64),
 		rowSeqCounter:   make(map[rowCounterKey]int64),
 	}
@@ -355,6 +370,7 @@ func (s *state) clone() *state {
 		endToEnd:        maps.Clone(s.endToEnd),
 		facilities:      cloneNested(s.facilities),
 		installments:    cloneNested(s.installments),
+		facilityTerms:   cloneNested(s.facilityTerms),
 		rowSeq:          maps.Clone(s.rowSeq),
 		rowSeqCounter:   maps.Clone(s.rowSeqCounter),
 	}

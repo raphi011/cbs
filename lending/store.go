@@ -2,6 +2,7 @@ package lending
 
 import (
 	"context"
+	"time"
 
 	"github.com/raphi011/cbs/ledger"
 )
@@ -32,6 +33,18 @@ type Tx interface {
 
 	PutInstallment(ctx context.Context, book ledger.BookID, i Installment) error
 	ListInstallments(ctx context.Context, book ledger.BookID, id FacilityID) ([]Installment, error)
+
+	// The facility's effective-dated terms timeline. Three methods rather than
+	// two, for the same reason deposit.Tx has three: accrual wants the whole
+	// timeline in one read and resolves per day in Go, while a draw check wants
+	// exactly one row — the rate in force now — and should not pay for history
+	// on a path that runs on every draw.
+	PutFacilityTerms(ctx context.Context, book ledger.BookID, t FacilityTerms) error
+	// ListFacilityTerms is named after ListInstallments, the facility-scoped
+	// listing precedent in this interface, rather than after deposit's
+	// ListOverdraftTermsForAccount, which is named after ListHoldsForAccount.
+	ListFacilityTerms(ctx context.Context, book ledger.BookID, id FacilityID) ([]FacilityTerms, error)
+	GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id FacilityID, day time.Time) (FacilityTerms, error)
 }
 
 // Contract notes for implementers — storetest.RunLending pins all of these:
@@ -57,3 +70,19 @@ type Tx interface {
 //     state (a term loan before disbursement, a line before its first cycle).
 //   - Writes roll back with the surrounding Update, lending rows and ledger rows
 //     together — that is the whole point of Tx embedding ledger.Tx.
+//   - PutFacilityTerms is an upsert keyed by (facility, TermsDayKey(t.EffectiveFrom)),
+//     the same identity deposit.Tx.PutOverdraftTerms has. Two rows entered for
+//     the same facility and the same effective DAY are the same row, and the
+//     later one wins — which is what makes "the terms in force on day D" unique
+//     by construction rather than by a validation rule.
+//   - ListFacilityTerms orders by effective day ASCENDING, ties broken by the
+//     row's insertion sequence for form. Ascending is not a convenience:
+//     lending.termsAt binary-searches the slice it is handed.
+//   - GetFacilityTermsAsOf returns the row with the greatest effective day not
+//     after `day`, or ErrTermsNotFound when the day precedes the facility's
+//     first row. It is book- and facility-scoped like everything else here, and
+//     it is NOT an aggregate: an unknown facility has no terms, which is
+//     ErrTermsNotFound rather than a zero row that would read as a real
+//     interest-free product.
+//   - The store truncates nothing. Callers pass an already-DayStart-ed instant
+//     and both stores key on lending.TermsDayKey of it.

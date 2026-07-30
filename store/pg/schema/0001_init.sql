@@ -362,6 +362,35 @@ CREATE TABLE installments (
     PRIMARY KEY (book_id, facility_id, seq_no)
 );
 
+-- A facility's credit terms from one day onwards: one row per repricing, never
+-- overwritten. The mirror of overdraft_terms — see there for why terms are rows
+-- at all — with two differences worth stating. There is no limit column,
+-- because facilities.commitment is not effective-dated: drawing is refused
+-- against the limit in force at the moment of the draw, and no past day's
+-- arithmetic depends on what it used to be. And there is no method, term_months
+-- or min_payment column, because those feed BuildSchedule rather than the
+-- accrual: a term loan's instalments are generated once from the rate in force
+-- at disbursement, so repricing one that already has a schedule is REFUSED
+-- (lending.ErrScheduleWouldDiverge) rather than allowed to drift.
+CREATE TABLE facility_terms (
+    book_id        TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    facility_id    TEXT NOT NULL,
+    day_key        TEXT NOT NULL,
+    effective_from TIMESTAMPTZ,
+    rate           BIGINT NOT NULL,
+    day_count      SMALLINT NOT NULL,
+    created_at     TIMESTAMPTZ,
+    seq            BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, facility_id, day_key)
+);
+
+-- Index 4: the timeline read that accrual makes once per facility per run, and
+-- the bounded as-of lookup a draw check makes. Both filter on (book_id,
+-- facility_id) and order by day_key, so one index serves both — the same
+-- reasoning as overdraft_terms_account_idx, applied to this table's own
+-- primary key.
+CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id, day_key);
+
 -- ---------------------------------------------------------------------------
 -- The payment layer
 -- ---------------------------------------------------------------------------
@@ -441,7 +470,7 @@ CREATE TABLE payments (
     seq                  BIGSERIAL NOT NULL
 );
 
--- Index 4: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
+-- Index 5: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
 -- InitiatePaymentTx — and a store that refused one where mem accepted it would
 -- be the two implementations disagreeing.
@@ -462,7 +491,7 @@ CREATE TABLE cycles (
     seq           BIGSERIAL NOT NULL
 );
 
--- Index 5: GetOpenCycle. Partial on the open status, which is the only one it
+-- Index 6: GetOpenCycle. Partial on the open status, which is the only one it
 -- ever asks for. status 0 is payment.CycleOpen.
 CREATE INDEX cycles_open_idx ON cycles (scheme) WHERE status = 0;
 
@@ -785,6 +814,51 @@ COMMENT ON COLUMN facilities.non_performing IS
     'income — and expected-credit-loss provisioning are recorded as future '
     'work in docs/expansion-roadmap.md. Part of the arrears cache described on '
     'days_past_due.';
+
+COMMENT ON COLUMN facility_terms.day_key IS
+    'The UTC calendar day these terms first apply, as YYYY-MM-DD, and part of '
+    'the primary key: a terms row is identified by (facility, DAY), so a second '
+    'row entered for the same effective day replaces the first and "the terms '
+    'in force on day D" is unique by construction rather than by a validation '
+    'rule. Go does the truncating (lending.TermsDayKey over ledger.DayStart) '
+    'and this column is what both the listing and the as-of lookup order and '
+    'compare on — an ISO day is lexicographically ordered, so a text compare '
+    'is a day compare. The key is a day rather than a timestamp because '
+    'accrual iterates whole UTC days: terms changing part-way through a day '
+    'would have no well-defined meaning, since the day is the unit the '
+    'arithmetic is expressed in. Neither store truncates for itself, which is '
+    'one DST-adjacent edge case away from store/pg and store/mem disagreeing '
+    'about which day a repricing landed in. Compare overdraft_terms.day_key, '
+    'which is the same pattern for the same reason.';
+
+COMMENT ON COLUMN facility_terms.effective_from IS
+    'The same day as day_key, as a timestamp, and the value Go reads back. It '
+    'is stored beside the key rather than derived from it so that a reader of '
+    'this table sees a date rather than a string, and so that ORDER BY '
+    'effective_from and ORDER BY day_key can never disagree.';
+
+COMMENT ON COLUMN facility_terms.created_at IS
+    'When this repricing was ENTERED, as against effective_from, which is when '
+    'it takes economic effect. The pair is the booking-date/value-date '
+    'distinction applied to configuration, for exactly the reasons the README '
+    'gives for money: a repricing agreed on the 1st and entered on the 15th is '
+    'the ordinary case, and refusing it would leave the agreed date with no '
+    'representation. Both directions are allowed — a row effective in the past '
+    'is picked up by the next recompute the same way a backdated posting is, '
+    'and one effective next month is inert until the runs reach it, which is '
+    'scheduled repricing for free.';
+
+COMMENT ON COLUMN facility_terms.rate IS
+    'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '
+    '(interest.RateScale). Zero makes the WHOLE facility interest-free, which '
+    'is a real product. There is deliberately NO CHECK on this column, and '
+    'none on day_count: a CHECK enumerating the valid day-count conventions '
+    'would make store/pg refuse a write store/mem performs — which '
+    'store/storetest exists to prevent — and would turn a one-line change to a '
+    'Go constant into a migration. This is the same reasoning recorded on '
+    'overdraft_terms.rate and on the four asset columns, applied to a new '
+    'case, and it is recorded in the database because a missing constraint is '
+    'invisible in a schema dump.';
 
 COMMENT ON COLUMN installments.seq_no IS
     'The instalment''s position in the contract, 1-based, and part of its '

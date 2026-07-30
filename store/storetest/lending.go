@@ -465,6 +465,128 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 		})
 	})
 
+	// The terms timeline. Everything the accrual depends on is here: ordering
+	// (termsAt binary-searches the slice List hands it), the day-granular
+	// upsert identity, and the four positions the as-of lookup has to answer
+	// for. A store that got any of them wrong would produce interest figures
+	// nobody could reproduce, and no other subtest would notice.
+	t.Run("FacilityTermsTimeline", func(t *testing.T) {
+		s := openLending(t, newStore)
+
+		jan := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+		mar := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
+		jun := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+
+		row := func(from time.Time, rate interest.Rate) lending.FacilityTerms {
+			return lending.FacilityTerms{
+				FacilityID: "fac_1", EffectiveFrom: from,
+				Rate: rate, DayCount: interest.ACT360,
+				CreatedAt: early,
+			}
+		}
+
+		// Written out of order on purpose: the store owns the ordering, and a
+		// caller may enter a backdated repricing at any time.
+		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			for _, r := range []lending.FacilityTerms{row(jun, 120_000), row(jan, 60_000), row(mar, 90_000)} {
+				if err := tx.PutFacilityTerms(ctx, bookA, r); err != nil {
+					return err
+				}
+			}
+			// A second book's rows must be invisible to the first.
+			return tx.PutFacilityTerms(ctx, bookB, lending.FacilityTerms{
+				FacilityID: "fac_1", EffectiveFrom: jan, Rate: 999_000, CreatedAt: early,
+			})
+		})
+
+		viewLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			rows, err := tx.ListFacilityTerms(ctx, bookA, "fac_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "timeline length", len(rows), 3)
+			assertEqual(t, "first row rate", rows[0].Rate, interest.Rate(60_000))
+			assertEqual(t, "second row rate", rows[1].Rate, interest.Rate(90_000))
+			assertEqual(t, "third row rate", rows[2].Rate, interest.Rate(120_000))
+			for i := 1; i < len(rows); i++ {
+				if !rows[i-1].EffectiveFrom.Before(rows[i].EffectiveFrom) {
+					t.Fatalf("timeline not ascending at %d: %v then %v",
+						i, rows[i-1].EffectiveFrom, rows[i].EffectiveFrom)
+				}
+			}
+			// Every field round-trips, not just the rate: a dropped day count
+			// is a product silently repriced onto another convention.
+			assertEqual(t, "day count", rows[0].DayCount, interest.ACT360)
+			assertEqual(t, "facility id", string(rows[0].FacilityID), "fac_1")
+			if !rows[0].CreatedAt.Equal(early) {
+				t.Errorf("created at: got %v, want %v", rows[0].CreatedAt, early)
+			}
+			if !rows[0].EffectiveFrom.Equal(jan) {
+				t.Errorf("effective from: got %v, want %v", rows[0].EffectiveFrom, jan)
+			}
+
+			other, err := tx.ListFacilityTerms(ctx, bookB, "fac_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "book-b timeline length", len(other), 1)
+			assertEqual(t, "book-b rate is its own", other[0].Rate, interest.Rate(999_000))
+			return nil
+		})
+
+		// The four as-of positions.
+		viewLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			_, err := tx.GetFacilityTermsAsOf(ctx, bookA, "fac_1", time.Date(2024, 12, 31, 0, 0, 0, 0, time.UTC))
+			if !errors.Is(err, lending.ErrTermsNotFound) {
+				t.Errorf("before the first row: got %v, want ErrTermsNotFound", err)
+			}
+
+			onBoundary, err := tx.GetFacilityTermsAsOf(ctx, bookA, "fac_1", mar)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "on a boundary", onBoundary.Rate, interest.Rate(90_000))
+
+			between, err := tx.GetFacilityTermsAsOf(ctx, bookA, "fac_1",
+				time.Date(2025, 4, 15, 0, 0, 0, 0, time.UTC))
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "between rows takes the earlier", between.Rate, interest.Rate(90_000))
+
+			after, err := tx.GetFacilityTermsAsOf(ctx, bookA, "fac_1",
+				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "after the last row", after.Rate, interest.Rate(120_000))
+
+			// An unknown facility is ErrTermsNotFound, not a zero row that would
+			// read as a real interest-free product.
+			if _, err := tx.GetFacilityTermsAsOf(ctx, bookA, "fac_missing", mar); !errors.Is(err, lending.ErrTermsNotFound) {
+				t.Errorf("unknown facility: got %v, want ErrTermsNotFound", err)
+			}
+			return nil
+		})
+
+		// Upsert on the same (facility, effective DAY): the later row wins and
+		// the timeline does not grow. The second write carries a time of day,
+		// which must land on the same row — the identity is a day, not a moment.
+		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			repriced := row(mar.Add(17*time.Hour), 100_000)
+			return tx.PutFacilityTerms(ctx, bookA, repriced)
+		})
+		viewLending(t, s, func(ctx context.Context, tx lending.Tx) error {
+			rows, err := tx.ListFacilityTerms(ctx, bookA, "fac_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "timeline length after upsert", len(rows), 3)
+			assertEqual(t, "upserted rate", rows[1].Rate, interest.Rate(100_000))
+			return nil
+		})
+	})
+
 	t.Run("ResetClearsLendingRows", func(t *testing.T) {
 		s := openLending(t, newStore)
 
@@ -474,8 +596,14 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			}); err != nil {
 				return err
 			}
-			return tx.PutInstallment(ctx, bookA, lending.Installment{
+			if err := tx.PutInstallment(ctx, bookA, lending.Installment{
 				FacilityID: "fac_1", Seq: 1, DueDate: early, Principal: 100,
+			}); err != nil {
+				return err
+			}
+			return tx.PutFacilityTerms(ctx, bookA, lending.FacilityTerms{
+				FacilityID: "fac_1", EffectiveFrom: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+				Rate: 90_000, DayCount: interest.ACT360, CreatedAt: early,
 			})
 		})
 
@@ -495,6 +623,12 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 				return err
 			}
 			assertEqual(t, "instalments after reset", len(sched), 0)
+
+			terms, err := tx.ListFacilityTerms(ctx, bookA, "fac_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "facility terms after reset", len(terms), 0)
 			return nil
 		})
 	})
