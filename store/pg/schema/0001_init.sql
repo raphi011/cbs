@@ -316,14 +316,11 @@ CREATE TABLE facilities (
     interest_gl       TEXT NOT NULL,
     refund_gl         TEXT NOT NULL DEFAULT '',
     commitment        BIGINT NOT NULL,
-    rate              BIGINT NOT NULL,
-    day_count         SMALLINT NOT NULL,
     method            SMALLINT NOT NULL,
     term_months       INTEGER NOT NULL,
     min_payment       BIGINT NOT NULL,
     accrued_interest  BIGINT NOT NULL,
     accrued_gross     BIGINT NOT NULL DEFAULT 0,
-    terms_effective_from TIMESTAMPTZ,
     last_accrual_date TIMESTAMPTZ,
     days_past_due     INTEGER NOT NULL,
     arrears_bucket    SMALLINT NOT NULL,
@@ -729,39 +726,30 @@ COMMENT ON COLUMN facilities.accrued_interest IS
     'read them as corruption.';
 
 COMMENT ON COLUMN facilities.accrued_gross IS
-    'What the CURRENT terms window has accrued in total, same scale as '
+    'What this facility has accrued over its WHOLE LIFE, same scale as '
     'accrued_interest. Facility interest is recomputed rather than '
-    'incremented: every end-of-day re-derives the whole window from the '
-    'VALUE-DATED balance of principal_gl, and accrued_interest moves by the '
-    'change in this column. That is what makes a backdated repayment or '
-    'advance correct itself — the days it takes effect over are re-derived '
-    'with it in place, this figure moves, and the next run posts the '
-    'difference. Unlike accrued_interest it is never decremented by a '
-    'repayment or a capitalization, which settle the receivable rather than '
-    'the window. A store that dropped this column would re-derive the whole '
-    'window as a fresh delta every night and charge the same interest over '
-    'and over.';
+    'incremented: every end-of-day re-derives every day since the facility''s '
+    'opening terms row from the VALUE-DATED balance of principal_gl, and '
+    'accrued_interest moves by the change in this column. That is what makes a '
+    'backdated repayment or advance correct itself — the days it takes effect '
+    'over are re-derived with it in place, this figure moves, and the next run '
+    'posts the difference. Unlike accrued_interest it is never decremented by a '
+    'repayment or a capitalization, which settle the receivable rather than the '
+    'window, and unlike before terms became effective-dated it is never RESET: '
+    'there is no window to restart, because every day is re-derived at the '
+    'terms that were actually in force on it (see the facility_terms table) and '
+    'the days before the first advance re-derive to zero on their own. A store '
+    'that dropped this column would re-derive the facility''s whole life as a '
+    'fresh delta every night and charge the same interest over and over.';
 
-COMMENT ON COLUMN facilities.terms_effective_from IS
-    'The start of the recompute window: where the current terms took effect, '
-    'which for a facility is its FIRST ADVANCE — money not yet paid out earns '
-    'nothing, so there is nothing earlier to re-derive. It is ALSO bounded at '
-    'the last repricing, which is the constraint the deposit side has already '
-    'shed: rate and day_count are still mutable columns on this very row, and '
-    'a window reaching back past a change to them would re-derive past days at '
-    'a rate that was not in force on them. deposit_accounts used to carry the '
-    'same column for the same reason and no longer does — its terms became the '
-    'effective-dated overdraft_terms table, and its recompute window now opens '
-    'at account inception. The facility_terms table is the same move for this '
-    'side. NULL means nothing has been advanced and the facility accrues '
-    'nothing.';
-
-COMMENT ON COLUMN facilities.rate IS
-    'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '
-    '(interest.RateScale). min_payment is the same scale but is NOT a rate — '
-    'it is a dimensionless share of drawn principal added to a revolving '
-    'line''s minimum payment each cycle (interest.Fraction), and the Go types '
-    'are distinct so the compiler refuses to swap them.';
+COMMENT ON COLUMN facilities.min_payment IS
+    'The share of drawn principal added to a revolving line''s minimum payment '
+    'each cycle, on top of the interest charged. It is in MILLIONTHS, the same '
+    'scale as facility_terms.rate, but it is NOT a rate: it is dimensionless '
+    'and not per annum (interest.Fraction), and the Go types are distinct so '
+    'the compiler refuses to swap them. It stays on this row rather than moving '
+    'to facility_terms because it feeds the BILLING, not the accrual — see that '
+    'table''s comment for why nothing BuildSchedule reads is effective-dated.';
 
 COMMENT ON COLUMN facilities.commitment IS
     'What the bank has committed: a term loan''s original principal, a '

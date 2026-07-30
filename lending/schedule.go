@@ -38,23 +38,32 @@ import (
 // significant digits, so the factor for any term a human would sign is exact
 // far beyond a cent.
 //
+// # The rate is an argument, and that is the point
+//
+// It used to be read off the facility. Taking it explicitly makes visible what
+// was implicit: the schedule is a PLAN PINNED TO THE TERMS IN FORCE AT
+// ACTIVATION. Interest now follows an effective-dated timeline and the schedule
+// does not, which is exactly why repricing a term loan that already has one is
+// refused — see ErrScheduleWouldDiverge. This argument and that error are the
+// same sentence approached from opposite ends.
+//
 // Returns nil for a revolving line, which has no schedule to generate: it
 // appends one instalment per billing cycle instead, when interest is charged.
 // Also nil for a non-positive term or principal, so a caller that has validated
 // its input gets a schedule and one that has not gets nothing rather than a
 // schedule that repays a negative amount.
-func BuildSchedule(f Facility, principal ledger.Amount, firstDue time.Time) []Installment {
+func BuildSchedule(f Facility, principal ledger.Amount, rate interest.Rate, firstDue time.Time) []Installment {
 	if f.Kind != TermLoan || f.TermMonths <= 0 || principal <= 0 {
 		return nil
 	}
 
 	out := make([]Installment, 0, f.TermMonths)
 	outstanding := principal
-	payment := annuityPayment(principal, f.Rate, f.TermMonths)
+	payment := annuityPayment(principal, rate, f.TermMonths)
 	flat := principal / ledger.Amount(f.TermMonths)
 
 	for seq := 1; seq <= f.TermMonths; seq++ {
-		scheduled := monthlyInterest(outstanding, f.Rate)
+		scheduled := monthlyInterest(outstanding, rate)
 
 		var portion ledger.Amount
 		switch {

@@ -12,10 +12,12 @@ func day(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-func termLoan(method AmortMethod, rate interest.Rate, months int) Facility {
+// termLoan carries no rate: the rate is BuildSchedule's own argument now, not a
+// facility field, so each call below states the rate it is generating at.
+func termLoan(method AmortMethod, months int) Facility {
 	return Facility{
 		Kind: TermLoan, Name: "Loan", Asset: "EUR",
-		Rate: rate, DayCount: interest.ACT365, Method: method, TermMonths: months,
+		Method: method, TermMonths: months,
 	}
 }
 
@@ -24,7 +26,7 @@ func termLoan(method AmortMethod, rate interest.Rate, months int) Facility {
 func TestBuildSchedule_Annuity(t *testing.T) {
 	const principal ledger.Amount = 1_000_000 // €10,000 in cents
 
-	got := BuildSchedule(termLoan(Annuity, 60_000, 60), principal, day(2025, time.February, 15))
+	got := BuildSchedule(termLoan(Annuity, 60), principal, 60_000, day(2025, time.February, 15))
 
 	if len(got) != 60 {
 		t.Fatalf("instalments = %d, want 60", len(got))
@@ -60,7 +62,7 @@ func TestBuildSchedule_Annuity(t *testing.T) {
 func TestBuildSchedule_EqualPrincipal(t *testing.T) {
 	const principal ledger.Amount = 1_000_000
 
-	got := BuildSchedule(termLoan(EqualPrincipal, 60_000, 60), principal, day(2025, time.February, 15))
+	got := BuildSchedule(termLoan(EqualPrincipal, 60), principal, 60_000, day(2025, time.February, 15))
 
 	if len(got) != 60 {
 		t.Fatalf("instalments = %d, want 60", len(got))
@@ -89,7 +91,7 @@ func TestBuildSchedule_ZeroRate(t *testing.T) {
 
 	for _, method := range []AmortMethod{Annuity, EqualPrincipal} {
 		t.Run(method.String(), func(t *testing.T) {
-			got := BuildSchedule(termLoan(method, 0, 12), principal, day(2025, time.February, 15))
+			got := BuildSchedule(termLoan(method, 12), principal, 0, day(2025, time.February, 15))
 
 			if len(got) != 12 {
 				t.Fatalf("instalments = %d, want 12", len(got))
@@ -107,7 +109,7 @@ func TestBuildSchedule_ZeroRate(t *testing.T) {
 // not silently truncate the schedule's interest.
 func TestBuildSchedule_AwkwardRate(t *testing.T) {
 	const principal ledger.Amount = 1_000_000
-	got := BuildSchedule(termLoan(Annuity, 33_750, 12), principal, day(2025, time.February, 15)) // 3.375%
+	got := BuildSchedule(termLoan(Annuity, 12), principal, 33_750, day(2025, time.February, 15)) // 3.375%
 
 	// 1_000_000 × 33_750 / 12 / 1_000_000 = 2812.5, rounded half up to 2813.
 	// A monthly fraction pre-divided to 2812 millionths would give 2812.
@@ -115,9 +117,60 @@ func TestBuildSchedule_AwkwardRate(t *testing.T) {
 	assertScheduleRepaysExactly(t, got, principal)
 }
 
+// BuildSchedule is pinned to the rate it is GIVEN, not to one read off the
+// facility — which is what makes the schedule a plan pinned to the terms in
+// force at activation rather than something derived from a facility row that can
+// now be repriced out from under it.
+//
+// The same Facility value and the same principal at two rates produce two
+// different Interest columns. Since a Facility no longer carries a rate at all,
+// the only way the two could agree is if the argument were ignored.
+func TestBuildScheduleUsesTheRateItIsGiven(t *testing.T) {
+	const (
+		principal ledger.Amount = 1_000_000 // €10,000 in cents
+		cheap     interest.Rate = 60_000    // 6%
+		dear      interest.Rate = 120_000   // 12%
+	)
+	f := termLoan(Annuity, 12)
+	firstDue := day(2025, time.February, 15)
+
+	atCheap := BuildSchedule(f, principal, cheap, firstDue)
+	atDear := BuildSchedule(f, principal, dear, firstDue)
+
+	if len(atCheap) != 12 || len(atDear) != 12 {
+		t.Fatalf("instalments = %d and %d, want 12 each", len(atCheap), len(atDear))
+	}
+
+	// The first instalment's scheduled interest is outstanding × rate / 12,
+	// stated from the definition rather than copied from a run:
+	//
+	//	1_000_000 × 60_000  / 12_000_000 =  5_000
+	//	1_000_000 × 120_000 / 12_000_000 = 10_000
+	assertAmount(t, "first interest at 6%", atCheap[0].Interest, 5_000)
+	assertAmount(t, "first interest at 12%", atDear[0].Interest, 10_000)
+
+	// And the whole column differs, not just its head: a schedule that took the
+	// rate from somewhere else would produce two identical plans.
+	var cheapInterest, dearInterest ledger.Amount
+	for i := range atCheap {
+		cheapInterest += atCheap[i].Interest
+		dearInterest += atDear[i].Interest
+	}
+	if dearInterest <= cheapInterest {
+		t.Errorf("total scheduled interest: 12%% gave %d, 6%% gave %d; the rate argument was not used",
+			dearInterest, cheapInterest)
+	}
+
+	// Both still repay the principal to the cent, which is the property the
+	// generator's every rounding decision exists for and which a rate change
+	// must not disturb.
+	assertScheduleRepaysExactly(t, atCheap, principal)
+	assertScheduleRepaysExactly(t, atDear, principal)
+}
+
 func TestBuildSchedule_RevolvingLineHasNoSchedule(t *testing.T) {
-	line := Facility{Kind: RevolvingLine, Asset: "EUR", Rate: 180_000, TermMonths: 12}
-	if got := BuildSchedule(line, 100_000, day(2025, time.February, 15)); len(got) != 0 {
+	line := Facility{Kind: RevolvingLine, Asset: "EUR", TermMonths: 12}
+	if got := BuildSchedule(line, 100_000, 180_000, day(2025, time.February, 15)); len(got) != 0 {
 		t.Errorf("a revolving line generated %d instalments, want 0", len(got))
 	}
 }
@@ -134,8 +187,8 @@ func TestBuildSchedule_RejectsNonsense(t *testing.T) {
 		{"negative principal", 60, -1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			f := termLoan(Annuity, 60_000, tt.months)
-			if got := BuildSchedule(f, tt.principal, day(2025, time.February, 15)); len(got) != 0 {
+			f := termLoan(Annuity, tt.months)
+			if got := BuildSchedule(f, tt.principal, 60_000, day(2025, time.February, 15)); len(got) != 0 {
 				t.Errorf("generated %d instalments, want 0", len(got))
 			}
 		})

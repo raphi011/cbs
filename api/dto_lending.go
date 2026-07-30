@@ -19,6 +19,13 @@ import (
 // integer whose scale a client has to know from documentation is an integer a
 // client will render wrong. Amounts follow the existing convention and are the
 // asset's minor units.
+//
+// Rate and DayCount are RESOLVED AS OF TODAY from the facility's effective-dated
+// terms timeline rather than read off the facility row — the facility has no such
+// columns any more. So this is what the credit costs today and nothing else: a
+// future-dated repricing is not visible here until it takes effect, and a past
+// one is not visible here at all. lending.Portfolio.FacilityTermsHistory is what
+// shows the whole timeline; there is no HTTP route onto it yet.
 type facilityDTO struct {
 	ID          string `json:"id"`
 	Kind        string `json:"kind"`
@@ -64,19 +71,19 @@ type facilityDTO struct {
 	MaturityAt time.Time `json:"maturityAt,omitempty"`
 }
 
-// toFacilityDTO renders a facility. drawn, accrued and refund are resolved by
-// the caller so this function does no I/O of its own, the same convention
-// toTransactionDTO follows for entry assets: drawn is the principal GL
-// account's book balance (Portfolio.Drawn), genuinely derived; accrued is
-// f.Accrued.Minor(), the facility's own stored figure, not a GL read — it
-// only agrees with the interest GL account's balance because the system
-// maintains that as an invariant; refund is the refunds-payable account's
+// toFacilityDTO renders a facility. t is the terms in force today, and drawn,
+// accrued and refund are resolved by the caller so this function does no I/O of
+// its own, the same convention toTransactionDTO follows for entry assets: drawn
+// is the principal GL account's book balance (Portfolio.Drawn), genuinely
+// derived; accrued is f.Accrued.Minor(), the facility's own stored figure, not a
+// GL read — it only agrees with the interest GL account's balance because the
+// system maintains that as an invariant; refund is the refunds-payable account's
 // balance (Portfolio.RefundPayableFor), 0 when there is no such account.
 //
 // Method is rendered only for a term loan: AmortMethod's zero value (Annuity)
 // is indistinguishable from an explicitly-set one, and a revolving line — which
 // has no amortization method — would otherwise render a misleading "Annuity".
-func toFacilityDTO(f lending.Facility, drawn, accrued, refund ledger.Amount) facilityDTO {
+func toFacilityDTO(f lending.Facility, t lending.FacilityTerms, drawn, accrued, refund ledger.Amount) facilityDTO {
 	outstanding := drawn
 	if accrued > 0 {
 		outstanding += accrued
@@ -98,9 +105,9 @@ func toFacilityDTO(f lending.Facility, drawn, accrued, refund ledger.Amount) fac
 		Outstanding:     int64(outstanding),
 		RefundPayable:   int64(refund),
 
-		Rate:      int64(f.Rate),
+		Rate:      int64(t.Rate),
 		RateScale: interest.RateScale,
-		DayCount:  f.DayCount.String(),
+		DayCount:  t.DayCount.String(),
 
 		DaysPastDue:   f.Arrears.DaysPastDue,
 		ArrearsBucket: f.Arrears.Bucket.String(),

@@ -35,17 +35,29 @@ import (
 // # Idempotency, and how a backdated posting is corrected
 //
 // LastAccrualDate never moves backwards, so re-running an end-of-day for a date
-// already covered is a no-op rather than a second day's interest.
+// already covered is a no-op rather than a second day's interest. It is also a
+// no-op by arithmetic now: the same date over the same history produces the same
+// gross and therefore a zero delta, so the guard has one fewer reason behind it
+// than it used to.
 //
-// That is also why a posting which arrives backdated is trued up by the NEXT
-// day's run rather than by rewinding this one. Each run recomputes the whole
-// terms window from the value-dated drawn balance, so the days the posting
-// takes effect over are re-derived with it in place; the difference between the
-// window's new total and its old one is what gets posted. Interest that turns
-// out never to have been owed comes back as a correction — see
-// correctFacilityAccrualTx, which is where a facility differs from a deposit
-// account: what the receivable cannot absorb comes off principal, and what
-// principal cannot absorb either becomes a payable.
+// A posting which arrives backdated is trued up by the NEXT day's run rather
+// than by rewinding this one. Each run recomputes the whole of the facility's
+// LIFE from the value-dated drawn balance — the window opens at the facility's
+// opening terms row — so the days the posting takes effect over are re-derived
+// with it in place; the difference between the new total and the old one is what
+// gets posted. Interest that turns out never to have been owed comes back as a
+// correction — see correctFacilityAccrualTx, which is where a facility differs
+// from a deposit account: what the receivable cannot absorb comes off principal,
+// and what principal cannot absorb either becomes a payable.
+//
+// Because the window opens at origination rather than at the first advance or
+// the last repricing, a backdated posting is trued up WHEREVER it lands,
+// including on days before a repricing: each of those days is re-derived at the
+// terms that were actually in force on it, not at today's. Under the
+// mutable-columns model those days were behind the window and were silently
+// never corrected. It is also what charges the span between a full repayment and
+// a re-disbursement, which the window-reopening clamp in DisburseTx used to skip
+// entirely.
 //
 // Returns ErrFacilityNotFound.
 func (p *Portfolio) Accrue(ctx context.Context, id FacilityID, date time.Time) error {
@@ -75,26 +87,91 @@ func (p *Portfolio) AccrueTx(ctx context.Context, tx Tx, id FacilityID, date tim
 // in place, gross moves, and the delta trues up what was charged on the old
 // figure. No accrual is reversed and no date is rewound — the original posting
 // was a correct statement of what the ledger knew at the time.
+//
+// The terms are resolved PER DAY from the facility's timeline rather than read
+// off the facility, which is what lets the window reach back past a repricing
+// without re-deriving an earlier day at a rate that was never in force on it.
 func (p *Portfolio) accrueFacilityTx(ctx context.Context, tx Tx, f Facility, date time.Time) error {
-	if f.Status == Closed || f.Rate <= 0 {
-		return nil
-	}
-	if f.TermsEffectiveFrom.IsZero() {
-		// Nothing has been advanced yet, so there is no window to accrue over.
-		return nil
-	}
-	if f.DayCount.Days(f.LastAccrualDate, date) <= 0 {
+	if f.Status == Closed {
 		return nil
 	}
 
-	series, err := p.drawnSeriesTx(ctx, tx, f, f.TermsEffectiveFrom, date)
+	// The whole timeline, in one read, resolved per day in Go below. The three
+	// guards that used to sit here do not survive as a trio, and lumping them
+	// together is how this would acquire a bug:
+	//
+	//   - Status == Closed is unchanged, above.
+	//   - TermsEffectiveFrom.IsZero() meant "nothing advanced, so no window",
+	//     and there is always a window now: the opening row. The days before the
+	//     first advance are re-derived at a drawn balance of zero and accrue
+	//     nothing, which is the same answer the guard gave, arrived at by
+	//     arithmetic instead of state.
+	//   - Rate <= 0 cannot survive as an early return, because an early return
+	//     skips the whole run and a zero rate is now a property of a DAY. A
+	//     facility interest-free for its first year and priced thereafter is a
+	//     case the previous model could not express at all. Two things replace
+	//     it: the closure returns zero for a day whose resolved rate is zero,
+	//     and the run is skipped entirely when NO row carries a non-zero rate —
+	//     a scan over rows already in memory, which is what keeps a never-priced
+	//     facility from reading a drawn series every night.
+	rows, err := tx.ListFacilityTerms(ctx, p.bookID, f.ID)
 	if err != nil {
 		return err
 	}
-	next, delta := interest.Recompute(series, f.TermsEffectiveFrom, date,
+	if !anyPriced(rows) {
+		return nil
+	}
+
+	// The window opens at the earliest row, which is the opening row, which is
+	// origination. Every nightly run therefore re-derives every day the facility
+	// has had: O(days) per facility per night, accepted deliberately at this
+	// scale. The cost is arithmetic rather than I/O — the series is still one
+	// query over the window — and checkpointing is the named successor.
+	window := rows[0].EffectiveFrom
+
+	// The advancement guard resolves its day count on `date`, because after this
+	// change there is no single DayCount to ask: it is a terms field, and the
+	// conventions genuinely disagree about whether a window advanced. Under
+	// Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero
+	// while ACT365 says one — a run on the 31st is a no-op under one convention
+	// and a real day under the other.
+	//
+	// `date` is exactly the right day, and for a sharper reason than "the day
+	// being accrued": a span is named by its END (see the closure below), so the
+	// last span this run adds is [date-1, date), which is the span NAMED date.
+	// termsAt(rows, date) is therefore the very row that will price that span.
+	current, ok := termsAt(rows, date)
+	if !ok {
+		return nil
+	}
+	if current.DayCount.Days(f.LastAccrualDate, date) <= 0 {
+		return nil
+	}
+
+	series, err := p.drawnSeriesTx(ctx, tx, f, window, date)
+	if err != nil {
+		return err
+	}
+	next, delta := interest.Recompute(series, window, date,
 		interest.State{Accrued: f.Accrued, Gross: f.AccruedGross},
 		func(drawn ledger.Amount, from, to time.Time) interest.Accrued {
-			return interest.Accrue(drawn, f.Rate, f.DayCount, from, to)
+			// perDay has already cut the window to single days before any Period
+			// runs, so this closure is a function of the DAY as well as the
+			// balance. The day is `to`, not `from`: interest.AccrueSeries names a
+			// span by its END date, because a movement value-dated V ends the
+			// preceding run at V-1 and so first bites on [V-1, V). That is why
+			// the pre-existing TestAccrue_CorrectsABackdatedRepayment calls that
+			// span "day 3" for a repayment value-dated day 3.
+			//
+			// Resolving terms on `to` is what puts the rate on the same day axis
+			// as the drawn balance it is charged against. On `from` they would be
+			// a day apart — day D's rate applied to day D+1's balance — and a
+			// repricing effective day 30 would not bite until day 31.
+			day, ok := termsAt(rows, to)
+			if !ok {
+				return 0
+			}
+			return interest.Accrue(drawn, day.Rate, day.DayCount, from, to)
 		})
 
 	f.Accrued = next.Accrued

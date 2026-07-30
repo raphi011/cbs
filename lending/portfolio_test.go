@@ -14,13 +14,29 @@ import (
 
 const bookID ledger.BookID = "bank"
 
+// mutableClock is a test clock a test can move. Most of this package runs on the
+// frozen one below, which is the stronger fixture — but a terms row records WHEN
+// it was entered as well as when it takes effect, and an advance takes its value
+// date from the clock, so a test about a facility's life over time has to be able
+// to move it.
+type mutableClock struct{ at time.Time }
+
+func (c *mutableClock) set(t time.Time) { c.at = t }
+func (c *mutableClock) now() time.Time  { return c.at }
+
 // newTestPortfolio returns a portfolio over a fresh in-memory store, the book
 // it composes with, a subledger to file facilities in, and a Liability account
 // to disburse into — standing in for a customer's current account.
 func newTestPortfolio(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.AccountID) {
 	t.Helper()
+	return newTestPortfolioOn(t, func() time.Time { return time.Date(2025, time.January, 15, 9, 0, 0, 0, time.UTC) })
+}
+
+// newTestPortfolioOn is newTestPortfolio on a caller-supplied clock, for the
+// tests where WHEN an operation happened is the thing under test.
+func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.AccountID) {
+	t.Helper()
 	ctx := context.Background()
-	clock := func() time.Time { return time.Date(2025, time.January, 15, 9, 0, 0, 0, time.UTC) }
 
 	store := mem.New(clock)
 	book := ledger.NewBook(store, bookID, clock)
@@ -180,11 +196,23 @@ func TestDisburse_PostsPrincipalAndGeneratesTheSchedule(t *testing.T) {
 	if after.Status != lending.Active {
 		t.Errorf("status = %s, want Active", after.Status)
 	}
-	// Accrual starts from disbursement, not from opening: money not yet paid
-	// out earns nothing, so the clock is set here and not at OpenTermLoan.
-	if after.LastAccrualDate.IsZero() {
-		t.Error("last accrual date was not set at disbursement")
+	// Disbursement no longer touches LastAccrualDate, and it is still zero here.
+	//
+	// It used to be set to the clock, because disbursement was where the accrual
+	// window opened. The window now opens at ORIGINATION and never moves, so
+	// there is nothing for a disbursement to open and LastAccrualDate is only the
+	// advancement guard's high-water mark, set by the first accrual run. Money
+	// not yet paid out still earns nothing — but by arithmetic, because the drawn
+	// series is zero across those days, rather than by a date on the row.
+	if !after.LastAccrualDate.IsZero() {
+		t.Errorf("last accrual date = %v, want zero: disbursement does not open a window", after.LastAccrualDate)
 	}
+	// The terms the schedule was generated at are resolvable, and the timeline
+	// holds exactly the opening row written at origination.
+	terms, err := p.FacilityTermsHistory(ctx, loan.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline length at disbursement", len(terms), 1)
+	assertEqual(t, "opening row rate", terms[0].Rate, interest.Rate(60_000))
 	if !after.MaturityAt.Equal(lending.AddMonths(firstDue, 59)) {
 		t.Errorf("maturity = %v, want %v", after.MaturityAt, lending.AddMonths(firstDue, 59))
 	}
@@ -267,73 +295,165 @@ func TestDraw_RespectsTheCommitmentAndRepeats(t *testing.T) {
 	}
 }
 
-// TestDisburse_DoesNotRewindTheAccrualWindow pins the one path on which a
-// facility's window can reopen behind interest it has already been charged.
+// TestDisburse_LeavesTheAccrualWindowAlone is the successor to a test that
+// pinned a clamp this change deletes.
 //
 // ErrAlreadyDisbursed is guarded on drawn principal, not on status, so a term
 // loan repaid in full and not closed can be disbursed a second time. End-of-day
-// takes its date from the caller, so accrual can legitimately have run through
-// a date ahead of the wall clock by then. Reopening the window at the clock
-// would leave LastAccrualDate behind a charged span with AccruedGross zeroed,
-// and the next run would recompute that span and add it to Accrued again.
-func TestDisburse_DoesNotRewindTheAccrualWindow(t *testing.T) {
+// takes its date from the caller, so accrual can legitimately have run through a
+// date ahead of the wall clock by then. Disbursement USED to reopen the recompute
+// window at the clock and zero AccruedGross with it, which on that path would
+// have left the window behind an already-charged span and charged it twice — so
+// it clamped forward.
+//
+// Neither figure is touched at all now: the window opens at origination and never
+// moves, so there is no boundary for a day to fall between and nothing for a
+// clamp to protect. This asserts exactly that, on the same awkward path — the
+// deleted clamp's own scenario, with the assertion moved from "it clamped" to
+// "there is nothing to clamp". What the re-accrual then charges is
+// TestReDisbursementChargesTheSpanBeforeTheRepayment's subject.
+func TestDisburse_LeavesTheAccrualWindowAlone(t *testing.T) {
 	ctx := context.Background()
 	p, _, loan, customer := disbursedLoan(t)
 
 	// An end-of-day for a date five years ahead of the test clock.
 	ahead := day(2030, time.January, 1)
-	if err := p.Accrue(ctx, loan.ID, ahead); err != nil {
-		t.Fatalf("Accrue: %v", err)
-	}
+	assertNoError(t, p.Accrue(ctx, loan.ID, ahead))
 	charged, err := p.GetFacility(ctx, loan.ID)
-	if err != nil {
-		t.Fatalf("GetFacility: %v", err)
-	}
-	accrued := charged.Accrued
+	assertNoError(t, err)
 
 	// Repay it to zero, which is what unlocks a second disbursement.
 	owed, err := p.Outstanding(ctx, loan.ID)
-	if err != nil {
-		t.Fatalf("Outstanding: %v", err)
-	}
-	if _, err := p.Repay(ctx, loan.ID, customer, owed, ahead, "full"); err != nil {
-		t.Fatalf("Repay: %v", err)
-	}
-	if _, err := p.Disburse(ctx, loan.ID, customer, day(2030, time.March, 15), "second advance"); err != nil {
-		t.Fatalf("second Disburse: %v", err)
-	}
+	assertNoError(t, err)
+	_, err = p.Repay(ctx, loan.ID, customer, owed, ahead, "full")
+	assertNoError(t, err)
+	settled, err := p.GetFacility(ctx, loan.ID)
+	assertNoError(t, err)
+
+	_, err = p.Disburse(ctx, loan.ID, customer, day(2030, time.March, 15), "second advance")
+	assertNoError(t, err)
 
 	after, err := p.GetFacility(ctx, loan.ID)
-	if err != nil {
-		t.Fatalf("GetFacility: %v", err)
-	}
-	if after.LastAccrualDate.Before(ahead) {
-		t.Errorf("LastAccrualDate rewound to %s, want no earlier than %s",
-			after.LastAccrualDate, ahead)
-	}
-	if after.TermsEffectiveFrom.Before(ahead) {
-		t.Errorf("TermsEffectiveFrom opened at %s, behind the charged-through date %s",
-			after.TermsEffectiveFrom, ahead)
-	}
+	assertNoError(t, err)
+	assertDate(t, "LastAccrualDate across a re-disbursement", after.LastAccrualDate, ahead)
+	assertEqual(t, "AccruedGross across a re-disbursement", after.AccruedGross, charged.AccruedGross)
+	assertEqual(t, "Accrued across a re-disbursement", after.Accrued, settled.Accrued)
 
-	// The proof it is not double-charged: a run on the day after the window
-	// opens adds one day of interest, not five years of it. A repayment settles
-	// Accrued.Minor(), so what survives it is the sub-minor residue the ledger
-	// cannot represent — the base the single day is added to.
-	residue := after.Accrued
-	if err := p.Accrue(ctx, loan.ID, ahead.AddDate(0, 0, 1)); err != nil {
-		t.Fatalf("Accrue after re-disbursement: %v", err)
+	// And the timeline still holds one row, the opening one: disbursing does not
+	// reprice anything.
+	rows, err := p.FacilityTermsHistory(ctx, loan.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline length after a re-disbursement", len(rows), 1)
+}
+
+// SetFacilityTerms refuses a term loan that has a generated schedule, and allows
+// a revolving line (which has none) and an undisbursed term loan (which has none
+// yet).
+//
+// Refusing is better than documenting a divergence nobody would see: a repriced
+// term loan whose schedule still reflected the old rate would let the final
+// instalment silently absorb the difference, unnoticed until maturity.
+func TestSetFacilityTermsRefusesADisbursedTermLoan(t *testing.T) {
+	ctx := context.Background()
+
+	// Disbursed term loan: refused, and the timeline is unchanged. The fixture's
+	// subledger comes back too, so the two facilities below are opened in the
+	// same book rather than in one of their own.
+	p, _, sub, loan, _ := disbursedLoanIn(t)
+	_, err := p.SetFacilityTerms(ctx, loan.ID, 90_000, interest.ACT365, ledger.DayStart(loan.OpenedAt))
+	if !errors.Is(err, lending.ErrScheduleWouldDiverge) {
+		t.Errorf("repricing a disbursed term loan: got %v, want ErrScheduleWouldDiverge", err)
 	}
-	next, err := p.GetFacility(ctx, loan.ID)
-	if err != nil {
-		t.Fatalf("GetFacility: %v", err)
+	rows, err := p.FacilityTermsHistory(ctx, loan.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline after a refused repricing", len(rows), 1)
+
+	// Undisbursed term loan: allowed, because there is no schedule yet — and the
+	// schedule generated later uses the newer rate, which is right and may still
+	// surprise someone reading only the origination record.
+	pending := openUndisbursedTermLoan(t, p, sub)
+	_, err = p.SetFacilityTerms(ctx, pending.ID, 90_000, interest.ACT365, ledger.DayStart(pending.OpenedAt))
+	assertNoError(t, err)
+
+	// Revolving line: allowed, because it has no schedule to diverge from. Its
+	// instalments are billing cycles appended one at a time, and a cycle already
+	// billed is a statement of what WAS charged rather than a plan.
+	line := openLine(t, p, sub)
+	_, err = p.SetFacilityTerms(ctx, line.ID, 200_000, interest.ACT365, ledger.DayStart(line.OpenedAt))
+	assertNoError(t, err)
+}
+
+// A line stays repriceable after its first billing cycle, which is what keying
+// the guard on Kind before the schedule buys: a charged line DOES have
+// instalment rows, and a guard that only counted them would have locked every
+// line the moment it was billed once.
+func TestSetFacilityTermsAllowsALineThatHasBeenBilled(t *testing.T) {
+	ctx := context.Background()
+	p, _, sub, customer := newTestPortfolio(t)
+
+	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	assertNoError(t, err)
+	_, err = p.Draw(ctx, line.ID, customer, 100_000, "First draw")
+	assertNoError(t, err)
+	charge, err := p.ChargeInterest(ctx, line.ID, day(2025, time.January, 15))
+	assertNoError(t, err)
+	if !charge.Billed() {
+		t.Fatal("the cycle was not billed, so this test proves nothing")
 	}
-	// €10,000 at 6% ACT/365 for one day: 1_000_000 × 60_000 / 365 = 164_383_561.
-	want := residue + 164_383_561
-	if next.Accrued != want {
-		t.Errorf("accrued a day past the second advance = %d, want %d (five years' interest is %d)",
-			next.Accrued, want, accrued)
-	}
+	schedule, err := p.Schedule(ctx, line.ID)
+	assertNoError(t, err)
+	assertEqual(t, "instalment rows on a billed line", len(schedule), 1)
+
+	_, err = p.SetFacilityTerms(ctx, line.ID, 200_000, interest.ACT365, day(2025, time.February, 1))
+	assertNoError(t, err)
+	rows, err := p.FacilityTermsHistory(ctx, line.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline on a repriced line", len(rows), 2)
+}
+
+// A closed facility cannot be repriced, and an unknown one is not found. Both
+// guards are ahead of the schedule check, so neither can be reached by way of it.
+func TestSetFacilityTermsRejects(t *testing.T) {
+	ctx := context.Background()
+	p, _, sub, customer := newTestPortfolio(t)
+
+	line, err := p.OpenRevolvingLine(ctx, sub, "Alice Line", "EUR", 250_000, 180_000, interest.ACT365, 20_000)
+	assertNoError(t, err)
+
+	// A negative rate is not a product, whatever the facility's state.
+	_, err = p.SetFacilityTerms(ctx, line.ID, -1, interest.ACT365, day(2025, time.January, 15))
+	assertErrorIs(t, err, lending.ErrInvalidRate)
+
+	_, err = p.Draw(ctx, line.ID, customer, 100_000, "draw")
+	assertNoError(t, err)
+	_, err = p.Repay(ctx, line.ID, customer, 100_000, day(2025, time.January, 15), "settle")
+	assertNoError(t, err)
+	assertNoError(t, p.Close(ctx, line.ID))
+
+	_, err = p.SetFacilityTerms(ctx, line.ID, 200_000, interest.ACT365, day(2025, time.February, 1))
+	assertErrorIs(t, err, lending.ErrFacilityClosed)
+
+	_, err = p.SetFacilityTerms(ctx, "fac_nope", 200_000, interest.ACT365, day(2025, time.February, 1))
+	assertErrorIs(t, err, lending.ErrFacilityNotFound)
+}
+
+// openUndisbursedTermLoan opens a term loan and leaves it Pending: no money out,
+// and therefore no schedule.
+func openUndisbursedTermLoan(t *testing.T, p *lending.Portfolio, sub ledger.SubledgerID) lending.Facility {
+	t.Helper()
+	loan, err := p.OpenTermLoan(context.Background(), sub, "Bob Home Loan", "EUR",
+		1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	assertNoError(t, err)
+	return loan
+}
+
+// openLine opens an undrawn revolving line.
+func openLine(t *testing.T, p *lending.Portfolio, sub ledger.SubledgerID) lending.Facility {
+	t.Helper()
+	line, err := p.OpenRevolvingLine(context.Background(), sub, "Bob Line", "EUR",
+		250_000, 180_000, interest.ACT365, 20_000)
+	assertNoError(t, err)
+	return line
 }
 
 func TestPortfolio_UnknownFacility(t *testing.T) {
@@ -354,5 +474,30 @@ func assertErrorIs(t *testing.T, err, target error) {
 	t.Helper()
 	if !errors.Is(err, target) {
 		t.Fatalf("got error %v, want %v", err, target)
+	}
+}
+
+// assertNoError, assertEqual and assertDate mirror the in-package helpers in
+// schedule_test.go. They are duplicated rather than shared because that file is
+// `package lending` and this one is `package lending_test`, and a test helper is
+// not worth an exported symbol.
+func assertNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func assertEqual[T comparable](t *testing.T, label string, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Errorf("%s: got %v, want %v", label, got, want)
+	}
+}
+
+func assertDate(t *testing.T, label string, got, want time.Time) {
+	t.Helper()
+	if !got.Equal(want) {
+		t.Errorf("%s: got %v, want %v", label, got, want)
 	}
 }

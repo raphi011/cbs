@@ -90,7 +90,17 @@ func (s *Server) handleOpenFacility(w http.ResponseWriter, r *http.Request) {
 	// A freshly-opened facility is Pending: nothing has been advanced, nothing
 	// has accrued and no correction can have overshot, so all three derived
 	// figures are 0 without a further round trip to read the balances back.
-	writeJSON(w, http.StatusCreated, toFacilityDTO(f, 0, 0, 0))
+	//
+	// The rate reaches the response through the facility's opening terms row
+	// rather than through the value returned above: it is a terms field now, and
+	// reading it back is what keeps the created body and a later GET the same
+	// shape.
+	withTerms, err := p.Lending.GetFacilityWithTerms(r.Context(), f.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toFacilityDTO(withTerms.Facility, withTerms.Terms, 0, 0, 0))
 }
 
 func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
@@ -98,13 +108,18 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	facilities, err := p.Lending.ListFacilities(r.Context())
+	// ListFacilitiesWithTerms rather than ListFacilities: the rate is resolved
+	// per facility from its timeline, and one unit of work resolves the whole
+	// listing — resolving each facility through its own View would make a listing
+	// N units of work over a store whose mem implementation refuses to nest them.
+	facilities, err := p.Lending.ListFacilitiesWithTerms(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	out := make([]facilityDTO, len(facilities))
-	for i, f := range facilities {
+	for i, withTerms := range facilities {
+		f := withTerms.Facility
 		drawn, err := p.Lending.Drawn(r.Context(), f.ID)
 		if err != nil {
 			writeError(w, err)
@@ -120,7 +135,7 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 		// its own store transaction to return exactly this. Drawn cannot be
 		// had that way — it is the principal account's book balance, which is
 		// not on the record at all, and nor can the refund payable.
-		out[i] = toFacilityDTO(f, drawn, f.Accrued.Minor(), refund)
+		out[i] = toFacilityDTO(f, withTerms.Terms, drawn, f.Accrued.Minor(), refund)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -131,11 +146,12 @@ func (s *Server) handleGetFacility(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fid := lending.FacilityID(r.PathValue("fid"))
-	f, err := p.Lending.GetFacility(r.Context(), fid)
+	withTerms, err := p.Lending.GetFacilityWithTerms(r.Context(), fid)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
+	f := withTerms.Facility
 	drawn, err := p.Lending.Drawn(r.Context(), fid)
 	if err != nil {
 		writeError(w, err)
@@ -148,7 +164,7 @@ func (s *Server) handleGetFacility(w http.ResponseWriter, r *http.Request) {
 	}
 	// f.Accrued.Minor() rather than Portfolio.AccruedInterest, which would
 	// re-read the row already in hand — see handleListFacilities.
-	writeJSON(w, http.StatusOK, toFacilityDTO(f, drawn, f.Accrued.Minor(), refund))
+	writeJSON(w, http.StatusOK, toFacilityDTO(f, withTerms.Terms, drawn, f.Accrued.Minor(), refund))
 }
 
 func (s *Server) handleFacilitySchedule(w http.ResponseWriter, r *http.Request) {

@@ -72,7 +72,14 @@ const (
 	EventFacilityOpened    = "facility.opened"
 	EventFacilityDisbursed = "facility.disbursed"
 	EventFacilityDrawn     = "facility.drawn"
-	EventFacilityAccrued   = "facility.accrued"
+	// EventFacilityTermsSet records one row appended to a facility's
+	// effective-dated terms timeline, carrying the effective date and the entry
+	// date alike. It is the deposit layer's EventOverdraftTermsSet for a credit
+	// facility, and it is the only control on a BACKDATED repricing: that moves
+	// interest already charged to a borrower, and this event is what makes "who
+	// repriced this facility backwards, and when" answerable.
+	EventFacilityTermsSet = "facility.terms_set"
+	EventFacilityAccrued  = "facility.accrued"
 	// EventFacilityAccrualCorrected is a true-up of facility interest after a
 	// backdated posting changed the drawn balance a past day accrued on.
 	// Distinct from EventFacilityAccrued so a correction is visible as one in

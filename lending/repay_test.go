@@ -267,7 +267,9 @@ func TestClose_SucceedsOnAnExactHalfMinorUnitResidue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
-	// Disbursement sets LastAccrualDate from the (fixed) clock, 15 January.
+	// The recompute window opens at ORIGINATION, which the fixed clock puts on
+	// the same day as this disbursement, 15 January — so the run below is one
+	// ACT/365 day whichever of the two you measure from.
 	if _, err := p.Disburse(ctx, loan.ID, customer, day(2025, time.April, 15), "advance"); err != nil {
 		t.Fatalf("Disburse: %v", err)
 	}

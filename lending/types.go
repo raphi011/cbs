@@ -202,9 +202,6 @@ type Facility struct {
 	// plays the same role in both — the amount beyond which drawing is refused.
 	Commitment ledger.Amount
 
-	Rate     interest.Rate
-	DayCount interest.DayCount
-
 	// Method is the amortization method, term loans only.
 	Method AmortMethod
 	// TermMonths is the number of instalments, term loans only.
@@ -219,39 +216,38 @@ type Facility struct {
 	// precision. InterestGL holds Accrued.Minor(); this holds the residue the
 	// ledger cannot represent.
 	Accrued interest.Accrued
-	// AccruedGross is the interest the current terms window has produced in
-	// total, recomputed from the facility's value-dated drawn balance on every
-	// run. Accrued moves by the CHANGE in it, which is what lets a backdated
-	// posting correct the interest charged on the days it takes effect over:
-	// those days are re-derived with it in place, this figure moves, and the
-	// next run posts the difference.
+	// AccruedGross is the interest this facility has produced over its WHOLE
+	// LIFE, recomputed from its value-dated drawn balance on every run. Accrued
+	// moves by the CHANGE in it, which is what lets a backdated posting correct
+	// the interest charged on the days it takes effect over: those days are
+	// re-derived with it in place, this figure moves, and the next run posts the
+	// difference.
 	//
 	// Unlike Accrued it is never decremented by a repayment or a
-	// capitalization — those settle the receivable, not the window — and it
-	// resets when the window does, which today is the first advance.
+	// capitalization — those settle the receivable, not the window — and,
+	// unlike before terms were effective-dated, it is never RESET. There is no
+	// window to start any more: the recompute opens at the facility's opening
+	// terms row and every day is re-derived at the terms that were actually in
+	// force on it, so a repricing needs no fresh baseline. The days before the
+	// first advance re-derive to zero on their own, because drawn is zero
+	// across them.
+	//
+	// Overflow is not a concern worth engineering around: this is int64
+	// micro-minor-units, a EUR 100,000 loan at 10% produces on the order of
+	// 1e12 a year, and int64 holds 9.2e18.
 	AccruedGross interest.Accrued
-	// TermsEffectiveFrom is the start of the recompute window: where the
-	// current terms took effect, which for a facility is its first advance.
-	// Money not yet paid out earns nothing, so there is nothing earlier to
-	// re-derive.
+	// LastAccrualDate is the business date accrual has been recomputed through.
 	//
-	// It is ALSO bounded at the last repricing, which is the constraint the
-	// deposit side has already shed: Rate and DayCount are still mutable
-	// columns on this very row, so a window reaching back past a change to them
-	// would re-derive past days at a rate that was not in force on them.
-	// deposit.Account carried the same field for the same reason and no longer
-	// does — its terms became the effective-dated deposit.OverdraftTerms
-	// timeline, resolved per accrual day, and its recompute window now opens at
-	// account inception. lending.FacilityTerms is the same move for this side,
-	// not yet consumed here. Nothing in this package reprices a facility yet;
-	// whatever does must move this field, and reset AccruedGross with it.
+	// It enforces interest.Recompute's documented precondition: [from, to] must
+	// cover at least one day, and a caller that recomputes an empty window over
+	// a non-zero prior state is told to give the whole record back. That is the
+	// only job it has left. It used to also carry the job of preventing a second
+	// day's interest on a re-run; with a whole-life recompute the same date
+	// produces the same gross and therefore a zero delta, so the same invariant
+	// now has one fewer reason behind it.
 	//
-	// Zero means nothing has been advanced and the facility accrues nothing.
-	TermsEffectiveFrom time.Time
-	// LastAccrualDate never moves backwards, which is what makes re-running an
-	// end-of-day a no-op rather than a second day's interest — and why a
-	// backdated posting is corrected by the next day's run rather than by
-	// rewinding this one.
+	// Zero until the first accrual run: neither opening nor advancing sets it,
+	// because neither opens a window any more.
 	LastAccrualDate time.Time
 
 	Arrears Arrears
@@ -295,3 +291,13 @@ func (i Installment) Outstanding() ledger.Amount {
 
 // Total is the instalment's scheduled payment.
 func (i Installment) Total() ledger.Amount { return i.Principal + i.Interest }
+
+// FacilityWithTerms is a facility alongside the terms in force on a day —
+// today, for every caller here. It is deposit.AccountWithTerms' mirror and
+// exists for the same reason: terms are resolved rather than cached on the row,
+// and a listing that resolved each one through its own unit of work would be N
+// units of work.
+type FacilityWithTerms struct {
+	Facility Facility
+	Terms    FacilityTerms
+}

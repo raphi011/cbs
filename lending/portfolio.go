@@ -124,7 +124,10 @@ func (p *Portfolio) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 // money that was never disbursed is a plan to repay nothing.
 //
 // principal is the committed amount; rate is the annual rate; dc is the
-// day-count convention interest accrues under.
+// day-count convention interest accrues under. The last two are written as the
+// facility's OPENING TERMS ROW rather than onto the facility itself — terms are
+// effective-dated, and this is the row in force from origination onwards. Use
+// SetFacilityTerms to reprice afterwards.
 //
 // termMonths is bounded at MaxTermMonths as well as below at 1. The term is an
 // ALLOCATION: BuildSchedule writes one instalment row per month, so an
@@ -158,8 +161,8 @@ func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, subledger ledger.
 	}
 	return p.openTx(ctx, tx, Facility{
 		Kind: TermLoan, Name: name, Asset: asset, Commitment: principal,
-		Rate: rate, DayCount: dc, Method: method, TermMonths: termMonths,
-	}, subledger)
+		Method: method, TermMonths: termMonths,
+	}, rate, dc, subledger)
 }
 
 // OpenRevolvingLine opens a revolving credit line: a commitment that may be
@@ -168,6 +171,10 @@ func (p *Portfolio) OpenTermLoanTx(ctx context.Context, tx Tx, subledger ledger.
 // minPayment is the share of drawn principal added to each billing cycle's
 // minimum payment, on top of the interest charged that cycle. It is a
 // dimensionless Fraction rather than a Rate, because it is not per annum.
+//
+// rate and dc become the line's opening terms row, exactly as in OpenTermLoan;
+// SetFacilityTerms reprices it afterwards, and a line may be repriced freely
+// because it has no generated schedule to diverge from.
 //
 // A line has no maturity and no up-front schedule; its instalments are its
 // billing cycles, appended by ChargeInterest.
@@ -188,21 +195,27 @@ func (p *Portfolio) OpenRevolvingLineTx(ctx context.Context, tx Tx, subledger le
 	}
 	return p.openTx(ctx, tx, Facility{
 		Kind: RevolvingLine, Name: name, Asset: asset, Commitment: limit,
-		Rate: rate, DayCount: dc, MinPayment: minPayment,
-	}, subledger)
+		MinPayment: minPayment,
+	}, rate, dc, subledger)
 }
 
 // openTx is the shared body of both openers: validate, create the two GL
-// accounts, write the facility, record the event.
-func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, subledger ledger.SubledgerID) (Facility, error) {
+// accounts, write the facility and its opening terms row, record the event.
+//
+// rate and dc are parameters rather than fields on f because they are no longer
+// fields on a Facility at all: they are what the facility's first FacilityTerms
+// row carries. The openers used to set them on the literal they build, and the
+// change from that to this is the whole shape of effective-dated terms in one
+// signature.
+func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, rate interest.Rate, dc interest.DayCount, subledger ledger.SubledgerID) (Facility, error) {
 	if err := ledger.ValidateText("name", f.Name); err != nil {
 		return Facility{}, err
 	}
 	if f.Commitment <= 0 {
 		return Facility{}, ErrInvalidAmount
 	}
-	if f.Rate < 0 {
-		return Facility{}, ErrInvalidRate
+	if err := (FacilityTerms{Rate: rate}).Validate(); err != nil {
+		return Facility{}, err
 	}
 
 	// The facility's own accounts go in a Loans and Advances subledger under
@@ -243,6 +256,25 @@ func (p *Portfolio) openTx(ctx context.Context, tx Tx, f Facility, subledger led
 	if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
 		return Facility{}, err
 	}
+
+	// Every facility gets a terms row from origination, so the recompute window
+	// starts uniform across both credit layers and the timeline answers for
+	// every day the facility has existed. Days before the first advance accrue
+	// zero anyway, because drawn is zero across them — which is why the "first
+	// advance opens the window" state that used to live in DisburseTx and DrawTx
+	// can go: it was an optimisation expressed as a guard, and the series
+	// already gives the right answer.
+	opening := FacilityTerms{
+		FacilityID:    f.ID,
+		EffectiveFrom: ledger.DayStart(f.OpenedAt),
+		Rate:          rate,
+		DayCount:      dc,
+		CreatedAt:     f.OpenedAt,
+	}
+	if err := tx.PutFacilityTerms(ctx, p.bookID, opening); err != nil {
+		return Facility{}, err
+	}
+
 	if err := p.appendAuditTx(ctx, tx, ledger.EventFacilityOpened, string(f.ID), f); err != nil {
 		return Facility{}, err
 	}
@@ -307,7 +339,17 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 		return ledger.Transaction{}, err
 	}
 
-	schedule := BuildSchedule(f, f.Commitment, firstDue)
+	// The schedule is generated from the rate in force ON THE DISBURSEMENT DAY,
+	// resolved from the timeline rather than read off the facility. That is the
+	// moment the plan is pinned to, and a term loan repriced BEFORE disbursement
+	// is disbursed on the newer rate — see SetFacilityTerms, which refuses the
+	// repricing once a schedule exists precisely because the two could then
+	// diverge.
+	terms, err := tx.GetFacilityTermsAsOf(ctx, p.bookID, f.ID, ledger.DayStart(p.now()))
+	if err != nil {
+		return ledger.Transaction{}, err
+	}
+	schedule := BuildSchedule(f, f.Commitment, terms.Rate, firstDue)
 	for _, inst := range schedule {
 		inst.FacilityID = f.ID
 		if err := tx.PutInstallment(ctx, p.bookID, inst); err != nil {
@@ -316,26 +358,14 @@ func (p *Portfolio) DisburseTx(ctx context.Context, tx Tx, id FacilityID, counte
 	}
 
 	f.Status = Active
-	// Disbursement opens the accrual window. Nothing was owed before it, so
-	// there is no earlier span for the recompute to reach back over and none
-	// can fall between two windows: this is the first one.
-	//
-	// "First" is not quite guaranteed, though: the guard above is on drawn
-	// principal, not on status, so a term loan repaid in full and not closed
-	// can be disbursed again. If interest had by then been accrued through a
-	// date ahead of the wall clock — end-of-day takes its date from the caller
-	// — reopening the window at now would put it BEHIND a charged span with
-	// AccruedGross zeroed, and the next run would add that span to Accrued a
-	// second time. Clamping forward keeps LastAccrualDate's documented
-	// never-backwards invariant true, and is a no-op on the ordinary first
-	// advance, where LastAccrualDate is still zero.
-	now := p.now()
-	if now.Before(f.LastAccrualDate) {
-		now = f.LastAccrualDate
-	}
-	f.LastAccrualDate = now
-	f.TermsEffectiveFrom = now
-	f.AccruedGross = 0
+	// Disbursement no longer opens the accrual window: the window opens at
+	// origination and never moves, so there is no boundary for a day to fall
+	// between and no span for a clamp to skip. What the clamp here protected
+	// against — a re-disbursement reopening the window behind a span already
+	// charged, with AccruedGross zeroed, so the next run charged it twice — is
+	// unreachable once neither figure is touched at all. And the span between a
+	// full repayment and a re-disbursement, which the clamp used to skip
+	// entirely, is now charged like any other: it was drawn, so it was owed.
 	if n := len(schedule); n > 0 {
 		f.MaturityAt = schedule[n-1].DueDate
 	}
@@ -399,20 +429,13 @@ func (p *Portfolio) DrawTx(ctx context.Context, tx Tx, id FacilityID, counterpar
 	}
 
 	if f.Status == Pending {
+		// A line still accrues nothing before its first draw — an undrawn
+		// commitment costs the borrower nothing — but that is now arithmetic
+		// rather than state: the recompute opens at origination and the drawn
+		// series is zero across every day before this posting, so those days
+		// re-derive to zero on their own. The three assignments that used to
+		// open a window here are gone with the window.
 		f.Status = Active
-		// A line accrues from its first draw, not from opening: an undrawn
-		// commitment costs the borrower nothing. That first draw is therefore
-		// also where the recompute window opens, and a later draw leaves it
-		// alone — the window spans the whole drawn history, which is the point.
-		//
-		// No clamp is needed here, unlike in DisburseTx: this branch only runs
-		// while the line is still Pending, which means nothing has ever been
-		// advanced and so nothing has ever been accrued. LastAccrualDate is
-		// zero, and now cannot be before it.
-		now := p.now()
-		f.LastAccrualDate = now
-		f.TermsEffectiveFrom = now
-		f.AccruedGross = 0
 		if err := tx.PutFacility(ctx, p.bookID, f); err != nil {
 			return ledger.Transaction{}, err
 		}
@@ -444,6 +467,106 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 }
 
 // ---------------------------------------------------------------------------
+// Repricing
+// ---------------------------------------------------------------------------
+
+// SetFacilityTerms reprices a facility from a given day.
+//
+// It appends a row to the facility's terms timeline rather than overwriting
+// anything, so the rate that was in force on any past day stays resolvable and
+// the next recompute re-derives each day at its own. effectiveFrom may be
+// backdated or future-dated: a backdated row is picked up by the next run the
+// same way a backdated posting is, and the difference is posted as ordinary
+// delta interest, while a future-dated row is inert until the runs reach it.
+//
+// The risk in the first of those is real and is not hidden: a retroactive
+// repricing MOVES INTEREST THAT HAS ALREADY BEEN CHARGED TO A BORROWER, and the
+// audit log is the only control on it. Every call appends an
+// EventFacilityTermsSet event carrying the row, effective date and entry date
+// alike.
+//
+// The value returned is the row that was WRITTEN, which is not necessarily the
+// row in force now — a future-dated repricing returns terms nothing is being
+// priced at yet. Use GetFacilityWithTerms for the row in force today.
+//
+// # Why a disbursed term loan is refused
+//
+// A term loan's instalment schedule is generated once, at disbursement, from
+// the rate in force then, and stored as rows. If accrual followed the timeline
+// and the schedule did not, a repricing would make the plan and the actual
+// accrual diverge — beyond the ordinary plan-versus-actual divergence this
+// package already teaches, which 30/360 exists to keep small — and the final
+// instalment would silently absorb the difference. Nobody would notice until
+// maturity.
+//
+// So this returns ErrScheduleWouldDiverge for a term loan that has a generated
+// schedule, and allows repricing freely on a revolving line (which has none)
+// and on an undisbursed term loan (which has none yet). Refusing is better than
+// documenting a divergence nobody would see; regenerating a schedule against
+// repayments already posted against it needs versioned schedule rows and
+// open-item allocation, and is its own topic.
+//
+// The guard is on the SCHEDULE rather than on status or on drawn principal,
+// which is what keeps a revolving line repriceable after its first billing
+// cycle has appended instalment rows: a line's instalments are cycles already
+// billed — statements of what WAS charged — not a plan a repricing could put out
+// of step. Keying on Kind first is what draws that line.
+//
+// A term loan repriced BEFORE disbursement is allowed and changes the schedule
+// generated later, which is right and may still surprise someone reading only
+// the origination record. Both rows are in the audit log.
+//
+// Returns ErrFacilityNotFound, ErrFacilityClosed, ErrInvalidRate and
+// ErrScheduleWouldDiverge.
+func (p *Portfolio) SetFacilityTerms(ctx context.Context, id FacilityID, rate interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (FacilityTerms, error) {
+	var out FacilityTerms
+	err := p.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = p.SetFacilityTermsTx(ctx, tx, id, rate, dc, effectiveFrom)
+		return err
+	})
+	return out, err
+}
+
+// SetFacilityTermsTx is SetFacilityTerms within a caller-supplied unit of work.
+func (p *Portfolio) SetFacilityTermsTx(ctx context.Context, tx Tx, id FacilityID, rate interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (FacilityTerms, error) {
+	f, err := tx.GetFacility(ctx, p.bookID, id)
+	if err != nil {
+		return FacilityTerms{}, err
+	}
+	if f.Status == Closed {
+		return FacilityTerms{}, ErrFacilityClosed
+	}
+	if f.Kind == TermLoan {
+		schedule, err := tx.ListInstallments(ctx, p.bookID, id)
+		if err != nil {
+			return FacilityTerms{}, err
+		}
+		if len(schedule) > 0 {
+			return FacilityTerms{}, ErrScheduleWouldDiverge
+		}
+	}
+
+	row := FacilityTerms{
+		FacilityID:    id,
+		EffectiveFrom: ledger.DayStart(effectiveFrom),
+		Rate:          rate,
+		DayCount:      dc,
+		CreatedAt:     p.now(),
+	}
+	if err := row.Validate(); err != nil {
+		return FacilityTerms{}, err
+	}
+	if err := tx.PutFacilityTerms(ctx, p.bookID, row); err != nil {
+		return FacilityTerms{}, err
+	}
+	if err := p.appendAuditTx(ctx, tx, ledger.EventFacilityTermsSet, string(id), row); err != nil {
+		return FacilityTerms{}, err
+	}
+	return row, nil
+}
+
+// ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
 
@@ -465,6 +588,69 @@ func (p *Portfolio) ListFacilities(ctx context.Context) ([]Facility, error) {
 		var err error
 		out, err = tx.ListFacilities(ctx, p.bookID)
 		return err
+	})
+	return out, err
+}
+
+// FacilityTermsHistory returns a facility's whole terms timeline, oldest first.
+// It is the point of making terms effective-dated: the history is inspectable
+// rather than merely recoverable by replaying the audit log.
+//
+// Returns ErrFacilityNotFound.
+func (p *Portfolio) FacilityTermsHistory(ctx context.Context, id FacilityID) ([]FacilityTerms, error) {
+	var out []FacilityTerms
+	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetFacility(ctx, p.bookID, id); err != nil {
+			return err
+		}
+		var err error
+		out, err = tx.ListFacilityTerms(ctx, p.bookID, id)
+		return err
+	})
+	return out, err
+}
+
+// GetFacilityWithTerms returns a facility alongside the terms in force today.
+// Returns ErrFacilityNotFound, and ErrTermsNotFound only for a facility that
+// somehow has no opening row.
+func (p *Portfolio) GetFacilityWithTerms(ctx context.Context, id FacilityID) (FacilityWithTerms, error) {
+	var out FacilityWithTerms
+	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		f, err := tx.GetFacility(ctx, p.bookID, id)
+		if err != nil {
+			return err
+		}
+		terms, err := tx.GetFacilityTermsAsOf(ctx, p.bookID, id, ledger.DayStart(p.now()))
+		if err != nil {
+			return err
+		}
+		out = FacilityWithTerms{Facility: f, Terms: terms}
+		return nil
+	})
+	return out, err
+}
+
+// ListFacilitiesWithTerms is GetFacilityWithTerms over the whole book, in ONE
+// unit of work. Resolving each facility through its own View would make a
+// listing N units of work over a store whose mem implementation refuses to nest
+// them.
+func (p *Portfolio) ListFacilitiesWithTerms(ctx context.Context) ([]FacilityWithTerms, error) {
+	var out []FacilityWithTerms
+	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		facilities, err := tx.ListFacilities(ctx, p.bookID)
+		if err != nil {
+			return err
+		}
+		today := ledger.DayStart(p.now())
+		out = make([]FacilityWithTerms, 0, len(facilities))
+		for _, f := range facilities {
+			terms, err := tx.GetFacilityTermsAsOf(ctx, p.bookID, f.ID, today)
+			if err != nil {
+				return err
+			}
+			out = append(out, FacilityWithTerms{Facility: f, Terms: terms})
+		}
+		return nil
 	})
 	return out, err
 }

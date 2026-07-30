@@ -288,7 +288,7 @@ func TestListRefundsPayable_ListsOnlyWhatIsOwed(t *testing.T) {
 	// A second, ordinary facility in the same book. It must not appear: it has
 	// no refunds-payable account, and a pooled per-asset account would have made
 	// these two indistinguishable.
-	if _, err := p.OpenRevolvingLine(ctx, sub, "Bob Line", "EUR", 500_000, 120_000, loan.DayCount, 20_000); err != nil {
+	if _, err := p.OpenRevolvingLine(ctx, sub, "Bob Line", "EUR", 500_000, 120_000, loanDayCount, 20_000); err != nil {
 		t.Fatalf("OpenRevolvingLine: %v", err)
 	}
 

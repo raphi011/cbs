@@ -151,7 +151,10 @@ func (p *Portfolio) recomputeArrearsFacilityTx(ctx context.Context, tx Tx, f Fac
 // on is a product decision this layer has no opinion about; a caller runs
 // ChargeInterest when its calendar says to.
 //
-// Closed facilities and those with no rate are skipped rather than errored.
+// Closed facilities and never-priced ones are skipped rather than errored.
+// "Never priced" is a property of the whole terms timeline, not of a column: a
+// facility priced only from next month still has a run tonight, and it accrues
+// nothing because the row in force on the day being accrued carries a zero rate.
 //
 // This is one of two end-of-day entry points — deposit.Register has the other,
 // for overdraft accrual — because the two layers own different products and

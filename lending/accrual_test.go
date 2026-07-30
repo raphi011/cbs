@@ -10,6 +10,16 @@ import (
 	"github.com/raphi011/cbs/lending"
 )
 
+// loanRate and loanDayCount are the terms disbursedLoan opens at. They are
+// constants here rather than fields read back off the facility, because a
+// facility no longer carries either: they live in its FacilityTerms timeline,
+// and a test that wants the rate a figure was derived at is better off stating
+// it than resolving it.
+const (
+	loanRate     interest.Rate     = 60_000 // 6%
+	loanDayCount interest.DayCount = interest.ACT365
+)
+
 // disbursedLoan is a €10,000 five-year annuity at 6%, paid out on 15 January.
 func disbursedLoan(t *testing.T) (*lending.Portfolio, *ledger.Book, lending.Facility, ledger.AccountID) {
 	t.Helper()
@@ -26,7 +36,7 @@ func disbursedLoanIn(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.Sub
 	ctx := context.Background()
 	p, book, sub, customer := newTestPortfolio(t)
 
-	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, 60_000, interest.ACT365, lending.Annuity, 60)
+	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR", 1_000_000, loanRate, loanDayCount, lending.Annuity, 60)
 	if err != nil {
 		t.Fatalf("OpenTermLoan: %v", err)
 	}
@@ -44,8 +54,10 @@ func day(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }
 
-// drawdown is the day disbursedLoan's money reaches the borrower, and so the
-// day its accrual window opens: the test portfolio's clock reads 15 January.
+// drawdown is the day disbursedLoan's money reaches the borrower: the test
+// portfolio's clock reads 15 January and never moves, so the loan is opened and
+// disbursed on the same day. That is also the day its recompute window opens —
+// the window opens at ORIGINATION now, and here the two coincide.
 var drawdown = day(2025, time.January, 15)
 
 // postTo posts a movement onto one of a facility's GL accounts against a
@@ -840,13 +852,13 @@ func TestAccrue_RefundFeedsTheFollowingDaysBasis(t *testing.T) {
 	}
 	after := facility(t, p, loan.ID).Accrued
 
-	want := interest.Accrue(drawnAfterCorrection, loan.Rate, loan.DayCount,
+	want := interest.Accrue(drawnAfterCorrection, loanRate, loanDayCount,
 		drawdown.AddDate(0, 0, 32), drawdown.AddDate(0, 0, 33))
 	if got := after - before; got != want {
 		t.Errorf("day 33 accrued %d, want %d on the post-refund principal %d", got, want, drawnAfterCorrection)
 	}
 	// And that is strictly less than a day on the basis before the refund.
-	full := interest.Accrue(100_000, loan.Rate, loan.DayCount,
+	full := interest.Accrue(100_000, loanRate, loanDayCount,
 		drawdown.AddDate(0, 0, 32), drawdown.AddDate(0, 0, 33))
 	if want >= full {
 		t.Errorf("post-refund day = %d, want less than %d; the refund must reduce the basis", want, full)
