@@ -260,6 +260,8 @@ After a €600 debit:
   Available left:     €100  (limit €500, used €400)
 \`\`\`
 
+The limit is [[effective-dated-terms|effective-dated]], so the figure this formula uses is the one in force on the day being asked about — not a column that can be edited out from under a past calculation.
+
 When a liability account's book balance goes negative, the bank's perspective flips: economically it is now money owed *to* the bank. Once a rate is set, [[overdraft-interest|interest accrues daily]] on that drawn amount and is charged — capitalized — to the account monthly, which is what makes an overdraft **compound**.
 
 That flip is never posted, which is the load-bearing point. The drawn amount stays exactly where it always was — the negative balance of this same Liability account — because it has no existence independent of that balance; there is no separate [[credit-facility|facility]] record for it. What looks like an Asset-side total is a derived aggregate over every deposit account, computed when asked, never stored.
@@ -939,7 +941,9 @@ A row's outstanding amount is *that instalment's* unpaid remainder — (principa
     title: "Overdraft interest",
     body: `An [[overdraft|overdraft limit]] is not free once a rate is set: interest accrues daily on the account's debit balance — the arranged rate up to the limit, and the [[unarranged-rate|unarranged rate]] on any balance beyond it — under a [[day-count|day-count convention]], the same way a [[credit-facility|facility]] does.
 
-[[accrued-interest|Accrued interest]] is tracked at higher precision than the ledger posts (rounding to a whole minor unit every day would quietly lose a fraction of it); the account's accrued figure is the rounded amount the general ledger actually holds. It is charged to the account — [[capitalization|capitalized]] into the debit balance — on a billing cycle, which is why an overdraft sitting at its limit is not costless the way a \`0\`-rate account is.`,
+[[accrued-interest|Accrued interest]] is tracked at higher precision than the ledger posts (rounding to a whole minor unit every day would quietly lose a fraction of it); the account's accrued figure is the rounded amount the general ledger actually holds. It is charged to the account — [[capitalization|capitalized]] into the debit balance — on a billing cycle, which is why an overdraft sitting at its limit is not costless the way a \`0\`-rate account is.
+
+Both the limit and the rates are [[effective-dated-terms|effective-dated]], and every night's accrual is a RECOMPUTATION of the whole account rather than an increment. That is what lets it reach all the way back to account opening: every day is re-derived at the terms that were actually in force on it, so a back-dated posting is trued up wherever it lands — including before a repricing, which used to be a line the correction silently stopped at.`,
   },
   "effective-dated-terms": {
     title: "Effective-dated terms",

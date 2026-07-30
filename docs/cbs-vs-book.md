@@ -9,7 +9,7 @@ The book is a German-flavoured EU reference (fictional "Nordwind Bank GmbH", BaF
 ## Status, as of 2026-07-30
 
 **This is a snapshot of the comparison as it read when written, not a live
-checklist.** Six of its findings have since been closed and the body below has
+checklist.** Seven of its findings have since been closed and the body below has
 deliberately *not* been rewritten around them — the argument for each change is
 worth keeping even where the change landed. Read §6's numbered list against this
 table, not on its own.
@@ -26,7 +26,7 @@ table, not on its own.
 | 8. `ValueDateBalance`, and accrual reading it | **closed, and overshot** — §2.2's premise no longer holds. Both accrual paths read `Tx.ValueDatedSeries`, `interest.AccrueSeries` accrues over a balance that *moves* within the window, and both paths recompute rather than increment | `9866c9d`, `8c1b1cd`, `b9de417`, `65b00d0`, `e108ba6` |
 | 9. Reject future booking dates | **open** | — |
 | 10. Hold expiry sweep | **open** — `HoldStatus` still has no expired state | — |
-| 11. Effective-dated terms | **open, but approached** — `TermsEffectiveFrom` exists on `deposit.Account` and `lending.Facility`. It is a *recompute-window bound*, not a terms history: `SetOverdraftTermsTx` still overwrites the rate in place | — |
+| 11. Effective-dated terms | **closed** — §4.3's premise no longer holds. An account's overdraft limit, both its rates and its day count — and a facility's rate and day count — are rows on a per-instance timeline, one per repricing, never overwritten, each carrying both the day it takes effect and the day it was entered. `SetOverdraftTermsTx` and `SetFacilityTermsTx` append rather than overwrite, and accrual resolves the row in force on each day it prices. `TermsEffectiveFrom` is gone from both types, and the recompute window opens at inception instead | `deposit/terms.go`, `lending/terms.go`, `overdraft_terms` / `facility_terms` |
 | 12. Allocation-order policy | **open** | — |
 | 13. Inbound suspense + return | **open**, and better understood than §4.5 states — see below | — |
 | 14. Savings product | **open** — `interest` has still never run on the liability side | — |
@@ -43,12 +43,16 @@ Two things the comparison got incomplete, worth recording next to it:
   `Clearing Suspense (<asset>)`: that account means "a payment leg in flight",
   and pooling unapplicable credits into it would make one balance answer two
   questions. See README *Next Work*.
-- **A gap this comparison never found.** `DisburseTx` clamps
-  `LastAccrualDate` forward to the wall clock before reopening the accrual
-  window on a re-drawn facility. The clamp stops a span being charged twice —
-  and thereby stops the span between the real last accrual and the
-  re-disbursement being charged at all. Mirror image of the double-charge that
-  was fixed, same code path.
+- **A gap this comparison never found, and item 11 closed on its way past.**
+  `DisburseTx` used to clamp `LastAccrualDate` forward to the wall clock before
+  reopening the accrual window on a re-drawn facility. The clamp stopped a span
+  being charged twice — and thereby stopped the span between the real last
+  accrual and the re-disbursement being charged at all: the mirror image of the
+  double-charge that was fixed, through the same code path. Effective-dated
+  terms removed the clamp outright. The window opens at origination and every
+  run re-derives the facility's whole life, so the skipped span is charged, and
+  it still cannot be charged twice — a recomputation posts the CHANGE in the
+  rounded value, not an increment.
 
 ---
 

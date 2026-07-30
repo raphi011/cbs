@@ -2098,9 +2098,17 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
 			// perDay has already cut the window to single days before any
-			// Period runs, so `from` IS the day: this closure is a function of
-			// the day as well as the balance, which is what a Period is for.
-			day, ok := termsAt(rows, from)
+			// Period runs, so this closure is a function of the DAY as well as
+			// the balance, which is what a Period is for. The day is `to`, not
+			// `from`: interest.AccrueSeries names a span by its END date,
+			// because a movement value-dated V ends the preceding run at V-1
+			// and so first bites on [V-1, V).
+			//
+			// Resolving terms on `to` is what puts the rate on the same day
+			// axis as the balance it is charged against. On `from` they would
+			// be a day apart — day D's rate applied to day D+1's balance — and
+			// a repricing effective day 30 would not bite until day 31.
+			day, ok := termsAt(rows, to)
 			if !ok {
 				return 0
 			}
@@ -2701,7 +2709,8 @@ Add to `ledger/audit.go`, in the lending block beside `EventFacilityOpened`:
 Replace `accrueFacilityTx`'s head (`lending/accrual.go:78-98`) with the mirror of Task 4 Step 7:
 `Status == Closed` stays; `TermsEffectiveFrom.IsZero()` and `Rate <= 0` are replaced by the
 timeline read plus `anyPriced`; `window := rows[0].EffectiveFrom`; the advancement guard resolves
-its day count with `termsAt(rows, date)`; the closure resolves `termsAt(rows, from)` and calls
+its day count with `termsAt(rows, date)`; the closure resolves `termsAt(rows, to)` — a span is
+named by its END date, as in Task 4 Step 7 — and calls
 `interest.Accrue(drawn, day.Rate, day.DayCount, from, to)`, returning 0 when the day precedes the
 first row.
 
@@ -3082,14 +3091,20 @@ before the final 15-day run:
 	// ordinary case and the one mutable terms could not represent at all.
 	//
 	// This is the seed's demonstration of the whole change. The next end-of-day
-	// re-derives every day since Bruno's account opened, charges the last
-	// twenty of them at 18% instead of 15%, and posts the difference as
-	// ordinary delta interest. Nothing is rewritten and both terms rows stay on
-	// the timeline, which the account page now renders.
+	// re-derives every day since Bruno's account opened and prices TWENTY-TWO
+	// of them at 18% — the spans ending on the effective day through the span
+	// ending on the day of the run — twenty-one of them previously charged at
+	// 15% and the twenty-second (the span ending on the day of the run) never
+	// priced before, and posts the difference as ordinary delta interest.
+	// Twenty-two, not the twenty-day offset it looks like, because a span is
+	// named by its END date: the span ending on the effective day itself is
+	// already priced at the new rate. Nothing is rewritten and all three terms
+	// rows — the zero-rate opening row, 15%, and 18% — stay on the timeline,
+	// which the account page now renders.
 	//
 	// Before terms were effective-dated this could not happen: the recompute
-	// window would have been reset to today and the twenty days behind it would
-	// have kept the old rate forever.
+	// window would have been reset to today and the twenty-one days behind it
+	// would have kept the old rate forever.
 	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 180_000, 350_000,
 		interest.ACT365, b.clock.now().AddDate(0, 0, -20)))
 ```

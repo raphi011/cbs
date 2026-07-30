@@ -285,5 +285,28 @@ export const chapter: Chapter = {
       explanation:
         "The [[unarranged-rate]] exists specifically so that exceeding the limit is never cheaper than staying inside it: the arranged rate applies up to the limit, and the higher unarranged rate applies to whatever sits beyond it — here, the €200 excess. An unarranged rate is a SURCHARGE, so an account that has none falls back to the arranged rate on the excess. The one thing that never happens is the first option: the money beyond the limit is never free.",
     },
+    {
+      kind: "truefalse",
+      id: "ch18-q21",
+      difficulty: "core",
+      concept: "effective-dated-terms",
+      prompt:
+        "A posting that arrives value-dated to a day BEFORE the account's last repricing is trued up by the next accrual run, the same way any other back-dated posting is.",
+      answer: true,
+      explanation:
+        "It is — and it is true *because* the terms are [[effective-dated-terms|effective-dated]]. Each run re-derives every day since the account opened, pricing each one at the terms actually in force on it, and posts the change in the rounded value as a delta. While terms were mutable columns the recompute window had to start at the last repricing — reaching further would have re-derived old days at *today's* rate — so a back-value landing behind that line was silently never corrected at all.",
+    },
+    {
+      kind: "numeric",
+      id: "ch18-q22",
+      difficulty: "challenge",
+      concept: "interest-accrual",
+      prompt:
+        "An account is overdrawn by a constant €2,000 — well inside its arranged limit, with no movements in the window — and accrues under ACT/365. The arranged rate is 15% for the first 20 days and is repriced to 18% for the next 25. How much does the account accrue over the whole 45 days, in micro-minor-units (minor units × 1,000,000)?",
+      answer: 4109589000,
+      tolerance: 0,
+      explanation:
+        "Accrual is per DAY and per terms row, never one rate applied across the window. One day at 15% is 200,000 minor units × 0.15 ÷ 365 = 82.19178082 minor units — 82,191,780.82 micro-minor-units — and the division truncates to **82,191,780**. One day at 18% is 98,630,136.98 → **98,630,136**. So 20 × 82,191,780 + 25 × 98,630,136 = 1,643,835,600 + 2,465,753,400 = **4,109,589,000**. Computing each rate's block in one call instead gives 1,643,835,616 + 2,465,753,424 = 4,109,589,040 — 40 more, because the truncation then happens once per call rather than once per day, and [[interest-accrual|the accrual walks the days]] to reproduce exactly what was charged day by day.",
+    },
   ],
 };

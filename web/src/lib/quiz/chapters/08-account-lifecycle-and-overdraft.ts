@@ -300,5 +300,34 @@ export const chapter: Chapter = {
       explanation:
         "[[balance-available]] = book (−$350) + limit ($500) − holds ($100) = **$50**. This is the maximum additional debit permitted before the available balance reaches zero and the overdraft capacity is exhausted.",
     },
+    {
+      kind: "truefalse",
+      id: "ch8-q21",
+      difficulty: "core",
+      concept: "balance-available",
+      prompt:
+        "An account's overdraft limit is a single value stored on the account, so changing it changes what the available balance was on every past day as well.",
+      answer: false,
+      explanation:
+        "The limit is not a column: it is a row on an [[effective-dated-terms|effective-dated timeline]], one per repricing, each carrying the day it takes effect. The [[balance-available|available balance]] resolves the row in force on the day it is asked about rather than reading a field off the account. A column would have made every past available-balance figure move the moment the limit was changed; a timeline leaves what the customer could spend last March a fact about last March.",
+    },
+    {
+      kind: "multi",
+      id: "ch8-q22",
+      difficulty: "challenge",
+      concept: "effective-dated-terms",
+      prompt:
+        "A bank agrees a new overdraft rate with a customer on the 1st, and an operator keys it in on the 15th. Which of the following does the system do? Select all that apply.",
+      options: [
+        "Records ONE terms row carrying two dates — the 1st as the day it takes effect, the 15th as the day it was entered",
+        "Lets the next end-of-day re-derive the 1st-to-15th span at the new rate and post the difference as delta interest",
+        "Reverses every accrual posted since the 1st and re-posts it at the new rate",
+        "Refuses the repricing, because a rate cannot take effect before the day it was entered",
+        "Replaces the account's previous terms row, so what the account was priced at before the 1st is no longer recoverable",
+      ],
+      answers: [0, 1],
+      explanation:
+        "A terms row carries **two** dates, which is the [[booking-date|booking-date]]/[[value-date|value-date]] distinction applied to configuration: entered on the 15th, effective from the 1st. The next accrual run re-derives the days that row now prices and posts the change in the rounded value as ordinary delta interest — nothing is reversed and no date is rewound, because each earlier posting was a correct statement of what the bank knew when it was made. Backdating is not refused: it is the ordinary case an [[effective-dated-terms|effective-dated timeline]] exists to represent. And it appends — the earlier row stays, which is what keeps the old pricing recoverable.",
+    },
   ],
 };
