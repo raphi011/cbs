@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
 )
@@ -140,6 +141,61 @@ func TestReservesConserved(t *testing.T) {
 	const wantFunded = 1_120_000
 	if sum != wantFunded {
 		t.Fatalf("sum of reserves = %d, want %d", sum, wantFunded)
+	}
+}
+
+// TestBrunoOverdraftRepricing pins the one figure seed.go's comments argue for
+// at length: Bruno's overdraft ends the build with three terms rows (opening,
+// 15%, 18%) and a final accrued interest blending both rates. 487 (EUR 4.87)
+// is derived, not read off a run: 15% ACT/365 on EUR 200.00 for the days up to
+// the repricing's effective date, 18% from it, per the arithmetic walked
+// through in the comment above lendingShowcase's SetOverdraftTerms call for
+// the repricing. Without this, a change to Bella's 30-day span or the
+// repricing's twenty-day offset would rot that comment silently.
+func TestBrunoOverdraftRepricing(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	var verde *payment.Participant
+	for _, p := range listParticipants(t, ctx, net) {
+		if p.Name == "Banca Verde" {
+			verde = p
+		}
+	}
+	if verde == nil {
+		t.Fatal("Banca Verde not found")
+	}
+
+	accts, err := verde.Deposit.ListAccounts(ctx)
+	if err != nil {
+		t.Fatalf("list deposit accounts: %v", err)
+	}
+	var bruno *deposit.Account
+	for i := range accts {
+		if accts[i].Name == "Bruno Bianchi" {
+			bruno = &accts[i]
+		}
+	}
+	if bruno == nil {
+		t.Fatal("Bruno Bianchi not found")
+	}
+
+	if got := bruno.Accrued.Minor(); got != 487 {
+		t.Errorf("Bruno's accrued interest = %d, want 487 (EUR 4.87)", got)
+	}
+
+	rows, err := verde.Deposit.OverdraftTermsHistory(ctx, bruno.ID)
+	if err != nil {
+		t.Fatalf("overdraft terms history: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("terms rows = %d, want 3 (opening, 15%%, 18%%)", len(rows))
+	}
+	last := rows[2]
+	wantEffective := ledger.DayStart(last.CreatedAt.AddDate(0, 0, -20))
+	if !last.EffectiveFrom.Equal(wantEffective) {
+		t.Errorf("last row EffectiveFrom = %v, want %v (twenty days before its CreatedAt %v)",
+			last.EffectiveFrom, wantEffective, last.CreatedAt)
 	}
 }
 

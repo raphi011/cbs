@@ -454,13 +454,17 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// accrued interest the seed actually produces reflects 45 days
 	// post-capitalization, all at the 18% the repricing below has already put
 	// in force by then, not the 15 this phase runs on its own. The repricing
-	// also reaches backwards: twenty of the days that already elapsed BEFORE
-	// the charge, accrued at 15% when they ran, are repriced to 18% by the
-	// very next end-of-day. Bruno's final figure blends both — 15% ACT/365 up
-	// to the repricing's effective date, 18% from it — on the EUR 203.78
-	// balance (≈ EUR 4.87), not the single-rate ≈ EUR 3.77 a pure-15% run
-	// would give. Changing Bella's 30-day span, or the repricing's twenty-day
-	// offset, changes Bruno's final number.
+	// also reaches backwards: twenty-ONE of the days that already elapsed
+	// before the charge — the spans ending 2026-03-14 through 2026-04-03
+	// inclusive — accrued at 15% when they ran and are repriced to 18% by the
+	// very next end-of-day. That is twenty-one, not the twenty-day gap it
+	// looks like, because a span is named by its END date: the span ending on
+	// the effective day itself is already priced at the new rate. Bruno's
+	// final figure blends both rates over both balances it accrued on — EUR
+	// 200.00 before the charge, EUR 203.78 after — for a total ≈ EUR 4.87, not
+	// the single-rate ≈ EUR 3.77 a pure-15% run would give. Changing Bella's
+	// 30-day span, or the repricing's twenty-day offset, changes Bruno's
+	// final number.
 	//
 	// It joins the SCT cycle Phase F left open (only one may be open per
 	// scheme at a time) rather than opening a second one, which is also why it
@@ -481,14 +485,16 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// ordinary case and the one mutable terms could not represent at all.
 	//
 	// This is the seed's demonstration of the whole change. The next end-of-day
-	// re-derives every day since Bruno's account opened, charges the last
-	// twenty of them at 18% instead of 15%, and posts the difference as
-	// ordinary delta interest. Nothing is rewritten and both terms rows stay on
-	// the timeline, which the account page now renders.
+	// re-derives twenty-two days at 18% — the spans ending 2026-03-14 through
+	// 2026-04-04 — twenty-one of them previously charged at 15% and the
+	// twenty-second (the span ending on the new day itself) never priced
+	// before, and posts the difference as ordinary delta interest. Nothing is
+	// rewritten and all three terms rows — the zero-rate opening row, 15%, and
+	// 18% — stay on the timeline, which the account page now renders.
 	//
 	// Before terms were effective-dated this could not happen: the recompute
-	// window would have been reset to today and the twenty days behind it would
-	// have kept the old rate forever.
+	// window would have been reset to today and the twenty-one days behind it
+	// would have kept the old rate forever.
 	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 180_000, 350_000,
 		interest.ACT365, b.clock.now().AddDate(0, 0, -20)))
 
