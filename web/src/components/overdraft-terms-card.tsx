@@ -13,9 +13,8 @@ import type { Asset, OverdraftTerms } from "@/lib/types";
 // Read-only view of an account's whole effective-dated overdraft terms
 // timeline, oldest first — including the opening row every account gets at
 // OpenAccount. There is no form here: the only way to add a row is
-// POST .../overdraft-terms (see the account page's terms line), which this
-// card exists to make the history of inspectable rather than merely
-// recoverable by replaying the audit log.
+// POST .../overdraft-terms, which this card exists to make the history of
+// inspectable rather than merely recoverable by replaying the audit log.
 export function OverdraftTermsCard({
   pid,
   did,

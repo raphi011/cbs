@@ -1697,8 +1697,11 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 //
 // It is the endpoint the change exists to make possible — before terms were
 // rows, "what did this account's product say on 15 July?" had no answer to
-// serve — so it also asserts that a FUTURE-dated row is on the timeline while
-// the account's own resolved-as-of-today fields still show the current ones.
+// serve — so it also asserts that a BACKDATED row and a FUTURE-dated row are
+// both on the timeline, distinct rows are asserted on more than just rate and
+// length (effectiveFrom, dayCount, unarrangedRate, accountId), and that the
+// account's own resolved-as-of-today fields still show the current terms, not
+// the future ones.
 func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
@@ -1712,13 +1715,18 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	assertEqual(t, "opening limit", int64(opening["overdraftLimit"].(float64)), int64(50_000))
 	assertEqual(t, "opening rate", int64(opening["rate"].(float64)), int64(0))
 
-	// A priced row today, and a future-dated one. fixedTime (the test clock)
-	// is 2025-01-15, the same day the account above was just opened on, so
-	// this priced row's effectiveFrom shares the opening row's day key and
-	// REPLACES it in place — one row per (account, day) by construction,
-	// see deposit.TermsDayKey — rather than appending a third row. The
-	// timeline below is 2 long: the collapsed today's-row, then the future
-	// one.
+	// A BACKDATED row (agreed on the 1st, entered "today"), a row priced
+	// today, and a FUTURE-dated one. fixedTime (the test clock) is
+	// 2025-01-15, the same day the account above was just opened on, so the
+	// SECOND of these three POSTs shares the opening row's day key and
+	// REPLACES it in place — one row per (account, day) by construction, see
+	// deposit.TermsDayKey — rather than appending a fourth row. The timeline
+	// below is 3 long: the backdated row, the collapsed today's-row, then the
+	// future one.
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
+		"limit":50000,"rate":100000,"unarrangedRate":300000,"dayCount":"ACT/360",
+		"effectiveFrom":"2025-01-01T00:00:00Z"
+	}`, http.StatusOK)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
 		"limit":50000,"rate":150000,"unarrangedRate":350000,"dayCount":"ACT/365",
 		"effectiveFrom":"2025-01-15T00:00:00Z"
@@ -1729,10 +1737,23 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	}`, http.StatusOK)
 
 	rows := doJSONArray(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", "", http.StatusOK)
-	assertEqual(t, "timeline length", len(rows), 2)
+	assertEqual(t, "timeline length", len(rows), 3)
+
+	// The backdated row: effectiveFrom (2025-01-01) is distinct from createdAt
+	// (fixedTime, 2025-01-15), which is what would catch the two ever being
+	// swapped in the DTO mapping — the card renders them as separate columns.
+	backdated := rows[0].(map[string]any)
+	assertEqual(t, "accountId is on the wire", backdated["accountId"].(string), did)
+	assertEqual(t, "backdated effectiveFrom", backdated["effectiveFrom"].(string), "2025-01-01T00:00:00Z")
+	assertEqual(t, "backdated dayCount", backdated["dayCount"].(string), "ACT/360")
+	assertEqual(t, "backdated unarrangedRate", int64(backdated["unarrangedRate"].(float64)), int64(300_000))
+
 	last := rows[len(rows)-1].(map[string]any)
 	assertEqual(t, "the future row is on the timeline", int64(last["rate"].(float64)), int64(180_000))
 	assertEqual(t, "rate scale is on the wire", int64(last["rateScale"].(float64)), int64(interest.RateScale))
+	assertEqual(t, "future effectiveFrom", last["effectiveFrom"].(string), "2099-01-01T00:00:00Z")
+	assertEqual(t, "future dayCount", last["dayCount"].(string), "ACT/365")
+	assertEqual(t, "future unarrangedRate", int64(last["unarrangedRate"].(float64)), int64(350_000))
 
 	// …but the account itself still reports the rate in force TODAY.
 	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)

@@ -949,7 +949,7 @@ The reason is that every interest figure is a function of three things — accou
 
 There is a sharper consequence than an audit weakness. While terms were mutable, the [[interest-accrual|accrual]] recompute could only reach back to the last repricing — reaching further would re-derive old days at *today's* rate. So a [[booking-date|back-dated]] posting landing before the last repricing was silently never trued up. With a timeline, every day is re-derived at the terms actually in force on it, so the window opens at account inception and the correction always lands.
 
-Each row carries **two** dates, and the pair is the [[booking-date|booking-date/value-date]] distinction applied to configuration: when the repricing was *entered*, and when it takes *economic effect*. They can differ in either direction — a rate agreed on the 1st and keyed in on the 15th is backdated; a rate agreed for next month is future-dated and simply sits inert until the end-of-day runs reach it.`,
+Each row carries **two** dates, and the pair is the [[booking-date|booking-date/value-date]] distinction applied to configuration: when the repricing was *entered*, and when it takes *economic effect*. They can differ in either direction — a rate agreed on the 1st and keyed in on the 15th is backdated; a rate agreed for next month is future-dated and, for a product with no instalment schedule to diverge from — an overdraft or a revolving line — simply sits inert until the end-of-day runs reach it.`,
   },
   lending: {
     title: "Lending",
