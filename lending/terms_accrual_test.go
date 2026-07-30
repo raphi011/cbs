@@ -281,6 +281,104 @@ func TestAFacilityUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	assertEqual(t, "receivable", bookBalance(t, book, got.InterestGL), want.Minor())
 }
 
+// The advancement guard resolves its day count on `date` — meaning on the ROW in
+// force on the day being accrued, not on the row the recompute window opens at.
+// It is deposit's TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate,
+// applied to a facility's drawn principal, and it exists for the same reason.
+//
+// There is no single DayCount to ask any more: it is a terms field, one per row,
+// and the conventions genuinely disagree about whether a window advanced. Under
+// Thirty360 the 31st collapses onto the 30th, so Days(30th, 31st) is zero while
+// ACT365 says one — a run on the 31st is a no-op under one convention and a real
+// day under the other.
+//
+// Three cases, because the first two only pin half the claim. They hold the
+// timeline to a SINGLE row, so they discriminate which CONVENTION the guard
+// applies but not which row supplies it — with only those two, taking the day
+// count from rows[0] instead of from the accrual date's row passes. The third
+// gives one facility two rows differing in nothing but their convention, so the
+// row choice is the only thing that can move the figure.
+//
+// Only one direction of that third case is observable, which is worth knowing
+// before someone adds its mirror image expecting symmetry. When the guard wrongly
+// REFUSES a run the day is never accrued and the difference shows; when it
+// wrongly ALLOWS one, the per-day closure resolves the row the guard should have
+// used and prices that span at zero days anyway, so the delta is zero and the
+// mistake hides. The guard's row choice matters exactly where a real day would
+// otherwise be silently dropped.
+func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
+	ctx := context.Background()
+	jan1 := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	the30th := time.Date(2025, time.January, 30, 0, 0, 0, 0, time.UTC)
+	the31st := time.Date(2025, time.January, 31, 0, 0, 0, 0, time.UTC)
+
+	const (
+		rate  interest.Rate = 120_000
+		drawn ledger.Amount = 100_000
+	)
+
+	// open puts a drawn, priced line on its own portfolio, so a case can add rows
+	// of its own before running any days. A revolving line rather than a term
+	// loan, because a term loan cannot be repriced once it has a schedule and the
+	// third case below adds a row after the money is out.
+	open := func(dc interest.DayCount) (*lending.Portfolio, lending.Facility, *mutableClock) {
+		t.Helper()
+		clock := &mutableClock{at: jan1}
+		p, _, sub, customer := newTestPortfolioOn(t, clock.now)
+		line, err := p.OpenRevolvingLine(ctx, sub, "Bruno Line", "EUR", 500_000, rate, dc, 20_000)
+		assertNoError(t, err)
+		_, err = p.Draw(ctx, line.ID, customer, drawn, "First draw")
+		assertNoError(t, err)
+		return p, line, clock
+	}
+
+	// movedOnThe31st runs the 30th and then the 31st, and reports what the second
+	// run added. It reads AccruedGross rather than Accrued so that nothing but
+	// the arithmetic can move it — no capitalisation happens here, but the two
+	// are the same figure only for as long as that stays true.
+	movedOnThe31st := func(p *lending.Portfolio, line lending.Facility, clock *mutableClock) interest.Accrued {
+		t.Helper()
+		clock.set(the30th)
+		assertNoError(t, p.Accrue(ctx, line.ID, the30th))
+		through30 := facility(t, p, line.ID).AccruedGross
+
+		clock.set(the31st)
+		assertNoError(t, p.Accrue(ctx, line.ID, the31st))
+		return facility(t, p, line.ID).AccruedGross - through30
+	}
+
+	// One row, Thirty360 throughout: the 31st is not a day.
+	if moved := movedOnThe31st(open(interest.Thirty360)); moved != 0 {
+		t.Errorf("Thirty360 accrued %d on the 31st, want 0: the 31st collapses onto the 30th", moved)
+	}
+	// One row, ACT365 throughout: it is.
+	if moved := movedOnThe31st(open(interest.ACT365)); moved <= 0 {
+		t.Errorf("ACT365 accrued %d on the 31st, want a real day", moved)
+	}
+
+	// Two rows, same rate, differing ONLY in convention: Thirty360 from 1 January,
+	// ACT365 from the 31st. The window opens on the Thirty360 row and the day
+	// being accrued belongs to the ACT365 one, so the two candidate readings of
+	// the guard disagree about whether the 31st is a day at all:
+	//
+	//	rows[0]        Thirty360  Days(30th, 31st) = 0  -> the run is refused
+	//	termsAt(date)  ACT365     Days(30th, 31st) = 1  -> the run happens
+	//
+	// A convention change mid-life is a sharp fixture rather than a common product
+	// event; it is the cleanest way to make the row choice the only variable,
+	// since everything else about the two rows is identical.
+	p, line, clock := open(interest.Thirty360)
+	_, err := p.SetFacilityTerms(ctx, line.ID, rate, interest.ACT365, the31st)
+	assertNoError(t, err)
+
+	// Exactly one ACT/365 day on the drawn principal, and no more: the 31st is the
+	// span [30th, 31st), which resolves to the row effective the 31st. Derived
+	// from the timeline, not read off the run.
+	want := interest.Accrue(drawn, rate, interest.ACT365, the30th, the31st)
+	assertEqual(t, "the 31st, priced by the row in force on it",
+		movedOnThe31st(p, line, clock), want)
+}
+
 // A never-priced facility reads no drawn series. Every row in its timeline
 // carries a zero rate, so the run is skipped BEFORE any store read rather than
 // merely producing zero — which is what keeps a portfolio of interest-free

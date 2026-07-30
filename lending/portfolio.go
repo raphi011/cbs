@@ -506,15 +506,42 @@ func (p *Portfolio) advanceTx(ctx context.Context, tx Tx, f Facility, counterpar
 // repayments already posted against it needs versioned schedule rows and
 // open-item allocation, and is its own topic.
 //
-// The guard is on the SCHEDULE rather than on status or on drawn principal,
-// which is what keeps a revolving line repriceable after its first billing
-// cycle has appended instalment rows: a line's instalments are cycles already
-// billed — statements of what WAS charged — not a plan a repricing could put out
-// of step. Keying on Kind first is what draws that line.
+// The first guard is on the SCHEDULE rather than on status or on drawn
+// principal, which is what keeps a revolving line repriceable after its first
+// billing cycle has appended instalment rows: a line's instalments are cycles
+// already billed — statements of what WAS charged — not a plan a repricing could
+// put out of step. Keying on Kind first is what draws that line.
 //
-// A term loan repriced BEFORE disbursement is allowed and changes the schedule
-// generated later, which is right and may still surprise someone reading only
-// the origination record. Both rows are in the audit log.
+// # Why a term loan may not be repriced into the FUTURE either
+//
+// "It has no schedule yet" is not enough on its own. DisburseTx pins the
+// schedule to the row in force ON THE DISBURSEMENT DAY, so a row effective after
+// that day is one the schedule cannot see and the accrual will reach anyway:
+//
+//	open at 6% -> reprice to 24% effective day 30 (no schedule yet, so allowed)
+//	-> disburse on day 0 -> the schedule is pinned at 6%, and on day 30 the
+//	accrual steps to 24% with no instalment reflecting it
+//
+// That is exactly the divergence this error exists to make unreachable, arrived
+// at through the gap between the two guards, and it is worse than the case above
+// because the loan then has a schedule and can no longer be repriced back. So a
+// term loan additionally refuses a repricing effective AFTER the day it is
+// entered. A revolving line keeps future-dating — scheduled repricing for free —
+// because it has no schedule for a later row to get ahead of.
+//
+// The invariant that buys is: when DisburseTx pins the schedule, no row exists
+// effective after the disbursement day, so termsAt resolves to the schedule's own
+// rate for that day and EVERY day after it, for as long as the loan cannot be
+// repriced again. It rests on the clock moving forward — a row entered today and
+// effective no later than today is effective no later than any subsequent
+// disbursement day — which is why the check lives here, at entry, where the
+// mistake is, rather than at disbursement, where refusing would leave a facility
+// that can never be disbursed at all.
+//
+// A term loan repriced before disbursement, effective on or before the day it is
+// entered, is still allowed and still changes the schedule generated later. That
+// is right and may still surprise someone reading only the origination record;
+// both rows are in the audit log.
 //
 // Returns ErrFacilityNotFound, ErrFacilityClosed, ErrInvalidRate and
 // ErrScheduleWouldDiverge.
@@ -537,22 +564,32 @@ func (p *Portfolio) SetFacilityTermsTx(ctx context.Context, tx Tx, id FacilityID
 	if f.Status == Closed {
 		return FacilityTerms{}, ErrFacilityClosed
 	}
+
+	now := p.now()
+	from := ledger.DayStart(effectiveFrom)
 	if f.Kind == TermLoan {
 		schedule, err := tx.ListInstallments(ctx, p.bookID, id)
 		if err != nil {
 			return FacilityTerms{}, err
 		}
+		// Two ways a term loan's plan and its accrual can come apart, and both
+		// are refused: a schedule that already exists, and a row that would be
+		// effective past the day a schedule is pinned at. See the doc comment —
+		// the second is the one reachable only through the gap between them.
 		if len(schedule) > 0 {
+			return FacilityTerms{}, ErrScheduleWouldDiverge
+		}
+		if from.After(ledger.DayStart(now)) {
 			return FacilityTerms{}, ErrScheduleWouldDiverge
 		}
 	}
 
 	row := FacilityTerms{
 		FacilityID:    id,
-		EffectiveFrom: ledger.DayStart(effectiveFrom),
+		EffectiveFrom: from,
 		Rate:          rate,
 		DayCount:      dc,
-		CreatedAt:     p.now(),
+		CreatedAt:     now,
 	}
 	if err := row.Validate(); err != nil {
 		return FacilityTerms{}, err

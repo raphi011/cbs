@@ -363,7 +363,10 @@ CREATE TABLE installments (
 -- or min_payment column, because those feed BuildSchedule rather than the
 -- accrual: a term loan's instalments are generated once from the rate in force
 -- at disbursement, so repricing one that already has a schedule is REFUSED
--- (lending.ErrScheduleWouldDiverge) rather than allowed to drift.
+-- (lending.ErrScheduleWouldDiverge) rather than allowed to drift — and so is a
+-- row effective after the day it is entered, which is a row the schedule pinned
+-- at disbursement could not see but the accrual would still reach. A revolving
+-- line may be repriced either way, having no schedule to diverge from.
 CREATE TABLE facility_terms (
     book_id        TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     facility_id    TEXT NOT NULL,

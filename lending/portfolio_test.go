@@ -383,6 +383,81 @@ func TestSetFacilityTermsRefusesADisbursedTermLoan(t *testing.T) {
 	assertNoError(t, err)
 }
 
+// SetFacilityTerms refuses a FUTURE-DATED repricing on a term loan, even one
+// with no schedule at all — and that is not a second-guess of the schedule
+// guard, it is the case that guard cannot see.
+//
+// DisburseTx pins the schedule to the row in force ON THE DISBURSEMENT DAY. A row
+// effective after that day is invisible to the schedule and reached by the
+// accrual anyway, so allowing it would produce exactly the divergence
+// ErrScheduleWouldDiverge exists to make unreachable:
+//
+//	open at 6% -> reprice to 24% effective day 30 -> disburse on day 0
+//	-> schedule pinned at 6%, accrual steps to 24% on day 30, and the loan now
+//	   HAS a schedule so it can never be repriced back
+//
+// The second half of this test is the arithmetic of that divergence, run against
+// a revolving line — which is allowed to be future-dated, having no schedule —
+// so the figures are not hypothetical: they are what a term loan would have done.
+func TestSetFacilityTermsRefusesAFutureDatedTermLoanRepricing(t *testing.T) {
+	ctx := context.Background()
+
+	origin := time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)
+	dayN := func(n int) time.Time { return origin.AddDate(0, 0, n) }
+
+	const (
+		opening interest.Rate = 60_000  // 6%
+		dear    interest.Rate = 240_000 // 24%
+	)
+
+	clock := &mutableClock{at: dayN(0)}
+	p, _, sub, customer := newTestPortfolioOn(t, clock.now)
+
+	loan, err := p.OpenTermLoan(ctx, sub, "Alice Home Loan", "EUR",
+		1_000_000, opening, interest.ACT365, lending.Annuity, 12)
+	assertNoError(t, err)
+
+	// Undisbursed, no schedule — and still refused, because the row would be
+	// effective past the day any schedule would be pinned at.
+	_, err = p.SetFacilityTerms(ctx, loan.ID, dear, interest.ACT365, dayN(30))
+	assertErrorIs(t, err, lending.ErrScheduleWouldDiverge)
+	rows, err := p.FacilityTermsHistory(ctx, loan.ID)
+	assertNoError(t, err)
+	assertEqual(t, "timeline after a refused future-dated repricing", len(rows), 1)
+	assertEqual(t, "the rate in force is untouched", rows[0].Rate, opening)
+
+	// Effective TODAY is allowed, and effective in the PAST is allowed: neither
+	// can be a day the schedule fails to see, because the schedule is pinned at
+	// the disbursement day and the clock only moves forward from here.
+	_, err = p.SetFacilityTerms(ctx, loan.ID, dear, interest.ACT365, dayN(0))
+	assertNoError(t, err)
+	_, err = p.SetFacilityTerms(ctx, loan.ID, dear, interest.ACT365, dayN(-5))
+	assertNoError(t, err)
+
+	// And the allowed repricing really did reach the schedule: 24% on €10,000 is
+	// a first month's scheduled interest of 1_000_000 × 240_000 / 12_000_000 =
+	// 20_000, against 5_000 at the rate the loan was opened at.
+	_, err = p.Disburse(ctx, loan.ID, customer, lending.AddMonths(dayN(0), 1), "advance")
+	assertNoError(t, err)
+	schedule, err := p.Schedule(ctx, loan.ID)
+	assertNoError(t, err)
+	assertEqual(t, "first instalment interest at the repriced rate", schedule[0].Interest, ledger.Amount(20_000))
+
+	// Now the loan has a schedule, so it is refused on the first guard too —
+	// including for a date that would have been fine a moment ago.
+	_, err = p.SetFacilityTerms(ctx, loan.ID, opening, interest.ACT365, dayN(0))
+	assertErrorIs(t, err, lending.ErrScheduleWouldDiverge)
+
+	// A revolving line keeps future-dating, which is scheduled repricing for
+	// free: it has no schedule for a later row to get ahead of.
+	line := openLine(t, p, sub)
+	_, err = p.SetFacilityTerms(ctx, line.ID, dear, interest.ACT365, dayN(30))
+	assertNoError(t, err)
+	lineRows, err := p.FacilityTermsHistory(ctx, line.ID)
+	assertNoError(t, err)
+	assertEqual(t, "a line's timeline takes a future-dated row", len(lineRows), 2)
+}
+
 // A line stays repriceable after its first billing cycle, which is what keying
 // the guard on Kind before the schedule buys: a charged line DOES have
 // instalment rows, and a guard that only counted them would have locked every

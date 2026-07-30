@@ -62,8 +62,11 @@ var (
 	// way to miss is to ask about a day before the facility existed.
 	ErrTermsNotFound = errors.New("no facility terms in force on that day")
 
-	// ErrScheduleWouldDiverge is returned when a term loan that already has a
-	// generated schedule is repriced.
+	// ErrScheduleWouldDiverge is returned when repricing a term loan would put
+	// its instalment schedule out of step with its accrual. Two cases: the loan
+	// already HAS a generated schedule, or the row would be effective AFTER the
+	// day it is entered, which is the day a schedule generated later would be
+	// pinned at.
 	//
 	// A term loan's instalments are generated once, at disbursement, from the
 	// rate in force then, and stored as rows. If accrual followed a timeline
@@ -74,6 +77,8 @@ var (
 	// maturity. Regenerating a schedule against repayments already posted
 	// against it needs versioned schedule rows and open-item allocation, which
 	// is its own topic. Repricing is allowed freely on a revolving line (no
-	// schedule) and on an undisbursed term loan (none yet).
+	// schedule, and so nothing for a future-dated row to get ahead of) and on an
+	// undisbursed term loan effective on or before today (no schedule yet, and
+	// the one generated later will be pinned at this very row).
 	ErrScheduleWouldDiverge = errors.New("repricing a term loan with a generated schedule would diverge from it")
 )
