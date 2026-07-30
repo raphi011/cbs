@@ -229,11 +229,49 @@ exists to keep small — and the final instalment silently absorbs the differenc
 Nobody would notice until maturity.
 
 So `SetFacilityTerms` **refuses a term loan that has a generated schedule**, with
-`ErrScheduleWouldDiverge`, and allows repricing freely on a revolving line (which
-has no schedule) and on an undisbursed term loan (which has none yet). Refusing
-is better than documenting a divergence nobody would see, and the error is where
-the reason gets stated: schedule regeneration against posted repayments is a
-separate topic.
+`ErrScheduleWouldDiverge`, and allows repricing a revolving line (which has no
+schedule) and an undisbursed term loan (which has none yet). Refusing is better
+than documenting a divergence nobody would see, and the error is where the reason
+gets stated: schedule regeneration against posted repayments is a separate topic.
+
+**That guard alone is not enough**, and the shipped code carries a second one.
+"There is no schedule yet" says nothing about the day a schedule will be pinned
+*at*. `DisburseTx` pins it to the row in force ON THE DISBURSEMENT DAY, so a row
+effective after that day is one the schedule cannot see and the accrual reaches
+anyway:
+
+```
+open at 6% -> reprice to 24% effective day 30 (no schedule yet, so the first
+guard allows it) -> disburse on day 0 -> the schedule is pinned at 6%, and on
+day 30 the accrual steps to 24% with no instalment reflecting it
+```
+
+That is exactly the divergence `ErrScheduleWouldDiverge` exists to make
+unreachable, arrived at through the gap between the guards, and it is worse than
+the disbursed case because the loan then *has* a schedule and can no longer be
+repriced back. So `SetFacilityTermsTx` (`lending/portfolio.go:583-598`)
+additionally refuses a term loan a row effective **after the day it is entered**.
+
+The second guard is **unconditional** — it applies to an undisbursed term loan
+with no schedule at all, which is the only kind of loan that can reach it. Making
+it conditional on a schedule existing would restore the exact gap it closes: the
+dangerous row is written *before* the schedule exists, and by the time the
+schedule exists the first guard has already locked the facility, so a
+schedule-conditional check would never fire on the one row that matters. What the
+unconditional form buys is an invariant: when `DisburseTx` pins the schedule, no
+row exists effective after the disbursement day, so `termsAt` resolves to the
+schedule's own rate for that day and *every* day after it, for as long as the
+loan cannot be repriced again. It rests on the clock moving forward — a row
+entered today and effective no later than today is effective no later than any
+subsequent disbursement day — which is why the check lives at entry, where the
+mistake is, rather than at disbursement, where refusing would leave a facility
+that can never be disbursed at all.
+
+A revolving line keeps future-dating unconditionally, which is scheduled
+repricing for free: it has no schedule for a later row to get ahead of, and
+neither does an overdraft over in the deposit layer. Only a term loan is
+constrained, and only in the future direction — backdating an undisbursed one
+stays allowed, and changes the schedule generated later.
 
 This also sharpens an existing teaching point from the other side.
 `BuildSchedule` reads `f.Rate` (`lending/schedule.go:53,57`) and gains an
@@ -617,9 +655,11 @@ one of them has, by definition, made the two stores diverge.
 - **`Thirty360` terms effective on a 31st appear to be ignored** for a day. It
   follows from the convention, not from this change, and it is pinned by test.
 - **A term loan repriced before disbursement changes its schedule silently.**
-  Allowed, because there is no schedule yet — but the schedule generated later
-  uses the newer rate, which is right and may still surprise someone reading only
-  the origination record. The audit log carries both rows.
+  Allowed when the row is effective on or before the day it is entered; a
+  future-dated one is refused even with no schedule yet (see *Repricing a term
+  loan is refused*). The schedule generated later uses the newer rate, which is
+  right and may still surprise someone reading only the origination record. The
+  audit log carries both rows.
 - **Plan and actual still diverge on a revolving line after a repricing.** There
   is no schedule to disagree with, so nothing is wrong, but the minimum payment
   is computed from `MinPayment` and the interest charged follows the timeline;

@@ -253,7 +253,9 @@ CREATE TABLE snapshots (
 );
 
 -- An account's arranged overdraft terms from one day onwards: one row per
--- repricing, never overwritten.
+-- repricing, appended rather than editing what an earlier day already said. A
+-- second row for the SAME effective day does replace the first — the day is
+-- part of the primary key below, and day_key's comment says why.
 --
 -- These four values used to be mutable columns on deposit_accounts, and that is
 -- the one place this schema broke its own rule. Every financial calculation
@@ -357,13 +359,15 @@ CREATE TABLE installments (
     PRIMARY KEY (book_id, facility_id, seq_no)
 );
 
--- A facility's credit terms from one day onwards: one row per repricing, never
--- overwritten. The mirror of overdraft_terms — see there for why terms are rows
--- at all — with two differences worth stating. There is no limit column,
--- because facilities.commitment is not effective-dated: drawing is refused
--- against the limit in force at the moment of the draw, and no past day's
--- arithmetic depends on what it used to be. And there is no method, term_months
--- or min_payment column, because those feed BuildSchedule rather than the
+-- A facility's credit terms from one day onwards: one row per repricing,
+-- appended rather than editing what an earlier day already said, and replaced
+-- only by a second row for the same effective day. The mirror of
+-- overdraft_terms — see there for why terms are rows at all — with two
+-- differences worth stating. There is no limit column, because
+-- facilities.commitment is not effective-dated: drawing is refused against the
+-- limit in force at the moment of the draw, and no past day's arithmetic
+-- depends on what it used to be. And there is no method, term_months or
+-- min_payment column, because those feed BuildSchedule rather than the
 -- accrual: a term loan's instalments are generated once from the rate in force
 -- at disbursement, so repricing one that already has a schedule is REFUSED
 -- (lending.ErrScheduleWouldDiverge) rather than allowed to drift — and so is a
@@ -820,10 +824,18 @@ COMMENT ON COLUMN facility_terms.created_at IS
     'distinction applied to configuration, for exactly the reasons the README '
     'gives for money: a repricing agreed on the 1st and entered on the 15th is '
     'the ordinary case, and refusing it would leave the agreed date with no '
-    'representation. Both directions are allowed — a row effective in the past '
-    'is picked up by the next recompute the same way a backdated posting is, '
-    'and one effective next month is inert until the runs reach it, which is '
-    'scheduled repricing for free.';
+    'representation. A row effective in the PAST is always allowed and is '
+    'picked up by the next recompute the same way a backdated posting is. A row '
+    'effective in the FUTURE — created_at earlier than effective_from — is '
+    'inert until the runs reach it, which is scheduled repricing for free, but '
+    'only for a product with no instalment schedule to diverge from, which on '
+    'this table means a revolving line. A term loan REFUSES one '
+    '(lending.ErrScheduleWouldDiverge), because its schedule is pinned at '
+    'disbursement to the row in force on the disbursement day and a later row '
+    'is one the schedule cannot see but the accrual would reach anyway; see '
+    'this table''s own comment. Compare overdraft_terms.created_at, where both '
+    'directions really are unconditional, an overdraft having no schedule at '
+    'all.';
 
 COMMENT ON COLUMN facility_terms.rate IS
     'Annual interest rate in MILLIONTHS: 1000000 is 100%, 60000 is 6% '

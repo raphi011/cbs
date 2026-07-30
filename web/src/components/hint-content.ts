@@ -947,7 +947,7 @@ Both the limit and the rates are [[effective-dated-terms|effective-dated]], and 
   },
   "effective-dated-terms": {
     title: "Effective-dated terms",
-    body: `A product's terms are a **timeline**, not a set of columns: one row per repricing, each carrying the day it takes effect, and none ever overwritten.
+    body: `A product's terms are a **timeline**, not a set of columns: one row per repricing, each carrying the day it takes effect, and a repricing appends a row rather than editing what an earlier day already said.
 
 The reason is that every interest figure is a function of three things — account state, event history, and configuration. The first two are immutable and replayable here. If the third could be edited in place, that whole investment is undone, because "what did this account's product say on 15 July?" stops having a stable answer.
 

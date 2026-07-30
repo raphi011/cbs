@@ -9,10 +9,12 @@ import (
 )
 
 // OverdraftTerms is what an account's arranged overdraft cost from one day
-// onwards. It is a ROW, one per repricing, never overwritten — which is what
-// makes "what did this account's product say on 15 July 2027?" a question with
-// a stable answer, and what lets the accrual re-derive a past day at the terms
-// that were actually in force on it.
+// onwards. It is a ROW, one per repricing: a repricing APPENDS rather than
+// editing what an earlier day already said — which is what makes "what did this
+// account's product say on 15 July 2027?" a question with a stable answer, and
+// what lets the accrual re-derive a past day at the terms that were actually in
+// force on it. Re-entering the SAME effective day does replace that day's row,
+// and only that day's; see TermsDayKey for why the day is the identity.
 //
 // The four fields used to be mutable columns on Account. An accrual posted six
 // months ago could not then be reproduced from stored state: the inputs it used

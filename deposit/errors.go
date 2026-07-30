@@ -25,6 +25,14 @@ var (
 	// ErrTermsNotFound is returned when no overdraft terms are in force on a
 	// day. Every account gets an opening terms row at OpenAccount, so the only
 	// way to miss is to ask about a day before the account existed.
+	//
+	// It is deliberately absent from api.errorStatus's 404 list and so reaches
+	// the client as a 500. That is the choice, not an oversight: an account with
+	// no opening row is internally inconsistent state rather than a missing
+	// resource, and a 404 would read as "no such account" — worth saying because
+	// ListAccountsWithTerms resolves terms for every account in the book, so one
+	// account missing its opening row fails the whole listing rather than a row
+	// of it.
 	ErrTermsNotFound = errors.New("no overdraft terms in force on that day")
 
 	// ErrInvalidAmount is returned when a hold amount is zero or negative.

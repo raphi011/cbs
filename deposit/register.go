@@ -1054,6 +1054,16 @@ func (r *Register) TakeEndOfDaySnapshot(ctx context.Context, id AccountID, date 
 
 // TakeEndOfDaySnapshotTx is TakeEndOfDaySnapshot within a caller-supplied unit
 // of work, so an end-of-day run can snapshot every account atomically.
+//
+// The whole Balance is resolved as of NOW rather than as of date — the book
+// balance and the holds always were, and so is the overdraft limit inside
+// Available, which balanceTx reads from the terms row in force TODAY. Now that
+// terms are a timeline, "the limit on day D" is a cheap question and a reader
+// may reasonably expect Snapshot.Date to govern it; it does not. Resolving only
+// the limit as of date would be a third answer rather than a fix, so the
+// inconsistency is recorded here rather than half-closed: reconstructing a past
+// day's balance belongs with checkpointing, the named successor for snapshots
+// nothing reads back yet.
 func (r *Register) TakeEndOfDaySnapshotTx(ctx context.Context, tx Tx, id AccountID, date time.Time) (Snapshot, error) {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {

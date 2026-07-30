@@ -9,7 +9,9 @@ import (
 )
 
 // FacilityTerms is what a facility's credit cost from one day onwards: one row
-// per repricing, never overwritten.
+// per repricing, appended rather than editing what an earlier day already said.
+// Re-entering the same effective day replaces that day's row, and only that
+// day's — see TermsDayKey.
 //
 // It is the mirror of deposit.OverdraftTerms and exists for the same reasons —
 // see there for the full argument. What differs is what is NOT here. A
@@ -43,9 +45,9 @@ func (t FacilityTerms) Validate() error {
 }
 
 // termsAt is the row in force on a day: the last one whose EffectiveFrom is not
-// after it. rows must be ascending, which is what ListFacilityTermsForFacility
-// returns. See deposit.termsAt for why this is a binary search rather than a
-// cursor advanced alongside the accrual walk.
+// after it. rows must be ascending, which is what ListFacilityTerms returns. See
+// deposit.termsAt for why this is a binary search rather than a cursor advanced
+// alongside the accrual walk.
 func termsAt(rows []FacilityTerms, day time.Time) (FacilityTerms, bool) {
 	d := ledger.DayStart(day)
 	i := sort.Search(len(rows), func(i int) bool {

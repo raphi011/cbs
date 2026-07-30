@@ -60,6 +60,11 @@ var (
 	// ErrTermsNotFound is returned when no facility terms are in force on a
 	// day. Every facility gets an opening terms row at origination, so the only
 	// way to miss is to ask about a day before the facility existed.
+	//
+	// Like deposit.ErrTermsNotFound it is deliberately absent from
+	// api.errorStatus's 404 list and reaches the client as a 500: a facility
+	// with no opening row is internally inconsistent state rather than a missing
+	// resource, and a 404 would read as "no such facility".
 	ErrTermsNotFound = errors.New("no facility terms in force on that day")
 
 	// ErrScheduleWouldDiverge is returned when repricing a term loan would put
