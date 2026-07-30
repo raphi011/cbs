@@ -261,8 +261,11 @@ CREATE TABLE snapshots (
 -- first two are immutable and replayable, and a configuration that could be
 -- edited in place undermined that entirely, because "what did this account's
 -- product say on 15 July 2027?" had no stable answer. It also bounded the
--- interest recompute window at the last repricing, so a backdated posting
--- landing before it was silently never trued up.
+-- interest recompute window at the last repricing: a repricing closed the old
+-- window out and opened a new one at itself, so a backdated posting landing
+-- behind it was trued up only from the repricing forward, and the days between
+-- where it took effect and the repricing kept the interest computed without it,
+-- permanently.
 --
 -- These are PER-INSTANCE terms: one timeline per account, not a catalogue
 -- shared across them. There is no product/product_version table, no content

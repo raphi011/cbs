@@ -31,9 +31,12 @@ defect rather than an audit weakness. Because terms are mutable, the recompute
 window has to start at the last repricing — a wider window would re-derive past
 days at today's rate, which is strictly worse than the incremental code it
 replaced. So **a backdated posting only trues up interest within the current
-terms window.** Back-value landing before the last repricing is silently never
-corrected. The retroactive-accrual machinery the previous topic built stops
-working at a line the customer cannot see and did not agree to.
+terms window.** Back-value landing before the last repricing is trued up only
+from the repricing forward — the window's opening balance is value-dated, so the
+posting does move the current window — while the days between where it takes
+effect and the repricing keep the interest computed without it, permanently. The
+retroactive-accrual machinery the previous topic built stops working at a line
+the customer cannot see and did not agree to.
 
 This design makes product terms an effective-dated timeline, resolved per accrual
 day. Three things follow:
@@ -380,8 +383,12 @@ per-day walk is not a detail a caller may opt out of; `Recompute`'s own
 documentation calls it *"the single most load-bearing convention in the accrual
 engine"* (`:50-53`).
 
-So the terms-resolution point is the `Period` closure, and because `perDay`
-calls it with one day at a time, its `from` **is** the day:
+So the terms-resolution point is the `Period` closure. `perDay` calls it with one
+day at a time, and the day is its **`to`**, not its `from`: `interest.AccrueSeries`
+names a span by its END date, because a movement value-dated `V` ends the preceding
+run at `V-1` and so first bites on `[V-1, V)`. Resolving on `from` would put the
+rate and the balance it is charged against a day apart — day D's rate applied to
+day D+1's balance — and a repricing effective day 30 would not bite until day 31.
 
 ```go
 // deposit/register.go:1084-1090, today
@@ -395,7 +402,7 @@ next, delta := interest.Recompute(series, acct.TermsEffectiveFrom, date,
 next, delta := interest.Recompute(series, window, date,
 	interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 	func(balance ledger.Amount, from, to time.Time) interest.Accrued {
-		return overdraftAccrual(balance, termsAt(rows, from), from, to)
+		return overdraftAccrual(balance, termsAt(rows, to), from, to)
 	})
 ```
 

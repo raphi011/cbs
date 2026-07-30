@@ -294,7 +294,7 @@ export const chapter: Chapter = {
         "A posting that arrives value-dated to a day BEFORE the account's last repricing is trued up by the next accrual run, the same way any other back-dated posting is.",
       answer: true,
       explanation:
-        "It is — and it is true *because* the terms are [[effective-dated-terms|effective-dated]]. Each run re-derives every day since the account opened, pricing each one at the terms actually in force on it, and posts the change in the rounded value as a delta. While terms were mutable columns the recompute window had to start at the last repricing — reaching further would have re-derived old days at *today's* rate — so a back-value landing behind that line was silently never corrected at all.",
+        "It is — and it is true *because* the terms are [[effective-dated-terms|effective-dated]]. Each run re-derives every day since the account opened, pricing each one at the terms actually in force on it, and posts the change in the rounded value as a delta. While terms were mutable columns the recompute window had to start at the last repricing — reaching further would have re-derived old days at *today's* rate — so a back-value landing behind that line was trued up only from the repricing forward, and the days between where it took effect and the repricing kept the interest computed without it, permanently. The repricing was a line the correction stopped at.",
     },
     {
       kind: "numeric",

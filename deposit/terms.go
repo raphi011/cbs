@@ -17,8 +17,12 @@ import (
 // The four fields used to be mutable columns on Account. An accrual posted six
 // months ago could not then be reproduced from stored state: the inputs it used
 // were gone, overwritten by the current ones. Worse, it bounded the recompute
-// window at the last repricing, so a backdated posting landing before it was
-// silently never trued up.
+// window at the last repricing. A repricing closed the old window out and
+// opened a new one at itself, so a backdated posting landing behind it was
+// trued up only from the repricing forward — the window's opening balance is
+// value-dated, so the posting did move it — while the days between where it
+// took economic effect and the repricing kept the interest computed without it,
+// permanently. The repricing was a line the correction stopped at.
 //
 // # Two dates, and what the pair means
 //
