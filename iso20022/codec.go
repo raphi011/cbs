@@ -49,11 +49,16 @@ func Marshal(env Envelope) ([]byte, error) {
 // from the header's MsgDefIdr.
 //
 // It is the one function in this repository that consumes bytes it did not
-// produce, so it is written to fail rather than to guess: a root element that
-// is not Envelope, a second top-level element after the first one closes, an
-// unknown message definition, a header that disagrees with the document's
-// namespace, a missing Document, and a document missing a mandatory element
-// are each a named error.
+// produce, so it fails rather than guesses: a root element that is not
+// Envelope, a second top-level element (complete or not) anywhere after the
+// first one, an unknown message definition, a header that disagrees with the
+// document's namespace, a missing Document, and a document missing a
+// mandatory element are each a named error. The two structural checks — the
+// root's name and there being only one — deliberately return a plain error
+// rather than one of this package's sentinels: both are a structurally
+// different document, not a mandatory element that happens to be missing, and
+// naming them ErrMissingElement would misname the problem the same way the
+// missing-Document case once did before it was fixed.
 //
 // It reads the input as a single stream of tokens from one *xml.Decoder,
 // rather than unmarshalling into a struct and then re-parsing a captured
@@ -67,22 +72,35 @@ func Marshal(env Envelope) ([]byte, error) {
 // encoding/xml does not treat an undefined prefix as a decode failure. See
 // TestUnmarshalPreservesPrefixedNamespaceBindings.
 //
-// The token walk only ever dispatches on the element at depth 2 (AppHdr,
-// Document); nothing checked what depth 1 actually was, so any wrapper
-// element worked, including a bare <Document> as the root. It is checked
-// explicitly here instead — deliberately with a plain error rather than one
-// of this package's sentinels: a wrong root is a structurally different
-// document, not a mandatory element that happens to be missing, and dressing
-// it up as ErrMissingElement would name the wrong problem, the same mistake
-// the missing-Document case made before it was fixed. The same check also
-// catches a second top-level element appearing after the first root closes
-// (rootClosed below): silently reading only the first, or only the last, of
-// two concatenated envelopes is a parser differential two banks could
-// disagree on, so it is refused rather than left to guesswork. Trailing
-// non-element content — whitespace, a comment — after a valid envelope is NOT
-// rejected: this function returns as soon as the Document decodes and
-// validates, before the root's own closing tag is even read, so nothing after
-// it is inspected either way.
+// # Decoding the document does not end the function
+//
+// dec.DecodeElement(doc, &t) consumes through Document's own end tag and
+// stops there, leaving the rest of the input — at minimum the root's own
+// </Envelope>, possibly a great deal more — unread. Unmarshal keeps draining
+// tokens after that, all the way to EOF, instead of returning as soon as it
+// has a usable result. Returning early would accept a second, complete
+// <Envelope>...</Envelope> concatenated after the first: silently reading
+// only the one this function happened to reach, while a different parser
+// reads the other, which is exactly the kind of disagreement two banks must
+// not have about the same bytes. This makes Unmarshal's cost proportional to
+// the WHOLE input rather than just the prefix containing the document — the
+// right tradeoff for the one function that validates bytes this package did
+// not produce, not an oversight.
+//
+// Once a valid Document has been read, everything remaining is scrutinised:
+// any further xml.StartElement is refused, whether it is another <Envelope>,
+// a bare element, or anything else, and any xml.CharData holding non-blank
+// text is refused too. What stays legal after a valid envelope is exactly
+// what carries no content of its own: whitespace, comments, and processing
+// instructions. See TestUnmarshalRejectsASecondValidEnvelope and
+// TestUnmarshalAcceptsTrailingWhitespaceAndComments.
+//
+// A second, SEPARATE guard (rootClosed below) covers the case where the
+// first top-level element closes WITHOUT ever producing a valid result — an
+// empty or incomplete first <Envelope> followed by more content. That case
+// never reaches the "valid Document" checks above, since there is no result
+// yet, so it needs its own check that a new element cannot legally follow a
+// closed root at depth 1. See TestUnmarshalRejectsContentAfterTheRootCloses.
 func Unmarshal(data []byte) (Envelope, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 
@@ -90,18 +108,27 @@ func Unmarshal(data []byte) (Envelope, error) {
 	haveHdr := false
 	depth := 0
 	rootClosed := false
+	var result *Envelope
 
 	for {
 		tok, err := dec.Token()
 		if err != nil {
-			if haveHdr && errors.Is(err, io.EOF) {
-				return Envelope{}, fmt.Errorf("%w: Document", ErrMissingElement)
+			if errors.Is(err, io.EOF) {
+				if result != nil {
+					return *result, nil
+				}
+				if haveHdr {
+					return Envelope{}, fmt.Errorf("%w: Document", ErrMissingElement)
+				}
 			}
 			return Envelope{}, err
 		}
 
 		switch t := tok.(type) {
 		case xml.StartElement:
+			if result != nil {
+				return Envelope{}, fmt.Errorf("iso20022: unexpected element %q after a valid envelope was already read", t.Name.Local)
+			}
 			depth++
 			if depth == 1 {
 				if rootClosed {
@@ -144,7 +171,8 @@ func Unmarshal(data []byte) (Envelope, error) {
 				if err := doc.validate(); err != nil {
 					return Envelope{}, err
 				}
-				return Envelope{AppHdr: hdr, Document: doc}, nil
+				depth-- // DecodeElement consumed Document's own EndElement too.
+				result = &Envelope{AppHdr: hdr, Document: doc}
 			default:
 				// An element this codec does not recognize. Skip it rather than
 				// walk into it, so the depth count stays correct for whatever
@@ -158,6 +186,10 @@ func Unmarshal(data []byte) (Envelope, error) {
 			depth--
 			if depth == 0 {
 				rootClosed = true
+			}
+		case xml.CharData:
+			if result != nil && len(bytes.TrimSpace(t)) != 0 {
+				return Envelope{}, errors.New("iso20022: unexpected text content after a valid envelope was already read")
 			}
 		}
 	}

@@ -317,6 +317,38 @@ func TestUnmarshalRejectsContentAfterTheRootCloses(t *testing.T) {
 	}
 }
 
+// TestUnmarshalRejectsASecondValidEnvelope pins the case
+// TestUnmarshalRejectsContentAfterTheRootCloses does NOT cover: two complete,
+// well-formed, individually valid envelopes concatenated back to back. That
+// first attempt at fixing "content after the root" only ever set its guard
+// inside the xml.EndElement branch, which Unmarshal never reaches on the
+// success path — it returns as soon as Document decodes and validates,
+// before consuming the root's own closing tag. So a first envelope that
+// fully succeeds was never checked for what came after it, which is exactly
+// the parser differential that matters: one reader takes the first envelope,
+// another could be misled into taking the last.
+func TestUnmarshalRejectsASecondValidEnvelope(t *testing.T) {
+	in := wantEnvelopeXML + wantEnvelopeXML
+	if _, err := Unmarshal([]byte(in)); err == nil {
+		t.Fatal("Unmarshal() = nil, want an error for a second, complete envelope concatenated after a valid one")
+	}
+}
+
+// TestUnmarshalAcceptsTrailingWhitespaceAndComments pins the other half of
+// the same fix: refusing a second envelope must not become refusing
+// everything after the first one. Whitespace and a comment carry no content
+// of their own and are legal trailing bytes.
+func TestUnmarshalAcceptsTrailingWhitespaceAndComments(t *testing.T) {
+	in := wantEnvelopeXML + "\n  \n<!-- a trailing comment -->\n  "
+	env, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v, want trailing whitespace and a comment to be accepted", err)
+	}
+	if env.AppHdr.BizMsgIdr != "AURTSESSXXX-20260731-000001" {
+		t.Fatalf("BizMsgIdr = %q, want the envelope decoded from wantEnvelopeXML", env.AppHdr.BizMsgIdr)
+	}
+}
+
 // TestRegisterDocumentPanicsWhenNamespaceDisagrees is
 // TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees's
 // counterpart for the namespace argument.
