@@ -90,6 +90,9 @@ func (s *Server) bankRouter() *router {
 	// unnarrowed, which is the split doing its job rather than a collision.
 	mux.HandleFunc("GET /payments", s.handleListBankPayments)
 	mux.HandleFunc("GET /payments/{payid}", s.handleGetBankPayment)
+	// Where a customer's instruction lands. Never the clearing house: a
+	// retail client has no CSM connection in the real thing either.
+	mux.HandleFunc("POST /payments", s.handleSubmitPayment)
 
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)

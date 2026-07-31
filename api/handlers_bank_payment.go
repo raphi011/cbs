@@ -53,3 +53,44 @@ func (s *Server) handleGetBankPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
+
+// acceptedPaymentDTO is what a bank answers a customer's instruction with: an
+// identifier to ask about, not an outcome.
+type acceptedPaymentDTO struct {
+	PaymentID string `json:"paymentId"`
+}
+
+// handleSubmitPayment accepts a payment instruction from this bank's own
+// customer.
+//
+// A customer's client must never talk to the clearing house — it has no CSM
+// connection in the real thing either — so submission lands on the bank, and
+// the bank is what forwards it.
+//
+// The answer is 202 with an identifier rather than 201 with the payment, even
+// though the handler is synchronous today. Sub-project 7b converts submission
+// to exactly this shape, because a real CSM answers with a pacs.002 later and
+// not by return value; a client built against a synchronous "payment created"
+// response would have to be rewritten, and one built against "here is an
+// identifier, ask again" will not be.
+func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
+	var req initiatePaymentRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	dom := req.toDomain()
+	// A bank submits on behalf of its own customer and nobody else's. This is
+	// scoping, not authorization: it says which instructions this listener is
+	// for, and verifies nothing about who is calling it.
+	if dom.Debtor.Participant != s.boundPID {
+		writeUnprocessable(w, "the debtor must be an account at this bank")
+		return
+	}
+	p, err := s.network().InitiatePayment(r.Context(), dom)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, acceptedPaymentDTO{PaymentID: string(p.ID)})
+}

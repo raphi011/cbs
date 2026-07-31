@@ -20,8 +20,9 @@ import (
 //     ledger events on a bank, the reserve movements on the central bank. Same
 //     pattern, different operator, different answer — which is what the split is
 //     for, and is worth the consistency.
-//   - GET /payments and GET /payments/{payid} are on a bank and the clearing
-//     house with different handlers: the bank's are narrowed to its own legs.
+//   - The three payment routes are on a bank and the clearing house with
+//     different handlers: the bank's reads are narrowed to its own legs, and its
+//     POST accepts a customer instruction and answers 202 with an identifier.
 //     Same pattern, different operator, different answer.
 var allowedOverlaps = []string{
 	"GET /assets",
@@ -29,6 +30,7 @@ var allowedOverlaps = []string{
 	"GET /audit",
 	"GET /payments",
 	"GET /payments/{payid}",
+	"POST /payments",
 }
 
 func surfaces(t *testing.T) map[string][]string {
@@ -367,4 +369,52 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 		"amount":10000,
 		"endToEndId":"`+e2e+`"
 	}`, http.StatusCreated)["id"].(string)
+}
+
+// TestABankAcceptsItsOwnCustomersInstruction pins both halves of retail
+// submission: the debtor must be one of this bank's accounts, and the answer is
+// an identifier rather than the payment.
+func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := threeBanks(t, h)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	instruction := `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"` + a.pid + `","account":"` + a.account + `"},
+		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `"},
+		"amount":10000,
+		"endToEndId":"retail-1"
+	}`
+
+	got := doJSON(t, bank(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
+	id, ok := got["paymentId"].(string)
+	if !ok || id == "" {
+		t.Fatalf("response = %v, want a paymentId", got)
+	}
+	if _, leaked := got["status"]; leaked {
+		t.Errorf("the acceptance carries a status: %v — the outcome is a second request", got)
+	}
+
+	// The outcome arrives from asking again, which is the shape 7b needs.
+	outcome := doJSON(t, bank(h, a.pid), "GET", "/payments/"+id, "", http.StatusOK)
+	if outcome["id"] != id {
+		t.Fatalf("GET /payments/%s returned %v", id, outcome["id"])
+	}
+}
+
+// A bank may not submit a payment drawn on somebody else's customer.
+func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := threeBanks(t, h)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	// Bank A's listener, asked to debit Bank B's customer.
+	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
+		"creditor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
+		"amount":10000,
+		"endToEndId":"not-mine-to-send"
+	}`, http.StatusUnprocessableEntity)
 }

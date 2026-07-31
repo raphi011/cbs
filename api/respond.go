@@ -26,6 +26,14 @@ func writeBadRequest(w http.ResponseWriter, msg string) {
 	writeJSON(w, http.StatusBadRequest, errorBody{Error: msg})
 }
 
+// writeUnprocessable reports a well-formed request that the state refuses, as a
+// 422 with the given message. It is the hand-written twin of the errorStatus
+// arm that maps the domain's business-state sentinels — for the refusals the
+// API itself makes and the domain has no error for.
+func writeUnprocessable(w http.ResponseWriter, msg string) {
+	writeJSON(w, http.StatusUnprocessableEntity, errorBody{Error: msg})
+}
+
 type errorBody struct {
 	Error string `json:"error"`
 }
