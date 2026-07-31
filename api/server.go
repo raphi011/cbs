@@ -91,30 +91,6 @@ func (s *Server) Reset(ctx context.Context) error {
 	return s.populate(ctx, s.net)
 }
 
-// Routes builds the HTTP handler: an enhanced ServeMux (Go 1.22+ method+path
-// patterns) wrapped in the middleware chain (CORS, logging, recover).
-func (s *Server) Routes() http.Handler {
-	return s.withMiddleware(s.routes().mux)
-}
-
-// RoutePatterns is every pattern Routes registers, sorted. It exists for the
-// tests that hold the operator split honest; nothing in serving uses it.
-func (s *Server) RoutePatterns() []string { return s.routes().Patterns() }
-
-func (s *Server) routes() *router {
-	mux := newRouter()
-	s.registerParticipantRoutes(mux)
-	s.registerLedgerRoutes(mux)
-	s.registerDepositRoutes(mux)
-	s.registerProductRoutes(mux)
-	s.registerLendingRoutes(mux)
-	s.registerPaymentRoutes(mux)
-	s.registerDirectoryRoutes(mux)
-	s.registerAuditRoutes(mux)
-	s.registerAdminRoutes(mux)
-	return mux
-}
-
 // forBank returns a view of this Server bound to one participant. The copy is
 // shallow on purpose: every listener shares the one Network, the one populate
 // func and the one log.
@@ -137,15 +113,11 @@ func (s *Server) forBank(pid payment.ParticipantID) *Server {
 // appropriate error response and returns false, so callers can simply `return`
 // when ok is false.
 //
-// Transitional: until the switch-over an unbound Server falls back to the {pid}
-// path parameter, so the combined Routes() keeps working alongside the three
-// operator surfaces.
+// An unbound Server reaching here asks the network for the participant "",
+// which is a clean not-found rather than some other bank's data — the failure
+// mode worth having if a route is ever registered on the wrong surface.
 func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Participant, bool) {
-	pid := s.boundPID
-	if pid == "" {
-		pid = payment.ParticipantID(r.PathValue("pid"))
-	}
-	p, err := s.network().GetParticipant(r.Context(), pid)
+	p, err := s.network().GetParticipant(r.Context(), s.boundPID)
 	if err != nil {
 		writeError(w, err)
 		return nil, false

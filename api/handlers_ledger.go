@@ -8,23 +8,23 @@ import (
 )
 
 func (s *Server) registerLedgerRoutes(mux *router) {
-	mux.HandleFunc("POST /participants/{pid}/ledgers", s.handleCreateLedger)
-	mux.HandleFunc("GET /participants/{pid}/ledgers", s.handleListLedgers)
-	mux.HandleFunc("GET /participants/{pid}/ledgers/{lid}", s.handleGetLedger)
+	mux.HandleFunc("POST /ledgers", s.handleCreateLedger)
+	mux.HandleFunc("GET /ledgers", s.handleListLedgers)
+	mux.HandleFunc("GET /ledgers/{lid}", s.handleGetLedger)
 
-	mux.HandleFunc("POST /participants/{pid}/ledgers/{lid}/subledgers", s.handleCreateSubledger)
-	mux.HandleFunc("GET /participants/{pid}/ledgers/{lid}/subledgers", s.handleListSubledgers)
-	mux.HandleFunc("GET /participants/{pid}/subledgers/{sid}", s.handleGetSubledger)
+	mux.HandleFunc("POST /ledgers/{lid}/subledgers", s.handleCreateSubledger)
+	mux.HandleFunc("GET /ledgers/{lid}/subledgers", s.handleListSubledgers)
+	mux.HandleFunc("GET /subledgers/{sid}", s.handleGetSubledger)
 
-	mux.HandleFunc("POST /participants/{pid}/subledgers/{sid}/accounts", s.handleCreateAccount)
-	mux.HandleFunc("GET /participants/{pid}/subledgers/{sid}/accounts", s.handleListAccounts)
-	mux.HandleFunc("GET /participants/{pid}/accounts/{aid}", s.handleGetAccount)
-	mux.HandleFunc("GET /participants/{pid}/accounts/{aid}/balance", s.handleBookBalance)
+	mux.HandleFunc("POST /subledgers/{sid}/accounts", s.handleCreateAccount)
+	mux.HandleFunc("GET /subledgers/{sid}/accounts", s.handleListAccounts)
+	mux.HandleFunc("GET /accounts/{aid}", s.handleGetAccount)
+	mux.HandleFunc("GET /accounts/{aid}/balance", s.handleBookBalance)
 
-	mux.HandleFunc("POST /participants/{pid}/transactions", s.handlePostTransaction)
-	mux.HandleFunc("GET /participants/{pid}/transactions", s.handleListTransactions)
-	mux.HandleFunc("GET /participants/{pid}/transactions/{tid}", s.handleGetTransaction)
-	mux.HandleFunc("POST /participants/{pid}/transactions/{tid}/reversal", s.handleReverseTransaction)
+	mux.HandleFunc("POST /transactions", s.handlePostTransaction)
+	mux.HandleFunc("GET /transactions", s.handleListTransactions)
+	mux.HandleFunc("GET /transactions/{tid}", s.handleGetTransaction)
+	mux.HandleFunc("POST /transactions/{tid}/reversal", s.handleReverseTransaction)
 }
 
 func (s *Server) handleCreateLedger(w http.ResponseWriter, r *http.Request) {

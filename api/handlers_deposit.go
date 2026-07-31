@@ -12,30 +12,30 @@ import (
 )
 
 func (s *Server) registerDepositRoutes(mux *router) {
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts", s.handleOpenDepositAccount)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts", s.handleListDepositAccounts)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}", s.handleGetDepositAccount)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/balance", s.handleDepositBalance)
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/status", s.handleDepositStatus)
-	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}", s.handleCloseDepositAccount)
+	mux.HandleFunc("POST /deposit-accounts", s.handleOpenDepositAccount)
+	mux.HandleFunc("GET /deposit-accounts", s.handleListDepositAccounts)
+	mux.HandleFunc("GET /deposit-accounts/{did}", s.handleGetDepositAccount)
+	mux.HandleFunc("GET /deposit-accounts/{did}/balance", s.handleDepositBalance)
+	mux.HandleFunc("POST /deposit-accounts/{did}/status", s.handleDepositStatus)
+	mux.HandleFunc("DELETE /deposit-accounts/{did}", s.handleCloseDepositAccount)
 
 	// The three writes the old overdraft-terms POST conflated, split along the
 	// pinned/floating seam: a limit is an underwriting decision about one
 	// customer, a price is the product's, and a migration is neither.
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-limit", s.handleSetOverdraftLimit)
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-pricing", s.handleSetOverdraftPricing)
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/product", s.handleChangeProduct)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleListOverdraftTerms)
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
+	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-limit", s.handleSetOverdraftLimit)
+	mux.HandleFunc("POST /deposit-accounts/{did}/overdraft-pricing", s.handleSetOverdraftPricing)
+	mux.HandleFunc("POST /deposit-accounts/{did}/product", s.handleChangeProduct)
+	mux.HandleFunc("GET /deposit-accounts/{did}/overdraft-terms", s.handleListOverdraftTerms)
+	mux.HandleFunc("POST /deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
 
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/holds", s.handleCreateHold)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/holds", s.handleListHolds)
-	mux.HandleFunc("GET /participants/{pid}/holds/{hid}", s.handleGetHold)
-	mux.HandleFunc("POST /participants/{pid}/holds/{hid}/release", s.handleReleaseHold)
-	mux.HandleFunc("POST /participants/{pid}/holds/{hid}/capture", s.handleCaptureHold)
+	mux.HandleFunc("POST /deposit-accounts/{did}/holds", s.handleCreateHold)
+	mux.HandleFunc("GET /deposit-accounts/{did}/holds", s.handleListHolds)
+	mux.HandleFunc("GET /holds/{hid}", s.handleGetHold)
+	mux.HandleFunc("POST /holds/{hid}/release", s.handleReleaseHold)
+	mux.HandleFunc("POST /holds/{hid}/capture", s.handleCaptureHold)
 
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/snapshots", s.handleTakeSnapshot)
-	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/snapshots", s.handleGetSnapshots)
+	mux.HandleFunc("POST /deposit-accounts/{did}/snapshots", s.handleTakeSnapshot)
+	mux.HandleFunc("GET /deposit-accounts/{did}/snapshots", s.handleGetSnapshots)
 }
 
 func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request) {

@@ -14,17 +14,17 @@ import (
 // off a participant: the same product ID at two banks is two products, because
 // a catalogue belongs to a bank.
 func (s *Server) registerProductRoutes(mux *router) {
-	mux.HandleFunc("POST /participants/{pid}/products", s.handleCreateProduct)
-	mux.HandleFunc("GET /participants/{pid}/products", s.handleListProducts)
-	mux.HandleFunc("GET /participants/{pid}/products/{prid}", s.handleGetProduct)
-	mux.HandleFunc("POST /participants/{pid}/products/{prid}/retire", s.handleRetireProduct)
+	mux.HandleFunc("POST /products", s.handleCreateProduct)
+	mux.HandleFunc("GET /products", s.handleListProducts)
+	mux.HandleFunc("GET /products/{prid}", s.handleGetProduct)
+	mux.HandleFunc("POST /products/{prid}/retire", s.handleRetireProduct)
 
-	mux.HandleFunc("POST /participants/{pid}/products/{prid}/versions", s.handleDraftVersion)
-	mux.HandleFunc("GET /participants/{pid}/products/{prid}/versions", s.handleListVersions)
+	mux.HandleFunc("POST /products/{prid}/versions", s.handleDraftVersion)
+	mux.HandleFunc("GET /products/{prid}/versions", s.handleListVersions)
 	// The effective day is in the PATH rather than in a body, because that day
 	// is the version's identity: a body carrying it would let a client publish
 	// a different version from the one the URL names.
-	mux.HandleFunc("POST /participants/{pid}/products/{prid}/versions/{day}/publish", s.handlePublishVersion)
+	mux.HandleFunc("POST /products/{prid}/versions/{day}/publish", s.handlePublishVersion)
 }
 
 func (s *Server) handleCreateProduct(w http.ResponseWriter, r *http.Request) {

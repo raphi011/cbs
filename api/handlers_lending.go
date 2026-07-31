@@ -13,25 +13,25 @@ import (
 )
 
 func (s *Server) registerLendingRoutes(mux *router) {
-	mux.HandleFunc("POST /participants/{pid}/facilities", s.handleOpenFacility)
-	mux.HandleFunc("GET /participants/{pid}/facilities", s.handleListFacilities)
-	mux.HandleFunc("GET /participants/{pid}/facilities/{fid}", s.handleGetFacility)
-	mux.HandleFunc("GET /participants/{pid}/facilities/{fid}/schedule", s.handleFacilitySchedule)
-	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/disbursement", s.handleDisburse)
-	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/draws", s.handleDraw)
-	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/repayments", s.handleRepay)
-	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/interest-charge", s.handleChargeInterest)
-	mux.HandleFunc("POST /participants/{pid}/facilities/{fid}/interest-refunds", s.handleRefundInterest)
-	mux.HandleFunc("DELETE /participants/{pid}/facilities/{fid}", s.handleCloseFacility)
+	mux.HandleFunc("POST /facilities", s.handleOpenFacility)
+	mux.HandleFunc("GET /facilities", s.handleListFacilities)
+	mux.HandleFunc("GET /facilities/{fid}", s.handleGetFacility)
+	mux.HandleFunc("GET /facilities/{fid}/schedule", s.handleFacilitySchedule)
+	mux.HandleFunc("POST /facilities/{fid}/disbursement", s.handleDisburse)
+	mux.HandleFunc("POST /facilities/{fid}/draws", s.handleDraw)
+	mux.HandleFunc("POST /facilities/{fid}/repayments", s.handleRepay)
+	mux.HandleFunc("POST /facilities/{fid}/interest-charge", s.handleChargeInterest)
+	mux.HandleFunc("POST /facilities/{fid}/interest-refunds", s.handleRefundInterest)
+	mux.HandleFunc("DELETE /facilities/{fid}", s.handleCloseFacility)
 
 	// Outstanding refunds are listed per BANK rather than per facility: the
 	// question an operator has is "who do we still owe?", and a per-facility
 	// route can only answer it by walking every facility. The per-facility
 	// figure is already on facilityDTO.
-	mux.HandleFunc("GET /participants/{pid}/interest-refunds-payable", s.handleListRefundsPayable)
+	mux.HandleFunc("GET /interest-refunds-payable", s.handleListRefundsPayable)
 
-	mux.HandleFunc("POST /participants/{pid}/end-of-day", s.handleRunEndOfDay)
-	mux.HandleFunc("GET /participants/{pid}/totals", s.handleTotals)
+	mux.HandleFunc("POST /end-of-day", s.handleRunEndOfDay)
+	mux.HandleFunc("GET /totals", s.handleTotals)
 }
 
 // handleOpenFacility opens a term loan or a revolving line, chosen by the

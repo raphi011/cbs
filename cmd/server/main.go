@@ -21,13 +21,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"log/slog"
-	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -52,7 +51,7 @@ type store interface {
 }
 
 func main() {
-	addr := flag.String("addr", defaultAddr(), "listen address (host:port)")
+	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per member bank")
 	database := flag.String("database", os.Getenv("DATABASE_URL"), "Postgres DSN; empty uses the in-memory store")
 	flag.Parse()
 
@@ -78,21 +77,16 @@ func main() {
 
 	srv := api.NewServer(net, data.Populate, log)
 
-	httpServer := &http.Server{
-		Addr:              *addr,
-		Handler:           srv.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
+	entities, err := plan(context.Background(), net, *basePort)
+	if err != nil {
+		log.Error("planning the listeners", "error", err)
+		os.Exit(1)
 	}
-
-	// Run the server until an interrupt/terminate signal, then shut down
-	// gracefully so in-flight requests can finish.
-	go func() {
-		log.Info("listening", "addr", *addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("server error", "error", err)
-			os.Exit(1)
-		}
-	}()
+	shutdown, err := serve(entities, srv, log)
+	if err != nil {
+		log.Error("starting the listeners", "error", err)
+		os.Exit(1)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -101,7 +95,7 @@ func main() {
 	log.Info("shutting down")
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := httpServer.Shutdown(shutCtx); err != nil {
+	if err := shutdown(shutCtx); err != nil {
 		log.Error("graceful shutdown failed", "error", err)
 	}
 }
@@ -145,11 +139,14 @@ func redact(dsn string) string {
 	return u.Redacted()
 }
 
-// defaultAddr reads the PORT environment variable (the common convention for
-// hosted environments) and falls back to :8080.
-func defaultAddr() string {
+// defaultBasePort reads the PORT environment variable (the common convention
+// for hosted environments) and falls back to 8081 — one above the single
+// server's old :8080, so an 8081-8086 block cannot collide with a stray one.
+func defaultBasePort() int {
 	if p := os.Getenv("PORT"); p != "" {
-		return ":" + p
+		if n, err := strconv.Atoi(p); err == nil {
+			return n
+		}
 	}
-	return ":8080"
+	return 8081
 }

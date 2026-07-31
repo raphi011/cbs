@@ -18,10 +18,6 @@ import (
 // bank's port is that bank; the port is the claim. What it removes is the
 // ability to reach another operator's data by editing a URL, because that URL
 // does not exist on the port you are talking to.
-//
-// The bank's routes are registered through mux.strip, which is transitional:
-// the four participant-scoped register functions are shared with the combined
-// Routes() and still name /participants/{pid}/… at their source.
 
 // CentralBankRoutes is the settlement layer's surface: reserves, its own audit,
 // admission, and the reset that rebuilds the sample dataset.
@@ -73,8 +69,6 @@ func (s *Server) clearingHouseRouter() *router {
 
 func (s *Server) bankRouter() *router {
 	mux := newRouter()
-	scoped := mux.strip("/participants/{pid}")
-
 	// GET /me is GET /participants/{pid} with the question already answered.
 	// The handler is the same one: it resolves through s.participant, which on
 	// this listener reads the bound identity instead of the path.
@@ -89,10 +83,10 @@ func (s *Server) bankRouter() *router {
 	mux.HandleFunc("GET /audit", s.handleLedgerAudit)
 	mux.HandleFunc("GET /deposit-audit", s.handleDepositAudit)
 
-	s.registerLedgerRoutes(scoped)
-	s.registerDepositRoutes(scoped)
-	s.registerProductRoutes(scoped)
-	s.registerLendingRoutes(scoped)
-	s.registerBankIdentifierRoutes(scoped)
+	s.registerLedgerRoutes(mux)
+	s.registerDepositRoutes(mux)
+	s.registerProductRoutes(mux)
+	s.registerLendingRoutes(mux)
+	s.registerBankIdentifierRoutes(mux)
 	return mux
 }

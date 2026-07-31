@@ -9,19 +9,6 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-func (s *Server) registerParticipantRoutes(mux *router) {
-	mux.HandleFunc("POST /participants", s.handleAddParticipant)
-	mux.HandleFunc("GET /participants", s.handleListParticipants)
-	mux.HandleFunc("GET /participants/{pid}", s.handleGetParticipant)
-	mux.HandleFunc("POST /participants/{pid}/deposits", s.handleFundDeposit)
-
-	mux.HandleFunc("GET /schemes", s.handleListSchemes)
-	mux.HandleFunc("GET /assets", s.handleListAssets)
-
-	mux.HandleFunc("GET /central-bank/reserves", s.handleListReserves)
-	mux.HandleFunc("GET /central-bank/reserves/{pid}", s.handleGetReserve)
-}
-
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {

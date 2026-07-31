@@ -1,6 +1,7 @@
 package api
 
 import (
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -52,7 +53,7 @@ func TestSurfacesAreDisjoint(t *testing.T) {
 func TestEveryRouteLandsSomewhere(t *testing.T) {
 	got := surfaces(t)
 
-	for _, old := range newServer(t, nil).RoutePatterns() {
+	for _, old := range preSplitRoutes {
 		op, want := movedTo(old)
 		if op == "" {
 			continue // deliberately not moved yet; see the switch below
@@ -98,5 +99,128 @@ func movedTo(old string) (operator, pattern string) {
 	default:
 		// Payments, mandates, cycles, settlements, schemes, the directory.
 		return "clearing-house", old
+	}
+}
+
+// preSplitRoutes is the API as one server served it, captured before the split.
+// It is a golden list rather than something derived from the code, because a
+// list derived from the code after the fact could only ever agree with itself:
+// the whole question is whether the three surfaces still serve what the one
+// server did.
+var preSplitRoutes = []string{
+	"DELETE /participants/{pid}/deposit-accounts/{did}",
+	"DELETE /participants/{pid}/deposit-accounts/{did}/identifiers/{scheme}/{value}",
+	"DELETE /participants/{pid}/facilities/{fid}",
+	"GET /assets",
+	"GET /central-bank/audit",
+	"GET /central-bank/reserves",
+	"GET /central-bank/reserves/{pid}",
+	"GET /cycles",
+	"GET /cycles/{cid}",
+	"GET /directory",
+	"GET /mandates",
+	"GET /mandates/{mid}",
+	"GET /participants",
+	"GET /participants/{pid}",
+	"GET /participants/{pid}/accounts/{aid}",
+	"GET /participants/{pid}/accounts/{aid}/balance",
+	"GET /participants/{pid}/audit",
+	"GET /participants/{pid}/deposit-accounts",
+	"GET /participants/{pid}/deposit-accounts/{did}",
+	"GET /participants/{pid}/deposit-accounts/{did}/balance",
+	"GET /participants/{pid}/deposit-accounts/{did}/holds",
+	"GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms",
+	"GET /participants/{pid}/deposit-accounts/{did}/snapshots",
+	"GET /participants/{pid}/deposit-audit",
+	"GET /participants/{pid}/facilities",
+	"GET /participants/{pid}/facilities/{fid}",
+	"GET /participants/{pid}/facilities/{fid}/schedule",
+	"GET /participants/{pid}/holds/{hid}",
+	"GET /participants/{pid}/interest-refunds-payable",
+	"GET /participants/{pid}/ledgers",
+	"GET /participants/{pid}/ledgers/{lid}",
+	"GET /participants/{pid}/ledgers/{lid}/subledgers",
+	"GET /participants/{pid}/products",
+	"GET /participants/{pid}/products/{prid}",
+	"GET /participants/{pid}/products/{prid}/versions",
+	"GET /participants/{pid}/subledgers/{sid}",
+	"GET /participants/{pid}/subledgers/{sid}/accounts",
+	"GET /participants/{pid}/totals",
+	"GET /participants/{pid}/transactions",
+	"GET /participants/{pid}/transactions/{tid}",
+	"GET /payments",
+	"GET /payments/{payid}",
+	"GET /payments/audit",
+	"GET /schemes",
+	"GET /settlements",
+	"GET /settlements/{sid}",
+	"POST /admin/reset",
+	"POST /cycles",
+	"POST /cycles/{cid}/close",
+	"POST /cycles/{cid}/settle",
+	"POST /mandates",
+	"POST /mandates/{mid}/revoke",
+	"POST /participants",
+	"POST /participants/{pid}/deposit-accounts",
+	"POST /participants/{pid}/deposit-accounts/{did}/holds",
+	"POST /participants/{pid}/deposit-accounts/{did}/identifiers",
+	"POST /participants/{pid}/deposit-accounts/{did}/interest-charge",
+	"POST /participants/{pid}/deposit-accounts/{did}/overdraft-limit",
+	"POST /participants/{pid}/deposit-accounts/{did}/overdraft-pricing",
+	"POST /participants/{pid}/deposit-accounts/{did}/product",
+	"POST /participants/{pid}/deposit-accounts/{did}/snapshots",
+	"POST /participants/{pid}/deposit-accounts/{did}/status",
+	"POST /participants/{pid}/deposits",
+	"POST /participants/{pid}/end-of-day",
+	"POST /participants/{pid}/facilities",
+	"POST /participants/{pid}/facilities/{fid}/disbursement",
+	"POST /participants/{pid}/facilities/{fid}/draws",
+	"POST /participants/{pid}/facilities/{fid}/interest-charge",
+	"POST /participants/{pid}/facilities/{fid}/interest-refunds",
+	"POST /participants/{pid}/facilities/{fid}/repayments",
+	"POST /participants/{pid}/holds/{hid}/capture",
+	"POST /participants/{pid}/holds/{hid}/release",
+	"POST /participants/{pid}/ledgers",
+	"POST /participants/{pid}/ledgers/{lid}/subledgers",
+	"POST /participants/{pid}/products",
+	"POST /participants/{pid}/products/{prid}/retire",
+	"POST /participants/{pid}/products/{prid}/versions",
+	"POST /participants/{pid}/products/{prid}/versions/{day}/publish",
+	"POST /participants/{pid}/subledgers/{sid}/accounts",
+	"POST /participants/{pid}/transactions",
+	"POST /participants/{pid}/transactions/{tid}/reversal",
+	"POST /payments",
+	"POST /payments/{payid}/reject",
+	"POST /payments/{payid}/return",
+}
+
+// TestABankCannotNameAnotherBank is the whole point of the split.
+//
+// The old API took the bank as a path segment, so any caller could ask for any
+// bank's ledger by editing a URL. There is now nowhere in a bank's API to put
+// another bank's id — the port has already answered that question — so the old
+// shape is not a route at all, and the bank's own data is reached without
+// naming it.
+func TestABankCannotNameAnotherBank(t *testing.T) {
+	s := newServer(t, nil)
+	aurora := doJSON(t, cb(s), "POST", "/members", `{"name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
+	verde := doJSON(t, cb(s), "POST", "/members", `{"name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
+
+	h := bank(s, aurora)
+	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
+	assertStatus(t, h, "GET", "/participants/"+aurora+"/deposit-accounts", "", http.StatusNotFound)
+
+	// And its own list is reached by asking for it, with no id anywhere.
+	var mine []depositAccountDTO
+	getJSON(t, h, "/deposit-accounts", &mine)
+
+	// The bank a listener is bound to is the bank it answers as.
+	got := doJSON(t, h, "GET", "/me", "", http.StatusOK)
+	if got["id"] != aurora {
+		t.Fatalf("GET /me on Aurora's listener = %v, want %s", got["id"], aurora)
+	}
+	got = doJSON(t, bank(s, verde), "GET", "/me", "", http.StatusOK)
+	if got["id"] != verde {
+		t.Fatalf("GET /me on Verde's listener = %v, want %s", got["id"], verde)
 	}
 }
