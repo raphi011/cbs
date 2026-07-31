@@ -5,6 +5,7 @@ import { useMemo } from "react";
 
 import {
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -12,7 +13,7 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
-import type { Asset, AuditQuery } from "@/lib/types";
+import type { Asset, AuditQuery, DepositAccount, Participant } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -725,6 +726,60 @@ export function useSettlement(sid: string) {
     queryFn: () => api.getSettlement(sid),
     enabled: sid !== "",
   });
+}
+
+// --- Identities -------------------------------------------------------------
+
+// Every identity in the system, in one place: each member bank with its customer
+// accounts. The lobby and the identity picker both need exactly this, so they
+// share one set of queries rather than each fetching its own.
+//
+// The honest cost of the split is visible here. The roster comes from the
+// clearing house's GET /members, and each bank's accounts come from that bank's
+// own listener — so drawing one list touches five backends. That is why this is
+// a shared hook rather than an optimisation.
+//
+// A bank admitted at runtime has a store row and no listener until the server
+// restarts. Its query is not fired at all: it would 502 forever, and four
+// failing requests plus a dead console is a worse answer than one row saying so.
+export interface BankEntry {
+  participant: Participant;
+  accounts: DepositAccount[];
+  provisioned: boolean;
+}
+
+export function useIdentityDirectory(): {
+  banks: BankEntry[];
+  isLoading: boolean;
+  error: unknown;
+} {
+  const participants = useParticipants();
+  const operators = useOperators();
+  const isProvisioned = useIsProvisioned();
+  const list = participants.data ?? [];
+
+  const results = useQueries({
+    queries: list.map((p) => ({
+      queryKey: qk.depositAccounts(p.id),
+      queryFn: () => api.listDepositAccounts(p.id),
+      enabled: isProvisioned(`bank/${p.id}`),
+    })),
+  });
+
+  const banks = list.map((participant, i) => ({
+    participant,
+    accounts: results[i]?.data ?? [],
+    provisioned: isProvisioned(`bank/${participant.id}`),
+  }));
+
+  return {
+    banks,
+    // The probe is part of the load: until it answers, "provisioned" is a guess
+    // and firing the per-bank queries on a guess is what this exists to avoid.
+    isLoading:
+      participants.isLoading || operators.isLoading || results.some((r) => r.isLoading),
+    error: participants.error ?? results.find((r) => r.error)?.error ?? null,
+  };
 }
 
 // Reset the whole backend to the sample dataset, then invalidate every query so
