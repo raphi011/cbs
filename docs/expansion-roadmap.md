@@ -308,6 +308,16 @@ card-processor persona, and the customer's mandate and credit screens. The
 scheme-operator persona is no longer among them — 6a gave it a backend, so it
 ships.
 
+**The two paragraphs above are being revised.** 6 has absorbed a per-entity API
+split — one process binding one listener per bank, per central bank and per
+clearing house, over one shared `Store` — which makes the scoping *structural*
+rather than navigational, drops `/participants/{pid}` from 43 of ~60 routes, and
+separates three operator surfaces the single API currently conflates. It also
+surfaces two things the one-server API cannot express: `POST /cycles/{cid}/settle`
+sits on the clearing house when settling is the central bank's act, and
+`GET /payments` lists every bank's payments when a bank should see only its own.
+The spec owns the revision; this entry follows it.
+
 ### 7. ISO 20022 interbank messaging — `spec`
 
 Spec: [`superpowers/specs/2026-07-31-iso20022-messages-design.md`](superpowers/specs/2026-07-31-iso20022-messages-design.md)
@@ -339,9 +349,57 @@ Reopens exactly one of 5's deferrals, and only because 5's stated reason for it
 was that nothing needed a BIC: `DbtrAgt`/`CdtrAgt` are mandatory in the EPC
 `pacs.008`, so a message cannot be written without one.
 
+**7b depends on the topology decision made in 6: one process, many listeners.**
+Go channels do not cross process boundaries, so a per-entity split into separate
+*processes* would make 7b's transport a socket instead. It is not, and 7b
+therefore uses channels directly rather than behind a transport interface — an
+abstraction with one implementor, kept open for a future that has been decided
+against, would not earn its place.
+
 Deliberately out of scope across all three: `pain.001`/`pain.008` customer
 initiation, the `camt` reporting family, `camt.056`/`pacs.007` recalls and
 reversals, runtime XSD validation, and message signing.
+
+### 8. Per-entity stores — `todo`
+
+Each entity — every participant bank, the central bank, the clearing house —
+gets its **own `Store`**, so that no code path can reach another entity's books
+except by sending it a message.
+
+One process, N stores. Separate *processes* were never what made this hard, and
+6 has settled the topology the other way; separate **stores** are the whole
+cost, and they are also the whole lesson.
+
+**What it costs.** `SettleCycleTx` today "moves the netted reserves, mirrors
+them in each bank's own books and pays out every creditor inside one
+`Store.Update`" (`payment/doc.go:68-80`). With per-entity stores there is no such
+transaction. `Network.bind` (`payment/system.go:166`) and the live
+`Ledger`/`Deposit`/`Lending`/`Catalogue` handles on `Participant` become
+impossible to construct, which is the point rather than a casualty.
+
+**What it teaches, and what the current model gets wrong.** Real settlement *is*
+atomic — in the central bank's own ledger, because the settlement agent holds
+every reserve account there. What is emphatically *not* atomic is each
+commercial bank mirroring that movement into its own books: the bank learns of
+it afterwards, from a `camt.054`, and if its mirroring fails the settlement is
+still **final**. The bank has a reconciliation break, not a rollback. The
+present shared transaction teaches the opposite, and this is the one place the
+model is misleading rather than merely simplified.
+
+So the sub-project's real deliverable is a concept the repository does not have:
+an unreconciled position, and what a bank does with one.
+
+**Dependencies.** 6, for the per-entity API. 7b, for seams that are already
+message-shaped — attempted before 7b this is a redesign, attempted after it a
+mechanical extraction.
+
+**Survives unchanged:** Postgres-optional (each store may still be `store/mem`,
+so `make dev` and `go test ./...` need no database), and `store/storetest`,
+which is already per-store and conforms each one independently.
+
+**Out of scope:** separate processes, two-phase commit, and any distributed
+transaction manager. If settlement cannot be made final in one book and mirrored
+asynchronously into the others, the design is wrong rather than under-powered.
 
 ## Log
 
