@@ -68,4 +68,32 @@ func TestPacs008Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrBICFormat", err)
 		}
 	})
+	t.Run("a transaction settlement amount with no currency is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt.Ccy = ""
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a malformed transaction settlement amount is a format error", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt.Value = "not-a-number"
+		if err := d.validate(); !errors.Is(err, ErrAmountFormat) {
+			t.Fatalf("validate() = %v, want it to wrap ErrAmountFormat", err)
+		}
+	})
+	t.Run("a group header total settlement amount with no currency is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrCdtTrf.GrpHdr.TtlIntrBkSttlmAmt.Ccy = ""
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a malformed group header total settlement amount is a format error", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrCdtTrf.GrpHdr.TtlIntrBkSttlmAmt.Value = "not-a-number"
+		if err := d.validate(); !errors.Is(err, ErrAmountFormat) {
+			t.Fatalf("validate() = %v, want it to wrap ErrAmountFormat", err)
+		}
+	})
 }

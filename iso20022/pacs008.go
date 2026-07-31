@@ -70,6 +70,11 @@ func (h CreditTransferGroupHeader) validate() error {
 	if h.NbOfTxs == "" {
 		return fmt.Errorf("%w: GrpHdr/NbOfTxs", ErrMissingElement)
 	}
+	if h.TtlIntrBkSttlmAmt != nil {
+		if err := h.TtlIntrBkSttlmAmt.validate(); err != nil {
+			return fmt.Errorf("TtlIntrBkSttlmAmt: %w", err)
+		}
+	}
 	return h.SttlmInf.validate()
 }
 
@@ -96,6 +101,9 @@ type CreditTransferTransaction struct {
 func (t CreditTransferTransaction) validate() error {
 	if err := t.PmtId.validate(); err != nil {
 		return err
+	}
+	if err := t.IntrBkSttlmAmt.validate(); err != nil {
+		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
 	}
 	if t.ChrgBr == "" {
 		return fmt.Errorf("%w: ChrgBr", ErrMissingElement)

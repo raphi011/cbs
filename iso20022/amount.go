@@ -73,6 +73,30 @@ func (a ActiveCurrencyAndAmount) Minor(scale uint8) (int64, error) {
 	return minor, nil
 }
 
+// validate reports whether the amount is well-formed enough to put on the
+// wire: a currency code is present, and Value is shaped like a non-negative
+// decimal.
+//
+// It checks FORMAT, not scale. Scale is a property of the asset an amount is
+// denominated in — 2 for EUR, 8 for BTC — and this type does not know it and
+// must not guess it; a value with more fraction digits than one particular
+// currency allows is not malformed in the abstract, only in that currency, and
+// that check belongs to a caller that knows the asset, via Minor. What IS
+// universal, and so IS checked here, is the schema's own bound on this type:
+// at most five fraction digits, for any currency — see the type doc comment.
+// This reuses Minor(5) rather than a second parser: Minor already rejects
+// exactly the malformed shapes (non-digits, a second '.', and so on) that
+// would make a value unrepresentable, and five is that ceiling, not a guess.
+func (a ActiveCurrencyAndAmount) validate() error {
+	if a.Ccy == "" {
+		return fmt.Errorf("%w: Ccy", ErrMissingElement)
+	}
+	if _, err := a.Minor(5); err != nil {
+		return err
+	}
+	return nil
+}
+
 // isDigits reports whether s is a non-empty run of ASCII digits. strconv would
 // accept a leading sign and underscores; the schema's decimal does not.
 func isDigits(s string) bool {

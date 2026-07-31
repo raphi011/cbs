@@ -22,10 +22,24 @@ func normaliseXML(b []byte) string {
 
 // assertGoldenRoundTrip runs both directions against a committed sample.
 //
-// Marshal-then-compare catches a field that serialises wrongly. Unmarshal-then-
-// compare-structs catches a field that silently fails to PARSE — which the
-// first direction cannot see, because a field that never populated also never
-// changed, and a struct-equality test alone cannot see either.
+// Marshal-then-compare (direction 1) catches BOTH a field that serialises
+// wrongly AND a field that silently fails to parse: a field that fails to
+// unmarshal is left at its zero value, that zero value marshals differently
+// from the golden file's non-zero text, and the comparison is against the
+// GOLDEN FILE — not against a previous marshal — so the mismatch is caught
+// right there.
+//
+// Unmarshal-then-compare-structs (direction 2) is a stability check layered
+// on top, not a second, independent detector: it re-parses direction 1's
+// output and requires the result to equal the first parse. Once direction 1
+// has passed, direction 2 is nearly always redundant — a field that failed to
+// parse already failed direction 1's string comparison, so by the time
+// direction 2 runs, both sides it compares were produced from output already
+// known to match golden. What direction 2 actually guards against is the
+// narrow case where whitespace normalisation hid a real difference from
+// direction 1's string comparison but a struct-level comparison would still
+// see it. It costs nothing to keep, so it stays, but it is not the
+// parse-failure detector and should not be described as one.
 func assertGoldenRoundTrip(t *testing.T, file string) Envelope {
 	t.Helper()
 
