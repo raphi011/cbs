@@ -242,6 +242,43 @@ lending asset instead of directly, and the bank's short (or long) position in
 that asset becomes a number someone can see rather than an unrecorded fact
 about how the loan happened to be booked.
 
+### 5. Account addressing — `spec`
+
+Spec: [`superpowers/specs/2026-07-31-account-addressing-design.md`](superpowers/specs/2026-07-31-account-addressing-design.md)
+
+**Next in build order, ahead of 3 and 4.** A deposit account gains a set of
+external identifiers — `(scheme, value)`, with `IBAN` the one scheme shipped —
+distinct from its internal `AccountID`; `payment.Scheme` declares which
+identifier scheme addresses it, the way it already declares its asset; and
+`payment.Network.ResolveIdentifier` turns an address into a `PartyRef`.
+
+Discovered as a prerequisite of sub-project 6 rather than planned: a customer
+sends money to an IBAN, and today "IBANs are free-form labels" with nothing to
+look one up in. The naive fix — an `iban` column on `deposit.Account` — was
+rejected for putting a euro-area retail standard inside the CASA layer; ISO
+20022's `CashAccountIdentification` choice is the shape adopted instead, which
+is also what makes a later card PAN a data change rather than a rework.
+
+Deliberately out of scope: format validation including the mod-97 check digit
+(it would make the seed's readable `SE89-AURORA-1001` illegal and cost more
+teaching than it buys), a proxy-alias registry, a second identifier scheme, and
+BIC-level addressing.
+
+### 6. Role-scoped web UI — `spec`
+
+Spec: [`superpowers/specs/2026-07-31-role-scoped-web-ui-design.md`](superpowers/specs/2026-07-31-role-scoped-web-ui-design.md)
+
+Replaces the single unified dashboard with identities you switch between:
+central bank operator, bank back office, and bank customer, each on
+persona-prefixed routes with its own shell. Depends on 5 for the customer's send
+form.
+
+Purely frontend by design: the API stays open and unchanged, and the scoping is
+navigational rather than enforced. Real authn/authz, a scheme-operator
+(clearing house) persona, a card-processor persona, and the customer's mandate
+and credit screens are all recorded in the spec as out of scope rather than
+dropped.
+
 ## Log
 
 | Date | Entry |
@@ -252,3 +289,4 @@ about how the loan happened to be booked.
 | 2026-07-27 | Sub-project 2 design agreed and spec written. Scope widened to three products (term loan, revolving line, arranged overdraft); impairment deferred. Settled: an overdrawn account gets no loan account, because its drawn amount is the negative balance viewed by sign and has no independent existence — the Asset-side figure is a derived aggregate, as "total customer deposits" already is. Rejected a reclassification journal and an EOD sweep (the latter models a linked-loan product, not an arranged overdraft) and rejected restructuring deposits into control accounts as a regression. Packaging follows: pure `interest`, overdraft terms in `deposit` (CASA, not Loans — and a single `lending` owning the limit would cycle through `deposit`), `lending` for the two real-drawdown products. Interest is held at sub-minor-unit precision and posted daily as the delta of the rounded value; repayment allocates against actual accrued interest, not the schedule, which is why 30/360 exists. |
 | 2026-07-27 | Sub-project 1 **reworked**, in two parts. (1) The book-scoped `assets` table is gone; the definitions are a package-level list in `ledger`, the way schemes are Go types. The table was writable but unhonourable — a bank's plumbing accounts are provisioned when it joins, so an asset registered later gave a customer account that could never settle, surfacing as a 404 on funding. `GET /assets` replaces the per-participant registry endpoints; migrations `0002`–`0006` were folded into `0001` (no deployed databases; `migrate.go`'s own doc comment sanctions it). (2) The whole-branch review's findings: the euro-to-bitcoin counter-example was **wrong in five places** — the ledger does catch it, at settlement, and what it cannot catch is the payment at *initiation*; that correction is now pinned by a test rather than by argument. Also: N+1 round trips in two listing endpoints, an asset on both balance responses, mismatched-asset mandates refused, `ErrParticipantAssetNotFound` → 422, and the web form that silently reinterpreted an overdraft limit at a new scale. Learned: this is the **second** counter-example on this branch that argued the opposite of what it claimed. Prose that asserts what code does needs a test, not a careful reading. |
 | 2026-07-28 | Sub-project 2 **done**. `interest` (day counts, daily accrual, the sub-minor-unit `Accrued` type), overdraft terms and daily accrual on `deposit.Account`, and a new `lending` package for the term loan and revolving line — each a facility with two Asset GL accounts (principal, accrued-interest receivable), an amortization schedule (annuity or equal principal), interest accrual and capitalization, repayment allocated interest-before-principal against what actually accrued, and arrears computed from the schedule with a `NonPerforming` marker at 90+ days. Both `payment.Participant.RunEndOfDay` batches (deposit and lending) run in one unit of work; API, web, seed data and docs (README, hints, quiz chapters 17–18, schema comments) carried through as designed. Every decision in the spec shipped as designed; deferred work (non-accrual/NPL accounting, ECL provisioning, write-off, fees, early-repayment penalties, restructuring) is recorded above rather than silently dropped. Learned: four arithmetic worked examples in the plan and spec were wrong (a 30-day €10,000-at-6% accrual is €49.32 not €49.31; a revolving line's capitalization residue is *positive* — interest rounds down, not up — so it is +452,040 micro-minor-units, not −547,960; a 64-day accrual totals 10,521, not 10,520; and the `interest` package's overflow-example constant has a transposed digit) — all four caught only once tests were written against the actual arithmetic, not by re-reading the worked examples. And the load-bearing point of the whole sub-project — that an overdrawn account gets no loan account because its drawn amount is a sign-flipped view of an existing balance, not a second fact — is exactly the kind of claim that needs a pinned test (`deposit.TestTotals_OverdraftsAreDerivedAndNothingIsPosted`) rather than a comment, for the same reason sub-project 1's counter-example needed one. |
+| 2026-07-31 | Sub-projects **5 (account addressing)** and **6 (role-scoped web UI)** designed and specs written, in that build order. 6 was the request — make the web app realistic by scoping it to roles rather than showing every screen to everyone — and 5 fell out of it: a customer sends money to an IBAN, and accounts have none. Settled for 5: identifiers are a plural `(scheme, value)` set on the account, not an `iban` field, because a field names SEPA inside the CASA layer and cannot express a card PAN arriving later (ISO 20022 `CashAccountIdentification` is the same choice); the scheme declares what addresses it and `InitiatePaymentTx` enforces it, in the same place and for the same reason as the cross-asset check; uniqueness stops at the bank, which is the widest scope a register can see and also the correct line — a bank-issued identifier is globally unique by construction, a proxy alias is not, which is exactly why the alias registry is deferred rather than merely omitted; that rule is a *domain* rule and therefore gets no `UNIQUE` in `store/pg`, because the exemption the schema grants for `UNIQUE (book_id, name)` ("the race is already closed, one layer up") does not apply — nothing serializes two concurrent adds, so a constraint would fire in Postgres and not in memory, and `IdentifierUniquenessIsNotEnforced` pins that the way `ParentReferencesAreNotEnforced` already does; and an ambiguous resolution is an error, not the first hit, following the settlement rule about not defaulting quietly — which is also what closes the residual within-bank race, at read time. No mod-97 validation: it would make the seed's readable IBANs illegal. Settled for 6: three personas on persona-prefixed routes with three genuinely different shells (the customer loses the sidebar entirely), one flat identity picker because a persona without its context addresses nothing, a lobby that is always the root, and the concepts panel kept in all three shells — a little realism traded for the thing the repository exists for. No authn/authz: the scoping is navigational, and every endpoint stays reachable by URL. |
