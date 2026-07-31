@@ -22,7 +22,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "An authorization places a [[holds|hold]] — a real-time reservation. **No posting occurs**, so the [[balance-book|book balance]] is untouched. The available balance falls by the authorized amount so those funds cannot be spent twice while the purchase is in flight.",
-      explore: { label: "View payments", href: "/payments" },
+      explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
       kind: "mc",
@@ -40,7 +40,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "The dual-message [[payment-lifecycle]] begins with an **authorization** (hold is placed, no ledger entry) and ends with **presentment** — the merchant's formal claim that triggers [[hold-capture|capture]] into a real posting. These two steps may be hours or days apart.",
-      explore: { label: "View payments", href: "/payments" },
+      explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
       kind: "truefalse",
@@ -69,7 +69,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "When the captured amount is less than the authorized amount, the excess is a [[hold-release]]: the remaining $55 reservation is cancelled and the cardholder's available balance is restored. Only the actual $45 ever reaches the ledger.",
-      explore: { label: "View payments", href: "/payments" },
+      explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
       kind: "truefalse",
@@ -208,7 +208,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "After capture, a card payment is structurally identical to any other interbank credit. The [[clearing-vs-settlement|clearing and settlement]] machinery — netting, clearing suspense, central-bank reserve moves — applies unchanged. Card networks compute each bank's net position over a cycle and settle the net, reusing the existing rails rather than inventing new ones.",
-      explore: { label: "View settlement cycles", href: "/cycles" },
+      explore: { label: "View settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "numeric",

@@ -205,7 +205,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "This is the exact problem [[idempotency-key]] solves. A lost response does not mean a lost transaction — the server already committed. Retrying with the **same** key is safe: the server finds the key in its records and signals it was already used. The customer is charged exactly once regardless of network failures.",
-      explore: { label: "See payments", href: "/payments" },
+      explore: { label: "See payments", href: "/clearing-house/payments" },
     },
     {
       kind: "numeric",

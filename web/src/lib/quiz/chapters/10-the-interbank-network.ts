@@ -253,7 +253,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "[[netting]] compresses thousands of gross payment flows into a single net figure. Instead of requiring reserves equal to every individual gross flow, banks settle only the residual net. This is the core efficiency gain of net settlement: banks can support far larger payment volumes with much smaller reserve buffers.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "multi",
@@ -282,7 +282,7 @@ export const chapter: Chapter = {
       answer: false,
       explanation:
         "The customer's account is debited at initiation — the funds move into clearing suspense. [[settlement-delay|Settlement finality]] does not occur until the central-bank reserve transfer completes at the end of the clearing cycle. Until reserves actually move, the payment is clearing but not final, and the funds remain in suspense.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "numeric",

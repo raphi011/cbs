@@ -5,23 +5,16 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { usePanelRef, useDefaultLayout } from "react-resizable-panels";
 import {
-  ArrowLeftRight,
-  Building2,
-  FileSignature,
-  GraduationCap,
-  LayoutDashboard,
-  Menu,
-  Network,
-  RefreshCw,
-  Landmark,
   BookOpen,
+  GraduationCap,
+  Menu,
   PanelRightOpen,
   PanelLeftOpen,
   PanelLeftClose,
 } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { navFor, useIdentity, type NavItem } from "@/lib/identity";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,25 +32,6 @@ import { ConceptPanelBody } from "./concept-panel";
 import { ResetButton } from "./reset-button";
 import { useIsDesktop } from "./use-is-desktop";
 
-interface NavItem {
-  href: string;
-  label: string;
-  icon: LucideIcon;
-}
-
-// Network-wide screens (no participant selected). Payments, mandates, cycles
-// and settlements are global because each spans two participants.
-const NETWORK_NAV: NavItem[] = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/learn", label: "Learn", icon: GraduationCap },
-  { href: "/payments", label: "Payments", icon: ArrowLeftRight },
-  { href: "/mandates", label: "Mandates", icon: FileSignature },
-  { href: "/cycles", label: "Clearing cycles", icon: RefreshCw },
-  { href: "/settlements", label: "Settlements", icon: Landmark },
-  { href: "/central-bank", label: "Central bank", icon: Building2 },
-  { href: "/schemes", label: "Schemes", icon: Network },
-];
-
 function NavLinks({
   collapsed,
   onNavigate,
@@ -66,10 +40,17 @@ function NavLinks({
   onNavigate?: () => void;
 }) {
   const pathname = usePathname();
+  const identity = useIdentity();
+  // Learn sits outside the persona system, so it is appended rather than being
+  // any persona's. Task 6 gives it a shell of its own.
+  const items: NavItem[] = [
+    ...(identity ? navFor(identity) : []),
+    { href: "/learn", label: "Learn", icon: GraduationCap },
+  ];
   return (
     <nav className="flex flex-col gap-0.5">
-      {NETWORK_NAV.map(({ href, label, icon: Icon }) => {
-        const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+      {items.map(({ href, label, icon: Icon, exact }) => {
+        const active = exact ? pathname === href : pathname.startsWith(href);
         return (
           <Link
             key={href}

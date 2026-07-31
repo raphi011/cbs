@@ -34,7 +34,7 @@ export function ParticipantSwitcher() {
     <div className="flex items-center gap-2">
       <Select
         value={current ?? ""}
-        onValueChange={(pid) => router.push(`/participants/${pid}`)}
+        onValueChange={(pid) => router.push(`/bank/${pid}`)}
       >
         <SelectTrigger className="w-[180px]" size="sm">
           <SelectValue placeholder="Select participant" />

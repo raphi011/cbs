@@ -57,7 +57,7 @@ export function CreateParticipantDialog({
           setName("");
           setAssets(["EUR"]);
           toast.success(`Created ${p.name}`);
-          router.push(`/participants/${p.id}`);
+          router.push(`/bank/${p.id}`);
         },
         onError: (err) => toast.error(describeError(err)),
       },

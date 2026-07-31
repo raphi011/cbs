@@ -22,7 +22,7 @@ export const chapter: Chapter = {
       answer: 0,
       explanation:
         "In a [[scheme-direction-push]] payment the **payer's bank** originates the instruction — the payer 'pushes' funds toward the payee. SEPA Credit Transfer is the canonical example: the sender's bank submits the payment and funds flow out of the sender's account.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "mc",
@@ -40,7 +40,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "In a [[scheme-direction-pull]] payment the **payee's bank** originates the instruction — the payee 'pulls' funds from the payer's account. SEPA Direct Debit works this way: the creditor's bank initiates the collection.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "truefalse",
@@ -68,7 +68,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "[[settlement-model-net]] groups payments into clearing cycles. At the cut-off, each bank's outflows and inflows are netted, and only the residual — the net position — moves as reserves. This dramatically reduces the liquidity banks must hold compared to gross settlement.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "truefalse",
@@ -97,7 +97,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "The customer is voluntarily sending money out, so the **payer's bank** originates the instruction — the defining feature of a [[scheme-direction-push]] payment. The settlement model (net or gross) is a separate axis and has no bearing on push vs pull.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "numeric",
@@ -111,7 +111,7 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "[[netting]] aggregates all payments before computing net positions. Bank A's gross outflow = 4 × $75 = $300; Bank A's gross inflow = 3 × $40 = $120; net[A] = −$300 + $120 = −$180. Bank B's net = +$180. Only **$180** of reserves transfers — netting collapses the $420 gross total into a single $180 net flow.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "mc",
@@ -187,7 +187,7 @@ export const chapter: Chapter = {
       answers: [0, 1, 2],
       explanation:
         "SDD is [[scheme-direction-pull]] — the payee's bank initiates. It [[requires-mandate]] (a signed authorization). And it [[allows-return]] — the debtor can dispute and reclaim funds after settlement via a SEPA R-transaction. SCT is push, requires no mandate, and does not define a return right. Both schemes use net settlement — not individual (gross) settlement.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "mc",
@@ -218,7 +218,7 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "[[settlement-model-net]] computes the net position: $10,000 outgoing − $9,500 incoming = **$500 net outflow**. Bank A's reserve account at the central bank decreases by only $500, not by the $10,000 gross outgoing total.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "mc",
@@ -266,7 +266,7 @@ export const chapter: Chapter = {
       answers: [0, 1, 2, 3, 4],
       explanation:
         "The scheme interface captures exactly five axes: [[scheme-direction-push]]/[[scheme-direction-pull]] direction, [[settlement-model-net]]/[[settlement-model-gross]] model, [[requires-mandate]], [[allows-return]], and [[settlement-delay]]. ISO 20022 message names (pacs.008, pacs.003) are implementation labels, not scheme-differentiating axes.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "mc",
@@ -284,7 +284,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "[[requires-mandate]] schemes validate the mandate at the Initiated → Accepted step. If no valid mandate exists, the scheme rejects the payment with an error (such as `ErrMandateRequired`) and **no debtor leg is ever posted**. This protects payers from unauthorized debits before any money moves.",
-      explore: { label: "Browse payment schemes", href: "/schemes" },
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "multi",
@@ -316,7 +316,7 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "Under [[settlement-model-gross]] every payment settles individually: $300 moves one way and $100 moves the other — **$400** of reserves in total. Netting collapses this to just $200, which is exactly why clearing exists as a step before settlement: it converts a large gross flow into a small net one.",
-      explore: { label: "See settlement cycles", href: "/cycles" },
+      explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
   ],
 };
