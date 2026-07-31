@@ -72,6 +72,28 @@ func TestAddAndRemoveIdentifier(t *testing.T) {
 	}
 }
 
+// The same address twice in ONE OpenAccount call. checkIdentifierFreeTx only
+// sees accounts already in the register, and the account being opened is not
+// one of them, so nothing else catches this — and the API forwards the list
+// from a request body verbatim. Left alone it is a store divergence: store/pg's
+// identifier rows key on (scheme, value) and would keep one, a Go slice keeps
+// two.
+func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
+
+	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban, iban)
+	if !errors.Is(err, ErrIdentifierTaken) {
+		t.Fatalf("OpenAccount with a repeated identifier = %v, want ErrIdentifierTaken", err)
+	}
+
+	// And nothing was opened: the check runs before the GL account is created.
+	if _, err := reg.ResolveIdentifier(ctx, iban); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierNotFound", err)
+	}
+}
+
 func TestAddIdentifierRefusesADuplicateAtTheSameBank(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
@@ -172,15 +194,13 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)
 	iban := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
-	first, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban)
-	if err != nil {
+	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, iban); err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
 	second, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
 	if err != nil {
 		t.Fatalf("OpenAccount: %v", err)
 	}
-	_ = first
 
 	// Write the duplicate straight through the store, past the register's check.
 	if err := reg.Store().Update(ctx, func(ctx context.Context, tx Tx) error {

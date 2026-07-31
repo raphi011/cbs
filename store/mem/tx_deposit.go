@@ -2,6 +2,8 @@ package mem
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
@@ -27,8 +29,56 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 		return err
 	}
 	t.state.insertSeq(book, kindDepositAccount, string(a.ID))
-	bucket(t.state.depositAccounts, book)[a.ID] = a
+	bucket(t.state.depositAccounts, book)[a.ID] = copyDepositAccount(a)
 	return nil
+}
+
+// copyDepositAccount returns a with its identifier set detached from the
+// caller's and normalised to what store/pg would have stored.
+//
+// DETACHED, because Identifiers is the deposit account's only slice field and
+// this store hands Go values straight to its callers. Without the copy, a
+// mutation inside a View would change stored state, and a mutation inside an
+// Update that then returned an error would survive the rollback — neither of
+// which store/pg can do at all, which is exactly the divergence
+// store/storetest exists to prevent, and which is what clone()'s one-level-deep
+// snapshot relies on not happening. It is applied on the way IN and on the way
+// OUT, like detachPricing and copyPayment, because those are two different
+// aliases into the same row.
+//
+// NORMALISED, because store/pg normalises whether it means to or not, and "the
+// same write reads back differently on the two stores" is the same class of
+// divergence as a constraint one of them holds:
+//
+//   - deposit_account_identifiers has (book, account, scheme, value) as its
+//     primary key and is inserted ON CONFLICT DO NOTHING, so writing the same
+//     pair twice on one account collapses to one row there. A Go map keeps
+//     both. Sorting first makes slices.Compact enough to do the same here.
+//   - It is read back ORDER BY scheme, value, so the set comes out sorted
+//     whatever order it went in. A Go slice preserves insertion order.
+//   - An account with no identifiers has no rows, so pg's hydrate leaves the
+//     field nil. A caller that passed a non-nil empty slice — which
+//     api/handlers_deposit.go does, since make([]T, 0) is what it builds from an
+//     absent JSON field — would otherwise read back non-nil here and nil there.
+//
+// The domain layer refuses a duplicate before it ever reaches the store
+// (Register.OpenAccountTx and checkIdentifierFreeTx); this is the store holding
+// the same line for a caller that goes around it, which storetest does on
+// purpose.
+func copyDepositAccount(a deposit.Account) deposit.Account {
+	if len(a.Identifiers) == 0 {
+		a.Identifiers = nil
+		return a
+	}
+	idents := slices.Clone(a.Identifiers)
+	slices.SortFunc(idents, func(x, y deposit.Identifier) int {
+		if c := strings.Compare(string(x.Scheme), string(y.Scheme)); c != 0 {
+			return c
+		}
+		return strings.Compare(x.Value, y.Value)
+	})
+	a.Identifiers = slices.Compact(idents)
+	return a
 }
 
 func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
@@ -36,13 +86,13 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 	if !ok {
 		return deposit.Account{}, deposit.ErrAccountNotFound
 	}
-	return a, nil
+	return copyDepositAccount(a), nil
 }
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
 	out := make([]deposit.Account, 0, len(t.state.depositAccounts[book]))
 	for _, a := range t.state.depositAccounts[book] {
-		out = append(out, a)
+		out = append(out, copyDepositAccount(a))
 	}
 	sortRows(t.state, out, book, kindDepositAccount, func(a deposit.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
 	return out, nil
@@ -56,7 +106,7 @@ func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.Bo
 	for _, a := range t.state.depositAccounts[book] {
 		for _, got := range a.Identifiers {
 			if got == ident {
-				out = append(out, a)
+				out = append(out, copyDepositAccount(a))
 				break
 			}
 		}

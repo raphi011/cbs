@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/raphi011/cbs/interest"
@@ -179,9 +180,20 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		return Account{}, err
 	}
 
-	for _, ident := range identifiers {
+	for i, ident := range identifiers {
 		if err := ident.Validate("identifier"); err != nil {
 			return Account{}, err
+		}
+		// Siblings in THIS call, not only accounts already in the store.
+		// checkIdentifierFreeTx reads the register, and the account being opened
+		// is not in it yet, so `identifiers: [X, X]` — which the API accepts
+		// verbatim from a request body — would sail past it. It must not: the
+		// same list means one address on store/pg, whose identifier rows carry
+		// (scheme, value) in their primary key, and two in a Go slice. Refusing
+		// is better than collapsing, because a caller who sent an address twice
+		// meant something and should be told which of the two things it was.
+		if slices.Contains(identifiers[:i], ident) {
+			return Account{}, ErrIdentifierTaken
 		}
 		if err := r.checkIdentifierFreeTx(ctx, tx, "", ident); err != nil {
 			return Account{}, err

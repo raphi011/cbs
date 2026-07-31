@@ -3,6 +3,7 @@ package storetest
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -137,13 +138,131 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// and both readers bring them back. If they did not, the register's
 	// uniqueness check would pass against a store that had silently dropped
 	// the very rows it was checking.
+	//
+	// TWO identifiers, written out of order: a set of one round-trips through
+	// any ordering rule at all, which is how store/pg's `ORDER BY scheme, value`
+	// and store/mem's insertion order looked identical for the whole of this
+	// branch. Both stores must answer with the same order, and the order is
+	// ascending by (scheme, value) because that is the one Postgres can give
+	// cheaply.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		aa := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "AA-AURORA-0001"}
+		zz := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "ZZ-AURORA-9999"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", GLAccount: "200.cust.001", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{zz, aa},
+			})
+		})
+
+		want := []deposit.Identifier{aa, zz}
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(got.Identifiers, want) {
+				t.Fatalf("GetDepositAccount identifiers = %#v, want %#v", got.Identifiers, want)
+			}
+			list, err := tx.ListDepositAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(list) != 1 || !slices.Equal(list[0].Identifiers, want) {
+				t.Fatalf("ListDepositAccounts identifiers = %#v, want %#v", list, want)
+			}
+			byIdent, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, zz)
+			if err != nil {
+				return err
+			}
+			if len(byIdent) != 1 || !slices.Equal(byIdent[0].Identifiers, want) {
+				t.Fatalf("ListDepositAccountsByIdentifier identifiers = %#v, want %#v", byIdent, want)
+			}
+			return nil
+		})
+	})
+
+	// An account with no identifiers reads back with a NIL set, not an empty
+	// non-nil one. store/pg has no rows to return and so cannot produce
+	// anything else; store/mem is handed whatever the caller built, and
+	// api/handlers_deposit.go builds make([]Identifier, 0) from an absent JSON
+	// field. Callers compare with reflect.DeepEqual and encoders distinguish
+	// null from [], so this is a real difference, not a cosmetic one.
+	t.Run("NoIdentifiersReadsBackNil", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Plumbing", Asset: "EUR",
+				Identifiers: []deposit.Identifier{},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if got.Identifiers != nil {
+				t.Fatalf("identifiers = %#v, want nil", got.Identifiers)
+			}
+			return nil
+		})
+	})
+
+	// One account carrying the same pair twice collapses to one, on both
+	// stores. store/pg cannot do otherwise — (book, account, scheme, value) is
+	// the primary key of deposit_account_identifiers and the insert is ON
+	// CONFLICT DO NOTHING — so store/mem must not keep the duplicate either.
+	//
+	// This is NOT in tension with IdentifierUniquenessIsNotEnforced below. That
+	// one is about two ACCOUNTS sharing a value, which is a domain rule with no
+	// constraint behind it. This is one account listing one address twice, which
+	// is not a domain question at all: it is the same row written twice.
+	t.Run("DuplicateIdentifiersOnOneAccountCollapse", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
-				ID: "dep_1", GLAccount: "200.cust.001", Name: "Alice", Asset: "EUR",
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban, iban},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(got.Identifiers, []deposit.Identifier{iban}) {
+				t.Fatalf("identifiers = %#v, want exactly one %#v", got.Identifiers, iban)
+			}
+			// And the account surfaces once from the lookup, not twice.
+			hits, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, iban)
+			if err != nil {
+				return err
+			}
+			if len(hits) != 1 {
+				t.Fatalf("lookup returned %d accounts, want 1", len(hits))
+			}
+			return nil
+		})
+	})
+
+	// A read hands back a COPY: mutating what a reader was given must not reach
+	// stored state. store/pg cannot be mutated through its return values at all,
+	// and store/mem's rollback snapshot is one level deep precisely on the
+	// promise that nothing mutates a stored entity in place.
+	t.Run("MutatingReadIdentifiersDoesNotReachTheStore", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
 				Identifiers: []deposit.Identifier{iban},
 			})
 		})
@@ -153,15 +272,44 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if err != nil {
 				return err
 			}
-			if len(got.Identifiers) != 1 || got.Identifiers[0] != iban {
-				t.Fatalf("GetDepositAccount identifiers = %#v, want [%#v]", got.Identifiers, iban)
-			}
-			list, err := tx.ListDepositAccounts(ctx, bookA)
+			got.Identifiers[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "STOLEN-0001"}
+			return nil
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			again, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
 			if err != nil {
 				return err
 			}
-			if len(list) != 1 || len(list[0].Identifiers) != 1 || list[0].Identifiers[0] != iban {
-				t.Fatalf("ListDepositAccounts identifiers = %#v, want [%#v]", list, iban)
+			if !slices.Equal(again.Identifiers, []deposit.Identifier{iban}) {
+				t.Fatalf("identifiers after a reader mutated its copy = %#v, want [%#v]", again.Identifiers, iban)
+			}
+			return nil
+		})
+	})
+
+	// The mirror image: a WRITER that keeps its argument must not be able to
+	// rewrite what it stored afterwards. store/pg copies the values into
+	// Postgres and could not honour such a rewrite if it wanted to.
+	t.Run("MutatingWrittenIdentifiersDoesNotReachTheStore", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		mine := []deposit.Identifier{iban}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR", Identifiers: mine,
+			})
+		})
+		mine[0] = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "STOLEN-0001"}
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if !slices.Equal(got.Identifiers, []deposit.Identifier{iban}) {
+				t.Fatalf("identifiers after the writer mutated its slice = %#v, want [%#v]", got.Identifiers, iban)
 			}
 			return nil
 		})

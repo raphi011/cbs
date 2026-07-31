@@ -162,11 +162,18 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 	for i, a := range accounts {
 		ids[i] = string(a.ID)
 	}
+	// COLLATE "C" is not decoration. The identifier set has to read back in the
+	// same order on both stores, and store/mem sorts it with strings.Compare,
+	// which is byte order. A bare ORDER BY sorts under the database's collation,
+	// which on a typical en_US.UTF-8 cluster ignores punctuation at the first
+	// level — so `SE89-AURORA-1001` and `SE89AURORA0999` would order one way
+	// here and the other way there, and the divergence would depend on where
+	// the database was created.
 	rows, err := t.tx.Query(ctx, `
 		SELECT deposit_account_id, scheme, value
 		FROM deposit_account_identifiers
 		WHERE book_id = $1 AND deposit_account_id = ANY($2)
-		ORDER BY scheme, value`, string(book), ids)
+		ORDER BY scheme COLLATE "C", value COLLATE "C"`, string(book), ids)
 	if err != nil {
 		return fmt.Errorf("pg: list identifiers: %w", err)
 	}
