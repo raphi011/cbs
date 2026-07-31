@@ -8,6 +8,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/product"
 )
 
 // ParticipantAccounts are the internal accounts a participant needs for one
@@ -65,6 +66,12 @@ type Participant struct {
 
 	CustomerSubledger ledger.SubledgerID
 
+	// ProductID is the catalogue entry OpenCustomerAccount opens accounts from,
+	// configured per participant exactly as CustomerSubledger is. A bank's
+	// onboarding has to name a product, because every account is opened from
+	// one — there is no such thing as an unpriced deposit account.
+	ProductID product.ID
+
 	// Assets holds one set of internal accounts per asset the participant
 	// operates in, keyed by asset code.
 	//
@@ -97,6 +104,11 @@ type Participant struct {
 	// balance viewed by sign and has no independent existence. See the
 	// lending package doc.
 	Lending *lending.Portfolio `json:"-"`
+
+	// Catalogue is a live handle like Ledger, Deposit and Lending, bound by
+	// Network.bind. It is this bank's product catalogue: products are
+	// book-scoped, so the same ID in two banks is two products.
+	Catalogue *product.Catalogue `json:"-"`
 }
 
 // AccountsFor returns the participant's internal accounts for an asset.
@@ -121,11 +133,16 @@ func (p *Participant) AccountsFor(asset ledger.AssetCode) (ParticipantAccounts, 
 // the customer and the bank owes it to them. The account is opened with no
 // overdraft.
 //
+// The account is opened from the participant's configured ProductID, and is
+// FLOATING: its price is the product's, so a later published version reprices
+// it with no write to the account at all.
+//
 // This opens its own unit of work, so it must not be called from inside one.
 // A caller already holding a Tx should drive p.Deposit.OpenAccountTx instead —
-// which is also how to open an account with an overdraft limit.
+// which is also how to open an account with an overdraft limit, or from a
+// product other than the participant's default.
 func (p *Participant) OpenCustomerAccount(ctx context.Context, name string, asset ledger.AssetCode) (deposit.Account, error) {
-	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, 0)
+	return p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, asset, p.ProductID, 0)
 }
 
 // RunEndOfDay runs this bank's end-of-day batches for one business date: the

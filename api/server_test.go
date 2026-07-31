@@ -123,11 +123,22 @@ func assertStatus(t *testing.T, h http.Handler, method, path, body string, want 
 	}
 }
 
+// prdOf is the participant's default deposit product, read back from the
+// participant resource.
+//
+// Every deposit account is opened FROM a product, and a bank's default one is
+// created with its chart of accounts at onboarding — so a client that has just
+// created a bank learns which product it may sell by reading the bank.
+func prdOf(t *testing.T, h http.Handler, pid string) string {
+	t.Helper()
+	return doJSON(t, h, "GET", "/participants/"+pid, "", http.StatusOK)["productId"].(string)
+}
+
 func TestDepositFlow(t *testing.T) {
 	h := newTestServer(t)
 
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// Fund Alice and confirm the returned balance.
 	bal := doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
@@ -148,8 +159,8 @@ func TestSCTEndToEnd(t *testing.T) {
 
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
@@ -267,7 +278,7 @@ func TestCreateParticipantRejectsUnknownAsset(t *testing.T) {
 func TestAccountResponseIncludesAsset(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 
 	res := do(t, h, "GET", "/participants/"+pid+"/deposit-accounts", "")
 	if !strings.Contains(res.Body.String(), `"asset":"EUR"`) {
@@ -448,8 +459,8 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 	h := newTestServer(t)
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"USD"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
 	assertStatus(t, h, "POST", "/payments", `{
 		"scheme":"sepa.ct",
@@ -476,10 +487,10 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
-	aliceUSD := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceUSD","asset":"USD"}`, http.StatusCreated)["id"].(string)
-	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR"}`, http.StatusCreated)["id"].(string)
-	bobUSD := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"BobUSD","asset":"USD"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	aliceUSD := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceUSD","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bobUSD := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"BobUSD","asset":"USD","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
 	// Mandate: derived from the (non-EUR) debtor account. Both ends are USD —
 	// CreateMandate refuses a mandate whose two accounts disagree.
@@ -555,7 +566,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 func TestErrorMapping(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// 404: unknown participant.
 	assertStatus(t, h, "GET", "/participants/nope", "", http.StatusNotFound)
@@ -717,7 +728,8 @@ func TestResetEmptiesState(t *testing.T) {
 	}
 
 	// Mutate, reset, then assert the mutation is gone and the seed is back.
-	doJSON(t, srv, "POST", "/participants/bank_1/deposit-accounts", `{"name":"Temp","asset":"EUR","overdraftLimit":0}`, http.StatusCreated)
+	doJSON(t, srv, "POST", "/participants/bank_1/deposit-accounts",
+		`{"name":"Temp","asset":"EUR","overdraftLimit":0,"productId":"`+prdOf(t, srv, "bank_1")+`"}`, http.StatusCreated)
 	if got := names(); len(got) != 2 {
 		t.Fatalf("accounts after the mutation = %v, want two", got)
 	}
@@ -877,7 +889,7 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newTestServer(t)
 
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
 		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
@@ -963,8 +975,8 @@ func auditFixture(t *testing.T, h http.Handler) (bankA, bankB, payID string) {
 	t.Helper()
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -1401,7 +1413,7 @@ func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
 func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 60)
@@ -1437,7 +1449,7 @@ func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 func TestDrawPastCommitmentReturns422(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 100000)
@@ -1466,7 +1478,7 @@ func TestDrawPastCommitmentReturns422(t *testing.T) {
 func TestRepayFromDepositAccount(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
@@ -1496,7 +1508,7 @@ func TestRepayFromDepositAccount(t *testing.T) {
 func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
@@ -1524,7 +1536,7 @@ func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 func TestChargeInterestOnRevolvingLine(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 500000)
@@ -1579,7 +1591,7 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	line := openRevolvingLine(t, h, pid, 500000)
@@ -1625,15 +1637,18 @@ func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
 	// Nothing has accrued yet — an account that has never been overdrawn.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/interest-charge",
 		`{"date":"2025-01-31"}`, http.StatusNoContent)
 
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
-		"limit":100000,"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-limit", `{
+		"limit":100000
+	}`, http.StatusOK)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-pricing", `{
+		"pricing":{"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"}
 	}`, http.StatusOK)
 
 	glLedger := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
@@ -1697,72 +1712,77 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 //
 // It is the endpoint the change exists to make possible — before terms were
 // rows, "what did this account's product say on 15 July?" had no answer to
-// serve — so it also asserts that a BACKDATED row and a FUTURE-dated row are
-// both on the timeline, distinct rows are asserted on more than just rate and
-// length (effectiveFrom, dayCount, unarrangedRate, accountId), and that the
-// account's own resolved-as-of-today fields still show the current terms, not
-// the future ones.
+// serve — so it also asserts that a FUTURE-dated row is on the timeline, that
+// rows are asserted on more than rate and length (effectiveFrom, dayCount,
+// unarrangedRate, accountId, productId, floating), and that the account's own
+// resolved-as-of-today fields still show the current terms, not the future ones.
 func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	prd := prdOf(t, h, pid)
 	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","overdraftLimit":50000}`, http.StatusCreated)["id"].(string)
+		`{"name":"Alice","asset":"EUR","overdraftLimit":50000,"productId":"`+prd+`"}`, http.StatusCreated)["id"].(string)
 
-	// The opening row alone.
+	// The opening row alone: FLOATING, because an account is opened onto its
+	// product's price rather than a copy of it. Its three rate fields are zero
+	// because the row holds no price at all, which is what floating means and
+	// is emphatically not "interest-free".
 	first := doJSONArray(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", "", http.StatusOK)
 	assertEqual(t, "opening timeline length", len(first), 1)
 	opening := first[0].(map[string]any)
 	assertEqual(t, "opening limit", int64(opening["overdraftLimit"].(float64)), int64(50_000))
-	assertEqual(t, "opening rate", int64(opening["rate"].(float64)), int64(0))
+	assertEqual(t, "the opening row floats", opening["floating"].(bool), true)
+	assertEqual(t, "opening product", opening["productId"].(string), prd)
 
-	// A BACKDATED row (agreed on the 1st, entered "today"), a row priced
-	// today, and a FUTURE-dated one. fixedTime (the test clock) is
+	// A change effective before the account existed is refused: each row is a
+	// complete statement of the account's terms carried forward from the row in
+	// force, and there is no row in force before the opening one.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-limit",
+		`{"limit":50000,"effectiveFrom":"2025-01-01T00:00:00Z"}`, http.StatusInternalServerError)
+
+	// A row priced today and a FUTURE-dated one. fixedTime (the test clock) is
 	// 2025-01-15, the same day the account above was just opened on, so the
-	// SECOND of these three POSTs shares the opening row's day key and
-	// REPLACES it in place — one row per (account, day) by construction, see
-	// deposit.TermsDayKey — rather than appending a fourth row. The timeline
-	// below is 3 long: the backdated row, the collapsed today's-row, then the
-	// future one.
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
-		"limit":50000,"rate":100000,"unarrangedRate":300000,"dayCount":"ACT/360",
-		"effectiveFrom":"2025-01-01T00:00:00Z"
-	}`, http.StatusOK)
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
-		"limit":50000,"rate":150000,"unarrangedRate":350000,"dayCount":"ACT/365",
+	// first of these shares the opening row's day key and REPLACES it in place
+	// — one row per (account, day) by construction, see deposit.TermsDayKey —
+	// rather than appending. The timeline below is 2 long.
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-pricing", `{
+		"pricing":{"rate":150000,"unarrangedRate":350000,"dayCount":"ACT/365"},
 		"effectiveFrom":"2025-01-15T00:00:00Z"
 	}`, http.StatusOK)
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
-		"limit":50000,"rate":180000,"unarrangedRate":350000,"dayCount":"ACT/365",
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-pricing", `{
+		"pricing":{"rate":180000,"unarrangedRate":350000,"dayCount":"ACT/365"},
 		"effectiveFrom":"2099-01-01T00:00:00Z"
 	}`, http.StatusOK)
 
 	rows := doJSONArray(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", "", http.StatusOK)
-	assertEqual(t, "timeline length", len(rows), 3)
+	assertEqual(t, "timeline length", len(rows), 2)
 
-	// The backdated row: effectiveFrom (2025-01-01) is distinct from createdAt
-	// (fixedTime, 2025-01-15), which is what would catch the two ever being
-	// swapped in the DTO mapping — the card renders them as separate columns.
-	backdated := rows[0].(map[string]any)
-	assertEqual(t, "accountId is on the wire", backdated["accountId"].(string), did)
-	assertEqual(t, "backdated effectiveFrom", backdated["effectiveFrom"].(string), "2025-01-01T00:00:00Z")
-	assertEqual(t, "backdated dayCount", backdated["dayCount"].(string), "ACT/360")
-	assertEqual(t, "backdated unarrangedRate", int64(backdated["unarrangedRate"].(float64)), int64(300_000))
+	today := rows[0].(map[string]any)
+	assertEqual(t, "accountId is on the wire", today["accountId"].(string), did)
+	assertEqual(t, "today's effectiveFrom", today["effectiveFrom"].(string), "2025-01-15T00:00:00Z")
+	assertEqual(t, "today's rate", int64(today["rate"].(float64)), int64(150_000))
+	assertEqual(t, "an overlaid row does not float", today["floating"].(bool), false)
+	assertEqual(t, "the limit was carried forward", int64(today["overdraftLimit"].(float64)), int64(50_000))
+
 	// createdAt is the OTHER half of the two-dates pair, and the test clock is
-	// frozen, so it is fixedTime regardless of this row's effectiveFrom — that
-	// gap (entered 2025-01-15, effective 2025-01-01) is what makes this row
-	// backdated at all.
-	assertEqual(t, "backdated createdAt", backdated["createdAt"].(string), "2025-01-15T12:00:00Z")
-
+	// frozen, so it is fixedTime regardless of a row's effectiveFrom. The
+	// future row is where the gap is largest, and it is what would catch the
+	// two ever being swapped in the DTO mapping — the card renders them as
+	// separate columns.
 	last := rows[len(rows)-1].(map[string]any)
 	assertEqual(t, "the future row is on the timeline", int64(last["rate"].(float64)), int64(180_000))
 	assertEqual(t, "rate scale is on the wire", int64(last["rateScale"].(float64)), int64(interest.RateScale))
 	assertEqual(t, "future effectiveFrom", last["effectiveFrom"].(string), "2099-01-01T00:00:00Z")
 	assertEqual(t, "future dayCount", last["dayCount"].(string), "ACT/365")
 	assertEqual(t, "future unarrangedRate", int64(last["unarrangedRate"].(float64)), int64(350_000))
+	assertEqual(t, "future createdAt", last["createdAt"].(string), "2025-01-15T12:00:00Z")
 
-	// …but the account itself still reports the rate in force TODAY.
+	// …but the account itself still reports the rate in force TODAY, and says
+	// where it came from: this one is negotiated, not the product's list price.
 	acct := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
 	assertEqual(t, "resolved as of today", int64(acct["overdraftRate"].(float64)), int64(150_000))
+	assertEqual(t, "and its source", acct["pricingSource"].(string), "negotiated")
+	assertEqual(t, "and its product", acct["productId"].(string), prd)
 }
 
 // TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half
@@ -1775,11 +1795,14 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
-	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-terms", `{
-		"limit":100000,"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-limit", `{
+		"limit":100000
+	}`, http.StatusOK)
+	doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-pricing", `{
+		"pricing":{"rate":120000,"unarrangedRate":0,"dayCount":"ACT/365"}
 	}`, http.StatusOK)
 
 	glLedger := doJSON(t, h, "POST", "/participants/"+pid+"/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
@@ -1826,8 +1849,8 @@ func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	alice := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","overdraftLimit":100000}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+		`{"name":"Alice","asset":"EUR","overdraftLimit":100000,"productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	aliceGL := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+alice, "", http.StatusOK)["glAccount"].(string)
 
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
@@ -1865,7 +1888,7 @@ func TestUnknownFacilityReturns404(t *testing.T) {
 	// A real, funded deposit account, so the repayments case below clears the
 	// available-funds check and 404s on the FACILITY lookup, not on the
 	// account or on insufficient funds.
-	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
 		`{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -1962,8 +1985,8 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	h := newTestServer(t)
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice["id"].(string)+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -2035,7 +2058,7 @@ func overpaidFacilityViaAPI(t *testing.T, h http.Handler) (pid, fid, did string,
 	t.Helper()
 	pid = doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
-		`{"name":"Alice","asset":"EUR"}`, http.StatusCreated)
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 	did = acct["id"].(string)
 	aliceGL := acct["glAccount"].(string)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
@@ -2196,7 +2219,7 @@ func TestFundingRespectsAccountStatus(t *testing.T) {
 
 	open := func(name string) string {
 		return doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
-			`{"name":"`+name+`","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+			`{"name":"`+name+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	}
 	fund := func(did string, amount int) *httptest.ResponseRecorder {
 		return do(t, h, "POST", "/participants/"+pid+"/deposits",
@@ -2246,7 +2269,7 @@ func TestDormantDebitNamesDormancy(t *testing.T) {
 	h := newTestServer(t)
 	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
-		`{"name":"Alice","asset":"EUR"}`, http.StatusCreated)["id"].(string)
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+pid+"/deposits",
 		`{"account":"`+did+`","amount":100000}`, http.StatusOK)
 	fid := doJSON(t, h, "POST", "/participants/"+pid+"/facilities", `{

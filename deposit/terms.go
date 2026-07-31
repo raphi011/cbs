@@ -1,11 +1,12 @@
 package deposit
 
 import (
+	"fmt"
 	"sort"
 	"time"
 
-	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/product"
 )
 
 // OverdraftTerms is what an account's arranged overdraft cost from one day
@@ -42,20 +43,35 @@ type OverdraftTerms struct {
 	AccountID     AccountID
 	EffectiveFrom time.Time // day-truncated; the first day these terms apply
 
+	// ProductID is the catalogue entry this account is on from this day. It is
+	// on the ROW rather than on Account because it varies over the account's
+	// life: migrating between products is an ordinary forward-dated row, and a
+	// column on Account would contradict the timeline the moment a future-dated
+	// migration was entered — the Account.Rate mistake with a new name.
+	ProductID product.ID
+
 	// OverdraftLimit is the positive amount the balance may go below zero by;
 	// 0 means none. It is here rather than on Account because the available
 	// balance a customer was quoted last March is as much a fact about that
 	// March as the rate they were charged.
+	//
+	// It is PINNED: it is on this row for every day of the account's life and
+	// never resolves from the product, because a limit is an underwriting
+	// decision about one customer rather than a price the bank publishes.
+	// product.OverdraftPricing cannot express one at all, which is what makes
+	// this a fact about the types rather than a rule to remember.
 	OverdraftLimit ledger.Amount
-	// Rate is the annual rate on the drawn balance up to OverdraftLimit. Zero
-	// makes the WHOLE overdraft interest-free, which is a real product.
-	Rate interest.Rate
-	// UnarrangedRate applies to any balance drawn beyond OverdraftLimit. It is
-	// an optional SURCHARGE, not a switch: zero does not mean the excess is
-	// free, it means Rate applies throughout. See Validate for the one
-	// combination that is refused.
-	UnarrangedRate interest.Rate
-	DayCount       interest.DayCount
+
+	// Pricing is this customer's NEGOTIATED price, or nil to float with the
+	// product version in force on the day.
+	//
+	// nil means float and specifically NOT interest-free: a zero-rate overlay
+	// is a real interest-free product and a different, deliberate statement.
+	// Validate refuses the states in between, and store/pg's three nullable
+	// columns carry a COMMENT saying the same, because the difference between
+	// "NULL means free" and "NULL means ask the product" is invisible in a
+	// schema dump.
+	Pricing *product.OverdraftPricing
 
 	CreatedAt time.Time // when the row was entered, not when it takes effect
 }
@@ -74,23 +90,30 @@ type OverdraftTerms struct {
 // ordered ISO day is a total order the two stores cannot disagree about.
 func TermsDayKey(day time.Time) string { return ledger.DayStart(day).Format("2006-01-02") }
 
-// Validate reports whether these terms are a product. The rules are the ones
-// SetOverdraftTerms used to apply to its arguments, moved onto the row so that
-// a store round trip and a register call are held to one standard.
+// Validate reports whether these terms are a product. The rules are held on the
+// row so that a store round trip and a register call are checked against one
+// standard.
 //
+// The pricing rules are product.OverdraftPricing's, because an overlay and a
+// catalogue version are the same three numbers and must be judged the same way.
 // The refused combination is an unarranged rate with no arranged one: it would
 // price only the excess, making the money drawn beyond the limit dearer than
 // nothing while leaving the facility inside it free. That is not a product, it
-// is a mistake.
+// is a mistake. The error is re-wrapped in this layer's sentinel so that a
+// caller of the deposit layer — and the api's status mapping — has one thing to
+// check.
 func (t OverdraftTerms) Validate() error {
+	if t.ProductID == "" {
+		return ErrProductRequired
+	}
 	if t.OverdraftLimit < 0 {
 		return ErrInvalidAmount
 	}
-	if t.Rate < 0 || t.UnarrangedRate < 0 {
-		return ErrInvalidRate
+	if t.Pricing == nil {
+		return nil
 	}
-	if t.Rate == 0 && t.UnarrangedRate > 0 {
-		return ErrInvalidRate
+	if err := t.Pricing.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRate, err)
 	}
 	return nil
 }
@@ -121,18 +144,97 @@ func termsAt(rows []OverdraftTerms, day time.Time) (OverdraftTerms, bool) {
 	return rows[i-1], true
 }
 
-// anyPriced reports whether any row in the timeline carries a non-zero rate.
+// EffectiveTerms is what an account's overdraft actually costs on one day: the
+// merge of its own row and the product version in force.
 //
-// It is what keeps a never-priced account from reading a value-dated series
-// every night. A zero rate is now a property of a DAY rather than of an
-// account, so the old `Rate <= 0` early return cannot survive as an
-// account-level guard: an account unpriced for its first year and priced
-// thereafter is a case the previous model could not express at all. Skipping
-// the run entirely is only safe when NO day in the timeline is priced.
-func anyPriced(rows []OverdraftTerms) bool {
+// It is in-memory only and is never stored. That is the rule the terms timeline
+// already follows one level down — current terms are resolved, never cached on
+// the row — for the same reason: a second copy of a derivable fact is a second
+// place it can be wrong.
+type EffectiveTerms struct {
+	// ProductID is which catalogue entry priced this day. It is what makes
+	// "what did this account's product say on 15 July 2027?" answerable rather
+	// than merely recoverable.
+	ProductID product.ID
+	Limit     ledger.Amount
+	Pricing   product.OverdraftPricing
+
+	// Negotiated says the pricing above came from the account's own overlay
+	// rather than from the product version in force.
+	//
+	// It is on the resolved value rather than left for a caller to re-derive
+	// because the merge is the only place that knows, and because a client that
+	// cannot tell a list price from a promised one cannot answer the single
+	// question a negotiated rate generates: why did my rate not move when the
+	// product was repriced?
+	Negotiated bool
+}
+
+// Resolve merges the timelines for one day.
+//
+// Order of precedence: the account's own row supplies the limit, always; the
+// account's row supplies the pricing if it carries an overlay; otherwise the
+// product version in force on that day does.
+//
+// versions is keyed by product because an account's life can span several — a
+// ChangeProduct is a forward-dated row like any other — and a day resolves
+// against the product in force on THAT day. A single slice would silently price
+// pre-migration days from the new product, which is the class of bug this whole
+// design exists to prevent. Extra keys are harmless: an accrual run loads one
+// entry per distinct product across every account it touches and hands the same
+// map to every call.
+//
+// rows must be ascending by EffectiveFrom, and so must each slice of versions.
+//
+// The three failures are worth telling apart, which is why this returns an error
+// where termsAt returns a bool: ErrTermsNotFound for a day before the account's
+// first row, product.ErrVersionNotFound for a floating day whose product had no
+// published price, and product.ErrHashMismatch for a version edited in the
+// database.
+func Resolve(rows []OverdraftTerms, versions map[product.ID][]product.Version, day time.Time) (EffectiveTerms, error) {
+	row, ok := termsAt(rows, day)
+	if !ok {
+		return EffectiveTerms{}, ErrTermsNotFound
+	}
+	out := EffectiveTerms{ProductID: row.ProductID, Limit: row.OverdraftLimit}
+	if row.Pricing != nil {
+		out.Pricing = *row.Pricing
+		out.Negotiated = true
+		return out, nil
+	}
+	v, err := product.VersionAt(versions[row.ProductID], day)
+	if err != nil {
+		return EffectiveTerms{}, err
+	}
+	out.Pricing = v.Overdraft
+	return out, nil
+}
+
+// anyPriced reports whether any day in the account's life could carry a
+// non-zero rate. It is what keeps a never-priced account from reading a
+// value-dated series every night.
+//
+// A row with an overlay is judged on the overlay alone: a zero-rate overlay is
+// a definite statement that those days are free. A FLOATING row has to look
+// through to its product, which is the case the old account-level `Rate <= 0`
+// guard could not express at all.
+//
+// It errs towards running. A product version outside the account's life still
+// counts, because bounding each row's span against the next row's day would be
+// a second, subtler copy of Resolve — and the cost of being wrong this way is
+// one unnecessary series read, not a wrong number.
+func anyPriced(rows []OverdraftTerms, versions map[product.ID][]product.Version) bool {
 	for _, r := range rows {
-		if r.Rate > 0 {
-			return true
+		if r.Pricing != nil {
+			if r.Pricing.Rate > 0 {
+				return true
+			}
+			continue
+		}
+		for _, v := range versions[r.ProductID] {
+			if v.Published() && v.Overdraft.Rate > 0 {
+				return true
+			}
 		}
 	}
 	return false

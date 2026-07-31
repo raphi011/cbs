@@ -45,8 +45,15 @@ const (
 	EventHoldReleased       = "hold.released"
 	EventHoldCaptured       = "hold.captured"
 	EventSnapshotTaken      = "snapshot.taken"
-	EventOverdraftTermsSet  = "overdraft.terms_set"
-	EventOverdraftAccrued   = "overdraft.accrued"
+	// The three ways an account's own terms row changes, kept apart because they
+	// are three different decisions: what the bank will lend this customer, what
+	// this customer was promised instead of the list price, and which product
+	// they are on. One event type for all three would make a rate change and a
+	// limit change indistinguishable in the log.
+	EventOverdraftLimitSet        = "overdraft.limit_set"
+	EventOverdraftPricingOverlaid = "overdraft.pricing_overlaid"
+	EventAccountProductChanged    = "account.product_changed"
+	EventOverdraftAccrued         = "overdraft.accrued"
 	// EventOverdraftAccrualCorrected is a true-up of overdraft interest after a
 	// backdated posting changed the balance a past day accrued on. Distinct
 	// from EventOverdraftAccrued so a correction is visible as one in the log

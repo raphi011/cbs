@@ -18,12 +18,23 @@ import { Input } from "@/components/ui/input";
 import { FieldLabel } from "@/components/field-label";
 import { MoneyInput } from "@/components/money";
 import { AssetPicker } from "@/components/pickers/asset-picker";
-import { useAssetLookup, useOpenDepositAccount } from "@/lib/api/hooks";
+import {
+  useAssetLookup,
+  useOpenDepositAccount,
+  useParticipant,
+} from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
 // Opens a demand-deposit account backed by a Liability GL account. Overdraft
 // limit defaults to 0 (a hard-decline account); a positive limit lets the
 // available balance go that far below zero.
+//
+// The account is opened from the bank's default product, which its onboarding
+// created alongside its chart of accounts: every deposit account is opened FROM
+// a product, and its PRICE comes from that product rather than from this form.
+// The limit is asked for here and the rate is not, which is the pinned/floating
+// distinction made visible — a limit is an underwriting decision about this
+// customer, a rate is what the bank charges for the product.
 export function OpenDepositAccountForm({ pid }: { pid: string }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -32,6 +43,8 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
   const [asset, setAsset] = useState("");
   const [overdraft, setOverdraft] = useState<number | null>(null);
   const create = useOpenDepositAccount(pid);
+  const participant = useParticipant(pid);
+  const productId = participant.data?.productId ?? "";
   // Until an asset is chosen there is no scale to convert a typed overdraft
   // limit by, so the amount input is not rendered at all rather than guessing.
   const { byCode } = useAssetLookup();
@@ -49,11 +62,12 @@ export function OpenDepositAccountForm({ pid }: { pid: string }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !asset) return;
+    if (!name.trim() || !asset || !productId) return;
     try {
       const acct = await create.mutateAsync({
         name: name.trim(),
         asset,
+        productId,
         overdraftLimit: overdraft ?? 0,
       });
       toast.success(`Opened ${acct.name}`);

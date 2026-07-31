@@ -6,6 +6,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/product"
 )
 
 // Store owns the payment layer's persistent state. Like ledger.Store and
@@ -141,6 +142,20 @@ func (v depositView) Update(ctx context.Context, fn func(context.Context, deposi
 }
 
 func (v depositView) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
+	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+}
+
+// productView presents a payment.Store as a product.Store, for the same reason
+// and in the same way as ledgerView and depositView.
+type productView struct{ Store }
+
+var _ product.Store = productView{}
+
+func (v productView) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return v.Store.Update(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
+}
+
+func (v productView) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
 	return v.Store.View(ctx, func(ctx context.Context, tx Tx) error { return fn(ctx, tx) })
 }
 

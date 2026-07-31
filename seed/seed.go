@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/mem"
 )
 
@@ -196,7 +197,7 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // openOverdraft opens a customer account with an overdraft limit (the
 // participant helper only opens with zero overdraft) and records its IBAN.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, limit))
+	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, p.ProductID, limit))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -397,7 +398,15 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// He already has a 500.00 limit (openOverdraft, above); this is what makes
 	// drawing on it cost him something rather than nothing: 15% arranged, 35%
 	// on anything drawn beyond the limit.
-	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 350_000, interest.ACT365, b.clock.now()))
+	//
+	// It is an OVERLAY rather than a product price, which is what it always
+	// meant: a rate negotiated with Bruno, on his own timeline. Verde's product
+	// is repriced separately below, and that reprice does not move him — which
+	// is the whole point of the distinction and is visible on his account page.
+	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
+		&product.OverdraftPricing{Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
+		b.clock.now()))
+	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.now()))
 
 	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
 	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day
@@ -495,8 +504,9 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// Before terms were effective-dated this could not happen: the recompute
 	// window would have been reset to today and the twenty-one days behind it
 	// would have kept the old rate forever.
-	must(verde.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 180_000, 350_000,
-		interest.ACT365, b.clock.now().AddDate(0, 0, -20)))
+	must(verde.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
+		&product.OverdraftPricing{Rate: 180_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
+		b.clock.now().AddDate(0, 0, -20)))
 
 	b.runDays(verde, 15)
 

@@ -7,6 +7,8 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 )
 
 func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
@@ -17,7 +19,12 @@ func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/status", s.handleDepositStatus)
 	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}", s.handleCloseDepositAccount)
 
-	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleSetOverdraftTerms)
+	// The three writes the old overdraft-terms POST conflated, split along the
+	// pinned/floating seam: a limit is an underwriting decision about one
+	// customer, a price is the product's, and a migration is neither.
+	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-limit", s.handleSetOverdraftLimit)
+	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/overdraft-pricing", s.handleSetOverdraftPricing)
+	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/product", s.handleChangeProduct)
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms", s.handleListOverdraftTerms)
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/interest-charge", s.handleChargeOverdraftInterest)
 
@@ -45,7 +52,12 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, "asset is required")
 		return
 	}
-	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name, ledger.AssetCode(req.Asset), ledger.Amount(req.OverdraftLimit))
+	if req.ProductID == "" {
+		writeBadRequest(w, "productId is required")
+		return
+	}
+	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name,
+		ledger.AssetCode(req.Asset), product.ID(req.ProductID), ledger.Amount(req.OverdraftLimit))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -163,44 +175,104 @@ func (s *Server) handleCloseDepositAccount(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSetOverdraftTerms APPENDS a row to an account's effective-dated terms
-// timeline. It is the only way to change a limit after opening.
+// The three handlers that replaced handleSetOverdraftTerms.
 //
-// An absent effectiveFrom is passed through as the zero time, which the deposit
-// layer resolves to today on ITS clock rather than on this process's wall
-// clock — the same default ledger.PostTransactionRequest gives a zero booking
-// date, and the reason a request that says nothing about when still lands on
-// the day the rest of the system thinks it is.
-//
-// The 200 body is the account re-read WITH its terms rather than the row that
-// was just written, so the response shape is the same one every other deposit
-// endpoint returns — and so a future-dated repricing does not come back as
+// Each 200 body is the account re-read WITH its resolved terms rather than the
+// row that was just written, so the response shape is the same one every other
+// deposit endpoint returns — and so a future-dated change does not come back as
 // though it were already in force.
-func (s *Server) handleSetOverdraftTerms(w http.ResponseWriter, r *http.Request) {
+
+func (s *Server) handleSetOverdraftLimit(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.participant(w, r)
 	if !ok {
 		return
 	}
-	var req setOverdraftTermsRequest
+	var req setOverdraftLimitRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	dc, err := dayCountFromString(req.DayCount)
-	if err != nil {
-		writeBadRequest(w, err.Error())
-		return
-	}
-	var effectiveFrom time.Time
-	if req.EffectiveFrom != nil {
-		effectiveFrom = *req.EffectiveFrom
-	}
 	did := deposit.AccountID(r.PathValue("did"))
-	if _, err := p.Deposit.SetOverdraftTerms(r.Context(), did, ledger.Amount(req.Limit),
-		interest.Rate(req.Rate), interest.Rate(req.UnarrangedRate), dc, effectiveFrom); err != nil {
+	if _, err := p.Deposit.SetOverdraftLimit(r.Context(), did,
+		ledger.Amount(req.Limit), effectiveFromOrToday(req.EffectiveFrom)); err != nil {
 		writeError(w, err)
 		return
 	}
+	writeAccountWithTerms(w, r, p, did)
+}
+
+func (s *Server) handleSetOverdraftPricing(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req setOverdraftPricingRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	// A null pricing CLEARS the overlay, which is why this is a pointer all the
+	// way down rather than a zero value: a zero-rate overlay is a real
+	// interest-free product and must not be reachable by omission.
+	var pricing *product.OverdraftPricing
+	if req.Pricing != nil {
+		dc, err := dayCountFromString(req.Pricing.DayCount)
+		if err != nil {
+			writeBadRequest(w, err.Error())
+			return
+		}
+		pricing = &product.OverdraftPricing{
+			Rate:           interest.Rate(req.Pricing.Rate),
+			UnarrangedRate: interest.Rate(req.Pricing.UnarrangedRate),
+			DayCount:       dc,
+		}
+	}
+	did := deposit.AccountID(r.PathValue("did"))
+	if _, err := p.Deposit.SetOverdraftPricingOverlay(r.Context(), did,
+		pricing, effectiveFromOrToday(req.EffectiveFrom)); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeAccountWithTerms(w, r, p, did)
+}
+
+func (s *Server) handleChangeProduct(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req changeProductRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.ProductID == "" {
+		writeBadRequest(w, "productId is required")
+		return
+	}
+	did := deposit.AccountID(r.PathValue("did"))
+	if _, err := p.Deposit.ChangeProduct(r.Context(), did,
+		product.ID(req.ProductID), effectiveFromOrToday(req.EffectiveFrom)); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeAccountWithTerms(w, r, p, did)
+}
+
+// effectiveFromOrToday maps an absent date to the zero time, which every
+// register setter reads as "today on the register's clock" — the same default
+// ledger.PostTransactionRequest gives a zero booking date, and the reason a
+// request that says nothing about when still lands on the day the rest of the
+// system thinks it is.
+func effectiveFromOrToday(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// writeAccountWithTerms is the response the three terms writes share.
+func writeAccountWithTerms(w http.ResponseWriter, r *http.Request, p *payment.Participant, did deposit.AccountID) {
 	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
 	if err != nil {
 		writeError(w, err)

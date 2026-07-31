@@ -12,9 +12,14 @@ import type { Asset, OverdraftTerms } from "@/lib/types";
 
 // Read-only view of an account's whole effective-dated overdraft terms
 // timeline, oldest first — including the opening row every account gets at
-// OpenAccount. There is no form here: the only way to add a row is
-// POST .../overdraft-terms, which this card exists to make the history of
+// OpenAccount. There is no form here: rows are added by POST .../overdraft-limit
+// and POST .../overdraft-pricing, which this card exists to make the history of
 // inspectable rather than merely recoverable by replaying the audit log.
+//
+// A FLOATING row shows "product" rather than a rate. Its three rate fields are
+// zero because the row carries no price at all — the price comes from the
+// product version in force on each day — and rendering those zeros as a rate
+// would tell a customer their overdraft is free.
 export function OverdraftTermsCard({
   pid,
   did,
@@ -40,14 +45,33 @@ export function OverdraftTermsCard({
     {
       key: "rate",
       header: "Arranged",
-      render: (t) => formatRate(t.rate, t.rateScale),
+      render: (t) =>
+        t.floating ? (
+          <span className="text-muted-foreground">product</span>
+        ) : (
+          formatRate(t.rate, t.rateScale)
+        ),
     },
     {
       key: "unarrangedRate",
       header: "Unarranged",
-      render: (t) => formatRate(t.unarrangedRate, t.rateScale),
+      render: (t) =>
+        t.floating ? (
+          <span className="text-muted-foreground">product</span>
+        ) : (
+          formatRate(t.unarrangedRate, t.rateScale)
+        ),
     },
-    { key: "dayCount", header: "Day count", render: (t) => t.dayCount },
+    {
+      key: "dayCount",
+      header: "Day count",
+      render: (t) =>
+        t.floating ? (
+          <span className="text-muted-foreground">product</span>
+        ) : (
+          t.dayCount
+        ),
+    },
     {
       key: "createdAt",
       header: "Entered",

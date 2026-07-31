@@ -154,15 +154,25 @@ export interface DepositAccount {
   name: string;
   asset: string;
   status: DepositStatus;
+  // The catalogue entry pricing this account today. It varies over the
+  // account's life — migrating between products is an ordinary forward-dated
+  // row — so it is resolved as of today rather than fixed at opening.
+  productId: string;
   overdraftLimit: number;
   overdraftRate: number;
   unarrangedRate: number;
   rateScale: number;
   dayCount: string;
+  // Where overdraftRate came from: "product" is the product's list price and
+  // "negotiated" is an overlay for this one customer. Without it a customer
+  // cannot be told why their rate did not move when the product was repriced.
+  pricingSource: PricingSource;
   accruedInterest: number;
   interestGlAccount?: string;
   createdAt: string;
 }
+
+export type PricingSource = "product" | "negotiated";
 
 // One row of an account's effective-dated overdraft terms timeline. rate and
 // unarrangedRate are millionths of rateScale, the same convention
@@ -172,7 +182,13 @@ export interface DepositAccount {
 export interface OverdraftTerms {
   accountId: string;
   effectiveFrom: string;
+  productId: string;
   overdraftLimit: number;
+  // floating means the row carries no negotiated price, so its rate comes from
+  // the product version in force on each day. The three rate fields are then
+  // ZERO because the row holds nothing — which is not "interest-free", and
+  // rendering them as a price would show every floating account as free.
+  floating: boolean;
   rate: number;
   unarrangedRate: number;
   rateScale: number;
@@ -223,6 +239,9 @@ export interface ParticipantAccounts {
 export interface Participant {
   id: string;
   name: string;
+  // The bank's default deposit product, created with its chart of accounts at
+  // onboarding. It is what the open-account form offers.
+  productId: string;
   customerSubledger: string;
   assets: ParticipantAccounts[];
 }
@@ -457,7 +476,38 @@ export interface OpenDepositAccountRequest {
   name: string;
   // Required, like CreateAccountRequest.asset.
   asset: string;
+  // Required too: every deposit account is opened FROM a product, because a
+  // floating terms row with no product would have nothing to float to.
+  productId: string;
   overdraftLimit: number;
+}
+
+// The three requests that replaced SetOverdraftTermsRequest, one per decision
+// the old single call conflated. effectiveFrom is RFC3339 and may point in
+// either direction; absent means today on the server's clock.
+
+export interface SetOverdraftLimitRequest {
+  limit: number;
+  effectiveFrom?: string | null;
+}
+
+// A null pricing CLEARS the overlay and puts the account back on its product,
+// at whatever the product costs by then. That is not "interest-free": an
+// interest-free account is a pricing with a zero rate.
+export interface SetOverdraftPricingRequest {
+  pricing: OverdraftPricing | null;
+  effectiveFrom?: string | null;
+}
+
+export interface OverdraftPricing {
+  rate: number;
+  unarrangedRate: number;
+  dayCount: string;
+}
+
+export interface ChangeProductRequest {
+  productId: string;
+  effectiveFrom?: string | null;
 }
 
 export interface StatusRequest {

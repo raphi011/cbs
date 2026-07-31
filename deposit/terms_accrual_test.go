@@ -34,7 +34,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
 	const (
 		r1      interest.Rate = 120_000 // 12%
@@ -43,9 +43,9 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 		extra   ledger.Amount = 100_000 // a second EUR 1,000, value-dated day 10
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 
 	overdrawValueDated(t, book, sub, acct, opening, day(0), day(0))
@@ -55,7 +55,7 @@ func TestBackValueAcrossARepricingTruesUp(t *testing.T) {
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, day(30)))
 
 	// Repriced from day 30, entered on day 30 — an ordinary forward repricing.
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
 	assertNoError(t, err)
 
 	clock.set(day(45))
@@ -126,12 +126,12 @@ func TestWholeLifeAccrualEqualsTheSumOfItsPeriods(t *testing.T) {
 	// book, so that neither run can be influenced by the other's postings.
 	build := func(clock *mutableClock) (*Register, *ledger.Book, Account) {
 		t.Helper()
-		reg, book, sub := newTestRegisterOn(t, clock.now)
-		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+		reg, book, sub, prd := newTestRegisterOn(t, clock.now)
+		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 		assertNoError(t, err)
-		_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
+		_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 		assertNoError(t, err)
-		_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
+		_, err = setTerms(ctx, reg, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
 		assertNoError(t, err)
 		overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
 		return reg, book, acct
@@ -187,7 +187,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
 	const (
 		r1    interest.Rate = 120_000
@@ -195,9 +195,9 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
 
@@ -207,7 +207,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	// Entered on the 45th, effective on the 30th. The pair of dates is the
 	// whole point: CreatedAt is when the bank was told, EffectiveFrom is when
 	// the customer's product changed.
-	backdated, err := reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
+	backdated, err := setTerms(ctx, reg, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
 	assertNoError(t, err)
 	if !backdated.EffectiveFrom.Equal(day(30)) {
 		t.Errorf("effective from %s, want %s", backdated.EffectiveFrom, day(30))
@@ -244,7 +244,7 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	assertNoError(t, err)
 	var termsSet int
 	for _, e := range events {
-		if e.Type == ledger.EventOverdraftTermsSet && e.EntityID == string(acct.ID) {
+		if e.Type == ledger.EventOverdraftPricingOverlaid && e.EntityID == string(acct.ID) {
 			termsSet++
 		}
 	}
@@ -253,8 +253,8 @@ func TestABackdatedTermsRowPostsADeltaAndRewritesNothing(t *testing.T) {
 	history, err := reg.OverdraftTermsHistory(ctx, acct.ID)
 	assertNoError(t, err)
 	assertEqual(t, "timeline length", len(history), 2)
-	assertEqual(t, "first row rate", history[0].Rate, r1)
-	assertEqual(t, "second row rate", history[1].Rate, r2)
+	assertEqual(t, "first row rate", history[0].Pricing.Rate, r1)
+	assertEqual(t, "second row rate", history[1].Pricing.Rate, r2)
 	if !history[1].EffectiveFrom.Equal(day(30)) {
 		t.Errorf("second row effective from %s, want %s", history[1].EffectiveFrom, day(30))
 	}
@@ -272,7 +272,7 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
 	const (
 		r1    interest.Rate = 120_000
@@ -280,15 +280,15 @@ func TestAFutureDatedTermsRowIsInertUntilItsDate(t *testing.T) {
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
 
 	// Agreed on day 10, effective day 30.
 	clock.set(day(10))
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r2, 0, interest.ACT365, day(30))
 	assertNoError(t, err)
 
 	clock.set(day(20))
@@ -334,7 +334,7 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
 	const (
 		r1    interest.Rate = 120_000
@@ -342,7 +342,7 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	)
 
 	// A facility with no price: the only row is the opening one, at a zero rate.
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 500_000)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 500_000)
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
 
@@ -355,7 +355,7 @@ func TestAnAccountUnpricedThenPricedAccruesOnlyAfterwards(t *testing.T) {
 	assertEqual(t, "and no receivable was opened for it", string(free.InterestGL), "")
 
 	// Priced from day 365.
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, r1, 0, interest.ACT365, day(365))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, r1, 0, interest.ACT365, day(365))
 	assertNoError(t, err)
 
 	clock.set(day(400))
@@ -398,11 +398,11 @@ func TestRerunningEndOfDayForTheSameDatePostsNothing(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
 
@@ -442,9 +442,9 @@ func TestANeverPricedAccountReadsNoSeries(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bella", testAsset, 500_000)
+	acct, err := reg.OpenAccount(ctx, sub, "Bella", testAsset, prd, 500_000)
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
 
@@ -471,11 +471,11 @@ func TestAnUnadvancedWindowIsRefusedBeforeReadingASeries(t *testing.T) {
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, 100_000, day(0), day(0))
 
@@ -540,10 +540,10 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	open := func(dc interest.DayCount) (*Register, Account, *mutableClock) {
 		t.Helper()
 		clock := &mutableClock{at: jan1}
-		reg, book, sub := newTestRegisterOn(t, clock.now)
-		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+		reg, book, sub, prd := newTestRegisterOn(t, clock.now)
+		acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 		assertNoError(t, err)
-		_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, rate, 0, dc, jan1)
+		_, err = setTerms(ctx, reg, acct.ID, 500_000, rate, 0, dc, jan1)
 		assertNoError(t, err)
 		overdrawValueDated(t, book, sub, acct, drawn, jan1, jan1)
 		return reg, acct, clock
@@ -587,7 +587,7 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 	// product event; it is the cleanest way to make the row choice the only
 	// variable, since everything else about the two rows is identical.
 	reg, acct, clock := open(interest.Thirty360)
-	_, err := reg.SetOverdraftTerms(ctx, acct.ID, 500_000, rate, 0, interest.ACT365, the31st)
+	_, err := setTerms(ctx, reg, acct.ID, 500_000, rate, 0, interest.ACT365, the31st)
 	assertNoError(t, err)
 
 	// Exactly one ACT/365 day on the drawn balance, and no more: the 31st is
@@ -615,11 +615,11 @@ func TestTheAdvancementGuardResolvesItsDayCountOnTheAccrualDate(t *testing.T) {
 func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.T) {
 	ctx := context.Background()
 	clock := &mutableClock{at: time.Date(2025, time.January, 1, 0, 0, 0, 0, time.UTC)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, 120_000, 0, interest.Thirty360, clock.now())
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, 120_000, 0, interest.Thirty360, clock.now())
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, 100_000, clock.now(), clock.now())
 
@@ -631,7 +631,7 @@ func TestUnderThirty360ATermsRowEffectiveOnA31stFirstChargesOnThe1st(t *testing.
 	assertNoError(t, reg.AccrueOverdraft(ctx, acct.ID, the30th))
 
 	// A repricing effective on the 31st, entered on the 30th.
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, 240_000, 0, interest.Thirty360, the31st)
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, 240_000, 0, interest.Thirty360, the31st)
 	assertNoError(t, err)
 
 	through30, err := reg.GetAccount(ctx, acct.ID)
@@ -674,7 +674,7 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 	day := func(n int) time.Time { return origin.AddDate(0, 0, n) }
 
 	clock := &mutableClock{at: day(0)}
-	reg, book, sub := newTestRegisterOn(t, clock.now)
+	reg, book, sub, prd := newTestRegisterOn(t, clock.now)
 
 	const (
 		dear  interest.Rate = 240_000 // 24%
@@ -682,9 +682,9 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 		drawn ledger.Amount = 100_000
 	)
 
-	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, 0)
+	acct, err := reg.OpenAccount(ctx, sub, "Bruno", testAsset, prd, 0)
 	assertNoError(t, err)
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, dear, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, dear, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 	overdrawValueDated(t, book, sub, acct, drawn, day(0), day(0))
 
@@ -715,7 +715,7 @@ func TestARetroactiveRateCutRefundsWithoutDrivingTheReceivableNegative(t *testin
 		customerAfterCharge, -(drawn + charge))
 
 	// Now the whole year was mispriced: 2%, effective from day 0.
-	_, err = reg.SetOverdraftTerms(ctx, acct.ID, 500_000, cheap, 0, interest.ACT365, day(0))
+	_, err = setTerms(ctx, reg, acct.ID, 500_000, cheap, 0, interest.ACT365, day(0))
 	assertNoError(t, err)
 
 	clock.set(day(366))

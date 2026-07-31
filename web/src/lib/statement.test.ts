@@ -121,6 +121,7 @@ describe("buildKnownAccounts", () => {
     const p: Participant = {
       id: "bank_1",
       name: "Bank",
+      productId: "prd_1",
       customerSubledger: "sub_1",
       assets: [
         { asset: "EUR", suspense: "acct_03", reserve: "acct_02", settlement: "acct_09" },
@@ -134,6 +135,7 @@ describe("buildKnownAccounts", () => {
     const p: Participant = {
       id: "bank_1",
       name: "Bank",
+      productId: "prd_1",
       customerSubledger: "sub_1",
       assets: [
         { asset: "EUR", suspense: "acct_07", reserve: "acct_09", settlement: "acct_09" },

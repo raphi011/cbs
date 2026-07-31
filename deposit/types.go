@@ -211,5 +211,8 @@ type Totals struct {
 // thing a second copy always creates, the possibility that the two disagree.
 type AccountWithTerms struct {
 	Account Account
-	Terms   OverdraftTerms
+	// Terms is RESOLVED rather than the account's raw row: a floating account's
+	// price lives in the catalogue, so the row alone would answer "nil" to the
+	// question every caller of this type is asking.
+	Terms EffectiveTerms
 }

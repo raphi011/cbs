@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -468,7 +469,7 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	assertNoError(t, err)
 	bob, err := b.OpenCustomerAccount(ctx, "Bob", testAsset)
 	assertNoError(t, err)
-	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, 100000)
+	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000)
 	assertNoError(t, err)
 
 	assertNoError(t, sys.Deposit(ctx, a.ID, alice.ID, 100000, "Alice opening deposit"))
@@ -1016,7 +1017,10 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	// An overdrawn current account with a priced overdraft.
 	bruno, err := bank.OpenCustomerAccount(ctx, "Bruno Bianchi", testAsset)
 	assertNoError(t, err)
-	_, err = bank.Deposit.SetOverdraftTerms(ctx, bruno.ID, 50_000, 150_000, 0, interest.ACT365, time.Time{})
+	_, err = bank.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, time.Time{})
+	assertNoError(t, err)
+	_, err = bank.Deposit.SetOverdraftPricingOverlay(ctx, bruno.ID,
+		&product.OverdraftPricing{Rate: 150_000, DayCount: interest.ACT365}, time.Time{})
 	assertNoError(t, err)
 	assertNoError(t, net.Deposit(ctx, bank.ID, bruno.ID, 5_000, "Opening deposit"))
 

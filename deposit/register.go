@@ -3,11 +3,13 @@ package deposit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/product"
 )
 
 // Register is the demand-deposit layer over a general ledger. It manages
@@ -129,28 +131,43 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 // registered in the underlying book. A customer holding two assets holds two
 // accounts.
 //
-// overdraftLimit is a positive amount the account may go below zero by; 0
-// means no overdraft is permitted. The asset comes before it so that the two
-// ledger-typed arguments are not adjacent and transposable.
+// productID is the catalogue entry the account is priced by. Every account has
+// one: a floating terms row with no product would have nothing to float to, and
+// making that unreachable is cheaper than handling it. The product must exist,
+// must not be Retired, must be of Kind CurrentAccount, and must have a published
+// version in force today — an account opened from an unpriced product could not
+// resolve a single day, and refusing here is what stops that surfacing as an
+// accrual failure weeks later.
 //
-// Returns any error from the underlying ledger (for example
-// ledger.ErrSubledgerNotFound if the subledger does not exist, or
-// ledger.ErrAssetNotFound if the asset is not registered).
-func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error) {
+// overdraftLimit is a positive amount the account may go below zero by; 0
+// means no overdraft is permitted. It is NOT part of the product: a limit is an
+// underwriting decision about this customer, so it is passed per account and
+// stays on the account's own timeline for life. The asset comes before it so
+// that the two ledger-typed arguments are not adjacent and transposable.
+//
+// Returns product.ErrProductNotFound, product.ErrProductRetired,
+// product.ErrKindMismatch, product.ErrVersionNotFound, and any error from the
+// underlying ledger (for example ledger.ErrSubledgerNotFound if the subledger
+// does not exist, or ledger.ErrAssetNotFound if the asset is not registered).
+func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount) (Account, error) {
 	var out Account
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = r.OpenAccountTx(ctx, tx, subledger, name, asset, overdraftLimit)
+		out, err = r.OpenAccountTx(ctx, tx, subledger, name, asset, productID, overdraftLimit)
 		return err
 	})
 	return out, err
 }
 
 // OpenAccountTx is OpenAccount within a caller-supplied unit of work. The GL
-// account and the deposit account are created through the same Tx, so an
-// account can never exist in one layer without the other.
-func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, overdraftLimit ledger.Amount) (Account, error) {
+// account, the deposit account and the account's first terms row are created
+// through the same Tx, so an account can never exist in one layer without the
+// other — which is what deposit.Tx embedding product.Tx exists for.
+func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount) (Account, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
+		return Account{}, err
+	}
+	if err := r.checkOpenableProductTx(ctx, tx, productID); err != nil {
 		return Account{}, err
 	}
 
@@ -177,18 +194,19 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 	}
 
 	// Every account gets a terms row from birth, carrying the limit it was
-	// opened with and zero rates.
+	// opened with and NO overlay.
 	//
 	// This is cleaner than treating "no rows" as a state the resolver has to
-	// model: it makes the recompute window start uniform, it means the timeline
-	// answers for every day the account has existed, and it costs nothing to
-	// specify — interest.DayCount's zero value is already ACT365, so the
-	// opening row needs no invented default, and a zero rate accrues nothing.
-	// An account opened before any pricing existed therefore keeps exactly the
-	// behaviour it had.
+	// model: it makes the recompute window start uniform, and it means the
+	// timeline answers for every day the account has existed.
+	//
+	// The row is FLOATING — its pricing resolves from the product version in
+	// force on each day — which is what makes a later product-wide reprice reach
+	// this account without a write to it.
 	opening := OverdraftTerms{
 		AccountID:      acct.ID,
 		EffectiveFrom:  ledger.DayStart(acct.CreatedAt),
+		ProductID:      productID,
 		OverdraftLimit: overdraftLimit,
 		CreatedAt:      acct.CreatedAt,
 	}
@@ -203,6 +221,31 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		return Account{}, err
 	}
 	return acct, nil
+}
+
+// checkOpenableProductTx is the product validation OpenAccount and
+// ChangeProduct share: it must exist, be on sale, be the right kind, and have a
+// price today.
+//
+// Retired is checked HERE and never at resolution, which is the distinction that
+// lets a product go off sale without the accounts sold from it losing their
+// price — see product.ErrProductRetired.
+func (r *Register) checkOpenableProductTx(ctx context.Context, tx Tx, id product.ID) error {
+	p, err := tx.GetProduct(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	if p.Retired {
+		return fmt.Errorf("%w: %s", product.ErrProductRetired, id)
+	}
+	if p.Kind != product.CurrentAccount {
+		return fmt.Errorf("%w: %s is a %s", product.ErrKindMismatch, id, p.Kind)
+	}
+	v, err := tx.GetProductVersionAsOf(ctx, r.bookID, id, ledger.DayStart(r.now()))
+	if err != nil {
+		return err
+	}
+	return v.VerifyHash()
 }
 
 // receivableSubledgerName is where per-account accrued-interest receivables are
@@ -223,76 +266,147 @@ func interestIncomeName(asset ledger.AssetCode) string {
 	return "Interest Income (" + string(asset) + ")"
 }
 
-// SetOverdraftTerms APPENDS an account's overdraft limit and credit terms to
-// its effective-dated timeline. It does not overwrite anything: one immutable
-// row per repricing, and the terms in force on a day are resolved from the
-// timeline whenever a day has to be priced.
+// SetOverdraftLimit changes what this customer may go overdrawn by, from a day.
 //
-// It is the only way to change a limit after opening; OpenAccount takes one for
-// convenience, and writes the account's opening row with it.
-//
-// limit is a positive amount the balance may go below zero by, rate is the
-// annual rate charged on the drawn balance up to that limit, and unarranged is
-// the rate on anything beyond it. A zero rate means the facility is
-// interest-free, which is a real product and is what every account opened
-// before this method existed has.
-//
-// A zero unarranged rate does NOT mean the same thing for the excess. It is a
-// surcharge, and its absence means rate applies to the whole drawn balance,
-// inside the limit and beyond it alike — never that the part beyond the limit
-// is free, which would make exceeding a limit cheaper than respecting it. Hence
-// the one combination refused: an unarranged rate with no arranged one, which
-// would price only the excess. See OverdraftTerms.Validate.
+// It is the PINNED half of the old SetOverdraftTerms: a limit is an underwriting
+// decision about one customer and never comes from the catalogue. The pricing
+// and the product are carried forward from the row in force on effectiveFrom,
+// because each row is a complete statement of the account's own terms from its
+// day — dropping the overlay here would silently reprice a customer who was
+// promised a rate.
 //
 // # effectiveFrom, and the two directions it may point
 //
-// effectiveFrom is the day the terms take economic effect, day-truncated here;
-// CreatedAt on the returned row is when they were entered. A ZERO effectiveFrom
+// effectiveFrom is the day the change takes economic effect, day-truncated here;
+// CreatedAt on the returned row is when it was entered. A ZERO effectiveFrom
 // means today on the register's clock, exactly as a zero BookingDate does in
-// ledger.PostTransactionRequest — the caller that has no opinion about the date
-// gets the system's, rather than the wall clock of whichever process is holding
-// the HTTP request. Both directions are allowed, because both happen:
+// ledger.PostTransactionRequest. Both directions are allowed, because both
+// happen:
 //
-//   - A BACKDATED row — a repricing agreed on the 1st and entered on the 15th —
-//     is picked up by the next end-of-day exactly as a backdated posting is.
-//     The days it takes effect over are re-derived at it, gross moves, and the
-//     difference is posted as ordinary delta interest. Nothing is rewritten and
-//     no accrual is reversed: the earlier postings were correct statements of
-//     what the bank knew at the time.
-//   - A FUTURE-DATED row is inert until the end-of-day runs reach its day,
-//     which is scheduled repricing for free.
-//
-// The risk in the first of those is real and is not hidden: a retroactive
-// repricing MOVES INTEREST THAT HAS ALREADY BEEN CHARGED TO A CUSTOMER, and the
-// audit log is the only control on it. Every call appends an
-// EventOverdraftTermsSet event carrying the row, effective date and entry date
-// alike, and that record is what makes "who repriced this account backwards,
-// and when" answerable.
+//   - A BACKDATED row is picked up by the next end-of-day exactly as a backdated
+//     posting is. A backdated limit does not move interest by itself, but it does
+//     change which part of a drawn balance was inside the limit on those days, so
+//     the difference is trued up as ordinary delta interest. Nothing is rewritten.
+//   - A FUTURE-DATED row is inert until the end-of-day runs reach its day, which
+//     is scheduled repricing for free.
 //
 // The value returned is the row that was WRITTEN, which is not necessarily the
-// row in force now — a future-dated repricing returns terms nothing is being
-// priced at yet. Use GetAccountWithTerms for the row in force today.
+// row in force now. Use GetAccountWithTerms for what applies today.
 //
-// The first non-zero rate creates the account's own accrued-interest-receivable
-// GL account. Setting terms again reuses it, including when the rate is set
-// back to zero: the account may already hold accrued interest, and discarding
-// the receivable would strand it.
-//
-// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount for a negative
-// limit, and ErrInvalidRate for a negative rate or an unarranged rate with no
-// arranged one.
-func (r *Register) SetOverdraftTerms(ctx context.Context, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (OverdraftTerms, error) {
+// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidAmount, and
+// ErrTermsNotFound for a day before the account existed.
+func (r *Register) SetOverdraftLimit(ctx context.Context, id AccountID, limit ledger.Amount, effectiveFrom time.Time) (OverdraftTerms, error) {
 	var out OverdraftTerms
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = r.SetOverdraftTermsTx(ctx, tx, id, limit, rate, unarranged, dc, effectiveFrom)
+		out, err = r.SetOverdraftLimitTx(ctx, tx, id, limit, effectiveFrom)
 		return err
 	})
 	return out, err
 }
 
-// SetOverdraftTermsTx is SetOverdraftTerms within a caller-supplied unit of work.
-func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, rate, unarranged interest.Rate, dc interest.DayCount, effectiveFrom time.Time) (OverdraftTerms, error) {
+// SetOverdraftLimitTx is SetOverdraftLimit within a caller-supplied unit of work.
+func (r *Register) SetOverdraftLimitTx(ctx context.Context, tx Tx, id AccountID, limit ledger.Amount, effectiveFrom time.Time) (OverdraftTerms, error) {
+	return r.appendTermsTx(ctx, tx, id, effectiveFrom, ledger.EventOverdraftLimitSet,
+		func(row *OverdraftTerms) { row.OverdraftLimit = limit })
+}
+
+// SetOverdraftPricingOverlay gives this customer a negotiated price instead of
+// the product's, from a day — or clears one, putting the account back on the
+// product.
+//
+// pricing nil means FLOAT, not free. An account cleared back onto its product
+// pays whatever the product costs by then, not what it cost when the overlay was
+// set; a genuinely interest-free account is a zero-rate overlay, which is a
+// different and deliberate statement.
+//
+// This is where retroactivity lives. A backdated overlay MOVES INTEREST THAT HAS
+// ALREADY BEEN CHARGED TO ONE CUSTOMER, and the delta is posted rather than the
+// history rewritten; the audit log is the only control on it, and every call
+// appends an EventOverdraftPricingOverlaid event carrying the row, effective date
+// and entry date alike. The catalogue refuses the same thing outright
+// (product.ErrRetroactivePublish) precisely because its blast radius is every
+// account on the product rather than one named customer.
+//
+// A zero effectiveFrom means today, as it does for SetOverdraftLimit.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed, ErrInvalidRate, and
+// ErrTermsNotFound.
+func (r *Register) SetOverdraftPricingOverlay(ctx context.Context, id AccountID, pricing *product.OverdraftPricing, effectiveFrom time.Time) (OverdraftTerms, error) {
+	var out OverdraftTerms
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.SetOverdraftPricingOverlayTx(ctx, tx, id, pricing, effectiveFrom)
+		return err
+	})
+	return out, err
+}
+
+// SetOverdraftPricingOverlayTx is SetOverdraftPricingOverlay within a
+// caller-supplied unit of work.
+func (r *Register) SetOverdraftPricingOverlayTx(ctx context.Context, tx Tx, id AccountID, pricing *product.OverdraftPricing, effectiveFrom time.Time) (OverdraftTerms, error) {
+	return r.appendTermsTx(ctx, tx, id, effectiveFrom, ledger.EventOverdraftPricingOverlaid,
+		func(row *OverdraftTerms) {
+			if pricing == nil {
+				row.Pricing = nil
+				return
+			}
+			// Copied, so a caller keeping its argument cannot rewrite a stored
+			// row's price afterwards.
+			p := *pricing
+			row.Pricing = &p
+		})
+}
+
+// ChangeProduct migrates an account onto another product, from a day.
+//
+// It is a forward-dated row like any other, which is the point: the days before
+// it still resolve against the product that priced them, so "what did this
+// account's product say on 15 July 2027?" survives a migration. A migration is
+// not a rewrite.
+//
+// A negotiated overlay is carried forward untouched. A rate promised to a
+// customer is a promise, and dropping it as a side effect of a migration would
+// reprice them without a decision; clearing it is an explicit
+// SetOverdraftPricingOverlay(nil, day) call, so each method changes one thing.
+//
+// Returns ErrAccountNotFound, ErrAccountClosed, ErrTermsNotFound, and the
+// product refusals checkOpenableProductTx makes.
+func (r *Register) ChangeProduct(ctx context.Context, id AccountID, productID product.ID, effectiveFrom time.Time) (OverdraftTerms, error) {
+	var out OverdraftTerms
+	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.ChangeProductTx(ctx, tx, id, productID, effectiveFrom)
+		return err
+	})
+	return out, err
+}
+
+// ChangeProductTx is ChangeProduct within a caller-supplied unit of work.
+func (r *Register) ChangeProductTx(ctx context.Context, tx Tx, id AccountID, productID product.ID, effectiveFrom time.Time) (OverdraftTerms, error) {
+	if err := r.checkOpenableProductTx(ctx, tx, productID); err != nil {
+		return OverdraftTerms{}, err
+	}
+	return r.appendTermsTx(ctx, tx, id, effectiveFrom, ledger.EventAccountProductChanged,
+		func(row *OverdraftTerms) { row.ProductID = productID })
+}
+
+// appendTermsTx is the one write the three setters share: read the row in force
+// on the effective day, change the one thing this caller changes, and append the
+// result as a new row.
+//
+// Carrying the in-force row forward is what makes each row a complete statement
+// of the account's terms rather than a diff — which is what lets termsAt answer
+// with one row and no accumulation, and what makes an out-of-order sequence of
+// backdated changes mean something definite.
+//
+// It appends and never edits: the row it read stays exactly as it was, so a past
+// day still re-derives at the terms that were in force on it.
+//
+// No setter creates the receivable any more. A floating account's rate lives in
+// the catalogue, so no register call knows it; the receivable is created by the
+// accrual, on the first day that actually accrues.
+func (r *Register) appendTermsTx(ctx context.Context, tx Tx, id AccountID, effectiveFrom time.Time, event string, change func(*OverdraftTerms)) (OverdraftTerms, error) {
 	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
 	if err != nil {
 		return OverdraftTerms{}, err
@@ -305,40 +419,22 @@ func (r *Register) SetOverdraftTermsTx(ctx context.Context, tx Tx, id AccountID,
 	if effectiveFrom.IsZero() {
 		effectiveFrom = now
 	}
-	row := OverdraftTerms{
-		AccountID:      id,
-		EffectiveFrom:  ledger.DayStart(effectiveFrom),
-		OverdraftLimit: limit,
-		Rate:           rate,
-		UnarrangedRate: unarranged,
-		DayCount:       dc,
-		CreatedAt:      now,
+	day := ledger.DayStart(effectiveFrom)
+	row, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, id, day)
+	if err != nil {
+		return OverdraftTerms{}, err
 	}
+	row.EffectiveFrom = day
+	row.CreatedAt = now
+	change(&row)
+
 	if err := row.Validate(); err != nil {
 		return OverdraftTerms{}, err
 	}
-
-	// The receivable is created on the first non-zero rate ever set and reused
-	// afterwards, including when a rate goes back to zero: the account may
-	// already hold accrued interest, and discarding the receivable would
-	// strand it. It stays on the account rather than moving to the terms row
-	// for the same reason — there is one receivable per account, not one per
-	// repricing.
-	if rate > 0 && acct.InterestGL == "" {
-		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
-		if err != nil {
-			return OverdraftTerms{}, err
-		}
-		acct.InterestGL = receivable
-		if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
-			return OverdraftTerms{}, err
-		}
-	}
-
 	if err := tx.PutOverdraftTerms(ctx, r.bookID, row); err != nil {
 		return OverdraftTerms{}, err
 	}
-	if err := r.appendAuditTx(ctx, tx, ledger.EventOverdraftTermsSet, string(id), row); err != nil {
+	if err := r.appendAuditTx(ctx, tx, event, string(id), row); err != nil {
 		return OverdraftTerms{}, err
 	}
 	return row, nil
@@ -419,6 +515,10 @@ func (r *Register) GetAccount(ctx context.Context, id AccountID) (Account, error
 // first. It is the point of making terms effective-dated: the history is
 // inspectable rather than merely recoverable by replaying the audit log.
 //
+// These are the RAW rows, not resolved terms: an overlay that was later cleared
+// is exactly what a reader of a history wants to see, and so is the day the
+// account changed product. What a day actually cost is GetAccountWithTerms.
+//
 // Returns ErrAccountNotFound.
 func (r *Register) OverdraftTermsHistory(ctx context.Context, id AccountID) ([]OverdraftTerms, error) {
 	var out []OverdraftTerms
@@ -433,9 +533,15 @@ func (r *Register) OverdraftTermsHistory(ctx context.Context, id AccountID) ([]O
 	return out, err
 }
 
-// GetAccountWithTerms returns an account alongside the terms in force today.
-// Returns ErrAccountNotFound, and ErrTermsNotFound only for an account that
-// somehow has no opening row.
+// GetAccountWithTerms returns an account alongside what its overdraft costs
+// today: the RESOLVED merge of its own row and its product's version, not the
+// raw row. A floating account's rate is in the catalogue, so the raw row would
+// answer "nil" to the question the caller is asking.
+//
+// Returns ErrAccountNotFound, ErrTermsNotFound only for an account that somehow
+// has no opening row, product.ErrVersionNotFound for a floating account whose
+// product has no published price today, and product.ErrHashMismatch for a
+// version edited in the database.
 func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (AccountWithTerms, error) {
 	var out AccountWithTerms
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -443,7 +549,15 @@ func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (Accou
 		if err != nil {
 			return err
 		}
-		terms, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, id, ledger.DayStart(r.now()))
+		rows, err := tx.ListOverdraftTermsForAccount(ctx, r.bookID, id)
+		if err != nil {
+			return err
+		}
+		cache := versionCache{}
+		if err := r.loadForTerms(ctx, tx, rows, cache); err != nil {
+			return err
+		}
+		terms, err := Resolve(rows, cache, ledger.DayStart(r.now()))
 		if err != nil {
 			return err
 		}
@@ -456,6 +570,10 @@ func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (Accou
 // ListAccountsWithTerms is GetAccountWithTerms over the whole book, in ONE unit
 // of work. Resolving each account through its own View would make a listing N
 // units of work over a store whose mem implementation refuses to nest them.
+//
+// One version cache serves the whole listing, so a book of ten thousand accounts
+// on three products reads three product timelines rather than ten thousand — the
+// same dividend the accrual run takes.
 func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerms, error) {
 	var out []AccountWithTerms
 	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -464,9 +582,17 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 			return err
 		}
 		today := ledger.DayStart(r.now())
+		cache := versionCache{}
 		out = make([]AccountWithTerms, 0, len(accounts))
 		for _, acct := range accounts {
-			terms, err := tx.GetOverdraftTermsAsOf(ctx, r.bookID, acct.ID, today)
+			rows, err := tx.ListOverdraftTermsForAccount(ctx, r.bookID, acct.ID)
+			if err != nil {
+				return err
+			}
+			if err := r.loadForTerms(ctx, tx, rows, cache); err != nil {
+				return err
+			}
+			terms, err := Resolve(rows, cache, today)
 			if err != nil {
 				return err
 			}
@@ -998,6 +1124,12 @@ func requireCreditable(acct Account) error {
 // runs on every withdrawal check and should not pay for history —
 // ActiveHoldTotal above is a bounded aggregate for the same reason.
 //
+// And it needs NO catalogue lookup at all, which is the second dividend from
+// pinning the limit to the account: the limit is on the account's own row for
+// every day of its life, so the path that runs constantly still answers in one
+// read. The reverse design — a limit that floated with the product — would put
+// a product read on every withdrawal check in the system.
+//
 // ErrTermsNotFound is propagated rather than treated as a zero limit. Every
 // account gets an opening row at OpenAccount, so the only way to miss is to ask
 // about a day before the account existed, and silently reporting a spendable
@@ -1182,7 +1314,9 @@ func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, d
 	if err != nil {
 		return err
 	}
-	return r.accrueOverdraftAccountTx(ctx, tx, acct, date)
+	// A fresh cache: one account, so there is nothing to share. RunEndOfDayTx
+	// is where the type earns its place.
+	return r.accrueOverdraftAccountTx(ctx, tx, acct, date, versionCache{})
 }
 
 // accrueOverdraftAccountTx is AccrueOverdraftTx against an account the caller
@@ -1200,7 +1334,7 @@ func (r *Register) AccrueOverdraftTx(ctx context.Context, tx Tx, id AccountID, d
 // The terms are resolved PER DAY from the account's timeline rather than read
 // off the account, which is what lets the window reach back past a repricing
 // without re-deriving an earlier day at a rate that was never in force on it.
-func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time) error {
+func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Account, date time.Time, cache versionCache) error {
 	if acct.Status == Closed {
 		return nil
 	}
@@ -1225,7 +1359,10 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
-	if !anyPriced(rows) {
+	if err := r.loadForTerms(ctx, tx, rows, cache); err != nil {
+		return err
+	}
+	if !anyPriced(rows, cache) {
 		return nil
 	}
 
@@ -1249,11 +1386,14 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	// termsAt(rows, date) is therefore the very row that will price that span —
 	// the guard asks its question of the same row the walk will answer it with,
 	// rather than of a neighbouring day's.
-	current, ok := termsAt(rows, date)
-	if !ok {
+	current, err := Resolve(rows, cache, date)
+	if errors.Is(err, ErrTermsNotFound) {
 		return nil
 	}
-	if current.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
+	if err != nil {
+		return err
+	}
+	if current.Pricing.DayCount.Days(acct.LastAccrualDate, date) <= 0 {
 		return nil
 	}
 
@@ -1261,6 +1401,11 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 	if err != nil {
 		return err
 	}
+	// A Period cannot return an error, so a resolution failure inside the walk
+	// is captured and checked before anything is applied. It must abort the run
+	// rather than accrue zero for the day: a tampered version and a free day are
+	// not the same event, and posting the second for the first would hide it.
+	var resolveErr error
 	next, delta := interest.Recompute(series, window, date,
 		interest.State{Accrued: acct.Accrued, Gross: acct.AccruedGross},
 		func(balance ledger.Amount, from, to time.Time) interest.Accrued {
@@ -1277,12 +1422,21 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 			// axis as the balance it is charged against. On `from` they would
 			// be a day apart — day D's rate applied to day D+1's balance — and
 			// a repricing effective day 30 would not bite until day 31.
-			day, ok := termsAt(rows, to)
-			if !ok {
+			day, err := Resolve(rows, cache, to)
+			if err != nil {
+				// A day before the account existed is not a failure: the window
+				// opens at the opening row, so it cannot arise, and returning
+				// zero is what the pre-catalogue walk did. Anything else is.
+				if !errors.Is(err, ErrTermsNotFound) && resolveErr == nil {
+					resolveErr = err
+				}
 				return 0
 			}
 			return overdraftAccrual(balance, day, from, to)
 		})
+	if resolveErr != nil {
+		return resolveErr
+	}
 
 	acct.Accrued = next.Accrued
 	acct.AccruedGross = next.Gross
@@ -1295,6 +1449,19 @@ func (r *Register) accrueOverdraftAccountTx(ctx context.Context, tx Tx, acct Acc
 			return err
 		}
 		return r.appendAuditTx(ctx, tx, ledger.EventOverdraftAccrued, string(acct.ID), acct)
+	}
+
+	// The receivable is created on the first day that actually accrues, not when
+	// a rate is set: a floating account's rate lives in the catalogue, so no
+	// register call knows it any more. It is reused forever afterwards,
+	// including when the rate goes back to zero, because the account may already
+	// hold accrued interest and discarding the receivable would strand it.
+	if acct.InterestGL == "" {
+		receivable, err := r.ensureReceivableTx(ctx, tx, acct)
+		if err != nil {
+			return err
+		}
+		acct.InterestGL = receivable
 	}
 
 	income, err := r.interestIncomeTx(ctx, tx, acct)
@@ -1419,25 +1586,52 @@ func (r *Register) correctOverdraftAccrualTx(ctx context.Context, tx Tx, acct *A
 // It takes the TERMS IN FORCE ON THE DAY it is accruing rather than the
 // account, because the limit and both rates are effective-dated: the day it is
 // called for is the day whose terms apply, and the caller resolves them from
-// the account's timeline before each call.
-func overdraftAccrual(book ledger.Amount, t OverdraftTerms, from, to time.Time) interest.Accrued {
+// the account's timeline AND its product's before each call. EffectiveTerms is
+// that merge — the limit from the account always, the pricing from its overlay
+// or from the product version in force — so this function never has to know
+// which of the two sources priced the day.
+func overdraftAccrual(book ledger.Amount, t EffectiveTerms, from, to time.Time) interest.Accrued {
 	drawn := -book
 	if drawn <= 0 {
 		return 0
 	}
 	arranged := drawn
-	if arranged > t.OverdraftLimit {
-		arranged = t.OverdraftLimit
+	if arranged > t.Limit {
+		arranged = t.Limit
 	}
-	total := interest.Accrue(arranged, t.Rate, t.DayCount, from, to)
+	total := interest.Accrue(arranged, t.Pricing.Rate, t.Pricing.DayCount, from, to)
 	if excess := drawn - arranged; excess > 0 {
-		rate := t.UnarrangedRate
+		rate := t.Pricing.UnarrangedRate
 		if rate == 0 {
-			rate = t.Rate
+			rate = t.Pricing.Rate
 		}
-		total += interest.Accrue(excess, rate, t.DayCount, from, to)
+		total += interest.Accrue(excess, rate, t.Pricing.DayCount, from, to)
 	}
 	return total
+}
+
+// versionCache is one accrual run's product timelines, loaded on first use and
+// reused for every account after it.
+//
+// A book of ten thousand accounts on three products therefore does three reads
+// for the whole run rather than ten thousand. It is passed in rather than held
+// on the Register because a Register owns no state — the same reason its clock
+// is a function and not a time.
+type versionCache map[product.ID][]product.Version
+
+// loadForTerms fills the cache with every product the given rows name.
+func (r *Register) loadForTerms(ctx context.Context, tx Tx, rows []OverdraftTerms, cache versionCache) error {
+	for _, row := range rows {
+		if _, ok := cache[row.ProductID]; ok {
+			continue
+		}
+		versions, err := tx.ListProductVersions(ctx, r.bookID, row.ProductID)
+		if err != nil {
+			return err
+		}
+		cache[row.ProductID] = versions
+	}
+	return nil
 }
 
 // ChargeOverdraftInterest capitalizes accrued interest into the account,
@@ -1557,8 +1751,11 @@ func (r *Register) RunEndOfDayTx(ctx context.Context, tx Tx, date time.Time) err
 	if err != nil {
 		return err
 	}
+	// One cache for the whole run: a book of ten thousand accounts on three
+	// products reads three product timelines, not ten thousand.
+	cache := versionCache{}
 	for _, acct := range accounts {
-		if err := r.accrueOverdraftAccountTx(ctx, tx, acct, date); err != nil {
+		if err := r.accrueOverdraftAccountTx(ctx, tx, acct, date, cache); err != nil {
 			return err
 		}
 	}

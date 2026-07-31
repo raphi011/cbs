@@ -8,6 +8,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 )
 
 // errorStatus maps a domain sentinel error to an HTTP status code. Unknown
@@ -38,7 +39,11 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrSettlementNotFound),
 		errors.Is(err, payment.ErrSchemeNotFound),
 		errors.Is(err, payment.ErrAccountNotInParticipant),
-		errors.Is(err, lending.ErrFacilityNotFound):
+		errors.Is(err, lending.ErrFacilityNotFound),
+		errors.Is(err, product.ErrProductNotFound),
+		// A product with no published version in force is a price that does not
+		// exist yet, which is a missing resource rather than a refused one.
+		errors.Is(err, product.ErrVersionNotFound):
 		return http.StatusNotFound
 
 	case errors.Is(err, ledger.ErrDuplicateIdempotencyKey),
@@ -92,7 +97,18 @@ func errorStatus(err error) int {
 		// is well formed and the field values are valid, but this facility is
 		// the wrong product for the operation — the same category as
 		// ErrCycleNotOpen.
-		errors.Is(err, lending.ErrWrongFacilityKind):
+		errors.Is(err, lending.ErrWrongFacilityKind),
+		// The catalogue's four refusals are the same category: each request is
+		// well formed and its field values are valid, and the state is what
+		// refuses it. A retired product is on the books but off sale, a
+		// published version is frozen by design, a backdated publication is
+		// refused outright because its blast radius is every account on the
+		// product, and a terms row with no product cannot resolve a price.
+		errors.Is(err, product.ErrProductRetired),
+		errors.Is(err, product.ErrKindMismatch),
+		errors.Is(err, product.ErrVersionPublished),
+		errors.Is(err, product.ErrRetroactivePublish),
+		errors.Is(err, deposit.ErrProductRequired):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),
@@ -104,12 +120,19 @@ func errorStatus(err error) int {
 		errors.Is(err, ledger.ErrAssetNotFound),
 		errors.Is(err, deposit.ErrInvalidAmount),
 		errors.Is(err, deposit.ErrInvalidRate),
+		errors.Is(err, product.ErrInvalidRate),
+		errors.Is(err, product.ErrNameRequired),
 		errors.Is(err, payment.ErrInvalidPaymentAmount),
 		errors.Is(err, lending.ErrInvalidAmount),
 		errors.Is(err, lending.ErrInvalidRate),
 		errors.Is(err, lending.ErrInvalidTerm):
 		return http.StatusBadRequest
 
+	// product.ErrHashMismatch is deliberately NOT mapped, so it falls through to
+	// 500. A published version whose content no longer matches its hash means
+	// stored data was edited behind the system's back: the caller did nothing
+	// wrong, and a 4xx would tell them to fix their request. It is the one
+	// catalogue error that is the server's problem.
 	default:
 		return http.StatusInternalServerError
 	}

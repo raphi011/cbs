@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/product"
 )
 
 // Network is the payment processor. It owns one book of accounts per
@@ -56,6 +57,7 @@ type Network struct {
 	ledgers  ledger.Store
 	deposits deposit.Store
 	lendings lending.Store
+	products product.Store
 
 	// mu guards schemes, the only thing a Network holds in memory. Schemes are
 	// registered at startup and read on every payment.
@@ -117,6 +119,7 @@ func NewNetwork(store Store, clock func() time.Time) *Network {
 		ledgers:     ledgers,
 		deposits:    depositView{store},
 		lendings:    lendingView{store},
+		products:    productView{store},
 		schemes:     make(map[SchemeID]Scheme),
 		centralBank: ledger.NewBook(ledgers, CentralBankBook, clock),
 	}
@@ -164,6 +167,7 @@ func (s *Network) bind(p Participant) *Participant {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
+	p.Catalogue = product.NewCatalogue(s.products, p.Ledger, p.BookID, s.clock)
 	return &p
 }
 
@@ -389,11 +393,35 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 		accounts[asset] = ParticipantAccounts{Suspense: suspense.ID, Reserve: reserve.ID, Settlement: cbReserve.ID}
 	}
 
+	// The bank's default deposit product, created here because a bank with no
+	// product cannot open an account: every deposit account is opened FROM one.
+	// It belongs with the chart of accounts for the same reason those are built
+	// here — onboarding a bank produces a bank that works.
+	//
+	// Its opening version is INTEREST-FREE, which is a real product and not an
+	// absence: a bank that has not decided a price has not decided a price, and
+	// pricing the overdraft is a later PublishVersion that reaches every account
+	// already sold from it. A caller wanting something else creates its own
+	// product through the Catalogue and passes it to OpenAccountTx.
+	catalogue := product.NewCatalogue(s.products, bank, bookID, s.clock)
+	basic, err := catalogue.CreateProductTx(ctx, tx, "Basic Current Account", product.CurrentAccount)
+	if err != nil {
+		return nil, err
+	}
+	today := ledger.DayStart(s.now())
+	if _, err := catalogue.DraftVersionTx(ctx, tx, basic.ID, today, product.OverdraftPricing{}); err != nil {
+		return nil, err
+	}
+	if _, err := catalogue.PublishVersionTx(ctx, tx, basic.ID, today); err != nil {
+		return nil, err
+	}
+
 	p := Participant{
 		ID:                ParticipantID(id),
 		Name:              name,
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
+		ProductID:         basic.ID,
 		Assets:            accounts,
 		CreatedAt:         s.now(),
 	}

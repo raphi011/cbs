@@ -279,10 +279,11 @@ CREATE TABLE overdraft_terms (
     account_id      TEXT NOT NULL,
     day_key         TEXT NOT NULL,
     effective_from  TIMESTAMPTZ,
+    product_id      TEXT NOT NULL,
     overdraft_limit BIGINT NOT NULL,
-    rate            BIGINT NOT NULL,
-    unarranged_rate BIGINT NOT NULL,
-    day_count       SMALLINT NOT NULL,
+    rate            BIGINT,
+    unarranged_rate BIGINT,
+    day_count       SMALLINT,
     created_at      TIMESTAMPTZ,
     seq             BIGSERIAL NOT NULL,
     PRIMARY KEY (book_id, account_id, day_key)
@@ -769,19 +770,36 @@ COMMENT ON COLUMN overdraft_terms.created_at IS
     'and one effective next month is inert until the runs reach it, which is '
     'scheduled repricing for free.';
 
+COMMENT ON COLUMN overdraft_terms.product_id IS
+    'The catalogue entry this account is on from this day. On the row rather '
+    'than on deposit_accounts because it varies over the account life: '
+    'migrating between products is an ordinary forward-dated row, and a column '
+    'on the account would contradict the timeline the moment a future-dated '
+    'migration was entered. It carries no foreign key to products, for the '
+    'reason subledgers.ledger_id carries none: "the parent must exist" is a '
+    'domain rule, enforced by deposit.Register, and a constraint here would '
+    'make store/pg refuse a write store/mem accepts.';
+
 COMMENT ON COLUMN overdraft_terms.rate IS
     'Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is '
     '100%, 150000 is 15% (interest.RateScale). Zero makes the WHOLE overdraft '
     'interest-free, which is a real product. unarranged_rate is the same scale '
     'and applies to any balance drawn beyond overdraft_limit; it is an optional '
     'SURCHARGE, so zero there means rate applies throughout rather than that '
-    'the excess is free. There is deliberately NO CHECK on either column, and '
-    'none on day_count: a CHECK enumerating the valid day-count conventions '
-    'would make store/pg refuse a write store/mem performs — which '
-    'store/storetest exists to prevent — and would turn a one-line change to a '
-    'Go constant into a migration. This is the same reasoning recorded on the '
-    'four asset columns, applied to a new case, and it is recorded in the '
-    'database because a missing constraint is invisible in a schema dump.';
+    'the excess is free. NULL in all three pricing columns means the pricing '
+    'FLOATS: resolve it from the product version in force on this day. All '
+    'three set is a negotiated overlay for this one customer. NULL does NOT '
+    'mean interest-free — a zero-rate overlay is a real interest-free product '
+    'and a different, deliberate statement — and the mixed state is refused by '
+    'deposit.OverdraftTerms.Validate rather than by a CHECK, because store/mem '
+    'must refuse exactly the same rows. There is deliberately NO CHECK on any '
+    'of the three, and none on day_count: a CHECK enumerating the valid '
+    'day-count conventions would make store/pg refuse a write store/mem '
+    'performs — which store/storetest exists to prevent — and would turn a '
+    'one-line change to a Go constant into a migration. This is the same '
+    'reasoning recorded on the four asset columns, applied to a new case, and '
+    'it is recorded in the database because neither a missing constraint nor '
+    'the meaning of NULL is visible in a schema dump.';
 
 COMMENT ON COLUMN facilities.accrued_interest IS
     'Interest earned and not yet settled, in MICRO-MINOR-UNITS: the asset''s '

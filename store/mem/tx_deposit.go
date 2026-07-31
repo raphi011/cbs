@@ -161,8 +161,25 @@ func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row depo
 	}
 	key := termsKey{account: row.AccountID, dayKey: deposit.TermsDayKey(row.EffectiveFrom)}
 	t.state.insertSeq(book, kindOverdraftTerms, termsSeqID(key))
-	bucket(t.state.overdraftTerms, book)[key] = row
+	bucket(t.state.overdraftTerms, book)[key] = detachPricing(row)
 	return nil
+}
+
+// detachPricing returns row with its pricing overlay pointing at a fresh copy.
+//
+// The overlay is the deposit layer's only pointer field, and this store hands
+// Go values straight to its callers. Without the copy a writer that kept its
+// argument could rewrite a stored price afterwards, and a reader could mutate
+// stored history through the pointer it was handed — neither of which store/pg
+// can do at all, which is exactly the divergence store/storetest exists to
+// prevent. It is applied on the way IN and on the way OUT, because those are
+// two different aliases into the same row.
+func detachPricing(row deposit.OverdraftTerms) deposit.OverdraftTerms {
+	if row.Pricing != nil {
+		pricing := *row.Pricing
+		row.Pricing = &pricing
+	}
+	return row
 }
 
 // ListOverdraftTermsForAccount returns an account's whole timeline, ascending
@@ -172,7 +189,7 @@ func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookI
 	out := make([]deposit.OverdraftTerms, 0)
 	for key, row := range t.state.overdraftTerms[book] {
 		if key.account == id {
-			out = append(out, row)
+			out = append(out, detachPricing(row))
 		}
 	}
 	// The effective day is already a total order within an account, so the
@@ -211,7 +228,7 @@ func (t *tx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id d
 	if !found {
 		return deposit.OverdraftTerms{}, deposit.ErrTermsNotFound
 	}
-	return best, nil
+	return detachPricing(best), nil
 }
 
 // termsSeqID renders a terms row's composite key as the string sortRows and

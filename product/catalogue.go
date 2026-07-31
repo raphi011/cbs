@@ -94,24 +94,32 @@ func (c *Catalogue) appendAuditTx(ctx context.Context, tx Tx, eventType, entityI
 func (c *Catalogue) CreateProduct(ctx context.Context, name string, kind Kind) (Product, error) {
 	var out Product
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		id, err := tx.NextID(ctx, c.bookID, "prd")
-		if err != nil {
-			return err
-		}
-		p := Product{ID: ID(id), Name: name, Kind: kind, CreatedAt: c.now()}
-		if err := p.Validate(); err != nil {
-			return err
-		}
-		if err := tx.PutProduct(ctx, c.bookID, p); err != nil {
-			return err
-		}
-		if err := c.appendAuditTx(ctx, tx, ledger.EventProductCreated, id, p); err != nil {
-			return err
-		}
-		out = p
-		return nil
+		var err error
+		out, err = c.CreateProductTx(ctx, tx, name, kind)
+		return err
 	})
 	return out, err
+}
+
+// CreateProductTx is CreateProduct within a caller-supplied unit of work, so a
+// bank's onboarding can create its chart of accounts and its first product
+// together — a bank with no product cannot open an account.
+func (c *Catalogue) CreateProductTx(ctx context.Context, tx Tx, name string, kind Kind) (Product, error) {
+	id, err := tx.NextID(ctx, c.bookID, "prd")
+	if err != nil {
+		return Product{}, err
+	}
+	p := Product{ID: ID(id), Name: name, Kind: kind, CreatedAt: c.now()}
+	if err := p.Validate(); err != nil {
+		return Product{}, err
+	}
+	if err := tx.PutProduct(ctx, c.bookID, p); err != nil {
+		return Product{}, err
+	}
+	if err := c.appendAuditTx(ctx, tx, ledger.EventProductCreated, id, p); err != nil {
+		return Product{}, err
+	}
+	return p, nil
 }
 
 // DraftVersion writes an unpublished version for one effective day, or replaces
@@ -131,38 +139,44 @@ func (c *Catalogue) CreateProduct(ctx context.Context, name string, kind Kind) (
 func (c *Catalogue) DraftVersion(ctx context.Context, id ID, effectiveFrom time.Time, pricing OverdraftPricing) (Version, error) {
 	var out Version
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		if _, err := tx.GetProduct(ctx, c.bookID, id); err != nil {
-			return err
-		}
-		day := ledger.DayStart(effectiveFrom)
-
-		existing, err := c.versionOnTx(ctx, tx, id, day)
-		if err != nil {
-			return err
-		}
-		if existing.Published() {
-			return fmt.Errorf("%w: %s effective %s", ErrVersionPublished, id, VersionDayKey(day))
-		}
-
-		v := Version{
-			ProductID:     id,
-			EffectiveFrom: day,
-			Overdraft:     pricing,
-			CreatedAt:     c.now(),
-		}
-		if err := v.Validate(); err != nil {
-			return err
-		}
-		if err := tx.PutProductVersion(ctx, c.bookID, v); err != nil {
-			return err
-		}
-		if err := c.appendAuditTx(ctx, tx, ledger.EventProductVersionDrafted, string(id), v); err != nil {
-			return err
-		}
-		out = v
-		return nil
+		var err error
+		out, err = c.DraftVersionTx(ctx, tx, id, effectiveFrom, pricing)
+		return err
 	})
 	return out, err
+}
+
+// DraftVersionTx is DraftVersion within a caller-supplied unit of work.
+func (c *Catalogue) DraftVersionTx(ctx context.Context, tx Tx, id ID, effectiveFrom time.Time, pricing OverdraftPricing) (Version, error) {
+	if _, err := tx.GetProduct(ctx, c.bookID, id); err != nil {
+		return Version{}, err
+	}
+	day := ledger.DayStart(effectiveFrom)
+
+	existing, err := c.versionOnTx(ctx, tx, id, day)
+	if err != nil {
+		return Version{}, err
+	}
+	if existing.Published() {
+		return Version{}, fmt.Errorf("%w: %s effective %s", ErrVersionPublished, id, VersionDayKey(day))
+	}
+
+	v := Version{
+		ProductID:     id,
+		EffectiveFrom: day,
+		Overdraft:     pricing,
+		CreatedAt:     c.now(),
+	}
+	if err := v.Validate(); err != nil {
+		return Version{}, err
+	}
+	if err := tx.PutProductVersion(ctx, c.bookID, v); err != nil {
+		return Version{}, err
+	}
+	if err := c.appendAuditTx(ctx, tx, ledger.EventProductVersionDrafted, string(id), v); err != nil {
+		return Version{}, err
+	}
+	return v, nil
 }
 
 // PublishVersion freezes the draft for one effective day and stamps its content
@@ -187,38 +201,44 @@ func (c *Catalogue) DraftVersion(ctx context.Context, id ID, effectiveFrom time.
 func (c *Catalogue) PublishVersion(ctx context.Context, id ID, effectiveFrom time.Time) (Version, error) {
 	var out Version
 	err := c.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		if _, err := tx.GetProduct(ctx, c.bookID, id); err != nil {
-			return err
-		}
-		day := ledger.DayStart(effectiveFrom)
-		if day.Before(c.today()) {
-			return fmt.Errorf("%w: %s effective %s, today is %s",
-				ErrRetroactivePublish, id, VersionDayKey(day), VersionDayKey(c.today()))
-		}
-
-		v, err := c.versionOnTx(ctx, tx, id, day)
-		if err != nil {
-			return err
-		}
-		if v.ProductID == "" {
-			return fmt.Errorf("%w: %s effective %s", ErrVersionNotFound, id, VersionDayKey(day))
-		}
-		if v.Published() {
-			return fmt.Errorf("%w: %s effective %s", ErrVersionPublished, id, VersionDayKey(day))
-		}
-
-		v.PublishedAt = c.now()
-		v.Hash = v.ComputeHash()
-		if err := tx.PutProductVersion(ctx, c.bookID, v); err != nil {
-			return err
-		}
-		if err := c.appendAuditTx(ctx, tx, ledger.EventProductVersionPublished, string(id), v); err != nil {
-			return err
-		}
-		out = v
-		return nil
+		var err error
+		out, err = c.PublishVersionTx(ctx, tx, id, effectiveFrom)
+		return err
 	})
 	return out, err
+}
+
+// PublishVersionTx is PublishVersion within a caller-supplied unit of work.
+func (c *Catalogue) PublishVersionTx(ctx context.Context, tx Tx, id ID, effectiveFrom time.Time) (Version, error) {
+	if _, err := tx.GetProduct(ctx, c.bookID, id); err != nil {
+		return Version{}, err
+	}
+	day := ledger.DayStart(effectiveFrom)
+	if day.Before(c.today()) {
+		return Version{}, fmt.Errorf("%w: %s effective %s, today is %s",
+			ErrRetroactivePublish, id, VersionDayKey(day), VersionDayKey(c.today()))
+	}
+
+	v, err := c.versionOnTx(ctx, tx, id, day)
+	if err != nil {
+		return Version{}, err
+	}
+	if v.ProductID == "" {
+		return Version{}, fmt.Errorf("%w: %s effective %s", ErrVersionNotFound, id, VersionDayKey(day))
+	}
+	if v.Published() {
+		return Version{}, fmt.Errorf("%w: %s effective %s", ErrVersionPublished, id, VersionDayKey(day))
+	}
+
+	v.PublishedAt = c.now()
+	v.Hash = v.ComputeHash()
+	if err := tx.PutProductVersion(ctx, c.bookID, v); err != nil {
+		return Version{}, err
+	}
+	if err := c.appendAuditTx(ctx, tx, ledger.EventProductVersionPublished, string(id), v); err != nil {
+		return Version{}, err
+	}
+	return v, nil
 }
 
 // RetireProduct takes a product off sale: no new account may be opened from it

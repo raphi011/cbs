@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/product"
 )
 
 // Store owns the deposit layer's persistent state. Like ledger.Store it is
@@ -17,11 +18,13 @@ type Store interface {
 	Close() error
 }
 
-// Tx embeds ledger.Tx so one concrete transaction spans both layers. That is
-// what makes CaptureHold — a hold write plus a GL posting — a single unit of
-// work rather than two that can half-fail.
+// Tx embeds product.Tx — and, through it, ledger.Tx — so one concrete
+// transaction spans all three layers. That is what makes CaptureHold (a hold
+// write plus a GL posting) a single unit of work, and what lets OpenAccount
+// validate the product an account is being opened from and write the account's
+// first terms row without leaving it.
 type Tx interface {
-	ledger.Tx
+	product.Tx
 
 	// Named with a Deposit prefix because ledger.Tx, embedded above, already has
 	// PutAccount/GetAccount/ListAccounts for GL accounts. Go rejects an interface

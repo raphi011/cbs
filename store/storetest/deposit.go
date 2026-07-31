@@ -9,6 +9,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/product"
 )
 
 // RunDeposit runs the deposit-layer conformance suite against a store. Every
@@ -511,9 +512,11 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if err := tx.PutSnapshot(ctx, bookA, snapshot("dep_1", day(15))); err != nil {
 				return err
 			}
+			// Floating: no overlay, priced by the product. The overlay shape is
+			// exercised by OverdraftTermsTimeline and by the round-trip subtest.
 			return tx.PutOverdraftTerms(ctx, bookA, deposit.OverdraftTerms{
-				AccountID: "dep_1", EffectiveFrom: day(1), OverdraftLimit: 500,
-				Rate: 150_000, DayCount: interest.Thirty360, CreatedAt: early,
+				AccountID: "dep_1", EffectiveFrom: day(1), ProductID: "prd_basic",
+				OverdraftLimit: 500, CreatedAt: early,
 			})
 		})
 
@@ -642,10 +645,17 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		mar := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
 		jun := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
 
+		// A NEGOTIATED row, so that the assertions below stay about the store's
+		// ordering and identity rather than about a catalogue this suite does not
+		// build. The floating shape is exercised by ResetClearsDepositState and by
+		// OverdraftTermsPricingOverlayRoundTrip.
 		row := func(from time.Time, rate interest.Rate) deposit.OverdraftTerms {
 			return deposit.OverdraftTerms{
-				AccountID: "dep_1", EffectiveFrom: from, OverdraftLimit: 50_000,
-				Rate: rate, UnarrangedRate: rate * 2, DayCount: interest.Thirty360,
+				AccountID: "dep_1", EffectiveFrom: from, ProductID: "prd_basic",
+				OverdraftLimit: 50_000,
+				Pricing: &product.OverdraftPricing{
+					Rate: rate, UnarrangedRate: rate * 2, DayCount: interest.Thirty360,
+				},
 				CreatedAt: early,
 			}
 		}
@@ -660,7 +670,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			// A second book's rows must be invisible to the first.
 			return tx.PutOverdraftTerms(ctx, bookB, deposit.OverdraftTerms{
-				AccountID: "dep_1", EffectiveFrom: jan, Rate: 999_000, CreatedAt: early,
+				AccountID: "dep_1", EffectiveFrom: jan, ProductID: "prd_basic",
+				Pricing:   &product.OverdraftPricing{Rate: 999_000},
+				CreatedAt: early,
 			})
 		})
 
@@ -670,9 +682,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				return err
 			}
 			assertEqual(t, "timeline length", len(rows), 3)
-			assertEqual(t, "first row rate", rows[0].Rate, interest.Rate(100_000))
-			assertEqual(t, "second row rate", rows[1].Rate, interest.Rate(200_000))
-			assertEqual(t, "third row rate", rows[2].Rate, interest.Rate(300_000))
+			assertEqual(t, "first row rate", rows[0].Pricing.Rate, interest.Rate(100_000))
+			assertEqual(t, "second row rate", rows[1].Pricing.Rate, interest.Rate(200_000))
+			assertEqual(t, "third row rate", rows[2].Pricing.Rate, interest.Rate(300_000))
 			for i := 1; i < len(rows); i++ {
 				if !rows[i-1].EffectiveFrom.Before(rows[i].EffectiveFrom) {
 					t.Fatalf("timeline not ascending at %d: %v then %v",
@@ -682,8 +694,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			// Every field round-trips, not just the rate: a dropped day count
 			// is a product silently repriced onto another convention.
 			assertEqual(t, "limit", rows[0].OverdraftLimit, ledger.Amount(50_000))
-			assertEqual(t, "unarranged", rows[0].UnarrangedRate, interest.Rate(200_000))
-			assertEqual(t, "day count", rows[0].DayCount, interest.Thirty360)
+			assertEqual(t, "unarranged", rows[0].Pricing.UnarrangedRate, interest.Rate(200_000))
+			assertEqual(t, "day count", rows[0].Pricing.DayCount, interest.Thirty360)
+			assertEqual(t, "product", string(rows[0].ProductID), "prd_basic")
 			assertEqual(t, "account id", string(rows[0].AccountID), "dep_1")
 			if !rows[0].CreatedAt.Equal(early) {
 				t.Errorf("created at: got %v, want %v", rows[0].CreatedAt, early)
@@ -697,7 +710,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				return err
 			}
 			assertEqual(t, "book-b timeline length", len(other), 1)
-			assertEqual(t, "book-b rate is its own", other[0].Rate, interest.Rate(999_000))
+			assertEqual(t, "book-b rate is its own", other[0].Pricing.Rate, interest.Rate(999_000))
 			return nil
 		})
 
@@ -712,21 +725,21 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "on a boundary", onBoundary.Rate, interest.Rate(200_000))
+			assertEqual(t, "on a boundary", onBoundary.Pricing.Rate, interest.Rate(200_000))
 
 			between, err := tx.GetOverdraftTermsAsOf(ctx, bookA, "dep_1",
 				time.Date(2025, 4, 15, 0, 0, 0, 0, time.UTC))
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "between rows takes the earlier", between.Rate, interest.Rate(200_000))
+			assertEqual(t, "between rows takes the earlier", between.Pricing.Rate, interest.Rate(200_000))
 
 			after, err := tx.GetOverdraftTermsAsOf(ctx, bookA, "dep_1",
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "after the last row", after.Rate, interest.Rate(300_000))
+			assertEqual(t, "after the last row", after.Pricing.Rate, interest.Rate(300_000))
 
 			// An account with no rows at all is ErrTermsNotFound, not a zero
 			// row that would read as a real interest-free product.
@@ -749,7 +762,85 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				return err
 			}
 			assertEqual(t, "timeline length after upsert", len(rows), 3)
-			assertEqual(t, "upserted rate", rows[1].Rate, interest.Rate(250_000))
+			assertEqual(t, "upserted rate", rows[1].Pricing.Rate, interest.Rate(250_000))
+			return nil
+		})
+	})
+
+	// The overlay is the deposit layer's only pointer field, and the only place
+	// a store can conflate "float from the product" with "interest-free". Both
+	// stores must round-trip the distinction, and neither may hand a reader a
+	// pointer into its own state.
+	t.Run("OverdraftTermsPricingOverlayRoundTrip", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+
+		overlay := product.OverdraftPricing{Rate: 90_000, UnarrangedRate: 350_000, DayCount: interest.Thirty360}
+		free := product.OverdraftPricing{}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			for _, row := range []deposit.OverdraftTerms{
+				{AccountID: "dep_1", EffectiveFrom: day(1), ProductID: "prd_basic", OverdraftLimit: 500},
+				{AccountID: "dep_1", EffectiveFrom: day(10), ProductID: "prd_basic", OverdraftLimit: 500, Pricing: &overlay},
+				{AccountID: "dep_1", EffectiveFrom: day(20), ProductID: "prd_basic", OverdraftLimit: 500, Pricing: &free},
+			} {
+				if err := tx.PutOverdraftTerms(ctx, bookA, row); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		// A writer that keeps its argument must not be able to rewrite a stored
+		// price afterwards.
+		overlay.Rate = 7
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			rows, err := tx.ListOverdraftTermsForAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "rows", len(rows), 3)
+
+			if rows[0].Pricing != nil {
+				t.Error("a floating row came back with a pricing")
+			}
+			assertEqual(t, "product", string(rows[0].ProductID), "prd_basic")
+
+			if rows[1].Pricing == nil {
+				t.Fatal("the overlay was dropped")
+			}
+			assertEqual(t, "overlay rate", int64(rows[1].Pricing.Rate), int64(90_000))
+			assertEqual(t, "overlay unarranged", int64(rows[1].Pricing.UnarrangedRate), int64(350_000))
+			assertEqual(t, "overlay day count", int(rows[1].Pricing.DayCount), int(interest.Thirty360))
+
+			if rows[2].Pricing == nil {
+				t.Fatal("a zero-rate overlay came back as floating; free and floating are different")
+			}
+			assertEqual(t, "free overlay rate", int64(rows[2].Pricing.Rate), int64(0))
+
+			// Mutating what a reader was handed must not change stored state.
+			rows[1].Pricing.Rate = 1
+			return nil
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			rows, err := tx.ListOverdraftTermsForAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the stored overlay rate", int64(rows[1].Pricing.Rate), int64(90_000))
+
+			// The as-of reader is the one balanceTx uses, and it must copy too.
+			asOf, err := tx.GetOverdraftTermsAsOf(ctx, bookA, "dep_1", day(15))
+			if err != nil {
+				return err
+			}
+			asOf.Pricing.Rate = 2
+			again, err := tx.GetOverdraftTermsAsOf(ctx, bookA, "dep_1", day(15))
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "the stored overlay rate, as of", int64(again.Pricing.Rate), int64(90_000))
 			return nil
 		})
 	})

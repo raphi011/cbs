@@ -35,6 +35,14 @@ var (
 	// of it.
 	ErrTermsNotFound = errors.New("no overdraft terms in force on that day")
 
+	// ErrProductRequired is returned for a terms row that names no product.
+	//
+	// Every deposit account is opened FROM a product, so a row without one
+	// could not resolve a floating pricing: there would be nothing to float to.
+	// Refusing it is what keeps Resolve from needing a case for a state the
+	// model should not be able to reach.
+	ErrProductRequired = errors.New("overdraft terms must name a product")
+
 	// ErrInvalidAmount is returned when a hold amount is zero or negative.
 	ErrInvalidAmount = errors.New("amount must be positive")
 

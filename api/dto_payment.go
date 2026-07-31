@@ -27,8 +27,13 @@ type participantAccountsDTO struct {
 // choose: Go randomises map iteration, and a wire format that reorders itself
 // between two identical requests is not one a client can diff.
 type participantDTO struct {
-	ID                string                   `json:"id"`
-	Name              string                   `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// ProductID is the bank's default deposit product, created with its chart
+	// of accounts at onboarding. Every deposit account is opened FROM a
+	// product, so a client that has just created a bank needs to be told which
+	// one it may open accounts from before it can open any.
+	ProductID         string                   `json:"productId"`
 	CustomerSubledger string                   `json:"customerSubledger"`
 	Assets            []participantAccountsDTO `json:"assets"`
 }
@@ -48,6 +53,7 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 	return participantDTO{
 		ID:                string(p.ID),
 		Name:              p.Name,
+		ProductID:         string(p.ProductID),
 		CustomerSubledger: string(p.CustomerSubledger),
 		Assets:            assets,
 	}

@@ -25,38 +25,63 @@ import (
 // all. GET /participants/{pid}/deposit-accounts/{did}/overdraft-terms is what
 // shows the whole timeline.
 type depositAccountDTO struct {
-	ID             string `json:"id"`
-	GLAccount      string `json:"glAccount"`
-	Name           string `json:"name"`
-	Asset          string `json:"asset"`
-	Status         string `json:"status"`
+	ID        string `json:"id"`
+	GLAccount string `json:"glAccount"`
+	Name      string `json:"name"`
+	Asset     string `json:"asset"`
+	Status    string `json:"status"`
+	// ProductID is the catalogue entry pricing this account today. It varies
+	// over the account's life, so it comes from the resolved terms rather than
+	// from the account row.
+	ProductID      string `json:"productId"`
 	OverdraftLimit int64  `json:"overdraftLimit"`
 
-	OverdraftRate   int64  `json:"overdraftRate"`
-	UnarrangedRate  int64  `json:"unarrangedRate"`
-	RateScale       int64  `json:"rateScale"`
-	DayCount        string `json:"dayCount"`
+	OverdraftRate  int64  `json:"overdraftRate"`
+	UnarrangedRate int64  `json:"unarrangedRate"`
+	RateScale      int64  `json:"rateScale"`
+	DayCount       string `json:"dayCount"`
+	// PricingSource is "product" when the rate above is the product's list
+	// price and "negotiated" when this customer has an overlay.
+	//
+	// A client that cannot tell the two apart cannot show a customer why their
+	// rate did not move when the product was repriced — which is the single
+	// question a negotiated rate generates.
+	PricingSource   string `json:"pricingSource"`
 	AccruedInterest int64  `json:"accruedInterest"`
-	// InterestGLAccount is empty until the first non-zero rate is set — see
-	// deposit.Register.SetOverdraftTerms.
+	// InterestGLAccount is empty until the account first accrues — the
+	// receivable is created by the accrual, not by a register call, because a
+	// floating account's rate lives in the catalogue.
 	InterestGLAccount string `json:"interestGlAccount,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func toDepositAccountDTO(a deposit.Account, t deposit.OverdraftTerms) depositAccountDTO {
+// pricingSourceProduct and pricingSourceNegotiated are the two values
+// depositAccountDTO.PricingSource takes.
+const (
+	pricingSourceProduct    = "product"
+	pricingSourceNegotiated = "negotiated"
+)
+
+func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms) depositAccountDTO {
+	source := pricingSourceProduct
+	if t.Negotiated {
+		source = pricingSourceNegotiated
+	}
 	return depositAccountDTO{
 		ID:             string(a.ID),
 		GLAccount:      string(a.GLAccount),
 		Name:           a.Name,
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
-		OverdraftLimit: int64(t.OverdraftLimit),
+		ProductID:      string(t.ProductID),
+		OverdraftLimit: int64(t.Limit),
 
-		OverdraftRate:     int64(t.Rate),
-		UnarrangedRate:    int64(t.UnarrangedRate),
+		OverdraftRate:     int64(t.Pricing.Rate),
+		UnarrangedRate:    int64(t.Pricing.UnarrangedRate),
 		RateScale:         interest.RateScale,
-		DayCount:          t.DayCount.String(),
+		DayCount:          t.Pricing.DayCount.String(),
+		PricingSource:     source,
 		AccruedInterest:   int64(a.Accrued.Minor()),
 		InterestGLAccount: string(a.InterestGL),
 
@@ -121,7 +146,14 @@ func toBalanceDTO(b deposit.Balance, asset ledger.AssetCode) balanceDTO {
 type overdraftTermsDTO struct {
 	AccountID      string    `json:"accountId"`
 	EffectiveFrom  time.Time `json:"effectiveFrom"`
+	ProductID      string    `json:"productId"`
 	OverdraftLimit int64     `json:"overdraftLimit"`
+	// Floating says this row carries no negotiated price, so its rate comes
+	// from the product version in force on each day rather than from the row.
+	// The three rate fields below are then ZERO because the row holds nothing,
+	// which is emphatically not "interest-free" — a client that renders them as
+	// a price would show every floating account as free.
+	Floating       bool      `json:"floating"`
 	Rate           int64     `json:"rate"`
 	UnarrangedRate int64     `json:"unarrangedRate"`
 	RateScale      int64     `json:"rateScale"`
@@ -130,16 +162,21 @@ type overdraftTermsDTO struct {
 }
 
 func toOverdraftTermsDTO(t deposit.OverdraftTerms) overdraftTermsDTO {
-	return overdraftTermsDTO{
+	out := overdraftTermsDTO{
 		AccountID:      string(t.AccountID),
 		EffectiveFrom:  t.EffectiveFrom,
+		ProductID:      string(t.ProductID),
 		OverdraftLimit: int64(t.OverdraftLimit),
-		Rate:           int64(t.Rate),
-		UnarrangedRate: int64(t.UnarrangedRate),
+		Floating:       t.Pricing == nil,
 		RateScale:      interest.RateScale,
-		DayCount:       t.DayCount.String(),
 		CreatedAt:      t.CreatedAt,
 	}
+	if t.Pricing != nil {
+		out.Rate = int64(t.Pricing.Rate)
+		out.UnarrangedRate = int64(t.Pricing.UnarrangedRate)
+		out.DayCount = t.Pricing.DayCount.String()
+	}
+	return out
 }
 
 type snapshotDTO struct {
@@ -156,9 +193,13 @@ func toSnapshotDTO(s deposit.Snapshot, asset ledger.AssetCode) snapshotDTO {
 // openDepositAccountRequest carries a required asset, for the same reason
 // createAccountRequest does: the deposit account's asset is its backing GL
 // account's, and neither may be guessed on the caller's behalf.
+// productId is required for the same reason: every deposit account is opened
+// FROM a product, because a floating terms row with no product would have
+// nothing to float to.
 type openDepositAccountRequest struct {
 	Name           string `json:"name"`
 	Asset          string `json:"asset"`
+	ProductID      string `json:"productId"`
 	OverdraftLimit int64  `json:"overdraftLimit"`
 }
 
@@ -188,22 +229,54 @@ type fundRequest struct {
 	Description string `json:"description"`
 }
 
-// setOverdraftTermsRequest carries an account's arranged overdraft limit and
-// credit terms. Rate and UnarrangedRate are millionths, the same wire
-// convention facilityDTO uses for a lending rate.
+// The three requests that replaced setOverdraftTermsRequest, one per decision
+// the old single call conflated.
 //
-// effectiveFrom is the day the terms take economic effect, RFC3339, and may be
-// in the past or the future: a repricing agreed on the 1st and entered on the
-// 15th is the ordinary case, and a row effective next month is inert until the
-// end-of-day runs reach it. Absent or null means today, which is what every
-// caller before this field existed meant. A backdated row moves interest that
-// has already been charged; the audit log is the only control on that.
-type setOverdraftTermsRequest struct {
-	Limit          int64      `json:"limit"`
-	Rate           int64      `json:"rate"`
-	UnarrangedRate int64      `json:"unarrangedRate"`
-	DayCount       string     `json:"dayCount"`
-	EffectiveFrom  *time.Time `json:"effectiveFrom"`
+// effectiveFrom is common to all three: the day the change takes economic
+// effect, RFC3339, and it may be in the past or the future. A repricing agreed
+// on the 1st and entered on the 15th is the ordinary case, and a row effective
+// next month is inert until the end-of-day runs reach it. Absent or null means
+// today on the register's clock rather than on this process's wall clock.
+
+// setOverdraftLimitRequest changes what this customer may go overdrawn by. The
+// limit is never part of a product: it is an underwriting decision about one
+// customer, which is why product.OverdraftPricing cannot express one.
+type setOverdraftLimitRequest struct {
+	Limit         int64      `json:"limit"`
+	EffectiveFrom *time.Time `json:"effectiveFrom"`
+}
+
+// setOverdraftPricingRequest gives this customer a negotiated price instead of
+// the product's, or clears one.
+//
+// A NULL pricing clears the overlay and puts the account back on its product —
+// at whatever the product costs by then, not at what it cost when the overlay
+// was set. That is emphatically not "interest-free": an interest-free account
+// is a pricing with a zero rate, which is a different and deliberate statement.
+//
+// A backdated overlay moves interest that has already been charged to ONE named
+// customer, and the audit log is the only control on it. The catalogue refuses
+// the same thing outright, because its blast radius is every account on the
+// product.
+type setOverdraftPricingRequest struct {
+	Pricing       *overdraftPricingDTO `json:"pricing"`
+	EffectiveFrom *time.Time           `json:"effectiveFrom"`
+}
+
+// overdraftPricingDTO is the floating parameter group on the wire. Rate and
+// UnarrangedRate are millionths, the same convention facilityDTO uses.
+type overdraftPricingDTO struct {
+	Rate           int64  `json:"rate"`
+	UnarrangedRate int64  `json:"unarrangedRate"`
+	DayCount       string `json:"dayCount"`
+}
+
+// changeProductRequest migrates an account onto another product. The days
+// before effectiveFrom still resolve against the product that priced them: a
+// migration is not a rewrite.
+type changeProductRequest struct {
+	ProductID     string     `json:"productId"`
+	EffectiveFrom *time.Time `json:"effectiveFrom"`
 }
 
 type chargeOverdraftInterestRequest struct {

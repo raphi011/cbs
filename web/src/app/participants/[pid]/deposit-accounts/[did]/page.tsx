@@ -383,10 +383,15 @@ export default function DepositAccountDetailPage() {
             <Hint id="overdraft" />
           </p>
 
+          {/* The rate is resolved as of today, and where it came from is worth
+              saying: a negotiated rate is this customer's instead of the
+              product's, and it does not move when the product is repriced. */}
           <p className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
             Overdraft interest: {formatRate(account.overdraftRate, account.rateScale)} arranged
             · {formatRate(account.unarrangedRate, account.rateScale)} unarranged
-            · {account.dayCount} · accrued{" "}
+            · {account.dayCount} ·{" "}
+            {account.pricingSource === "negotiated" ? "negotiated" : "product price"}
+            · accrued{" "}
             <Money amount={account.accruedInterest} asset={asset} />
             <Hint id="overdraft-interest" />
           </p>

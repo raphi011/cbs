@@ -11,6 +11,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/product"
 )
 
 // The deposit half of tx. It is the same type that implements ledger.Tx, and
@@ -323,21 +324,32 @@ func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row depo
 	if err := t.ensureBook(ctx, book); err != nil {
 		return err
 	}
+	// A floating row stores three NULLs rather than three zeros: zero is a real
+	// interest-free price, and conflating the two would silently make every
+	// floating account free.
+	var rate, unarranged *int64
+	var dayCount *int16
+	if row.Pricing != nil {
+		r, u := int64(row.Pricing.Rate), int64(row.Pricing.UnarrangedRate)
+		d := int16(row.Pricing.DayCount)
+		rate, unarranged, dayCount = &r, &u, &d
+	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO overdraft_terms (
-			book_id, account_id, day_key, effective_from, overdraft_limit,
+			book_id, account_id, day_key, effective_from, product_id, overdraft_limit,
 			rate, unarranged_rate, day_count, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (book_id, account_id, day_key) DO UPDATE SET
 			effective_from  = EXCLUDED.effective_from,
+			product_id      = EXCLUDED.product_id,
 			overdraft_limit = EXCLUDED.overdraft_limit,
 			rate            = EXCLUDED.rate,
 			unarranged_rate = EXCLUDED.unarranged_rate,
 			day_count       = EXCLUDED.day_count,
 			created_at      = EXCLUDED.created_at`,
 		string(book), string(row.AccountID), deposit.TermsDayKey(row.EffectiveFrom),
-		nullTime(row.EffectiveFrom), row.OverdraftLimit,
-		int64(row.Rate), int64(row.UnarrangedRate), int16(row.DayCount), nullTime(row.CreatedAt))
+		nullTime(row.EffectiveFrom), string(row.ProductID), row.OverdraftLimit,
+		rate, unarranged, dayCount, nullTime(row.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put overdraft terms %s/%s: %w",
 			row.AccountID, deposit.TermsDayKey(row.EffectiveFrom), err)
@@ -349,23 +361,31 @@ func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row depo
 // depositAccountColumns exists: it stops the two from scanning different
 // column sets, which is a whole class of "it round-trips one way".
 const overdraftTermsColumns = `
-	account_id, effective_from, overdraft_limit, rate, unarranged_rate,
+	account_id, effective_from, product_id, overdraft_limit, rate, unarranged_rate,
 	day_count, created_at`
 
 func scanOverdraftTerms(row interface{ Scan(...any) error }) (deposit.OverdraftTerms, error) {
 	var (
 		out                deposit.OverdraftTerms
-		rate, unarranged   int64
-		dayCount           int16
+		rate, unarranged   *int64
+		dayCount           *int16
 		effective, created *time.Time
 	)
-	if err := row.Scan(&out.AccountID, &effective, &out.OverdraftLimit,
+	if err := row.Scan(&out.AccountID, &effective, &out.ProductID, &out.OverdraftLimit,
 		&rate, &unarranged, &dayCount, &created); err != nil {
 		return deposit.OverdraftTerms{}, err
 	}
-	out.Rate = interest.Rate(rate)
-	out.UnarrangedRate = interest.Rate(unarranged)
-	out.DayCount = interest.DayCount(dayCount)
+	// The overlay is reconstructed only when all three columns are present. The
+	// mixed state cannot be written through deposit.OverdraftTerms.Validate, and
+	// treating a partial row as an overlay would price an account from half a
+	// price rather than failing where it can be seen.
+	if rate != nil && unarranged != nil && dayCount != nil {
+		out.Pricing = &product.OverdraftPricing{
+			Rate:           interest.Rate(*rate),
+			UnarrangedRate: interest.Rate(*unarranged),
+			DayCount:       interest.DayCount(*dayCount),
+		}
+	}
 	out.EffectiveFrom = readTime(effective)
 	out.CreatedAt = readTime(created)
 	return out, nil

@@ -27,6 +27,7 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/pg"
 )
@@ -39,6 +40,7 @@ type Store interface {
 	ledger.Store
 	Deposit() deposit.Store
 	Payment() payment.Store
+	Product() product.Store
 }
 
 // compile-time checks that both implementations really are interchangeable here.
