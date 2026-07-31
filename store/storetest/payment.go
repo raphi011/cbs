@@ -219,6 +219,46 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("PartyRefIdentifierRoundTrips", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		// samplePayment and mandate each quote a DIFFERENT non-empty identifier
+		// on the debtor side than on the creditor side. That is deliberate:
+		// store/pg holds a PartyRef's identifier as two columns per side
+		// (scheme, value), split out of what used to be one free-form IBAN
+		// column — and two same-shaped TEXT columns is exactly the case a
+		// transposed insert argument or scan target would not fail on, it
+		// would just read back wrong. Asserting both sides, on both entities,
+		// independently is what would catch that.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
+				return err
+			}
+			return tx.PutMandate(ctx, mandate("mnd_1", early))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			gotPayment, err := tx.GetPayment(ctx, "pay_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "payment debtor identifier", gotPayment.Debtor.Identifier,
+				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+			assertEqual(t, "payment creditor identifier", gotPayment.Creditor.Identifier,
+				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+
+			gotMandate, err := tx.GetMandate(ctx, "mnd_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "mandate debtor identifier", gotMandate.Debtor.Identifier,
+				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+			assertEqual(t, "mandate creditor identifier", gotMandate.Creditor.Identifier,
+				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+			return nil
+		})
+	})
+
 	t.Run("PaymentListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
@@ -769,9 +809,11 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 
 func mandate(id payment.MandateID, createdAt time.Time) payment.Mandate {
 	return payment.Mandate{
-		ID:        id,
-		Debtor:    payment.PartyRef{Participant: "bank_1", Account: "dep_1"},
-		Creditor:  payment.PartyRef{Participant: "bank_2", Account: "dep_2"},
+		ID: id,
+		Debtor: payment.PartyRef{Participant: "bank_1", Account: "dep_1",
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}},
+		Creditor: payment.PartyRef{Participant: "bank_2", Account: "dep_2",
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}},
 		MaxAmount: 100000,
 		Status:    payment.MandateActive,
 		CreatedAt: createdAt,
