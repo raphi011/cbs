@@ -53,9 +53,15 @@ type store interface {
 func main() {
 	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per member bank")
 	database := flag.String("database", os.Getenv("DATABASE_URL"), "Postgres DSN; empty uses the in-memory store")
+	only := flag.String("entity", "", "serve one entity in this process (a bank id or name, `central-bank`, or `clearing-house`); requires -database")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	if err := checkEntityMode(*only, *database); err != nil {
+		log.Error(err.Error())
+		os.Exit(1)
+	}
 
 	data := seed.New()
 	st, err := openStore(context.Background(), *database, data.Now, log)
@@ -82,6 +88,12 @@ func main() {
 		log.Error("planning the listeners", "error", err)
 		os.Exit(1)
 	}
+	entities, err = resolveEntities(entities, *only)
+	if err != nil {
+		log.Error("selecting the entity", "error", err)
+		os.Exit(1)
+	}
+
 	shutdown, err := serve(entities, srv, log)
 	if err != nil {
 		log.Error("starting the listeners", "error", err)

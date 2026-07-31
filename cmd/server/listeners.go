@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/raphi011/cbs/api"
@@ -130,4 +131,111 @@ func serve(entities []entity, srv *api.Server, log *slog.Logger) (func(context.C
 		}
 		return first
 	}, nil
+}
+
+// checkEntityMode refuses -entity without a DSN.
+//
+// Running one entity per process is the real topology and the reason -entity
+// exists. It is also the one configuration store/mem cannot serve: separate
+// processes would each hold their own map, so the banks could not see each
+// other or the central bank, and a payment between two of them would post into
+// two systems with no knowledge of one another.
+//
+// Rather than let that fail later as a mystery — a participant that "does not
+// exist", a settlement that balances against nothing — it fails here, saying
+// why. This is the one place a reader is told by the software, rather than by a
+// comment, what "shared store" actually means.
+func checkEntityMode(entity, dsn string) error {
+	if entity == "" || dsn != "" {
+		return nil
+	}
+	return errors.New(
+		"-entity requires -database. Separate processes cannot share the in-memory " +
+			"store: each would hold its own, and a payment between two banks would post " +
+			"into two systems that cannot see each other. Start with -database, or run " +
+			"every entity in one process (the default).")
+}
+
+// resolveEntities is the whole listener table, or just the one entity named on
+// the command line.
+//
+// It exists as a function rather than as an `if` inside main because that `if`
+// is exactly the wiring that can be present, compile, and do nothing — which is
+// how it shipped broken once. Here a test can hold it.
+func resolveEntities(entities []entity, only string) ([]entity, error) {
+	if only == "" {
+		return entities, nil
+	}
+	one, err := selectEntity(entities, only)
+	if err != nil {
+		return nil, err
+	}
+	// It keeps the port the whole-system plan gave it, so an entity is
+	// reachable at the same address whichever mode started it.
+	return []entity{one}, nil
+}
+
+// selectEntity narrows a planned table to the one entity named on the command
+// line.
+//
+// A bank is matched by participant id or by name, because ids are generated
+// (bank_1, bank_3, …) and nobody can type one from memory. The name match is
+// slugified and case-insensitive, so `-entity aurora` finds "Aurora Bank" and
+// `-entity credit-soleil` finds "Crédit Soleil".
+func selectEntity(entities []entity, want string) (entity, error) {
+	slug := slugify(want)
+	for _, e := range entities {
+		if e.key == want || slugify(e.name) == slug || strings.HasPrefix(slugify(e.name), slug) {
+			return e, nil
+		}
+	}
+	names := make([]string, 0, len(entities))
+	for _, e := range entities {
+		names = append(names, fmt.Sprintf("%s (%s)", e.key, e.name))
+	}
+	return entity{}, fmt.Errorf("no entity named %q; this system has %s",
+		want, strings.Join(names, ", "))
+}
+
+// foldAccent maps the accented Latin letters to their base letter, so a name a
+// reader would type without accents still matches the one the seed spells with
+// them.
+//
+// A table rather than Unicode normalisation: NFD needs golang.org/x/text, and
+// this repository takes no dependency beyond pgx. The table covers Latin-1,
+// which is what bank names in this system are written in; a name outside it
+// still matches by id, and by its own exact spelling.
+var foldAccent = map[rune]rune{
+	'à': 'a', 'á': 'a', 'â': 'a', 'ã': 'a', 'ä': 'a', 'å': 'a',
+	'ç': 'c',
+	'è': 'e', 'é': 'e', 'ê': 'e', 'ë': 'e',
+	'ì': 'i', 'í': 'i', 'î': 'i', 'ï': 'i',
+	'ñ': 'n',
+	'ò': 'o', 'ó': 'o', 'ô': 'o', 'õ': 'o', 'ö': 'o', 'ø': 'o',
+	'ù': 'u', 'ú': 'u', 'û': 'u', 'ü': 'u',
+	'ý': 'y', 'ÿ': 'y',
+}
+
+// slugify reduces a display name to comparable letters and digits, folding
+// accents and mapping anything else — spaces, punctuation — to a single hyphen,
+// so "Crédit Soleil" and "credit-soleil" are the same handle.
+func slugify(s string) string {
+	var b strings.Builder
+	prevHyphen := false
+	for _, r := range strings.ToLower(s) {
+		if folded, ok := foldAccent[r]; ok {
+			r = folded
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			prevHyphen = false
+		default:
+			if !prevHyphen && b.Len() > 0 {
+				b.WriteRune('-')
+				prevHyphen = true
+			}
+		}
+	}
+	return strings.Trim(b.String(), "-")
 }
