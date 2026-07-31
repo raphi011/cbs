@@ -151,7 +151,13 @@ func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if m.Status == MandateRevoked {
 		return ErrMandateRevoked
 	}
-	if m.Debtor != p.Debtor || m.Creditor != p.Creditor {
+	// SameParty and not ==: a mandate authorises debits from an ACCOUNT, and
+	// the address quoted to reach that account is a record on each payment, not
+	// part of the authorisation's identity. Comparing whole structs would mean
+	// that withdrawing the debtor's IBAN and issuing a new one — which the
+	// register allows precisely because it is not supposed to disturb anything
+	// — killed every mandate on the account, permanently. See PartyRef.SameParty.
+	if !m.Debtor.SameParty(p.Debtor) || !m.Creditor.SameParty(p.Creditor) {
 		return ErrMandateMismatch
 	}
 	if m.MaxAmount > 0 && p.Amount > m.MaxAmount {

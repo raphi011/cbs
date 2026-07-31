@@ -1283,6 +1283,160 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 	}
 }
 
+func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
+	// The creditor-leg case above and this one are separate tests on purpose:
+	// checkAddressable is called once per leg, and a check wired to only one of
+	// them passes every creditor-leg test in the file.
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+	openCycle(t, ctx, net, SchemeSEPACT)
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+
+	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT,
+		Debtor: PartyRef{
+			Participant: aurora.ID, Account: alice.ID,
+			// Bruno's address, pointing at Alice's account.
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"},
+		},
+		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:   10_00,
+	})
+	if !errors.Is(err, ErrIdentifierMismatch) {
+		t.Fatalf("InitiatePayment = %v, want ErrIdentifierMismatch", err)
+	}
+}
+
+// A payment that quotes no address still records one. Before this, the
+// identifier was optional on the way in and simply stayed empty on the way to
+// storage, so the documented property — "a payment records the address it was
+// sent to" — held only for callers who volunteered it, which the API's own
+// tests never did.
+func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+
+	var pay Payment
+	runCycle(t, net, SchemeSEPACT, func() {
+		var err error
+		pay, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+			Scheme:   SchemeSEPACT,
+			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:   10_00,
+		})
+		assertNoError(t, err)
+	})
+
+	assertEqual(t, "back-filled debtor address", pay.Debtor.Identifier,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+	assertEqual(t, "back-filled creditor address", pay.Creditor.Identifier,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+
+	// And the address that reached storage is the same one, not just the one
+	// the call returned.
+	stored, err := net.GetPayment(ctx, pay.ID)
+	assertNoError(t, err)
+	assertEqual(t, "stored debtor address", stored.Debtor.Identifier, pay.Debtor.Identifier)
+	assertEqual(t, "stored creditor address", stored.Creditor.Identifier, pay.Creditor.Identifier)
+}
+
+// Back-filling stops where choosing would start. Two IBANs on one account and
+// nothing quoted is the same shape as an ambiguous resolution, and gets the
+// same answer.
+func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+	// A second IBAN on the debtor: legal, and it makes the debtor leg the one
+	// that has to refuse. No cycle is open yet, which is harmless — the
+	// addressing checks run before initiation looks for one.
+	assertNoError(t, aurora.Deposit.AddIdentifier(ctx, alice.ID,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}))
+
+	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme:   SchemeSEPACT,
+		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:   10_00,
+	})
+	if !errors.Is(err, ErrAmbiguousAddress) {
+		t.Fatalf("InitiatePayment = %v, want ErrAmbiguousAddress", err)
+	}
+
+	// Naming one of them is how the caller gets past it — the refusal is a
+	// question, not a dead end.
+	runCycle(t, net, SchemeSEPACT, func() {
+		pay, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT,
+			Debtor: PartyRef{
+				Participant: aurora.ID, Account: alice.ID,
+				Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"},
+			},
+			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:   10_00,
+		})
+		assertNoError(t, err)
+		assertEqual(t, "chosen debtor address", pay.Debtor.Identifier,
+			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"})
+	})
+}
+
+// Reissuing an address must not kill the mandates on the account.
+//
+// A remove plus an add is the documented way to reissue a card, and it moves
+// neither balance nor history. Before PartyRef.SameParty it moved something
+// else: the mandate compared whole PartyRefs, so after the reissue there was NO
+// address the payment could quote that worked — the new one differed from the
+// mandate's, the old one no longer belonged to the account, and quoting nothing
+// back-filled the new one. With no UpdateMandate, the mandate was dead for good.
+func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, biller := setupTwoBanks(t, sys)
+
+	debtor := PartyRef{Participant: a.ID, Account: alice}
+	creditor := PartyRef{Participant: b.ID, Account: biller}
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+
+	old := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0001"}
+	reissued := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0002"}
+	assertNoError(t, a.Deposit.RemoveIdentifier(ctx, alice, old))
+	assertNoError(t, a.Deposit.AddIdentifier(ctx, alice, reissued))
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPADD, func() {
+		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
+			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
+		})
+		assertNoError(t, err)
+	})
+
+	// The collection went through, and it records the NEW address — the mandate
+	// authorises the account, and each payment records how it was reached.
+	assertEqual(t, "reissued debtor address on the payment", pay.Debtor.Identifier, reissued)
+	assertEqual(t, "alice", customerBalance(t, a, alice), 75000)
+	assertEqual(t, "biller", customerBalance(t, b, biller), 25000)
+}
+
 func TestSchemesDeclareTheirIdentifierScheme(t *testing.T) {
 	if got := (SCT{}).AddressedBy(); got != deposit.IdentifierIBAN {
 		t.Fatalf("SCT.AddressedBy() = %q, want %q", got, deposit.IdentifierIBAN)

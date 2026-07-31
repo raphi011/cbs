@@ -172,6 +172,28 @@ type PartyRef struct {
 	Identifier  deposit.Identifier
 }
 
+// SameParty reports whether two refs name the same account at the same bank,
+// ignoring the address quoted to reach it.
+//
+// Identity is the (participant, account) pair and NOTHING else, because the
+// identifier is a record of how a party was reached on one occasion, not part
+// of who that party is. Anything comparing two refs to decide whether they mean
+// the same counterparty — a mandate against the payment claiming it — must use
+// this rather than ==.
+//
+// The reason is that identifiers are mutable by design: reissuing a card is a
+// RemoveIdentifier plus an AddIdentifier against an account whose balance and
+// history do not move (deposit/register.go). Whole-struct equality would turn
+// that ordinary operation into a silent, permanent kill of every mandate on the
+// account — quoting the new address fails the mandate comparison, quoting the
+// old one is refused because the account no longer holds it, and quoting
+// nothing back-fills the new one and fails the comparison again. There is no
+// UpdateMandate, so there would be no way back.
+// TestMandateSurvivesAReissuedDebtorIdentifier pins it.
+func (r PartyRef) SameParty(o PartyRef) bool {
+	return r.Participant == o.Participant && r.Account == o.Account
+}
+
 // Payment is a scheme-agnostic instruction to move funds from a debtor to a
 // creditor. The concrete behaviour (push/pull, mandate, settlement timing)
 // comes from its Scheme.

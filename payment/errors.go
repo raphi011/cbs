@@ -125,4 +125,18 @@ var (
 	// records the address used; the two disagreeing means one of them is wrong,
 	// and the system does not get to choose which.
 	ErrIdentifierMismatch = errors.New("quoted identifier does not belong to the named account")
+
+	// ErrAmbiguousAddress is returned when a party quotes NO address and its
+	// account holds more than one identifier in the scheme's addressing scheme,
+	// so there is nothing to back-fill without choosing.
+	//
+	// Initiation fills in the address when there is exactly one candidate, which
+	// is what makes "a payment records the address it was sent to" true for
+	// every payment rather than only for the ones whose caller volunteered it.
+	// Two candidates is the same situation as an ambiguous resolution and gets
+	// the same answer: a refusal, not the first one in the set. Picking would
+	// write a real, checkable address onto a settled payment on the strength of
+	// slice order, and a customer reading their statement would see an IBAN
+	// nobody quoted.
+	ErrAmbiguousAddress = errors.New("account holds several identifiers in the scheme's addressing scheme; the payment must quote one")
 )

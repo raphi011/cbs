@@ -1000,12 +1000,21 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	// moment both ends are in view and neither is written, and running it here
 	// rather than inside a scheme's Validate means it applies to every scheme
 	// rather than only the ones whose Validate calls validateFunds.
-	if err := checkAddressable(scheme, req.Debtor, debtorAccount); err != nil {
+	//
+	// The addresses come BACK, and are written onto the request's own refs
+	// before the payment is built from them: a caller that quoted nothing gets
+	// the account's address filled in rather than a stored payment with an empty
+	// one. req is a value, so this mutates nothing the caller owns.
+	debtorAddress, err := addressFor(scheme, req.Debtor, debtorAccount)
+	if err != nil {
 		return Payment{}, err
 	}
-	if err := checkAddressable(scheme, req.Creditor, creditorAccount); err != nil {
+	creditorAddress, err := addressFor(scheme, req.Creditor, creditorAccount)
+	if err != nil {
 		return Payment{}, err
 	}
+	req.Debtor.Identifier = debtorAddress
+	req.Creditor.Identifier = creditorAddress
 	if err := ledger.ValidateText("endToEndId", req.EndToEndID); err != nil {
 		return Payment{}, err
 	}
@@ -1467,29 +1476,51 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 	return acct, nil
 }
 
-// checkAddressable confirms an account can be addressed by the scheme, and that
-// any address the request quoted is really one of the account's.
-func checkAddressable(scheme Scheme, ref PartyRef, acct deposit.Account) error {
+// addressFor settles which external address one leg of a payment records, and
+// refuses the leg when the scheme cannot address its account at all.
+//
+// It returns the address rather than merely approving one, which is the whole
+// point: without that, a caller who quoted nothing — the ordinary case, since
+// the API's identifier field is optional — settled a payment whose stored
+// debtor and creditor addresses were both empty, and "a payment records the
+// address it was sent to" was true only when the caller volunteered it.
+//
+// Three outcomes, in the order they are decided:
+//
+//   - The account holds no identifier in the scheme's addressing scheme:
+//     ErrUnaddressableAccount. An account with no IBAN is not a SEPA party, and
+//     nothing here can invent one for it.
+//   - Nothing quoted, and exactly one candidate: that candidate, back-filled.
+//     Several candidates: ErrAmbiguousAddress, because choosing between them
+//     would stamp an address onto a settled payment on the strength of slice
+//     order — the same refusal ResolveIdentifier makes for the same reason.
+//   - Something quoted: it must be one of the account's own identifiers. The
+//     ids route the payment and the address records how it was reached; the two
+//     disagreeing means one of them is wrong, and this layer does not get to
+//     choose which.
+func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Identifier, error) {
 	want := scheme.AddressedBy()
-	held := false
+	var inScheme []deposit.Identifier
 	for _, ident := range acct.Identifiers {
 		if ident.Scheme == want {
-			held = true
-			break
+			inScheme = append(inScheme, ident)
 		}
 	}
-	if !held {
-		return ErrUnaddressableAccount
+	if len(inScheme) == 0 {
+		return deposit.Identifier{}, ErrUnaddressableAccount
 	}
 	if ref.Identifier == (deposit.Identifier{}) {
-		return nil
+		if len(inScheme) > 1 {
+			return deposit.Identifier{}, ErrAmbiguousAddress
+		}
+		return inScheme[0], nil
 	}
 	for _, ident := range acct.Identifiers {
 		if ident == ref.Identifier {
-			return nil
+			return ident, nil
 		}
 	}
-	return ErrIdentifierMismatch
+	return deposit.Identifier{}, ErrIdentifierMismatch
 }
 
 // removeFromCycleTx drops a payment from its (open) clearing cycle.

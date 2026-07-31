@@ -120,10 +120,15 @@ func errorStatus(err error) int {
 		errors.Is(err, deposit.ErrProductRequired),
 		// The account exists and the request is well formed; it simply carries no
 		// address in the kind the scheme routes on, or the address it quoted
-		// belongs to a different account. Both are business-state refusals, the
-		// same category as a frozen account or an unbalanced state transition.
+		// belongs to a different account, or it quoted none and the account has
+		// several the scheme could route on so initiation will not pick one. All
+		// three are business-state refusals, the same category as a frozen
+		// account or an unbalanced state transition — and the third stays 422
+		// rather than joining ErrIdentifierAmbiguous at 409 because nothing in
+		// the data is contested: the caller can fix it by naming an address.
 		errors.Is(err, payment.ErrUnaddressableAccount),
-		errors.Is(err, payment.ErrIdentifierMismatch):
+		errors.Is(err, payment.ErrIdentifierMismatch),
+		errors.Is(err, payment.ErrAmbiguousAddress):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),
