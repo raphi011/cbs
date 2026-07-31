@@ -100,7 +100,11 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 	}()
 
 	d.clock.rewind(baseDate)
-	b := &builder{ctx: ctx, net: net, clock: d.clock, ibans: map[deposit.AccountID]string{}}
+	b := &builder{
+		ctx: ctx, net: net, clock: d.clock,
+		ibans: map[deposit.AccountID]string{},
+		cats:  map[payment.ParticipantID]catalogue{},
+	}
 	b.build()
 	return nil
 }
@@ -158,7 +162,14 @@ type builder struct {
 	// to its mandate by PartyRef equality, and PartyRef includes the IBAN field —
 	// so a mandate and its direct debits must reference the account the same way.
 	ibans map[deposit.AccountID]string
+	// cats holds each bank's product IDs, keyed the way ibans is keyed: the
+	// catalogue is book-scoped, so every bank has its own Basic and Premium and
+	// the same name at two banks is two products.
+	cats map[payment.ParticipantID]catalogue
 }
+
+// catalogue is the two product IDs the rest of the seed needs.
+type catalogue struct{ basic, premium product.ID }
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
 // deterministic, so any error is a programming bug that should fail loudly.
@@ -187,17 +198,63 @@ func check(err error) {
 // because nobody said.
 const seedAsset ledger.AssetCode = "EUR"
 
-// open opens a customer account, records its canonical IBAN, and returns it.
-func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
-	a := must(p.OpenCustomerAccount(b.ctx, name, seedAsset))
-	b.ibans[a.ID] = iban
-	return a
+// products prices a bank's catalogue: the Basic Current Account its onboarding
+// created, and a Premium one an account can be migrated to.
+//
+// Basic is the product AddParticipant already made — every bank gets one,
+// because a bank with no product cannot open an account — and its first
+// published version is interest-free, which is what a bank that has not yet
+// decided a price has. This adds the two versions that give it one:
+//
+//   - 12% from day 1, the day after the bank opened.
+//   - 14.9% from day 30, published now and effective then. That is the case no
+//     per-account write can produce and the reason the catalogue exists: one
+//     row moves the price for every account bound to it, and the accounts' own
+//     rows are untouched.
+//
+// Both are forward-dated, which is the only direction PublishVersion allows.
+func (b *builder) products(p *payment.Participant) {
+	from := ledger.DayStart(b.clock.now())
+
+	b.publish(p, p.ProductID, from.AddDate(0, 0, 1), product.OverdraftPricing{
+		Rate: 120_000, UnarrangedRate: 350_000, DayCount: interest.ACT365,
+	})
+	b.publish(p, p.ProductID, from.AddDate(0, 0, 30), product.OverdraftPricing{
+		Rate: 149_000, UnarrangedRate: 350_000, DayCount: interest.ACT365,
+	})
+
+	premium := must(p.Catalogue.CreateProduct(b.ctx, "Premium Current Account", product.CurrentAccount))
+	b.publish(p, premium.ID, from, product.OverdraftPricing{
+		Rate: 70_000, UnarrangedRate: 250_000, DayCount: interest.ACT365,
+	})
+
+	b.cats[p.ID] = catalogue{basic: p.ProductID, premium: premium.ID}
 }
 
-// openOverdraft opens a customer account with an overdraft limit (the
-// participant helper only opens with zero overdraft) and records its IBAN.
+// publish drafts and publishes in one step, which is what every seeded version
+// wants: the draft state is a thing an operator passes through, not a thing the
+// demo data should sit in.
+func (b *builder) publish(p *payment.Participant, id product.ID, from time.Time, pricing product.OverdraftPricing) {
+	must(p.Catalogue.DraftVersion(b.ctx, id, from, pricing))
+	must(p.Catalogue.PublishVersion(b.ctx, id, from))
+}
+
+// open opens a customer account on the bank's Basic product, records its
+// canonical IBAN, and returns it.
+//
+// It goes through the register rather than p.OpenCustomerAccount because that
+// helper opens from the participant's configured default, and this seed has
+// retired that one in favour of a priced catalogue of its own.
+func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
+	return b.openOverdraft(p, name, iban, 0)
+}
+
+// openOverdraft opens a customer account with an overdraft limit and records
+// its IBAN. The limit is per account and the PRICE is not: it comes from the
+// Basic product, so the day-30 reprice above reaches every account opened here
+// without touching one of them.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, p.ProductID, limit))
+	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit))
 	b.ibans[a.ID] = iban
 	return a
 }
@@ -274,6 +331,14 @@ func (b *builder) build() {
 	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", euro))
 	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", euro))
 	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", euro))
+
+	// --- Each bank's catalogue ---------------------------------------------
+	// Before any account, because every deposit account is opened FROM a
+	// product: a floating terms row with no product would have nothing to
+	// float to.
+	for _, p := range []*payment.Participant{aurora, verde, nord, soleil} {
+		b.products(p)
+	}
 
 	// --- Customer accounts (each gets a canonical IBAN) --------------------
 	alice := b.open(aurora, "Alice Andersson", "SE89-AURORA-1001")
@@ -407,6 +472,17 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 		&product.OverdraftPricing{Rate: 150_000, UnarrangedRate: 350_000, DayCount: interest.ACT365},
 		b.clock.now()))
 	must(verde.Deposit.SetOverdraftLimit(ctx, bruno.ID, 50_000, b.clock.now()))
+
+	// --- Bella, migrated onto Premium ---------------------------------------
+	// Effective a fortnight in. Her earlier days keep pricing at Basic's rate —
+	// a migration is a forward-dated row, not a rewrite — which is what the
+	// deposit page's terms history shows.
+	//
+	// The seeded data now holds all three cases side by side: floating through
+	// the day-30 reprice (everyone else), negotiated and therefore unmoved by
+	// it (Bruno), and migrated (Bella).
+	must(verde.Deposit.ChangeProduct(ctx, bella.ID, b.cats[verde.ID].premium,
+		b.clock.now().AddDate(0, 0, 14)))
 
 	// --- A term loan part-way through its schedule (Alice, Aurora) ----------
 	// EUR 10,000, five years, 6%, annuity. Disbursed, then run day by day

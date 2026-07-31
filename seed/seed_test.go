@@ -23,12 +23,20 @@ import (
 // reserves, status coverage) hold on both backends rather than only in memory.
 func testNetwork(t *testing.T) *payment.Network {
 	t.Helper()
+	net, _ := testNetworkAndClock(t)
+	return net
+}
+
+// testNetworkAndClock is testNetwork for the tests that also need to ask what
+// day it is, which after the catalogue is any test resolving a price.
+func testNetworkAndClock(t *testing.T) (*payment.Network, *Dataset) {
+	t.Helper()
 	d := New()
 	net := payment.NewNetwork(testenv.New(t, d.Now).Payment(), d.Now)
 	if err := d.Populate(context.Background(), net); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return net
+	return net, d
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -196,6 +204,119 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 	if !last.EffectiveFrom.Equal(wantEffective) {
 		t.Errorf("last row EffectiveFrom = %v, want %v (twenty days before its CreatedAt %v)",
 			last.EffectiveFrom, wantEffective, last.CreatedAt)
+	}
+}
+
+// The seeded data holds the catalogue's three pricing cases side by side, so a
+// reader can see them in the web app without writing a test: an account
+// floating with its product, one whose negotiated overlay outranks it, and one
+// migrated onto another product.
+//
+// The floating account's rate is asserted to EQUAL the product's version in
+// force today rather than a hardcoded number. That is the claim worth pinning —
+// the account tracks the product, with no per-account write — and it stays true
+// if the story's length or the reprice's offset ever moves. The reprice itself
+// is pinned separately, on the timeline, where a hardcoded figure means
+// something.
+func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
+	ctx := context.Background()
+	net, data := testNetworkAndClock(t)
+
+	var verde *payment.Participant
+	for _, p := range listParticipants(t, ctx, net) {
+		if p.Name == "Banca Verde" {
+			verde = p
+		}
+	}
+	if verde == nil {
+		t.Fatal("Banca Verde not found")
+	}
+
+	accts, err := verde.Deposit.ListAccountsWithTerms(ctx)
+	if err != nil {
+		t.Fatalf("list deposit accounts: %v", err)
+	}
+	byName := map[string]deposit.AccountWithTerms{}
+	for _, a := range accts {
+		byName[a.Account.Name] = a
+	}
+
+	// The day-30 reprice is really on Basic's timeline, published and at 14.9%.
+	versions, err := verde.Catalogue.Versions(ctx, verde.ProductID)
+	if err != nil {
+		t.Fatalf("product versions: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("Basic has %d versions, want 3 (interest-free at onboarding, 12%%, 14.9%%)", len(versions))
+	}
+	repriced := versions[2]
+	if !repriced.Published() {
+		t.Error("the day-30 reprice was never published")
+	}
+	if got := int64(repriced.Overdraft.Rate); got != 149_000 {
+		t.Errorf("the reprice = %d, want 149000 (14.9%%)", got)
+	}
+	inForce, err := verde.Catalogue.VersionInForce(ctx, verde.ProductID, ledger.DayStart(data.Now()))
+	if err != nil {
+		t.Fatalf("version in force: %v", err)
+	}
+
+	// Floating: Bianca was never negotiated with and never migrated, so she is
+	// priced by whatever Basic costs today.
+	bianca, ok := byName["Bianca Belli"]
+	if !ok {
+		t.Fatal("Bianca Belli not found")
+	}
+	if bianca.Terms.Negotiated {
+		t.Error("Bianca has an overlay; she is meant to float")
+	}
+	if got, want := string(bianca.Terms.ProductID), string(verde.ProductID); got != want {
+		t.Errorf("Bianca's product = %v, want %v", got, want)
+	}
+	if got, want := int64(bianca.Terms.Pricing.Rate), int64(inForce.Overdraft.Rate); got != want {
+		t.Errorf("Bianca floats with her product = %v, want %v", got, want)
+	}
+
+	// Negotiated: Bruno's own rate outranks the product, and the day-30 reprice
+	// did not move him. That is the distinction the overlay exists for.
+	bruno, ok := byName["Bruno Bianchi"]
+	if !ok {
+		t.Fatal("Bruno Bianchi not found")
+	}
+	if !bruno.Terms.Negotiated {
+		t.Fatal("Bruno's rate is not negotiated")
+	}
+	if got, want := int64(bruno.Terms.Pricing.Rate), int64(180_000); got != want {
+		t.Errorf("Bruno's negotiated rate = %v, want %v", got, want)
+	}
+	if bruno.Terms.Pricing.Rate == inForce.Overdraft.Rate {
+		t.Error("Bruno's negotiated rate matches the product's; the reprice moved him")
+	}
+
+	// Migrated: Bella is on Premium, and her earlier days still price at Basic
+	// — a migration is a forward-dated row, not a rewrite.
+	bella, ok := byName["Bella Bruno"]
+	if !ok {
+		t.Fatal("Bella Bruno not found")
+	}
+	if got, want := int64(bella.Terms.Pricing.Rate), int64(70_000); got != want {
+		t.Errorf("Bella's rate = %v, want %v", got, want)
+	}
+	if bella.Terms.ProductID == verde.ProductID {
+		t.Error("Bella was not migrated off Basic")
+	}
+	rows, err := verde.Deposit.OverdraftTermsHistory(ctx, bella.Account.ID)
+	if err != nil {
+		t.Fatalf("Bella's terms history: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("Bella has %d terms rows, want 2 (opening, migration)", len(rows))
+	}
+	if got, want := string(rows[0].ProductID), string(verde.ProductID); got != want {
+		t.Errorf("Bella opened on Basic = %v, want %v", got, want)
+	}
+	if rows[0].ProductID == rows[1].ProductID {
+		t.Error("the migration row names the same product as the opening one")
 	}
 }
 
