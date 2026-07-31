@@ -120,10 +120,17 @@ var (
 	// cannot be a leg of a SEPA payment.
 	ErrUnaddressableAccount = errors.New("account has no identifier in the scheme's addressing scheme")
 
-	// ErrIdentifierMismatch is returned when a party quotes an identifier the
-	// named account does not hold. The ids route the payment and the identifier
-	// records the address used; the two disagreeing means one of them is wrong,
-	// and the system does not get to choose which.
+	// ErrIdentifierMismatch is returned when a party quotes an identifier that
+	// is not one of the named account's addresses in the scheme's addressing
+	// scheme. The ids route the payment and the identifier records the address
+	// used; the two disagreeing means one of them is wrong, and the system does
+	// not get to choose which.
+	//
+	// It covers two shapes, because they are one question asked once: the
+	// account does not hold the quoted address at all, and the account holds it
+	// but under a different identifier scheme than the payment scheme routes on
+	// — a card PAN quoted for a SEPA credit transfer. Both mean "that is not
+	// this account's address for this scheme".
 	ErrIdentifierMismatch = errors.New("quoted identifier does not belong to the named account")
 
 	// ErrAmbiguousAddress is returned when a party quotes NO address and its

@@ -1494,10 +1494,20 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 //     Several candidates: ErrAmbiguousAddress, because choosing between them
 //     would stamp an address onto a settled payment on the strength of slice
 //     order — the same refusal ResolveIdentifier makes for the same reason.
-//   - Something quoted: it must be one of the account's own identifiers. The
-//     ids route the payment and the address records how it was reached; the two
-//     disagreeing means one of them is wrong, and this layer does not get to
-//     choose which.
+//   - Something quoted: it must be one of the account's identifiers IN THE
+//     SCHEME'S SCHEME. The ids route the payment and the address records how it
+//     was reached; the two disagreeing means one of them is wrong, and this
+//     layer does not get to choose which.
+//
+// That last "in the scheme's scheme" is why the loop scans inScheme rather than
+// the whole set. Scanning the whole set asks only whether the account holds the
+// quoted address somewhere, which is not the question: an account holding both
+// an IBAN and a card PAN would have a sepa.ct payment accepted — and stored —
+// quoting the PAN. It is unreachable while IdentifierIBAN is the only scheme
+// shipped, which is precisely the argument for fixing it now: the design's
+// load-bearing claim is that a card PAN drops in as a constant, and the first
+// day it does, an address bound to the scheme would silently stop being bound
+// to it. AddressedBy() is decorative if anything but it decides the answer.
 func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Identifier, error) {
 	want := scheme.AddressedBy()
 	var inScheme []deposit.Identifier
@@ -1515,7 +1525,7 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 		}
 		return inScheme[0], nil
 	}
-	for _, ident := range acct.Identifiers {
+	for _, ident := range inScheme {
 		if ident == ref.Identifier {
 			return ident, nil
 		}

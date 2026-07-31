@@ -1312,6 +1312,75 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 	}
 }
 
+// An address the account really holds, but in the wrong identifier scheme.
+//
+// testPAN is declared here rather than shipped as a deposit constant, because
+// the card scheme it would address does not exist yet — which is the whole
+// reason this test matters. Nothing in the shipped system can reach this case
+// while IBAN is the only scheme, so the check would have gone on being wrong
+// until the day a PAN arrived, and on that day it would have been wrong
+// silently: an account holding both would have had a SEPA payment accepted, and
+// stored, quoting its card number. Scheme.AddressedBy() means the address is
+// bound to the scheme, not merely to the account.
+func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
+	const testPAN = deposit.IdentifierScheme("PAN")
+
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+
+	// Both customers keep their IBAN and gain a card, exactly as the design
+	// says a plural identifier set is for.
+	alicePAN := deposit.Identifier{Scheme: testPAN, Value: "4000-0000-0000-0001"}
+	brunoPAN := deposit.Identifier{Scheme: testPAN, Value: "4000-0000-0000-0002"}
+	assertNoError(t, aurora.Deposit.AddIdentifier(ctx, alice.ID, alicePAN))
+	assertNoError(t, verde.Deposit.AddIdentifier(ctx, bruno.ID, brunoPAN))
+
+	// Creditor leg.
+	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme:   SchemeSEPACT,
+		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
+		Amount:   10_00,
+	})
+	if !errors.Is(err, ErrIdentifierMismatch) {
+		t.Fatalf("creditor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
+	}
+
+	// Debtor leg.
+	_, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme:   SchemeSEPACT,
+		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
+		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:   10_00,
+	})
+	if !errors.Is(err, ErrIdentifierMismatch) {
+		t.Fatalf("debtor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
+	}
+
+	// And the PAN does not disturb the back-fill: one IBAN each is still one
+	// candidate each, so the ordinary payment goes through and records IBANs.
+	var pay Payment
+	runCycle(t, net, SchemeSEPACT, func() {
+		pay, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+			Scheme:   SchemeSEPACT,
+			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:   10_00,
+		})
+		assertNoError(t, err)
+	})
+	assertEqual(t, "back-filled debtor address", pay.Debtor.Identifier,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+	assertEqual(t, "back-filled creditor address", pay.Creditor.Identifier,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
+}
+
 // A payment that quotes no address still records one. Before this, the
 // identifier was optional on the way in and simply stayed empty on the way to
 // storage, so the documented property — "a payment records the address it was
