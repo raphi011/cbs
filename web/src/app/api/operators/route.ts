@@ -1,0 +1,80 @@
+import { NextResponse } from "next/server";
+
+import {
+  backendConfig,
+  bankUrl,
+  institutionUrl,
+  type OperatorStatus,
+} from "@/lib/api/backend-url";
+
+// Which operators actually have a listener behind them.
+//
+// Ports are static by design: a bank admitted at runtime through POST /members
+// gets reserve accounts and no listener until the server restarts, because
+// admitting a member to a network is an operational act and modelling it as an
+// API call that instantly yields a running bank teaches the wrong thing. The
+// lobby and the identity picker need to tell those two states apart *before*
+// offering a console, so this answers once for every bank rather than letting
+// each one discover it through a 502.
+//
+// This is Next's own knowledge and is served by no backend: deployment topology
+// is not domain data. A member of the roster with no listener is still a member.
+export const dynamic = "force-dynamic";
+
+const CFG = backendConfig(process.env);
+const PROBE_TIMEOUT_MS = 1_500;
+
+// A listener is live if it answers at all. GET /assets is the probe because
+// every operator serves it — it is a compiled-in constant, which is exactly why
+// it is on all three surfaces — so one request shape works for every key.
+async function probe(base: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${base}/assets`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function GET() {
+  const csm = institutionUrl("clearing-house", CFG);
+
+  let roster: string[] = [];
+  let csmLive = false;
+  try {
+    const res = await fetch(`${csm}/members`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    csmLive = res.ok;
+    if (res.ok) roster = ((await res.json()) as { id: string }[]).map((m) => m.id);
+  } catch {
+    // Leave the roster empty. With the clearing house down there is no roster to
+    // read, and reporting every bank as dead would be a guess rather than an
+    // answer — the caller sees clearing-house:false and knows why the list is
+    // short.
+  }
+
+  const banks = await Promise.all(
+    roster.map(async (pid): Promise<OperatorStatus> => {
+      let base: string;
+      try {
+        base = bankUrl(pid, roster, CFG);
+      } catch {
+        // In the roster and outside the port plan: admitted, not provisioned.
+        return { operator: `bank/${pid}`, live: false };
+      }
+      return { operator: `bank/${pid}`, live: await probe(base) };
+    }),
+  );
+
+  const out: OperatorStatus[] = [
+    { operator: "central-bank", live: await probe(institutionUrl("central-bank", CFG)) },
+    { operator: "clearing-house", live: csmLive },
+    ...banks,
+  ];
+  return NextResponse.json(out);
+}

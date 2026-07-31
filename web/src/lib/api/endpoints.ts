@@ -4,6 +4,7 @@
 
 import { request, qs } from "./client";
 import { bank, cb, csm } from "./operator";
+import type { OperatorStatus } from "./backend-url";
 import type {
   Account,
   Asset,
@@ -528,6 +529,20 @@ export function listSettlements(): Promise<Settlement[]> {
 
 export function getSettlement(sid: string): Promise<Settlement> {
   return request("GET", csm(`/settlements/${sid}`));
+}
+
+// --- Operators (Next-side, not a backend route) ----------------------------
+
+export type { OperatorStatus } from "./backend-url";
+
+// Which operators have a listener behind them. Served by the Next app itself:
+// deployment topology is not domain data, and no backend knows where its
+// siblings are bound. See app/api/operators/route.ts, which shares the type.
+//
+// It is the one path here that is not built with cb()/csm()/bank(), because it
+// names no operator — it is the question "which of them are there?".
+export function listOperators(): Promise<OperatorStatus[]> {
+  return request("GET", "/operators");
 }
 
 // --- Admin ----------------------------------------------------------------

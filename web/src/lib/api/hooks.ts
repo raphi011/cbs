@@ -46,6 +46,31 @@ export function useAddParticipant() {
   });
 }
 
+// --- Operators (Next-side, not a backend area) ----------------------------
+
+// Which operators have a listener behind them, and a predicate over the answer.
+//
+// staleTime is Infinity because ports are static by design: a bank admitted at
+// runtime gets no listener until the server restarts, so the answer cannot change
+// under a running page. Re-probing six listeners on every mount would be waste.
+export function useOperators() {
+  return useQuery({
+    queryKey: qk.operators(),
+    queryFn: api.listOperators,
+    staleTime: Infinity,
+  });
+}
+
+// Answers `backendFor(identity)`. Optimistic while the probe is in flight and
+// when it failed: an unknown answer must not make a working console look dead.
+export function useIsProvisioned(): (operatorKey: string) => boolean {
+  const { data } = useOperators();
+  return (operatorKey: string) => {
+    const row = data?.find((o) => o.operator === operatorKey);
+    return row ? row.live : true;
+  };
+}
+
 // --- Schemes --------------------------------------------------------------
 
 export function useSchemes() {

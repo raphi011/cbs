@@ -27,6 +27,9 @@ export const qk = {
   // Network-wide: assets are defined in code, not per book.
   assets: () => ["assets"] as const,
 
+  // Next-side, not a backend area: which listeners are actually there.
+  operators: () => ["operators"] as const,
+
   // Ledger layer (all nested under the participant so a post can invalidate
   // a whole subtree at once).
   ledgers: (pid: string) => ["participants", pid, "ledgers"] as const,
