@@ -1,24 +1,24 @@
 # ISO 20022 Messages — Design
 
-The first of three sub-projects that replace the repository's largest remaining
-payments fiction:
+Sub-project 7a in `docs/expansion-roadmap.md`, the first of three that replace
+the repository's largest remaining payments fiction:
 
 > **No ISO 20022 message parsing.** The `Payment` struct stands in for
 > `pain.001`/`pacs.008`/`pacs.003`; the schemes only *name* the messages they
-> correspond to. (`README.md:1001`, `payment/doc.go:64`)
+> correspond to. (`README.md:1016`, `payment/doc.go:61`)
 
 The arc, so this spec can be read knowing where it stops:
 
-1. **This spec — the `iso20022` package.** Message types, the `head.001`
-   envelope, the XML codec, the external code sets. No domain imports, no
-   behaviour change anywhere else in the repository.
-2. **The mesh and the actors.** One goroutine per participant bank, one for the
-   clearing house, one for the central bank, exchanging marshalled bytes over
-   channels. `api/` moves to `202 Accepted` plus a status query, because a real
-   CSM answers with a `pacs.002` later and not with a return value.
-3. **The message log, the UI and the teaching layers.** Envelopes persisted in
-   both stores so a payment screen can show the XML that actually moved, plus
-   `README.md`, `hint-content.ts` and the quiz.
+- **7a — this spec, the `iso20022` package.** Message types, the `head.001`
+  envelope, the XML codec, the external code sets. No domain imports, no
+  behaviour change anywhere else in the repository.
+- **7b — the mesh and the actors.** One goroutine per participant bank, one for
+  the clearing house, one for the central bank, exchanging marshalled bytes over
+  channels. `api/` moves to `202 Accepted` plus a status query, because a real
+  CSM answers with a `pacs.002` later and not with a return value.
+- **7c — the message log, the UI and the teaching layers.** Envelopes persisted
+  in both stores so a payment screen can show the XML that actually moved, plus
+  `README.md`, `hint-content.ts` and the quiz.
 
 Each gets its own spec, plan and branch. This one is deliberately the piece with
 no consumer, because the alternative — designing the wire format and the actors
@@ -57,9 +57,9 @@ it until only one thing can be meant.
   vocabulary.
 - **`camt.052` / `camt.053` / `camt.054`.** Reporting back from the central bank
   after settlement. Wanted, but the actor that would send them does not exist
-  until sub-project 2.
+  until 7b.
 - **`camt.056` recall, `pacs.007` reversal.** The `payment` package models
-  returns (`Network.ReturnPayment`, `payment/system.go:1175`) and nothing else
+  returns (`Network.ReturnPayment`, `payment/system.go:1197`) and nothing else
   in the R-transaction family. A message with no domain operation behind it
   would be a struct nobody constructs.
 - **XSD validation at runtime.** There is no usable pure-Go XSD validator, and
@@ -87,7 +87,7 @@ tell which fields came from ISO 20022 and which came from here. It also means
 the package can be read, and its tests understood, by someone who knows the
 standard and nothing about this codebase.
 
-The cost is one conversion boundary, which sub-project 2 owns as
+The cost is one conversion boundary, which 7b owns as
 `payment/translate.go`. That is the correct place for it: mapping a domain type
 onto a wire type is exactly the work a translator does, and it is easier to
 review when it is a file rather than a scattering of methods.
@@ -120,12 +120,12 @@ only thing that narrows it.
 
 ### IBANs are compacted, not validated — and that turns out to be free
 
-The account-addressing design
-(`docs/superpowers/specs/2026-07-31-account-addressing-design.md`) refuses ISO
-7064 mod-97 validation, on the grounds that it would make the seed's readable
+Sub-project 5, account addressing, shipped a refusal of ISO 7064 mod-97
+validation, on the grounds that it would make the seed's readable
 `SE89-AURORA-1001` illegal and replace it with opaque digits in every
-screenshot, worked example and quiz answer. That argument stands and is not
-reopened here.
+screenshot, worked example and quiz answer. It is now a stated property of the
+system (`README.md:1017`), not merely a spec decision. That argument stands and
+is not reopened here.
 
 It also costs nothing, which is worth recording because it looks like it should.
 The `pacs.008` XSD constrains an IBAN by **pattern** —
@@ -142,9 +142,11 @@ claim a future reader will otherwise assume.
 
 ### `Participant` gains a BIC, superseding a deferral
 
-The addressing design put bank-level addressing out of scope: *"Participants
-keep being addressed by `ParticipantID`. Resolving an IBAN yields the
-participant, which is the only thing the routing needs."*
+Sub-project 5 put bank-level addressing out of scope — *"Participants keep being
+addressed by `ParticipantID`. Resolving an IBAN yields the participant, which is
+the only thing the routing needs."* — and shipped the consequence as a stated
+simplification: *"a BIC is not modelled at all"* (`README.md:1017`,
+`payment/doc.go:65`).
 
 That was true when nothing needed a BIC. `DbtrAgt` and `CdtrAgt`, each a
 `BranchAndFinancialInstitutionIdentification6` carrying a `BICFI`, are
@@ -159,14 +161,14 @@ alphanumeric location, optionally 3 alphanumeric branch; 8 or 11 characters, no
 seed, the screenshots or the quiz quotes a BIC today, so the seeded BICs can be
 well-formed from the start.
 
-`Participant.BIC` itself, and routing by it, land in **sub-project 2**. This
+`Participant.BIC` itself, and routing by it, land in **7b**. This
 spec ships only the type, so that the field added there has somewhere to be
 validated.
 
 ### Actors will exchange bytes, so the codec is the package's real surface
 
 Recorded here because it constrains this package even though the actors are
-sub-project 2's: the mesh will pass **marshalled XML**, not structs. If two
+7b's: the mesh will pass **marshalled XML**, not structs. If two
 actors exchanged `*Pacs008` the message format would be decoration on a function
 call, malformed input would stop being a reachable failure mode, and the
 `FF01` rejection path would be untestable.
@@ -207,13 +209,13 @@ thing a real receiver does — and is why the header is not optional here.
 
 ISO 20022 rejection reasons are *external code sets*: four-character codes
 maintained outside the schema. They are the difference between a machine-
-actionable rejection and `RejectReason string` (`payment/types.go:180`).
+actionable rejection and `RejectReason string` (`payment/types.go:210`).
 
 The package ships them as defined types with named constants — `StatusReason`,
 `ReturnReason`, `TransactionStatus`, `SettlementMethod`, `ChargeBearer` — each
 constant carrying the standard's own definition as its doc comment.
 
-The mapping is decided here rather than in sub-project 2, because it is a
+The mapping is decided here rather than in 7b, because it is a
 statement about what this system's errors *mean* and that is a domain question,
 not a transport one:
 
@@ -248,7 +250,7 @@ all is a consequence of its multi-asset ledger, and the honest wire
 representation of a condition the scheme does not contemplate is "unspecified".
 The comment on that mapping says so, so it does not read as laziness.
 
-The table lives in `payment/translate.go` in sub-project 2. It is decided here.
+The table lives in `payment/translate.go` in 7b. It is decided here.
 
 ### Optional elements are pointers, and choices are validated rather than typed
 
@@ -277,7 +279,7 @@ anything else is omitted and the file's doc comment says what was omitted.
 
 ### `pacs.008.001.08` — `FIToFICstmrCdtTrf`
 
-The SEPA Credit Transfer interbank message. `SCT` (`payment/scheme.go:96`)
+The SEPA Credit Transfer interbank message. `SCT` (`payment/scheme.go:108`)
 already names it.
 
 - `GrpHdr`: `MsgId`, `CreDtTm`, `NbOfTxs`, `TtlIntrBkSttlmAmt`,
@@ -289,25 +291,25 @@ already names it.
   `RmtInf{Ustrd}`
 
 `CdtTrfTxInf` is a slice because the message is inherently a **bulk** — which is
-why STEP2 answers with a status *file*, and why sub-project 2's `pacs.002`
-distinguishes `GrpSts` from per-transaction `TxSts`. Sub-project 2 will send
+why STEP2 answers with a status *file*, and why 7b's `pacs.002`
+distinguishes `GrpSts` from per-transaction `TxSts`. 7b will send
 one transaction per message at first; the slice is not speculative generality,
 it is the message's actual cardinality, and flattening it would misteach the
 thing that makes retail clearing batch-shaped.
 
 ### `pacs.003.001.08` — `FIToFICstmrDrctDbt`
 
-SEPA Direct Debit collection; `SDD` (`payment/scheme.go:126`) names it.
+SEPA Direct Debit collection; `SDD` (`payment/scheme.go:132`) names it.
 
 Same envelope and group header. `DrctDbtTxInf[]` adds
 `DrctDbtTx{MndtRltdInf{MndtId, DtOfSgntr, AmdmntInd}}` and `CdtrSchmeId`, and
 reverses the agent roles — the creditor's bank sends. `MndtRltdInf.MndtId` is
-where `Payment.MandateID` (`payment/types.go:184`) goes, which makes the
+where `Payment.MandateID` (`payment/types.go:206`) goes, which makes the
 mandate a thing that travels with the collection rather than a foreign key the
 network happens to hold.
 
-`DtOfSgntr` is mandatory. `payment.Mandate` (`payment/types.go:199`) has
-`CreatedAt` and no signature date, so sub-project 2 either adds one or maps
+`DtOfSgntr` is mandatory. `payment.Mandate` (`payment/types.go:227`) has
+`CreatedAt` and no signature date, so 7b either adds one or maps
 `CreatedAt` and documents the elision. Flagged here; decided there.
 
 ### `pacs.002.001.10` — `FIToFIPmtStsRpt`
@@ -321,18 +323,18 @@ has no counterpart in the current model at all.
 
 `TxSts` values shipped: `ACCP` accepted, `ACSP` accepted-settlement-in-process,
 `ACSC` accepted-settlement-completed, `RJCT` rejected. Those four map exactly
-onto `PaymentStatus` (`payment/types.go:83`) — `Accepted`, `Cleared`, `Settled`,
+onto `PaymentStatus` (`payment/types.go:86`) — `Accepted`, `Cleared`, `Settled`,
 `Rejected` — which is a pleasant confirmation that the existing lifecycle was
 modelled on the right thing. `Returned` has no `TxSts`; a return is a
 `pacs.004`, not a status.
 
 `GrpSts` and `TxSts` are separate because a bulk can be partly rejected
-(`GrpSts: PART`). Sub-project 2 needs that distinction the first time a cycle
+(`GrpSts: PART`). 7b needs that distinction the first time a cycle
 contains one bad payment.
 
 ### `pacs.004.001.09` — `PmtRtr`
 
-The R-transaction. `Network.ReturnPayment` (`payment/system.go:1175`) already
+The R-transaction. `Network.ReturnPayment` (`payment/system.go:1197`) already
 implements the operation.
 
 - `GrpHdr{MsgId, CreDtTm, NbOfTxs, TtlRtrdIntrBkSttlmAmt, IntrBkSttlmDt, SttlmInf}`
@@ -415,24 +417,24 @@ standing rule is that both runs are green, not that both are relevant.
 Deliberately almost none, and this is the sub-project's main cost.
 
 Nothing user-visible changes: no endpoint, no screen, no seeded behaviour. The
-`README.md:1001` and `payment/doc.go:64` simplification bullets stay **true**
-until sub-project 2 makes them false, and editing them now would be a claim the
+`README.md:1016` and `payment/doc.go:61` simplification bullets stay **true**
+until 7b makes them false, and editing them now would be a claim the
 code does not yet support — the failure mode `CLAUDE.md` exists to prevent.
 
 So this sub-project ships `iso20022/doc.go` and nothing else, and the package is
-imported by no one until sub-project 2. That is a real cost, honestly an
+imported by no one until 7b. That is a real cost, honestly an
 unusual one for this repository. It is accepted because the alternative is
 worse: designing the wire format inside the transport that carries it means the
 message shape gets settled by whatever the transport found convenient, and every
 "why is this field here?" answer becomes "because the mesh needed it".
 
-The mitigation is sequencing, not argument: sub-project 2 follows immediately,
+The mitigation is sequencing, not argument: 7b follows immediately,
 and if it does not, this package is a branch that was never merged rather than
 dead code in `main`.
 
 ## Failure modes
 
-- **The package is merged and sub-project 2 is not.** Dead code in `main`.
+- **The package is merged and 7b is not.** Dead code in `main`.
   Mitigated by holding the merge until 2's plan is written, not by hoping.
 - **The EPC samples are wrong or misremembered.** The golden files are the
   entire basis for "these messages are real", so a bad sample propagates
@@ -445,16 +447,16 @@ dead code in `main`.
   hand-written marshaller for the envelope only — the leaf structs are
   unaffected. This is the one place the plan should keep a spike step.
 - **The BIC decision reopens more than intended.** Adding `Participant.BIC` in
-  sub-project 2 touches the participant store rows in both backends and the
+  7b touches the participant store rows in both backends and the
   `storetest` conformance suite. It is small, but it is not zero, and it is
-  sub-project 2's cost rather than this one's — recorded here so it is not a
+  7b's cost rather than this one's — recorded here so it is not a
   surprise there.
 - **The reason-code table drifts from `payment/errors.go`.** A new sentinel
-  added later gets no code and falls through to `MS03`. Sub-project 2's
+  added later gets no code and falls through to `MS03`. 7b's
   translator should make the mapping exhaustive over a list the tests can hold,
   so a new error is a compile-or-test failure rather than a silent `MS03`.
 
-## What sub-project 2 inherits
+## What 7b inherits
 
 Stated so its spec starts from a contract rather than from a reading of this
 package:

@@ -308,6 +308,41 @@ card-processor persona, and the customer's mandate and credit screens. The
 scheme-operator persona is no longer among them — 6a gave it a backend, so it
 ships.
 
+### 7. ISO 20022 interbank messaging — `spec`
+
+Spec: [`superpowers/specs/2026-07-31-iso20022-messages-design.md`](superpowers/specs/2026-07-31-iso20022-messages-design.md)
+
+Retires the largest remaining payments fiction — *"No ISO 20022 message
+parsing"* (`README.md:1016`) — by making the message the interface between
+banks: participant banks, the clearing house and the central bank become
+goroutines exchanging marshalled `pacs.008` / `pacs.003` / `pacs.002` /
+`pacs.004` over channels, wrapped in a `head.001` business application header.
+
+Three sub-projects, each with its own spec, plan and branch. Only the first is
+specified:
+
+- **7a, the `iso20022` package** — the four messages, the envelope, the codec
+  and the external code sets, in a package that imports nothing from this
+  repository. Specified above.
+- **7b, the mesh and the actors** — one goroutine per bank, `Participant.BIC`
+  and routing by `BICFI`, the creditor-account check moving out of
+  `InitiatePaymentTx` and coming back as a `pacs.002` rejection, and `api/`
+  moving to `202 Accepted` plus a status query because a real CSM answers later
+  and not by return value. Settlement stays one atomic `Store.Update` at the
+  central bank, which is what a settlement agent genuinely is.
+- **7c, the message log** — envelopes persisted in both stores so a payment
+  screen can show the XML that actually moved, plus the README, hint and quiz
+  layers.
+
+Depends on 5, which supplies `PartyRef.Identifier` and `Scheme.AddressedBy()`.
+Reopens exactly one of 5's deferrals, and only because 5's stated reason for it
+was that nothing needed a BIC: `DbtrAgt`/`CdtrAgt` are mandatory in the EPC
+`pacs.008`, so a message cannot be written without one.
+
+Deliberately out of scope across all three: `pain.001`/`pain.008` customer
+initiation, the `camt` reporting family, `camt.056`/`pacs.007` recalls and
+reversals, runtime XSD validation, and message signing.
+
 ## Log
 
 | Date | Entry |
