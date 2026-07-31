@@ -86,6 +86,10 @@ func (s *Server) bankRouter() *router {
 	mux.HandleFunc("POST /deposits", s.handleFundDeposit)
 	mux.HandleFunc("GET /audit", s.handleLedgerAudit)
 	mux.HandleFunc("GET /deposit-audit", s.handleDepositAudit)
+	// A bank's own legs. The clearing house serves the same two patterns
+	// unnarrowed, which is the split doing its job rather than a collision.
+	mux.HandleFunc("GET /payments", s.handleListBankPayments)
+	mux.HandleFunc("GET /payments/{payid}", s.handleGetBankPayment)
 
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)

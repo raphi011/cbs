@@ -20,7 +20,16 @@ import (
 //     ledger events on a bank, the reserve movements on the central bank. Same
 //     pattern, different operator, different answer — which is what the split is
 //     for, and is worth the consistency.
-var allowedOverlaps = []string{"GET /assets", "GET /directory", "GET /audit"}
+//   - GET /payments and GET /payments/{payid} are on a bank and the clearing
+//     house with different handlers: the bank's are narrowed to its own legs.
+//     Same pattern, different operator, different answer.
+var allowedOverlaps = []string{
+	"GET /assets",
+	"GET /directory",
+	"GET /audit",
+	"GET /payments",
+	"GET /payments/{payid}",
+}
 
 func surfaces(t *testing.T) map[string][]string {
 	t.Helper()
@@ -280,4 +289,82 @@ func closedCycle(t *testing.T, h *Server) string {
 	}`, http.StatusCreated)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
 	return cyc
+}
+
+// TestABankSeesOnlyItsOwnPayments pins the narrowing the single server could
+// not express.
+//
+// GET /payments listed every payment in the network to every caller —
+// competitors' customers, their counterparties and their amounts. Narrowing it
+// needs a caller identity, and there was none until the port became one.
+func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, c := threeBanks(t, h)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	mine := sct(t, h, a, b, "own-leg")
+	theirs := sct(t, h, b, c, "not-mine")
+
+	// Aurora is the debtor on one and a party to no other.
+	var list []paymentDTO
+	getJSON(t, bank(h, a.pid), "/payments", &list)
+	if len(list) != 1 || list[0].ID != mine {
+		t.Fatalf("bank A sees %d payments (%+v), want only its own leg %s", len(list), list, mine)
+	}
+
+	doJSON(t, bank(h, a.pid), "GET", "/payments/"+mine, "", http.StatusOK)
+
+	// 404 and not 403: a payment this bank is not party to does not exist as
+	// far as its API is concerned, and a 403 would confirm that the id names
+	// something real.
+	doJSON(t, bank(h, a.pid), "GET", "/payments/"+theirs, "", http.StatusNotFound)
+
+	// The creditor sees it too — "its own" is either leg, not just the debit.
+	var bList []paymentDTO
+	getJSON(t, bank(h, b.pid), "/payments", &bList)
+	if len(bList) != 2 {
+		t.Fatalf("bank B is a party to both payments but sees %d", len(bList))
+	}
+
+	// The clearing house is the CSM. Seeing every payment is its job, not a leak.
+	var all []paymentDTO
+	getJSON(t, csm(h), "/payments", &all)
+	if len(all) != 2 {
+		t.Fatalf("the clearing house sees %d payments, want both", len(all))
+	}
+}
+
+// seededBank is a bank plus one funded, IBAN-addressed customer account — the
+// least a bank needs to be either end of an SCT.
+type seededBank struct {
+	pid     string
+	account string
+	iban    string
+}
+
+func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
+	t.Helper()
+	mk := func(name, iban string) seededBank {
+		pid := doJSON(t, cb(h), "POST", "/members", `{"name":"`+name+`"}`, http.StatusCreated)["id"].(string)
+		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
+			`{"name":"`+name+` customer","asset":"EUR","productId":"`+prdOf(t, h, pid)+
+				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,
+			http.StatusCreated)["id"].(string)
+		doJSON(t, bank(h, pid), "POST", "/deposits",
+			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
+		return seededBank{pid: pid, account: did, iban: iban}
+	}
+	return mk("Bank A", "NARROW-A-0001"), mk("Bank B", "NARROW-B-0001"), mk("Bank C", "NARROW-C-0001")
+}
+
+// sct initiates a credit transfer between two seeded banks and returns its id.
+func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
+	t.Helper()
+	return doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+from.pid+`","account":"`+from.account+`"},
+		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`"},
+		"amount":10000,
+		"endToEndId":"`+e2e+`"
+	}`, http.StatusCreated)["id"].(string)
 }
