@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>AURTSESSXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CSMBFRPPXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>AURTSESSXXX-20260731-000001</BizMsgIdr>
+    <MsgDefIdr>pacs.008.001.08</MsgDefIdr>
+    <CreDt>2026-07-31T09:30:00Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+    <FIToFICstmrCdtTrf>
+      <GrpHdr>
+        <MsgId>AURTSESSXXX-20260731-000001</MsgId>
+        <CreDtTm>2026-07-31T09:30:00Z</CreDtTm>
+        <NbOfTxs>1</NbOfTxs>
+        <TtlIntrBkSttlmAmt Ccy="EUR">3000.00</TtlIntrBkSttlmAmt>
+        <IntrBkSttlmDt>2026-08-01</IntrBkSttlmDt>
+        <SttlmInf>
+          <SttlmMtd>CLRG</SttlmMtd>
+          <ClrSys>
+            <Prtry>CBS</Prtry>
+          </ClrSys>
+        </SttlmInf>
+      </GrpHdr>
+      <CdtTrfTxInf>
+        <PmtId>
+          <InstrId>pay-0001</InstrId>
+          <EndToEndId>INV-2026-0042</EndToEndId>
+          <TxId>pay-0001</TxId>
+        </PmtId>
+        <PmtTpInf>
+          <SvcLvl>
+            <Cd>SEPA</Cd>
+          </SvcLvl>
+        </PmtTpInf>
+        <IntrBkSttlmAmt Ccy="EUR">3000.00</IntrBkSttlmAmt>
+        <ChrgBr>SLEV</ChrgBr>
+        <Dbtr>
+          <Nm>Alice Andersson</Nm>
+        </Dbtr>
+        <DbtrAcct>
+          <Id>
+            <IBAN>SE89AURORA1001</IBAN>
+          </Id>
+        </DbtrAcct>
+        <DbtrAgt>
+          <FinInstnId>
+            <BICFI>AURTSESSXXX</BICFI>
+          </FinInstnId>
+        </DbtrAgt>
+        <CdtrAgt>
+          <FinInstnId>
+            <BICFI>VERDITMMXXX</BICFI>
+          </FinInstnId>
+        </CdtrAgt>
+        <Cdtr>
+          <Nm>Bella Bruno</Nm>
+        </Cdtr>
+        <CdtrAcct>
+          <Id>
+            <IBAN>IT60VERDE2002</IBAN>
+          </Id>
+        </CdtrAcct>
+        <RmtInf>
+          <Ustrd>Invoice INV-2026-0042</Ustrd>
+        </RmtInf>
+      </CdtTrfTxInf>
+    </FIToFICstmrCdtTrf>
+  </Document>
+</Envelope>
