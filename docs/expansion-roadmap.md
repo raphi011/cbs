@@ -308,16 +308,6 @@ card-processor persona, and the customer's mandate and credit screens. The
 scheme-operator persona is no longer among them — 6a gave it a backend, so it
 ships.
 
-**The two paragraphs above are being revised.** 6 has absorbed a per-entity API
-split — one process binding one listener per bank, per central bank and per
-clearing house, over one shared `Store` — which makes the scoping *structural*
-rather than navigational, drops `/participants/{pid}` from 43 of ~60 routes, and
-separates three operator surfaces the single API currently conflates. It also
-surfaces two things the one-server API cannot express: `POST /cycles/{cid}/settle`
-sits on the clearing house when settling is the central bank's act, and
-`GET /payments` lists every bank's payments when a bank should see only its own.
-The spec owns the revision; this entry follows it.
-
 ### 7. ISO 20022 interbank messaging — `spec`
 
 Spec: [`superpowers/specs/2026-07-31-iso20022-messages-design.md`](superpowers/specs/2026-07-31-iso20022-messages-design.md)
@@ -349,12 +339,18 @@ Reopens exactly one of 5's deferrals, and only because 5's stated reason for it
 was that nothing needed a BIC: `DbtrAgt`/`CdtrAgt` are mandatory in the EPC
 `pacs.008`, so a message cannot be written without one.
 
-**7b depends on the topology decision made in 6: one process, many listeners.**
-Go channels do not cross process boundaries, so a per-entity split into separate
-*processes* would make 7b's transport a socket instead. It is not, and 7b
-therefore uses channels directly rather than behind a transport interface — an
-abstraction with one implementor, kept open for a future that has been decided
-against, would not earn its place.
+**7b depends on 6a's topology: the deployment unit is the listener, not the
+process.** Go channels do not cross process boundaries, so the mesh lives inside
+one binary running every listener — 6a's default. It therefore uses channels
+directly rather than behind a transport interface; an abstraction with one
+implementor, kept open for a topology that is not the default, would not earn
+its place.
+
+The consequence to state plainly rather than discover: **6a's `-entity` mode
+runs one process per entity, and the mesh cannot span it.** 7b must either
+refuse `-entity` or carry a second transport, and that is a decision for 7b's
+spec. It is not a defect in 6a — a real network's banks are separate processes,
+and the honest form of that is a socket, which is what 7b would have to build.
 
 Deliberately out of scope across all three: `pain.001`/`pain.008` customer
 initiation, the `camt` reporting family, `camt.056`/`pacs.007` recalls and
@@ -366,9 +362,14 @@ Each entity — every participant bank, the central bank, the clearing house —
 gets its **own `Store`**, so that no code path can reach another entity's books
 except by sending it a message.
 
-One process, N stores. Separate *processes* were never what made this hard, and
-6 has settled the topology the other way; separate **stores** are the whole
-cost, and they are also the whole lesson.
+One binary, N listeners, N stores. Separate *processes* were never what made
+this hard — 6a settled the deployment unit as the listener — and separate
+**stores** are the whole cost, as well as the whole lesson.
+
+6a is the reason this is now tractable rather than speculative. It already gives
+each entity its own surface and its own identity; what it deliberately did not
+split is the one thing left, and it said so: *"out of scope: splitting the
+store"*.
 
 **What it costs.** `SettleCycleTx` today "moves the netted reserves, mirrors
 them in each bank's own books and pays out every creditor inside one
@@ -389,7 +390,7 @@ model is misleading rather than merely simplified.
 So the sub-project's real deliverable is a concept the repository does not have:
 an unreconciled position, and what a bank does with one.
 
-**Dependencies.** 6, for the per-entity API. 7b, for seams that are already
+**Dependencies.** 6a, for the per-entity API. 7b, for seams that are already
 message-shaped — attempted before 7b this is a redesign, attempted after it a
 mechanical extraction.
 
