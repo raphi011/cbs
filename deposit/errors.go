@@ -83,4 +83,26 @@ var (
 	// ErrInvalidStatusTransition is returned when an account status change is
 	// not permitted from the account's current state.
 	ErrInvalidStatusTransition = errors.New("invalid account status transition")
+
+	// ErrIdentifierTaken is returned when an account is given an identifier
+	// another account at the SAME bank already holds. The check spans one
+	// register, because that is the widest scope a register can see — and it is
+	// also the right scope: a bank-issued identifier is globally unique by
+	// construction (an IBAN carries its own bank code, a PAN its BIN), so two
+	// banks cannot collide without one of them issuing addresses it was never
+	// allocated.
+	ErrIdentifierTaken = errors.New("identifier already in use at this bank")
+
+	// ErrIdentifierNotFound is returned when no account holds the identifier.
+	ErrIdentifierNotFound = errors.New("identifier not found")
+
+	// ErrIdentifierAmbiguous is returned when more than one account holds it.
+	//
+	// This is refused rather than resolved to the first hit, for the reason
+	// settlement refuses to default a cycle's asset: an address that resolves
+	// to two accounts is not an address, and guessing quietly in the layer that
+	// decides where money goes is the failure worth having a sentinel for. It
+	// is also what closes the within-bank race that comes with enforcing
+	// uniqueness in the domain rather than with a constraint.
+	ErrIdentifierAmbiguous = errors.New("identifier resolves to more than one account")
 )

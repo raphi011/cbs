@@ -75,6 +75,16 @@ type Account struct {
 	Asset     ledger.AssetCode
 	Status    AccountStatus
 
+	// Identifiers are this account's external addresses — what a counterparty
+	// quotes to pay it. Zero is normal: an account nobody pays from outside the
+	// bank needs no address at all.
+	//
+	// They are part of the account aggregate rather than a sibling entity, and
+	// that is load-bearing in store/pg: PutDepositAccount writes both sides
+	// itself, which is the one condition under which the schema allows a real
+	// FOREIGN KEY (see store/pg/schema/0001_init.sql).
+	Identifiers []Identifier
+
 	// Accrued is interest earned and not yet charged, at sub-minor-unit
 	// precision. The general ledger holds Accrued.Minor() in InterestGL; this
 	// field holds the residue the ledger cannot represent.
