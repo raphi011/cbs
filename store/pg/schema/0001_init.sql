@@ -552,19 +552,19 @@ CREATE TABLE participant_assets (
 -- scheme and value, for the same reason: the known schemes are Go constants,
 -- not a database enum.
 CREATE TABLE mandates (
-    id                        TEXT PRIMARY KEY,
-    debtor_participant        TEXT NOT NULL,
-    debtor_account            TEXT NOT NULL,
-    debtor_identifier_scheme  TEXT NOT NULL,
-    debtor_identifier_value   TEXT NOT NULL,
-    creditor_participant      TEXT NOT NULL,
-    creditor_account          TEXT NOT NULL,
+    id                         TEXT PRIMARY KEY,
+    debtor_participant         TEXT NOT NULL,
+    debtor_account             TEXT NOT NULL,
+    debtor_identifier_scheme   TEXT NOT NULL,
+    debtor_identifier_value    TEXT NOT NULL,
+    creditor_participant       TEXT NOT NULL,
+    creditor_account           TEXT NOT NULL,
     creditor_identifier_scheme TEXT NOT NULL,
     creditor_identifier_value  TEXT NOT NULL,
-    max_amount                BIGINT NOT NULL,
-    status                    SMALLINT NOT NULL,
-    created_at                TIMESTAMPTZ,
-    seq                       BIGSERIAL NOT NULL
+    max_amount                 BIGINT NOT NULL,
+    status                     SMALLINT NOT NULL,
+    created_at                 TIMESTAMPTZ,
+    seq                        BIGSERIAL NOT NULL
 );
 
 CREATE TABLE payments (
