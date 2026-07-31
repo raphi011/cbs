@@ -1,5 +1,23 @@
 # Role-Scoped Web UI Implementation Plan
 
+> **PARTLY SUPERSEDED, 2026-07-31 — do not execute as written.** Sub-project 6
+> split into **6a, the operator-split API**
+> (`../specs/2026-07-31-operator-split-api-design.md`), built first, and **6b**,
+> the web UI this plan covers. Build 6a, then re-plan 6b against the revised
+> spec.
+>
+> What survives: Task 1 (the identity module), Task 4 (the shell split), Task 5
+> (the identity picker), Task 6 (accents), Task 7 (the bank home), and the two
+> findings recorded under *Two things the design spec undercounts* — both still
+> hold and both still cost real work.
+>
+> What does not: there are **four** personas now, not three, so `navFor`, the
+> route move and the nav-integrity test all grow a clearing house; the network
+> screens split between `/central-bank/…` and `/clearing-house/…` rather than
+> all landing on the central bank; every data call is routed to a per-operator
+> backend through a rewritten proxy; and Task 9's send form is rebuilt around
+> the bank's `POST /payments` answering `202 Accepted` with a `{paymentId}`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the web app's single unified dashboard with three role-scoped

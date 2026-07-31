@@ -1,5 +1,27 @@
 # Handoff: sub-project 6, the role-scoped web UI
 
+> **Superseded, 2026-07-31.** Sub-project 6 split in two after this was written.
+> **6a, the operator-split API** (`specs/2026-07-31-operator-split-api-design.md`)
+> gives each entity its own listener and is built first; **6b** is the web UI
+> below, revised against it. Read both specs, and take this document only for
+> the repo lore in *Things about this repo that will bite you* and *Two lessons
+> from sub-project 5* — those still hold in full.
+>
+> What is now false here, corrected rather than deleted so the reasoning stays
+> legible:
+>
+> - "**This sub-project is frontend-only**" — 6a is entirely backend. The web
+>   work is still frontend, but it is no longer the whole of 6.
+> - "**A customer send form … does not have to quote an identifier — but the
+>   payee lookup still needs `/directory`**" — true, and it now calls the
+>   *bank's* `GET /directory`, not the network's. A customer's browser must not
+>   talk to the clearing house.
+> - The implied persona count. There are **four**: central bank, clearing house,
+>   bank, customer. The scheme-operator persona this handoff's spec deferred now
+>   ships, because 6a gives it a backend.
+> - "**Start by writing the implementation plan**" — done, at `c91c092`, and
+>   since partly invalidated by 6a. Re-plan after 6a lands; do not patch it.
+
 Paste this into a fresh session in `~/Git/cbs`.
 
 ---
