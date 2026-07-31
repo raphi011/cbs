@@ -549,3 +549,30 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 		}
 	}
 }
+
+func TestSeededAccountsCarryTheirIBAN(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	for _, p := range listParticipants(t, ctx, net) {
+		accounts, err := p.Deposit.ListAccounts(ctx)
+		if err != nil {
+			t.Fatalf("ListAccounts: %v", err)
+		}
+		for _, a := range accounts {
+			if len(a.Identifiers) != 1 || a.Identifiers[0].Scheme != deposit.IdentifierIBAN {
+				t.Fatalf("%s/%s identifiers = %#v, want exactly one IBAN",
+					p.Name, a.Name, a.Identifiers)
+			}
+			// Resolving it must come back to the same account: this is the
+			// property the customer send form depends on.
+			got, err := p.Deposit.ResolveIdentifier(ctx, a.Identifiers[0])
+			if err != nil {
+				t.Fatalf("ResolveIdentifier(%s): %v", a.Identifiers[0].Value, err)
+			}
+			if got.ID != a.ID {
+				t.Fatalf("resolved %s, want %s", got.ID, a.ID)
+			}
+		}
+	}
+}

@@ -249,12 +249,19 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 	return b.openOverdraft(p, name, iban, 0)
 }
 
-// openOverdraft opens a customer account with an overdraft limit and records
-// its IBAN. The limit is per account and the PRICE is not: it comes from the
-// Basic product, so the day-30 reprice above reaches every account opened here
-// without touching one of them.
+// openOverdraft opens a customer account with an overdraft limit and gives it
+// the IBAN as its own identifier, so it is resolvable through
+// Register.ResolveIdentifier rather than merely labelled. The limit is per
+// account and the PRICE is not: it comes from the Basic product, so the day-30
+// reprice above reaches every account opened here without touching one of
+// them.
+//
+// b.ibans is a lookaside recording the same string, kept only because
+// payment.PartyRef.IBAN is still a free-form field that b.ref populates from
+// it; once PartyRef carries an identifier instead, the map goes with it.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
-	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit))
+	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
+	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
 	b.ibans[a.ID] = iban
 	return a
 }
