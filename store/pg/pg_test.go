@@ -19,6 +19,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/pg"
 	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
@@ -54,6 +55,7 @@ func TestConformance(t *testing.T) {
 
 	storetest.RunLedger(t, func(t *testing.T) ledger.Store { return newStore(t) })
 	storetest.RunDeposit(t, func(t *testing.T) deposit.Store { return newStore(t).Deposit() })
+	storetest.RunProduct(t, func(t *testing.T) product.Store { return newStore(t).Product() })
 	storetest.RunPayment(t, func(t *testing.T) payment.Store { return newStore(t).Payment() })
 	storetest.RunLending(t, func(t *testing.T) lending.Store { return newStore(t).Lending() })
 }

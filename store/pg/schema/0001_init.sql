@@ -299,6 +299,65 @@ CREATE TABLE overdraft_terms (
 CREATE INDEX overdraft_terms_account_idx ON overdraft_terms (book_id, account_id, day_key);
 
 -- ---------------------------------------------------------------------------
+-- The product catalogue
+-- ---------------------------------------------------------------------------
+
+-- A catalogue entry: the named product an account is opened FROM. Separate from
+-- its versions because a product needs a name before it has a price, and
+-- because listing the catalogue should not mean grouping a version table.
+--
+-- product_versions.product_id carries no foreign key, for the reason
+-- subledgers.ledger_id does not: "the parent must exist" is a domain rule, and
+-- product.Catalogue enforces it. A constraint here would make store/pg reject
+-- writes store/mem accepts.
+CREATE TABLE products (
+    book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    id         TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    kind       SMALLINT NOT NULL,
+    retired    BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ,
+    seq        BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, id)
+);
+
+-- What a product cost from one day onwards: one row per repricing, never
+-- changed once published.
+--
+-- The primary key is (book_id, product_id, day_key), which is where the book's
+-- non-overlapping-interval exclusion constraint went. Keying by DAY makes "the
+-- version in force on D" unique by construction, so there is no interval to
+-- exclude — and unlike a tstzrange with a GiST exclusion constraint, store/mem
+-- can implement the same rule with a map key. It is the discipline
+-- overdraft_terms and snapshots already follow.
+CREATE TABLE product_versions (
+    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    product_id      TEXT NOT NULL,
+    day_key         TEXT NOT NULL,
+    effective_from  TIMESTAMPTZ,
+    rate            BIGINT NOT NULL,
+    unarranged_rate BIGINT NOT NULL,
+    day_count       SMALLINT NOT NULL,
+    hash            TEXT NOT NULL,
+    published_at    TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ,
+    seq             BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, product_id, day_key)
+);
+
+COMMENT ON COLUMN product_versions.published_at IS
+    'NULL means DRAFT: the row is editable and is invisible to resolution, so the published version before it stays in force through it. Non-NULL freezes the row — product.Catalogue refuses a write to it, and the refusal is in the domain layer rather than a CHECK because store/mem must refuse exactly the same writes.';
+
+COMMENT ON COLUMN product_versions.hash IS
+    'sha256 over the identity and the pricing (see product.Version.ComputeHash), computed at publication and VERIFIED on every read that prices a day. It is the only control on the one hole a domain-layer refusal cannot cover: a direct UPDATE to a published row. A mismatch fails the accrual rather than pricing a day from a row nobody published.';
+
+-- Index 4: the timeline read the accrual makes once per product per run, and
+-- the bounded as-of lookup an operator view makes. Both filter on
+-- (book_id, product_id) and order by day_key, so one index serves both. Not
+-- redundant with the primary key for the reason Index 3 is not.
+CREATE INDEX product_versions_product_idx ON product_versions (book_id, product_id, day_key);
+
+-- ---------------------------------------------------------------------------
 -- The lending layer
 -- ---------------------------------------------------------------------------
 
@@ -386,7 +445,7 @@ CREATE TABLE facility_terms (
     PRIMARY KEY (book_id, facility_id, day_key)
 );
 
--- Index 4: the timeline read that accrual makes once per facility per run, and
+-- Index 5: the timeline read that accrual makes once per facility per run, and
 -- the bounded as-of lookup a draw check makes. Both filter on (book_id,
 -- facility_id) and order by day_key, so one index serves both — the same
 -- reasoning as overdraft_terms_account_idx, applied to this table's own
@@ -472,7 +531,7 @@ CREATE TABLE payments (
     seq                  BIGSERIAL NOT NULL
 );
 
--- Index 5: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
+-- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
 -- InitiatePaymentTx — and a store that refused one where mem accepted it would
 -- be the two implementations disagreeing.
@@ -493,7 +552,7 @@ CREATE TABLE cycles (
     seq           BIGSERIAL NOT NULL
 );
 
--- Index 6: GetOpenCycle. Partial on the open status, which is the only one it
+-- Index 7: GetOpenCycle. Partial on the open status, which is the only one it
 -- ever asks for. status 0 is payment.CycleOpen.
 CREATE INDEX cycles_open_idx ON cycles (scheme) WHERE status = 0;
 
@@ -546,7 +605,7 @@ CREATE TABLE audit_events (
     occurred_at TIMESTAMPTZ
 );
 
--- Indexes 7 and 8: the two shapes every audit query has. Book+scope is what a
+-- Indexes 8 and 9: the two shapes every audit query has. Book+scope is what a
 -- Book's own log and the participant endpoints ask for; entity is what a
 -- "history of this account" view asks for. Both carry seq so the cursor and the
 -- ordering come out of the index.

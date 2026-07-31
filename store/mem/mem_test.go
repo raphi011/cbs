@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/storetest"
 )
@@ -34,6 +35,14 @@ func TestConformance(t *testing.T) {
 func TestDepositConformance(t *testing.T) {
 	storetest.RunDeposit(t, func(t *testing.T) deposit.Store {
 		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Deposit()
+	})
+}
+
+// TestProductConformance runs the catalogue half of the suite against the same
+// implementation, through the product.Store view of the store.
+func TestProductConformance(t *testing.T) {
+	storetest.RunProduct(t, func(t *testing.T) product.Store {
+		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Product()
 	})
 }
 

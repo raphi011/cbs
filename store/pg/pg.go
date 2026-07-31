@@ -51,6 +51,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 )
 
 // ErrReadOnly is returned when a write is attempted inside View, mirroring
@@ -241,6 +242,7 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 var tables = []string{
 	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
 	"deposit_accounts", "holds", "snapshots", "overdraft_terms",
+	"products", "product_versions",
 	"facilities", "installments", "facility_terms",
 	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions",
@@ -326,6 +328,24 @@ func (d depositStore) Update(ctx context.Context, fn func(context.Context, depos
 
 func (d depositStore) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
 	return d.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Product returns this store as a product.Store.
+func (s *Store) Product() product.Store { return productStore{s} }
+
+// productStore re-types Store's update and view; Reset and Close are promoted
+// unchanged from the embedded *Store.
+type productStore struct{ *Store }
+
+// compile-time check that the adapter satisfies the interface it exists for.
+var _ product.Store = productStore{}
+
+func (p productStore) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (p productStore) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
 }
 
 // Lending returns this store as a lending.Store.

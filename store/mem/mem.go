@@ -37,6 +37,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 )
 
 // ErrReadOnly is returned when a write is attempted inside View. Update is the
@@ -198,6 +199,13 @@ type state struct {
 	// map assignment — the same shape snapshots has, for the same reason.
 	overdraftTerms map[ledger.BookID]map[termsKey]deposit.OverdraftTerms
 
+	// The catalogue's state. products is keyed by ID; productVersions is keyed
+	// by (product, effective day) rather than nested per product, so an upsert
+	// is a single map assignment — the same shape overdraftTerms has, for the
+	// same reason.
+	products        map[ledger.BookID]map[product.ID]product.Product
+	productVersions map[ledger.BookID]map[versionKey]product.Version
+
 	// The payment layer's state. These maps are NOT nested per book: the
 	// entities are network-scoped — a payment belongs to no single bank — so
 	// they are sequenced under ledger.NetworkBook and keyed by their ID alone.
@@ -260,6 +268,13 @@ type termsKey struct {
 	dayKey  string
 }
 
+// versionKey identifies one product version within a book: the product and the
+// effective day, which is the composite primary key store/pg holds.
+type versionKey struct {
+	productID product.ID
+	dayKey    string
+}
+
 // installmentKey is an instalment's composite identity: its facility and its
 // position in that facility's schedule.
 type installmentKey struct {
@@ -287,6 +302,8 @@ const (
 	kindHold           rowKind = "hold"
 	kindSnapshot       rowKind = "snapshot"
 	kindOverdraftTerms rowKind = "overdraft_terms"
+	kindProduct        rowKind = "products"
+	kindProductVersion rowKind = "product_versions"
 	kindParticipant    rowKind = "participant"
 	kindPayment        rowKind = "payment"
 	kindMandate        rowKind = "mandate"
@@ -324,6 +341,8 @@ func newState() *state {
 		holds:           make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
 		snapshots:       make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
 		overdraftTerms:  make(map[ledger.BookID]map[termsKey]deposit.OverdraftTerms),
+		products:        make(map[ledger.BookID]map[product.ID]product.Product),
+		productVersions: make(map[ledger.BookID]map[versionKey]product.Version),
 		participants:    make(map[payment.ParticipantID]payment.Participant),
 		payments:        make(map[payment.PaymentID]payment.Payment),
 		mandates:        make(map[payment.MandateID]payment.Mandate),
@@ -362,6 +381,8 @@ func (s *state) clone() *state {
 		holds:           cloneNested(s.holds),
 		snapshots:       cloneNested(s.snapshots),
 		overdraftTerms:  cloneNested(s.overdraftTerms),
+		products:        cloneNested(s.products),
+		productVersions: cloneNested(s.productVersions),
 		participants:    maps.Clone(s.participants),
 		payments:        maps.Clone(s.payments),
 		mandates:        maps.Clone(s.mandates),
@@ -418,6 +439,28 @@ func cloneNested[B, K comparable, V any](m map[B]map[K]V) map[B]map[K]V {
 // counters — and a deposit capture's hold write and GL posting land in one unit
 // of work.
 func (s *Store) Deposit() deposit.Store { return depositStore{s} }
+
+// Product returns this store as a product.Store.
+func (s *Store) Product() product.Store { return productStore{s} }
+
+// productStore re-types Store's Update and View; Reset and Close are promoted
+// unchanged from the embedded *Store.
+type productStore struct{ *Store }
+
+// compile-time check that the adapter satisfies the interface it exists for.
+var _ product.Store = productStore{}
+
+func (p productStore) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.Update(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(product.Tx))
+	})
+}
+
+func (p productStore) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.View(ctx, func(ctx context.Context, t ledger.Tx) error {
+		return fn(ctx, t.(product.Tx))
+	})
+}
 
 // depositStore re-types Store's Update and View; Reset and Close are promoted
 // unchanged from the embedded *Store.
