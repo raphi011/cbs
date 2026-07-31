@@ -14,6 +14,15 @@ import (
 // already named the bank would answer nothing.
 func (s *Server) registerDirectoryRoutes(mux *router) {
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
+	s.registerBankIdentifierRoutes(mux)
+}
+
+// registerBankIdentifierRoutes is the half of the directory that belongs to one
+// bank: issuing and withdrawing the addresses of its own accounts. Resolving an
+// address is the network-wide half and is registered separately, because the
+// two answer different questions — "give this account an IBAN" is the account's
+// bank's act, and "who holds this IBAN?" is a question about everybody.
+func (s *Server) registerBankIdentifierRoutes(mux *router) {
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/identifiers", s.handleAddIdentifier)
 	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}/identifiers/{scheme}/{value}", s.handleRemoveIdentifier)
 }

@@ -20,6 +20,16 @@ import (
 type Server struct {
 	net *payment.Network
 
+	// boundPID is the participant this listener belongs to, empty on the
+	// central bank's and the clearing house's.
+	//
+	// It is what replaces the {pid} path segment: a bank's port already names
+	// the bank, so a bank's routes have nowhere to put another bank's id. The
+	// value lives on a shallow copy of the Server (see forBank) rather than in
+	// the request context, which is what leaves all 58 bank handlers untouched
+	// — they call s.participant(w, r) exactly as before.
+	boundPID payment.ParticipantID
+
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
 	populate func(context.Context, *payment.Network) error
@@ -105,11 +115,36 @@ func (s *Server) routes() *router {
 	return mux
 }
 
-// participant resolves the {pid} path parameter to a live *payment.Participant.
-// On failure it writes the appropriate error response and returns false, so
-// callers can simply `return` when ok is false.
+// forBank returns a view of this Server bound to one participant. The copy is
+// shallow on purpose: every listener shares the one Network, the one populate
+// func and the one log.
+//
+// It is built field by field rather than as *s because a sync.Mutex copied by
+// value is a second, independent lock. resetMu therefore stays behind, on the
+// original Server — which is the one the central bank's listener uses, and the
+// central bank is the only operator with a reset route. So there is exactly one
+// resetMu in the process, guarding the only surface that can reach it.
+func (s *Server) forBank(pid payment.ParticipantID) *Server {
+	return &Server{
+		net:      s.net,
+		boundPID: pid,
+		populate: s.populate,
+		log:      s.log,
+	}
+}
+
+// participant resolves the listener's own participant. On failure it writes the
+// appropriate error response and returns false, so callers can simply `return`
+// when ok is false.
+//
+// Transitional: until the switch-over an unbound Server falls back to the {pid}
+// path parameter, so the combined Routes() keeps working alongside the three
+// operator surfaces.
 func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Participant, bool) {
-	pid := payment.ParticipantID(r.PathValue("pid"))
+	pid := s.boundPID
+	if pid == "" {
+		pid = payment.ParticipantID(r.PathValue("pid"))
+	}
 	p, err := s.network().GetParticipant(r.Context(), pid)
 	if err != nil {
 		writeError(w, err)
