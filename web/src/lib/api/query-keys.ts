@@ -52,6 +52,14 @@ export const qk = {
   // Deposit layer. Balances, holds and snapshots nest under the account so a
   // single invalidate of ["participants", pid, "deposit-accounts"] refreshes
   // the whole subtree — handy when a release/capture only gives us a hold id.
+  // Product catalogue. Versions nest under the product, which nests under the
+  // list, so one invalidate of products(pid) refreshes a timeline too.
+  products: (pid: string) => ["participants", pid, "products"] as const,
+  product: (pid: string, prid: string) =>
+    ["participants", pid, "products", prid] as const,
+  productVersions: (pid: string, prid: string) =>
+    ["participants", pid, "products", prid, "versions"] as const,
+
   depositAccounts: (pid: string) =>
     ["participants", pid, "deposit-accounts"] as const,
   depositAccount: (pid: string, did: string) =>

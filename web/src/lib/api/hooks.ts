@@ -288,6 +288,22 @@ function invalidateDeposits(
   qc.invalidateQueries({ queryKey: qk.depositAudit(pid) });
 }
 
+export function useProducts(pid: string) {
+  return useQuery({
+    queryKey: qk.products(pid),
+    queryFn: () => api.listProducts(pid),
+    enabled: pid !== "",
+  });
+}
+
+export function useProductVersions(pid: string, prid: string) {
+  return useQuery({
+    queryKey: qk.productVersions(pid, prid),
+    queryFn: () => api.listProductVersions(pid, prid),
+    enabled: pid !== "" && prid !== "",
+  });
+}
+
 export function useDepositAccounts(pid: string) {
   return useQuery({
     queryKey: qk.depositAccounts(pid),

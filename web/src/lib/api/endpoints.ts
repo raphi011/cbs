@@ -18,6 +18,10 @@ import type {
   CreateHoldRequest,
   CreateMandateRequest,
   DepositAccount,
+  DraftVersionRequest,
+  CreateProductRequest,
+  ProductVersion,
+  Product,
   DescriptionRequest,
   Facility,
   FundRequest,
@@ -226,6 +230,58 @@ export function ledgerAudit(
 }
 
 // --- Deposit: accounts ----------------------------------------------------
+
+// --- Product catalogue ----------------------------------------------------
+
+// listProducts returns the whole catalogue, retired entries included: a
+// withdrawn product is still the product some accounts are on.
+export function listProducts(pid: string): Promise<Product[]> {
+  return request("GET", `/participants/${pid}/products`);
+}
+
+export function getProduct(pid: string, prid: string): Promise<Product> {
+  return request("GET", `/participants/${pid}/products/${prid}`);
+}
+
+export function createProduct(
+  pid: string,
+  body: CreateProductRequest,
+): Promise<Product> {
+  return request("POST", `/participants/${pid}/products`, body);
+}
+
+export function retireProduct(pid: string, prid: string): Promise<Product> {
+  return request("POST", `/participants/${pid}/products/${prid}/retire`);
+}
+
+// listProductVersions returns the whole timeline, drafts included, oldest
+// first — an operator view has to be able to see what is queued.
+export function listProductVersions(
+  pid: string,
+  prid: string,
+): Promise<ProductVersion[]> {
+  return request("GET", `/participants/${pid}/products/${prid}/versions`);
+}
+
+export function draftProductVersion(
+  pid: string,
+  prid: string,
+  body: DraftVersionRequest,
+): Promise<ProductVersion> {
+  return request("POST", `/participants/${pid}/products/${prid}/versions`, body);
+}
+
+// The effective day is in the PATH because it is the version's identity: "2026-07-30".
+export function publishProductVersion(
+  pid: string,
+  prid: string,
+  day: string,
+): Promise<ProductVersion> {
+  return request(
+    "POST",
+    `/participants/${pid}/products/${prid}/versions/${day}/publish`,
+  );
+}
 
 export function listDepositAccounts(pid: string): Promise<DepositAccount[]> {
   return request("GET", `/participants/${pid}/deposit-accounts`);

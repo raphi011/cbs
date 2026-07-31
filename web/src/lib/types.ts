@@ -174,6 +174,57 @@ export interface DepositAccount {
 
 export type PricingSource = "product" | "negotiated";
 
+// --- Product catalogue ----------------------------------------------------
+
+// A catalogue entry: the named product an account is opened FROM.
+//
+// retired takes it off sale but does NOT unprice the accounts already on it,
+// which keep resolving against its versions for as long as they live — so a
+// form must filter retired entries out of what it offers, while an account
+// page must still be able to name one.
+export interface Product {
+  id: string;
+  name: string;
+  kind: ProductKind;
+  retired: boolean;
+  createdAt: string;
+}
+
+export type ProductKind = "CurrentAccount";
+
+// One row of a product's effective-dated timeline: what it cost from one day
+// onwards, never changed once published.
+//
+// published false is a DRAFT — editable, and invisible to pricing, so the
+// published row before it stays in force through its day. hash and publishedAt
+// are stamped at publication and absent before it. There is no limit here, and
+// the absence is the design: a limit is an underwriting decision about one
+// customer, so it lives on the account's own terms timeline.
+export interface ProductVersion {
+  productId: string;
+  effectiveFrom: string;
+  rate: number;
+  unarrangedRate: number;
+  rateScale: number;
+  dayCount: string;
+  published: boolean;
+  publishedAt?: string;
+  hash: string;
+  createdAt: string;
+}
+
+export interface CreateProductRequest {
+  name: string;
+  kind: ProductKind;
+}
+
+export interface DraftVersionRequest {
+  effectiveFrom: string;
+  rate: number;
+  unarrangedRate: number;
+  dayCount: string;
+}
+
 // One row of an account's effective-dated overdraft terms timeline. rate and
 // unarrangedRate are millionths of rateScale, the same convention
 // DepositAccount uses. effectiveFrom is when the row takes economic effect and

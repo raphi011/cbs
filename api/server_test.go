@@ -2288,3 +2288,91 @@ func TestDormantDebitNamesDormancy(t *testing.T) {
 		t.Errorf("refusal body = %s, want it to name dormancy", res.Body)
 	}
 }
+
+// The catalogue over the wire, end to end: create, draft, publish, open an
+// account from it, and see the resolved rate on the account.
+//
+// It is also where the two refusals that make the catalogue trustworthy are
+// pinned at the HTTP boundary — republishing and retroactive publication are
+// both 422, because each is a well-formed request the STATE refuses rather than
+// a malformed one.
+func TestProductCatalogueRoutes(t *testing.T) {
+	h := newTestServer(t)
+	pid := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+
+	created := doJSON(t, h, "POST", "/participants/"+pid+"/products",
+		`{"name":"Basic Current Account","kind":"CurrentAccount"}`, http.StatusCreated)
+	prd := created["id"].(string)
+	if prd == "" {
+		t.Fatal("no product id")
+	}
+	assertEqual(t, "kind on the wire", created["kind"].(string), "CurrentAccount")
+	assertEqual(t, "a new product is on sale", created["retired"].(bool), false)
+
+	// The bank's own default product is in the listing beside it: onboarding
+	// creates one, because a bank with no product cannot open an account.
+	list := doJSONArray(t, h, "GET", "/participants/"+pid+"/products", "", http.StatusOK)
+	assertEqual(t, "catalogue length", len(list), 2)
+
+	// A draft prices nothing, so an account cannot be opened from it yet.
+	drafted := doJSON(t, h, "POST", "/participants/"+pid+"/products/"+prd+"/versions", `{
+		"effectiveFrom":"2025-01-15T00:00:00Z","rate":120000,"dayCount":"ACT/365"
+	}`, http.StatusCreated)
+	assertEqual(t, "a draft is not published", drafted["published"].(bool), false)
+	assertEqual(t, "and carries no hash", drafted["hash"].(string), "")
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Bruno","asset":"EUR","productId":"`+prd+`"}`, http.StatusNotFound)
+
+	published := doJSON(t, h, "POST",
+		"/participants/"+pid+"/products/"+prd+"/versions/2025-01-15/publish", "", http.StatusOK)
+	assertEqual(t, "published", published["published"].(bool), true)
+	if published["hash"].(string) == "" {
+		t.Error("publishing stamped no hash")
+	}
+
+	// Republishing is refused, and the status says "state, not syntax".
+	assertStatus(t, h, "POST",
+		"/participants/"+pid+"/products/"+prd+"/versions/2025-01-15/publish", "", http.StatusUnprocessableEntity)
+
+	acct := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Bruno","asset":"EUR","productId":"`+prd+`","overdraftLimit":50000}`, http.StatusCreated)
+	did := acct["id"].(string)
+	assertEqual(t, "the account names its product", acct["productId"].(string), prd)
+	assertEqual(t, "and is priced by it", int64(acct["overdraftRate"].(float64)), int64(120_000))
+	assertEqual(t, "from the product", acct["pricingSource"].(string), "product")
+
+	// A negotiated rate shows as such, which is the distinction a customer
+	// service screen needs.
+	negotiated := doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts/"+did+"/overdraft-pricing", `{
+		"effectiveFrom":"2025-01-15T00:00:00Z",
+		"pricing":{"rate":90000,"unarrangedRate":0,"dayCount":"ACT/365"}
+	}`, http.StatusOK)
+	assertEqual(t, "the negotiated rate", int64(negotiated["overdraftRate"].(float64)), int64(90_000))
+	assertEqual(t, "and its source", negotiated["pricingSource"].(string), "negotiated")
+
+	// Retroactive publication is refused over the wire too. Drafting it is
+	// allowed — only publication is forward-only.
+	doJSON(t, h, "POST", "/participants/"+pid+"/products/"+prd+"/versions", `{
+		"effectiveFrom":"2020-01-01T00:00:00Z","rate":1,"dayCount":"ACT/365"
+	}`, http.StatusCreated)
+	assertStatus(t, h, "POST",
+		"/participants/"+pid+"/products/"+prd+"/versions/2020-01-01/publish", "", http.StatusUnprocessableEntity)
+
+	// The timeline lists drafts alongside published rows: an operator view has
+	// to be able to see what is queued.
+	versions := doJSONArray(t, h, "GET", "/participants/"+pid+"/products/"+prd+"/versions", "", http.StatusOK)
+	assertEqual(t, "timeline length", len(versions), 2)
+	assertEqual(t, "oldest first", versions[0].(map[string]any)["effectiveFrom"].(string), "2020-01-01T00:00:00Z")
+
+	// Retiring takes it off sale without unpricing the account already on it.
+	retired := doJSON(t, h, "POST", "/participants/"+pid+"/products/"+prd+"/retire", "", http.StatusOK)
+	assertEqual(t, "retired", retired["retired"].(bool), true)
+	assertStatus(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Bella","asset":"EUR","productId":"`+prd+`"}`, http.StatusUnprocessableEntity)
+	still := doJSON(t, h, "GET", "/participants/"+pid+"/deposit-accounts/"+did, "", http.StatusOK)
+	assertEqual(t, "the account on it still resolves", int64(still["overdraftRate"].(float64)), int64(90_000))
+
+	// An unknown kind is a bad field value, not a silent CurrentAccount.
+	assertStatus(t, h, "POST", "/participants/"+pid+"/products",
+		`{"name":"Odd","kind":"SavingsAccount"}`, http.StatusBadRequest)
+}
