@@ -1,6 +1,7 @@
 package iso20022
 
 import (
+	"encoding/json"
 	"encoding/xml"
 	"time"
 )
@@ -43,6 +44,35 @@ func (d *ISODate) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
 	return nil
 }
 
+// MarshalJSON writes the date as a JSON string in YYYY-MM-DD format.
+//
+// This method exists because the embedded time.Time would otherwise promote
+// an encoding that silently disagrees with the XML one. A type whose whole
+// purpose is a specific precision must not have a second, different precision
+// reachable through another encoder.
+func (d ISODate) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Format(isoDateLayout))
+}
+
+// UnmarshalJSON parses YYYY-MM-DD from a JSON string, and fails on anything else.
+//
+// This method exists because the embedded time.Time would otherwise promote
+// an encoding that silently disagrees with the XML one. A type whose whole
+// purpose is a specific precision must not have a second, different precision
+// reachable through another encoder.
+func (d *ISODate) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	t, err := time.Parse(isoDateLayout, s)
+	if err != nil {
+		return err
+	}
+	d.Time = t
+	return nil
+}
+
 // ISODateTime is a timestamp, such as a message creation time.
 type ISODateTime struct{ time.Time }
 
@@ -56,6 +86,37 @@ func (d ISODateTime) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
 func (d *ISODateTime) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
 	var s string
 	if err := dec.DecodeElement(&s, &start); err != nil {
+		return err
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return err
+	}
+	d.Time = t
+	return nil
+}
+
+// MarshalJSON writes the timestamp as a JSON string at second precision, with its zone.
+//
+// This method exists because the embedded time.Time would otherwise promote
+// an encoding that silently disagrees with the XML one. A type whose whole
+// purpose is a specific precision must not have a second, different precision
+// reachable through another encoder.
+func (d ISODateTime) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.Truncate(time.Second).Format(isoDateTimeLayout))
+}
+
+// UnmarshalJSON parses an ISO 20022 ISODateTime from a JSON string, accepting
+// the fractional seconds the standard permits even though this package never
+// writes them.
+//
+// This method exists because the embedded time.Time would otherwise promote
+// an encoding that silently disagrees with the XML one. A type whose whole
+// purpose is a specific precision must not have a second, different precision
+// reachable through another encoder.
+func (d *ISODateTime) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
 		return err
 	}
 	t, err := time.Parse(time.RFC3339, s)
