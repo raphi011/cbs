@@ -13,7 +13,7 @@ import (
 // Products are book-scoped like every other entity here, so every route hangs
 // off a participant: the same product ID at two banks is two products, because
 // a catalogue belongs to a bank.
-func (s *Server) registerProductRoutes(mux *http.ServeMux) {
+func (s *Server) registerProductRoutes(mux *router) {
 	mux.HandleFunc("POST /participants/{pid}/products", s.handleCreateProduct)
 	mux.HandleFunc("GET /participants/{pid}/products", s.handleListProducts)
 	mux.HandleFunc("GET /participants/{pid}/products/{prid}", s.handleGetProduct)

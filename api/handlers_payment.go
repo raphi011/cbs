@@ -112,7 +112,7 @@ func (s *Server) settlementAssets(ctx context.Context, settlements []payment.Set
 	return out, nil
 }
 
-func (s *Server) registerPaymentRoutes(mux *http.ServeMux) {
+func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("POST /mandates", s.handleCreateMandate)
 	mux.HandleFunc("GET /mandates", s.handleListMandates)
 	mux.HandleFunc("GET /mandates/{mid}", s.handleGetMandate)

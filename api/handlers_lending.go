@@ -12,7 +12,7 @@ import (
 	"github.com/raphi011/cbs/lending"
 )
 
-func (s *Server) registerLendingRoutes(mux *http.ServeMux) {
+func (s *Server) registerLendingRoutes(mux *router) {
 	mux.HandleFunc("POST /participants/{pid}/facilities", s.handleOpenFacility)
 	mux.HandleFunc("GET /participants/{pid}/facilities", s.handleListFacilities)
 	mux.HandleFunc("GET /participants/{pid}/facilities/{fid}", s.handleGetFacility)

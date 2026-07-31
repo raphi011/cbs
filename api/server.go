@@ -84,7 +84,15 @@ func (s *Server) Reset(ctx context.Context) error {
 // Routes builds the HTTP handler: an enhanced ServeMux (Go 1.22+ method+path
 // patterns) wrapped in the middleware chain (CORS, logging, recover).
 func (s *Server) Routes() http.Handler {
-	mux := http.NewServeMux()
+	return s.withMiddleware(s.routes().mux)
+}
+
+// RoutePatterns is every pattern Routes registers, sorted. It exists for the
+// tests that hold the operator split honest; nothing in serving uses it.
+func (s *Server) RoutePatterns() []string { return s.routes().Patterns() }
+
+func (s *Server) routes() *router {
+	mux := newRouter()
 	s.registerParticipantRoutes(mux)
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)
@@ -94,7 +102,7 @@ func (s *Server) Routes() http.Handler {
 	s.registerDirectoryRoutes(mux)
 	s.registerAuditRoutes(mux)
 	s.registerAdminRoutes(mux)
-	return s.withMiddleware(mux)
+	return mux
 }
 
 // participant resolves the {pid} path parameter to a live *payment.Participant.

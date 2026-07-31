@@ -11,7 +11,7 @@ import (
 // a wedged connection holding a goroutine forever, not to police the work.
 const resetTimeout = 30 * time.Second
 
-func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
+func (s *Server) registerAdminRoutes(mux *router) {
 	mux.HandleFunc("POST /admin/reset", s.handleReset)
 }
 

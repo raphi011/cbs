@@ -7,7 +7,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 )
 
-func (s *Server) registerLedgerRoutes(mux *http.ServeMux) {
+func (s *Server) registerLedgerRoutes(mux *router) {
 	mux.HandleFunc("POST /participants/{pid}/ledgers", s.handleCreateLedger)
 	mux.HandleFunc("GET /participants/{pid}/ledgers", s.handleListLedgers)
 	mux.HandleFunc("GET /participants/{pid}/ledgers/{lid}", s.handleGetLedger)

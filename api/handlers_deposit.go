@@ -11,7 +11,7 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-func (s *Server) registerDepositRoutes(mux *http.ServeMux) {
+func (s *Server) registerDepositRoutes(mux *router) {
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts", s.handleOpenDepositAccount)
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts", s.handleListDepositAccounts)
 	mux.HandleFunc("GET /participants/{pid}/deposit-accounts/{did}", s.handleGetDepositAccount)

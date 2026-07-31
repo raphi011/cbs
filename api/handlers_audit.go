@@ -14,7 +14,7 @@ import (
 // file is what makes the query parameters — and the limit cap — impossible to
 // implement three-and-a-bit ways.
 
-func (s *Server) registerAuditRoutes(mux *http.ServeMux) {
+func (s *Server) registerAuditRoutes(mux *router) {
 	mux.HandleFunc("GET /participants/{pid}/audit", s.handleLedgerAudit)
 	mux.HandleFunc("GET /participants/{pid}/deposit-audit", s.handleDepositAudit)
 	mux.HandleFunc("GET /central-bank/audit", s.handleCentralBankAudit)

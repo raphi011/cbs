@@ -12,7 +12,7 @@ import (
 // GET /directory is network-scoped rather than participant-scoped on purpose:
 // resolving an address is exactly the question "which bank?", so a route that
 // already named the bank would answer nothing.
-func (s *Server) registerDirectoryRoutes(mux *http.ServeMux) {
+func (s *Server) registerDirectoryRoutes(mux *router) {
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
 	mux.HandleFunc("POST /participants/{pid}/deposit-accounts/{did}/identifiers", s.handleAddIdentifier)
 	mux.HandleFunc("DELETE /participants/{pid}/deposit-accounts/{did}/identifiers/{scheme}/{value}", s.handleRemoveIdentifier)

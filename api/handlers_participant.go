@@ -9,7 +9,7 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-func (s *Server) registerParticipantRoutes(mux *http.ServeMux) {
+func (s *Server) registerParticipantRoutes(mux *router) {
 	mux.HandleFunc("POST /participants", s.handleAddParticipant)
 	mux.HandleFunc("GET /participants", s.handleListParticipants)
 	mux.HandleFunc("GET /participants/{pid}", s.handleGetParticipant)
