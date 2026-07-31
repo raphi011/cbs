@@ -19,6 +19,7 @@ type Scope string
 const (
 	ScopeLedger  Scope = "ledger"
 	ScopeDeposit Scope = "deposit"
+	ScopeProduct Scope = "product"
 	ScopePayment Scope = "payment"
 	ScopeLending Scope = "lending"
 )
@@ -52,6 +53,15 @@ const (
 	// rather than hiding inside the ordinary daily stream.
 	EventOverdraftAccrualCorrected = "overdraft.accrual_corrected"
 	EventOverdraftInterestCharged  = "overdraft.interest_charged"
+
+	// ScopeProduct. A published price is exactly the kind of fact an auditor
+	// asks who entered and when, so every catalogue write is logged — including
+	// the draft, because the gap between drafting and publishing is where a
+	// four-eyes control would sit if this system had one.
+	EventProductCreated          = "product.created"
+	EventProductRetired          = "product.retired"
+	EventProductVersionDrafted   = "product.version_drafted"
+	EventProductVersionPublished = "product.version_published"
 
 	// ScopePayment. These are network-scoped: they describe entities that
 	// belong to no single bank, so they are recorded under NetworkBook.
