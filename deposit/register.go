@@ -145,15 +145,23 @@ func (r *Register) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID
 // stays on the account's own timeline for life. The asset comes before it so
 // that the two ledger-typed arguments are not adjacent and transposable.
 //
+// identifiers are the account's external addresses — an IBAN, later a card PAN.
+// Zero is legal and normal: an account nobody pays from outside the bank needs
+// no address. Each must be unique within THIS bank; a collision is
+// ErrIdentifierTaken. Uniqueness is not checked across banks, and does not need
+// to be: a bank-issued identifier carries its own issuer (an IBAN its bank
+// code, a PAN its BIN), so two banks cannot collide without one of them issuing
+// addresses it was never allocated.
+//
 // Returns product.ErrProductNotFound, product.ErrProductRetired,
 // product.ErrKindMismatch, product.ErrVersionNotFound, and any error from the
 // underlying ledger (for example ledger.ErrSubledgerNotFound if the subledger
 // does not exist, or ledger.ErrAssetNotFound if the asset is not registered).
-func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount) (Account, error) {
+func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount, identifiers ...Identifier) (Account, error) {
 	var out Account
 	err := r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = r.OpenAccountTx(ctx, tx, subledger, name, asset, productID, overdraftLimit)
+		out, err = r.OpenAccountTx(ctx, tx, subledger, name, asset, productID, overdraftLimit, identifiers...)
 		return err
 	})
 	return out, err
@@ -163,12 +171,21 @@ func (r *Register) OpenAccount(ctx context.Context, subledger ledger.SubledgerID
 // account, the deposit account and the account's first terms row are created
 // through the same Tx, so an account can never exist in one layer without the
 // other — which is what deposit.Tx embedding product.Tx exists for.
-func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount) (Account, error) {
+func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.SubledgerID, name string, asset ledger.AssetCode, productID product.ID, overdraftLimit ledger.Amount, identifiers ...Identifier) (Account, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return Account{}, err
 	}
 	if err := r.checkOpenableProductTx(ctx, tx, productID); err != nil {
 		return Account{}, err
+	}
+
+	for _, ident := range identifiers {
+		if err := ident.Validate("identifier"); err != nil {
+			return Account{}, err
+		}
+		if err := r.checkIdentifierFreeTx(ctx, tx, "", ident); err != nil {
+			return Account{}, err
+		}
 	}
 
 	gl, err := r.gl.CreateAccountTx(ctx, tx, subledger, name, ledger.Liability, asset)
@@ -182,12 +199,13 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 	}
 
 	acct := Account{
-		ID:        AccountID(id),
-		GLAccount: gl.ID,
-		Name:      name,
-		Asset:     gl.Asset,
-		Status:    Active,
-		CreatedAt: r.now(),
+		ID:          AccountID(id),
+		GLAccount:   gl.ID,
+		Name:        name,
+		Asset:       gl.Asset,
+		Status:      Active,
+		CreatedAt:   r.now(),
+		Identifiers: identifiers,
 	}
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return Account{}, err
@@ -601,6 +619,132 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 		return nil
 	})
 	return out, err
+}
+
+// checkIdentifierFreeTx refuses an identifier another account at this bank
+// already holds. owner, when non-empty, is the account the identifier is being
+// added TO: it already holding the identifier is a no-op rather than a
+// collision, which is what makes a retried AddIdentifier succeed twice.
+//
+// The check is a read followed by a write with no constraint behind it and no
+// lock above it, so two concurrent adds can both pass. That is deliberate — a
+// UNIQUE in store/pg would reject writes store/mem accepts — and the resulting
+// duplicate is caught by ResolveIdentifier, which refuses rather than guesses.
+func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner AccountID, ident Identifier) error {
+	holders, err := tx.ListDepositAccountsByIdentifier(ctx, r.bookID, ident)
+	if err != nil {
+		return err
+	}
+	for _, h := range holders {
+		if h.ID != owner {
+			return ErrIdentifierTaken
+		}
+	}
+	return nil
+}
+
+// AddIdentifier gives an existing account another external address.
+//
+// Adding rather than replacing is the point of the plural: a customer keeps
+// their IBAN and gains a card PAN, and reissuing a card is a remove plus an add
+// against an account whose balance and history do not move.
+func (r *Register) AddIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.AddIdentifierTx(ctx, tx, id, ident)
+	})
+}
+
+// AddIdentifierTx is AddIdentifier within a caller-supplied unit of work.
+func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ident Identifier) error {
+	if err := ident.Validate("identifier"); err != nil {
+		return err
+	}
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	if err := r.checkIdentifierFreeTx(ctx, tx, id, ident); err != nil {
+		return err
+	}
+	for _, got := range acct.Identifiers {
+		if got == ident {
+			return nil // already held by this account: a no-op, not an error
+		}
+	}
+	acct.Identifiers = append(acct.Identifiers, ident)
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventIdentifierAdded, string(id), ident)
+}
+
+// RemoveIdentifier withdraws an external address. Removing one that is not held
+// is a no-op, for the same reason adding one twice is.
+//
+// Historical payments are unaffected: a payment stores the address it was sent
+// to, so removing it here cannot rewrite what a settled payment says.
+func (r *Register) RemoveIdentifier(ctx context.Context, id AccountID, ident Identifier) error {
+	return r.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return r.RemoveIdentifierTx(ctx, tx, id, ident)
+	})
+}
+
+// RemoveIdentifierTx is RemoveIdentifier within a caller-supplied unit of work.
+func (r *Register) RemoveIdentifierTx(ctx context.Context, tx Tx, id AccountID, ident Identifier) error {
+	acct, err := tx.GetDepositAccount(ctx, r.bookID, id)
+	if err != nil {
+		return err
+	}
+	kept := make([]Identifier, 0, len(acct.Identifiers))
+	found := false
+	for _, got := range acct.Identifiers {
+		if got == ident {
+			found = true
+			continue
+		}
+		kept = append(kept, got)
+	}
+	if !found {
+		return nil
+	}
+	acct.Identifiers = kept
+	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
+		return err
+	}
+	return r.appendAuditTx(ctx, tx, ledger.EventIdentifierRemoved, string(id), ident)
+}
+
+// ResolveIdentifier returns the account this bank addresses by ident.
+//
+// Zero matches is ErrIdentifierNotFound; more than one is
+// ErrIdentifierAmbiguous, never the first hit. An address that resolves to two
+// accounts is not an address, and this is the layer that decides where money
+// goes — the same reason settlement refuses to default a cycle's asset rather
+// than settle it in the wrong money.
+func (r *Register) ResolveIdentifier(ctx context.Context, ident Identifier) (Account, error) {
+	var out Account
+	err := r.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = r.ResolveIdentifierTx(ctx, tx, ident)
+		return err
+	})
+	return out, err
+}
+
+// ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of work.
+func (r *Register) ResolveIdentifierTx(ctx context.Context, tx Tx, ident Identifier) (Account, error) {
+	holders, err := tx.ListDepositAccountsByIdentifier(ctx, r.bookID, ident)
+	if err != nil {
+		return Account{}, err
+	}
+	switch len(holders) {
+	case 0:
+		return Account{}, ErrIdentifierNotFound
+	case 1:
+		return holders[0], nil
+	default:
+		return Account{}, ErrIdentifierAmbiguous
+	}
 }
 
 // ---------------------------------------------------------------------------

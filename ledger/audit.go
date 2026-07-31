@@ -45,6 +45,8 @@ const (
 	EventHoldReleased       = "hold.released"
 	EventHoldCaptured       = "hold.captured"
 	EventSnapshotTaken      = "snapshot.taken"
+	EventIdentifierAdded    = "identifier.added"
+	EventIdentifierRemoved  = "identifier.removed"
 	// The three ways an account's own terms row changes, kept apart because they
 	// are three different decisions: what the bank will lend this customer, what
 	// this customer was promised instead of the list price, and which product
