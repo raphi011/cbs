@@ -1,6 +1,7 @@
 package iso20022
 
 import (
+	"encoding/xml"
 	"errors"
 	"testing"
 )
@@ -94,5 +95,89 @@ func TestIBANValidateRejects(t *testing.T) {
 				t.Fatalf("Validate(%q) = %v, want it to wrap ErrIBANPattern", tt.in, err)
 			}
 		})
+	}
+}
+
+func TestAccountIdentificationChoice(t *testing.T) {
+	iban := IBAN("SE89AURORA1001")
+	other := GenericAccountIdentification{Id: "internal-1"}
+
+	t.Run("IBAN only is valid", func(t *testing.T) {
+		c := AccountIdentification4Choice{IBAN: &iban}
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate() = %v, want nil", err)
+		}
+	})
+	t.Run("Othr only is valid", func(t *testing.T) {
+		c := AccountIdentification4Choice{Othr: &other}
+		if err := c.validate(); err != nil {
+			t.Fatalf("validate() = %v, want nil", err)
+		}
+	})
+	t.Run("both is invalid", func(t *testing.T) {
+		c := AccountIdentification4Choice{IBAN: &iban, Othr: &other}
+		if err := c.validate(); !errors.Is(err, ErrInvalidChoice) {
+			t.Fatalf("validate() = %v, want it to wrap ErrInvalidChoice", err)
+		}
+	})
+	t.Run("neither is invalid", func(t *testing.T) {
+		c := AccountIdentification4Choice{}
+		if err := c.validate(); !errors.Is(err, ErrInvalidChoice) {
+			t.Fatalf("validate() = %v, want it to wrap ErrInvalidChoice", err)
+		}
+	})
+	t.Run("a malformed IBAN is rejected", func(t *testing.T) {
+		bad := IBAN("nope")
+		c := AccountIdentification4Choice{IBAN: &bad}
+		if err := c.validate(); !errors.Is(err, ErrIBANPattern) {
+			t.Fatalf("validate() = %v, want it to wrap ErrIBANPattern", err)
+		}
+	})
+}
+
+func TestBranchAndFinancialInstitutionValidate(t *testing.T) {
+	t.Run("a well-formed BIC is valid", func(t *testing.T) {
+		a := BranchAndFinancialInstitution{FinInstnId: FinancialInstitutionIdentification{BICFI: "AURTSESSXXX"}}
+		if err := a.validate(); err != nil {
+			t.Fatalf("validate() = %v, want nil", err)
+		}
+	})
+	t.Run("a missing BIC is a missing element", func(t *testing.T) {
+		a := BranchAndFinancialInstitution{}
+		if err := a.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a malformed BIC is a format error", func(t *testing.T) {
+		a := BranchAndFinancialInstitution{FinInstnId: FinancialInstitutionIdentification{BICFI: "AURTSESSX"}}
+		if err := a.validate(); !errors.Is(err, ErrBICFormat) {
+			t.Fatalf("validate() = %v, want it to wrap ErrBICFormat", err)
+		}
+	})
+}
+
+func TestPartyIdentificationRequiresAName(t *testing.T) {
+	if err := (PartyIdentification{}).validate(); !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+	}
+	if err := (PartyIdentification{Nm: "Alice Andersson"}).validate(); err != nil {
+		t.Fatalf("validate() = %v, want nil", err)
+	}
+}
+
+// TestOptionalCompositesAreOmitted pins the encoding/xml hazard the package doc
+// describes: an optional composite element that is not a pointer would emit an
+// empty element, which the schema rejects.
+func TestOptionalCompositesAreOmitted(t *testing.T) {
+	type holder struct {
+		XMLName xml.Name               `xml:"Holder"`
+		RmtInf  *RemittanceInformation `xml:"RmtInf,omitempty"`
+	}
+	out, err := xml.Marshal(holder{})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if string(out) != `<Holder></Holder>` {
+		t.Fatalf("Marshal() = %s, want <Holder></Holder>", out)
 	}
 }
