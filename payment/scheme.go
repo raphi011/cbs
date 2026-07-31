@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -25,6 +26,16 @@ type Scheme interface {
 	// is a euro scheme. A cross-currency payment is not one payment at all —
 	// it is a payment plus an FX trade.
 	Asset() ledger.AssetCode
+
+	// AddressedBy is the kind of external address this scheme routes on. Both
+	// legs of a payment must carry an identifier in it.
+	//
+	// It is a property of the scheme, exactly as Asset is: SEPA routes on
+	// IBANs, a card scheme routes on a PAN. Putting it here rather than on the
+	// account is what keeps a euro-area retail standard out of the deposit
+	// layer — an account has addresses, and the scheme decides which kind it
+	// reads.
+	AddressedBy() deposit.IdentifierScheme
 
 	// Direction reports whether the debtor pushes funds or the creditor
 	// pulls them.
@@ -96,13 +107,14 @@ const SchemeSEPACT SchemeID = "sepa.ct"
 // mandate. It maps to the ISO 20022 pacs.008 interbank message.
 type SCT struct{}
 
-func (SCT) ID() SchemeID                     { return SchemeSEPACT }
-func (SCT) Asset() ledger.AssetCode          { return "EUR" }
-func (SCT) Direction() SchemeDirection       { return Push }
-func (SCT) SettlementModel() SettlementModel { return Net }
-func (SCT) RequiresMandate() bool            { return false }
-func (SCT) AllowsReturn() bool               { return true }
-func (SCT) SettlementDelay() time.Duration   { return 24 * time.Hour } // T+1
+func (SCT) ID() SchemeID                          { return SchemeSEPACT }
+func (SCT) Asset() ledger.AssetCode               { return "EUR" }
+func (SCT) AddressedBy() deposit.IdentifierScheme { return deposit.IdentifierIBAN }
+func (SCT) Direction() SchemeDirection            { return Push }
+func (SCT) SettlementModel() SettlementModel      { return Net }
+func (SCT) RequiresMandate() bool                 { return false }
+func (SCT) AllowsReturn() bool                    { return true }
+func (SCT) SettlementDelay() time.Duration        { return 24 * time.Hour } // T+1
 
 func (SCT) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return validateFunds(ctx, p, sc)
@@ -119,13 +131,14 @@ const SchemeSEPADD SchemeID = "sepa.dd"
 // mandate, and allowing returns. It maps to the ISO 20022 pacs.003 message.
 type SDD struct{}
 
-func (SDD) ID() SchemeID                     { return SchemeSEPADD }
-func (SDD) Asset() ledger.AssetCode          { return "EUR" }
-func (SDD) Direction() SchemeDirection       { return Pull }
-func (SDD) SettlementModel() SettlementModel { return Net }
-func (SDD) RequiresMandate() bool            { return true }
-func (SDD) AllowsReturn() bool               { return true }
-func (SDD) SettlementDelay() time.Duration   { return 48 * time.Hour } // T+2
+func (SDD) ID() SchemeID                          { return SchemeSEPADD }
+func (SDD) Asset() ledger.AssetCode               { return "EUR" }
+func (SDD) AddressedBy() deposit.IdentifierScheme { return deposit.IdentifierIBAN }
+func (SDD) Direction() SchemeDirection            { return Pull }
+func (SDD) SettlementModel() SettlementModel      { return Net }
+func (SDD) RequiresMandate() bool                 { return true }
+func (SDD) AllowsReturn() bool                    { return true }
+func (SDD) SettlementDelay() time.Duration        { return 48 * time.Hour } // T+2
 
 func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if p.MandateID == "" {

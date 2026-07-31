@@ -993,6 +993,19 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if debtorAccount.Asset != scheme.Asset() || creditorAccount.Asset != scheme.Asset() {
 		return Payment{}, ErrAssetMismatch
 	}
+	// Both legs must be addressable in the scheme's addressing scheme, and a
+	// quoted address must belong to the account it is quoted for.
+	//
+	// This sits beside the asset check and for the same reason: it is the one
+	// moment both ends are in view and neither is written, and running it here
+	// rather than inside a scheme's Validate means it applies to every scheme
+	// rather than only the ones whose Validate calls validateFunds.
+	if err := checkAddressable(scheme, req.Debtor, debtorAccount); err != nil {
+		return Payment{}, err
+	}
+	if err := checkAddressable(scheme, req.Creditor, creditorAccount); err != nil {
+		return Payment{}, err
+	}
 	if err := ledger.ValidateText("endToEndId", req.EndToEndID); err != nil {
 		return Payment{}, err
 	}
@@ -1452,6 +1465,31 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 		return deposit.Account{}, ErrAccountNotInParticipant
 	}
 	return acct, nil
+}
+
+// checkAddressable confirms an account can be addressed by the scheme, and that
+// any address the request quoted is really one of the account's.
+func checkAddressable(scheme Scheme, ref PartyRef, acct deposit.Account) error {
+	want := scheme.AddressedBy()
+	held := false
+	for _, ident := range acct.Identifiers {
+		if ident.Scheme == want {
+			held = true
+			break
+		}
+	}
+	if !held {
+		return ErrUnaddressableAccount
+	}
+	if ref.Identifier == (deposit.Identifier{}) {
+		return nil
+	}
+	for _, ident := range acct.Identifiers {
+		if ident == ref.Identifier {
+			return nil
+		}
+	}
+	return ErrIdentifierMismatch
 }
 
 // removeFromCycleTx drops a payment from its (open) clearing cycle.

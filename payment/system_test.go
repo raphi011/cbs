@@ -3,6 +3,7 @@ package payment_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -45,6 +46,10 @@ func accountsOf(t *testing.T, p *Participant) ParticipantAccounts {
 // each (Alice at Bank A, Bob at Bank B), and funds Alice with 100000. The
 // returned account IDs are deposit account IDs; their backing GL account IDs
 // are resolved when checking book balances.
+//
+// Both accounts carry an IBAN — not because this fixture is about addressing,
+// but because most of it is not: every scheme in play here is SEPA, so an
+// account it cannot address is not a usable test fixture at all.
 func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob deposit.AccountID) {
 	t.Helper()
 	ctx := context.Background()
@@ -54,10 +59,8 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 	b, err = sys.AddParticipant(ctx, "Bank B", euroOnly)
 	assertNoError(t, err)
 
-	aliceAcct, err := a.OpenCustomerAccount(ctx, "Alice", testAsset)
-	assertNoError(t, err)
-	bobAcct, err := b.OpenCustomerAccount(ctx, "Bob", testAsset)
-	assertNoError(t, err)
+	aliceAcct := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
+	bobAcct := openCustomer(t, ctx, b, "Bob", "SE89-BANKB-0001")
 
 	assertNoError(t, sys.Deposit(ctx, a.ID, aliceAcct.ID, 100000, "Alice opening deposit"))
 	return a, b, aliceAcct.ID, bobAcct.ID
@@ -84,6 +87,33 @@ func openCustomer(t *testing.T, ctx context.Context, p *Participant, name, iban 
 	acct, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, testAsset, p.ProductID, 0, ident)
 	assertNoError(t, err)
 	return acct
+}
+
+// openCustomerWithoutIdentifier opens a customer deposit account at p with no
+// address at all — the fixture for proving a scheme refuses to route to an
+// account it cannot address, rather than merely one whose quoted address is
+// wrong.
+func openCustomerWithoutIdentifier(t *testing.T, ctx context.Context, p *Participant, name string) deposit.Account {
+	t.Helper()
+	acct, err := p.OpenCustomerAccount(ctx, name, testAsset)
+	assertNoError(t, err)
+	return acct
+}
+
+// openCycle opens a clearing cycle for the given scheme, failing the test on
+// error. It is runCycle's opening step, factored out for tests that only need
+// a cycle open to initiate into — not the full open/close/settle round trip.
+func openCycle(t *testing.T, ctx context.Context, sys *Network, scheme SchemeID) {
+	t.Helper()
+	_, err := sys.OpenCycle(ctx, scheme)
+	assertNoError(t, err)
+}
+
+// fundAccount deposits amount into a customer account, failing the test on
+// error.
+func fundAccount(t *testing.T, ctx context.Context, sys *Network, p *Participant, acct deposit.Account, amount ledger.Amount) {
+	t.Helper()
+	assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, amount, "opening deposit"))
 }
 
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
@@ -488,11 +518,10 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	c, err := sys.AddParticipant(ctx, "Bank C", euroOnly) // underfunded net payer
 	assertNoError(t, err)
 
-	alice, err := a.OpenCustomerAccount(ctx, "Alice", testAsset)
-	assertNoError(t, err)
-	bob, err := b.OpenCustomerAccount(ctx, "Bob", testAsset)
-	assertNoError(t, err)
-	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000)
+	alice := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
+	bob := openCustomer(t, ctx, b, "Bob", "SE89-BANKB-0001")
+	carol, err := c.Deposit.OpenAccount(ctx, c.CustomerSubledger, "Carol", testAsset, c.ProductID, 100000,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKC-0001"})
 	assertNoError(t, err)
 
 	assertNoError(t, sys.Deposit(ctx, a.ID, alice.ID, 100000, "Alice opening deposit"))
@@ -546,11 +575,10 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		sys := testNetwork(t)
 		var banks []*Participant
 		var accounts []deposit.Account
-		for _, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
+		for i, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
 			p, err := sys.AddParticipant(ctx, name, euroOnly)
 			assertNoError(t, err)
-			acct, err := p.OpenCustomerAccount(ctx, "Customer at "+name, testAsset)
-			assertNoError(t, err)
+			acct := openCustomer(t, ctx, p, "Customer at "+name, fmt.Sprintf("SE89-BANK%d-0001", i))
 			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
 			banks = append(banks, p)
 			accounts = append(accounts, acct)
@@ -1199,5 +1227,67 @@ func TestResolveIdentifierRefusesACrossBankCollision(t *testing.T) {
 	})
 	if !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AddressedBy — the scheme declares what addresses it, initiation enforces it
+// ---------------------------------------------------------------------------
+
+func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+	openCycle(t, ctx, net, SchemeSEPACT)
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	// Bruno has no IBAN at all: an SCT cannot address him.
+	bruno := openCustomerWithoutIdentifier(t, ctx, verde, "Bruno")
+
+	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme:   SchemeSEPACT,
+		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:   10_00,
+	})
+	if !errors.Is(err, ErrUnaddressableAccount) {
+		t.Fatalf("InitiatePayment = %v, want ErrUnaddressableAccount", err)
+	}
+}
+
+func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+	openCycle(t, ctx, net, SchemeSEPACT)
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	fundAccount(t, ctx, net, aurora, alice, 100_00)
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+
+	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT,
+		Debtor: PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor: PartyRef{
+			Participant: verde.ID, Account: bruno.ID,
+			// Somebody else's address, pointing at Bruno's account.
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"},
+		},
+		Amount: 10_00,
+	})
+	if !errors.Is(err, ErrIdentifierMismatch) {
+		t.Fatalf("InitiatePayment = %v, want ErrIdentifierMismatch", err)
+	}
+}
+
+func TestSchemesDeclareTheirIdentifierScheme(t *testing.T) {
+	if got := (SCT{}).AddressedBy(); got != deposit.IdentifierIBAN {
+		t.Fatalf("SCT.AddressedBy() = %q, want %q", got, deposit.IdentifierIBAN)
+	}
+	if got := (SDD{}).AddressedBy(); got != deposit.IdentifierIBAN {
+		t.Fatalf("SDD.AddressedBy() = %q, want %q", got, deposit.IdentifierIBAN)
 	}
 }

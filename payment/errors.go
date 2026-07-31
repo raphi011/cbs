@@ -114,4 +114,15 @@ var (
 	// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle in
 	// system_test.go pins both halves of that.
 	ErrAssetMismatch = errors.New("payment accounts are not denominated in the scheme's asset")
+
+	// ErrUnaddressableAccount is returned when a party's account carries no
+	// identifier in the scheme's identifier scheme — an account with no IBAN
+	// cannot be a leg of a SEPA payment.
+	ErrUnaddressableAccount = errors.New("account has no identifier in the scheme's addressing scheme")
+
+	// ErrIdentifierMismatch is returned when a party quotes an identifier the
+	// named account does not hold. The ids route the payment and the identifier
+	// records the address used; the two disagreeing means one of them is wrong,
+	// and the system does not get to choose which.
+	ErrIdentifierMismatch = errors.New("quoted identifier does not belong to the named account")
 )
