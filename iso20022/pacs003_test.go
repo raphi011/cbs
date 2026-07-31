@@ -1,0 +1,63 @@
+package iso20022
+
+import (
+	"errors"
+	"testing"
+)
+
+func TestPacs003RoundTrip(t *testing.T) {
+	env := assertGoldenRoundTrip(t, "pacs003.xml")
+
+	doc, ok := env.Document.(*Pacs003)
+	if !ok {
+		t.Fatalf("Document is %T, want *Pacs003", env.Document)
+	}
+	tx := doc.FIToFICstmrDrctDbt.DrctDbtTxInf
+	if len(tx) != 1 {
+		t.Fatalf("DrctDbtTxInf has %d entries, want 1", len(tx))
+	}
+	if got := tx[0].DrctDbtTx.MndtRltdInf.MndtId; got != "mnd-0001" {
+		t.Fatalf("MndtId = %q, want mnd-0001", got)
+	}
+	if got := tx[0].DrctDbtTx.MndtRltdInf.DtOfSgntr.Format("2006-01-02"); got != "2026-01-15" {
+		t.Fatalf("DtOfSgntr = %s, want 2026-01-15", got)
+	}
+	// The collection is a PULL: the creditor's agent sends it, so Fr is the
+	// creditor's bank and the debtor's bank is the one being asked to pay.
+	if got := env.AppHdr.Fr.FIId.FinInstnId.BICFI; got != "VERDITMMXXX" {
+		t.Fatalf("Fr = %q, want the creditor's agent VERDITMMXXX", got)
+	}
+	if got := tx[0].DbtrAgt.FinInstnId.BICFI; got != "AURTSESSXXX" {
+		t.Fatalf("DbtrAgt = %q, want AURTSESSXXX", got)
+	}
+}
+
+func TestPacs003Validate(t *testing.T) {
+	valid := func() *Pacs003 {
+		env := assertGoldenRoundTrip(t, "pacs003.xml")
+		return env.Document.(*Pacs003)
+	}
+
+	t.Run("no transactions is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no mandate id is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DrctDbtTx.MndtRltdInf.MndtId = ""
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a malformed debtor IBAN is a pattern error", func(t *testing.T) {
+		d := valid()
+		bad := IBAN("nope")
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DbtrAcct.Id.IBAN = &bad
+		if err := d.validate(); !errors.Is(err, ErrIBANPattern) {
+			t.Fatalf("validate() = %v, want it to wrap ErrIBANPattern", err)
+		}
+	})
+}
