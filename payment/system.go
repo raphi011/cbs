@@ -1374,6 +1374,61 @@ func validateParty(field string, ref PartyRef) error {
 	return ledger.ValidateText(field+".iban", ref.IBAN)
 }
 
+// ResolveIdentifier turns an external address — an IBAN today — into the party
+// it names. It is the network's directory.
+//
+// A real network's directory is a service with an index; this is a sweep over
+// the members, which is the honest shape at four banks and the boundary at
+// which a proxy-alias registry would arrive. Aliases that are NOT bank-issued
+// (a phone number, an email address) cannot be resolved this way at all, since
+// no member can guarantee they are unique — which is why SEPA's Proxy Lookup
+// Service and UPI are separate central services rather than a sweep like this.
+func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+	var out PartyRef
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ResolveIdentifierTx(ctx, tx, ident)
+		return err
+	})
+	return out, err
+}
+
+// ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of work.
+//
+// Two members holding the identifier is ErrIdentifierAmbiguous rather than the
+// first one found. Uniqueness is enforced per bank — that is the widest scope a
+// register can see — so a collision across banks is representable, and choosing
+// between them here would route a payment to a bank on the strength of listing
+// order.
+func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+	if err := ident.Validate("identifier"); err != nil {
+		return PartyRef{}, err
+	}
+	members, err := tx.ListParticipants(ctx)
+	if err != nil {
+		return PartyRef{}, err
+	}
+	var found PartyRef
+	hits := 0
+	for _, m := range members {
+		holders, err := tx.ListDepositAccountsByIdentifier(ctx, m.BookID, ident)
+		if err != nil {
+			return PartyRef{}, err
+		}
+		hits += len(holders)
+		if hits > 1 {
+			return PartyRef{}, deposit.ErrIdentifierAmbiguous
+		}
+		if len(holders) == 1 {
+			found = PartyRef{Participant: m.ID, Account: holders[0].ID}
+		}
+	}
+	if hits == 0 {
+		return PartyRef{}, deposit.ErrIdentifierNotFound
+	}
+	return found, nil
+}
+
 // checkPartyTx verifies that a party's participant exists and its deposit
 // account exists within that participant, returning the account so callers
 // that need more than existence (its Asset, its GLAccount, ...) don't have to

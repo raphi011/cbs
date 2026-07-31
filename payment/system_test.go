@@ -63,6 +63,29 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 	return a, b, aliceAcct.ID, bobAcct.ID
 }
 
+// addParticipant adds a euro-only participant bank, failing the test on
+// error. It is setupTwoBanks' AddParticipant call, factored out for tests
+// that want more than two banks or want to name them themselves.
+func addParticipant(t *testing.T, ctx context.Context, sys *Network, name string) *Participant {
+	t.Helper()
+	p, err := sys.AddParticipant(ctx, name, euroOnly)
+	assertNoError(t, err)
+	return p
+}
+
+// openCustomer opens a customer deposit account at p, addressed by the given
+// IBAN. It goes through p.Deposit.OpenAccount directly, rather than
+// p.OpenCustomerAccount, because the identifier is a variadic argument that
+// only the register method takes — mirroring how seed.go attaches an IBAN to
+// every sample account.
+func openCustomer(t *testing.T, ctx context.Context, p *Participant, name, iban string) deposit.Account {
+	t.Helper()
+	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
+	acct, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, name, testAsset, p.ProductID, 0, ident)
+	assertNoError(t, err)
+	return acct
+}
+
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
 // the settled settlement.
 func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settlement {
@@ -1120,5 +1143,61 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 	t.Helper()
 	if got != want {
 		t.Fatalf("%s: got %v, want %v", label, got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ResolveIdentifier — the network's directory
+// ---------------------------------------------------------------------------
+
+func TestResolveIdentifierAcrossBanks(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+
+	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
+	_ = openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
+
+	ref, err := net.ResolveIdentifier(ctx, deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001",
+	})
+	if err != nil {
+		t.Fatalf("ResolveIdentifier: %v", err)
+	}
+	if ref.Participant != aurora.ID || ref.Account != alice.ID {
+		t.Fatalf("resolved %s/%s, want %s/%s", ref.Participant, ref.Account, aurora.ID, alice.ID)
+	}
+}
+
+func TestResolveIdentifierNotFound(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	addParticipant(t, ctx, net, "Aurora Bank")
+
+	_, err := net.ResolveIdentifier(ctx, deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN, Value: "NOBODY-0001",
+	})
+	if !errors.Is(err, deposit.ErrIdentifierNotFound) {
+		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierNotFound", err)
+	}
+}
+
+func TestResolveIdentifierRefusesACrossBankCollision(t *testing.T) {
+	// Per-bank uniqueness makes this reachable, so the network must not pick
+	// one. Two banks claiming one address is not an address.
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	verde := addParticipant(t, ctx, net, "Banca Verde")
+
+	openCustomer(t, ctx, aurora, "Alice", "SHARED-0001")
+	openCustomer(t, ctx, verde, "Bruno", "SHARED-0001")
+
+	_, err := net.ResolveIdentifier(ctx, deposit.Identifier{
+		Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001",
+	})
+	if !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
+		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
 	}
 }
