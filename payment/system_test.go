@@ -1320,8 +1320,8 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 
 func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 	// The creditor-leg case above and this one are separate tests on purpose:
-	// checkAddressable is called once per leg, and a check wired to only one of
-	// them passes every creditor-leg test in the file.
+	// addressFor is called once per leg, and a check wired to only one of them
+	// passes every creditor-leg test in the file.
 	ctx := context.Background()
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank")
@@ -1539,6 +1539,58 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 	assertEqual(t, "reissued debtor address on the payment", pay.Debtor.Identifier, reissued)
 	assertEqual(t, "alice", customerBalance(t, a, alice), 75000)
 	assertEqual(t, "biller", customerBalance(t, b, biller), 25000)
+}
+
+// The other direction of the same change, and the one that has to keep holding.
+//
+// SameParty deliberately LOOSENS the mandate comparison — it stops comparing
+// the quoted address — so what a reader wants proof of is that it did not
+// loosen the part that matters: a mandate still authorises exactly one debtor
+// account paying exactly one creditor account, and nothing else. Substituting
+// either end is ErrMandateMismatch, which before this wave had no test at all.
+func TestMandateStillRefusesADifferentParty(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, biller := setupTwoBanks(t, sys)
+
+	debtor := PartyRef{Participant: a.ID, Account: alice}
+	creditor := PartyRef{Participant: b.ID, Account: biller}
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+
+	// A second customer at Alice's own bank, funded, addressable, and party to
+	// nothing. Same bank on purpose: the participant matching is the easy half,
+	// and an implementation that compared only Participant would pass a
+	// cross-bank version of this test.
+	carla := openCustomer(t, ctx, a, "Carla", "SE89-BANKA-0009")
+	fundAccount(t, ctx, sys, a, carla, 100000)
+	// And a second biller at bank B, for the creditor half.
+	other := openCustomer(t, ctx, b, "Other Biller", "SE89-BANKB-0009")
+
+	openCycle(t, ctx, sys, SchemeSEPADD)
+
+	// Someone else's account, drawn on under Alice's mandate.
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
+		Debtor: PartyRef{Participant: a.ID, Account: carla.ID}, Creditor: creditor,
+	})
+	if !errors.Is(err, ErrMandateMismatch) {
+		t.Fatalf("substituted debtor = %v, want ErrMandateMismatch", err)
+	}
+
+	// Alice's account, collected by a creditor she never authorised.
+	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
+		Debtor: debtor, Creditor: PartyRef{Participant: b.ID, Account: other.ID},
+	})
+	if !errors.Is(err, ErrMandateMismatch) {
+		t.Fatalf("substituted creditor = %v, want ErrMandateMismatch", err)
+	}
+
+	// Nothing moved on either attempt: a refused instruction rolls back whole.
+	assertEqual(t, "alice", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "carla", customerBalance(t, a, carla.ID), 100000)
+	assertEqual(t, "biller", customerBalance(t, b, biller), 0)
 }
 
 func TestSchemesDeclareTheirIdentifierScheme(t *testing.T) {

@@ -131,7 +131,7 @@ var (
 	// but under a different identifier scheme than the payment scheme routes on
 	// — a card PAN quoted for a SEPA credit transfer. Both mean "that is not
 	// this account's address for this scheme".
-	ErrIdentifierMismatch = errors.New("quoted identifier does not belong to the named account")
+	ErrIdentifierMismatch = errors.New("quoted identifier is not one of the account's addresses in the scheme's addressing scheme")
 
 	// ErrAmbiguousAddress is returned when a party quotes NO address and its
 	// account holds more than one identifier in the scheme's addressing scheme,
