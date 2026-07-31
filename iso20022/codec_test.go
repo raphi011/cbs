@@ -362,3 +362,102 @@ func TestRegisterDocumentPanicsWhenNamespaceDisagrees(t *testing.T) {
 	registerDocument("mismatched-namespace.001.001.01", "urn:example:wrong",
 		func() Document { return &testDoc{} })
 }
+
+// envelopeAround wraps a valid header for test.001.001.01 and whatever body
+// bytes the caller supplies in a single <Envelope>. The tests below differ
+// only in what sits between the header and the root's closing tag, so the
+// header is written once here rather than copied into each of them.
+func envelopeAround(body string) string {
+	return `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>AURTSESSXXX-20260731-000001</BizMsgIdr><MsgDefIdr>test.001.001.01</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` + body + `</Envelope>`
+}
+
+const testDocumentXML = `<Document xmlns="urn:example:test.001.001.01"><Body>hello</Body></Document>`
+
+// TestUnmarshalAcceptsAnUnknownElementAfterTheDocument pins that the
+// single-envelope rule is about the ENVELOPE, not about the Document: an
+// element the codec does not recognise, sitting between </Document> and
+// </Envelope>, is skipped and the envelope still decodes. <Sgntr> is a real
+// element of the ISO 20022 business message envelope, and it is defined to
+// follow the document, so refusing it would refuse legitimate input. The same
+// element placed BEFORE <Document> was always skipped, so a rule that refused
+// it here would also be positional and asymmetric for no stated reason.
+func TestUnmarshalAcceptsAnUnknownElementAfterTheDocument(t *testing.T) {
+	in := envelopeAround(testDocumentXML + `<Sgntr><X>signature</X></Sgntr>`)
+
+	env, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v, want an element after <Document> but inside the envelope to be accepted", err)
+	}
+	doc, ok := env.Document.(*testDoc)
+	if !ok {
+		t.Fatalf("Document is %T, want *testDoc", env.Document)
+	}
+	if doc.Body != "hello" {
+		t.Fatalf("Body = %q, want hello", doc.Body)
+	}
+}
+
+// TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses is
+// TestUnmarshalAcceptsAnUnknownElementAfterTheDocument's counterpart for
+// character data. Text between </Document> and </Envelope> is still inside the
+// envelope, so the post-envelope text guard must not reach it.
+func TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses(t *testing.T) {
+	in := envelopeAround(testDocumentXML + `some trailing text inside the envelope`)
+
+	env, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v, want text inside the envelope to be accepted", err)
+	}
+	if env.AppHdr.BizMsgIdr != "AURTSESSXXX-20260731-000001" {
+		t.Fatalf("BizMsgIdr = %q, want the envelope to have decoded", env.AppHdr.BizMsgIdr)
+	}
+}
+
+// TestUnmarshalRejectsASecondDocumentInTheSameEnvelope pins the one element
+// the envelope-level rule must NOT let through twice. Widening the guard so
+// that <Sgntr> can follow <Document> would, on its own, also let a second
+// <Document> follow the first and silently overwrite it — the same parser
+// differential as two concatenated envelopes, one level down.
+func TestUnmarshalRejectsASecondDocumentInTheSameEnvelope(t *testing.T) {
+	in := envelopeAround(testDocumentXML + testDocumentXML)
+
+	if _, err := Unmarshal([]byte(in)); err == nil {
+		t.Fatal("Unmarshal() = nil, want an error for a second <Document> in one envelope")
+	}
+}
+
+// TestUnmarshalRejectsATrailingDirective pins the one trailing construct that
+// carries content of its own. encoding/xml surfaces <!DOCTYPE ...> as an
+// xml.Directive, and a DOCTYPE's internal subset can declare entities — so a
+// DTD arriving after a complete business message is neither inert nor
+// meaningful, and this function parses bytes it did not produce.
+func TestUnmarshalRejectsATrailingDirective(t *testing.T) {
+	for _, in := range []string{
+		wantEnvelopeXML + "\n<!DOCTYPE x>",
+		wantEnvelopeXML + "\n<!DOCTYPE x [<!ENTITY e 'boom'>]>",
+	} {
+		if _, err := Unmarshal([]byte(in)); err == nil {
+			t.Fatalf("Unmarshal() = nil for %q, want an error for a directive after a complete envelope", in[len(wantEnvelopeXML):])
+		}
+	}
+}
+
+// TestUnmarshalAcceptsATrailingProcessingInstruction pins the processing
+// instruction half of the doc comment's claim about what stays legal after the
+// envelope closes. Without it, mutating the code to refuse trailing
+// xml.ProcInst leaves the whole suite green and the claim unchecked.
+func TestUnmarshalAcceptsATrailingProcessingInstruction(t *testing.T) {
+	in := wantEnvelopeXML + "\n<?display mode=\"compact\"?>\n"
+
+	env, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v, want a trailing processing instruction to be accepted", err)
+	}
+	if env.AppHdr.BizMsgIdr != "AURTSESSXXX-20260731-000001" {
+		t.Fatalf("BizMsgIdr = %q, want the envelope decoded from wantEnvelopeXML", env.AppHdr.BizMsgIdr)
+	}
+}

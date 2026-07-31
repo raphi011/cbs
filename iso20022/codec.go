@@ -51,12 +51,13 @@ func Marshal(env Envelope) ([]byte, error) {
 // It is the one function in this repository that consumes bytes it did not
 // produce, so it fails rather than guesses: a root element that is not
 // Envelope, a second top-level element (complete or not) anywhere after the
-// first one, an unknown message definition, a header that disagrees with the
+// first one, a second Document inside one envelope, a DTD after a complete
+// envelope, an unknown message definition, a header that disagrees with the
 // document's namespace, a missing Document, and a document missing a
-// mandatory element are each a named error. The two structural checks — the
-// root's name and there being only one — deliberately return a plain error
-// rather than one of this package's sentinels: both are a structurally
-// different document, not a mandatory element that happens to be missing, and
+// mandatory element are each a named error. The structural checks — the
+// root's name, there being only one, and what may follow it — return a plain
+// error rather than one of this package's sentinels: each says the input is a
+// structurally different document, not a mandatory element that is missing, and
 // naming them ErrMissingElement would misname the problem the same way the
 // missing-Document case once did before it was fixed.
 //
@@ -87,20 +88,41 @@ func Marshal(env Envelope) ([]byte, error) {
 // right tradeoff for the one function that validates bytes this package did
 // not produce, not an oversight.
 //
-// Once a valid Document has been read, everything remaining is scrutinised:
-// any further xml.StartElement is refused, whether it is another <Envelope>,
-// a bare element, or anything else, and any xml.CharData holding non-blank
-// text is refused too. What stays legal after a valid envelope is exactly
-// what carries no content of its own: whitespace, comments, and processing
-// instructions. See TestUnmarshalRejectsASecondValidEnvelope and
-// TestUnmarshalAcceptsTrailingWhitespaceAndComments.
+// The rule this enforces is about the ENVELOPE, not about the Document. It
+// takes effect only once a valid document has been read AND the root element
+// has closed — depth back to zero — not the moment </Document> is decoded.
+// The distinction is not academic: <Sgntr> is a real element of the ISO 20022
+// business message envelope and it follows the document, so a guard that fired
+// on the document's close would refuse legitimate input, and would refuse it
+// only in that position, since the same element before <Document> has always
+// been skipped by the default branch below. See
+// TestUnmarshalAcceptsAnUnknownElementAfterTheDocument and
+// TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses.
+//
+// Once the root has closed on a valid envelope, what remains is scrutinised:
+// a further xml.StartElement is refused, whether it is another <Envelope> or
+// anything else; xml.CharData holding non-blank text is refused; and an
+// xml.Directive is refused, because a DOCTYPE's internal subset can declare
+// entities and so is the one trailing construct that carries content of its
+// own — a DTD arriving after a complete business message has no legitimate
+// meaning. What stays legal is what carries nothing: whitespace, comments and
+// processing instructions. See TestUnmarshalRejectsASecondValidEnvelope,
+// TestUnmarshalRejectsATrailingDirective,
+// TestUnmarshalAcceptsTrailingWhitespaceAndComments and
+// TestUnmarshalAcceptsATrailingProcessingInstruction.
+//
+// Widening the guard to the envelope leaves one element that must still not
+// repeat inside a single envelope: a second <Document> would overwrite the
+// first, which is the same parser differential as two concatenated envelopes
+// one level down. It is refused where it is dispatched, not by the
+// envelope-level guard. See TestUnmarshalRejectsASecondDocumentInTheSameEnvelope.
 //
 // A second, SEPARATE guard (rootClosed below) covers the case where the
 // first top-level element closes WITHOUT ever producing a valid result — an
 // empty or incomplete first <Envelope> followed by more content. That case
-// never reaches the "valid Document" checks above, since there is no result
-// yet, so it needs its own check that a new element cannot legally follow a
-// closed root at depth 1. See TestUnmarshalRejectsContentAfterTheRootCloses.
+// never reaches the checks above, since there is no result yet, so it needs
+// its own check that a new element cannot legally follow a closed root at
+// depth 1. See TestUnmarshalRejectsContentAfterTheRootCloses.
 func Unmarshal(data []byte) (Envelope, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 
@@ -126,8 +148,8 @@ func Unmarshal(data []byte) (Envelope, error) {
 
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if result != nil {
-				return Envelope{}, fmt.Errorf("iso20022: unexpected element %q after a valid envelope was already read", t.Name.Local)
+			if result != nil && depth == 0 {
+				return Envelope{}, fmt.Errorf("iso20022: unexpected element %q after a valid envelope closed", t.Name.Local)
 			}
 			depth++
 			if depth == 1 {
@@ -153,6 +175,9 @@ func Unmarshal(data []byte) (Envelope, error) {
 				}
 				haveHdr = true
 			case "Document":
+				if result != nil {
+					return Envelope{}, errors.New("iso20022: a second Document in one envelope")
+				}
 				if !haveHdr {
 					return Envelope{}, fmt.Errorf("%w: AppHdr", ErrMissingElement)
 				}
@@ -188,8 +213,16 @@ func Unmarshal(data []byte) (Envelope, error) {
 				rootClosed = true
 			}
 		case xml.CharData:
-			if result != nil && len(bytes.TrimSpace(t)) != 0 {
-				return Envelope{}, errors.New("iso20022: unexpected text content after a valid envelope was already read")
+			if result != nil && depth == 0 && len(bytes.TrimSpace(t)) != 0 {
+				return Envelope{}, errors.New("iso20022: unexpected text content after a valid envelope closed")
+			}
+		case xml.Directive:
+			// encoding/xml surfaces <!DOCTYPE ...> here, internal subset and
+			// all. Unlike a comment or a processing instruction it can declare
+			// entities, so it is not inert, and nothing legitimate declares a
+			// DTD after the message it would have applied to.
+			if result != nil && depth == 0 {
+				return Envelope{}, errors.New("iso20022: unexpected directive after a valid envelope closed")
 			}
 		}
 	}
