@@ -331,7 +331,9 @@ Transitions: Active ↔ Dormant (inactivity timer / incoming credit), any state 
 
 A **Frozen** account blocks card authorizations ([[holds]]) and every debit, but still accepts credits — the freeze implemented here is a **debit block**, which is the garnishment and fraud-investigation case: the customer cannot take money out while money owed to them keeps arriving. A *full* freeze, the sanctions case, blocks credits too; one status cannot express both, and this system implements the debit block. The freeze preserves the previous state so that unfreeze returns to Active or Dormant correctly.
 
-The two directions are not mirror images. A debit can fail for want of money, so it is checked with an amount; a credit cannot, so the only question it answers is whether the account is still somewhere money may land — which makes **Closed** the one state that refuses one. Crediting a closed account would leave it holding money no withdrawal could reach and no second close could clear.`,
+The two directions are not mirror images. A debit can fail for want of money, so it is checked with an amount; a credit cannot, so the only question it answers is whether the account is still somewhere money may land — which makes **Closed** the one state that refuses one. Crediting a closed account would leave it holding money no withdrawal could reach and no second close could clear.
+
+Status governs what the account may do; it says nothing about how a counterparty finds it in the first place — that is a separate concern, see [[account-addressing]].`,
   },
   "scheme-direction-push": {
     title: "Push scheme",
@@ -635,6 +637,16 @@ Timeline for a SEPA Credit Transfer:
 
 The suspense balance at any point equals the total value of in-flight payments that have been accepted but not yet settled. If a cycle fails to settle, the suspense remains non-zero — a signal that requires investigation. The [[audit-trail]] records every posting in/out of suspense for reconciliation.`,
   },
+  "account-addressing": {
+    title: "Account addressing",
+    body: `An account has exactly one **internal number** — \`deposit.AccountID\`, the bank's own key — and a set, possibly empty, of **external identifiers**: \`(scheme, value)\` pairs a counterparty actually quotes to pay it. The two are never the same thing; \`AccountID\` is never handed outside the bank, and an account nobody pays from outside it needs no identifier at all. \`IBAN\` (\`SE89-AURORA-1001\` in the seed data) is the only scheme this system issues today, but the shape is generic — a sort code and number, a routing number and number, a proxy alias, a card PAN are all the same pair with a different scheme name.
+
+An account can hold several identifiers at once, and gain or lose one without its balance or history moving: \`Register.AddIdentifier\`/\`RemoveIdentifier\` are how a customer keeps an IBAN and later adds a card PAN, or reissues a card. ISO 20022 models the same shape directly — \`CashAccountIdentification\` is a *choice* between \`IBAN\` and a generic \`Othr\` triple — which is why \`Identifier\` is a pair rather than a field per kind.
+
+**The [[scheme-asset|scheme]] decides which kind addresses it**, \`Scheme.AddressedBy() deposit.IdentifierScheme\`, exactly as \`Scheme.Asset()\` decides what it settles in. \`InitiatePaymentTx\` refuses a leg with no identifier in that scheme (\`ErrUnaddressableAccount\`) and refuses a quoted identifier the named account doesn't hold (\`ErrIdentifierMismatch\`).
+
+**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Network.ResolveIdentifier\` sweeps every member bank and answers \`ErrIdentifierAmbiguous\` rather than guessing — enforced in \`deposit.Register\` alone, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`.`,
+  },
   "audit-trail": {
     title: "Audit trail",
     body: `The **audit trail** is an **immutable, append-only log** of every mutation in the system. Nothing is ever deleted. Every event carries a unique ID, timestamp, event type, and the full payload of the affected entity.
@@ -877,7 +889,7 @@ What is **not** in the ledger under this scheme is trading profit and loss. That
   },
   "scheme-asset": {
     title: "A scheme declares its asset",
-    body: `Every [[payment-lifecycle|payment scheme]] names the one [[asset]] it carries. \`SCT\` and \`SDD\` both return **EUR** — SEPA is the *Single Euro Payments Area*, and a "SEPA dollar transfer" is not a thing. A scheme in another currency is another scheme, with its own rulebook and its own cycles.
+    body: `Every [[payment-lifecycle|payment scheme]] names the one [[asset]] it carries. \`SCT\` and \`SDD\` both return **EUR** — SEPA is the *Single Euro Payments Area*, and a "SEPA dollar transfer" is not a thing. A scheme in another currency is another scheme, with its own rulebook and its own cycles. A scheme makes the same kind of declaration about *addressing*: see [[account-addressing]] for \`AddressedBy()\`, the sibling of \`Asset()\`.
 
 Both the debtor's and the creditor's accounts are checked against it at initiation; a mismatch is \`ErrAssetMismatch\`. The check sits in \`InitiatePaymentTx\` rather than inside a scheme's own \`Validate\`, so it runs for **every** scheme — a future card scheme whose \`Validate\` places a hold instead of checking funds would otherwise skip it silently.
 

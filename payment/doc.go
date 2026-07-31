@@ -61,7 +61,9 @@
 //   - No ISO 20022 (pain.001 / pacs.008 / pacs.003) message parsing; the
 //     Payment struct stands in for the instruction. Scheme docs name the
 //     messages they correspond to.
-//   - No IBAN or BIC validation; routing is by explicit ParticipantID.
+//   - No identifier format validation: an IBAN's check digit, length and
+//     country code go unchecked, and a BIC is not modelled at all. Addresses
+//     resolve by exact lookup against deposit.Identifier, not by parsing.
 //   - A single currency, using ledger.Amount (integer minor units).
 //   - One database transaction stands in for a settlement window. Every book —
 //     each participant's and the central bank's — lives in the same Store, told
