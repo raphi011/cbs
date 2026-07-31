@@ -10,9 +10,19 @@ const headerNamespace = "urn:iso:std:iso:20022:tech:xsd:head.001.001.02"
 
 // Document is one ISO 20022 message.
 //
-// Its methods are unexported by design, so that only this package can implement
-// it. A message defined elsewhere would not have a namespace registered, and a
-// Document the codec cannot dispatch to is not a Document.
+// Its methods are unexported, which keeps ACCIDENTAL implementations out: a
+// type defined outside this package cannot satisfy Document merely by having
+// methods of the right names. It does not keep every implementation out — a
+// package that embeds an exported iso20022 type gets that type's unexported
+// methods promoted, and can then override the exported
+// MessageDefinitionIdentifier to name a different message while keeping the
+// embedded namespace() and validate(). That is a deliberate hole, left open
+// because Go has no narrower way to say "implementable only here": sealing it
+// completely would also block the legitimate case of one message type reusing
+// another's plumbing. What IS guaranteed, because both Marshal and
+// registerDocument check it, is that no value reaches either without agreeing
+// with documentRegistry: a Document the codec cannot dispatch to is not a
+// Document.
 type Document interface {
 	// MessageDefinitionIdentifier is the value the header's MsgDefIdr must
 	// carry for this message, e.g. "pacs.008.001.08".
@@ -37,9 +47,27 @@ type documentType struct {
 	make      func() Document
 }
 
+// registerDocument records a message type under a message definition
+// identifier and a namespace. Both are also asserted against a probe instance
+// built by make: the identifier and namespace are otherwise a second source of
+// truth alongside the type's own MessageDefinitionIdentifier and namespace
+// methods, and nothing else would ever notice the two disagreeing — Unmarshal
+// would dispatch to the type under the registered key, and the type would then
+// report a different one, which is a round trip Marshal cannot reproduce. A
+// mismatch here is a programming error caught at package init, so it panics,
+// the same as the duplicate-key case below.
 func registerDocument(msgDefIdr, namespace string, make func() Document) {
 	if _, dup := documentRegistry[msgDefIdr]; dup {
 		panic("iso20022: duplicate message definition " + msgDefIdr)
+	}
+	probe := make()
+	if got := probe.MessageDefinitionIdentifier(); got != msgDefIdr {
+		panic(fmt.Sprintf("iso20022: %T registered under message definition identifier %q but MessageDefinitionIdentifier() returns %q",
+			probe, msgDefIdr, got))
+	}
+	if got := probe.namespace(); got != namespace {
+		panic(fmt.Sprintf("iso20022: %T registered under namespace %q but namespace() returns %q",
+			probe, namespace, got))
 	}
 	documentRegistry[msgDefIdr] = documentType{namespace: namespace, make: make}
 }
