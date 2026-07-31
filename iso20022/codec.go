@@ -51,15 +51,21 @@ func Marshal(env Envelope) ([]byte, error) {
 // It is the one function in this repository that consumes bytes it did not
 // produce, so it fails rather than guesses: a root element that is not
 // Envelope, a second top-level element (complete or not) anywhere after the
-// first one, a second Document inside one envelope, a DTD after a complete
-// envelope, an unknown message definition, a header that disagrees with the
-// document's namespace, a missing Document, and a document missing a
-// mandatory element are each a named error. The structural checks — the
-// root's name, there being only one, and what may follow it — return a plain
-// error rather than one of this package's sentinels: each says the input is a
-// structurally different document, not a mandatory element that is missing, and
-// naming them ErrMissingElement would misname the problem the same way the
-// missing-Document case once did before it was fixed.
+// first one, a repeated AppHdr or Document inside one envelope, a DTD after a
+// complete envelope, an unknown message definition, a header that disagrees
+// with the document's namespace, a missing Document, and a document missing a
+// mandatory element are each an error. The sections below are the authority on
+// the exact set; this sentence is a summary and does not promise to be
+// exhaustive.
+//
+// Four checks return a plain error rather than one of this package's
+// sentinels: the root's name, there being only one top-level element, what may
+// follow a closed envelope, and a repeated AppHdr or Document. Each says the
+// input is a structurally different document, not a mandatory element that
+// happens to be missing, so naming them ErrMissingElement would misname the
+// problem. A missing Document is deliberately NOT among them — that one really
+// is an absent mandatory element, and reporting it as anything else was a bug
+// once already.
 //
 // It reads the input as a single stream of tokens from one *xml.Decoder,
 // rather than unmarshalling into a struct and then re-parsing a captured
@@ -94,10 +100,12 @@ func Marshal(env Envelope) ([]byte, error) {
 // The distinction is not academic: <Sgntr> is a real element of the ISO 20022
 // business message envelope and it follows the document, so a guard that fired
 // on the document's close would refuse legitimate input, and would refuse it
-// only in that position, since the same element before <Document> has always
-// been skipped by the default branch below. See
-// TestUnmarshalAcceptsAnUnknownElementAfterTheDocument and
-// TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses.
+// only in that position, since the same element before <Document> is skipped
+// by the default branch below. See
+// TestUnmarshalAcceptsAnUnknownElementAfterTheDocument,
+// TestUnmarshalAcceptsTextBeforeTheEnvelopeCloses and
+// TestUnmarshalAcceptsUndispatchedElementsAnywhere, which pins the
+// before-position that makes the rule symmetric.
 //
 // Once the root has closed on a valid envelope, what remains is scrutinised:
 // a further xml.StartElement is refused, whether it is another <Envelope> or
@@ -111,11 +119,20 @@ func Marshal(env Envelope) ([]byte, error) {
 // TestUnmarshalAcceptsTrailingWhitespaceAndComments and
 // TestUnmarshalAcceptsATrailingProcessingInstruction.
 //
-// Widening the guard to the envelope leaves one element that must still not
-// repeat inside a single envelope: a second <Document> would overwrite the
-// first, which is the same parser differential as two concatenated envelopes
-// one level down. It is refused where it is dispatched, not by the
-// envelope-level guard. See TestUnmarshalRejectsASecondDocumentInTheSameEnvelope.
+// The envelope-level guard says nothing about repetition INSIDE one envelope,
+// so both elements this codec dispatches on are guarded where they are
+// dispatched instead. Neither <AppHdr> nor <Document> may appear twice: the
+// duplicate is the same parser differential as two concatenated envelopes,
+// one level down. It bit hardest on the header, which is what drives dispatch
+// — and which copy won depended on position, since a second header before
+// <Document> overwrote the first before dispatch while a second after it was
+// decoded and then discarded, result having already snapshotted the first.
+// See TestUnmarshalRejectsASecondDocumentInTheSameEnvelope and
+// TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope, which pins both
+// positions.
+//
+// Elements this codec does NOT dispatch on may repeat freely; they are
+// skipped either way. See TestUnmarshalAcceptsUndispatchedElementsAnywhere.
 //
 // A second, SEPARATE guard (rootClosed below) covers the case where the
 // first top-level element closes WITHOUT ever producing a valid result — an
@@ -166,6 +183,9 @@ func Unmarshal(data []byte) (Envelope, error) {
 			}
 			switch t.Name.Local {
 			case "AppHdr":
+				if haveHdr {
+					return Envelope{}, errors.New("iso20022: a second AppHdr in one envelope")
+				}
 				if err := dec.DecodeElement(&hdr, &t); err != nil {
 					return Envelope{}, err
 				}

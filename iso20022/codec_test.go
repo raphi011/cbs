@@ -461,3 +461,102 @@ func TestUnmarshalAcceptsATrailingProcessingInstruction(t *testing.T) {
 		t.Fatalf("BizMsgIdr = %q, want the envelope decoded from wantEnvelopeXML", env.AppHdr.BizMsgIdr)
 	}
 }
+
+// appHdrXML builds a header for test.001.001.01 carrying the given BizMsgIdr
+// and MsgDefIdr, so the two duplicate-header tests below can make the two
+// copies visibly disagree about which message definition the envelope holds.
+func appHdrXML(bizMsgIdr, msgDefIdr string) string {
+	return `<AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>` + bizMsgIdr + `</BizMsgIdr><MsgDefIdr>` + msgDefIdr + `</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>`
+}
+
+// TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope pins the header against
+// the same duplication rule as <Document>, in BOTH positions, because the two
+// positions failed differently and only one of them was ever refused.
+//
+// AppHdr is the element that DRIVES dispatch, so two headers is the parser
+// differential the <Document> guard exists to prevent, applied to the field
+// that decides the document's type. Which copy won depended on where it sat:
+// a second header BEFORE <Document> overwrote hdr before dispatch, so the
+// SECOND won; a second header AFTER <Document> was decoded into hdr and then
+// thrown away, because result had already snapshotted the first — so the
+// FIRST won. Same bytes, two answers, chosen by position.
+//
+// The two copies here differ ONLY in BizMsgIdr, and both name the same,
+// registered message definition. That is deliberate. An earlier draft made
+// the second header name camt.053.001.08, and the before-position subtest
+// passed against the unfixed code — not because the duplicate was refused,
+// but because the overwritten header then failed the registry lookup. A
+// duplicate that changes nothing the other checks look at is the only kind
+// that isolates this guard.
+func TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope(t *testing.T) {
+	first := appHdrXML("FIRST", "test.001.001.01")
+	second := appHdrXML("SECOND", "test.001.001.01")
+
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{
+			name: "before the document",
+			in:   `<Envelope>` + first + second + testDocumentXML + `</Envelope>`,
+		},
+		{
+			name: "after the document",
+			in:   `<Envelope>` + first + testDocumentXML + second + `</Envelope>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, err := Unmarshal([]byte(tt.in))
+			if err == nil {
+				t.Fatalf("Unmarshal() = nil (BizMsgIdr = %q, MsgDefIdr = %q), want an error for a second <AppHdr> in one envelope",
+					env.AppHdr.BizMsgIdr, env.AppHdr.MsgDefIdr)
+			}
+		})
+	}
+}
+
+// TestUnmarshalAcceptsUndispatchedElementsAnywhere pins the two claims the
+// duplicate guards do NOT make. An element this codec does not dispatch on is
+// skipped wherever it sits — before <Document> as well as after it, which is
+// what makes the envelope-level rule symmetric rather than positional — and it
+// may repeat, because only the two elements the codec actually reads into
+// (AppHdr, Document) can be duplicated into a parser differential. Without
+// this, "skipped either way" and "may repeat freely" are prose no test checks.
+func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
+	hdr := appHdrXML("AURTSESSXXX-20260731-000001", "test.001.001.01")
+
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{
+			name: "before the document",
+			in:   `<Envelope>` + hdr + `<Sgntr><X>s</X></Sgntr>` + testDocumentXML + `</Envelope>`,
+		},
+		{
+			name: "repeated on both sides of the document",
+			in: `<Envelope>` + hdr + `<Sgntr><X>1</X></Sgntr>` + testDocumentXML +
+				`<Sgntr><X>2</X></Sgntr></Envelope>`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, err := Unmarshal([]byte(tt.in))
+			if err != nil {
+				t.Fatalf("Unmarshal() error = %v, want an undispatched element to be skipped", err)
+			}
+			doc, ok := env.Document.(*testDoc)
+			if !ok {
+				t.Fatalf("Document is %T, want *testDoc", env.Document)
+			}
+			if doc.Body != "hello" {
+				t.Fatalf("Body = %q, want hello", doc.Body)
+			}
+		})
+	}
+}
