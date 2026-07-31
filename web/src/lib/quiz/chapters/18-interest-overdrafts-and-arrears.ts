@@ -79,29 +79,6 @@ export const chapter: Chapter = {
         "€10,000 at 6% accrues 164.383561 cents a day — mostly fraction. Rounding that away every day rather than keeping it is a measurable annual error, so [[accrued-interest]] is held exact at sub-minor-unit precision and only rounded when the ledger actually needs a whole minor unit to post.",
     },
     {
-      kind: "truefalse",
-      id: "ch18-q6",
-      difficulty: "intro",
-      concept: "accrued-interest",
-      prompt: "The general ledger posts a facility's exact, sub-minor-unit accrual figure every single day.",
-      answer: false,
-      explanation:
-        "The ledger cannot post a fraction of a cent. It holds `Minor()` of the [[accrued-interest|accrued record]] — the record rounded to a whole minor unit — and each day's posting is only the CHANGE in that rounded value, not the day's raw interest.",
-    },
-    {
-      kind: "numeric",
-      id: "ch18-q7",
-      difficulty: "challenge",
-      concept: "accrued-interest",
-      prompt:
-        "A revolving line's accrued-interest record stands at 1,479,452,040 micro-minor-units after 30 days of accrual. Rounded to whole minor units, half away from zero, what does that round to, in cents?",
-      answer: 1479,
-      unit: { asset: "EUR", in: "minor" },
-      tolerance: 0,
-      explanation:
-        "1,479,452,040 micro-minor-units is 1479.452040 minor units. The fraction (.452040) is below one half, so it rounds DOWN to **1,479** — not up. This is exactly the figure `ChargeInterest` [[capitalization|capitalizes]] into principal.",
-    },
-    {
       kind: "mc",
       id: "ch18-q8",
       difficulty: "core",
@@ -307,6 +284,34 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "Accrual is per DAY and per terms row, never one rate applied across the window. One day at 15% is 200,000 minor units × 0.15 ÷ 365 = 82.19178082 minor units — 82,191,780.82 micro-minor-units — and the division truncates to **82,191,780**. One day at 18% is 98,630,136.98 → **98,630,136**. So 20 × 82,191,780 + 25 × 98,630,136 = 1,643,835,600 + 2,465,753,400 = **4,109,589,000**. Computing each rate's block in one call instead gives 1,643,835,616 + 2,465,753,424 = 4,109,589,040 — 40 more, because the truncation then happens once per call rather than once per day, and [[interest-accrual|the accrual walks the days]] to reproduce exactly what was charged day by day.",
+    },
+    {
+      kind: "mc",
+      id: "ch18-q23",
+      difficulty: "core",
+      concept: "pricing-overlay",
+      prompt:
+        "A customer negotiated 9% on their overdraft last year. The bank now publishes a new version of their product at 14.9%. What does that customer pay?",
+      options: [
+        "9%, until the negotiated rate is explicitly cleared",
+        "14.9%, because a published version overrides everything",
+        "The higher of the two, 14.9%",
+        "9% until the end of the current billing cycle, then 14.9%",
+      ],
+      answer: 0,
+      explanation:
+        "A [[pricing-overlay|negotiated rate]] is this customer's price instead of the product's, and it outranks a reprice published underneath it. Clearing it puts them back on the product at whatever it costs BY THEN — not at what it cost when the overlay was set. Nothing expires on its own: an overlay ends when a row says it ends.",
+    },
+    {
+      kind: "truefalse",
+      id: "ch18-q24",
+      difficulty: "challenge",
+      concept: "product-catalogue",
+      prompt:
+        "A rate was published in error last month. The bank corrects it by publishing a replacement version effective from the wrong rate's start date.",
+      answer: false,
+      explanation:
+        "It cannot: publication is [[product-catalogue|forward-only]]. A backdated version would move interest already charged on every account bound to the product at once, with the audit log as the only control — and this system has no four-eyes check to sit in front of it. The retroactive tool is the per-account [[pricing-overlay|overlay]], whose blast radius is one named customer and whose delta the [[interest-accrual|accrual]] posts as ordinary correction interest. Correcting a mispublished rate is therefore laborious, and should be: it is a set of individual decisions about money already taken from named people.",
     },
   ],
 };

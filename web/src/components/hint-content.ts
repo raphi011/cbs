@@ -260,7 +260,7 @@ After a €600 debit:
   Available left:     €100  (limit €500, used €400)
 \`\`\`
 
-The limit is [[effective-dated-terms|effective-dated]], so the figure this formula uses is the one in force on the day being asked about — not a column that can be edited out from under a past calculation.
+The limit is [[effective-dated-terms|effective-dated]], so the figure this formula uses is the one in force on the day being asked about — not a column that can be edited out from under a past calculation. It is also [[pinned-vs-floating|pinned to the account]]: unlike the rate, it never comes from the [[product-catalogue|product]], because how far *this* customer may go overdrawn is an underwriting decision about them.
 
 When a liability account's book balance goes negative, the bank's perspective flips: economically it is now money owed *to* the bank. Once a rate is set, [[overdraft-interest|interest accrues daily]] on that drawn amount and is charged — capitalized — to the account monthly, which is what makes an overdraft **compound**.
 
@@ -943,7 +943,7 @@ A row's outstanding amount is *that instalment's* unpaid remainder — (principa
 
 [[accrued-interest|Accrued interest]] is tracked at higher precision than the ledger posts (rounding to a whole minor unit every day would quietly lose a fraction of it); the account's accrued figure is the rounded amount the general ledger actually holds. It is charged to the account — [[capitalization|capitalized]] into the debit balance — on a billing cycle, which is why an overdraft sitting at its limit is not costless the way a \`0\`-rate account is.
 
-Both the limit and the rates are [[effective-dated-terms|effective-dated]], and every night's accrual is a RECOMPUTATION of the whole account rather than an increment. That is what lets it reach all the way back to account opening: every day is re-derived at the terms that were actually in force on it, so a back-dated posting is trued up wherever it lands — including before a repricing, which used to be a line the correction silently stopped at.`,
+The rate an account pays is usually its [[product-catalogue|product]]'s rather than its own — it [[pinned-vs-floating|floats]], so one published version reprices a whole book — unless the customer has a negotiated [[pricing-overlay|overlay]]. Both the limit and the rates are [[effective-dated-terms|effective-dated]], and every night's accrual is a RECOMPUTATION of the whole account rather than an increment. That is what lets it reach all the way back to account opening: every day is re-derived at the terms that were actually in force on it, so a back-dated posting is trued up wherever it lands — including before a repricing, which used to be a line the correction silently stopped at.`,
   },
   "effective-dated-terms": {
     title: "Effective-dated terms",
@@ -954,6 +954,43 @@ The reason is that every interest figure is a function of three things — accou
 There is a sharper consequence than an audit weakness. While terms were mutable, the [[interest-accrual|accrual]] recompute could only reach back to the last repricing — reaching further would re-derive old days at *today's* rate. A repricing closed the old window out and opened a new one at itself, so a [[booking-date|back-dated]] posting landing behind it was trued up only from the repricing forward, while the days between where it took effect and the repricing kept the interest computed without it, permanently — the repricing was a line the correction stopped at. With a timeline, every day is re-derived at the terms actually in force on it, so the window opens at account inception and the correction always lands.
 
 Each row carries **two** dates, and the pair is the [[booking-date|booking-date/value-date]] distinction applied to configuration: when the repricing was *entered*, and when it takes *economic effect*. They can differ in either direction — a rate agreed on the 1st and keyed in on the 15th is backdated; a rate agreed for next month is future-dated and, for a product with no instalment schedule to diverge from — an overdraft or a revolving line — simply sits inert until the end-of-day runs reach it.`,
+  },
+  "product-catalogue": {
+    title: "Product catalogue",
+    body: `A **product** is a named catalogue entry an account is opened *from* — "Basic Current Account" — and its price is an [[effective-dated-terms|effective-dated]] timeline of immutable published **versions**, one row per repricing.
+
+The point is that a price becomes a THING with a name and a publication event, rather than a number copied onto each account. Repricing a book of ten thousand accounts is then one published row, not ten thousand writes with no shared cause — and afterwards there is an artefact naming the decision, instead of ten thousand coincidences.
+
+A version is a **draft** until it is published: a draft prices nothing, so the published version before it stays in force through its day. That is what stops "immutable" from meaning a typo in a rate is permanent. Publishing freezes the row and stamps a content hash which is **verified every time a day is priced**, so a row edited directly in the database stops the accrual rather than quietly pricing a day nobody published.
+
+Publication is **forward-only**: a version effective before today is refused. It would move interest already charged on every account bound to the product at once, and the audit log would be the only control on it. Retroactive repricing stays where its blast radius is one named customer — the [[pricing-overlay|pricing overlay]]. This is deliberately less capable than a four-eyes maker-checker regime; forward-only is the mitigation this system ships instead.
+
+**Retiring** a product takes it off sale without unpricing anything: the accounts already sold from it keep resolving against its versions for as long as they live. A bank that could not express that would have to keep dead products on sale.`,
+  },
+  "pinned-vs-floating": {
+    title: "Pinned and floating terms",
+    body: `An account's overdraft terms come from two places at once, and which parameter comes from which is the whole design:
+
+- The **rate** *floats* with the [[product-catalogue|product]]. One published version reprices every account bound to it, per day, with no write to any account.
+- The [[overdraft|limit]] is *pinned* to the account. It never comes from the catalogue.
+
+The reason is that they are different kinds of decision. A rate is a **price the bank publishes**; a limit is an **underwriting decision about one customer's creditworthiness**. Repricing the overdraft book and raising one customer's limit are not the same operation and should not look like one.
+
+It is enforced by the types rather than by a rule someone has to remember: the catalogue's pricing record has no limit field at all, so "the limit does not float" is checked by the compiler.
+
+There is a second dividend. Every withdrawal check needs the limit and nothing else — and the limit is on the account's own row, so that path answers in one read with no catalogue lookup. A floating limit would have put a product read on every withdrawal in the system.
+
+The [[day-count|day-count convention]] floats with the product too, because it is part of the price: 12% on \`ACT/365\` and 12% on \`30/360\` are different products.`,
+  },
+  "pricing-overlay": {
+    title: "Pricing overlay",
+    body: `A **pricing overlay** is one customer's negotiated price instead of the [[product-catalogue|product]]'s, carried on the account's own [[effective-dated-terms|terms timeline]] rather than in a table of its own — setting one and clearing one are ordinary rows, ordered against limit changes and product migrations like any other.
+
+While an overlay is in force it outranks the product: a reprice published underneath it does not reach that customer. Clearing it puts the account back on the product at **whatever the product costs by then**, not at what it cost when the overlay was set.
+
+No overlay means *float*, and specifically **not** interest-free. A genuinely interest-free account is an overlay with a zero rate, which is a real product and a different, deliberate statement. The two are stored differently for exactly that reason, and confusing them would silently make a whole book free.
+
+The overlay is also **where retroactivity lives**. A backdated overlay moves interest already charged — but to one named customer, and the [[interest-accrual|accrual]] posts the difference as ordinary correction interest rather than rewriting history. The catalogue refuses the same thing outright, because a backdated *publication* would do it to every account on the product at once. Correcting a mispublished rate is therefore laborious, and should be: it is a set of individual decisions about money already taken from named people.`,
   },
   lending: {
     title: "Lending",
@@ -995,7 +1032,7 @@ What accrues is held as [[accrued-interest|exact, sub-minor-unit interest]] on t
   },
   "day-count": {
     title: "Day-count convention",
-    body: `A **day-count convention** turns a pair of dates into a fraction of a year, and it is a real product parameter, not an implementation detail — the same balance at the same rate accrues differently under each:
+    body: `A **day-count convention** turns a pair of dates into a fraction of a year, and it is a real product parameter, not an implementation detail — literally so: it is a field on a [[product-catalogue|product version]], and it [[pinned-vs-floating|floats]] with the price because it is part of the price — the same balance at the same rate accrues differently under each:
 
 - **\`ACT/365\`** — actual elapsed days over a 365-day year. Most retail lending.
 - **\`ACT/360\`** — actual elapsed days over a 360-day year, so a year of daily accrual comes to 365/360 of the nominal rate. Euro money markets, US commercial lending.

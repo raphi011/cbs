@@ -183,17 +183,6 @@ export const chapter: Chapter = {
     },
     {
       kind: "truefalse",
-      id: "ch8-q12",
-      difficulty: "intro",
-      concept: "overdraft",
-      prompt:
-        "With an arranged overdraft limit of $300, a deposit account's book balance can legitimately reach −$300.",
-      answer: true,
-      explanation:
-        "An arranged [[overdraft]] explicitly permits the book balance to go negative, down to the negative of the limit. At −$300 exactly, the entire limit is consumed but not breached. The customer owes the bank $300 — economically this is a short-term loan.",
-    },
-    {
-      kind: "truefalse",
       id: "ch8-q13",
       difficulty: "core",
       concept: "double-entry",
@@ -202,17 +191,6 @@ export const chapter: Chapter = {
       answer: true,
       explanation:
         "[[double-entry]] is universal: every debit must be matched by an equal credit elsewhere. An overdraft debit to the deposit account — whether it leaves the balance positive or drives it negative — is always offset by a credit to another account (for example, the payment sent to a counterparty or funds released as cash). Going negative changes the economic relationship between customer and bank, but it does not relax the bookkeeping structure.",
-    },
-    {
-      kind: "truefalse",
-      id: "ch8-q14",
-      difficulty: "challenge",
-      concept: "double-entry",
-      prompt:
-        "When a debit drives a deposit account's balance below zero, the double-entry accounting principle is violated because there is no matching credit.",
-      answer: false,
-      explanation:
-        "[[double-entry]] is never violated. A debit to the deposit account (reducing the liability or creating a receivable) is always matched by an equal credit elsewhere — for example, cash paid out or another account credited. Going negative changes the economic interpretation but not the bookkeeping structure; every entry remains balanced.",
     },
     {
       kind: "multi",
@@ -328,6 +306,34 @@ export const chapter: Chapter = {
       answers: [0, 1],
       explanation:
         "A terms row carries **two** dates, which is the [[booking-date|booking-date]]/[[value-date|value-date]] distinction applied to configuration: entered on the 15th, effective from the 1st. The next accrual run re-derives the days that row now prices and posts the change in the rounded value as ordinary delta interest — nothing is reversed and no date is rewound, because each earlier posting was a correct statement of what the bank knew when it was made. Backdating is not refused: it is the ordinary case an [[effective-dated-terms|effective-dated timeline]] exists to represent. And it appends — the earlier row stays, which is what keeps the old pricing recoverable.",
+    },
+    {
+      kind: "mc",
+      id: "ch8-q23",
+      difficulty: "core",
+      concept: "pinned-vs-floating",
+      prompt:
+        "A bank publishes a new version of its Basic Current Account, raising the overdraft rate from 12% to 14.9%. What happens to a customer on that product who has no negotiated rate?",
+      options: [
+        "Their rate moves to 14.9% and their overdraft limit is unchanged",
+        "Both their rate and their overdraft limit move to the product's new values",
+        "Nothing moves until someone writes to their account",
+        "Their limit is recalculated in proportion to the new rate",
+      ],
+      answer: 0,
+      explanation:
+        "The rate [[pinned-vs-floating|floats]] with the [[product-catalogue|product]] and the limit is pinned to the account, so one published row reprices the whole book without a single per-account write — and no limit moves, because the catalogue cannot express one. A rate is a price the bank publishes; a limit is an underwriting decision about one customer, and the two are not the same operation.",
+    },
+    {
+      kind: "truefalse",
+      id: "ch8-q24",
+      difficulty: "challenge",
+      concept: "product-catalogue",
+      prompt:
+        "An account is migrated from Basic to Premium effective 1 April. Asked what it cost on 15 March, the system answers with Premium's price, because that is the product the account is on.",
+      answer: false,
+      explanation:
+        "A migration is a forward-dated row on the account's [[effective-dated-terms|terms timeline]], not a rewrite: 15 March still resolves against Basic, the product that priced it. That is why the [[product-catalogue|product]] binding lives on the timeline rather than as a column on the account — a column would be a cached current value that contradicts the timeline the moment a future-dated migration is entered.",
     },
   ],
 };
