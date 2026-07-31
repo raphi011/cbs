@@ -242,9 +242,10 @@ lending asset instead of directly, and the bank's short (or long) position in
 that asset becomes a number someone can see rather than an unrecorded fact
 about how the loan happened to be booked.
 
-### 5. Account addressing — `spec`
+### 5. Account addressing — `plan`
 
 Spec: [`superpowers/specs/2026-07-31-account-addressing-design.md`](superpowers/specs/2026-07-31-account-addressing-design.md)
+Plan: [`superpowers/plans/2026-07-31-account-addressing.md`](superpowers/plans/2026-07-31-account-addressing.md)
 
 **Next in build order, ahead of 3 and 4.** A deposit account gains a set of
 external identifiers — `(scheme, value)`, with `IBAN` the one scheme shipped —

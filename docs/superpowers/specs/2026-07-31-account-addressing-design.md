@@ -243,8 +243,16 @@ register mutates `Account.Identifiers` and calls the existing
 `AddDepositAccountIdentifier` — one new method, a read:
 
 ```go
-FindDepositAccountByIdentifier(ctx, tx, participant, Identifier) (Account, error)
+ListDepositAccountsByIdentifier(ctx, book, Identifier) ([]Account, error)
 ```
+
+It returns **every** match rather than one account and a not-found sentinel,
+because "an address resolves to exactly one account" is a domain rule and the
+store is a key/value layer that holds no domain rules — the same division that
+keeps parent-existence out of the schema. Zero matches, one, and more than one
+become `ErrIdentifierNotFound`, the account, and `ErrIdentifierAmbiguous` in
+`Register.ResolveIdentifier`, which is also where the network's sweep applies
+the identical rule across banks.
 
 `GetDepositAccount` and `ListDepositAccounts` return accounts with
 `Identifiers` populated. The list path must not become N+1 — the same finding
