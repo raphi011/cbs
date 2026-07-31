@@ -60,14 +60,13 @@ export async function GET() {
 
   const banks = await Promise.all(
     roster.map(async (pid): Promise<OperatorStatus> => {
-      let base: string;
-      try {
-        base = bankUrl(pid, roster, CFG);
-      } catch {
-        // In the roster and outside the port plan: admitted, not provisioned.
-        return { operator: `bank/${pid}`, live: false };
-      }
-      return { operator: `bank/${pid}`, live: await probe(base) };
+      // pid always comes from this same roster, so its position is always
+      // found and bankUrl never throws here — the port is always derivable.
+      // What is not guaranteed is that anything is bound to it: a bank
+      // admitted at runtime gets a derived port and no listener until the
+      // server restarts, so probe() failing against that port is what tells
+      // admitted from provisioned, not a thrown error.
+      return { operator: `bank/${pid}`, live: await probe(bankUrl(pid, roster, CFG)) };
     }),
   );
 
