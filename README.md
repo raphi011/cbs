@@ -1155,11 +1155,11 @@ TEST_DATABASE_URL=… go test ./...      # the same suites, on store/pg
 
 The rule it enforces is sharper than "both work": **`store/pg` must never accept or refuse a write that `store/mem` handles differently.** That rule has real consequences in the schema. There is no `UNIQUE (book_id, name)` on ledgers, subledgers or accounts, however tempting it looks — the domain does not hold a uniqueness invariant on names (two customers called "John Smith" at one bank is not an error), so the constraint would make Postgres reject a write the in-memory store accepts. Validation belongs in the domain layer; the store is a per-table key/value store that happens to be relational.
 
-It cuts the other way too, and that direction is easier to miss. `store/mem` is a map of Go strings and will hold any byte sequence at all; Postgres will not hold a NUL in a `text` column (SQLSTATE 22021) or in a `jsonb` string (22P05), nor anything that is not valid UTF-8. So `POST /participants` with `{"name":"Ban\u0000k"}` — legal JSON — created a bank on one backend and returned a 500 carrying a raw SQLSTATE on the other. The fix is not a check in `store/pg`; it is `ledger.ValidateText`, one domain rule applied to every caller-supplied string that reaches a store, whether as a value it stores or as a key it looks a row up by:
+It cuts the other way too, and that direction is easier to miss. `store/mem` is a map of Go strings and will hold any byte sequence at all; Postgres will not hold a NUL in a `text` column (SQLSTATE 22021) or in a `jsonb` string (22P05), nor anything that is not valid UTF-8. So `POST /members` with `{"name":"Ban\u0000k"}` — legal JSON — created a bank on one backend and returned a 500 carrying a raw SQLSTATE on the other. The fix is not a check in `store/pg`; it is `ledger.ValidateText`, one domain rule applied to every caller-supplied string that reaches a store, whether as a value it stores or as a key it looks a row up by:
 
 > **Text must be valid UTF-8 and free of control characters.** That covers names, descriptions, reject and return reasons, idempotency keys, end-to-end ids, IBANs, metadata keys and values, and identifiers a request supplies for lookup. Length is unbounded and every printable Unicode character is allowed; `Crédit Soleil`, `三菱UFJ銀行` and `🏦` are all fine.
 
-The rule is drawn at control characters rather than at "the two things Postgres refuses" on purpose: a rule that can only be stated by naming a database is not a domain rule, and no field in this list has a legitimate use for a tab, a newline or an ANSI escape. Identifiers arriving in a URL rather than in a request body are screened at the API edge instead — they pass through no domain constructor — which is why `GET /participants/bank%001` is a 400 on both backends rather than a 404 on one and a 500 on the other.
+The rule is drawn at control characters rather than at "the two things Postgres refuses" on purpose: a rule that can only be stated by naming a database is not a domain rule, and no field in this list has a legitimate use for a tab, a newline or an ANSI escape. Identifiers arriving in a URL rather than in a request body are screened at the API edge instead — they pass through no domain constructor — which is why `GET /reserves/bank%001` is a 400 on both backends rather than a 404 on one and a 500 on the other.
 
 The same argument covers the errors a store returns. `ErrDuplicateIdempotencyKey` is a documented answer, so a caller may handle it and go on using the same unit of work; in Postgres any error aborts the transaction, so `store/pg` runs the statement behind that sentinel inside a `SAVEPOINT`. Wherever a SQLSTATE becomes a domain sentinel, the sentinel has to cost the caller one statement rather than the whole transaction — because that is what it costs on `store/mem`.
 
@@ -1403,59 +1403,125 @@ dep.Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
 
 A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only — the module's single dependency, `jackc/pgx`, is used by the optional Postgres store in `store/pg` and by nothing else, so the default in-memory build still needs no setup at all.
 
+### One binary, one listener per entity
+
+There is no single API. Each entity gets a **listener of its own**, bound to its own identity: one per member bank, one for the central bank, one for the clearing house. That is what makes the scoping the rest of this system models *structural* rather than a convention — a bank's API cannot name another bank, because there is nowhere in it to put the name.
+
 ```bash
-go run ./cmd/server            # listens on :8080 (override with PORT env or -addr flag)
+go run ./cmd/server        # :8081 central bank, :8082 clearing house, :8083+ one per bank
 
 # The same server, on Postgres. State then survives a restart.
 DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 ```
 
-The `payment.Network` is the application root: each participant bank owns its own ledger and deposit register, so ledger and deposit operations are routed **under a participant** (`/participants/{id}/...`), while mandates, payments, clearing cycles, settlements, and the central bank are network-level resources. The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`, `"class": "Fiat"`) while keeping amounts as integer minor units.
+**One binary and, by default, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` still starts a single Go process — it just answers on six ports over one shared `payment.Network`.
 
-Every request that creates an account names its **asset** explicitly, and there is no default: opening a deposit account without one is a `400`, not a euro account. The single exception is `POST /participants`, whose optional `assets` array defaults to `["EUR"]` — a default for which assets a *bank joins with*, not for the asset of any account. Responses carry the asset wherever an amount would otherwise be ambiguous, including on every entry of a transaction, so a client never has to infer a scale.
+That default is not a convenience. `store/mem` is a map behind a mutex in one process's memory, so four bank *processes* would be four disconnected universes: a payment from Aurora to Verde would post into an Aurora that Verde has never heard of. Postgres is strictly optional here (`go test ./...`, `make dev` and `make run` all work with no database), so the split cannot require one.
 
-Representative endpoints:
+`-entity` runs a single entity in its own process, which is the real topology — and it **refuses to start without `-database`**, saying why:
+
+```
+$ go run ./cmd/server -entity aurora
+-entity requires -database. Separate processes cannot share the in-memory store:
+each would hold its own, and a payment between two banks would post into two
+systems that cannot see each other. Start with -database, or run every entity in
+one process (the default).
+```
+
+`make dev-split` is that mode for the whole cast. An entity is named by id or by name (`-entity aurora`, `-entity credit-soleil`), and keeps the port the whole-system plan gave it either way.
+
+**Ports are static, and admission is not provisioning.** A participant created at runtime through `POST /members` gets a store row, a chart of accounts and reserve accounts — and **no listener until the process restarts**. That is a decision rather than a limitation: admitting a member to a payment network is an operational act, and an API call that instantly yielded a running bank would teach the wrong thing.
+
+The transport layer (handlers, DTOs, error mapping) lives in the `api` package and contains no business logic — it decodes requests, calls the domain methods, and encodes responses, rendering the domain's integer enums as strings (`"status": "Settled"`, `"class": "Fiat"`) while keeping amounts as integer minor units. Every request that creates an account names its **asset** explicitly, and there is no default: opening a deposit account without one is a `400`, not a euro account. The single exception is `POST /members`, whose optional `assets` array defaults to `["EUR"]` — a default for which assets a *bank joins with*, not for the asset of any account.
+
+### The central bank — `:8081`
+
+The settlement layer. Reserves move in its book and nowhere else.
 
 | Method & path | Operation |
 |---|---|
-| `GET /assets` | list the assets the system knows (code, name, scale, class) |
-| `POST` / `GET /participants`, `GET /participants/{id}` | create / list / get a bank |
-| `POST /participants/{id}/deposits` | fund a customer account |
-| `POST` / `GET /participants/{id}/deposit-accounts` | open / list customer accounts |
-| `GET /participants/{id}/accounts/{aid}/balance` | book balance and value-dated balance for a GL account; `?asOf=` (RFC 3339, default now) picks the day the value-dated figure is computed through |
-| `GET /participants/{id}/deposit-accounts/{did}/balance` | book / holds / available balance |
-| `POST /participants/{id}/deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
-| `POST` / `GET .../holds`, `POST .../holds/{hid}/release\|capture` | authorization holds |
-| `POST` / `GET /participants/{id}/transactions`, `.../{tid}/reversal` | general-ledger postings. Each entry carries its own optional `valueDate` in both directions — omitted on input it inherits the transaction's, and on output it is always the leg's own resolved date, which is [not always the transaction's](#posting-choreography-sepa-credit-transfer) |
+| `GET /reserves`, `GET /reserves/{pid}` | every bank's reserves, or one bank's — one row per asset |
+| `POST /members` | admit a bank: opens its reserve and settlement accounts here |
+| `POST /settlements` | settle a closed cycle (`{"cycleId": "..."}`) |
+| `GET /audit` | the central bank's own log |
+| `POST /admin/reset` | clear the store and rebuild the sample dataset |
+
+`POST /settlements` is the central bank's rather than the clearing house's because settlement moves reserves between accounts in the central bank's own book, and a clearing house that could do that would be a central bank. Before the split the CSM settled directly, because there was one server and nothing in the shape of the API could say otherwise. What is still not modelled is the *instruction* between them — today an operator closes a cycle on one console and settles it on another.
+
+### The clearing house — `:8082`
+
+The CSM. It sees every payment in the network, which is its job rather than a leak.
+
+| Method & path | Operation |
+|---|---|
+| `GET /members` | the routing roster |
 | `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
-| `POST` / `GET /cycles`, `POST /cycles/{id}/close\|settle` | clearing & settlement |
+| `POST` / `GET /cycles`, `POST /cycles/{id}/close` | clearing cycles |
+| `GET /settlements`, `GET /settlements/{sid}` | settlements (reading is not doing) |
 | `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
-| `POST` / `GET /participants/{id}/facilities`, `.../disbursement`, `.../draws`, `.../repayments`, `.../interest-charge`, `.../schedule` | credit facilities |
-| `POST /participants/{id}/facilities/{fid}/interest-refunds` | pay a borrower back interest the bank charged and never earned |
-| `GET /participants/{id}/interest-refunds-payable` | every borrower this bank still owes, closed facilities included |
-| `GET /central-bank/reserves`, `GET /schemes` | central-bank reserves, registered schemes |
+| `GET /schemes`, `GET /directory`, `GET /assets` | schemes, address resolution, known assets |
+| `GET /payments/audit` | the payment layer's log |
+
+Admission is the central bank's and the roster is the clearing house's: two different questions that a single `POST`/`GET /participants` used to make look like one.
+
+### A member bank — `:8083`, `:8084`, …
+
+Everything that used to sit under `/participants/{pid}/…`, with the segment gone. The port carries the identity.
+
+| Method & path | Operation |
+|---|---|
+| `GET /me` | the bank this listener is |
+| `POST /deposits` | fund a customer account |
+| `POST` / `GET /deposit-accounts` | open / list customer accounts |
+| `GET /deposit-accounts/{did}/balance` | book / holds / available balance |
+| `POST /deposit-accounts/{did}/status` | lifecycle action (freeze / unfreeze / markDormant / reactivate) |
+| `POST` / `GET .../holds`, `POST /holds/{hid}/release\|capture` | authorization holds |
+| `POST` / `DELETE .../identifiers` | issue or withdraw an account's external address |
+| `POST` / `GET /transactions`, `.../{tid}/reversal` | general-ledger postings. Each entry carries its own optional `valueDate` in both directions — omitted on input it inherits the transaction's, and on output it is always the leg's own resolved date, which is [not always the transaction's](#posting-choreography-sepa-credit-transfer) |
+| `GET /accounts/{aid}/balance` | book and value-dated balance for a GL account; `?asOf=` (RFC 3339, default now) picks the day the value-dated figure is computed through |
+| `POST` / `GET /facilities`, `.../disbursement`, `.../draws`, `.../repayments`, `.../interest-charge`, `.../schedule` | credit facilities |
+| `POST /facilities/{fid}/interest-refunds`, `GET /interest-refunds-payable` | interest the bank charged and never earned |
+| `POST` / `GET /products`, `.../versions`, `.../publish`, `.../retire` | the product catalogue |
+| `POST /end-of-day` | run the day's accrual |
+| `GET /audit`, `GET /deposit-audit` | this bank's own logs |
+| `GET /payments`, `GET /payments/{payid}` | **its own legs only** |
+| `POST /payments` | accept a customer's instruction — `202` and a `paymentId` |
+| `GET /directory`, `GET /assets` | resolve a payee's address; known assets |
+
+Two of those are new, and both were impossible before. **`GET /payments` is narrowed to the bank's own legs** — what it sent and what it received. The unnarrowed list showed every bank its competitors' customers, counterparties and amounts, and narrowing it needs a caller identity that a single shared server does not have. A payment this bank is not party to answers `404` rather than `403`: it does not exist as far as this API is concerned, and a `403` would confirm the id names something real.
+
+**`POST /payments` is where a customer's instruction lands.** A retail client must never talk to the clearing house — it has no CSM connection in the real thing either — so submission goes to its own bank, which forwards it. The answer is `202 Accepted` with a `paymentId` rather than the payment itself, and the outcome is read back from `GET /payments/{id}`. That is the shape a real CSM imposes: it answers with a `pacs.002` later, not by return value.
+
+`GET /assets` is on all three listeners and `GET /directory` on two, deliberately. An asset definition is a compiled-in constant every operator needs to render money at the right scale, and duplicating a constant is not duplicating state; a bank is a scheme participant with genuine directory access. A test holds that allowlist, so a third accidental overlap fails.
+
+This is **scoping, not authorization**. Nothing verifies that the caller on a bank's port is that bank; the port is the claim. What it removes is the ability to reach another operator's data by editing a URL, because that URL does not exist on the port you are talking to.
 
 Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` conflict/duplicate, `422` business-state violation, `400` malformed input) and returned as `{"error": "..."}`.
 
-Example — a SEPA credit transfer end to end:
+Example — a SEPA credit transfer end to end, across three listeners:
 
 ```bash
-BASE=http://localhost:8080; H='-H Content-Type:application/json'
-A=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank A"}' | jq -r .id)
-B=$(curl -s $H -X POST $BASE/participants -d '{"name":"Bank B"}' | jq -r .id)
-ALICE=$(curl -s $H -X POST $BASE/participants/$A/deposit-accounts -d '{"name":"Alice","asset":"EUR"}' | jq -r .id)
-BOB=$(curl -s $H -X POST $BASE/participants/$B/deposit-accounts -d '{"name":"Bob","asset":"EUR"}' | jq -r .id)
-curl -s $H -X POST $BASE/participants/$A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
+CB=http://localhost:8081; CSM=http://localhost:8082; H='-H Content-Type:application/json'
+A=$(curl -s $H -X POST $CB/members -d '{"name":"Bank A"}' | jq -r .id)
+B=$(curl -s $H -X POST $CB/members -d '{"name":"Bank B"}' | jq -r .id)
+
+# A bank's own listener. Its port is its identity, so no path names the bank.
+BANK_A=http://localhost:8083; BANK_B=http://localhost:8084
+ALICE=$(curl -s $H -X POST $BANK_A/deposit-accounts -d '{"name":"Alice","asset":"EUR"}' | jq -r .id)
+BOB=$(curl -s $H -X POST $BANK_B/deposit-accounts -d '{"name":"Bob","asset":"EUR"}' | jq -r .id)
+curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
 
 # A payment joins its scheme's open clearing cycle by itself, and the response
 # says which. (`POST /cycles` opens one, but a scheme may only have one open at
 # a time — against the seeded dataset it answers "already open for scheme".)
-CYC=$(curl -s $H -X POST $BASE/payments -d "{\"scheme\":\"sepa.ct\",
+CYC=$(curl -s $H -X POST $CSM/payments -d "{\"scheme\":\"sepa.ct\",
   \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
   \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}" | jq -r .cycleId)
-curl -s $H -X POST $BASE/cycles/$CYC/close && curl -s $H -X POST $BASE/cycles/$CYC/settle
-curl -s $BASE/participants/$A/deposit-accounts/$ALICE/balance   # book 75000
-curl -s $BASE/participants/$B/deposit-accounts/$BOB/balance     # book 25000
+curl -s $H -X POST $CSM/cycles/$CYC/close
+curl -s $H -X POST $CB/settlements -d "{\"cycleId\":\"$CYC\"}"   # the central bank's act
+
+curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000
+curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000
 ```
 
 > Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.
