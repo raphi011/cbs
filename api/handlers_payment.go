@@ -128,7 +128,6 @@ func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("GET /cycles", s.handleListCycles)
 	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
 	mux.HandleFunc("POST /cycles/{cid}/close", s.handleCloseCycle)
-	mux.HandleFunc("POST /cycles/{cid}/settle", s.handleSettleCycle)
 
 	mux.HandleFunc("GET /settlements", s.handleListSettlements)
 	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
@@ -314,8 +313,26 @@ func (s *Server) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
+// handleSettleCycle answers POST /settlements on the CENTRAL BANK.
+//
+// The cycle is the input and a settlement is the resource created, which is why
+// it is not an action on a cycle. The operator matters more: settlement moves
+// reserves between accounts in the central bank's own book, and a clearing
+// house that could do that would be a central bank. Before the operator split
+// the CSM settled directly, because there was one server and nothing in the
+// shape of the API could say otherwise.
+//
+// What is deliberately not modelled is the instruction — the message in which
+// the clearing house tells the central bank which cycle to settle. Today it is
+// out of band: an operator closes a cycle on one console and settles it on
+// another.
 func (s *Server) handleSettleCycle(w http.ResponseWriter, r *http.Request) {
-	settlement, err := s.network().SettleCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
+	var req settleCycleRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	settlement, err := s.network().SettleCycle(r.Context(), payment.CycleID(req.CycleID))
 	if err != nil {
 		writeError(w, err)
 		return

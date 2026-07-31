@@ -187,7 +187,7 @@ func TestSCTEndToEnd(t *testing.T) {
 	payID := pay["id"].(string)
 
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusOK)
+	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cyc+`"}`, http.StatusOK)
 
 	aliceBal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
 	if got := int64(aliceBal["book"].(float64)); got != 75000 {
@@ -546,7 +546,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	}`, http.StatusCreated)
 
 	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/close", "", http.StatusOK)
-	settlement := doJSON(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusOK)
+	settlement := doJSON(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusOK)
 	assertEqual(t, "settled settlement asset", settlement["asset"].(string), "EUR")
 	sid := settlement["id"].(string)
 
@@ -987,7 +987,7 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 		"amount":25000
 	}`, http.StatusCreated)["id"].(string)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusOK)
+	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cyc+`"}`, http.StatusOK)
 	return a, b, pay
 }
 

@@ -90,7 +90,9 @@ func movedTo(old string) (operator, pattern string) {
 		return "central-bank", old
 
 	case path == "/cycles/{cid}/settle":
-		return "", "" // Task 4 turns this into POST /settlements on the central bank
+		// Settling moved operator as well as shape: the cycle is now the body
+		// of POST /settlements on the central bank.
+		return "central-bank", "POST /settlements"
 
 	case path == "/assets":
 		// On every operator; the disjointness allowlist is what records that.
@@ -223,4 +225,59 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	if got["id"] != verde {
 		t.Fatalf("GET /me on Verde's listener = %v, want %s", got["id"], verde)
 	}
+}
+
+// TestSettlingIsTheCentralBanksAct pins the operator, not the mechanism.
+//
+// Settlement moves reserves between accounts in the central bank's own book; a
+// clearing house that could do that would be a central bank. Before the split
+// the CSM settled directly, because there was only one server to put the route
+// on and nothing in the shape of the API could say otherwise.
+//
+// The clearing house keeps GET /settlements: it needs to know whether the cycle
+// it closed has settled, and reading is not doing.
+func TestSettlingIsTheCentralBanksAct(t *testing.T) {
+	h := newServer(t, nil)
+	cid := closedCycle(t, h)
+
+	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
+
+	settlement := doJSON(t, cb(h), "POST", "/settlements",
+		`{"cycleId":"`+cid+`"}`, http.StatusOK)
+	if settlement["cycleId"] != cid {
+		t.Fatalf("settlement cycleId = %v, want %s", settlement["cycleId"], cid)
+	}
+
+	var settlements []settlementDTO
+	getJSON(t, csm(h), "/settlements", &settlements)
+	if len(settlements) != 1 {
+		t.Fatalf("the clearing house sees %d settlements, want 1", len(settlements))
+	}
+}
+
+// closedCycle builds the smallest thing that can be settled: two banks, one
+// funded payment between them, cleared into a cycle that is then closed.
+func closedCycle(t *testing.T, h *Server) string {
+	t.Helper()
+	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SET-ALICE-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SET-BOB-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	doJSON(t, bank(h, a), "POST", "/deposits",
+		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+
+	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+	doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":25000,
+		"endToEndId":"settle-e2e"
+	}`, http.StatusCreated)
+	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	return cyc
 }

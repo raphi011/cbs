@@ -46,6 +46,10 @@ func (s *Server) centralBankRouter() *router {
 	// central bank's own book, which is what makes it the central bank's act
 	// and not the clearing house's.
 	mux.HandleFunc("POST /members", s.handleAddParticipant)
+	// Settling is the central bank's act; the clearing house keeps the
+	// read side, because it needs to know whether the cycle it closed has
+	// settled and reading is not doing.
+	mux.HandleFunc("POST /settlements", s.handleSettleCycle)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	// Reset clears the store and reseeds it. It belongs to one operator
 	// because Server.resetMu serializes it per process, and the central bank

@@ -355,3 +355,13 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 type openCycleRequest struct {
 	Scheme string `json:"scheme"`
 }
+
+// settleCycleRequest names the cycle to settle.
+//
+// The cycle is the input; the resource created is a settlement, which is why
+// this is the body of POST /settlements rather than a path parameter on an
+// action against a cycle — and why the route is the central bank's, whose book
+// the reserves actually move in.
+type settleCycleRequest struct {
+	CycleID string `json:"cycleId"`
+}
