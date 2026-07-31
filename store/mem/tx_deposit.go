@@ -52,10 +52,12 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 //
 //   - deposit_account_identifiers has (book, account, scheme, value) as its
 //     primary key and is inserted ON CONFLICT DO NOTHING, so writing the same
-//     pair twice on one account collapses to one row there. A Go map keeps
+//     pair twice on one account collapses to one row there. A Go slice keeps
 //     both. Sorting first makes slices.Compact enough to do the same here.
-//   - It is read back ORDER BY scheme, value, so the set comes out sorted
-//     whatever order it went in. A Go slice preserves insertion order.
+//   - It is read back ordered by (scheme, value), so the set comes out sorted
+//     whatever order it went in, where a Go slice preserves insertion order.
+//     strings.Compare is byte order, which is why hydrateIdentifiers spells its
+//     ORDER BY with COLLATE "C" rather than leaving it to the cluster's locale.
 //   - An account with no identifiers has no rows, so pg's hydrate leaves the
 //     field nil. A caller that passed a non-nil empty slice — which
 //     api/handlers_deposit.go does, since make([]T, 0) is what it builds from an

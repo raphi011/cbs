@@ -190,8 +190,9 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		// verbatim from a request body — would sail past it. It must not: the
 		// same list means one address on store/pg, whose identifier rows carry
 		// (scheme, value) in their primary key, and two in a Go slice. Refusing
-		// is better than collapsing, because a caller who sent an address twice
-		// meant something and should be told which of the two things it was.
+		// beats collapsing silently: a caller who listed one address twice
+		// either meant two different addresses and mistyped one, or is sending
+		// a list it has not deduplicated, and both are worth being told about.
 		if slices.Contains(identifiers[:i], ident) {
 			return Account{}, ErrIdentifierTaken
 		}

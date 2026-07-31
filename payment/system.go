@@ -1507,7 +1507,7 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 // shipped, which is precisely the argument for fixing it now: the design's
 // load-bearing claim is that a card PAN drops in as a constant, and the first
 // day it does, an address bound to the scheme would silently stop being bound
-// to it. AddressedBy() is decorative if anything but it decides the answer.
+// to it. AddressedBy() is decorative unless it decides this answer.
 func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Identifier, error) {
 	want := scheme.AddressedBy()
 	var inScheme []deposit.Identifier
