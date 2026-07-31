@@ -750,10 +750,12 @@ func participant(id payment.ParticipantID, name string, createdAt time.Time) pay
 
 func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time) payment.Payment {
 	return payment.Payment{
-		ID:          id,
-		Scheme:      payment.SchemeSEPACT,
-		Debtor:      payment.PartyRef{Participant: "bank_1", Account: "dep_1", IBAN: "SE89-AURORA-1001"},
-		Creditor:    payment.PartyRef{Participant: "bank_2", Account: "dep_2", IBAN: "IT60-VERDE-2001"},
+		ID:     id,
+		Scheme: payment.SchemeSEPACT,
+		Debtor: payment.PartyRef{Participant: "bank_1", Account: "dep_1",
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}},
+		Creditor: payment.PartyRef{Participant: "bank_2", Account: "dep_2",
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}},
 		Amount:      2500,
 		EndToEndID:  endToEndID,
 		Status:      payment.Accepted,

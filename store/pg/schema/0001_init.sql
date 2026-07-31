@@ -542,43 +542,56 @@ CREATE TABLE participant_assets (
     PRIMARY KEY (participant_id, asset)
 );
 
+-- debtor/creditor _identifier_scheme and _identifier_value are the PartyRef's
+-- payment.PartyRef.Identifier: the external address (an IBAN today) that was
+-- quoted for that side, STORED rather than looked up from
+-- deposit_account_identifiers at read time, because identifiers are mutable
+-- and a settled mandate or payment must keep saying what it actually used. A
+-- blank pair (both "") means the party was addressed only by its ids, the same
+-- "no CHECK, unvalidated format" stance deposit_account_identifiers takes on
+-- scheme and value, for the same reason: the known schemes are Go constants,
+-- not a database enum.
 CREATE TABLE mandates (
-    id                   TEXT PRIMARY KEY,
-    debtor_participant   TEXT NOT NULL,
-    debtor_account       TEXT NOT NULL,
-    debtor_iban          TEXT NOT NULL,
-    creditor_participant TEXT NOT NULL,
-    creditor_account     TEXT NOT NULL,
-    creditor_iban        TEXT NOT NULL,
-    max_amount           BIGINT NOT NULL,
-    status               SMALLINT NOT NULL,
-    created_at           TIMESTAMPTZ,
-    seq                  BIGSERIAL NOT NULL
+    id                        TEXT PRIMARY KEY,
+    debtor_participant        TEXT NOT NULL,
+    debtor_account            TEXT NOT NULL,
+    debtor_identifier_scheme  TEXT NOT NULL,
+    debtor_identifier_value   TEXT NOT NULL,
+    creditor_participant      TEXT NOT NULL,
+    creditor_account          TEXT NOT NULL,
+    creditor_identifier_scheme TEXT NOT NULL,
+    creditor_identifier_value  TEXT NOT NULL,
+    max_amount                BIGINT NOT NULL,
+    status                    SMALLINT NOT NULL,
+    created_at                TIMESTAMPTZ,
+    seq                       BIGSERIAL NOT NULL
 );
 
 CREATE TABLE payments (
-    id                   TEXT PRIMARY KEY,
-    scheme               TEXT NOT NULL,
-    debtor_participant   TEXT NOT NULL,
-    debtor_account       TEXT NOT NULL,
-    debtor_iban          TEXT NOT NULL,
-    creditor_participant TEXT NOT NULL,
-    creditor_account     TEXT NOT NULL,
-    creditor_iban        TEXT NOT NULL,
-    amount               BIGINT NOT NULL,
-    mandate_id           TEXT NOT NULL,
-    end_to_end_id        TEXT NOT NULL,
-    status               SMALLINT NOT NULL,
-    reject_reason        TEXT NOT NULL,
-    cycle_id             TEXT NOT NULL,
-    booking_date         TIMESTAMPTZ,
-    value_date           TIMESTAMPTZ,
-    description          TEXT NOT NULL,
-    metadata             JSONB,
-    created_at           TIMESTAMPTZ,
-    debtor_leg_tx        TEXT NOT NULL,
-    creditor_leg_tx      TEXT NOT NULL,
-    seq                  BIGSERIAL NOT NULL
+    id                         TEXT PRIMARY KEY,
+    scheme                     TEXT NOT NULL,
+    debtor_participant         TEXT NOT NULL,
+    debtor_account             TEXT NOT NULL,
+    debtor_identifier_scheme   TEXT NOT NULL,
+    debtor_identifier_value    TEXT NOT NULL,
+    creditor_participant       TEXT NOT NULL,
+    creditor_account           TEXT NOT NULL,
+    creditor_identifier_scheme TEXT NOT NULL,
+    creditor_identifier_value  TEXT NOT NULL,
+    amount                     BIGINT NOT NULL,
+    mandate_id                 TEXT NOT NULL,
+    end_to_end_id              TEXT NOT NULL,
+    status                     SMALLINT NOT NULL,
+    reject_reason              TEXT NOT NULL,
+    cycle_id                   TEXT NOT NULL,
+    booking_date               TIMESTAMPTZ,
+    value_date                 TIMESTAMPTZ,
+    description                TEXT NOT NULL,
+    metadata                   JSONB,
+    created_at                 TIMESTAMPTZ,
+    debtor_leg_tx              TEXT NOT NULL,
+    creditor_leg_tx            TEXT NOT NULL,
+    seq                        BIGSERIAL NOT NULL
 );
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not

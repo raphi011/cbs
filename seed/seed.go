@@ -102,8 +102,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 	d.clock.rewind(baseDate)
 	b := &builder{
 		ctx: ctx, net: net, clock: d.clock,
-		ibans: map[deposit.AccountID]string{},
-		cats:  map[payment.ParticipantID]catalogue{},
+		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
 	return nil
@@ -157,12 +156,7 @@ type builder struct {
 	ctx   context.Context
 	net   *payment.Network
 	clock *clock
-	// ibans assigns one canonical IBAN per deposit account so a PartyRef for an
-	// account is identical wherever it appears. The SDD scheme matches a payment
-	// to its mandate by PartyRef equality, and PartyRef includes the IBAN field —
-	// so a mandate and its direct debits must reference the account the same way.
-	ibans map[deposit.AccountID]string
-	// cats holds each bank's product IDs, keyed the way ibans is keyed: the
+	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
 	// the same name at two banks is two products.
 	cats map[payment.ParticipantID]catalogue
@@ -251,19 +245,14 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 
 // openOverdraft opens a customer account with an overdraft limit and gives it
 // the IBAN as its own identifier, so it is resolvable through
-// Register.ResolveIdentifier rather than merely labelled. The limit is per
-// account and the PRICE is not: it comes from the Basic product, so the day-30
-// reprice above reaches every account opened here without touching one of
-// them.
-//
-// b.ibans is a lookaside recording the same string, kept only because
-// payment.PartyRef.IBAN is still a free-form field that b.ref populates from
-// it; once PartyRef carries an identifier instead, the map goes with it.
+// Register.ResolveIdentifier rather than merely labelled, and so b.ref can
+// read it straight back off the account rather than a second copy. The limit
+// is per account and the PRICE is not: it comes from the Basic product, so the
+// day-30 reprice above reaches every account opened here without touching one
+// of them.
 func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
-	a := must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
-	b.ibans[a.ID] = iban
-	return a
+	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
 }
 
 // openLoan opens a term loan and disburses it in full into the borrower's own
@@ -294,10 +283,17 @@ func (b *builder) runDays(p *payment.Participant, days int) {
 	}
 }
 
-// ref builds a PartyRef for a customer deposit account using its canonical IBAN,
-// so the same account always produces an identical PartyRef.
+// ref builds a PartyRef for a customer deposit account from the account's own
+// IBAN identifier, so the same account always produces an identical PartyRef.
 func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.PartyRef {
-	return payment.PartyRef{Participant: p.ID, Account: acct.ID, IBAN: b.ibans[acct.ID]}
+	ref := payment.PartyRef{Participant: p.ID, Account: acct.ID}
+	for _, ident := range acct.Identifiers {
+		if ident.Scheme == deposit.IdentifierIBAN {
+			ref.Identifier = ident
+			break
+		}
+	}
+	return ref
 }
 
 // fund credits a deposit account with cash and raises the bank's reserve.

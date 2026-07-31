@@ -192,8 +192,8 @@ func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error
 // ---------------------------------------------------------------------------
 
 const paymentColumns = `id, scheme,
-	debtor_participant, debtor_account, debtor_iban,
-	creditor_participant, creditor_account, creditor_iban,
+	debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
+	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
 	amount, mandate_id, end_to_end_id, status, reject_reason, cycle_id,
 	booking_date, value_date, description, metadata, created_at,
 	debtor_leg_tx, creditor_leg_tx`
@@ -208,31 +208,33 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	}
 	_, err = t.tx.Exec(ctx, `
 		INSERT INTO payments (`+paymentColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
 		ON CONFLICT (id) DO UPDATE SET
-			scheme               = EXCLUDED.scheme,
-			debtor_participant   = EXCLUDED.debtor_participant,
-			debtor_account       = EXCLUDED.debtor_account,
-			debtor_iban          = EXCLUDED.debtor_iban,
-			creditor_participant = EXCLUDED.creditor_participant,
-			creditor_account     = EXCLUDED.creditor_account,
-			creditor_iban        = EXCLUDED.creditor_iban,
-			amount               = EXCLUDED.amount,
-			mandate_id           = EXCLUDED.mandate_id,
-			end_to_end_id        = EXCLUDED.end_to_end_id,
-			status               = EXCLUDED.status,
-			reject_reason        = EXCLUDED.reject_reason,
-			cycle_id             = EXCLUDED.cycle_id,
-			booking_date         = EXCLUDED.booking_date,
-			value_date           = EXCLUDED.value_date,
-			description          = EXCLUDED.description,
-			metadata             = EXCLUDED.metadata,
-			created_at           = EXCLUDED.created_at,
-			debtor_leg_tx        = EXCLUDED.debtor_leg_tx,
-			creditor_leg_tx      = EXCLUDED.creditor_leg_tx`,
+			scheme                     = EXCLUDED.scheme,
+			debtor_participant         = EXCLUDED.debtor_participant,
+			debtor_account             = EXCLUDED.debtor_account,
+			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
+			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
+			creditor_participant       = EXCLUDED.creditor_participant,
+			creditor_account           = EXCLUDED.creditor_account,
+			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
+			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
+			amount                     = EXCLUDED.amount,
+			mandate_id                 = EXCLUDED.mandate_id,
+			end_to_end_id              = EXCLUDED.end_to_end_id,
+			status                     = EXCLUDED.status,
+			reject_reason              = EXCLUDED.reject_reason,
+			cycle_id                   = EXCLUDED.cycle_id,
+			booking_date               = EXCLUDED.booking_date,
+			value_date                 = EXCLUDED.value_date,
+			description                = EXCLUDED.description,
+			metadata                   = EXCLUDED.metadata,
+			created_at                 = EXCLUDED.created_at,
+			debtor_leg_tx              = EXCLUDED.debtor_leg_tx,
+			creditor_leg_tx            = EXCLUDED.creditor_leg_tx`,
 		string(p.ID), string(p.Scheme),
-		string(p.Debtor.Participant), string(p.Debtor.Account), p.Debtor.IBAN,
-		string(p.Creditor.Participant), string(p.Creditor.Account), p.Creditor.IBAN,
+		string(p.Debtor.Participant), string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
+		string(p.Creditor.Participant), string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
 		p.Amount, string(p.MandateID), p.EndToEndID, int16(p.Status), p.RejectReason, string(p.CycleID),
 		nullTime(p.BookingDate), nullTime(p.ValueDate), p.Description, metadata, nullTime(p.CreatedAt),
 		string(p.DebtorLegTx), string(p.CreditorLegTx))
@@ -250,8 +252,8 @@ func scanPayment(row pgx.Row) (payment.Payment, error) {
 		metadata                  []byte
 	)
 	err := row.Scan(&p.ID, &p.Scheme,
-		&p.Debtor.Participant, &p.Debtor.Account, &p.Debtor.IBAN,
-		&p.Creditor.Participant, &p.Creditor.Account, &p.Creditor.IBAN,
+		&p.Debtor.Participant, &p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
+		&p.Creditor.Participant, &p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
 		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.CycleID,
 		&booking, &value, &p.Description, &metadata, &createdAt,
 		&p.DebtorLegTx, &p.CreditorLegTx)
@@ -322,8 +324,8 @@ func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
 // Mandates
 // ---------------------------------------------------------------------------
 
-const mandateColumns = `id, debtor_participant, debtor_account, debtor_iban,
-	creditor_participant, creditor_account, creditor_iban,
+const mandateColumns = `id, debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
+	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
 	max_amount, status, created_at`
 
 func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
@@ -332,20 +334,22 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO mandates (`+mandateColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
 		ON CONFLICT (id) DO UPDATE SET
-			debtor_participant   = EXCLUDED.debtor_participant,
-			debtor_account       = EXCLUDED.debtor_account,
-			debtor_iban          = EXCLUDED.debtor_iban,
-			creditor_participant = EXCLUDED.creditor_participant,
-			creditor_account     = EXCLUDED.creditor_account,
-			creditor_iban        = EXCLUDED.creditor_iban,
-			max_amount           = EXCLUDED.max_amount,
-			status               = EXCLUDED.status,
-			created_at           = EXCLUDED.created_at`,
+			debtor_participant         = EXCLUDED.debtor_participant,
+			debtor_account             = EXCLUDED.debtor_account,
+			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
+			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
+			creditor_participant       = EXCLUDED.creditor_participant,
+			creditor_account           = EXCLUDED.creditor_account,
+			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
+			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
+			max_amount                 = EXCLUDED.max_amount,
+			status                     = EXCLUDED.status,
+			created_at                 = EXCLUDED.created_at`,
 		string(m.ID),
-		string(m.Debtor.Participant), string(m.Debtor.Account), m.Debtor.IBAN,
-		string(m.Creditor.Participant), string(m.Creditor.Account), m.Creditor.IBAN,
+		string(m.Debtor.Participant), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
+		string(m.Creditor.Participant), string(m.Creditor.Account), string(m.Creditor.Identifier.Scheme), m.Creditor.Identifier.Value,
 		m.MaxAmount, int16(m.Status), nullTime(m.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put mandate %s: %w", m.ID, err)
@@ -360,8 +364,8 @@ func scanMandate(row pgx.Row) (payment.Mandate, error) {
 		createdAt *time.Time
 	)
 	err := row.Scan(&m.ID,
-		&m.Debtor.Participant, &m.Debtor.Account, &m.Debtor.IBAN,
-		&m.Creditor.Participant, &m.Creditor.Account, &m.Creditor.IBAN,
+		&m.Debtor.Participant, &m.Debtor.Account, &m.Debtor.Identifier.Scheme, &m.Debtor.Identifier.Value,
+		&m.Creditor.Participant, &m.Creditor.Account, &m.Creditor.Identifier.Scheme, &m.Creditor.Identifier.Value,
 		&m.MaxAmount, &status, &createdAt)
 	if err != nil {
 		return payment.Mandate{}, err

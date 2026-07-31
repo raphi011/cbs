@@ -297,10 +297,17 @@ export interface Participant {
   assets: ParticipantAccounts[];
 }
 
+export interface AccountIdentifier {
+  scheme: string;
+  value: string;
+}
+
 export interface PartyRef {
   participant: string;
   account: string;
-  iban?: string;
+  // The external address quoted for this party — an IBAN today. Absent when
+  // the party was addressed only by its ids.
+  identifier?: AccountIdentifier;
 }
 
 export interface Payment {

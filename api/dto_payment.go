@@ -73,22 +73,39 @@ type createParticipantRequest struct {
 	Assets []string `json:"assets"`
 }
 
+type identifierDTO struct {
+	Scheme string `json:"scheme"`
+	Value  string `json:"value"`
+}
+
 type partyRefDTO struct {
 	Participant string `json:"participant"`
 	Account     string `json:"account"`
-	IBAN        string `json:"iban,omitempty"`
+	// Identifier is the external address quoted for this party — an IBAN today.
+	// Absent for a party addressed only by its ids.
+	Identifier *identifierDTO `json:"identifier,omitempty"`
 }
 
 func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
-	return partyRefDTO{Participant: string(r.Participant), Account: string(r.Account), IBAN: r.IBAN}
+	out := partyRefDTO{Participant: string(r.Participant), Account: string(r.Account)}
+	if r.Identifier != (deposit.Identifier{}) {
+		out.Identifier = &identifierDTO{Scheme: string(r.Identifier.Scheme), Value: r.Identifier.Value}
+	}
+	return out
 }
 
 func (r partyRefDTO) toDomain() payment.PartyRef {
-	return payment.PartyRef{
+	out := payment.PartyRef{
 		Participant: payment.ParticipantID(r.Participant),
 		Account:     deposit.AccountID(r.Account),
-		IBAN:        r.IBAN,
 	}
+	if r.Identifier != nil {
+		out.Identifier = deposit.Identifier{
+			Scheme: deposit.IdentifierScheme(r.Identifier.Scheme),
+			Value:  r.Identifier.Value,
+		}
+	}
+	return out
 }
 
 type paymentDTO struct {

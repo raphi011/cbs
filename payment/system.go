@@ -1361,9 +1361,10 @@ func transition(p *Payment, to PaymentStatus) error {
 }
 
 // validateParty checks a party reference's text before anything is looked up
-// with it. The IBAN is stored on the payment; the two ids are used as lookup
-// keys, and a key that reaches store/pg with a control character in it raises a
-// SQLSTATE rather than answering "no such row". See ledger.ValidateText.
+// with it. The identifier is stored on the payment rather than derived; the
+// two ids are used as lookup keys, and a key that reaches store/pg with a
+// control character in it raises a SQLSTATE rather than answering "no such
+// row". See ledger.ValidateText.
 func validateParty(field string, ref PartyRef) error {
 	if err := ledger.ValidateText(field+".participant", string(ref.Participant)); err != nil {
 		return err
@@ -1371,7 +1372,12 @@ func validateParty(field string, ref PartyRef) error {
 	if err := ledger.ValidateText(field+".account", string(ref.Account)); err != nil {
 		return err
 	}
-	return ledger.ValidateText(field+".iban", ref.IBAN)
+	// An empty identifier is legal — an internal transfer quotes no external
+	// address — so validate only what is there.
+	if ref.Identifier == (deposit.Identifier{}) {
+		return nil
+	}
+	return ref.Identifier.Validate(field + ".identifier")
 }
 
 // ResolveIdentifier turns an external address — an IBAN today — into the party
@@ -1420,7 +1426,7 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 			return PartyRef{}, deposit.ErrIdentifierAmbiguous
 		}
 		if len(holders) == 1 {
-			found = PartyRef{Participant: m.ID, Account: holders[0].ID}
+			found = PartyRef{Participant: m.ID, Account: holders[0].ID, Identifier: ident}
 		}
 	}
 	if hits == 0 {

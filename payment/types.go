@@ -159,11 +159,17 @@ func (s CycleStatus) String() string {
 }
 
 // PartyRef identifies one side of a payment: a customer deposit account at a
-// specific participant bank.
+// specific participant bank, and the external address that was quoted to reach
+// it.
+//
+// The identifier is STORED rather than derived, because identifiers are
+// mutable: an account that later has its IBAN withdrawn must not retroactively
+// change what a settled payment says it was sent to. What a payment records is
+// the address actually used.
 type PartyRef struct {
 	Participant ParticipantID
 	Account     deposit.AccountID // the customer deposit account within that bank
-	IBAN        string            // free-form label; no validation in this model
+	Identifier  deposit.Identifier
 }
 
 // Payment is a scheme-agnostic instruction to move funds from a debtor to a

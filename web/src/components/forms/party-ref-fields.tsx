@@ -52,11 +52,16 @@ export function PartyRefFields({
         <FieldLabel htmlFor={`${idBase}-iban`}>IBAN (optional)</FieldLabel>
         <Input
           id={`${idBase}-iban`}
-          value={value.iban ?? ""}
+          value={value.identifier?.value ?? ""}
           placeholder="DE89…"
           className="font-mono"
           onChange={(e) =>
-            onChange({ ...value, iban: e.target.value || undefined })
+            onChange({
+              ...value,
+              identifier: e.target.value
+                ? { scheme: "IBAN", value: e.target.value }
+                : undefined,
+            })
           }
         />
       </div>
