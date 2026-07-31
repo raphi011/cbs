@@ -30,7 +30,9 @@ Stack: Next.js 16 (App Router) · React 19 · Tailwind v4 (no config file; token
 
 ## Architecture
 
-**Proxy / no CORS by construction.** `src/app/api/[...path]/route.ts` forwards every request to the Go backend (`BACKEND_URL`, default `http://localhost:8080`). The browser only ever calls same-origin `/api/...`, so CORS is impossible and a downed backend surfaces as a clean 502.
+**Proxy / no CORS by construction.** `src/app/api/[...path]/route.ts` forwards every request to the Go backend. The browser only ever calls same-origin `/api/...`, so CORS is impossible and a downed backend surfaces as a clean 502.
+
+**There is no single backend.** Each entity has a listener of its own (see the operator-split API spec): `:8081` the central bank, `:8082` the clearing house, then one per member bank in registration order. A request therefore has to say which one it is for, and the first segment after `/api` is the operator key — `central-bank`, `clearing-house`, or `bank/<pid>`, which the proxy strips before forwarding. **Build those paths with `cb()`, `csm()` and `bank(pid, …)` from `src/lib/api/operator.ts`; never hand-write one.** A bank's port is resolved from its position in the clearing house's `GET /members` roster, mirroring `cmd/server`'s `plan()`, so `make dev` needs no configuration; `BACKENDS` (JSON, operator key → base URL) overrides it. A participant admitted at runtime has **no listener until the server restarts** — admission is not provisioning — and the proxy says so rather than hanging.
 
 **Data layer grows in three files, one section per backend area:**
 `src/lib/api/endpoints.ts` (one typed fn per route) → `src/lib/api/query-keys.ts` (key factory; ledger/deposit keys nest under `["participants", pid, …]` so one invalidate clears a subtree) → `src/lib/api/hooks.ts` (query/mutation hooks; mutations invalidate keys). `errors.ts` maps HTTP status → friendly text via `describeError`.
