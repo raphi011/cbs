@@ -49,9 +49,11 @@ func Marshal(env Envelope) ([]byte, error) {
 // from the header's MsgDefIdr.
 //
 // It is the one function in this repository that consumes bytes it did not
-// produce, so it is written to fail rather than to guess: an unknown message
-// definition, a header that disagrees with the document's namespace, a missing
-// Document, and a document missing a mandatory element are each a named error.
+// produce, so it is written to fail rather than to guess: a root element that
+// is not Envelope, a second top-level element after the first one closes, an
+// unknown message definition, a header that disagrees with the document's
+// namespace, a missing Document, and a document missing a mandatory element
+// are each a named error.
 //
 // It reads the input as a single stream of tokens from one *xml.Decoder,
 // rather than unmarshalling into a struct and then re-parsing a captured
@@ -64,12 +66,30 @@ func Marshal(env Envelope) ([]byte, error) {
 // a namespace prefix would decode with no error and an empty field, because
 // encoding/xml does not treat an undefined prefix as a decode failure. See
 // TestUnmarshalPreservesPrefixedNamespaceBindings.
+//
+// The token walk only ever dispatches on the element at depth 2 (AppHdr,
+// Document); nothing checked what depth 1 actually was, so any wrapper
+// element worked, including a bare <Document> as the root. It is checked
+// explicitly here instead — deliberately with a plain error rather than one
+// of this package's sentinels: a wrong root is a structurally different
+// document, not a mandatory element that happens to be missing, and dressing
+// it up as ErrMissingElement would name the wrong problem, the same mistake
+// the missing-Document case made before it was fixed. The same check also
+// catches a second top-level element appearing after the first root closes
+// (rootClosed below): silently reading only the first, or only the last, of
+// two concatenated envelopes is a parser differential two banks could
+// disagree on, so it is refused rather than left to guesswork. Trailing
+// non-element content — whitespace, a comment — after a valid envelope is NOT
+// rejected: this function returns as soon as the Document decodes and
+// validates, before the root's own closing tag is even read, so nothing after
+// it is inspected either way.
 func Unmarshal(data []byte) (Envelope, error) {
 	dec := xml.NewDecoder(bytes.NewReader(data))
 
 	var hdr AppHdr
 	haveHdr := false
 	depth := 0
+	rootClosed := false
 
 	for {
 		tok, err := dec.Token()
@@ -83,6 +103,15 @@ func Unmarshal(data []byte) (Envelope, error) {
 		switch t := tok.(type) {
 		case xml.StartElement:
 			depth++
+			if depth == 1 {
+				if rootClosed {
+					return Envelope{}, fmt.Errorf("iso20022: unexpected element %q after the root element closed", t.Name.Local)
+				}
+				if t.Name.Local != "Envelope" {
+					return Envelope{}, fmt.Errorf("iso20022: root element is %q, want %q", t.Name.Local, "Envelope")
+				}
+				continue
+			}
 			if depth != 2 {
 				continue
 			}
@@ -127,6 +156,9 @@ func Unmarshal(data []byte) (Envelope, error) {
 			}
 		case xml.EndElement:
 			depth--
+			if depth == 0 {
+				rootClosed = true
+			}
 		}
 	}
 }

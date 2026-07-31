@@ -277,6 +277,46 @@ func TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees(t *testi
 		func() Document { return &testDoc{} })
 }
 
+// TestUnmarshalRejectsAWrongRootElement pins the root element's own identity:
+// an otherwise well-formed header and document wrapped in something other
+// than <Envelope> must fail, not decode successfully. The token walk that
+// replaced rawEnvelope only ever inspects the element at depth 2 (AppHdr,
+// Document) — it never looked at what depth 1 actually was, so any wrapper
+// element worked by accident, including <Document> itself.
+func TestUnmarshalRejectsAWrongRootElement(t *testing.T) {
+	in := `<NotAnEnvelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>test.001.001.01</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
+		`<Document xmlns="urn:example:test.001.001.01"><Body>hello</Body></Document></NotAnEnvelope>`
+
+	if _, err := Unmarshal([]byte(in)); err == nil {
+		t.Fatal("Unmarshal() = nil, want an error for a root element that is not Envelope")
+	}
+}
+
+// TestUnmarshalRejectsContentAfterTheRootCloses pins the single-root
+// requirement: a second top-level element after the first </Envelope> must
+// fail rather than silently become the envelope that gets parsed. Without
+// this, an attacker (or a buggy peer) could smuggle two envelopes into one
+// message and rely on this codec picking whichever one a naive parser lands
+// on last, which is exactly the kind of parser differential that matters
+// between two banks.
+func TestUnmarshalRejectsContentAfterTheRootCloses(t *testing.T) {
+	second := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>test.001.001.01</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
+		`<Document xmlns="urn:example:test.001.001.01"><Body>hello</Body></Document></Envelope>`
+	in := `<Envelope></Envelope>` + second
+
+	if _, err := Unmarshal([]byte(in)); err == nil {
+		t.Fatal("Unmarshal() = nil, want an error for a second top-level element after the root closed")
+	}
+}
+
 // TestRegisterDocumentPanicsWhenNamespaceDisagrees is
 // TestRegisterDocumentPanicsWhenMessageDefinitionIdentifierDisagrees's
 // counterpart for the namespace argument.
