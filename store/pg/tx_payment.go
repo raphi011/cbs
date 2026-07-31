@@ -46,15 +46,16 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO participants
-			(id, name, book_id, customer_subledger, created_at)
-		VALUES ($1, $2, $3, $4, $5)
+			(id, name, book_id, customer_subledger, product_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
 			book_id            = EXCLUDED.book_id,
 			customer_subledger = EXCLUDED.customer_subledger,
+			product_id         = EXCLUDED.product_id,
 			created_at         = EXCLUDED.created_at`,
 		string(p.ID), p.Name, string(p.BookID), string(p.CustomerSubledger),
-		nullTime(p.CreatedAt))
+		string(p.ProductID), nullTime(p.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
 	}
@@ -81,14 +82,14 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	return nil
 }
 
-const participantColumns = `id, name, book_id, customer_subledger, created_at`
+const participantColumns = `id, name, book_id, customer_subledger, product_id, created_at`
 
 func scanParticipant(row pgx.Row) (payment.Participant, error) {
 	var (
 		p         payment.Participant
 		createdAt *time.Time
 	)
-	err := row.Scan(&p.ID, &p.Name, &p.BookID, &p.CustomerSubledger, &createdAt)
+	err := row.Scan(&p.ID, &p.Name, &p.BookID, &p.CustomerSubledger, &p.ProductID, &createdAt)
 	if err != nil {
 		return payment.Participant{}, err
 	}
