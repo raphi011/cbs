@@ -34,6 +34,16 @@ type Tx interface {
 	GetDepositAccount(ctx context.Context, book ledger.BookID, id AccountID) (Account, error)
 	ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]Account, error)
 
+	// ListDepositAccountsByIdentifier returns every account in the book holding
+	// this exact (scheme, value) pair.
+	//
+	// It returns a slice rather than one account and a not-found sentinel
+	// because "an address resolves to exactly one account" is a DOMAIN rule and
+	// this layer holds none — the same division that keeps parent-existence out
+	// of the schema. Register.ResolveIdentifier turns zero, one and more than
+	// one into ErrIdentifierNotFound, the account, and ErrIdentifierAmbiguous.
+	ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident Identifier) ([]Account, error)
+
 	PutHold(ctx context.Context, book ledger.BookID, h Hold) error
 	GetHold(ctx context.Context, book ledger.BookID, id HoldID) (Hold, error)
 	ListHoldsForAccount(ctx context.Context, book ledger.BookID, id AccountID) ([]Hold, error)
@@ -104,3 +114,14 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     as a real interest-free product.
 //   - The store truncates nothing. Callers pass an already-DayStart-ed instant
 //     and both stores key on deposit.TermsDayKey of it.
+//   - PutDepositAccount writes Account.Identifiers as part of the aggregate and
+//     REPLACES the stored set; both readers bring it back. Identifiers are not
+//     separately writable, which is the condition under which store/pg is
+//     allowed a real FOREIGN KEY on them.
+//   - ListDepositAccountsByIdentifier matches both halves of the pair exactly,
+//     is book-scoped like everything else here, orders created_at then seq, and
+//     returns an empty slice — never a sentinel — when nothing matches. It must
+//     NOT enforce uniqueness: storetest/IdentifierUniquenessIsNotEnforced pins
+//     that two accounts in one book may hold the same identifier, because the
+//     rule against it lives in deposit.Register and a constraint in only one
+//     store would make the two implementations disagree.

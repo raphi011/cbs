@@ -220,6 +220,48 @@ CREATE TABLE deposit_accounts (
     PRIMARY KEY (book_id, id)
 );
 
+-- An account's external addresses: what a counterparty quotes to pay it. The
+-- account's own id is never one of these.
+--
+-- Two things this table deliberately does NOT say.
+--
+-- First, there is no UNIQUE (book_id, scheme, value). "One bank issues an
+-- address once" is a real domain rule and deposit.Register enforces it by
+-- reading before it writes — but nothing serializes two concurrent adds the way
+-- NextID's row lock serializes AddParticipantTx, so under READ COMMITTED a
+-- constraint here would fire in Postgres and not in store/mem. That is the one
+-- divergence this package must never introduce; see the note on UNIQUE
+-- (book_id, name) above, which is the same argument. The primary key is
+-- therefore widened with deposit_account_id so that it is a row identity rather
+-- than the domain rule in disguise, and the lookup index is a plain index. The
+-- residual duplicate is caught at READ time: Register.ResolveIdentifier answers
+-- ErrIdentifierAmbiguous rather than picking one.
+-- storetest/IdentifierUniquenessIsNotEnforced pins all of this.
+--
+-- Second, there is no CHECK on scheme or value. The known schemes are Go
+-- constants (deposit.IdentifierIBAN), the way assets and payment schemes are,
+-- and the FORMAT of a value is deliberately unvalidated — no mod-97 check digit
+-- — so that the seed's readable SE89-AURORA-1001 stays legal.
+--
+-- The parent FOREIGN KEY, unlike subledgers.ledger_id, DOES stay. It is the
+-- exemption stated above for entries -> transactions: PutDepositAccount writes
+-- both sides itself, within one statement sequence, so no caller can produce an
+-- orphan. Identifiers are modelled as part of the account aggregate precisely
+-- so that this holds.
+CREATE TABLE deposit_account_identifiers (
+    book_id            TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    deposit_account_id TEXT NOT NULL,
+    scheme             TEXT NOT NULL,
+    value              TEXT NOT NULL,
+    PRIMARY KEY (book_id, deposit_account_id, scheme, value),
+    FOREIGN KEY (book_id, deposit_account_id)
+        REFERENCES deposit_accounts (book_id, id) ON DELETE CASCADE
+);
+
+-- ListDepositAccountsByIdentifier. Not UNIQUE, on purpose; see above.
+CREATE INDEX deposit_account_identifiers_lookup_idx
+    ON deposit_account_identifiers (book_id, scheme, value);
+
 CREATE TABLE holds (
     book_id     TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id          TEXT NOT NULL,

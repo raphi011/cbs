@@ -133,6 +133,163 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
+	// Identifiers ride on the account aggregate: PutDepositAccount writes them
+	// and both readers bring them back. If they did not, the register's
+	// uniqueness check would pass against a store that had silently dropped
+	// the very rows it was checking.
+	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", GLAccount: "200.cust.001", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if len(got.Identifiers) != 1 || got.Identifiers[0] != iban {
+				t.Fatalf("GetDepositAccount identifiers = %#v, want [%#v]", got.Identifiers, iban)
+			}
+			list, err := tx.ListDepositAccounts(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			if len(list) != 1 || len(list[0].Identifiers) != 1 || list[0].Identifiers[0] != iban {
+				t.Fatalf("ListDepositAccounts identifiers = %#v, want [%#v]", list, iban)
+			}
+			return nil
+		})
+	})
+
+	// An upsert replaces the set rather than merging into it. PutDepositAccount
+	// is an upsert of the whole aggregate everywhere else; identifiers must not
+	// be the one part of it that accumulates.
+	t.Run("IdentifiersAreReplacedByAnUpsert", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		first := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		second := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-9999"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{first},
+			})
+		})
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{second},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			got, err := tx.GetDepositAccount(ctx, bookA, "dep_1")
+			if err != nil {
+				return err
+			}
+			if len(got.Identifiers) != 1 || got.Identifiers[0] != second {
+				t.Fatalf("after upsert identifiers = %#v, want [%#v]", got.Identifiers, second)
+			}
+			return nil
+		})
+	})
+
+	// The lookup is exact on both halves of the pair and scoped by book, like
+	// every other method here. Two banks holding the same value is a legal
+	// state, and each book sees only its own.
+	t.Run("ListDepositAccountsByIdentifierIsExactAndBookScoped", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban},
+			}); err != nil {
+				return err
+			}
+			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
+				ID: "dep_2", Name: "Bruno", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			inA, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, iban)
+			if err != nil {
+				return err
+			}
+			if len(inA) != 1 || inA[0].ID != "dep_1" {
+				t.Fatalf("book A lookup = %#v, want just dep_1", inA)
+			}
+
+			// Same value, different scheme: no match.
+			other := deposit.Identifier{Scheme: deposit.IdentifierScheme("PAN"), Value: "SHARED-0001"}
+			none, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, other)
+			if err != nil {
+				return err
+			}
+			if len(none) != 0 {
+				t.Fatalf("wrong-scheme lookup = %#v, want none", none)
+			}
+
+			// A miss is an empty slice and a nil error, not a sentinel.
+			missing := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "NOPE"}
+			gone, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, missing)
+			if err != nil {
+				return err
+			}
+			if len(gone) != 0 {
+				t.Fatalf("missing lookup = %#v, want none", gone)
+			}
+			return nil
+		})
+	})
+
+	// The store does NOT enforce uniqueness, and this test is what keeps it
+	// that way.
+	//
+	// It is the same job ParentReferencesAreNotEnforced does. "One bank issues
+	// an address once" is a domain rule that deposit.Register enforces by
+	// reading before it writes; a UNIQUE constraint in store/pg would make
+	// Postgres reject a write the Go map accepts, under a race no lock closes,
+	// which is the one divergence the store layer must never introduce. The
+	// resulting ambiguity is caught at READ time by Register.ResolveIdentifier.
+	t.Run("IdentifierUniquenessIsNotEnforced", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban},
+			}); err != nil {
+				return err
+			}
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_2", Name: "Aaron", Asset: "EUR",
+				Identifiers: []deposit.Identifier{iban},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			both, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, iban)
+			if err != nil {
+				return err
+			}
+			if len(both) != 2 {
+				t.Fatalf("duplicate lookup returned %d accounts, want 2 — the store must not enforce uniqueness", len(both))
+			}
+			return nil
+		})
+	})
+
 	t.Run("GetOnMissingDepositRowsReturnsSentinels", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 

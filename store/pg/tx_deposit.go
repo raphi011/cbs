@@ -56,6 +56,24 @@ func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposi
 	if err != nil {
 		return fmt.Errorf("pg: put deposit account %s: %w", a.ID, err)
 	}
+
+	// Replace the identifier set. Delete-then-insert rather than a merge: the
+	// account is one aggregate and PutDepositAccount is an upsert of all of it,
+	// so a removed identifier has to actually disappear.
+	if _, err := t.tx.Exec(ctx,
+		`DELETE FROM deposit_account_identifiers WHERE book_id = $1 AND deposit_account_id = $2`,
+		string(book), string(a.ID)); err != nil {
+		return fmt.Errorf("pg: clear identifiers for %s: %w", a.ID, err)
+	}
+	for _, ident := range a.Identifiers {
+		if _, err := t.tx.Exec(ctx, `
+			INSERT INTO deposit_account_identifiers (book_id, deposit_account_id, scheme, value)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT DO NOTHING`,
+			string(book), string(a.ID), string(ident.Scheme), ident.Value); err != nil {
+			return fmt.Errorf("pg: put identifier %s/%s for %s: %w", ident.Scheme, ident.Value, a.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -100,7 +118,11 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 	if err != nil {
 		return deposit.Account{}, fmt.Errorf("pg: get deposit account %s: %w", id, err)
 	}
-	return a, nil
+	one := []deposit.Account{a}
+	if err := t.hydrateIdentifiers(ctx, book, one); err != nil {
+		return deposit.Account{}, err
+	}
+	return one[0], nil
 }
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
@@ -121,7 +143,87 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, t.hydrateIdentifiers(ctx, book, out)
+}
+
+// hydrateIdentifiers fills Identifiers on the accounts given, in ONE query.
+//
+// One query and not one per account: the multi-asset rework found exactly this
+// N+1 in two listing endpoints, and a bank with a page of customers would
+// reintroduce it here.
+func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, accounts []deposit.Account) error {
+	if len(accounts) == 0 {
+		return nil
+	}
+	ids := make([]string, len(accounts))
+	for i, a := range accounts {
+		ids[i] = string(a.ID)
+	}
+	rows, err := t.tx.Query(ctx, `
+		SELECT deposit_account_id, scheme, value
+		FROM deposit_account_identifiers
+		WHERE book_id = $1 AND deposit_account_id = ANY($2)
+		ORDER BY scheme, value`, string(book), ids)
+	if err != nil {
+		return fmt.Errorf("pg: list identifiers: %w", err)
+	}
+	defer rows.Close()
+
+	byAccount := make(map[deposit.AccountID][]deposit.Identifier, len(accounts))
+	for rows.Next() {
+		var (
+			id    deposit.AccountID
+			ident deposit.Identifier
+		)
+		if err := rows.Scan(&id, &ident.Scheme, &ident.Value); err != nil {
+			return fmt.Errorf("pg: list identifiers: %w", err)
+		}
+		byAccount[id] = append(byAccount[id], ident)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range accounts {
+		accounts[i].Identifiers = byAccount[accounts[i].ID]
+	}
+	return nil
+}
+
+// ListDepositAccountsByIdentifier returns every account in the book holding
+// this exact (scheme, value) pair. EXISTS rather than a JOIN, so that an
+// account with the pair recorded twice — which nothing here prevents; see
+// deposit_account_identifiers in the schema — still surfaces once and not
+// twice.
+func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+	rows, err := t.tx.Query(ctx, `
+		SELECT `+depositAccountColumns+`
+		FROM deposit_accounts a
+		WHERE a.book_id = $1 AND EXISTS (
+			SELECT 1 FROM deposit_account_identifiers i
+			WHERE i.book_id = a.book_id AND i.deposit_account_id = a.id
+			  AND i.scheme = $2 AND i.value = $3)
+		ORDER BY a.created_at ASC NULLS FIRST, a.seq`,
+		string(book), string(ident.Scheme), ident.Value)
+	if err != nil {
+		return nil, fmt.Errorf("pg: list deposit accounts by identifier: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]deposit.Account, 0)
+	for rows.Next() {
+		a, err := scanDepositAccount(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list deposit accounts by identifier: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, t.hydrateIdentifiers(ctx, book, out)
 }
 
 // ---------------------------------------------------------------------------

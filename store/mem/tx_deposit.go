@@ -48,6 +48,23 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 	return out, nil
 }
 
+// The whole Account — identifiers included — is the map value, so
+// PutDepositAccount and both readers need no change at all. Only the lookup is
+// new, and in a map it is a scan; there are four banks.
+func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+	out := make([]deposit.Account, 0)
+	for _, a := range t.state.depositAccounts[book] {
+		for _, got := range a.Identifiers {
+			if got == ident {
+				out = append(out, a)
+				break
+			}
+		}
+	}
+	sortRows(t.state, out, book, kindDepositAccount, func(a deposit.Account) (time.Time, string) { return a.CreatedAt, string(a.ID) })
+	return out, nil
+}
+
 // ---------------------------------------------------------------------------
 // Holds
 // ---------------------------------------------------------------------------
