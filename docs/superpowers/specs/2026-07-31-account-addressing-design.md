@@ -361,6 +361,38 @@ one migration because no database is deployed.
 - **A removed identifier orphans historical payments.** It does not: the payment
   stores the address it used. This is why `PartyRef.Identifier` is stored rather
   than derived.
+- **A reissued identifier kills the mandates on the account.** *Added after the
+  whole-branch review; this mode was missed, and the code shipped with it.*
+  `PartyRef` is stored on **mandates** as well as payments, and `SDD.Validate`
+  matched a payment to its mandate with whole-struct equality. Once the ref
+  carried an address, a remove-then-add reissue — the operation the design
+  advertises as harmless, "an account whose balance and history do not move" —
+  left no quoting that worked: the new address failed the mandate comparison,
+  the old one was refused because the account no longer held it, and quoting
+  nothing failed the comparison again. There is no `UpdateMandate`, so the
+  mandate was dead permanently, and it was reachable over the shipped API.
+
+  **Resolution:** identity and address are separated. `PartyRef.SameParty`
+  compares `(participant, account)` and nothing else, and the mandate check uses
+  it. A mandate authorises debits from an *account*; the quoted address is a
+  record of how one payment reached it, which is precisely what "stored rather
+  than derived" already implied and what whole-struct equality contradicted.
+  Pinned by `TestMandateSurvivesAReissuedDebtorIdentifier`.
+
+  The general lesson, recorded in `docs/expansion-roadmap.md`: the compiler
+  found the unanticipated consumer (`PartyRef` on mandates), and only its
+  *schema* consequence was chased. A type that gains a field needs the design's
+  failure analysis re-run against every consumer the compiler turns up, not just
+  a column added for it.
+- **A payment records no address at all.** The identifier is optional in the
+  request DTO, so before back-filling this was the *default*: every
+  payment-creating test in `api` omitted it and settled with both legs'
+  addresses empty, and only `seed` populated them. "A payment records the address
+  it was sent to" was therefore a property of well-behaved callers rather than
+  of the system. `InitiatePaymentTx` now writes the account's single identifier
+  in the scheme's scheme onto the stored ref when the caller quoted none, and
+  refuses with `ErrAmbiguousAddress` when there is more than one candidate —
+  the same refusal-rather-than-guess rule as the ambiguous resolution.
 - **Cross-bank collision.** Refused at resolution with
   `ErrIdentifierAmbiguous`. Reachable only by deliberately issuing the same
   value at two banks, which the tests do on purpose.
@@ -369,7 +401,10 @@ one migration because no database is deployed.
   no lock above it. It surfaces as `ErrIdentifierAmbiguous` at resolution rather
   than as a wrong answer, which is the acceptable failure; the schema comment
   says so, so that the next reader who reaches for a `UNIQUE` finds the argument
-  instead of the gap.
+  instead of the gap. **At resolution and only there** — `InitiatePaymentTx`
+  takes an explicit account id and never resolves, so both colliding accounts
+  stay payable by id. That is the right answer, not a second gap: the accounts
+  are distinct and real, and what is ambiguous is the address.
 - **The directory sweep is O(banks).** With four members this is not worth an
   index-per-network. It is worth a comment saying that a real network's
   directory is a service, not a sweep, and that this is the boundary at which

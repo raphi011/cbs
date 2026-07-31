@@ -234,8 +234,14 @@ CREATE TABLE deposit_accounts (
 -- (book_id, name) above, which is the same argument. The primary key is
 -- therefore widened with deposit_account_id so that it is a row identity rather
 -- than the domain rule in disguise, and the lookup index is a plain index. The
--- residual duplicate is caught at READ time: Register.ResolveIdentifier answers
--- ErrIdentifierAmbiguous rather than picking one.
+-- residual duplicate is caught at READ time, ON THE ROUTING PATH:
+-- Register.ResolveIdentifier and the network's sweep answer
+-- ErrIdentifierAmbiguous rather than picking one, so no address ever routes
+-- money to a bank or an account chosen by listing order. It is a claim about
+-- resolution and nothing else — InitiatePaymentTx is handed an account id and
+-- never resolves, so two accounts colliding on one address both stay payable by
+-- id. That is correct: the accounts are distinct and real, and what is
+-- ambiguous is the address.
 -- storetest/IdentifierUniquenessIsNotEnforced pins all of this.
 --
 -- Second, there is no CHECK on scheme or value. The known schemes are Go
