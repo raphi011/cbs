@@ -2482,6 +2482,102 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 	doJSON(t, srv, "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusNotFound)
 }
 
+// TestDirectoryAmbiguousIdentifierIs409 pins deposit.ErrIdentifierAmbiguous's
+// status code. The mapping is a conflict IN THE DATA — the answer exists and is
+// contested — and nothing else in this file held it there, so a future editor
+// tidying the 409 arm into the 404 arm would break a client's retry logic
+// silently.
+//
+// Two banks issuing one value is the only way to reach it without going around
+// a register: per-bank uniqueness cannot see across banks, which is exactly why
+// the network's sweep refuses rather than picking.
+func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
+	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
+		for _, name := range []string{"Aurora Bank", "Banca Verde"} {
+			p, err := net.AddParticipant(ctx, name, nil)
+			if err != nil {
+				return err
+			}
+			if _, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, "Holder", "EUR", p.ProductID, 0,
+				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}).Routes()
+
+	doJSON(t, srv, "GET", "/directory?scheme=IBAN&value=SHARED-0001", "", http.StatusConflict)
+}
+
+// TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
+// initiation can refuse a leg on addressing grounds. All three are well-formed
+// requests refused by state, the same category as a frozen account — and until
+// now nothing in this file held any of them, so the whole arm could have
+// drifted to 400 or 500 with every test still green.
+//
+// It also pins the back-fill over HTTP, which is where it matters: the DTO's
+// identifier field is optional and this is the shape every other payment test
+// in this file sends.
+func TestPaymentAddressingRefusalsAre422(t *testing.T) {
+	h := newTestServer(t)
+
+	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"ADDR-ALICE-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts",
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"ADDR-BOB-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	// A creditor with no address at all: an SCT cannot reach it.
+	nobody := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts",
+		`{"name":"Nobody","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`,
+		http.StatusCreated)["id"].(string)
+
+	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
+		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	doJSON(t, h, "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	// ErrUnaddressableAccount.
+	assertStatus(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+nobody+`"},
+		"amount":1000
+	}`, http.StatusUnprocessableEntity)
+
+	// ErrIdentifierMismatch — the creditor's own address, on the debtor leg.
+	assertStatus(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`","identifier":{"scheme":"IBAN","value":"ADDR-BOB-0001"}},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusUnprocessableEntity)
+
+	// The happy case, with no identifier quoted on either leg — and the stored
+	// payment carries both addresses anyway.
+	pay := doJSON(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusCreated)
+	assertEqual(t, "back-filled debtor address",
+		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "ADDR-ALICE-0001")
+	assertEqual(t, "back-filled creditor address",
+		pay["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "ADDR-BOB-0001")
+
+	// ErrAmbiguousAddress: give Alice a second IBAN and quote neither.
+	doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts/"+alice+"/identifiers",
+		`{"scheme":"IBAN","value":"ADDR-ALICE-0002"}`, http.StatusNoContent)
+	assertStatus(t, h, "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusUnprocessableEntity)
+}
+
 // TestDepositAccountDTOCarriesIdentifiers pins that depositAccountDTO renders
 // the account's identifiers, not just what the register knows about it.
 func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {

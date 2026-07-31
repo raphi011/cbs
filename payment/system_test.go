@@ -1230,6 +1230,41 @@ func TestResolveIdentifierRefusesACrossBankCollision(t *testing.T) {
 	}
 }
 
+// The other half of the same claim, and the half nothing held.
+//
+// The sweep accumulates hits ACROSS members with `hits += len(holders)`, so two
+// accounts inside ONE bank are ambiguous through the network exactly as two
+// banks are — which is what the README and the account-addressing hint assert,
+// and what makes the missing UNIQUE constraint safe. Only the cross-bank half
+// was tested, and this sentence has already had to be corrected once.
+//
+// The duplicate is written straight through the store, past the register's
+// write-time check, because that is the only way it arises: a race between two
+// AddIdentifier calls that both read before either wrote.
+func TestResolveIdentifierRefusesAWithinBankCollision(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	addParticipant(t, ctx, net, "Banca Verde")
+
+	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
+	openCustomer(t, ctx, aurora, "Alice", "SHARED-0001")
+	aaron := openCustomer(t, ctx, aurora, "Aaron", "SE89-AURORA-0002")
+
+	assertNoError(t, aurora.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+		a, err := tx.GetDepositAccount(ctx, aurora.Deposit.BookID(), aaron.ID)
+		if err != nil {
+			return err
+		}
+		a.Identifiers = append(a.Identifiers, shared)
+		return tx.PutDepositAccount(ctx, aurora.Deposit.BookID(), a)
+	}))
+
+	if _, err := net.ResolveIdentifier(ctx, shared); !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
+		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // AddressedBy — the scheme declares what addresses it, initiation enforces it
 // ---------------------------------------------------------------------------

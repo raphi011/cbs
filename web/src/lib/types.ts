@@ -154,6 +154,11 @@ export interface DepositAccount {
   name: string;
   asset: string;
   status: DepositStatus;
+  // The account's external addresses — what a counterparty quotes to pay it,
+  // as against `id`, which is the bank's own key and never leaves it. Always
+  // present, often empty: an account nobody pays from outside the bank needs no
+  // address at all. See api/dto_deposit.go, which renders `[]` and not `null`.
+  identifiers: AccountIdentifier[];
   // The catalogue entry pricing this account today. It varies over the
   // account's life — migrating between products is an ordinary forward-dated
   // row — so it is resolved as of today rather than fixed at opening.
