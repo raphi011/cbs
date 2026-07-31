@@ -32,6 +32,7 @@ func errorStatus(err error) int {
 		errors.Is(err, deposit.ErrAccountNotFound),
 		errors.Is(err, deposit.ErrHoldNotFound),
 		errors.Is(err, deposit.ErrSnapshotNotFound),
+		errors.Is(err, deposit.ErrIdentifierNotFound),
 		errors.Is(err, payment.ErrParticipantNotFound),
 		errors.Is(err, payment.ErrPaymentNotFound),
 		errors.Is(err, payment.ErrMandateNotFound),
@@ -55,7 +56,15 @@ func errorStatus(err error) int {
 		// reflects it. 409 is what tells a retrying proxy that its first
 		// attempt landed, where 422 would read as "this line cannot be
 		// billed".
-		errors.Is(err, lending.ErrCycleAlreadyBilled):
+		errors.Is(err, lending.ErrCycleAlreadyBilled),
+		// An identifier another account at this bank already holds is the same
+		// already-applied shape: the request is well formed, and what stops it is
+		// that the address is spoken for.
+		errors.Is(err, deposit.ErrIdentifierTaken),
+		// An address that resolves to more than one account is a conflict IN THE
+		// DATA, not a malformed request: the answer exists and is contested, which
+		// is what tells a client the situation needs a human rather than a retry.
+		errors.Is(err, deposit.ErrIdentifierAmbiguous):
 		return http.StatusConflict
 
 	case errors.Is(err, ledger.ErrInsufficientBalance),
@@ -108,7 +117,13 @@ func errorStatus(err error) int {
 		errors.Is(err, product.ErrKindMismatch),
 		errors.Is(err, product.ErrVersionPublished),
 		errors.Is(err, product.ErrRetroactivePublish),
-		errors.Is(err, deposit.ErrProductRequired):
+		errors.Is(err, deposit.ErrProductRequired),
+		// The account exists and the request is well formed; it simply carries no
+		// address in the kind the scheme routes on, or the address it quoted
+		// belongs to a different account. Both are business-state refusals, the
+		// same category as a frozen account or an unbalanced state transition.
+		errors.Is(err, payment.ErrUnaddressableAccount),
+		errors.Is(err, payment.ErrIdentifierMismatch):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),

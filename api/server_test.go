@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -159,8 +160,10 @@ func TestSCTEndToEnd(t *testing.T) {
 
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
+	// accounts need one before InitiatePayment will accept them.
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SCT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SCT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
@@ -488,9 +491,12 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
 	aliceUSD := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceUSD","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
-	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	// aliceEUR and bob feed the SCT payment below, which addresses both legs by
+	// IBAN (payment.Scheme.AddressedBy) — aliceUSD and bobUSD only ever back a
+	// mandate, which carries no scheme and so is never addressed.
+	aliceEUR := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"AliceEUR","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"DTO-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bobUSD := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"BobUSD","asset":"USD","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"DTO-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 
 	// Mandate: derived from the (non-EUR) debtor account. Both ends are USD —
 	// CreateMandate refuses a mandate whose two accounts disagree.
@@ -975,8 +981,10 @@ func auditFixture(t *testing.T, h http.Handler) (bankA, bankB, payID string) {
 	t.Helper()
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
+	// accounts need one before InitiatePayment will accept them.
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"AUDIT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"AUDIT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -1985,8 +1993,10 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	h := newTestServer(t)
 	a := doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, h, "POST", "/participants", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)
-	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
+	// accounts need one before InitiatePayment will accept them.
+	alice := doJSON(t, h, "POST", "/participants/"+a+"/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"VD-ALICE-0001"}]}`, http.StatusCreated)
+	bob := doJSON(t, h, "POST", "/participants/"+b+"/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"VD-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	doJSON(t, h, "POST", "/participants/"+a+"/deposits",
 		`{"account":"`+alice["id"].(string)+`","amount":100000,"description":"opening"}`, http.StatusOK)
 
@@ -2375,4 +2385,116 @@ func TestProductCatalogueRoutes(t *testing.T) {
 	// An unknown kind is a bad field value, not a silent CurrentAccount.
 	assertStatus(t, h, "POST", "/participants/"+pid+"/products",
 		`{"name":"Odd","kind":"SavingsAccount"}`, http.StatusBadRequest)
+}
+
+// ---------------------------------------------------------------------------
+// Account addressing: the directory and per-account identifier endpoints
+// ---------------------------------------------------------------------------
+
+// someAccount opens one participant with one deposit account that already
+// carries an IBAN, and returns both ids. The identifier is what
+// TestDepositAccountDTOCarriesIdentifiers checks for; the other tests in this
+// section build on top of it rather than opening their own bare account.
+func someAccount(t *testing.T, h http.Handler) (pid, did string) {
+	t.Helper()
+	pid = doJSON(t, h, "POST", "/participants", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	did = doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`",`+
+			`"identifiers":[{"scheme":"IBAN","value":"XX00-SOME-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	return pid, did
+}
+
+// anotherAccountAtSameBank opens a second deposit account at pid, with no
+// identifier of its own — the fixture for proving AddIdentifier's uniqueness
+// check is per-bank rather than per-account.
+func anotherAccountAtSameBank(t *testing.T, h http.Handler, pid string) string {
+	t.Helper()
+	return doJSON(t, h, "POST", "/participants/"+pid+"/deposit-accounts",
+		`{"name":"Bruno","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`,
+		http.StatusCreated)["id"].(string)
+}
+
+// TestDirectoryResolvesAnIBAN pins GET /directory's happy path: an account
+// opened with an identifier is resolvable by it, and the response names the
+// participant, the account, its display name and its asset — everything a
+// caller needs to show who an address belongs to before paying it.
+func TestDirectoryResolvesAnIBAN(t *testing.T) {
+	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
+		p, err := net.AddParticipant(ctx, "Aurora Bank", nil)
+		if err != nil {
+			return err
+		}
+		_, err = p.Deposit.OpenAccount(ctx, p.CustomerSubledger, "Alice", "EUR", p.ProductID, 0,
+			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
+		return err
+	}).Routes()
+
+	var got struct {
+		Participant string `json:"participant"`
+		Account     string `json:"account"`
+		Name        string `json:"name"`
+		Asset       string `json:"asset"`
+	}
+	getJSON(t, srv, "/directory?scheme=IBAN&value=SE89-AURORA-1001", &got)
+	if got.Participant == "" || got.Account == "" || got.Name == "" || got.Asset == "" {
+		t.Fatalf("directory response = %#v, want it fully populated", got)
+	}
+}
+
+// TestDirectoryUnknownIBANIs404 pins that an address nobody holds is a missing
+// resource, not an empty success.
+func TestDirectoryUnknownIBANIs404(t *testing.T) {
+	srv := newTestServer(t)
+	doJSON(t, srv, "GET", "/directory?scheme=IBAN&value=NOBODY-0001", "", http.StatusNotFound)
+}
+
+// TestDirectoryMissingParamsIs400 pins that scheme and value are both
+// required: this is a malformed request, not a lookup that could ever
+// succeed.
+func TestDirectoryMissingParamsIs400(t *testing.T) {
+	srv := newTestServer(t)
+	doJSON(t, srv, "GET", "/directory?scheme=IBAN", "", http.StatusBadRequest)
+	doJSON(t, srv, "GET", "/directory?value=X", "", http.StatusBadRequest)
+}
+
+// TestAddAndRemoveIdentifierEndpoints covers the per-account identifier
+// lifecycle over HTTP: adding one makes the account resolvable, a second
+// account at the same bank cannot take an address already in use, and
+// removing it makes the directory forget it again.
+func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
+	srv := newTestServer(t)
+	pid, did := someAccount(t, srv)
+
+	base := "/participants/" + pid + "/deposit-accounts/"
+	doJSON(t, srv, "POST", base+did+"/identifiers",
+		`{"scheme":"IBAN","value":"XX00-TEST-0001"}`, http.StatusNoContent)
+
+	// Now resolvable.
+	doJSON(t, srv, "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusOK)
+
+	// A second account at the same bank cannot take it.
+	other := anotherAccountAtSameBank(t, srv, pid)
+	doJSON(t, srv, "POST", base+other+"/identifiers",
+		`{"scheme":"IBAN","value":"XX00-TEST-0001"}`, http.StatusConflict)
+
+	doJSON(t, srv, "DELETE", base+did+"/identifiers/IBAN/XX00-TEST-0001", "", http.StatusNoContent)
+	doJSON(t, srv, "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusNotFound)
+}
+
+// TestDepositAccountDTOCarriesIdentifiers pins that depositAccountDTO renders
+// the account's identifiers, not just what the register knows about it.
+func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
+	srv := newTestServer(t)
+	pid, did := someAccount(t, srv)
+	var got struct {
+		Identifiers []struct {
+			Scheme string `json:"scheme"`
+			Value  string `json:"value"`
+		} `json:"identifiers"`
+	}
+	getJSON(t, srv, "/participants/"+pid+"/deposit-accounts/"+did, &got)
+	if len(got.Identifiers) == 0 {
+		t.Fatal("depositAccountDTO carried no identifiers")
+	}
 }

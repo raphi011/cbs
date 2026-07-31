@@ -78,6 +78,18 @@ type identifierDTO struct {
 	Value  string `json:"value"`
 }
 
+// toIdentifierDTOs renders an account's identifiers as a non-nil empty slice
+// rather than nil, so the JSON key is "[]" and not "null" — a web client that
+// renders a list of addresses should not have to distinguish "no identifiers"
+// from "the field was missing".
+func toIdentifierDTOs(idents []deposit.Identifier) []identifierDTO {
+	out := make([]identifierDTO, 0, len(idents))
+	for _, i := range idents {
+		out = append(out, identifierDTO{Scheme: string(i.Scheme), Value: i.Value})
+	}
+	return out
+}
+
 type partyRefDTO struct {
 	Participant string `json:"participant"`
 	Account     string `json:"account"`

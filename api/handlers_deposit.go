@@ -56,8 +56,12 @@ func (s *Server) handleOpenDepositAccount(w http.ResponseWriter, r *http.Request
 		writeBadRequest(w, "productId is required")
 		return
 	}
+	idents := make([]deposit.Identifier, len(req.Identifiers))
+	for i, ident := range req.Identifiers {
+		idents[i] = deposit.Identifier{Scheme: deposit.IdentifierScheme(ident.Scheme), Value: ident.Value}
+	}
 	acct, err := p.Deposit.OpenAccount(r.Context(), p.CustomerSubledger, req.Name,
-		ledger.AssetCode(req.Asset), product.ID(req.ProductID), ledger.Amount(req.OverdraftLimit))
+		ledger.AssetCode(req.Asset), product.ID(req.ProductID), ledger.Amount(req.OverdraftLimit), idents...)
 	if err != nil {
 		writeError(w, err)
 		return

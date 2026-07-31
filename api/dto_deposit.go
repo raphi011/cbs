@@ -30,6 +30,8 @@ type depositAccountDTO struct {
 	Name      string `json:"name"`
 	Asset     string `json:"asset"`
 	Status    string `json:"status"`
+	// Identifiers are the account's external addresses. Empty is normal.
+	Identifiers []identifierDTO `json:"identifiers"`
 	// ProductID is the catalogue entry pricing this account today. It varies
 	// over the account's life, so it comes from the resolved terms rather than
 	// from the account row.
@@ -74,6 +76,7 @@ func toDepositAccountDTO(a deposit.Account, t deposit.EffectiveTerms) depositAcc
 		Name:           a.Name,
 		Asset:          string(a.Asset),
 		Status:         a.Status.String(),
+		Identifiers:    toIdentifierDTOs(a.Identifiers),
 		ProductID:      string(t.ProductID),
 		OverdraftLimit: int64(t.Limit),
 
@@ -201,6 +204,11 @@ type openDepositAccountRequest struct {
 	Asset          string `json:"asset"`
 	ProductID      string `json:"productId"`
 	OverdraftLimit int64  `json:"overdraftLimit"`
+	// Identifiers are the external addresses to open the account with — an
+	// IBAN, say. Optional: most accounts open with none and gain one later
+	// through POST .../identifiers, and a scheme that requires one to be
+	// addressed will refuse a payment rather than let this go unnoticed.
+	Identifiers []identifierDTO `json:"identifiers"`
 }
 
 type statusRequest struct {
