@@ -54,6 +54,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		assertEqual(t, "name", got.Name, "Aurora Bank")
 		assertEqual(t, "book id", string(got.BookID), "bank_1")
 		assertEqual(t, "customer subledger", string(got.CustomerSubledger), "100")
+		// The product OpenCustomerAccount opens from. It is data like the
+		// subledger above, not a handle like Ledger below, so it has to survive
+		// the round trip — a store that drops it leaves every bank pricing
+		// accounts from a product id of "", which fails as "product not found"
+		// several layers away from the store that lost it.
+		assertEqual(t, "product id", string(got.ProductID), "prd_basic")
+		assertEqual(t, "product id in listings", string(listed[0].ProductID), "prd_basic")
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
@@ -78,6 +85,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			assertEqual(t, "participants after an upsert", len(all), 1)
 			assertEqual(t, "name after an upsert", all[0].Name, "Aurora Bank AB")
+			assertEqual(t, "product id after an upsert", string(all[0].ProductID), "prd_basic")
 			return nil
 		})
 	})
@@ -732,6 +740,7 @@ func participant(id payment.ParticipantID, name string, createdAt time.Time) pay
 		Name:              name,
 		BookID:            ledger.BookID(id),
 		CustomerSubledger: "100",
+		ProductID:         "prd_basic",
 		Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
 			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},
 		},

@@ -503,11 +503,18 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 -- unlike everything above they are keyed by their id alone. They are sequenced
 -- under ledger.NetworkBook, which is why they carry no book_id column.
 
+-- product_id is the catalogue entry this bank opens customer accounts from —
+-- the Basic product AddParticipant creates for every member. It is data, not a
+-- handle like the Ledger and Deposit fields the store deliberately drops, so it
+-- has to be stored: a participant read back without it prices its accounts from
+-- a product id of "", which surfaces as "product not found" several layers away
+-- from the store that lost it.
 CREATE TABLE participants (
     id                 TEXT PRIMARY KEY,
     name               TEXT NOT NULL,
     book_id            TEXT NOT NULL,
     customer_subledger TEXT NOT NULL,
+    product_id         TEXT NOT NULL,
     created_at         TIMESTAMPTZ,
     seq                BIGSERIAL NOT NULL
 );
