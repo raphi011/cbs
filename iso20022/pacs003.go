@@ -70,7 +70,7 @@ func (h DirectDebitGroupHeader) validate() error {
 		return fmt.Errorf("%w: GrpHdr/NbOfTxs", ErrMissingElement)
 	}
 	if h.TtlIntrBkSttlmAmt != nil {
-		if err := h.TtlIntrBkSttlmAmt.validate(); err != nil {
+		if err := h.TtlIntrBkSttlmAmt.Validate(); err != nil {
 			return fmt.Errorf("TtlIntrBkSttlmAmt: %w", err)
 		}
 	}
@@ -237,7 +237,7 @@ func (t DirectDebitTransactionInformation) validate() error {
 	if t.PmtTpInf.SeqTp == nil {
 		return fmt.Errorf("%w: PmtTpInf/SeqTp", ErrMissingElement)
 	}
-	if err := t.IntrBkSttlmAmt.validate(); err != nil {
+	if err := t.IntrBkSttlmAmt.Validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
 	}
 	if t.ChrgBr == "" {

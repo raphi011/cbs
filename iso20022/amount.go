@@ -73,9 +73,17 @@ func (a ActiveCurrencyAndAmount) Minor(scale uint8) (int64, error) {
 	return minor, nil
 }
 
-// validate reports whether the amount is well-formed enough to put on the
+// Validate reports whether the amount is well-formed enough to put on the
 // wire: a currency code is present, and Value is shaped like a non-negative
 // decimal.
+//
+// It is exported, as BIC.Validate and IBAN.Validate are and for the same
+// reason: this is a value type with a lexical space, and a caller building one
+// wants to know whether it is legal BEFORE the message it is going into is
+// assembled. payment's translator asks exactly that — an asset this repository
+// can hold may have no representation here at all, because the ceiling below is
+// on the ELEMENT and not on the currency, and a translator that discovered it
+// inside Marshal would report an element rather than the payment.
 //
 // It checks FORMAT, not scale. Scale is a property of the asset an amount is
 // denominated in — 2 for EUR, 8 for BTC — and this type does not know it and
@@ -87,7 +95,7 @@ func (a ActiveCurrencyAndAmount) Minor(scale uint8) (int64, error) {
 // This reuses Minor(5) rather than a second parser: Minor already rejects
 // exactly the malformed shapes (non-digits, a second '.', and so on) that
 // would make a value unrepresentable, and five is that ceiling, not a guess.
-func (a ActiveCurrencyAndAmount) validate() error {
+func (a ActiveCurrencyAndAmount) Validate() error {
 	if a.Ccy == "" {
 		return fmt.Errorf("%w: Ccy", ErrMissingElement)
 	}

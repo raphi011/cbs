@@ -100,10 +100,17 @@ type Party44Choice struct {
 	FIId FinancialInstitution `xml:"FIId"`
 }
 
-// agent builds a Party44Choice for a BIC. It is a constructor rather than a
+// NewAgent builds a Party44Choice for a BIC. It is a constructor rather than a
 // literal because the nesting — FIId, FinInstnId, BICFI — is four levels deep
 // to say one thing.
-func agent(b BIC) Party44Choice {
+//
+// It is exported, unlike the rest of this package's constructors-by-
+// convenience, because the translator in payment builds EVERY header this
+// system sends, and a four-level literal repeated at each of five message
+// types is five chances to address the wrong element. Exporting it does not
+// widen what payment can say — a Party44Choice is a struct it could always
+// have written out by hand — only how legibly it can say it.
+func NewAgent(b BIC) Party44Choice {
 	return Party44Choice{FIId: FinancialInstitution{
 		FinInstnId: FinancialInstitutionIdentification{BICFI: b},
 	}}

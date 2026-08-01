@@ -71,7 +71,7 @@ func (h CreditTransferGroupHeader) validate() error {
 		return fmt.Errorf("%w: GrpHdr/NbOfTxs", ErrMissingElement)
 	}
 	if h.TtlIntrBkSttlmAmt != nil {
-		if err := h.TtlIntrBkSttlmAmt.validate(); err != nil {
+		if err := h.TtlIntrBkSttlmAmt.Validate(); err != nil {
 			return fmt.Errorf("TtlIntrBkSttlmAmt: %w", err)
 		}
 	}
@@ -114,7 +114,7 @@ func (t CreditTransferTransaction) validate() error {
 			return fmt.Errorf("%w: PmtTpInf/SeqTp", ErrElementNotAllowed)
 		}
 	}
-	if err := t.IntrBkSttlmAmt.validate(); err != nil {
+	if err := t.IntrBkSttlmAmt.Validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
 	}
 	if t.ChrgBr == "" {

@@ -69,7 +69,7 @@ func (h ReturnGroupHeader) validate() error {
 		return fmt.Errorf("%w: GrpHdr/NbOfTxs", ErrMissingElement)
 	}
 	if h.TtlRtrdIntrBkSttlmAmt != nil {
-		if err := h.TtlRtrdIntrBkSttlmAmt.validate(); err != nil {
+		if err := h.TtlRtrdIntrBkSttlmAmt.Validate(); err != nil {
 			return fmt.Errorf("TtlRtrdIntrBkSttlmAmt: %w", err)
 		}
 	}
@@ -198,10 +198,10 @@ func (t ReturnTransaction) validate() error {
 		return fmt.Errorf("%w: TxInf needs OrgnlEndToEndId or OrgnlTxId to refer back by",
 			ErrMissingElement)
 	}
-	if err := t.OrgnlIntrBkSttlmAmt.validate(); err != nil {
+	if err := t.OrgnlIntrBkSttlmAmt.Validate(); err != nil {
 		return fmt.Errorf("OrgnlIntrBkSttlmAmt: %w", err)
 	}
-	if err := t.RtrdIntrBkSttlmAmt.validate(); err != nil {
+	if err := t.RtrdIntrBkSttlmAmt.Validate(); err != nil {
 		return fmt.Errorf("RtrdIntrBkSttlmAmt: %w", err)
 	}
 	if t.RtrRsnInf == nil {

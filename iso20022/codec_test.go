@@ -37,8 +37,8 @@ func init() {
 func testEnvelope() Envelope {
 	return Envelope{
 		AppHdr: AppHdr{
-			Fr:        agent("AURTSESSXXX"),
-			To:        agent("CSMBFRPPXXX"),
+			Fr:        NewAgent("AURTSESSXXX"),
+			To:        NewAgent("CSMBFRPPXXX"),
 			BizMsgIdr: "AURTSESSXXX-20260731-000001",
 			MsgDefIdr: "test.001.001.01",
 			CreDt:     ISODateTime{time.Date(2026, 7, 31, 9, 30, 0, 0, time.UTC)},

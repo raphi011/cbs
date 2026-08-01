@@ -88,7 +88,7 @@ func (t FinancialInstitutionCreditTransferTransaction) validate() error {
 	if err := t.PmtId.validate(); err != nil {
 		return err
 	}
-	if err := t.IntrBkSttlmAmt.validate(); err != nil {
+	if err := t.IntrBkSttlmAmt.Validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
 	}
 	if err := t.Dbtr.validate(); err != nil {

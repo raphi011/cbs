@@ -17,8 +17,8 @@ func sample009() Envelope {
 	when := time.Date(2026, 8, 1, 10, 30, 0, 0, time.UTC)
 	return Envelope{
 		AppHdr: AppHdr{
-			Fr:        agent("CSMXFRPPXXX"),
-			To:        agent("CBSEDEFFXXX"),
+			Fr:        NewAgent("CSMXFRPPXXX"),
+			To:        NewAgent("CBSEDEFFXXX"),
 			BizMsgIdr: "CSM-SETTLE-1",
 			MsgDefIdr: "pacs.009.001.08",
 			CreDt:     ISODateTime{when},
