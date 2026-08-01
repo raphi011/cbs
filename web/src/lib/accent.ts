@@ -14,7 +14,12 @@ import type { Identity } from "./identity";
 // both themes.
 const CENTRAL_BANK_ACCENT = "oklch(0.55 0.02 260)";
 const CLEARING_HOUSE_ACCENT = "oklch(0.58 0.10 150)";
-const BANK_HUES = [25, 265, 330, 60, 200, 100, 150];
+// 150 used to be in this list too: bank_7 hashed onto it and came out at the
+// same hue as the clearing house, differing only in chroma — the two would
+// read as the same colour family at a glance, which is exactly what a bank's
+// accent must not do to an institution's. 170 keeps its place in the palette
+// without landing on it (or on any other seeded hue — see accent.test.ts).
+const BANK_HUES = [25, 265, 330, 60, 200, 100, 170];
 
 function hueFor(pid: string): number {
   let h = 0;
