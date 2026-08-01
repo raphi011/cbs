@@ -144,7 +144,7 @@ func prdOf(t *testing.T, h *Server, pid string) string {
 func TestDepositFlow(t *testing.T) {
 	h := newServer(t, nil)
 
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// Fund Alice and confirm the returned balance.
@@ -163,8 +163,8 @@ func TestDepositFlow(t *testing.T) {
 func TestSCTEndToEnd(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before InitiatePayment will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SCT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
@@ -220,7 +220,7 @@ func TestSCTEndToEnd(t *testing.T) {
 // where a default would go unnoticed.
 func TestCreateAccountRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 
@@ -234,7 +234,7 @@ func TestCreateAccountRequiresAsset(t *testing.T) {
 
 func TestOpenDepositAccountRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"No Asset"}`, http.StatusBadRequest)
 }
@@ -273,14 +273,43 @@ func TestListAssets(t *testing.T) {
 func TestCreateParticipantRejectsUnknownAsset(t *testing.T) {
 	h := newServer(t, nil)
 
-	assertStatus(t, cb(h), "POST", "/members", `{"name":"Bank A","assets":["DOGE"]}`, http.StatusBadRequest)
+	assertStatus(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A","assets":["DOGE"]}`, http.StatusBadRequest)
+}
+
+// TestCreateParticipantBICIsValidatedAndRendered pins two things about the
+// BIC the mesh routes on: a structurally malformed one (including an absent
+// or empty field, which is malformed the same way) is refused with 422 — a
+// business-rule refusal, not a decoding failure — and a well-formed one comes
+// back on the created participant, and on every later read of it.
+func TestCreateParticipantBICIsValidatedAndRendered(t *testing.T) {
+	h := newServer(t, nil)
+
+	for _, tc := range []struct {
+		what string
+		body string
+	}{
+		{"absent", `{"name":"Bank A"}`},
+		{"empty", `{"bic":"","name":"Bank A"}`},
+		{"too short", `{"bic":"BANKDE","name":"Bank A"}`},
+		{"lower case", `{"bic":"bankdeffxxx","name":"Bank A"}`},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			assertStatus(t, cb(h), "POST", "/members", tc.body, http.StatusUnprocessableEntity)
+		})
+	}
+
+	p := doJSON(t, cb(h), "POST", "/members", `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)
+	assertEqual(t, "bic on creation", p["bic"].(string), "AURODEFFXXX")
+
+	reread := doJSON(t, bank(h, p["id"].(string)), "GET", "/me", "", http.StatusOK)
+	assertEqual(t, "bic on a later read", reread["bic"].(string), "AURODEFFXXX")
 }
 
 // TestAccountResponseIncludesAsset pins that the account, deposit-account and
 // entry DTOs all carry the asset they are denominated in.
 func TestAccountResponseIncludesAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 
 	res := do(t, bank(h, pid), "GET", "/deposit-accounts", "")
@@ -315,7 +344,7 @@ func TestAccountResponseIncludesAsset(t *testing.T) {
 // value-dated balance, read back with ?asOf=today, carries only the first.
 func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -354,7 +383,7 @@ func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 // either way, which is what makes the two figures distinguishable here.
 func TestBalanceEndpointDefaultsAsOfToNow(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -391,7 +420,7 @@ func TestBalanceEndpointDefaultsAsOfToNow(t *testing.T) {
 // ?asOf=: it must not panic and must not silently fall back to now.
 func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -410,7 +439,7 @@ func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
 // the default EUR-only set.
 func TestCreateParticipantWithAssets(t *testing.T) {
 	h := newServer(t, nil)
-	p := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A","assets":["USD"]}`, http.StatusCreated)
+	p := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusCreated)
 	assets := p["assets"].([]any)
 	if len(assets) != 1 {
 		t.Fatalf("participant assets = %v, want exactly one (USD)", assets)
@@ -429,8 +458,8 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 	h := newServer(t, nil)
 
 	for _, tc := range []struct{ name, body string }{
-		{"absent", `{"name":"Bank A"}`},
-		{"explicitly empty", `{"name":"Bank B","assets":[]}`},
+		{"absent", `{"bic":"BANKDEFFXXX","name":"Bank A"}`},
+		{"explicitly empty", `{"bic":"BANKDEFFXXX","name":"Bank B","assets":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := doJSON(t, cb(h), "POST", "/members", tc.body, http.StatusCreated)
@@ -453,8 +482,8 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 // would matter.
 func TestCrossAssetPaymentReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
@@ -481,8 +510,8 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 func TestPaymentDTOsCarryAsset(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
 	aliceUSD := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"AliceUSD","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
 	// aliceEUR and bob feed the SCT payment below, which addresses both legs by
 	// IBAN (payment.Scheme.AddressedBy) — aliceUSD and bobUSD only ever back a
@@ -563,7 +592,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 // TestErrorMapping locks one error per HTTP status class.
 func TestErrorMapping(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// 404: unknown participant.
@@ -630,7 +659,7 @@ func TestAuditEndpointIncludesPayloadAndSeq(t *testing.T) {
 
 	// AddParticipant posts several ledger audit events as a side effect
 	// (ledger + subledgers + accounts), so no further setup is needed.
-	doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)
+	doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)
 
 	rec := do(t, bank(h, "bank_1"), "GET", "/audit", "")
 	if rec.Code != http.StatusOK {
@@ -666,7 +695,7 @@ func TestAdminReset(t *testing.T) {
 	}
 
 	// Create a participant, confirm it's present.
-	doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)
+	doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)
 	if emptyList() {
 		t.Fatal("expected one participant before reset, got empty list")
 	}
@@ -696,7 +725,7 @@ func TestResetEmptiesState(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := net.AddParticipant(ctx, "Bank A", nil)
+		p, err := net.AddParticipant(ctx, "Bank A", "BANKDEFFXXX", nil)
 		if err != nil {
 			return err
 		}
@@ -768,7 +797,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		_, err = net.AddParticipant(ctx, "Bank A", nil)
+		_, err = net.AddParticipant(ctx, "Bank A", "BANKDEFFXXX", nil)
 		return err
 	}
 
@@ -818,7 +847,7 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := net.AddParticipant(ctx, "Bank A", nil)
+		p, err := net.AddParticipant(ctx, "Bank A", "BANKDEFFXXX", nil)
 		if err != nil {
 			return err
 		}
@@ -881,7 +910,7 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newServer(t, nil)
 
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
@@ -901,9 +930,9 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	}
 
 	for _, tc := range []struct{ what, method, path, body string }{
-		{"a participant name", "POST", "/members", `{"name":"Ban` + nul + `k"}`},
-		{"a participant name with an escape sequence", "POST", "/members", `{"name":"Bank` + esc + `[31m"}`},
-		{"a participant name with a newline", "POST", "/members", `{"name":"Bank\nof Nowhere"}`},
+		{"a participant name", "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Ban` + nul + `k"}`},
+		{"a participant name with an escape sequence", "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank` + esc + `[31m"}`},
+		{"a participant name with a newline", "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank\nof Nowhere"}`},
 		{"a deposit account name", "POST", "/deposit-accounts",
 			`{"name":"Al` + nul + `ice","overdraftLimit":0}`},
 		{"a ledger name", "POST", "/ledgers", `{"name":"G` + nul + `L"}`},
@@ -971,8 +1000,8 @@ func TestControlCharactersInAPathAreRefused(t *testing.T) {
 // IDs and the payment ID.
 func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	t.Helper()
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before InitiatePayment will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"AUDIT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
@@ -1357,7 +1386,7 @@ func openRevolvingLine(t *testing.T, h *Server, pid string, commitment int64) ma
 // reports zero drawn and zero accrued without a further round trip.
 func TestOpenTermLoanAndRevolvingLine(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
 	assertEqual(t, "loan kind", loan["kind"].(string), "TermLoan")
@@ -1386,7 +1415,7 @@ func TestOpenTermLoanAndRevolvingLine(t *testing.T) {
 // and nothing here may pick one on the caller's behalf.
 func TestOpenFacilityRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"TermLoan","name":"No Asset","commitment":100000,"rate":50000,
@@ -1399,7 +1428,7 @@ func TestOpenFacilityRequiresAsset(t *testing.T) {
 // account type: an unknown value is a 400 before the domain is ever called.
 func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"Nonsense","name":"X","asset":"EUR","commitment":100000,"rate":50000,"dayCount":"ACT/365"
@@ -1422,7 +1451,7 @@ func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
 // A second disbursement is refused.
 func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1458,7 +1487,7 @@ func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 // refused without moving the drawn balance.
 func TestDrawPastCommitmentReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1487,7 +1516,7 @@ func TestDrawPastCommitmentReturns422(t *testing.T) {
 // credits the facility's drawn balance in the same request.
 func TestRepayFromDepositAccount(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1517,7 +1546,7 @@ func TestRepayFromDepositAccount(t *testing.T) {
 // nothing moves on either side.
 func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1545,7 +1574,7 @@ func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 // minimum payment) is appended to the schedule.
 func TestChargeInterestOnRevolvingLine(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1599,7 +1628,7 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 // empty body would report "nothing to charge" while the schedule gained a row.
 func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1644,7 +1673,7 @@ func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 // nothing is billed either.
 func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1722,7 +1751,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 // resolved-as-of-today fields still show the current terms, not the future ones.
 func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	prd := prdOf(t, h, pid)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","overdraftLimit":50000,"productId":"`+prd+`"}`, http.StatusCreated)["id"].(string)
 
@@ -1796,7 +1825,7 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 // this test is about both batches running, not about either figure.
 func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1847,7 +1876,7 @@ func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 // asset — no journal posts this number anywhere.
 func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	alice := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","overdraftLimit":100000,"productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
@@ -1882,7 +1911,7 @@ func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 // follows.
 func TestUnknownFacilityReturns404(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	// A real, funded deposit account, so the repayments case below clears the
 	// available-funds check and 404s on the FACILITY lookup, not on the
 	// account or on insufficient funds.
@@ -1910,7 +1939,7 @@ func TestUnknownFacilityReturns404(t *testing.T) {
 // legs deliberately disagree.
 func TestEntryDTOCarriesItsOwnValueDate(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -1976,8 +2005,8 @@ func TestEntryDTOCarriesItsOwnValueDate(t *testing.T) {
 // and until entryDTO carried a value date the API reported one date for both.
 func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	h := newServer(t, nil)
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before InitiatePayment will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"VD-ALICE-0001"}]}`, http.StatusCreated)
@@ -2050,7 +2079,7 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 // obligation is reachable and dischargeable from outside Go.
 func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed int64) {
 	t.Helper()
-	pid = doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid = doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 	did = acct["id"].(string)
 	aliceGL := acct["glAccount"].(string)
@@ -2164,7 +2193,7 @@ func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 // reports no refund and no refund account.
 func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	loan := doJSON(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"TermLoan","name":"Bob Loan","asset":"EUR",
 		"commitment":500000,"rate":60000,"dayCount":"ACT/365",
@@ -2201,7 +2230,7 @@ func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 // cannot take any out.
 func TestFundingRespectsAccountStatus(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	open := func(name string) string {
 		return doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"`+name+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
@@ -2249,7 +2278,7 @@ func TestFundingRespectsAccountStatus(t *testing.T) {
 // account status transition", and it is a 422 like its frozen sibling.
 func TestDormantDebitNamesDormancy(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000}`, http.StatusOK)
 	fid := doJSON(t, bank(h, pid), "POST", "/facilities", `{
@@ -2276,7 +2305,7 @@ func TestDormantDebitNamesDormancy(t *testing.T) {
 // a malformed one.
 func TestProductCatalogueRoutes(t *testing.T) {
 	h := newServer(t, nil)
-	pid := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 
 	created := doJSON(t, bank(h, pid), "POST", "/products", `{"name":"Basic Current Account","kind":"CurrentAccount"}`, http.StatusCreated)
 	prd := created["id"].(string)
@@ -2357,7 +2386,7 @@ func TestProductCatalogueRoutes(t *testing.T) {
 // section build on top of it rather than opening their own bare account.
 func someAccount(t *testing.T, h *Server) (pid, did string) {
 	t.Helper()
-	pid = doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid = doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	did = doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`",`+
 		`"identifiers":[{"scheme":"IBAN","value":"XX00-SOME-0001"}]}`, http.StatusCreated)["id"].(string)
 	return pid, did
@@ -2377,7 +2406,7 @@ func anotherAccountAtSameBank(t *testing.T, h *Server, pid string) string {
 // caller needs to show who an address belongs to before paying it.
 func TestDirectoryResolvesAnIBAN(t *testing.T) {
 	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
-		p, err := net.AddParticipant(ctx, "Aurora Bank", nil)
+		p, err := net.AddParticipant(ctx, "Aurora Bank", "BANKDEFFXXX", nil)
 		if err != nil {
 			return err
 		}
@@ -2450,7 +2479,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
 		for _, name := range []string{"Aurora Bank", "Banca Verde"} {
-			p, err := net.AddParticipant(ctx, name, nil)
+			p, err := net.AddParticipant(ctx, name, "BANKDEFFXXX", nil)
 			if err != nil {
 				return err
 			}
@@ -2477,8 +2506,8 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"ADDR-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"ADDR-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	// A creditor with no address at all: an SCT cannot reach it.

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
 )
@@ -162,7 +163,7 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	_, err = sys.RejectPayment(ctx, p.ID, "AM05")
+	_, err = sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonDuplication, "AM05")
 	assertNoError(t, err)
 
 	assertEqual(t, "trail for the rejected payment", eventTypes(paymentAudit(t, sys, string(p.ID))),
@@ -259,7 +260,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Bank A", euroOnly)
+	p, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	events := paymentAudit(t, sys, string(p.ID))

@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -23,7 +24,11 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	for i, a := range req.Assets {
 		assets[i] = ledger.AssetCode(a)
 	}
-	p, err := s.network().AddParticipant(r.Context(), req.Name, assets)
+	// BIC is required, but its shape is a business rule (iso20022.BIC.Validate,
+	// run inside AddParticipant) rather than a decoding failure, so a malformed
+	// or missing value is left to surface as the 422 writeError already maps
+	// iso20022.ErrBICFormat to, not a 400 raised here.
+	p, err := s.network().AddParticipant(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
 	if err != nil {
 		writeError(w, err)
 		return

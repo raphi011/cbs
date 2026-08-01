@@ -225,8 +225,8 @@ var preSplitRoutes = []string{
 // naming it.
 func TestABankCannotNameAnotherBank(t *testing.T) {
 	s := newServer(t, nil)
-	aurora := doJSON(t, cb(s), "POST", "/members", `{"name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
-	verde := doJSON(t, cb(s), "POST", "/members", `{"name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
+	aurora := doJSON(t, cb(s), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
+	verde := doJSON(t, cb(s), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
 
 	h := bank(s, aurora)
 	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
@@ -319,8 +319,8 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 // funded payment between them, cleared into a cycle that is then closed.
 func closedCycle(t *testing.T, h *Server) string {
 	t.Helper()
-	a := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SET-ALICE-0001"}]}`,
 		http.StatusCreated)["id"].(string)
@@ -396,7 +396,7 @@ type seededBank struct {
 func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	t.Helper()
 	mk := func(name, iban string) seededBank {
-		pid := doJSON(t, cb(h), "POST", "/members", `{"name":"`+name+`"}`, http.StatusCreated)["id"].(string)
+		pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"`+name+`"}`, http.StatusCreated)["id"].(string)
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+name+` customer","asset":"EUR","productId":"`+prdOf(t, h, pid)+
 				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,

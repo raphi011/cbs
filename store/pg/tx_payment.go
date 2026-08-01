@@ -46,15 +46,16 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO participants
-			(id, name, book_id, customer_subledger, product_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+			(id, name, bic, book_id, customer_subledger, product_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
+			bic                = EXCLUDED.bic,
 			book_id            = EXCLUDED.book_id,
 			customer_subledger = EXCLUDED.customer_subledger,
 			product_id         = EXCLUDED.product_id,
 			created_at         = EXCLUDED.created_at`,
-		string(p.ID), p.Name, string(p.BookID), string(p.CustomerSubledger),
+		string(p.ID), p.Name, string(p.BIC), string(p.BookID), string(p.CustomerSubledger),
 		string(p.ProductID), nullTime(p.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
@@ -82,14 +83,14 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	return nil
 }
 
-const participantColumns = `id, name, book_id, customer_subledger, product_id, created_at`
+const participantColumns = `id, name, bic, book_id, customer_subledger, product_id, created_at`
 
 func scanParticipant(row pgx.Row) (payment.Participant, error) {
 	var (
 		p         payment.Participant
 		createdAt *time.Time
 	)
-	err := row.Scan(&p.ID, &p.Name, &p.BookID, &p.CustomerSubledger, &p.ProductID, &createdAt)
+	err := row.Scan(&p.ID, &p.Name, &p.BIC, &p.BookID, &p.CustomerSubledger, &p.ProductID, &createdAt)
 	if err != nil {
 		return payment.Participant{}, err
 	}
@@ -194,7 +195,7 @@ func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error
 const paymentColumns = `id, scheme,
 	debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
 	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
-	amount, mandate_id, end_to_end_id, status, reject_reason, cycle_id,
+	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code, cycle_id,
 	booking_date, value_date, description, metadata, created_at,
 	debtor_leg_tx, creditor_leg_tx`
 
@@ -208,7 +209,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	}
 	_, err = t.tx.Exec(ctx, `
 		INSERT INTO payments (`+paymentColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
 		ON CONFLICT (id) DO UPDATE SET
 			scheme                     = EXCLUDED.scheme,
 			debtor_participant         = EXCLUDED.debtor_participant,
@@ -224,6 +225,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 			end_to_end_id              = EXCLUDED.end_to_end_id,
 			status                     = EXCLUDED.status,
 			reject_reason              = EXCLUDED.reject_reason,
+			reject_code                = EXCLUDED.reject_code,
 			cycle_id                   = EXCLUDED.cycle_id,
 			booking_date               = EXCLUDED.booking_date,
 			value_date                 = EXCLUDED.value_date,
@@ -235,7 +237,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 		string(p.ID), string(p.Scheme),
 		string(p.Debtor.Participant), string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
 		string(p.Creditor.Participant), string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
-		p.Amount, string(p.MandateID), p.EndToEndID, int16(p.Status), p.RejectReason, string(p.CycleID),
+		p.Amount, string(p.MandateID), p.EndToEndID, int16(p.Status), p.RejectReason, string(p.RejectCode), string(p.CycleID),
 		nullTime(p.BookingDate), nullTime(p.ValueDate), p.Description, metadata, nullTime(p.CreatedAt),
 		string(p.DebtorLegTx), string(p.CreditorLegTx))
 	if err != nil {
@@ -254,7 +256,7 @@ func scanPayment(row pgx.Row) (payment.Payment, error) {
 	err := row.Scan(&p.ID, &p.Scheme,
 		&p.Debtor.Participant, &p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
 		&p.Creditor.Participant, &p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
-		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.CycleID,
+		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.RejectCode, &p.CycleID,
 		&booking, &value, &p.Description, &metadata, &createdAt,
 		&p.DebtorLegTx, &p.CreditorLegTx)
 	if err != nil {

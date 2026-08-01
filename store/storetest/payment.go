@@ -61,6 +61,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// several layers away from the store that lost it.
 		assertEqual(t, "product id", string(got.ProductID), "prd_basic")
 		assertEqual(t, "product id in listings", string(listed[0].ProductID), "prd_basic")
+		// The BIC is what the mesh routes on. A store that drops it leaves
+		// every bank unreachable, and the failure surfaces as an unroutable
+		// message rather than as a store that lost a column — which is why it
+		// is asserted here and in the listing, not only here.
+		assertEqual(t, "bic", string(got.BIC), "AURODEFFXXX")
+		assertEqual(t, "bic in listings", string(listed[0].BIC), "AURODEFFXXX")
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
@@ -257,6 +263,33 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"})
 			return nil
 		})
+	})
+
+	t.Run("RejectedPaymentKeepsItsCodeAndItsText", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		p := samplePayment("pay_1", "e2e-1", early)
+		p.Status = payment.Rejected
+		p.RejectReason = "creditor account is closed"
+		// A code AND free text, not one or the other. The code is what makes a
+		// rejection machine-actionable; the text is what a human reads. A store
+		// that keeps only the text silently turns every rejection back into the
+		// string it was before this sub-project.
+		p.RejectCode = "AC04"
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutPayment(ctx, p)
+		})
+
+		var got payment.Payment
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			var err error
+			got, err = tx.GetPayment(ctx, p.ID)
+			return err
+		})
+
+		assertEqual(t, "reject code", string(got.RejectCode), "AC04")
+		assertEqual(t, "reject reason", got.RejectReason, "creditor account is closed")
 	})
 
 	t.Run("PaymentListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
@@ -778,6 +811,7 @@ func participant(id payment.ParticipantID, name string, createdAt time.Time) pay
 	return payment.Participant{
 		ID:                id,
 		Name:              name,
+		BIC:               "AURODEFFXXX",
 		BookID:            ledger.BookID(id),
 		CustomerSubledger: "100",
 		ProductID:         "prd_basic",

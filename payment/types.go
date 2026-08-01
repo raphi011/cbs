@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -206,7 +207,16 @@ type Payment struct {
 	MandateID  MandateID // set for direct debits
 	EndToEndID string    // client reference (the ISO 20022 "end-to-end id")
 
-	Status       PaymentStatus
+	Status PaymentStatus
+
+	// RejectCode is the external-code-set reason a rejection carries on the
+	// wire, and RejectReason is the free text beside it.
+	//
+	// Both, not either. The code is what makes a rejection machine-actionable
+	// — it is the entire point of ISO 20022's external code sets — and the
+	// text is what says the part no code can. A rejection produced inside this
+	// system without a code would be one the mesh could not put in a pacs.002.
+	RejectCode   iso20022.StatusReason
 	RejectReason string
 
 	CycleID     CycleID

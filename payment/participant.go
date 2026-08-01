@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/product"
@@ -59,6 +60,18 @@ type ParticipantAccounts struct {
 type Participant struct {
 	ID   ParticipantID
 	Name string
+
+	// BIC is this bank's ISO 9362 business identifier code: what a
+	// counterparty addresses it by, and what the mesh routes on.
+	//
+	// It is here rather than derived from ID or Name because a BIC is issued
+	// by SWIFT, not chosen: "AURODEFFXXX" and "Aurora Bank" have no
+	// computable relationship, and inventing one would teach that they do.
+	//
+	// Validated with iso20022.BIC on the way in. Structure only — this
+	// repository has no directory to check membership against, exactly as it
+	// has no register to check an IBAN's issuer against.
+	BIC iso20022.BIC
 
 	// BookID is this bank's book within the network's store. It is
 	// ledger.BookID(ID) — the participant is its own book.

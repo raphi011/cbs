@@ -9,6 +9,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
@@ -25,6 +26,12 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 const testAsset ledger.AssetCode = "EUR"
 
 var euroOnly = []ledger.AssetCode{testAsset}
+
+// testBIC is a structurally valid ISO 9362 BIC used across these tests. There
+// is no uniqueness constraint on it (see participants.bic's column comment),
+// so every test bank sharing it is not a fixture bug — only store/storetest's
+// participant fixture needs a BIC distinct from anything else it asserts.
+const testBIC iso20022.BIC = "BANKDEFFXXX"
 
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
@@ -54,9 +61,9 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 	t.Helper()
 	ctx := context.Background()
 
-	a, err := sys.AddParticipant(ctx, "Bank A", euroOnly)
+	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
-	b, err = sys.AddParticipant(ctx, "Bank B", euroOnly)
+	b, err = sys.AddParticipant(ctx, "Bank B", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	aliceAcct := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -71,7 +78,7 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob de
 // that want more than two banks or want to name them themselves.
 func addParticipant(t *testing.T, ctx context.Context, sys *Network, name string) *Participant {
 	t.Helper()
-	p, err := sys.AddParticipant(ctx, name, euroOnly)
+	p, err := sys.AddParticipant(ctx, name, testBIC, euroOnly)
 	assertNoError(t, err)
 	return p
 }
@@ -511,11 +518,11 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	a, err := sys.AddParticipant(ctx, "Bank A", euroOnly) // net receiver
+	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly) // net receiver
 	assertNoError(t, err)
-	b, err := sys.AddParticipant(ctx, "Bank B", euroOnly) // solvent net payer
+	b, err := sys.AddParticipant(ctx, "Bank B", testBIC, euroOnly) // solvent net payer
 	assertNoError(t, err)
-	c, err := sys.AddParticipant(ctx, "Bank C", euroOnly) // underfunded net payer
+	c, err := sys.AddParticipant(ctx, "Bank C", testBIC, euroOnly) // underfunded net payer
 	assertNoError(t, err)
 
 	alice := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -576,7 +583,7 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		var banks []*Participant
 		var accounts []deposit.Account
 		for i, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
-			p, err := sys.AddParticipant(ctx, name, euroOnly)
+			p, err := sys.AddParticipant(ctx, name, testBIC, euroOnly)
 			assertNoError(t, err)
 			acct := openCustomer(t, ctx, p, "Customer at "+name, fmt.Sprintf("SE89-BANK%d-0001", i))
 			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
@@ -668,7 +675,7 @@ func TestStateMachineGuards(t *testing.T) {
 		assertNoError(t, err)
 		_, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.RejectPayment(ctx, p.ID, "too late")
+		_, err = sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late")
 		assertError(t, err, ErrInvalidStateTransition)
 	})
 }
@@ -687,7 +694,7 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
 
-	rejected, err := sys.RejectPayment(ctx, p.ID, "operator cancelled")
+	rejected, err := sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator cancelled")
 	assertNoError(t, err)
 	assertEqual(t, "status", rejected.Status, Rejected)
 	assertEqual(t, "alice restored", customerBalance(t, a, alice), 100000)
@@ -764,7 +771,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Alpha", []ledger.AssetCode{"EUR", "USD"})
+	p, err := sys.AddParticipant(ctx, "Alpha", testBIC, []ledger.AssetCode{"EUR", "USD"})
 	assertNoError(t, err)
 
 	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
@@ -800,7 +807,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 func TestAccountsForUnknownAssetFails(t *testing.T) {
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(context.Background(), "Alpha", nil) // defaults to EUR
+	p, err := sys.AddParticipant(context.Background(), "Alpha", testBIC, nil) // defaults to EUR
 	assertNoError(t, err)
 	assertEqual(t, "assets a bank joins with by default", len(p.Assets), 1)
 
@@ -860,9 +867,9 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
@@ -889,9 +896,9 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
@@ -919,9 +926,9 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// Both ends in BTC: a mandate's two accounts have to agree (see
@@ -955,9 +962,9 @@ func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", euroOnly)
+	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", euroOnly)
+	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
@@ -1062,7 +1069,7 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	bank, err := net.AddParticipant(ctx, "Aurora Bank", euroOnly)
+	bank, err := net.AddParticipant(ctx, "Aurora Bank", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// An overdrawn current account with a priced overdraft.
@@ -1121,7 +1128,7 @@ func TestParticipantRunEndOfDay_QuietBank(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	bank, err := net.AddParticipant(ctx, "Quiet Bank", euroOnly)
+	bank, err := net.AddParticipant(ctx, "Quiet Bank", testBIC, euroOnly)
 	assertNoError(t, err)
 	assertNoError(t, bank.RunEndOfDay(ctx, fixedTime))
 }

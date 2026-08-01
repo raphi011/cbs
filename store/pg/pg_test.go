@@ -392,7 +392,7 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 
 	names := []string{"Aurora Bank", "Banca Verde", "Nordkredit"}
 	errs := runConcurrently(len(names), func(i int) error {
-		_, err := net.AddParticipant(ctx, names[i], nil)
+		_, err := net.AddParticipant(ctx, names[i], "BANKDEFFXXX", nil)
 		return err
 	})
 	for _, err := range errs {

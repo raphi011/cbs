@@ -518,12 +518,23 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 CREATE TABLE participants (
     id                 TEXT PRIMARY KEY,
     name               TEXT NOT NULL,
+    bic                TEXT NOT NULL,
     book_id            TEXT NOT NULL,
     customer_subledger TEXT NOT NULL,
     product_id         TEXT NOT NULL,
     created_at         TIMESTAMPTZ,
     seq                BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN participants.bic IS
+    'ISO 9362 business identifier code. NOT NULL because a bank the mesh '
+    'cannot address is not a member: routing is by BICFI, so a participant '
+    'without one is unreachable rather than merely undescribed. No CHECK on '
+    'its shape — the structural rule lives in iso20022.BIC, and a constraint '
+    'here would fire in Postgres and not in store/mem, which store/storetest '
+    'exists to forbid. There is also no UNIQUE: two banks sharing a BIC is a '
+    'domain error, and nothing serializes two concurrent admissions, so the '
+    'same reasoning that kept a UNIQUE off deposit identifiers applies here.';
 
 -- A participant's internal plumbing accounts, one set per asset it operates in.
 --
@@ -589,6 +600,7 @@ CREATE TABLE payments (
     end_to_end_id              TEXT NOT NULL,
     status                     SMALLINT NOT NULL,
     reject_reason              TEXT NOT NULL,
+    reject_code                TEXT NOT NULL DEFAULT '',
     cycle_id                   TEXT NOT NULL,
     booking_date               TIMESTAMPTZ,
     value_date                 TIMESTAMPTZ,
@@ -599,6 +611,14 @@ CREATE TABLE payments (
     creditor_leg_tx            TEXT NOT NULL,
     seq                        BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN payments.reject_code IS
+    'The external status-reason code (AC01, AM04, MD01, ...) a rejection '
+    'carries in a pacs.002, alongside the free text in reject_reason. Both, '
+    'not either: the code is what makes the rejection machine-actionable and '
+    'the text is what says the part no code can. DEFAULT '''' rather than NULL '
+    'because a payment that was never rejected has no code, and an absent code '
+    'and an empty one are the same fact here.';
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in

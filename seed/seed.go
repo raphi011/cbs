@@ -7,6 +7,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -330,10 +331,10 @@ func (b *builder) build() {
 	// in its book and in the central bank's, and opens its suspense, reserve
 	// and settlement accounts in it.
 	euro := []ledger.AssetCode{seedAsset}
-	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank", euro))
-	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", euro))
-	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", euro))
-	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", euro))
+	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank", "AURODEFFXXX", euro))
+	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", "VERDITMMXXX", euro))
+	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", "NORDSESSXXX", euro))
+	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", "SOLEFRPPXXX", euro))
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a
@@ -439,7 +440,10 @@ func (b *builder) build() {
 	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription")
 	reject := b.initSDD(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Disputed charge")
-	must(b.net.RejectPayment(b.ctx, reject.ID, "Insufficient mandate coverage"))
+	// An operator-initiated rejection carries no more specific reason code
+	// than MS03 — the same choice the reject handler makes, for the same
+	// reason: nothing here is the system detecting a condition of its own.
+	must(b.net.RejectPayment(b.ctx, reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage"))
 
 	// --- Phase F: an open SCT cycle with an accepted payment ----------------
 	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))

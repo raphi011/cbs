@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -245,7 +246,10 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.network().RejectPayment(r.Context(), payment.PaymentID(r.PathValue("payid")), req.Reason)
+	// An operator-initiated rejection carries no more specific external status
+	// reason than MS03: the API exposes no way for a caller to name a code, so
+	// there is no more honest choice than the one that says exactly that.
+	p, err := s.network().RejectPayment(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
 	if err != nil {
 		writeError(w, err)
 		return

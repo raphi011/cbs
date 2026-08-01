@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -128,7 +129,11 @@ func errorStatus(err error) int {
 		// the data is contested: the caller can fix it by naming an address.
 		errors.Is(err, payment.ErrUnaddressableAccount),
 		errors.Is(err, payment.ErrIdentifierMismatch),
-		errors.Is(err, payment.ErrAmbiguousAddress):
+		errors.Is(err, payment.ErrAmbiguousAddress),
+		// A malformed BIC is well-formed JSON naming a field that is not a
+		// structurally valid ISO 9362 code — the same category as an
+		// unaddressable account, not a decoding failure.
+		errors.Is(err, iso20022.ErrBICFormat):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),

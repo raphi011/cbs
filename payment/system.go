@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/product"
@@ -296,11 +297,11 @@ func (s *Network) centralBankAssetsAccountIn(ctx context.Context, tx Tx, capital
 // account: every account below is created with an asset its caller named.
 //
 // The new bank starts with zero reserves; fund it with Deposit.
-func (s *Network) AddParticipant(ctx context.Context, name string, assets []ledger.AssetCode) (*Participant, error) {
+func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Participant, error) {
 	var out *Participant
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.AddParticipantTx(ctx, tx, name, assets)
+		out, err = s.AddParticipantTx(ctx, tx, name, bic, assets)
 		return err
 	})
 	if err != nil {
@@ -313,9 +314,16 @@ func (s *Network) AddParticipant(ctx context.Context, name string, assets []ledg
 // bank's chart of accounts, its reserve account at the central bank and the
 // participant record are all written through the same Tx, so a bank can never
 // exist without the accounts it needs.
-func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, assets []ledger.AssetCode) (*Participant, error) {
+func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Participant, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
+	}
+	// Validated at admission rather than at first use. A bank with a malformed
+	// BIC is one the mesh cannot route to, and the moment to refuse it is when
+	// it joins — not when the first payment addressed to it fails somewhere
+	// else entirely.
+	if err := bic.Validate(); err != nil {
+		return nil, fmt.Errorf("bic: %w", err)
 	}
 	if len(assets) == 0 {
 		assets = []ledger.AssetCode{"EUR"}
@@ -419,6 +427,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, asse
 	p := Participant{
 		ID:                ParticipantID(id),
 		Name:              name,
+		BIC:               bic,
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,
@@ -1142,18 +1151,18 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 
 // RejectPayment rejects a payment before it has cleared, reversing the debtor
 // leg if one was posted and removing it from its clearing cycle.
-func (s *Network) RejectPayment(ctx context.Context, id PaymentID, reason string) (Payment, error) {
+func (s *Network) RejectPayment(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.RejectPaymentTx(ctx, tx, id, reason)
+		out, err = s.RejectPaymentTx(ctx, tx, id, code, reason)
 		return err
 	})
 	return out, err
 }
 
 // RejectPaymentTx is RejectPayment within a caller-supplied unit of work.
-func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
+func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
 	}
@@ -1181,6 +1190,7 @@ func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	if err := transition(&p, Rejected); err != nil {
 		return Payment{}, err
 	}
+	p.RejectCode = code
 	p.RejectReason = reason
 	if err := tx.PutPayment(ctx, p); err != nil {
 		return Payment{}, err

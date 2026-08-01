@@ -29,6 +29,9 @@ type participantAccountsDTO struct {
 type participantDTO struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// BIC is this bank's ISO 9362 business identifier code — what a
+	// counterparty addresses it by, and what the mesh routes on.
+	BIC string `json:"bic"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
 	// product, so a client that has just created a bank needs to be told which
@@ -53,6 +56,7 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 	return participantDTO{
 		ID:                string(p.ID),
 		Name:              p.Name,
+		BIC:               string(p.BIC),
 		ProductID:         string(p.ProductID),
 		CustomerSubledger: string(p.CustomerSubledger),
 		Assets:            assets,
@@ -69,7 +73,12 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 // bank joins with. It is not a default for the asset of any account — every
 // account, deposit account and transaction still names its asset explicitly.
 type createParticipantRequest struct {
-	Name   string   `json:"name"`
+	Name string `json:"name"`
+	// BIC is required: a bank the mesh cannot address is not a member. It is
+	// validated by AddParticipant itself (iso20022.BIC.Validate), which is
+	// what turns a malformed value into a 422 rather than a 400 — the field is
+	// present and well-typed, and what is wrong with it is a business rule.
+	BIC    string   `json:"bic"`
 	Assets []string `json:"assets"`
 }
 
@@ -130,6 +139,7 @@ type paymentDTO struct {
 	MandateID     string            `json:"mandateId,omitempty"`
 	EndToEndID    string            `json:"endToEndId,omitempty"`
 	Status        string            `json:"status"`
+	RejectCode    string            `json:"rejectCode,omitempty"`
 	RejectReason  string            `json:"rejectReason,omitempty"`
 	CycleID       string            `json:"cycleId,omitempty"`
 	BookingDate   time.Time         `json:"bookingDate"`
@@ -165,6 +175,7 @@ func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
 		MandateID:     string(p.MandateID),
 		EndToEndID:    p.EndToEndID,
 		Status:        p.Status.String(),
+		RejectCode:    string(p.RejectCode),
 		RejectReason:  p.RejectReason,
 		CycleID:       string(p.CycleID),
 		BookingDate:   p.BookingDate,
