@@ -13,6 +13,7 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
+import { backendFor } from "@/lib/identity";
 import type { Asset, AuditQuery, DepositAccount, Participant } from "@/lib/types";
 
 import * as api from "./endpoints";
@@ -43,6 +44,11 @@ export function useAddParticipant() {
       qc.invalidateQueries({ queryKey: qk.participants() });
       // participant.added is a network-scope audit event.
       qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+      // The new bank has no listener yet, but useOperators' staleTime is
+      // Infinity — without this it would never re-probe, and the freshly
+      // admitted bank would render as a normal, clickable, dead console
+      // instead of "awaiting provisioning".
+      qc.invalidateQueries({ queryKey: qk.operators() });
     },
   });
 }
@@ -162,7 +168,7 @@ export function useAssetLookup() {
     for (const a of q.data ?? []) m.set(a.code, a);
     return m;
   }, [q.data]);
-  return { byCode, isLoading: q.isLoading, error: q.error };
+  return { byCode, isLoading: q.isLoading, error: q.error, refetch: () => q.refetch() };
 }
 
 // --- Ledger: accounts tree ------------------------------------------------
@@ -832,14 +838,17 @@ export function useIdentityDirectory(): {
     queries: list.map((p) => ({
       queryKey: qk.depositAccounts(p.id),
       queryFn: () => api.listDepositAccounts(p.id),
-      enabled: probeSettled && isProvisioned(`bank/${p.id}`),
+      enabled:
+        probeSettled && isProvisioned(backendFor({ persona: "bank", pid: p.id })),
     })),
   });
 
   const banks = list.map((participant, i) => ({
     participant,
     accounts: results[i]?.data ?? [],
-    provisioned: isProvisioned(`bank/${participant.id}`),
+    provisioned: isProvisioned(
+      backendFor({ persona: "bank", pid: participant.id }),
+    ),
   }));
 
   return {
