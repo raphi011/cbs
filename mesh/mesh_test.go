@@ -417,6 +417,127 @@ func TestStopDeliversWhatIsAlreadyQueued(t *testing.T) {
 	}
 }
 
+// A shutdown that cuts a conversation says which one. Stop closes every inbox
+// before it joins anybody, so a handler still running cannot reach any actor —
+// its send is refused, that refusal is its error, and that error is a dead
+// letter. A Stop that returned bare nil would make an interrupted chain fail
+// silently, which is the whole failure Drain's dead letters exist to prevent.
+func TestStopReportsWhatAHandlerCouldNotDoDuringShutdown(t *testing.T) {
+	m := newTestMesh(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		close(entered)
+		<-release
+		// The next hop of the chain, attempted after the shutdown began.
+		return m.send("AAAADEFFXXX", "BBBBDEFFXXX", testEnvelope("AAAADEFFXXX", "BBBBDEFFXXX", "hop-2"))
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "hop-1")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	<-entered
+
+	// The first Stop is what closes the inboxes — its own close, not one staged
+	// by this test. It cannot get past the join while A is wedged, so when it
+	// returns, every inbox is closed and A has not moved: the handler's send
+	// below is certainly attempted after the shutdown, with nothing raced.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := m.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the first Stop = %v, want the deadline while A is wedged", err)
+	}
+
+	close(release)
+
+	err := m.Stop(drainCtx(t))
+	if err == nil {
+		t.Fatal("Stop returned nil after cutting a chain; the handler's failure was swallowed")
+	}
+	if !strings.Contains(err.Error(), "BBBBDEFFXXX") {
+		t.Errorf("Stop error %q does not say which send the shutdown refused", err)
+	}
+}
+
+// A Stop that gives up hands over the failures it collected, for the same
+// reason Drain does: held back, they surface on some later call and get blamed
+// on the wrong thing.
+func TestStopThatTimesOutStillReportsTheDeadLetters(t *testing.T) {
+	m := newTestMesh(t)
+	boom := errors.New("boom")
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var n atomic.Int32
+	// One actor, two messages, one goroutine: the first message's dead letter
+	// is recorded before the second is popped, so the deadline races nothing.
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		if n.Add(1) == 1 {
+			return boom
+		}
+		close(blocked)
+		<-release
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { close(release); _ = m.Stop(context.Background()) })
+	for _, id := range []string{"1", "2"} {
+		if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", id)); err != nil {
+			t.Fatalf("send %s: %v", id, err)
+		}
+	}
+	<-blocked
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := m.Stop(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop = %v, want the deadline", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("Stop = %v; the dead letter it already had was left behind for some later call", err)
+	}
+}
+
+// An actor registered while Stop is in progress would be in neither of Stop's
+// two lists: its inbox never closed, its goroutine never joined. A timed-out
+// Stop leaves the mesh in exactly that state, which is what makes this
+// deterministic — no racing with a join loop.
+func TestAddingAnActorWhileStoppingIsAnError(t *testing.T) {
+	m := newTestMesh(t)
+	release := make(chan struct{})
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		<-release
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { close(release); _ = m.Stop(context.Background()) })
+	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "x")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := m.Stop(ctx); err == nil {
+		t.Fatal("Stop returned nil while a handler was wedged")
+	}
+
+	// The mesh is mid-shutdown: inboxes closed, snapshot taken, actors not yet
+	// joined. It is not "stopped" — a guard that waited for that would accept
+	// this actor.
+	if err := m.addActor("DDDDDEFFXXX", "D", func(context.Context, iso20022.BIC, []byte) error { return nil }); err == nil {
+		t.Fatal("a mesh that is stopping accepted a new actor; nothing would ever close or join it")
+	}
+	if _, ok := m.actors["DDDDDEFFXXX"]; ok {
+		t.Error("the refused actor was registered anyway")
+	}
+}
+
 // A Stop that times out leaves the mesh running, so calling it again finishes
 // the job. The alternative — marking the mesh stopped on the way out — would
 // return nil from the second call while an actor was still going, and would

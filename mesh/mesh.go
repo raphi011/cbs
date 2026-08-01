@@ -97,10 +97,17 @@ type Mesh struct {
 	// quiet is closed when inFlight reaches zero and replaced when it leaves
 	// zero. A channel rather than a sync.Cond because Drain must also wake on
 	// a cancelled context, and Cond cannot select.
-	quiet   chan struct{}
-	dead    []error
-	started bool
-	stopped bool
+	quiet chan struct{}
+	dead  []error
+	// started, stopping and stopped are three states rather than two because
+	// the middle one is reachable and is not the same as either neighbour: Stop
+	// has closed the inboxes and taken its snapshot but has not joined yet, and
+	// a Stop that times out leaves the mesh sitting there. stopping is what
+	// addActors refuses on — waiting for stopped would let an actor be
+	// registered into a shutdown that will never close or join it.
+	started  bool
+	stopping bool
+	stopped  bool
 	// busy names the actors currently inside a handler, so a Drain that times
 	// out can say which one is stuck instead of reporting a bare deadline.
 	busy map[iso20022.BIC]bool
@@ -193,11 +200,21 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 // keep the second and drop the first, and the dropped one's goroutine would
 // read an inbox nothing could ever address.
 //
-// A stopped mesh refuses too. Its actors' goroutines have returned, so a new
-// one would be registered with an open inbox and nobody reading it: a send to
-// it would report success, count a message in flight, and hang the next Drain
-// out to its deadline. A black hole that answers "sent" is worse than a
-// refusal.
+// A mesh that is stopping or stopped refuses. The obvious case is the stopped
+// one: its actors' goroutines have returned, so a new actor would have an open
+// inbox and nobody reading it — a send to it would report success, count a
+// message in flight, and hang the next Drain out to its deadline. A black hole
+// that answers "sent" is worse than a refusal.
+//
+// The case that actually bit is the one in between. Stop takes a snapshot of
+// the actors and closes their inboxes, then joins them; an actor registered
+// after that snapshot is in neither list, so its inbox is never closed and its
+// goroutine is never joined — a permanent leak, plus the same black hole. It is
+// not hypothetical: Task 16 starts the mesh before it seeds, so registering
+// actors into a running mesh is the normal path, and a shutdown racing a seed
+// is an ordinary thing to get wrong. Refusing from the moment Stop begins, and
+// setting that flag under the same lock Stop takes its snapshot under, closes
+// the window rather than narrowing it.
 func (m *Mesh) addActors(specs ...actorSpec) error {
 	for _, s := range specs {
 		if err := s.bic.Validate(); err != nil {
@@ -207,8 +224,8 @@ func (m *Mesh) addActors(specs ...actorSpec) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.stopped {
-		return fmt.Errorf("mesh: stopped; %s would have no goroutine to read its inbox", specs[0].bic)
+	if m.stopping || m.stopped {
+		return fmt.Errorf("mesh: stopping; %s would have no goroutine to read its inbox", specs[0].bic)
 	}
 	batch := make(map[iso20022.BIC]bool, len(specs))
 	for _, s := range specs {
@@ -280,8 +297,8 @@ func (m *Mesh) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop closes every inbox and waits for the actors to finish what they are
-// already doing.
+// Stop closes every inbox, waits for the actors to finish what they are already
+// doing, and returns the dead letters they produced, joined.
 //
 // It waits, rather than cancelling and returning, because its caller's next
 // move is typically to tear the store down: a handler still inside a unit of
@@ -289,50 +306,86 @@ func (m *Mesh) Start(ctx context.Context) error {
 // to prevent. A handler that will not return therefore times out and is NAMED,
 // the same as in Drain.
 //
-// # Queued messages are delivered, and what that means for the deadline
+// # Queued messages are delivered; chains are cut, and Stop says so
 //
-// Stop loses no work. Closing an inbox stops it accepting NEW messages; pop
-// hands over everything already in it before it reports the queue closed (see
-// queue.pop, where that is deliberate), so every message enqueued before Stop
-// was called is still handled, and handlers may send to each other while it
-// happens — only sends arriving after the close are refused.
+// Nothing already queued is lost. Closing an inbox stops it accepting NEW
+// messages, and pop hands over everything already in it before it reports the
+// queue closed (see queue.pop, where that is deliberate), so every message
+// enqueued before Stop was called is still handled.
 //
-// So the context given here bounds all of that: the handler in flight, plus the
-// whole depth of every inbox, plus anything those handlers enqueue for actors
-// that have not drained yet. It is not a bound on one handler. A caller that
-// wants a predictable shutdown should Drain first and then Stop, which leaves
-// Stop with nothing to do but join — that is what Tasks 14 and 16 should do,
-// and it is why Server.Reset drains before it truncates.
+// Chains, though, are CUT. Every inbox is closed in ONE step — under m.mu,
+// together with the snapshot of who the actors are — before any actor is
+// joined, so a handler still running during shutdown cannot reach anybody at
+// all, not even an actor that has not been joined yet. Its send is refused, the
+// refusal becomes that handler's error, and the error becomes a dead letter.
+//
+// Which is why Stop returns them. A shutdown that ended a conversation and said
+// nothing would be the silent failure Drain's dead letters exist to prevent,
+// reintroduced one method over. Stop's contract is Drain's: what handlers could
+// not deal with comes back to the caller. See
+// TestStopReportsWhatAHandlerCouldNotDoDuringShutdown.
+//
+// # The deadline, and why Tasks 14 and 16 must Drain first
+//
+// The context given here bounds the handler in flight PLUS the whole depth of
+// every inbox at the moment of the close. It is not a bound on one handler.
+// Nothing further can be enqueued, because by then every inbox is closed.
+//
+// Drain first, then Stop — and not merely to make the deadline predictable.
+// It is the ONLY way a chain that is in flight completes at all. Stop cuts
+// whatever is mid-conversation, so a shutdown or a reset that has not drained
+// first ends payments halfway: the debtor's bank debited and the pacs.002 that
+// would have told it so never sent. Draining leaves Stop nothing to do but
+// join.
+//
+// That is an instruction for Task 14's Server.Reset, which must drain before it
+// truncates, and for Task 16's shutdown path. Neither does today — api holds no
+// mesh at all yet.
 //
 // # A Stop that times out leaves the mesh running
 //
-// It names the actor that would not let go, and deliberately does NOT cancel
-// the mesh context or mark the mesh stopped: goroutines are still using both,
-// and a half-torn-down mesh is worse than one that plainly refused to stop.
-// Call it again once the handler has come back — the inboxes are already
-// closed, so a retry only re-joins — and the second call finishes the job.
-// Start keeps refusing throughout. See TestStopCanBeRetriedAfterATimeout.
+// It names the actor that would not let go, hands back the dead letters it has
+// so far, and deliberately does NOT cancel the mesh context or mark the mesh
+// stopped: goroutines are still using both, and a half-torn-down mesh is worse
+// than one that plainly refused to stop. Call it again once the handler has
+// come back — the inboxes are already closed, so a retry only re-joins — and
+// the second call finishes the job. Start keeps refusing throughout, and so
+// does addActor. See TestStopCanBeRetriedAfterATimeout.
 func (m *Mesh) Stop(ctx context.Context) error {
 	m.mu.Lock()
 	if !m.started {
+		// Never started, or already stopped: there is nothing to join, and any
+		// dead letters were taken by the Stop or the Drain that preceded this.
 		m.mu.Unlock()
 		return nil
 	}
+	// stopping, the snapshot and the closes are one critical section. The
+	// snapshot is the set of actors this call will close and join, so an
+	// actor registered after it would be neither — a goroutine nothing ever
+	// joins, reading an inbox nothing ever closes. addActors refuses from this
+	// moment on, and it cannot slip in beside this because it takes m.mu too.
+	//
+	// Closing here rather than after the unlock also makes "a handler in
+	// shutdown can reach nobody" true rather than nearly true: with the closes
+	// outside the lock, a send racing the loop could still land in an inbox the
+	// loop had not reached yet.
+	m.stopping = true
 	actors := make([]*actor, 0, len(m.actors))
 	for _, a := range m.actors {
 		actors = append(actors, a)
+		a.q.close()
 	}
 	cancel := m.cancel
 	m.mu.Unlock()
 
 	for _, a := range actors {
-		a.q.close()
-	}
-	for _, a := range actors {
 		select {
 		case <-a.done:
 		case <-ctx.Done():
-			return fmt.Errorf("mesh: stopping (%s): %w", m.stuck(), ctx.Err())
+			return errors.Join(
+				fmt.Errorf("mesh: stopping (%s): %w", m.stuck(), ctx.Err()),
+				m.takeDeadLetters(),
+			)
 		}
 	}
 
@@ -341,7 +394,11 @@ func (m *Mesh) Stop(ctx context.Context) error {
 	m.stopped = true
 	m.mu.Unlock()
 	cancel()
-	return nil
+
+	// The dead letters last, after every actor has returned, so that a handler
+	// whose send was refused by the shutdown itself is included rather than
+	// raced.
+	return m.takeDeadLetters()
 }
 
 // run is one actor's goroutine: pop, handle, repeat, until the inbox is closed
