@@ -40,11 +40,16 @@
 //     arm only, which the scheme does limit to one occurrence of Max140Text.
 //     See RemittanceInformation.
 //
-// Every claim above about what the guidelines require carries its index into
-// the Implementation Guidelines, so the next reader can check it against the
-// clause rather than against a 400-page PDF. Two of these claims were false
-// before a review fetched the guidelines; a citation is what makes the third
-// one cheap to falsify.
+// Three of the claims above carry their index into the Implementation
+// Guidelines — the charge bearer, the settlement method and remittance
+// information — so the next reader can check those against the clause rather
+// than against a 400-page PDF. Two of the three were false before a review
+// fetched the guidelines, which is the whole argument for citing an index.
+//
+// The IBAN-only and euro-only claims carry none. Nobody has looked them up
+// against the primary document, and saying "every claim here is cited" while
+// two of five are not would be the same kind of overclaim the citations exist
+// to prevent. They are the outstanding debt, recorded as such.
 //
 // # The envelope
 //

@@ -139,14 +139,25 @@ func Marshal(env Envelope) ([]byte, error) {
 //
 // # io.EOF never escapes
 //
-// Every error this function returns goes through notEOF, and the end-of-input
-// branch reports what was actually missing rather than handing back the
-// decoder's io.EOF. io.EOF is the one error a transport layer is idiomatically
-// required to read as "the peer closed cleanly, read more" rather than "this
-// content is bad", and sub-project 7b puts this function behind a network
-// boundary — where a framing bug that truncated a body would otherwise arrive
-// as a clean disconnect. See TestUnmarshalSurvivesHostileInput, which asserts
-// the sentinel class of every hostile case and that none of them is io.EOF.
+// The guarantee is about the RESULT, not about a code path:
+// errors.Is(err, io.EOF) is false for every error this function returns.
+//
+// It is reached two different ways, because the errors come from two places.
+// The errors this package constructs — the sentinels and the structural ones —
+// were never io.EOF to begin with and need nothing done to them. The errors
+// that come out of the decoder do: a clean end of input is answered by the
+// branch below, which reports what was actually missing instead of handing
+// io.EOF back, and every other decoder error — from DecodeElement, from Skip,
+// from a mid-stream token — goes through notEOF.
+//
+// io.EOF is the one error a transport layer is idiomatically required to read
+// as "the peer closed cleanly, read more" rather than "this content is bad",
+// and sub-project 7b puts this function behind a network boundary — where a
+// framing bug that truncated a body would otherwise arrive as a clean
+// disconnect. See TestUnmarshalSurvivesHostileInput, which asserts the
+// sentinel class of every hostile case and that none of them is io.EOF, and
+// FuzzUnmarshal, which asserts it for arbitrary bytes — the only way to make a
+// claim quantified over every error into one a test can hold.
 //
 // The envelope-level guard says nothing about repetition INSIDE one envelope,
 // so both elements this codec dispatches on are guarded where they are

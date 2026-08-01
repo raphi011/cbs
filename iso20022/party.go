@@ -285,8 +285,10 @@ func (a BranchAndFinancialInstitution) validate() error {
 // What is true of the scheme is the narrower part: the unstructured arm is
 // limited to one occurrence of Max140Text, which is why Ustrd is a string and
 // not a slice. This package models that arm and no other — the structured arm
-// is a deliberate omission, listed with the rest in the design document — and
-// it does not re-check the 140-character bound, for the same reason it checks
+// is a deliberate omission, recorded with the rest under "Out of scope,
+// deliberately" in
+// docs/superpowers/specs/2026-07-31-iso20022-messages-design.md — and it does
+// not re-check the 140-character bound, for the same reason it checks
 // ChrgBr for presence rather than for value: this is a codec, and the schema is
 // where a length is enforced. See
 // TestRemittanceInformationCarriesTheUnstructuredArmOnly.

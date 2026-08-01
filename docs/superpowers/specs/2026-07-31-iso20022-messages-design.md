@@ -41,11 +41,23 @@ the standard, and the ones that are absent are absent on purpose and listed.
 
 The base ISO 20022 `pacs.008` allows a great deal that SEPA forbids. The EPC
 Implementation Guidelines are a **constrained subset**: IBAN-only accounts, EUR
-only, `SLEV` charge bearer, one `Ustrd` remittance line of 140 characters. This
-package implements the EPC subset, and says so in the package doc, because the
-relationship between a standard and a scheme's profile of it is itself one of
-the things worth teaching: the standard is a superset, and the scheme narrows
-it until only one thing can be meant.
+only, `SLEV` charge bearer (SCT Inter-PSP IG idx 2.28, SDD Core IG idx 2.26).
+This package implements the EPC subset, and says so in the package doc, because
+the relationship between a standard and a scheme's profile of it is itself one
+of the things worth teaching: the standard is a superset, and the scheme
+narrows it until only one thing can be meant.
+
+**What is a narrowing of ours and not the scheme's** must be labelled as such,
+because a false claim about the standard propagates into the README, the hint
+content and the quiz. This paragraph used to say the guidelines allow "one
+`Ustrd` remittance line of 140 characters"; they do not. Either the structured
+or the unstructured arm may be present (SCT idx 2.137, SDD idx 2.156), and the
+2025 SCT IG adds an extended option. Modelling the unstructured arm alone is
+this package's choice — see *Out of scope* below. The same correction applies
+to the settlement method, which the SCT IG allows as `CLRG`, `INGA` or `INDA`
+(idx 1.9) and the SDD IG does not restrict at all (idx 1.10), where this
+package declares `CLRG` alone. The package doc is the authority on both and
+carries the same indexes.
 
 ## Out of scope, deliberately
 
@@ -68,6 +80,15 @@ it until only one thing can be meant.
   little. The substitute is stated under *Testing*: round-trip against committed
   EPC sample documents, plus an optional `xmllint` check that skips when the
   binary is absent.
+- **Structured remittance information (`RmtInf/Strd`), and the 2025 Extended
+  Remittance Information option.** The guidelines permit either arm — this was
+  originally recorded, wrongly, as the scheme allowing only the unstructured one
+  — so leaving `Strd` out is a choice and belongs on this list. `Ustrd` is what
+  this repository's payments carry: a free-text reference between two customers,
+  which is the whole of what `payment.Payment` has to convert. `Strd` is a
+  structured creditor reference with its own issuer and type, and modelling it
+  without an operation that produces one would be a struct nobody constructs —
+  the same reason `camt.056` is out. See `RemittanceInformation`.
 - **Digital signatures, `Sgntr`, and any transport security.** A real CSM
   connection is mutually authenticated and the messages are signed. Nothing in
   this repository models an untrusted counterparty.
