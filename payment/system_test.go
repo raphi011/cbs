@@ -2091,3 +2091,36 @@ func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
 	assertEqual(t, "suspense after the refused reversal",
 		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
 }
+
+// A queue redelivers, so the debtor's bank sees the same pacs.003 twice while
+// the payment is still Initiated. The second delivery must be a no-op.
+//
+// Before DebtorLegTx was used as the witness, it reached postDebtorLegTx again
+// and came back with the ledger's ErrDuplicateIdempotencyKey — no double debit,
+// because the key is the payment's own id, but an error with no entry in
+// reasonTable, so reasonFor turns it into MS03 and the bank rejects on the wire
+// a collection it has in fact accepted.
+func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
+	ctx := context.Background()
+	n, req := networkWithAMandate(t)
+	p, err := n.SubmitPayment(ctx, req)
+	assertNoError(t, err)
+	assertNoError(t, n.AcceptInbound(ctx, p.ID))
+
+	answered, err := n.GetPayment(ctx, p.ID)
+	assertNoError(t, err)
+	bank, err := n.GetParticipant(ctx, p.Debtor.Participant)
+	assertNoError(t, err)
+	balance := customerBalance(t, bank, p.Debtor.Account)
+
+	if err := n.AcceptInbound(ctx, p.ID); err != nil {
+		t.Fatalf("redelivered collection = %v, want a no-op — the mesh would answer MS03 for a collection this bank accepted", err)
+	}
+	assertEqual(t, "payer's balance after the redelivery", customerBalance(t, bank, p.Debtor.Account), balance)
+
+	again, err := n.GetPayment(ctx, p.ID)
+	assertNoError(t, err)
+	assertEqual(t, "debtor leg after the redelivery", again.DebtorLegTx, answered.DebtorLegTx)
+	assertEqual(t, "suspense after the redelivery",
+		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
+}

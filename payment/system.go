@@ -1129,6 +1129,25 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 // arbitrary interval apart, so the caller's copy is stale by construction.
 // TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated is the pin.
 //
+// # The same message twice
+//
+// A message queue redelivers, so the same pacs.003 can arrive twice while the
+// payment is still Initiated — and the status guard above cannot tell that
+// apart from a first delivery. DebtorLegTx is the exact witness that it can:
+// nothing but this half sets it on a pull, so a pull payment that has one has
+// already been answered, and the pull arm returns without doing anything. The
+// address back-fill it would otherwise redo was persisted by the first run.
+//
+// Without that witness a redelivered collection reached postDebtorLegTx again
+// and came back with the ledger's ErrDuplicateIdempotencyKey. No money was ever
+// at risk — the key is the payment's own id, so the second debit could not post
+// — but it is a wrong ANSWER: that error has no entry in reasonTable, so
+// reasonFor falls through to MS03 and the bank would reject, on the wire, a
+// collection it had in fact accepted. The push arm needs no such guard, because
+// the receiving bank posts nothing there: re-running it re-checks the payee's
+// account, back-fills an address that is already the stored one, and the
+// equality check below returns without a write.
+//
 // It writes the payment back only when it changed something (the debtor leg
 // for a pull, a back-filled far address for either), and without an audit
 // event. The payment's lifecycle has two facts, not three — the submitting
@@ -1161,6 +1180,14 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 			return err
 		}
 	} else {
+		// A collection this bank has already answered. See the witness note
+		// above: the leg is posted, so this half has run, and running it again
+		// would answer a duplicate pacs.003 with the ledger's idempotency
+		// refusal — which reasonFor cannot name, so the mesh would return MS03
+		// for a collection it in fact accepted.
+		if p.DebtorLegTx != "" {
+			return nil
+		}
 		if err := s.debtorSideTx(ctx, tx, scheme, &p, sc); err != nil {
 			return err
 		}
