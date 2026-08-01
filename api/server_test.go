@@ -1181,6 +1181,45 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 	assertEqual(t, "reject reason on a later read", reread["rejectReason"].(string), "card lost")
 }
 
+// TestRejectPaymentGivesThePayerTheirMoneyBack pins the half of a rejection
+// that is not the clearing house's: the payer's bank reverses the leg it
+// posted, and a caller that reads the balance straight after the 200 sees the
+// money back.
+//
+// The route runs both halves in one unit of work (rejectWholePayment), which is
+// one process playing two actors — what the mesh replaces. Until it does, this
+// is the behaviour the route has always had, and without this test the whole
+// debtor-bank half could go missing here and every api assertion would still
+// pass: the payment DTO the handler answers with is produced by the CSM's half
+// alone.
+func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := auditFixture(t, h)
+
+	var aAccounts, bAccounts []depositAccountDTO
+	getJSON(t, bank(h, a), "/deposit-accounts", &aAccounts)
+	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
+	payer := aAccounts[0].ID
+	bookOf := func() int64 {
+		t.Helper()
+		bal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+payer+"/balance", "", http.StatusOK)
+		return int64(bal["book"].(float64))
+	}
+	before := bookOf()
+
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	payID := doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"amount":1000
+	}`, http.StatusCreated)["id"].(string)
+	assertEqual(t, "payer's book balance after submission", bookOf(), before-1000)
+
+	doJSON(t, csm(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusOK)
+	assertEqual(t, "payer's book balance after the rejection", bookOf(), before)
+}
+
 // TestAuditMandateEvents covers the two mandate events, which no payment flow
 // emits on its own.
 func TestAuditMandateEvents(t *testing.T) {

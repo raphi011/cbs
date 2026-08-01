@@ -1121,7 +1121,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 //
 // Both halves of that are load-bearing, and taking the payment by value instead
 // was a genuine lost update rather than a theoretical one: submit, reject —
-// which reverses the debtor leg and RejectPaymentTx accepts an Initiated
+// which reverses the debtor leg and RejectAtCSMTx accepts an Initiated
 // payment, so this is an ordinary sequence — then answer with the copy the
 // submitting call returned, and the rejected payment came back Initiated with
 // DebtorLegTx still naming the reversed transaction, ready for the clearing
@@ -1363,20 +1363,54 @@ func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *
 	return nil
 }
 
-// RejectPayment rejects a payment before it has cleared, reversing the debtor
-// leg if one was posted and removing it from its clearing cycle.
-func (s *Network) RejectPayment(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+// RejectAtCSM is RejectAtCSMTx in its own unit of work.
+func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.RejectPaymentTx(ctx, tx, id, code, reason)
+		out, err = s.RejectAtCSMTx(ctx, tx, id, code, reason)
 		return err
 	})
 	return out, err
 }
 
-// RejectPaymentTx is RejectPayment within a caller-supplied unit of work.
-func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+// RejectAtCSMTx is the CLEARING HOUSE's half of a rejection: it transitions the
+// payment to Rejected with the code and reason it was refused for, drops it
+// from whatever cycle it had been taken into, and records the event.
+//
+// It touches no bank's book. The money a rejected push payment's payer has
+// already parted with is in that payer's own bank's clearing suspense, and
+// nobody but that bank may post in it — which is ReverseDebtorLegTx, the other
+// half, run by the debtor's bank on receiving the pacs.002.
+//
+// # This half can happen without the other
+//
+// This is the FIRST operation in this repository that can half-happen, and it
+// is written down here rather than left to be discovered: between the two
+// halves the payment is Rejected and the customer's money is still in suspense.
+// Every earlier operation either committed whole or rolled back whole, because
+// one process held one transaction across the lot.
+//
+// The mesh does not hide it. Once Tasks 10 and 11 put this flow on the wire, a
+// pacs.002 whose reversal fails at the debtor's bank has nobody to answer, so
+// it becomes a dead letter and mesh.Drain returns it — the system fails a test
+// rather than quietly telling the payer their money is back. Closing the gap
+// for real needs a way to carry an unreconciled position, the concept the
+// roadmap assigns to sub-project 8; 7b's job is to expose the seam honestly,
+// not to close it.
+//
+// The synchronous routes that still compose both halves — api's
+// rejectWholePayment, the seed's reject — pass ONE transaction to both, so the
+// gap is not open there and never has been: a failed reversal takes the
+// transition down with it. TestAFailedReversalRollsBackTheWholeRejection is the
+// pin.
+//
+// The reason text is validated HERE and not in the other half because this is
+// the half that stores it: RejectReason is persisted on the payment and copied
+// into the audit event's payload, so an unprintable byte in it would be written
+// to the store. The reversal half puts the same text in a ledger description,
+// and ledger.ReverseTransactionTx validates that itself.
+func (s *Network) RejectAtCSMTx(ctx context.Context, tx Tx, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
 	}
@@ -1388,15 +1422,6 @@ func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, code
 		return Payment{}, ErrInvalidStateTransition
 	}
 
-	if p.DebtorLegTx != "" {
-		debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
-		if err != nil {
-			return Payment{}, err
-		}
-		if _, err := debtor.Ledger.ReverseTransactionTx(ctx, tx, p.DebtorLegTx, "Reject payment "+string(p.ID)+": "+reason); err != nil {
-			return Payment{}, err
-		}
-	}
 	if err := s.removeFromCycleTx(ctx, tx, p); err != nil {
 		return Payment{}, err
 	}
@@ -1413,6 +1438,54 @@ func (s *Network) RejectPaymentTx(ctx context.Context, tx Tx, id PaymentID, code
 		return Payment{}, err
 	}
 	return p, nil
+}
+
+// ReverseDebtorLeg is ReverseDebtorLegTx in its own unit of work.
+func (s *Network) ReverseDebtorLeg(ctx context.Context, p Payment, reason string) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return s.ReverseDebtorLegTx(ctx, tx, p, reason)
+	})
+}
+
+// ReverseDebtorLegTx is the DEBTOR BANK's half of a rejection: it gives the
+// payer their money back, by reversing the transaction that moved it into this
+// bank's clearing suspense.
+//
+// A payment with no posted leg is a clean no-op — a collection the clearing
+// house refused before the payer's bank ever answered it never took the payer's
+// money, and there is nothing to give back.
+//
+// It takes the payment BY VALUE, and unlike AcceptInboundTx that is right here
+// rather than the lost update sub-project 7b fixed there. That half wrote a
+// caller-supplied copy of the payment back to the payment store, so a stale
+// copy resurrected dead fields. This one writes nothing to the payment store at
+// all: it posts in the debtor bank's own ledger and returns. The three fields
+// it reads — ID, Debtor.Participant and DebtorLegTx — are fixed when the leg is
+// posted and never change afterwards, so a copy of the payment taken at any
+// point after that names the same transaction.
+//
+// What it therefore relies on the caller for is the DECISION. It does not load
+// the payment and does not look at its status, so nothing here would stop it
+// reversing the live debit of a payment that is on its way to settlement. The
+// caller establishes that the payment is rejected: api's rejectWholePayment and
+// the seed's reject by running the CSM's half first in the same unit of work,
+// and in the mesh the debtor bank's handler, which runs this on a pacs.002 and
+// only for an RJCT.
+//
+// Running it twice is refused rather than absorbed: the ledger flips the
+// original to Reversed under a conditional store write, so a second reversal of
+// the same leg answers ErrTransactionAlreadyReversed instead of paying the
+// payer twice.
+func (s *Network) ReverseDebtorLegTx(ctx context.Context, tx Tx, p Payment, reason string) error {
+	if p.DebtorLegTx == "" {
+		return nil
+	}
+	debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
+	if err != nil {
+		return err
+	}
+	_, err = debtor.Ledger.ReverseTransactionTx(ctx, tx, p.DebtorLegTx, "Reject payment "+string(p.ID)+": "+reason)
+	return err
 }
 
 // ReturnPayment returns a settled payment (a SEPA R-transaction). It posts

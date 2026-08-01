@@ -210,7 +210,7 @@ type Payment struct {
 	Status PaymentStatus
 
 	// RejectCode is the external-code-set reason a REJECTION (Status ==
-	// Rejected, set by RejectPaymentTx) carries on the wire, and RejectReason
+	// Rejected, set by RejectAtCSMTx) carries on the wire, and RejectReason
 	// is the free text beside it.
 	//
 	// Both, not either, for a rejection: the code is what makes it

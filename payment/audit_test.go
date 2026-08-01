@@ -163,7 +163,7 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 	})
 	assertNoError(t, err)
 
-	_, err = sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonDuplication, "AM05")
+	_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonDuplication, "AM05")
 	assertNoError(t, err)
 
 	assertEqual(t, "trail for the rejected payment", eventTypes(paymentAudit(t, sys, string(p.ID))),

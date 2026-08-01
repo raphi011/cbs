@@ -327,6 +327,24 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	return out
 }
 
+// reject runs both halves of a rejection — the clearing house's transition and
+// the payer's bank's reversal of its own leg — in one unit of work, leaving the
+// payment Rejected with the payer's money back in their account.
+//
+// Split for the same reason initiate is: there is no method that plays both
+// actors. Sharing the Tx keeps the seed's outcome the one it has always built —
+// the whole rejection or none of it — which in the mesh is exactly what the two
+// actors do not share. See RejectAtCSMTx on what that opens.
+func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
+	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		rejected, err := b.net.RejectAtCSMTx(ctx, tx, id, code, reason)
+		if err != nil {
+			return err
+		}
+		return b.net.ReverseDebtorLegTx(ctx, tx, rejected, reason)
+	}))
+}
+
 func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
@@ -468,7 +486,12 @@ func (b *builder) build() {
 	// An operator-initiated rejection carries no more specific reason code
 	// than MS03 — the same choice the reject handler makes, for the same
 	// reason: nothing here is the system detecting a condition of its own.
-	must(b.net.RejectPayment(b.ctx, reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage"))
+	//
+	// Both halves, in one unit of work, as with initiate: the clearing house
+	// transitions the payment and drops it from the cycle, the payer's bank
+	// reverses the leg it posted. There is no method that does both, so nobody
+	// plays the clearing house and the payer's bank without saying so.
+	b.reject(reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage")
 
 	// --- Phase F: an open SCT cycle with an accepted payment ----------------
 	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))

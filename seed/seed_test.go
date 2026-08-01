@@ -110,6 +110,45 @@ func TestPaymentStatusCoverage(t *testing.T) {
 	}
 }
 
+// TestRejectedCollectionWasReversedInThePayersBank pins the second half of the
+// seed's one rejection. build() composes both halves itself — the clearing
+// house transitions the payment, the payer's bank reverses the leg it posted —
+// and only the first is visible in the payment row every other seed assertion
+// reads. Without this, the reversal could vanish from the seed and the sample
+// data would show a Rejected collection whose payer never got their money back.
+func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+	payments, err := net.ListPayments(ctx)
+	if err != nil {
+		t.Fatalf("list payments: %v", err)
+	}
+	var rejected payment.Payment
+	for _, p := range payments {
+		if p.Status == payment.Rejected {
+			rejected = p
+		}
+	}
+	if rejected.ID == "" {
+		t.Fatal("no rejected payment in the seed data")
+	}
+	if rejected.DebtorLegTx == "" {
+		t.Fatal("the rejected collection has no debtor leg; the fixture no longer covers a reversal")
+	}
+
+	bank, err := net.GetParticipant(ctx, rejected.Debtor.Participant)
+	if err != nil {
+		t.Fatalf("get participant: %v", err)
+	}
+	leg, err := bank.Ledger.GetTransaction(ctx, rejected.DebtorLegTx)
+	if err != nil {
+		t.Fatalf("get the debtor leg: %v", err)
+	}
+	if leg.Status != ledger.Reversed {
+		t.Errorf("the rejected collection's debtor leg is %v, want Reversed — the payer's money is still in suspense", leg.Status)
+	}
+}
+
 func TestAccountStatusCoverage(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)

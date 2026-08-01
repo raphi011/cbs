@@ -279,6 +279,38 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
+// rejectWholePayment runs both halves of a rejection — the clearing house's
+// and the debtor bank's — in one unit of work.
+//
+// One process playing two actors, exactly as initiateWholePayment plays three,
+// and for the same reason: POST /payments/{payid}/reject answers 200 with the
+// rejected payment, so it has to perform the whole choreography before it can
+// answer at all. Sub-project 7b's api handoff is what removes it.
+//
+// The two calls share a Tx deliberately. Run as two units of work, a reversal
+// that failed would leave a Rejected payment behind with the payer's money
+// still in clearing suspense — the half-happened outcome RejectAtCSMTx's doc
+// comment describes, real in the mesh where the CSM and the payer's bank are
+// two actors, but not one this synchronous route has ever produced or its
+// callers know how to read.
+//
+// The order is the mesh's: the CSM decides, then the debtor's bank acts on the
+// decision. That is also what makes passing the payment by value safe here —
+// the copy handed to the reversal is the one the CSM's half just returned.
+func (s *Server) rejectWholePayment(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error) {
+	net := s.network()
+	var out payment.Payment
+	err := net.Store().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		out, err = net.RejectAtCSMTx(ctx, tx, id, code, reason)
+		if err != nil {
+			return err
+		}
+		return net.ReverseDebtorLegTx(ctx, tx, out, reason)
+	})
+	return out, err
+}
+
 func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	var req reasonRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -288,7 +320,7 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	// An operator-initiated rejection carries no more specific external status
 	// reason than MS03: the API exposes no way for a caller to name a code, so
 	// there is no more honest choice than the one that says exactly that.
-	p, err := s.network().RejectPayment(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
+	p, err := s.rejectWholePayment(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
 	if err != nil {
 		writeError(w, err)
 		return

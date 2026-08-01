@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -76,6 +77,28 @@ func initiate(ctx context.Context, sys *Network, req InitiatePaymentRequest) (Pa
 		}
 		out, err = sys.AcceptAtCSMTx(ctx, tx, p.ID)
 		return err
+	})
+	return out, err
+}
+
+// reject runs both halves of a rejection — the clearing house's transition and
+// the debtor bank's reversal of its own leg — in one unit of work, and returns
+// the Rejected payment.
+//
+// It is what RejectPayment used to be, and it is a TEST helper for the same
+// reason initiate is: there is deliberately no method that plays both actors.
+// The tests below that are not about the split use this, so they keep asserting
+// the end state a whole rejection produces; the tests that ARE about the split
+// call the halves directly and see the state between them.
+func reject(ctx context.Context, sys *Network, id PaymentID, code iso20022.StatusReason, reason string) (Payment, error) {
+	var out Payment
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = sys.RejectAtCSMTx(ctx, tx, id, code, reason)
+		if err != nil {
+			return err
+		}
+		return sys.ReverseDebtorLegTx(ctx, tx, out, reason)
 	})
 	return out, err
 }
@@ -175,6 +198,17 @@ func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amo
 	bal, err := l.BookBalance(context.Background(), acct)
 	assertNoError(t, err)
 	return bal
+}
+
+// suspenseBalance returns a bank's clearing-suspense balance in the test asset,
+// looked up by participant id. It is where a payer's money sits between the
+// debtor leg and settlement, so it is the balance that says whether an actor
+// touched the debtor bank's own book.
+func suspenseBalance(t *testing.T, n *Network, id ParticipantID) ledger.Amount {
+	t.Helper()
+	p, err := n.GetParticipant(context.Background(), id)
+	assertNoError(t, err)
+	return bookBalance(t, p.Ledger, accountsOf(t, p).Suspense)
 }
 
 // customerBalance returns the book balance of a customer deposit account at a
@@ -711,12 +745,12 @@ func TestStateMachineGuards(t *testing.T) {
 		assertNoError(t, err)
 		_, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late")
+		_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late")
 		assertError(t, err, ErrInvalidStateTransition)
 	})
 }
 
-func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
+func TestRejectionReversesTheDebtorLeg(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
@@ -730,7 +764,7 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
 
-	rejected, err := sys.RejectPayment(ctx, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator cancelled")
+	rejected, err := reject(ctx, sys, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator cancelled")
 	assertNoError(t, err)
 	assertEqual(t, "status", rejected.Status, Rejected)
 	assertEqual(t, "alice restored", customerBalance(t, a, alice), 100000)
@@ -1837,7 +1871,7 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 //
 // This is why AcceptInboundTx takes an ID and loads: given the payment by
 // value it wrote the caller's copy back, and this sequence — which Task 9 makes
-// routine and which RejectPaymentTx already permits, since it accepts an
+// routine and which RejectAtCSMTx already permits, since it accepts an
 // Initiated payment — returned a rejected payment to Initiated with its
 // DebtorLegTx still naming the transaction the rejection had reversed. The
 // clearing house would then have accepted and settled it, paying the creditor
@@ -1846,7 +1880,7 @@ func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 	ctx := context.Background()
 	n, p := networkWithASubmittedPayment(t)
 
-	rejected, err := n.RejectPayment(ctx, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
+	rejected, err := reject(ctx, n, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
 	assertNoError(t, err)
 	assertEqual(t, "status after rejection", rejected.Status, Rejected)
 
@@ -1899,4 +1933,161 @@ func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 	if err := n2.AcceptInbound(context.Background(), p.ID); !errors.Is(err, deposit.ErrInsufficientAvailable) {
 		t.Fatalf("AcceptInbound = %v, want insufficient funds", err)
 	}
+}
+
+// Rejection is two units of work in two actors: the CSM transitions the
+// payment and drops it from its cycle, the debtor's bank reverses its own leg.
+//
+// This is the FIRST operation in this repository that can half-happen, and the
+// test says so rather than letting it be discovered: after RejectAtCSMTx alone,
+// the payment is Rejected and the customer's money is still in suspense.
+func TestRejectionIsTwoHalvesAndTheFirstHalfLeavesMoneyInSuspense(t *testing.T) {
+	n, p := networkWithASubmittedPayment(t)
+	before := suspenseBalance(t, n, p.Debtor.Participant)
+
+	rejected, err := n.RejectAtCSM(context.Background(), p.ID, "AC01", "no such account")
+	if err != nil {
+		t.Fatalf("RejectAtCSM: %v", err)
+	}
+	if rejected.Status != Rejected || rejected.RejectCode != "AC01" {
+		t.Fatalf("got %v/%q, want Rejected/AC01", rejected.Status, rejected.RejectCode)
+	}
+	if got := suspenseBalance(t, n, p.Debtor.Participant); got != before {
+		t.Error("the CSM's half moved money; only the debtor's bank may touch its own book")
+	}
+
+	if err := n.ReverseDebtorLeg(context.Background(), rejected, "no such account"); err != nil {
+		t.Fatalf("ReverseDebtorLeg: %v", err)
+	}
+	if got := suspenseBalance(t, n, p.Debtor.Participant); got != before-p.Amount {
+		t.Errorf("suspense = %d after the reversal, want %d", got, before-p.Amount)
+	}
+}
+
+// Dropping the payment from its cycle is the clearing house's own act, and it
+// is the half of a rejection with consequences beyond the payment row: a
+// rejected payment left in an open cycle would be closed and settled with it,
+// paying a creditor for an instruction the network refused.
+func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 5000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+	})
+	assertNoError(t, err)
+	before, err := sys.GetCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	assertEqual(t, "payments in the cycle after acceptance", len(before.PaymentIDs), 1)
+
+	_, err = sys.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonDuplication, "duplicate instruction")
+	assertNoError(t, err)
+
+	after, err := sys.GetCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	if slices.Contains(after.PaymentIDs, p.ID) {
+		t.Errorf("the rejected payment is still in cycle %s; closing it would settle a refused instruction", cyc.ID)
+	}
+}
+
+// The composition sites that stand in for the mesh — the reject route, the
+// seed, and the reject helper above — run the two halves in ONE unit of work,
+// and that is what keeps the half-happened outcome off the synchronous routes:
+// a reversal that fails takes the transition down with it, so no caller ever
+// reads a Rejected payment whose money is still in suspense.
+//
+// The mesh does not get this, and is not meant to: there the two halves are two
+// actors, and a failed reversal is a dead letter.
+func TestAFailedReversalRollsBackTheWholeRejection(t *testing.T) {
+	ctx := context.Background()
+	n, p := networkWithASubmittedPayment(t)
+
+	// The payer's bank has already given the money back, so the composite's
+	// second half will refuse. Anything that fails after the CSM's half would
+	// do; this is the one a retried pacs.002 actually produces.
+	assertNoError(t, n.ReverseDebtorLeg(ctx, p, "reversed already"))
+
+	_, err := reject(ctx, n, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
+	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
+		t.Fatalf("reject = %v, want ErrTransactionAlreadyReversed", err)
+	}
+
+	stored, err := n.GetPayment(ctx, p.ID)
+	assertNoError(t, err)
+	assertEqual(t, "status after the failed rejection", stored.Status, Initiated)
+	assertEqual(t, "reject reason after the failed rejection", stored.RejectReason, "")
+}
+
+// A collection the clearing house refuses before the payer's bank has answered
+// it took nothing from the payer, so the debtor bank's half has nothing to give
+// back. The pacs.002 still reaches that bank — it does not know whether it had
+// answered — so the half has to be a clean no-op rather than an error.
+func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
+	ctx := context.Background()
+	n, req := networkWithAMandate(t)
+	p, err := n.SubmitPayment(ctx, req)
+	assertNoError(t, err)
+	assertEqual(t, "debtor leg after submitting a collection", p.DebtorLegTx, "")
+
+	rejected, err := n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonNoMandate, "no usable mandate")
+	assertNoError(t, err)
+
+	bank, err := n.GetParticipant(ctx, p.Debtor.Participant)
+	assertNoError(t, err)
+	before := customerBalance(t, bank, p.Debtor.Account)
+
+	if err := n.ReverseDebtorLeg(ctx, rejected, "no usable mandate"); err != nil {
+		t.Fatalf("ReverseDebtorLeg on a payment with no posted leg = %v, want a no-op", err)
+	}
+	assertEqual(t, "payer's balance", customerBalance(t, bank, p.Debtor.Account), before)
+}
+
+// Reversing the same leg twice would pay the payer twice, so the ledger refuses
+// it rather than absorbing it: a redelivered pacs.002 fails loudly and becomes
+// a dead letter instead of quietly crediting the payer again.
+func TestReverseDebtorLegRefusesToRunTwice(t *testing.T) {
+	ctx := context.Background()
+	n, p := networkWithASubmittedPayment(t)
+
+	rejected, err := n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonIncorrectAccountNumber, "no such account")
+	assertNoError(t, err)
+	assertNoError(t, n.ReverseDebtorLeg(ctx, rejected, "no such account"))
+
+	err = n.ReverseDebtorLeg(ctx, rejected, "no such account")
+	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
+		t.Fatalf("second ReverseDebtorLeg = %v, want ErrTransactionAlreadyReversed", err)
+	}
+	assertEqual(t, "suspense after the refused second reversal",
+		suspenseBalance(t, n, p.Debtor.Participant), 0)
+}
+
+// The reason text is stored by one half and only described by the other, and
+// neither may put an unprintable byte where it will be persisted.
+func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
+	ctx := context.Background()
+	n, p := networkWithASubmittedPayment(t)
+	const unsafe = "cancelled\x00by the payer"
+
+	// The CSM's half validates it itself: RejectReason is written onto the
+	// payment and copied into the audit event.
+	if _, err := n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonDuplication, unsafe); !errors.Is(err, ledger.ErrInvalidText) {
+		t.Fatalf("RejectAtCSM with an unprintable reason = %v, want ErrInvalidText", err)
+	}
+	stored, err := n.GetPayment(ctx, p.ID)
+	assertNoError(t, err)
+	assertEqual(t, "status after the refused rejection", stored.Status, Initiated)
+
+	// The debtor bank's half does not repeat the check, because the ledger
+	// makes it: the reason travels in the reversal's description.
+	rejected, err := n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
+	assertNoError(t, err)
+	if err := n.ReverseDebtorLeg(ctx, rejected, unsafe); !errors.Is(err, ledger.ErrInvalidText) {
+		t.Fatalf("ReverseDebtorLeg with an unprintable reason = %v, want ErrInvalidText", err)
+	}
+	assertEqual(t, "suspense after the refused reversal",
+		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
 }
