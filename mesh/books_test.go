@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
@@ -127,9 +128,11 @@ const everyBook ledger.BookID = "(every book)"
 // the same thing, and mapping both to everyBook therefore OVER-reports the
 // write. That is the deliberate direction: a guard that over-reports fails
 // loudly and gets looked at, while one that under-reports passes silently, which
-// is the failure this whole file exists to prevent. Nothing in this repository
-// appends an audit event without a book, so the over-report is unreachable in
-// practice.
+// is the failure this whole file exists to prevent.
+//
+// The over-report is unreachable in practice because every audit event the
+// domain layers append names a book — and that is checked rather than asserted:
+// TestEveryAuditEventTheDomainAppendsCarriesABook reads the construction sites.
 func bookOf(book ledger.BookID) ledger.BookID {
 	if book == "" {
 		return everyBook
@@ -507,6 +510,33 @@ var structCarriedBooks = map[string]structCarriedBook{
 }
 
 // ---------------------------------------------------------------------------
+// READ THIS BEFORE WRITING TestTheCSMTouchesOnlyTheNetworkBook (Task 10)
+// ---------------------------------------------------------------------------
+//
+// ledger.NetworkBook reaches touched() through POSTINGS, never through rows.
+//
+// A clearing house handler that only writes network-scoped rows — PutPayment,
+// PutCycle, PutSettlement, PutMandate, PutParticipant — records NOTHING. Those
+// methods take no book (see structCarriedBooks for why PutParticipant's own
+// BookID field does not count), so a unit of work made entirely of them leaves
+// touched() EMPTY.
+//
+// So the brief's
+//
+//	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
+//	    []ledger.BookID{ledger.NetworkBook})
+//
+// passes only if the CSM handler also POSTS something under NetworkBook — which
+// the real clearing flow does, since a cleared payment moves the participants'
+// clearing positions. If that assertion fails with `touched [] want [network]`,
+// the handler has not posted yet; it is not a bug in the recorder, and it is not
+// a reason to relax the assertion to "empty is fine". An empty set means the
+// handler wrote rows and moved no money.
+//
+// The same goes the other way: do not expect PutPayment to contribute
+// NetworkBook on its own.
+
+// ---------------------------------------------------------------------------
 // The guard on the guard
 // ---------------------------------------------------------------------------
 
@@ -849,6 +879,76 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 	}
 }
 
+// TestEveryAuditEventTheDomainAppendsCarriesABook turns bookOf's last sentence
+// from a claim into a check.
+//
+// bookOf maps an empty book to everyBook, which is exactly right for a filter
+// and an over-report for an append. The reason that over-report never fires is
+// that every AuditEvent the domain constructs sets BookID — so this reads the
+// construction sites and says so, in the packages payment.Tx actually spans.
+// Those packages are the ones the chain walk visited, not a list kept by hand.
+//
+// store/storetest is deliberately out of range. It is a conformance suite that
+// builds deliberately odd events to probe the stores, and it is not a layer a
+// mesh handler drives.
+func TestEveryAuditEventTheDomainAppendsCarriesABook(t *testing.T) {
+	w := realChainWalk(t)
+	var found int
+	for _, dir := range w.dirs {
+		pkg := w.cache[dir]
+		for _, pf := range pkg.files {
+			ast.Inspect(pf.file, func(n ast.Node) bool {
+				lit, ok := n.(*ast.CompositeLit)
+				if !ok || !isAuditEventType(w, pkg, pf.imports, lit.Type) {
+					return true
+				}
+				found++
+				var keyed, hasBook bool
+				for _, el := range lit.Elts {
+					kv, ok := el.(*ast.KeyValueExpr)
+					if !ok {
+						continue
+					}
+					keyed = true
+					if id, ok := kv.Key.(*ast.Ident); ok && id.Name == "BookID" {
+						hasBook = true
+					}
+				}
+				// A positional literal sets every field, BookID included; only a
+				// keyed one can leave it out.
+				if keyed && !hasBook {
+					t.Errorf("%s builds a ledger.AuditEvent without a BookID.\n"+
+						"bookOf would record it as %q — an append that names no book. Give it one,\n"+
+						"or change bookOf and the reasoning on it.", filepath.Base(dir), everyBook)
+				}
+				if len(lit.Elts) == 0 {
+					t.Errorf("%s builds an empty ledger.AuditEvent, which names no book", filepath.Base(dir))
+				}
+				return true
+			})
+		}
+	}
+	// The domain builds one of these per layer. A scan that found none would
+	// pass silently, which is the shape of failure this file exists to refuse.
+	if found < 5 {
+		t.Errorf("found only %d ledger.AuditEvent literals across %v; the scan is wrong, not the domain", found, w.dirs)
+	}
+}
+
+// isAuditEventType reports whether a composite literal's type is
+// ledger.AuditEvent, in either spelling and resolving the qualifier through the
+// writing file's own imports — the same rule isBookID follows.
+func isAuditEventType(w *chainWalk, pkg *pkgAST, imports map[string]string, typ ast.Expr) bool {
+	switch t := typ.(type) {
+	case *ast.Ident:
+		return t.Name == "AuditEvent" && pkg.path == w.module+"/ledger"
+	case *ast.SelectorExpr:
+		id, ok := t.X.(*ast.Ident)
+		return ok && t.Sel.Name == "AuditEvent" && imports[id.Name] == w.module+"/ledger"
+	}
+	return false
+}
+
 // TestRecordingTxReachesTheStoreUnderneath is the delegation half at run time.
 //
 // A decorator that noted and returned a zero value would satisfy every book
@@ -958,6 +1058,217 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// The shapes the parser refuses
+// ---------------------------------------------------------------------------
+//
+// Three holes have now been found in this one mechanism, and all three had the
+// same shape: a category the parser could not see, described in a comment as a
+// category that did not exist. First it saw only ledger.Tx, and deposit, product
+// and lending were unrecorded. Then it saw only a book in second position, and
+// the audit trail was unrecorded. Both times the comment said the missing thing
+// was not a thing.
+//
+// So the parser no longer SKIPS what it cannot analyse — it REFUSES it, by name,
+// with the shape spelled out. The three tests below construct each refusable
+// shape in a throwaway module and assert the refusal, which is the answer to the
+// objection that an unused branch cannot be tested: an unused branch cannot, but
+// an ERRORING branch can, and this is how.
+//
+// What that buys is not that the parser handles every shape. It is that a shape
+// it does not handle becomes a decision somebody has to make — the same move
+// structCarriedBooks makes one level up, where the parser can see a thing but
+// cannot know what it means.
+
+// TestTheParserRefusesAnEmbeddedBookIDField constructs the shape the re-review
+// found: a filter struct that EMBEDS ledger.BookID instead of naming it.
+//
+// It is legal Go, and it compiles this repository unchanged. The promoted field
+// is still spelled f.BookID, so the recorder could in principle handle it — but
+// an embedded BookID also gives the struct BookID's own identity, and "is this
+// the scope of the call or an embedding for some other purpose" is exactly the
+// question no signature answers. Refusing puts it in front of a person.
+//
+// Before this refusal existed the method vanished from the candidate set
+// entirely, because carrierOf iterated f.Names and an embedded field has none.
+func TestTheParserRefusesAnEmbeddedBookIDField(t *testing.T) {
+	root, module := probeModule(t, `
+type Filter struct {
+	ledger.BookID
+	Scope string
+}
+
+type Tx interface {
+	ListThings(ctx context.Context, f Filter) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	assertRefused(t, w, "embeds ledger.BookID")
+	assertNoCandidate(t, w, "ListThings")
+}
+
+// TestTheParserRefusesABookBehindAPointerSliceOrMap constructs the three
+// indirections a book could hide behind.
+//
+// Each is legal, each would make the recorder's `note(f.BookID)` wrong or
+// impossible — a nil pointer, a slice of several books, a map of them — and each
+// silently produced no candidate before. One method per wrapper, so the refusal
+// has to name all three rather than stopping at the first.
+func TestTheParserRefusesABookBehindAPointerSliceOrMap(t *testing.T) {
+	root, module := probeModule(t, `
+type Filter struct {
+	BookID ledger.BookID
+}
+
+type Tx interface {
+	ViaPointer(ctx context.Context, f *Filter) error
+	ViaSlice(ctx context.Context, fs []Filter) error
+	ViaMap(ctx context.Context, m map[string]Filter) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	for _, want := range []string{"pointer", "slice", "map"} {
+		assertRefused(t, w, want)
+	}
+	for _, name := range []string{"ViaPointer", "ViaSlice", "ViaMap"} {
+		assertNoCandidate(t, w, name)
+	}
+}
+
+// TestTheParserRefusesABookNestedInAStructField constructs a book one level
+// deeper than the parser reads: an argument struct whose FIELD is a struct
+// carrying the BookID.
+//
+// The recorder would have to write o.Inner.BookID, and this parser records only
+// a top-level field. The detection is transitive and the refusal names the path,
+// so the person who hits it knows what the parser saw; what it deliberately does
+// not do is invent the path, because a book two levels down may be a scope or
+// may be a copy of one, and that is the structCarriedBooks question again.
+func TestTheParserRefusesABookNestedInAStructField(t *testing.T) {
+	root, module := probeModule(t, `
+type Inner struct {
+	BookID ledger.BookID
+}
+
+type Outer struct {
+	Inner Inner
+	Note  string
+}
+
+type Tx interface {
+	Nested(ctx context.Context, o Outer) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	assertRefused(t, w, "carries a ledger.BookID inside it")
+	assertNoCandidate(t, w, "Nested")
+}
+
+// TestTheParserFollowsOnlyFieldsTheDecoratorCouldName is the other side of the
+// three refusals: the shape that must NOT be refused.
+//
+// A book behind an unexported field is not a blind spot, it is out of reach —
+// recordingTx is written in package mesh and cannot name it. Refusing it would
+// be noise, and expensive noise: payment.Participant reaches four books this
+// way, through the live handles whose types keep their book unexported, and a
+// parser that refused those would refuse the real repository on every run.
+//
+// See exportedField for why that is safe as well as necessary.
+func TestTheParserFollowsOnlyFieldsTheDecoratorCouldName(t *testing.T) {
+	root, module := probeModule(t, `
+type Inner struct {
+	BookID ledger.BookID
+}
+
+type Outer struct {
+	hidden Inner
+	Note   string
+}
+
+type Tx interface {
+	Hidden(ctx context.Context, o Outer) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	if len(w.refusals) != 0 {
+		t.Errorf("the parser refused a book behind an unexported field: %v.\n"+
+			"It cannot be named from package mesh, so there is no decision to force.", w.refusals)
+	}
+	assertNoCandidate(t, w, "Hidden")
+}
+
+// TestTheProbeModuleItselfParsesCleanly is the control the three refusal tests
+// need. Without it they would all still pass if probeModule produced something
+// the parser refused for an unrelated reason — a fixture that always fails is no
+// evidence about the shape it was meant to isolate.
+func TestTheProbeModuleItselfParsesCleanly(t *testing.T) {
+	root, module := probeModule(t, `
+type Tx interface {
+	Ordinary(ctx context.Context, book ledger.BookID, id string) error
+	NotBookScoped(ctx context.Context, id string) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	if len(w.refusals) != 0 {
+		t.Fatalf("the probe module refused an ordinary shape: %v", w.refusals)
+	}
+	if len(w.methods) != 1 || w.methods[0].Name != "Ordinary" || w.methods[0].Carry != bookIsTheArg {
+		t.Fatalf("probe found %+v, want exactly Ordinary carrying its book positionally", w.methods)
+	}
+}
+
+// probeModule writes a throwaway module laid out like this one — a ledger
+// package declaring BookID, and a package declaring a Tx interface — and returns
+// its root and module path.
+//
+// It exists so the parser's refusals can be tested on shapes that do not occur
+// in this repository. The files are only ever parsed, never compiled, and they
+// live in the test's own temporary directory, so they are invisible to the
+// build.
+func probeModule(t *testing.T, probe string) (root, module string) {
+	t.Helper()
+	root = t.TempDir()
+	module = "example.test/probe"
+
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	write("go.mod", "module "+module+"\n\ngo 1.25\n")
+	write("ledger/ledger.go", "package ledger\n\ntype BookID string\n")
+	write("probe/probe.go", "package probe\n\nimport (\n\t\"context\"\n\n\t\""+
+		module+"/ledger\"\n)\n\nvar _ = context.Background\n"+probe)
+	return root, module
+}
+
+func assertRefused(t *testing.T, w *chainWalk, substring string) {
+	t.Helper()
+	for _, r := range w.refusals {
+		if strings.Contains(r, substring) {
+			return
+		}
+	}
+	t.Errorf("the parser did not refuse a shape mentioning %q; it reported %v.\n"+
+		"A shape it cannot analyse must be refused, not skipped: skipping is how the\n"+
+		"audit methods stayed invisible for two rounds.", substring, w.refusals)
+}
+
+func assertNoCandidate(t *testing.T, w *chainWalk, name string) {
+	t.Helper()
+	for _, m := range w.methods {
+		if m.Name == name {
+			t.Errorf("%s was accepted as a %v candidate; the parser cannot record that shape and must refuse it instead", name, m.Carry)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Parsing: walking the Tx embedding chain
 // ---------------------------------------------------------------------------
 
@@ -966,12 +1277,22 @@ type bookArg int
 
 const (
 	noBook bookArg = iota
-	// bookIsTheArg: `book ledger.BookID` — 50 of the 52.
+	// bookIsTheArg: `book ledger.BookID` — 50 of the 53 candidates.
 	bookIsTheArg
-	// bookInsideTheArg: a struct with a BookID field, as AuditEvent and
-	// AuditFilter have.
+	// bookInsideTheArg: a struct with a BookID field, as AuditEvent,
+	// AuditFilter and Participant have.
 	bookInsideTheArg
 )
+
+func (c bookArg) String() string {
+	switch c {
+	case bookIsTheArg:
+		return "positional"
+	case bookInsideTheArg:
+		return "struct-carried"
+	}
+	return "not book-carrying"
+}
 
 // bookMethod is one book-carrying method: where it is declared, how it carries
 // its book, and — for the struct shape — under what name.
@@ -983,9 +1304,26 @@ type bookMethod struct {
 	Field string // bookInsideTheArg only: the BookID field's name
 }
 
+// chainWalk is one traversal of a Tx embedding chain: what it found, what it
+// refused, and which packages it visited.
+//
+// It takes no *testing.T on purpose. The refusals are DATA, which is what lets
+// the three tests above construct a refusable shape and assert on the outcome
+// instead of watching the suite fail.
+type chainWalk struct {
+	root   string // the directory holding go.mod
+	module string
+
+	methods  []bookMethod
+	refusals []string
+	dirs     []string // every package the chain reached, in visit order
+
+	cache map[string]*pkgAST
+	seen  map[string]bool
+}
+
 // txBookCandidates is every method reachable through payment.Tx whose second
-// argument carries a book, in either shape, found by walking the interface
-// embedding chain from payment/store.go.
+// argument carries a book, in either shape.
 //
 // # What counts as carrying a book
 //
@@ -996,14 +1334,13 @@ type bookMethod struct {
 //
 // Both shapes exist and the parser must know both, because a parser that knew
 // only the first is precisely what let ListAudit go unrecorded behind a comment
-// asserting it was not per-book. A shape the parser cannot see is a shape nobody
-// is forced to think about, and the next one added would be missed the same way.
+// asserting it was not per-book.
 //
 // Whether shape 2 actually SCOPES the operation is not visible from any
 // signature — see structCarriedBooks, which is where that is decided. This
-// function's job is only to make sure none is forgotten.
+// function's job is only to make sure none is FORGOTTEN.
 //
-// Three deliberate properties of the rule:
+// Four deliberate properties of the rule:
 //
 //   - Type and position, not name. The parameter is called `book` everywhere
 //     today, but a name is documentation and a type is a fact.
@@ -1013,9 +1350,10 @@ type bookMethod struct {
 //     "ledger". A layer that wrote `import l "…/ledger"` is handled, which
 //     matters because the embed walk already honours aliases and two halves of
 //     one walk disagreeing is how a whole layer drops out silently.
-//   - A book carried anywhere OTHER than second is an error, not a skip.
-//     Silently skipping is how a method ends up unwrapped, and the uniform
-//     position is what lets every override be the same two lines.
+//   - A book carried anywhere OTHER than second is refused, not skipped.
+//   - A book carried in a shape this parser does not read — embedded rather than
+//     named, behind a pointer or slice or map, or nested one struct deeper — is
+//     REFUSED. See the three tests above, which construct each shape.
 //
 // Methods carrying no book at all are correctly absent: ledger's Now (the
 // clock), and payment.Tx's readers and its writers for payments, mandates,
@@ -1031,74 +1369,19 @@ type bookMethod struct {
 // the test's idea of "everything payment.Tx can reach" is Go's.
 func txBookCandidates(t *testing.T) []bookMethod {
 	t.Helper()
-	module := modulePath(t)
-	cache := map[string]*pkgAST{}
+	return realChainWalk(t).methods
+}
 
-	var out []bookMethod
-	seen := map[string]bool{}
-
-	var walk func(dir string)
-	walk = func(dir string) {
-		if seen[dir] {
-			return // ledger.Tx is reached through product and through lending
-		}
-		seen[dir] = true
-		pkg := loadPackage(t, cache, dir, module)
-		if pkg.iface == nil {
-			t.Errorf("no `type Tx interface` found in %s", dir)
-			return
-		}
-		for _, f := range pkg.iface.Methods.List {
-			// An embedded interface has no name. Recurse into the package that
-			// declares it, resolving the qualifier through the importing file's
-			// own import block rather than assuming the alias is the directory.
-			if len(f.Names) == 0 {
-				sel, ok := f.Type.(*ast.SelectorExpr)
-				if !ok {
-					t.Errorf("%s/Tx embeds %T, which this walk does not understand", dir, f.Type)
-					continue
-				}
-				qualifier, ok := sel.X.(*ast.Ident)
-				if !ok || sel.Sel.Name != "Tx" {
-					t.Errorf("%s/Tx embeds something other than a package's Tx", dir)
-					continue
-				}
-				path, ok := pkg.ifaceImports[qualifier.Name]
-				if !ok {
-					t.Errorf("%s/Tx embeds %s.Tx but the file imports no %s", dir, qualifier.Name, qualifier.Name)
-					continue
-				}
-				rel, inModule := strings.CutPrefix(path, module+"/")
-				if !inModule {
-					t.Errorf("%s/Tx embeds %s, which is outside this module", dir, path)
-					continue
-				}
-				walk(filepath.Join("..", rel))
-				continue
-			}
-			fn, ok := f.Type.(*ast.FuncType)
-			if !ok {
-				continue
-			}
-			m := classify(t, cache, module, pkg, f.Names[0].Name, fn)
-			if m.Carry != noBook {
-				out = append(out, m)
-			}
-		}
+// realChainWalk walks this repository's own chain and fails the test on any
+// refusal. The refusals are only data to the walk; here is where they become
+// failures.
+func realChainWalk(t *testing.T) *chainWalk {
+	t.Helper()
+	w := walkTxChain("..", modulePath(t), "payment")
+	for _, r := range w.refusals {
+		t.Error(r)
 	}
-	walk(filepath.Join("..", "payment"))
-
-	// Names are unique across the chain — Go rejects an interface that embeds
-	// two methods of one name — so a duplicate here means the walk visited
-	// something twice and every count taken from it is wrong.
-	byName := map[string]string{}
-	for _, m := range out {
-		if prev, dup := byName[m.Name]; dup {
-			t.Errorf("%s found in both %s and %s; the walk is double-counting", m.Name, prev, m.Pkg)
-		}
-		byName[m.Name] = m.Pkg
-	}
-	return out
+	return w
 }
 
 // bookScopedTxMethods is the subset of the candidates that recordingTx must
@@ -1126,21 +1409,96 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 	return out
 }
 
-// classify decides how one interface method carries its book, and fails the
-// test if it carries one somewhere the decorator could not reach uniformly.
-func classify(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
-	t.Helper()
-	params := flatParams(fn)
+// walkTxChain follows the Tx interface embedding chain from one entry package.
+func walkTxChain(root, module, entry string) *chainWalk {
+	w := &chainWalk{
+		root:   root,
+		module: module,
+		cache:  map[string]*pkgAST{},
+		seen:   map[string]bool{},
+	}
+	w.walk(filepath.Join(root, entry))
 
+	// Names are unique across the chain — Go rejects an interface that embeds
+	// two methods of one name — so a duplicate here means the walk visited
+	// something twice and every count taken from it is wrong.
+	byName := map[string]string{}
+	for _, m := range w.methods {
+		if prev, dup := byName[m.Name]; dup {
+			w.refusef("%s found in both %s and %s; the walk is double-counting", m.Name, prev, m.Pkg)
+		}
+		byName[m.Name] = m.Pkg
+	}
+	return w
+}
+
+func (w *chainWalk) refusef(format string, args ...any) {
+	w.refusals = append(w.refusals, fmt.Sprintf(format, args...))
+}
+
+func (w *chainWalk) walk(dir string) {
+	if w.seen[dir] {
+		return // ledger.Tx is reached through product and through lending
+	}
+	w.seen[dir] = true
+	w.dirs = append(w.dirs, dir)
+
+	pkg := w.loadPackage(dir)
+	if pkg.iface == nil {
+		w.refusef("no `type Tx interface` found in %s", dir)
+		return
+	}
+	for _, f := range pkg.iface.Methods.List {
+		// An embedded interface has no name. Recurse into the package that
+		// declares it, resolving the qualifier through the importing file's own
+		// import block rather than assuming the alias is the directory.
+		if len(f.Names) == 0 {
+			sel, ok := f.Type.(*ast.SelectorExpr)
+			if !ok {
+				w.refusef("%s/Tx embeds %s, which this walk does not understand", dir, exprString(f.Type))
+				continue
+			}
+			qualifier, ok := sel.X.(*ast.Ident)
+			if !ok || sel.Sel.Name != "Tx" {
+				w.refusef("%s/Tx embeds %s, which is not a package's Tx", dir, exprString(f.Type))
+				continue
+			}
+			path, ok := pkg.ifaceImports[qualifier.Name]
+			if !ok {
+				w.refusef("%s/Tx embeds %s.Tx but the file imports no %s", dir, qualifier.Name, qualifier.Name)
+				continue
+			}
+			rel, inModule := strings.CutPrefix(path, w.module+"/")
+			if !inModule {
+				w.refusef("%s/Tx embeds %s, which is outside this module", dir, path)
+				continue
+			}
+			w.walk(filepath.Join(w.root, rel))
+			continue
+		}
+		fn, ok := f.Type.(*ast.FuncType)
+		if !ok {
+			continue
+		}
+		if m := w.classify(pkg, f.Names[0].Name, fn); m.Carry != noBook {
+			w.methods = append(w.methods, m)
+		}
+	}
+}
+
+// classify decides how one interface method carries its book, refusing a book
+// carried anywhere but straight after ctx.
+func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
 	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
-	for i, p := range params {
-		carry, field := carrierOf(t, cache, module, pkg, p.typ)
+	for i, p := range flatParams(fn) {
+		ref := typeRef{expr: p.typ, imports: pkg.ifaceImports, pkg: pkg}
+		carry, field := w.carrierOf(ref, fmt.Sprintf("%s.Tx.%s argument %d (%s)", filepath.Base(pkg.dir), name, i, p.name))
 		if carry == noBook {
 			continue
 		}
 		if i != 1 {
-			t.Errorf("%s.Tx.%s carries its book at argument %d, not straight after ctx.\n"+
-				"Every override relies on that position; move it back, or teach this test the new rule.",
+			w.refusef("%s.Tx.%s carries its book at argument %d, not straight after ctx. "+
+				"Every override relies on that position; move it back, or teach this parser the new rule.",
 				filepath.Base(pkg.dir), name, i)
 			continue
 		}
@@ -1149,59 +1507,189 @@ func classify(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST
 	return found
 }
 
-// carrierOf reports whether a parameter type carries a book, and how.
-func carrierOf(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, typ ast.Expr) (bookArg, string) {
-	t.Helper()
-	if isBookID(typ, pkg.ifaceImports, pkg.path, module) {
+// typeRef is a type expression together with what it takes to resolve it: the
+// imports of the file it was written in, and the package that file belongs to.
+type typeRef struct {
+	expr    ast.Expr
+	imports map[string]string
+	pkg     *pkgAST
+}
+
+// carrierOf reports whether a parameter type carries a book and how, refusing
+// every shape it can see a book in but cannot record.
+func (w *chainWalk) carrierOf(ref typeRef, where string) (bookArg, string) {
+	if w.isBookID(ref) {
 		return bookIsTheArg, ""
 	}
-	decl, ok := lookupStruct(t, cache, module, pkg, typ)
+
+	// A book behind an indirection. The recorder writes `note(f.BookID)`, which
+	// a pointer could nil-dereference and a slice or map could hold several
+	// different answers to. Analysable in principle; not analysed here; refused
+	// rather than skipped.
+	if elems, wrapper := unwrap(ref.expr); wrapper != "" {
+		for _, e := range elems {
+			if w.carriesBook(typeRef{expr: e, imports: ref.imports, pkg: ref.pkg}, map[string]bool{}) {
+				w.refusef("%s is a %s of %s, which carries a ledger.BookID. "+
+					"This parser records a book that is the argument or a top-level field of it, "+
+					"so decide what this one means and teach it the shape.", where, wrapper, exprString(ref.expr))
+				return noBook, ""
+			}
+		}
+		return noBook, ""
+	}
+
+	decl, ok := w.lookupStruct(ref)
 	if !ok {
 		return noBook, ""
 	}
+
 	var fields []string
 	for _, f := range decl.typ.Fields.List {
-		if !isBookID(f.Type, decl.imports, decl.path, module) {
+		if !exportedField(f) {
+			continue // see reachableField
+		}
+		fieldRef := typeRef{expr: f.Type, imports: decl.imports, pkg: decl.pkg}
+		book := w.isBookID(fieldRef)
+
+		// An embedded field has no name. Its promoted selector happens to be
+		// spelled BookID, so this could be handled — but an embedded BookID also
+		// hands the struct that type's identity, and whether it is the scope of
+		// the call is exactly the question no signature answers.
+		if len(f.Names) == 0 {
+			switch {
+			case book:
+				w.refusef("%s: %s embeds ledger.BookID rather than naming it. "+
+					"Name the field, or decide what the embedding means and teach this parser.",
+					where, exprString(ref.expr))
+			case w.carriesBook(fieldRef, map[string]bool{}):
+				w.refusef("%s: %s embeds %s, which carries a ledger.BookID inside it.",
+					where, exprString(ref.expr), exprString(f.Type))
+			}
 			continue
 		}
-		for _, n := range f.Names {
-			fields = append(fields, n.Name)
+		if book {
+			for _, n := range f.Names {
+				fields = append(fields, n.Name)
+			}
+			continue
+		}
+		if w.carriesBook(fieldRef, map[string]bool{}) {
+			for _, n := range f.Names {
+				w.refusef("%s: %s.%s carries a ledger.BookID inside it, one level deeper than this parser reads. "+
+					"Decide whether that book scopes the call, and teach this parser the path if it does.",
+					where, exprString(ref.expr), n.Name)
+			}
 		}
 	}
+
 	switch len(fields) {
 	case 0:
 		return noBook, ""
 	case 1:
 		return bookInsideTheArg, fields[0]
 	default:
-		t.Errorf("%s carries %d BookID fields (%s); the recorder would not know which one scopes the call",
-			render(t, token.NewFileSet(), typ), len(fields), strings.Join(fields, ", "))
+		w.refusef("%s: %s carries %d BookID fields (%s); the recorder would not know which one scopes the call",
+			where, exprString(ref.expr), len(fields), strings.Join(fields, ", "))
 		return noBook, ""
 	}
 }
 
-// lookupStruct resolves a parameter's type to a struct declaration, in this
-// package or — following the file's imports — in another one inside the module.
-func lookupStruct(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, typ ast.Expr) (structDecl, bool) {
-	t.Helper()
-	switch e := typ.(type) {
+// carriesBook reports whether a book is reachable from a type at all, following
+// pointers, slices, maps and in-module struct fields to any depth.
+//
+// It answers only "is one in there", never "where". That asymmetry is the whole
+// design: knowing a book is hidden is enough to refuse, and refusing is what
+// turns a blind spot into somebody's decision. Working out the path would be
+// guessing at intent, which is what structCarriedBooks exists to stop.
+func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
+	if w.isBookID(ref) {
+		return true
+	}
+	if elems, wrapper := unwrap(ref.expr); wrapper != "" {
+		for _, e := range elems {
+			if w.carriesBook(typeRef{expr: e, imports: ref.imports, pkg: ref.pkg}, visited) {
+				return true
+			}
+		}
+		return false
+	}
+	decl, ok := w.lookupStruct(ref)
+	if !ok {
+		return false
+	}
+	key := decl.pkg.path + "." + exprString(ref.expr)
+	if visited[key] {
+		return false // a recursive type; it has been asked already
+	}
+	visited[key] = true
+	for _, f := range decl.typ.Fields.List {
+		if !exportedField(f) {
+			continue
+		}
+		if w.carriesBook(typeRef{expr: f.Type, imports: decl.imports, pkg: decl.pkg}, visited) {
+			return true
+		}
+	}
+	return false
+}
+
+// exportedField reports whether a struct field is one the decorator could name.
+//
+// The traversal follows exported fields only, and that is a statement about
+// reachability rather than a convenience. recordingTx is written in package mesh
+// and cannot name an unexported field of a type from anywhere else, so a book
+// reachable only through one is not a path the recorder could ever take — there
+// is nothing to "decide", which is what a refusal is for.
+//
+// Nor is it a crossing left open, and payment.Participant is the case that
+// proves it. Its Ledger, Deposit, Lending and Catalogue fields are live handles
+// whose types keep the book in an unexported field (ledger/book.go: `id
+// BookID`), so the transitive scan reaches four books through them. But a
+// handler that used one of those handles to read a book would do it by calling
+// through to the Tx — PutTransaction, BookBalance, ListAudit — and every one of
+// those IS recorded. The Tx is the choke point; a live handle is a route TO it,
+// not around it.
+//
+// An embedded field is exported when its type name is, which is the same rule Go
+// applies to the promoted selector.
+func exportedField(f *ast.Field) bool {
+	if len(f.Names) == 0 {
+		name := exprString(f.Type)
+		if i := strings.LastIndex(name, "."); i >= 0 {
+			name = name[i+1:]
+		}
+		name = strings.TrimLeft(name, "*[]")
+		return name != "" && ast.IsExported(name)
+	}
+	for _, n := range f.Names {
+		if n.IsExported() {
+			return true
+		}
+	}
+	return false
+}
+
+// lookupStruct resolves a type to a struct declaration, in its own package or —
+// following the file's imports — in another one inside the module.
+func (w *chainWalk) lookupStruct(ref typeRef) (structDecl, bool) {
+	switch e := ref.expr.(type) {
 	case *ast.Ident:
-		d, ok := pkg.structs[e.Name]
+		d, ok := ref.pkg.structs[e.Name]
 		return d, ok
 	case *ast.SelectorExpr:
 		qualifier, ok := e.X.(*ast.Ident)
 		if !ok {
 			return structDecl{}, false
 		}
-		path, ok := pkg.ifaceImports[qualifier.Name]
+		path, ok := ref.imports[qualifier.Name]
 		if !ok {
 			return structDecl{}, false
 		}
-		rel, inModule := strings.CutPrefix(path, module+"/")
+		rel, inModule := strings.CutPrefix(path, w.module+"/")
 		if !inModule {
 			return structDecl{}, false // stdlib and third-party carry no BookID
 		}
-		other := loadPackage(t, cache, filepath.Join("..", rel), module)
+		other := w.loadPackage(filepath.Join(w.root, rel))
 		d, ok := other.structs[e.Sel.Name]
 		return d, ok
 	}
@@ -1211,20 +1699,20 @@ func lookupStruct(t *testing.T, cache map[string]*pkgAST, module string, pkg *pk
 // isBookID reports whether a type expression is ledger.BookID.
 //
 // A bare `BookID` counts only inside package ledger, and a qualified one is
-// resolved through the importing file's own imports — never by comparing the
+// resolved through the writing file's own imports — never by comparing the
 // qualifier to the string "ledger", which would miss an aliased import and
 // silently drop every method in that layer.
-func isBookID(e ast.Expr, imports map[string]string, pkgPath, module string) bool {
-	ledgerPath := module + "/ledger"
-	switch typ := e.(type) {
+func (w *chainWalk) isBookID(ref typeRef) bool {
+	ledgerPath := w.module + "/ledger"
+	switch typ := ref.expr.(type) {
 	case *ast.Ident:
-		return typ.Name == "BookID" && pkgPath == ledgerPath
+		return typ.Name == "BookID" && ref.pkg.path == ledgerPath
 	case *ast.SelectorExpr:
 		qualifier, ok := typ.X.(*ast.Ident)
 		if !ok || typ.Sel.Name != "BookID" {
 			return false
 		}
-		return imports[qualifier.Name] == ledgerPath
+		return ref.imports[qualifier.Name] == ledgerPath
 	}
 	return false
 }
@@ -1238,39 +1726,56 @@ func isBookID(e ast.Expr, imports map[string]string, pkgPath, module string) boo
 type structDecl struct {
 	typ     *ast.StructType
 	imports map[string]string
-	path    string // the declaring package's import path
+	pkg     *pkgAST
+}
+
+// parsedFile is one source file and the imports it was written with.
+type parsedFile struct {
+	file    *ast.File
+	imports map[string]string
 }
 
 // pkgAST is one package as this walk needs it: its Tx interface, the imports of
-// the file that declares it, and every struct type it declares.
+// the file that declares it, every struct type it declares, and its files.
 type pkgAST struct {
 	dir          string
 	path         string
 	iface        *ast.InterfaceType
 	ifaceImports map[string]string
 	structs      map[string]structDecl
+	files        []parsedFile
 }
 
 // loadPackage parses every non-test file in a package directory once.
-func loadPackage(t *testing.T, cache map[string]*pkgAST, dir, module string) *pkgAST {
-	t.Helper()
-	if p, ok := cache[dir]; ok {
+//
+// It publishes to the cache only when the package is FULLY built. An earlier
+// version cached the empty shell first, as a re-entry guard; nothing re-enters —
+// Go forbids import cycles, so no package's struct fields can lead back to a
+// package still being read — and a half-built entry that is safe only because
+// nobody happens to touch it is the kind of thing this file is meant not to
+// contain.
+func (w *chainWalk) loadPackage(dir string) *pkgAST {
+	if p, ok := w.cache[dir]; ok {
 		return p
 	}
-	rel := strings.TrimPrefix(filepath.ToSlash(dir), "../")
-	pkg := &pkgAST{dir: dir, path: module + "/" + rel, structs: map[string]structDecl{}}
-	cache[dir] = pkg
+	rel := strings.TrimPrefix(filepath.ToSlash(strings.TrimPrefix(dir, w.root)), "/")
+	pkg := &pkgAST{dir: dir, path: w.module + "/" + rel, structs: map[string]structDecl{}}
 
 	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
-		t.Fatalf("listing %s: %v", dir, err)
+		w.refusef("listing %s: %v", dir, err)
 	}
 	for _, path := range paths {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		_, file := parseMeshFile(t, path)
+		file, err := parseFile(path)
+		if err != nil {
+			w.refusef("parsing %s: %v", path, err)
+			continue
+		}
 		imports := fileImports(file)
+		pkg.files = append(pkg.files, parsedFile{file: file, imports: imports})
 		for _, d := range file.Decls {
 			gd, ok := d.(*ast.GenDecl)
 			if !ok || gd.Tok != token.TYPE {
@@ -1287,11 +1792,12 @@ func loadPackage(t *testing.T, cache map[string]*pkgAST, dir, module string) *pk
 						pkg.iface, pkg.ifaceImports = typ, imports
 					}
 				case *ast.StructType:
-					pkg.structs[ts.Name.Name] = structDecl{typ: typ, imports: imports, path: pkg.path}
+					pkg.structs[ts.Name.Name] = structDecl{typ: typ, imports: imports, pkg: pkg}
 				}
 			}
 		}
 	}
+	w.cache[dir] = pkg
 	return pkg
 }
 
@@ -1328,6 +1834,44 @@ func modulePath(t *testing.T) string {
 	}
 	t.Fatal("go.mod declares no module path")
 	return ""
+}
+
+// unwrap peels one pointer, slice, array, map or variadic off a type and names
+// what it peeled. A map yields both its key and its value.
+func unwrap(e ast.Expr) ([]ast.Expr, string) {
+	switch t := e.(type) {
+	case *ast.StarExpr:
+		return []ast.Expr{t.X}, "pointer"
+	case *ast.ArrayType:
+		return []ast.Expr{t.Elt}, "slice"
+	case *ast.MapType:
+		return []ast.Expr{t.Key, t.Value}, "map"
+	case *ast.Ellipsis:
+		return []ast.Expr{t.Elt}, "variadic"
+	}
+	return nil, ""
+}
+
+// exprString renders a type expression for a message, without needing the
+// FileSet the expression was parsed with.
+func exprString(e ast.Expr) string {
+	switch t := e.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		return exprString(t.X) + "." + t.Sel.Name
+	case *ast.StarExpr:
+		return "*" + exprString(t.X)
+	case *ast.ArrayType:
+		return "[]" + exprString(t.Elt)
+	case *ast.MapType:
+		return "map[" + exprString(t.Key) + "]" + exprString(t.Value)
+	case *ast.Ellipsis:
+		return "..." + exprString(t.Elt)
+	case *ast.InterfaceType:
+		return "interface{…}"
+	}
+	return fmt.Sprintf("%T", e)
 }
 
 // param is one flattened parameter: `from, to time.Time` is two of them.
@@ -1388,6 +1932,10 @@ func paramNames(fn *ast.FuncType) []string {
 		out = append(out, p.name)
 	}
 	return out
+}
+
+func parseFile(path string) (*ast.File, error) {
+	return parser.ParseFile(token.NewFileSet(), path, nil, 0)
 }
 
 func parseMeshFile(t *testing.T, path string) (*token.FileSet, *ast.File) {
