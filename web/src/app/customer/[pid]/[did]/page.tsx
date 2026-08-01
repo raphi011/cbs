@@ -27,7 +27,7 @@ export default function CustomerOverview() {
   const did = typeof params.did === "string" ? params.did : "";
 
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
-  const { data: balance } = useDepositBalance(pid, did);
+  const { data: balance, isLoading: balanceLoading } = useDepositBalance(pid, did);
   const { data: bank } = useParticipant(pid);
   const { byCode } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
@@ -69,9 +69,13 @@ export default function CustomerOverview() {
               Available
               <Hint id="balance-available" />
             </p>
-            <p className="text-3xl font-semibold tabular-nums">
-              <Money amount={balance?.available ?? 0} asset={asset} />
-            </p>
+            {!balanceLoading && balance ? (
+              <p className="text-3xl font-semibold tabular-nums">
+                <Money amount={balance.available} asset={asset} />
+              </p>
+            ) : (
+              <Skeleton className="mt-1 h-9 w-32" />
+            )}
           </div>
           <div className="grid grid-cols-2 gap-4 border-t pt-4">
             <div>
@@ -79,18 +83,26 @@ export default function CustomerOverview() {
                 Balance
                 <Hint id="balance-book" />
               </p>
-              <p className="text-lg font-medium tabular-nums">
-                <Money amount={balance?.book ?? 0} asset={asset} />
-              </p>
+              {!balanceLoading && balance ? (
+                <p className="text-lg font-medium tabular-nums">
+                  <Money amount={balance.book} asset={asset} />
+                </p>
+              ) : (
+                <Skeleton className="mt-1 h-7 w-20" />
+              )}
             </div>
             <div>
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 On hold
                 <Hint id="balance-holds" />
               </p>
-              <p className="text-lg font-medium tabular-nums">
-                <Money amount={balance?.holds ?? 0} asset={asset} />
-              </p>
+              {!balanceLoading && balance ? (
+                <p className="text-lg font-medium tabular-nums">
+                  <Money amount={balance.holds} asset={asset} />
+                </p>
+              ) : (
+                <Skeleton className="mt-1 h-7 w-20" />
+              )}
             </div>
           </div>
           {headroom > 0 && (

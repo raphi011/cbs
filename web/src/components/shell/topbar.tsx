@@ -22,25 +22,35 @@ function ConceptTrigger() {
   );
 }
 
-// Shared topbar. On mobile it grows the nav trigger (mobileSidebar, already
-// wrapped in a Sheet by ShellFrame), a brand wordmark (link to /), and the
-// concepts trigger; on desktop the sidebar owns the brand + nav and this is
-// the identity picker plus the theme toggle. The brand wordmark is always a
-// link to the lobby (/) — the root of the app and the way back from any
-// persona console. The identity picker sits here, not in the sidebar, so it
-// is reachable from every shell — including the sidebar-less PlainShell the
-// lobby and Learn use.
+// Shared topbar. On mobile it always grows the nav trigger (mobileSidebar,
+// already wrapped in a Sheet by ShellFrame), a brand wordmark (link to /),
+// and the concepts trigger — the sidebar itself is hidden behind the sheet,
+// so nothing else on the page is holding a way back to the lobby. On
+// desktop, the wordmark appears here too whenever there is no sidebar
+// (`showBrand`, set by ShellFrame from whether it was given one): a shell
+// with a sidebar renders its own `Brand` there and must not get a second
+// wordmark, but a sidebar-less shell — the lobby, Learn, a customer's
+// account — has nowhere else to put one, and the ruling is that the lobby is
+// always one click away from every shell. Either way this is also the
+// identity picker plus the theme toggle, sitting here rather than in the
+// sidebar so it is reachable from every shell, sidebar or not.
 export function Topbar({
   mobile = false,
   mobileSidebar,
+  showBrand = false,
 }: {
   mobile?: boolean;
   mobileSidebar?: React.ReactNode;
+  // True when this shell has no sidebar of its own to hold the brand
+  // wordmark. Mobile always shows it regardless (the sidebar, if any, is
+  // behind the sheet, not on screen), so the two conditions are combined
+  // below rather than `showBrand` needing to account for `mobile` itself.
+  showBrand?: boolean;
 }) {
   return (
     <header className="flex h-14 items-center gap-2 border-b border-t-2 border-t-[color:var(--identity-accent,transparent)] px-4">
       {mobile && mobileSidebar}
-      {mobile && (
+      {(mobile || showBrand) && (
         <Link
           href="/"
           className="font-semibold text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

@@ -1,6 +1,7 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
+import { Suspense, cloneElement, useEffect, useRef, useState } from "react";
+import type { ReactElement } from "react";
 import { usePanelRef, useDefaultLayout } from "react-resizable-panels";
 import { Menu, PanelRightOpen } from "lucide-react";
 
@@ -88,9 +89,16 @@ function DesktopShell({
 }: {
   children: React.ReactNode;
   sidebar?: (collapsed: boolean, toggle: () => void) => React.ReactNode;
-  topbar: React.ReactNode;
+  topbar: ReactElement<React.ComponentProps<typeof Topbar>>;
   accent?: string;
 }) {
+  // Whether the wordmark belongs in the topbar is decided here, not by the
+  // caller that built `topbar` — a sidebar's own `Brand` holds it when there
+  // is one; the lobby, Learn, and a customer's account have no sidebar and
+  // no other way back to `/`, so the topbar must carry it instead. Cloning
+  // rather than asking every ShellFrame caller to compute `!sidebar` itself
+  // keeps that one rule in one place.
+  const topbarWithBrand = cloneElement(topbar, { showBrand: !sidebar });
   const { collapsed, setCollapsed } = useConceptPanel();
   const conceptRef = usePanelRef();
   const navRef = usePanelRef();
@@ -207,7 +215,7 @@ function DesktopShell({
 
         <ResizablePanel id="main" minSize={480}>
           <div className="flex h-full min-w-0 flex-col">
-            {topbar}
+            {topbarWithBrand}
             <main className="min-w-0 flex-1 overflow-y-auto p-4 md:p-8">
               {children}
             </main>
@@ -279,10 +287,18 @@ export function ShellFrame({
   children: React.ReactNode;
   // Rendered inside the collapsible left panel, given the panel's collapsed
   // state. Absent means no left panel at all — the customer shell and the lobby,
-  // which are content columns rather than consoles.
+  // which are content columns rather than consoles. Its absence is also what
+  // decides whether the topbar grows the brand wordmark on desktop: see
+  // DesktopShell.
   sidebar?: (collapsed: boolean, toggle: () => void) => React.ReactNode;
   mobileSidebar?: React.ReactNode;
-  topbar: React.ReactNode;
+  // Always a bare `<Topbar />` from every caller today; typed as the element
+  // (not plain ReactNode) because DesktopShell clones it to set `showBrand`
+  // itself rather than making every caller compute `!sidebar`. Ignored by
+  // MobileShell, which builds its own `<Topbar mobile ... />` — mobile always
+  // shows the wordmark regardless of `sidebar`, since the sidebar (if any) is
+  // behind a Sheet, not on screen.
+  topbar: ReactElement<React.ComponentProps<typeof Topbar>>;
   // The identity's colour, set as --identity-accent on the outermost element of
   // both arrangements. Undefined outside the persona system.
   accent?: string;
