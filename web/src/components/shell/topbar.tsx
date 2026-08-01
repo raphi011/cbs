@@ -6,6 +6,7 @@ import { BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useConceptPanel } from "@/components/concept-panel-provider";
+import { IdentityPicker } from "./identity-picker";
 
 function ConceptTrigger() {
   const { togglePanel } = useConceptPanel();
@@ -24,10 +25,11 @@ function ConceptTrigger() {
 // Shared topbar. On mobile it grows the nav trigger (mobileSidebar, already
 // wrapped in a Sheet by ShellFrame), a brand wordmark (link to /), and the
 // concepts trigger; on desktop the sidebar owns the brand + nav and this is
-// just the theme toggle. The brand wordmark is always a link to the lobby (/)
-// — the root of the app and the way back from any persona console. Nothing
-// sits where the participant switcher used to — Task 7 puts the identity
-// picker there.
+// the identity picker plus the theme toggle. The brand wordmark is always a
+// link to the lobby (/) — the root of the app and the way back from any
+// persona console. The identity picker sits here, not in the sidebar, so it
+// is reachable from every shell — including the sidebar-less PlainShell the
+// lobby and Learn use.
 export function Topbar({
   mobile = false,
   mobileSidebar,
@@ -48,6 +50,7 @@ export function Topbar({
       )}
       <div className="ml-auto flex items-center gap-2">
         {mobile && <ConceptTrigger />}
+        <IdentityPicker />
         <ThemeToggle />
       </div>
     </header>
