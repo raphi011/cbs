@@ -81,12 +81,21 @@ var reasonTable = []reasonMapping{
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a
 	// judgement about the instruction, so there is nothing truthful to tell
-	// the sender. They are classified here as never reaching a counterparty;
-	// the mesh (Task 6) is where that classification becomes observable, as
-	// a dead letter rather than a wire message. Until the mesh exists,
-	// reasonFor cannot yet tell one of these apart from an error the table
-	// has never heard of at all — both return MS03 through the same
-	// fallback path. See TestReasonForEmptyCodeEntriesFallToMS03.
+	// the sender. They are classified here as never reaching a counterparty,
+	// and the mesh is where that classification is acted on: an actor that
+	// gets one dead-letters it rather than putting it on the wire.
+	//
+	// ReasonFor itself still cannot tell one of these apart from an error the
+	// table has never heard of at all — both come back MS03 through the same
+	// fallback path, and TestReasonForEmptyCodeEntriesFallToMS03 pins that. So
+	// the discrimination is the CALLER's, made by name: mesh's handlers test
+	// for ErrInvalidStateTransition — the one of the six an ordinary
+	// redelivery reaches — before they ask for a code at all. The other five
+	// are not produced by the halves those handlers call, except through a
+	// message quoting an identifier this network has never issued, which
+	// answers MS03. That residue is stated rather than hidden; closing it
+	// needs a two-valued ReasonFor, which is a change to this signature and
+	// to every caller of it.
 
 	// A lookup for an id this system generated and then could not find is a
 	// bug here, not a defect in the message.
@@ -105,7 +114,14 @@ var reasonTable = []reasonMapping{
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
 }
 
-// reasonFor maps an error to the code a pacs.002 should carry.
+// ReasonFor maps an error to the code a pacs.002 should carry.
+//
+// It is exported because the party that decides an error is worth telling a
+// counterparty about is not this package: it is whoever holds the connection.
+// In this repository that is mesh, whose bank and clearing-house handlers turn
+// a refused half into a rejection on the wire, and which is therefore the first
+// caller this function has ever had. It stayed unexported for as long as it had
+// none.
 //
 // It unwraps, because the payment layer wraps freely and a table keyed on
 // identity alone would degrade to MS03 for most real failures — silently,
@@ -115,7 +131,7 @@ var reasonTable = []reasonMapping{
 // crashed instead of answering would be a worse outcome than an imprecise
 // code, and the exhaustiveness test is what stops that path being reachable
 // for a sentinel.
-func reasonFor(err error) iso20022.StatusReason {
+func ReasonFor(err error) iso20022.StatusReason {
 	for _, m := range reasonTable {
 		if m.Code != "" && errors.Is(err, m.Err) {
 			return m.Code
@@ -319,7 +335,7 @@ func cashAccount(iban iso20022.IBAN) iso20022.CashAccount {
 // payment's sentinels because there is no condition in this
 // system's own vocabulary for "the account holder has no name" — it wraps
 // iso20022.ErrMissingElement, which says exactly what went wrong, and falls to
-// MS03 through reasonFor's default like any other error the table has never
+// MS03 through ReasonFor's default like any other error the table has never
 // heard of.
 func namedPartyOf(element, name string) (iso20022.PartyIdentification, error) {
 	if name == "" {
@@ -431,14 +447,14 @@ func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor me
 // The obvious shape here — `if err != nil { return ErrAccountNotInParticipant }`
 // — is the one checkPartyTx uses, and it is wrong in this function in a way it
 // is not wrong there, because of what happens downstream. These errors are
-// destined for reasonFor and then for a counterparty's pacs.002:
+// destined for ReasonFor and then for a counterparty's pacs.002:
 // ErrParticipantNotFound becomes RC01 "bank identifier incorrect" and
 // ErrAccountNotInParticipant becomes AC01 "incorrect account number". A dropped
 // database connection, or a caller that cancelled the context this function now
 // takes, would be reported to another bank as a defect in ITS message. The
 // counterparty would then investigate an address that was never wrong.
 //
-// So a store failure is returned unchanged and falls to MS03 through reasonFor's
+// So a store failure is returned unchanged and falls to MS03 through ReasonFor's
 // default, which says "this agent could not carry it out" — true, unhelpful, and
 // vastly better than a confident false statement about someone else's data.
 //
@@ -772,10 +788,10 @@ func originalCreationOf(orig OriginalMessage) *iso20022.ISODateTime {
 // An acceptance has no reason: StatusReasonChoice requires exactly one of a
 // code and a proprietary text, so an accepted transaction with a reason element
 // would have to invent one. A rejection with no code is likewise not
-// representable, and is not reachable either — reasonFor returns MS03 rather
+// representable, and is not reachable either — ReasonFor returns MS03 rather
 // than the empty string for every error, including ones it has never heard of —
 // so a rejection whose Code is empty is a caller that built the report by hand
-// and left it out. It gets MS03 for the same reason reasonFor's default does:
+// and left it out. It gets MS03 for the same reason ReasonFor's default does:
 // "this agent refused it and the reason has no code" is the weakest true
 // statement available, and it is better than a rejection a receiver cannot act
 // on at all.
@@ -1011,7 +1027,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 // Neither refusal is a sentinel from errors.go, and that is deliberate. There is
 // no condition in this system's own vocabulary for "the file you sent
 // contradicts itself" or "this agent does not do bulk" — the same situation
-// namedPartyOf is in — so both fall to MS03 through reasonFor's default, which
+// namedPartyOf is in — so both fall to MS03 through ReasonFor's default, which
 // says "this agent could not carry it out". The free text beside the code is
 // where the detail reaches the sender, and it says which count disagreed.
 func onlyTransaction[T any](element string, txs []T, nbOfTxs string) (T, error) {
@@ -1123,7 +1139,7 @@ func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.Cas
 // An AMBIGUOUS address is passed through unchanged for the same reason rather
 // than a different one. AC01 would again be a false statement about the sender's
 // data — the IBAN is fine, and it is this network's own directory that cannot
-// say whose it is — so it falls to MS03 through reasonFor's default, which
+// say whose it is — so it falls to MS03 through ReasonFor's default, which
 // claims only that this agent could not carry the instruction out. See
 // TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both

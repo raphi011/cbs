@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -50,40 +51,84 @@ type recordingStore struct {
 
 	mu    sync.Mutex
 	books map[ledger.BookID]bool
+	// byActor is the same set, split by the institution whose unit of work made
+	// the access. See Mesh.withActor for where that identity comes from, and
+	// touchedBy for what it is worth: "which books did this bank reach" is the
+	// question this whole file exists to answer, and it cannot be asked of one
+	// global set.
+	//
+	// A unit of work opened by nobody in particular — a test fixture, a seed, an
+	// operator's cut-off — is counted in books and in no actor's set. That is the
+	// right default: attributing it to an institution would put work no actor did
+	// into that actor's ledger of crossings.
+	byActor map[iso20022.BIC]map[ledger.BookID]bool
 }
 
 var _ payment.Store = (*recordingStore)(nil)
 
 func newRecordingStore(inner payment.Store) *recordingStore {
-	return &recordingStore{inner: inner, books: map[ledger.BookID]bool{}}
+	return &recordingStore{
+		inner:   inner,
+		books:   map[ledger.BookID]bool{},
+		byActor: map[iso20022.BIC]map[ledger.BookID]bool{},
+	}
 }
 
 func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
 	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
 	})
 }
 
 func (s *recordingStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
 	return s.inner.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
 	})
 }
 
 func (s *recordingStore) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
 func (s *recordingStore) Close() error                    { return s.inner.Close() }
 
-// note records one book access. It is called from actor goroutines, so it takes
-// the lock — the mesh runs one goroutine per institution and they touch the same
-// store concurrently.
+// bookNoter is what one unit of work notes into: the store, plus the identity of
+// the actor that opened it.
+//
+// It exists so that recordingTx's overrides can stay two statements long. Every
+// one of them is `r.rec.note(book)` and TestEveryRecordingTxMethodNotesItsBookThenDelegates
+// holds them to exactly that shape, so the actor cannot be an argument at the
+// call site; it has to travel with the thing being called. A value, not a
+// pointer: it is two words and it is never mutated.
+type bookNoter struct {
+	store *recordingStore
+	actor iso20022.BIC
+}
+
+func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, book) }
+
+// noterFor reads the acting institution off the context the unit of work was
+// opened with.
+func (s *recordingStore) noterFor(ctx context.Context) bookNoter {
+	who, _ := actorOf(ctx)
+	return bookNoter{store: s, actor: who}
+}
+
+// note records one book access, against the whole store and against the actor
+// that made it. It is called from actor goroutines, so it takes the lock — the
+// mesh runs one goroutine per institution and they touch the same store
+// concurrently.
 //
 // What it records is NOT rolled back with the unit of work it was called in. A
 // handler that read another bank's book and then failed still read it, and a
 // recorder that forgot such a read on rollback would hide exactly the crossings
 // that go wrong.
-func (s *recordingStore) note(book ledger.BookID) {
+func (s *recordingStore) note(actor iso20022.BIC, book ledger.BookID) {
 	s.mu.Lock()
 	s.books[book] = true
+	if actor != "" {
+		if s.byActor[actor] == nil {
+			s.byActor[actor] = map[ledger.BookID]bool{}
+		}
+		s.byActor[actor][book] = true
+	}
 	s.mu.Unlock()
 }
 
@@ -92,8 +137,19 @@ func (s *recordingStore) note(book ledger.BookID) {
 func (s *recordingStore) touched() []ledger.BookID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]ledger.BookID, 0, len(s.books))
-	for b := range s.books {
+	return sortedBooks(s.books)
+}
+
+// touchedBy is touched, narrowed to one institution.
+func (s *recordingStore) touchedBy(actor iso20022.BIC) []ledger.BookID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return sortedBooks(s.byActor[actor])
+}
+
+func sortedBooks(set map[ledger.BookID]bool) []ledger.BookID {
+	out := make([]ledger.BookID, 0, len(set))
+	for b := range set {
 		out = append(out, b)
 	}
 	slices.Sort(out)
@@ -103,6 +159,7 @@ func (s *recordingStore) touched() []ledger.BookID {
 func (s *recordingStore) reset() {
 	s.mu.Lock()
 	s.books = map[ledger.BookID]bool{}
+	s.byActor = map[iso20022.BIC]map[ledger.BookID]bool{}
 	s.mu.Unlock()
 }
 
@@ -173,7 +230,7 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // promoted method, which records nothing.
 type recordingTx struct {
 	payment.Tx
-	rec *recordingStore
+	rec bookNoter
 }
 
 var _ payment.Tx = (*recordingTx)(nil)
@@ -588,6 +645,184 @@ var structCarriedBooks = map[string]structCarriedBook{
 // posting that cannot exist. It is left recorded here rather than quietly
 // replaced, because the reason it was wrong is the reason this file distrusts
 // unpinned prose.
+
+// ---------------------------------------------------------------------------
+// What each actor reaches
+// ---------------------------------------------------------------------------
+
+// assertBooksTouched compares one actor's set of books against the expectation,
+// whole and in order.
+//
+// Whole, and not "contains": the claim these tests make is about the books an
+// actor did NOT reach, so an assertion that only checked for the expected ones
+// would pass on a handler that reached every book in the network.
+func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Errorf("%s touched %v, want %v", who, got, want)
+	}
+}
+
+// TestABankHandlerTouchesOnlyItsOwnBook is sub-project 8's specification,
+// measured against the code that now exists.
+//
+// Under a shared store, nothing stops a handler reading another entity's books;
+// this is what notices. When each entity gets its own store, these assertions
+// become the definition of the split rather than a check on it.
+//
+// # The submitting bank, and why NetworkBook is in its set
+//
+// The draft this test comes from wanted []ledger.BookID{h.debtorBook} alone.
+// That is not satisfiable and never was: every payment id is allocated
+// network-scoped — payment/system.go's NextID(ctx, ledger.NetworkBook, "pay") —
+// and submission appends payment.initiated under NetworkBook. No version of
+// creating a payment avoids either. NetworkBook is not another bank's book; it
+// is the label for rows that belong to no single bank, and a bank that creates a
+// payment necessarily touches it.
+//
+// # The creditor's book is in it too, and that is a genuine crossing
+//
+// This is the finding the recorder was built for, and it was NOT predicted. The
+// payer's bank builds the pacs.008 it sends, and a pacs.008 names the payee:
+// payment.partyTx reads the payee's deposit account out of the PAYEE'S BANK'S
+// register to get the name on it (payment/translate.go, partiesOf — "the ONLY
+// part of building an outbound message that touches the store"). So the
+// submitting bank reads a book that is not its own, on the happy path, every
+// time.
+//
+// It is asserted rather than papered over because it is true, and because what
+// closes it is a domain change and not a mesh one: a real payer's bank knows the
+// payee's name because the payer typed it in, so InitiatePaymentRequest would
+// have to carry the two counterparty NAMES and CreditTransferMessage take them
+// from the payment instead of from the directory. That is sub-project 8's to do;
+// what this task owes it is the measurement, in a form that fails the day
+// somebody changes it in either direction.
+//
+// # The receiving bank reaches every bank's book, by design of the directory
+//
+// The payee's bank resolves the message BY ADDRESS — which is the point, and
+// what produces AC01 for an IBAN nobody holds — and this network's directory is
+// a sweep: ResolveIdentifierTx calls ListDepositAccountsByIdentifier once per
+// member (payment/system.go). Asking "whose IBAN is this" therefore reads every
+// member's register. A real network answers that question at a directory service
+// and not by asking each bank, and this one says so in ResolveIdentifier's own
+// doc; the sweep is the honest shape at two banks.
+//
+// So the receiving bank's set is every BANK book and neither NetworkBook nor the
+// central bank's: its half writes the payment row (network-scoped, and it
+// appends no audit event — see AcceptInboundTx on why the payment's lifecycle
+// has two facts and not three), so nothing in it allocates a network id.
+func TestABankHandlerTouchesOnlyItsOwnBook(t *testing.T) {
+	h := newMeshHarness(t) // builds a seeded network + mesh over a recordingStore
+
+	h.rec.reset()
+	h.submitCreditTransfer(t)
+	h.drain(t)
+
+	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
+		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
+	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC), h.bankBooks())
+
+	// Neither of them went near the central bank's book. Only settlement moves
+	// reserves, and no bank settles: that is the whole distinction between
+	// clearing and settlement, and it is the one book both banks must be clear of
+	// at this stage.
+	for _, who := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		if slices.Contains(h.booksTouchedBy(who), payment.CentralBankBook) {
+			t.Errorf("%s reached the central bank's book during a credit transfer", who)
+		}
+	}
+}
+
+// TestTheCSMTouchesOnlyTheNetworkBook is the assertion the note above was
+// written for, and it holds: the clearing house's half writes the payment and
+// the cycle and posts nothing.
+//
+// It reaches NetworkBook and NOTHING else — not through a posting, because
+// nothing in this repository ever posts under NetworkBook, but through the id
+// AcceptAtCSMTx's audit event needs and the event itself. A CSM half that
+// skipped that event would record nothing at all and fail this with an empty
+// set, which is a different bug wearing the same failure.
+//
+// Relaying costs it nothing: the pacs.008 hop reads the creditor's agent out of
+// the message and routes on it, with no store read at all. A clearing house that
+// looked a payment up to decide where to send it would be one that could not
+// route a message about a payment it does not hold.
+func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
+	h := newMeshHarness(t)
+	h.rec.reset()
+	h.submitCreditTransfer(t)
+	h.drain(t)
+
+	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
+		[]ledger.BookID{ledger.NetworkBook})
+}
+
+// TestTheCentralBankTouchesOnlyTheCentralBankBook belongs to Task 12, and is
+// deliberately absent here.
+//
+// The draft placed it in this task: submit, close the cycle, and assert the
+// central bank touched CentralBankBook. At Task 10 that assertion cannot mean
+// anything, and it was checked rather than assumed:
+//
+//   - CloseCycleTx posts NOTHING. It transitions each payment to Cleared, writes
+//     the net positions onto the cycle and appends audit events — all
+//     network-scoped (payment/system.go). Money moves at SettleCycleTx, which is
+//     where the netting transaction in CentralBankBook is.
+//   - No actor closes a cycle, and closing one emits no pacs.009. The central
+//     bank's actor still runs the refusing placeholder from Task 6, so
+//     booksTouchedBy(CentralBankBIC) is EMPTY after a cut-off — and a test
+//     asserting an empty set against []ledger.BookID{CentralBankBook} fails,
+//     while one asserting nil would pass vacuously and go on passing after Task
+//     12 gave settlement a real actor.
+//
+// "Settlement is Task 12's title" is not the argument; the argument is that the
+// path does not exist, which the two bullets above are the evidence for. Task 12
+// owns this test, and it will be a real one there: settlement posts in three
+// places, one of them the netting transaction in the central bank's own book.
+//
+// TestClosingACycleSendsNoMessageAndTouchesNoBankBook is that evidence as a
+// test rather than as prose, and it is written to FAIL the day Task 12 lands.
+
+// TestClosingACycleSendsNoMessageAndTouchesNoBankBook is what stands in for the
+// central bank's assertion until settlement exists.
+//
+// Reaching the cut-off at Task 10 does three things and no others: it marks
+// every payment in the cycle Cleared, writes the net positions onto the cycle,
+// and records that. All of it is network-scoped, and none of it moves money —
+// which is the whole distinction between clearing and settlement, made
+// falsifiable rather than asserted.
+//
+// It is deliberately a pin on the ABSENCE of settlement, so Task 12 will break
+// it: the moment a closed cycle emits a pacs.009 the message count stops being
+// zero, and the moment the central bank's actor settles, CentralBankBook appears.
+// That failure is the signal that Task 12 has started, and it is the point at
+// which TestTheCentralBankTouchesOnlyTheCentralBankBook replaces this.
+func TestClosingACycleSendsNoMessageAndTouchesNoBankBook(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitCreditTransfer(t)
+	h.drain(t)
+
+	h.rec.reset()
+	before := h.messagesSeen()
+	closed := h.closeCycle(t)
+	h.drain(t)
+
+	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
+		t.Errorf("after the cut-off the payment is %v, want Cleared", got.Status)
+	}
+	if len(closed.NetPositions) != 2 {
+		t.Errorf("the closed cycle has %d net positions, want one per bank", len(closed.NetPositions))
+	}
+	if got := h.messagesSeen(); got != before {
+		t.Errorf("closing a cycle put %d messages on the wire; at Task 10 clearing is not a conversation", got-before)
+	}
+	// Nobody's ledger moved — not the central bank's, and not either member's.
+	assertBooksTouched(t, "the cut-off", h.rec.touched(), []ledger.BookID{ledger.NetworkBook})
+	for _, who := range []iso20022.BIC{h.cfg.CentralBankBIC, h.debtorBIC, h.creditorBIC} {
+		assertBooksTouched(t, string(who)+" at the cut-off", h.booksTouchedBy(who), nil)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // The guard on the guard
@@ -1092,8 +1327,8 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	}
 }
 
-// TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw makes the two
-// claims about the recorder's own bookkeeping falsifiable, neither of which any
+// TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw makes the three
+// claims about the recorder's own bookkeeping falsifiable, none of which any
 // test above can see.
 //
 // Concurrency, because the mesh runs one goroutine per institution and they all
@@ -1105,17 +1340,33 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 // that an unsorted result cannot pass by landing in order — Go's map iteration
 // would have to hit one permutation in 120.
 //
+// Attribution, because every TestXTouchesOnly… assertion is a claim about ONE
+// institution's set. A recorder that noted the book and dropped the actor would
+// leave touchedBy empty for everyone, and an assertion that an actor touched
+// nothing is exactly what an empty set looks like.
+//
 // It needs no store: nothing here goes through Update, which is why the inner
 // store is nil.
 func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 	rec := newRecordingStore(nil)
 
+	// Two actors and an unattributed writer, all at once. The books are named so
+	// that each actor's own set is out of order on the way in.
+	work := []struct {
+		actor iso20022.BIC
+		book  ledger.BookID
+	}{
+		{"AURODEFFXXX", "e"}, {"AURODEFFXXX", "d"}, {"AURODEFFXXX", "c"},
+		{"AURODEFFXXX", "b"}, {"AURODEFFXXX", "a"},
+		{"VERDITMMXXX", "b"}, {"VERDITMMXXX", "a"},
+		{"", "z"},
+	}
 	var wg sync.WaitGroup
-	for _, b := range []ledger.BookID{"e", "d", "c", "b", "a"} {
+	for _, w := range work {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rec.note(b)
+			rec.note(w.actor, w.book)
 		}()
 	}
 	// A reader beside the writers: a test that asserts on books while actors are
@@ -1124,12 +1375,25 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_ = rec.touched()
+		_ = rec.touchedBy("AURODEFFXXX")
 	}()
 	wg.Wait()
 
-	want := []ledger.BookID{"a", "b", "c", "d", "e"}
+	want := []ledger.BookID{"a", "b", "c", "d", "e", "z"}
 	if got := rec.touched(); !slices.Equal(got, want) {
 		t.Errorf("touched() = %v, want %v — the set of books, ascending", got, want)
+	}
+	if got := rec.touchedBy("AURODEFFXXX"); !slices.Equal(got, []ledger.BookID{"a", "b", "c", "d", "e"}) {
+		t.Errorf("touchedBy(AURODEFFXXX) = %v, want [a b c d e]", got)
+	}
+	if got := rec.touchedBy("VERDITMMXXX"); !slices.Equal(got, []ledger.BookID{"a", "b"}) {
+		t.Errorf("touchedBy(VERDITMMXXX) = %v, want [a b] — one actor's set is not another's", got)
+	}
+	// The unattributed write is in the whole-store set and in nobody's.
+	for _, who := range []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX"} {
+		if slices.Contains(rec.touchedBy(who), "z") {
+			t.Errorf("touchedBy(%s) contains a book no actor wrote", who)
+		}
 	}
 }
 

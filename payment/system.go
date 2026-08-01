@@ -129,7 +129,22 @@ func NewNetwork(store Store, clock func() time.Time) *Network {
 	return s
 }
 
-func (s *Network) now() time.Time { return s.clock() }
+// Now is the instant this network reads for everything it stamps: booking
+// dates, value dates, audit timestamps.
+//
+// It is exported because a layer built OVER a network has to timestamp too, and
+// a second clock beside this one would be a second answer to the same question.
+// The mesh is the case that forced it: a message header carries a creation time
+// (AppHdr/CreDt), so a mesh with a clock of its own could emit a pacs.008 dated
+// after the payment it carries — under the frozen clock the tests run on, days
+// after. There is one clock in this system, and this is how anything above the
+// payment layer reads it. See the mesh package doc, which says so.
+func (s *Network) Now() time.Time { return s.clock() }
+
+// now is Now, for this package's own use. Both exist because the exported one
+// is a promise to callers outside and the unexported one is what a hundred call
+// sites in here already spell.
+func (s *Network) now() time.Time { return s.Now() }
 
 // Store returns the store every layer of this network shares, so a caller can
 // open its own unit of work — or reset the whole system — against the same
@@ -1142,7 +1157,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 // and came back with the ledger's ErrDuplicateIdempotencyKey. No money was ever
 // at risk — the key is the payment's own id, so the second debit could not post
 // — but it is a wrong ANSWER: that error has no entry in reasonTable, so
-// reasonFor falls through to MS03 and the bank would reject, on the wire, a
+// ReasonFor falls through to MS03 and the bank would reject, on the wire, a
 // collection it had in fact accepted. The push arm needs no such guard, because
 // the receiving bank posts nothing there: re-running it re-checks the payee's
 // account, back-fills an address that is already the stored one, and the
@@ -1183,7 +1198,7 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 		// A collection this bank has already answered. See the witness note
 		// above: the leg is posted, so this half has run, and running it again
 		// would answer a duplicate pacs.003 with the ledger's idempotency
-		// refusal — which reasonFor cannot name, so the mesh would return MS03
+		// refusal — which ReasonFor cannot name, so the mesh would return MS03
 		// for a collection it in fact accepted.
 		if p.DebtorLegTx != "" {
 			return nil

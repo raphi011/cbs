@@ -2101,7 +2101,7 @@ func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
 // Before DebtorLegTx was used as the witness, it reached postDebtorLegTx again
 // and came back with the ledger's ErrDuplicateIdempotencyKey — no double debit,
 // because the key is the payment's own id, but an error with no entry in
-// reasonTable, so reasonFor turns it into MS03 and the bank rejects on the wire
+// reasonTable, so ReasonFor turns it into MS03 and the bank rejects on the wire
 // a collection it has in fact accepted.
 func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	ctx := context.Background()

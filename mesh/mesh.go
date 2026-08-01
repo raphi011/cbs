@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
@@ -91,8 +93,33 @@ type Mesh struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
-	actors   map[iso20022.BIC]*actor
+	// tap, if non-nil, sees every message an actor is about to handle: who it
+	// is for, who sent it, and the bytes.
+	//
+	// It is a seam for THIS package's tests and for nothing else, and it earns
+	// its place because some of what this mesh does leaves no other trace. An
+	// FF01 names no payment — it cannot, the file that provoked it did not parse
+	// — so a test that could not see the message could not tell an answered
+	// malformed envelope from a swallowed one. Nor could one tell a submission
+	// that sent nothing from a submission whose message went somewhere else.
+	//
+	// It is written before Start and read only by actor goroutines, which is what
+	// makes it safe without a lock: until Start runs, no goroutine exists that
+	// could read it, and after Start nothing writes it.
+	tap func(to, from iso20022.BIC, raw []byte)
+
+	// msgSeq numbers the messages this mesh emits. See nextMsgID.
+	msgSeq atomic.Uint64
+
+	mu     sync.Mutex
+	actors map[iso20022.BIC]*actor
+	// banks is the member banks by participant, which is how Submit finds the
+	// actor that plays a payer's own bank. Keyed by ParticipantID and not by BIC
+	// because that is what an instruction names: a request says which
+	// participant holds the payer's account, and turning that into a BIC to look
+	// up an actor would be a store read to answer a question the roster already
+	// answered at startup.
+	banks    map[payment.ParticipantID]*bank
 	inFlight int
 	// quiet is closed when inFlight reaches zero and replaced when it leaves
 	// zero. A channel rather than a sync.Cond because Drain must also wake on
@@ -143,25 +170,42 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 		cfg:    cfg,
 		log:    log,
 		actors: make(map[iso20022.BIC]*actor),
+		banks:  make(map[payment.ParticipantID]*bank),
 		busy:   make(map[iso20022.BIC]bool),
 		quiet:  quiet,
 	}
-	if err := m.addActor(cfg.ClearingHouseBIC, "clearing house", unhandled("clearing house")); err != nil {
+	// The clearing house gets its behaviour here, because it has no store row to
+	// wait for: it IS the configuration. A mesh with no network keeps the
+	// refusing placeholder instead — clearing is a thing you do to payments, and
+	// there are none.
+	clearing := unhandled("clearing house")
+	if net != nil {
+		clearing = (&csm{m: m, ops: net, bic: cfg.ClearingHouseBIC}).handle
+	}
+	if err := m.addActor(cfg.ClearingHouseBIC, "clearing house", clearing); err != nil {
 		return nil, err
 	}
+	// The central bank keeps the placeholder either way. Settlement is Task 12's,
+	// and an actor that answered a settlement instruction with silence would make
+	// the missing half look like a working one.
 	if err := m.addActor(cfg.CentralBankBIC, "central bank", unhandled("central bank")); err != nil {
 		return nil, err
 	}
 	return m, nil
 }
 
-// unhandled is the handler every actor has until Tasks 10–13 give it one.
+// unhandled is the handler an actor has until some task gives it one.
 //
-// It refuses rather than discards. This task is the transport, and a message
-// arriving at an actor that has no behaviour yet is a bug in whoever sent it;
-// swallowing it would make the missing half look like a working one. Drain
-// returns it, which is exactly the dead-letter path this package exists to keep
-// visible.
+// It refuses rather than discards. A message arriving at an actor that has no
+// behaviour yet is a bug in whoever sent it; swallowing it would make the
+// missing half look like a working one. Drain returns it, which is exactly the
+// dead-letter path this package exists to keep visible.
+//
+// Two actors still have it after Task 10. The CENTRAL BANK has it always:
+// settlement is Task 12's, and there is nothing yet for it to do. The CLEARING
+// HOUSE has it only on a mesh built over no network — the transport's own tests
+// — because clearing is something you do to payments and a mesh with no store
+// has none.
 func unhandled(name string) handler {
 	return func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return fmt.Errorf("mesh: %s has no handler for the %d bytes %s sent it", name, len(raw), from)
@@ -277,14 +321,22 @@ func (m *Mesh) Start(ctx context.Context) error {
 			return fmt.Errorf("mesh: reading the participant roster: %w", err)
 		}
 		specs := make([]actorSpec, 0, len(ps))
+		banks := make(map[payment.ParticipantID]*bank, len(ps))
 		for _, p := range ps {
-			specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: unhandled(p.Name)})
+			b := &bank{m: m, ops: m.net, bic: p.BIC}
+			banks[p.ID] = b
+			specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
 		}
 		if len(specs) > 0 {
 			if err := m.addActors(specs...); err != nil {
 				return err
 			}
 		}
+		// After addActors, so that a roster the mesh refused to route leaves the
+		// bank index as it found it too.
+		m.mu.Lock()
+		m.banks = banks
+		m.mu.Unlock()
 	}
 
 	m.mu.Lock()
@@ -428,11 +480,72 @@ func (m *Mesh) run(ctx context.Context, a *actor) {
 // The error is captured by the closure rather than passed, because the deferred
 // call has to see what the handler returned AND run even if it returns by
 // panicking.
+// The context every handler runs with carries WHO IS ACTING, and that is the
+// only thing about the mesh a layer below it can see.
+//
+// It is there so that a unit of work can be attributed to the institution that
+// opened it. Nothing in the domain reads it — payment neither knows nor cares —
+// but the book recorder this package tests against does, and "which books did
+// the payer's bank reach" has no other answer under a shared store: one process,
+// one store, and four actors driving it concurrently, so neither the goroutine
+// nor the store nor the call stack can say. Sub-project 8 replaces the question
+// with a store per entity; until then this is how it is asked.
+//
+// A context value rather than an argument because it has to survive the trip
+// through payment: a handler calls AcceptInbound, payment opens the unit of work
+// several frames down, and no signature on that path has anywhere to put it.
+type actorContextKey struct{}
+
+// withActor marks a context as belonging to one institution's work. Mesh.Submit
+// does it for the submitting bank's synchronous half; dispatch does it for
+// everything else.
+func withActor(ctx context.Context, bic iso20022.BIC) context.Context {
+	return context.WithValue(ctx, actorContextKey{}, bic)
+}
+
+// actorOf reports which institution's work this context belongs to, if any. A
+// context with no actor is work no institution did: a seed, a test fixture, an
+// operator's cut-off.
+func actorOf(ctx context.Context) (iso20022.BIC, bool) {
+	bic, ok := ctx.Value(actorContextKey{}).(iso20022.BIC)
+	return bic, ok
+}
+
 func (m *Mesh) dispatch(ctx context.Context, a *actor, it item) {
 	var err error
 	defer func() { m.finish(a, err) }()
 	m.setBusy(a.bic)
-	err = a.handle(ctx, it.from, it.raw)
+	if m.tap != nil {
+		m.tap(a.bic, it.from, it.raw)
+	}
+	err = a.handle(withActor(ctx, a.bic), it.from, it.raw)
+}
+
+// now is the clock every header this mesh writes is stamped from, and it is the
+// payment network's own.
+//
+// A mesh with a clock of its own would be a second answer to what time it is,
+// and under the frozen clock these tests run on the two would be years apart: a
+// pacs.008 dated 2026 carrying a payment booked in 2025. The package doc says
+// the actors share one clock; this is that sentence's implementation.
+//
+// It is only ever called from a handler or from Submit, both of which exist only
+// on a mesh that has a network.
+func (m *Mesh) now() time.Time { return m.net.Now() }
+
+// nextMsgID mints the identifier a message travels under: the sender's BIC and a
+// number nobody else in this mesh will use.
+//
+// Per-mesh and not per-sender, which is a simplification worth naming. A real
+// BizMsgIdr is unique within the sender and nowhere else, so two banks
+// legitimately emit the same one; a receiver that assumed otherwise would
+// deduplicate one bank's message against another's. Here one counter serves
+// every actor, which is strictly stronger than the standard requires and cannot
+// therefore hide a bug the standard would allow. What it does buy is that a
+// message id is unique under a FROZEN clock, which a timestamp-derived one would
+// not be — and this package's tests run on one.
+func (m *Mesh) nextMsgID(from iso20022.BIC) string {
+	return fmt.Sprintf("%s-%d", from, m.msgSeq.Add(1))
 }
 
 // finish ends one message: its dead letter, the actor's busy flag and the
@@ -585,7 +698,19 @@ func (m *Mesh) send(from, to iso20022.BIC, env iso20022.Envelope) error {
 	if err != nil {
 		return fmt.Errorf("mesh: marshalling for %s: %w", to, err)
 	}
+	return m.sendRaw(from, to, raw)
+}
 
+// sendRaw is send with the marshalling already done: the bytes, and who they are
+// from.
+//
+// It is split out because bytes are what a queue carries, and because a message
+// that DID NOT come from this system's marshaller is a thing a receiver must
+// cope with. Nothing in production calls it directly — send is the only door in
+// — but without it every message in this package would be one iso20022.Marshal
+// had blessed, and FF01 would be a code with no path to it. See
+// TestAMalformedEnvelopeIsAnsweredWithFF01.
+func (m *Mesh) sendRaw(from, to iso20022.BIC, raw []byte) error {
 	m.mu.Lock()
 	a, ok := m.actors[to]
 	if !ok {
@@ -664,4 +789,95 @@ func (m *Mesh) takeDeadLetters() error {
 	m.dead = nil
 	m.mu.Unlock()
 	return errors.Join(dead...)
+}
+
+// Submit runs the submitting bank's half synchronously and then sends.
+//
+// The send is OUTSIDE the unit of work, deliberately. A handler that enqueued
+// while holding a transaction would schedule work against uncommitted state, or
+// against state a rollback removed — and because the queue is unbounded it would
+// not even deadlock, it would just be wrong. TestARolledBackSubmitSendsNothing
+// pins it.
+//
+// What that test can actually see is worth being exact about, because the claim
+// above is wider than the check. It provokes a submission that fails inside its
+// unit of work and asserts the mesh carried nothing, which falsifies any
+// arrangement that sends on a path the store rolled back. It does NOT
+// distinguish this ordering from an enqueue INSIDE the transaction, and cannot:
+// SubmitPaymentTx has no failure after the point at which a message could be
+// built, so there is no way to reach "sent, then rolled back" at all. The
+// ordering here is what keeps it that way as the submitting half grows.
+//
+// Synchronously, because the caller has an error to answer with. A customer
+// whose instruction fails their own bank's checks — no funds, an account that is
+// not theirs, a duplicate reference — is told so, then and there. What they are
+// NOT told is what the far side thinks: this returns an Initiated payment and
+// nothing more, and the fate of that payment arrives later, at another actor, as
+// a message. That is the whole difference the mesh makes, and it is why Task 14
+// answers this with 202 Accepted rather than 201 Created.
+//
+// It runs on the CALLER's goroutine, not the bank actor's, and that is not a
+// shortcut: an actor's goroutine handles what arrives in its inbox, and a
+// customer instruction does not arrive in an inbox — it comes in from outside
+// the mesh entirely. The work is still the bank's, and it is marked as the
+// bank's, so the recorder attributes every book it touches to the bank and not
+// to whoever called in.
+func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
+	m.mu.Lock()
+	b, ok := m.banks[req.Debtor.Participant]
+	m.mu.Unlock()
+	if !ok {
+		// The mesh has no actor to play this bank, so nothing it submitted could
+		// ever be answered. Refusing here is better than accepting a payment that
+		// would sit Initiated for ever.
+		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", req.Debtor.Participant)
+	}
+	return b.submit(ctx, req)
+}
+
+// notProvided is what a message says where a reference is genuinely unavailable.
+//
+// It is the EPC's convention, already used by payment for a credit transfer with
+// no end-to-end reference, and it is here for the one case that has no reference
+// at all: a pacs.002 answering a file that did not parse. That report cannot
+// quote the original's message id, its message name or the transaction's
+// references, because the bytes carrying them were unreadable — and this
+// package's pacs.002 makes all four mandatory (iso20022.OriginalGroupHeader and
+// PaymentTransactionStatus, the latter needing at least one back-reference).
+//
+// A real network would not have the problem: an unreadable file is answered with
+// admi.002 MessageReject, which refers back by nothing and carries a reason on
+// its own. This system has no admi.002, so the FF01 goes in the message it does
+// have, with the unavailable references named as unavailable rather than
+// invented. The substitution is recorded here rather than hidden in the one
+// function that makes it.
+const notProvided = "NOTPROVIDED"
+
+// answerUnreadable tells whoever sent a message that it could not be parsed.
+//
+// This is why item carries the sender beside the bytes. A message whose header
+// is unreadable cannot say who it is from, so a receiver that had only the bytes
+// could DETECT a malformed file and not answer it — which would make FF01, the
+// one rejection every real receiver must be able to send, the one this system
+// could not.
+//
+// The answer is a pacs.002 and not a dead letter, and the handler that calls
+// this returns nil: a message it answered is a message it dealt with. What
+// cannot be dealt with is the answer failing to send, which comes back as the
+// dead letter it is.
+func (m *Mesh) answerUnreadable(self, sender iso20022.BIC, cause error) error {
+	env, err := payment.StatusMessage(
+		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
+		[]payment.TransactionStatusReport{{
+			EndToEndID: notProvided,
+			Status:     iso20022.TransactionStatusRejected,
+			Code:       iso20022.StatusReasonInvalidFileFormat,
+			Text:       cause.Error(),
+		}},
+		payment.MessageContext{From: self, To: sender, MsgID: m.nextMsgID(self), Now: m.now()},
+	)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not build the FF01 for %s: %w", self, sender, err)
+	}
+	return m.send(self, sender, env)
 }

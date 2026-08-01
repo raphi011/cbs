@@ -83,8 +83,8 @@ func TestReasonForKnownErrors(t *testing.T) {
 		{ErrCycleNotOpen, iso20022.StatusReasonInvalidCutOffTime},
 		{ErrAssetMismatch, iso20022.StatusReasonNotSpecifiedAgentGenerated},
 	} {
-		if got := reasonFor(tc.err); got != tc.want {
-			t.Errorf("reasonFor(%v) = %q, want %q", tc.err, got, tc.want)
+		if got := ReasonFor(tc.err); got != tc.want {
+			t.Errorf("ReasonFor(%v) = %q, want %q", tc.err, got, tc.want)
 		}
 	}
 }
@@ -93,8 +93,8 @@ func TestReasonForKnownErrors(t *testing.T) {
 // sentinels are DELIBERATELY mapped to MS03 in reasonTable, as opposed to
 // merely falling through to it.
 //
-// A case in TestReasonForKnownErrors asserting reasonFor's output cannot
-// tell those two situations apart, because MS03 is also reasonFor's fallback
+// A case in TestReasonForKnownErrors asserting ReasonFor's output cannot
+// tell those two situations apart, because MS03 is also ReasonFor's fallback
 // for an error the table has never heard of: mutating one of these entries'
 // Code to "" leaves such a case green. This test asserts against reasonTable
 // directly instead, so it fails on exactly that mutation.
@@ -128,7 +128,7 @@ func TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases(t *testing.T) {
 // TestReasonForEmptyCodeEntriesFallToMS03 pins the claim in reasonTable's
 // "never reaching a counterparty" section: today, before the mesh (Task 6)
 // exists to make that classification observable as a dead letter,
-// reasonFor cannot tell one of these sentinels apart from an error it has
+// ReasonFor cannot tell one of these sentinels apart from an error it has
 // never heard of at all. Both return MS03 by exactly the same fallback path.
 func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
 	var checked int
@@ -137,8 +137,8 @@ func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
 			continue
 		}
 		checked++
-		if got := reasonFor(m.Err); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
-			t.Errorf("reasonFor(%s) = %q, want MS03 (same fallback as an unmapped error)", m.Name, got)
+		if got := ReasonFor(m.Err); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
+			t.Errorf("ReasonFor(%s) = %q, want MS03 (same fallback as an unmapped error)", m.Name, got)
 		}
 	}
 	if checked == 0 {
@@ -150,8 +150,8 @@ func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
 // crashed the actor rather than reaching the counterparty would be a worse
 // failure than an imprecise code.
 func TestReasonForUnknownErrorIsUnspecified(t *testing.T) {
-	if got := reasonFor(errors.New("something new")); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
-		t.Errorf("reasonFor(unknown) = %q, want MS03", got)
+	if got := ReasonFor(errors.New("something new")); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
+		t.Errorf("ReasonFor(unknown) = %q, want MS03", got)
 	}
 }
 
@@ -159,11 +159,11 @@ func TestReasonForUnknownErrorIsUnspecified(t *testing.T) {
 // payment layer wraps errors freely, so a table keyed on identity alone would
 // silently degrade to MS03 for most real failures.
 func TestReasonForUnwraps(t *testing.T) {
-	if got := reasonFor(errors.Join(errors.New("context"), ErrAccountNotInParticipant)); got != iso20022.StatusReasonIncorrectAccountNumber {
-		t.Errorf("reasonFor(joined) = %q, want AC01", got)
+	if got := ReasonFor(errors.Join(errors.New("context"), ErrAccountNotInParticipant)); got != iso20022.StatusReasonIncorrectAccountNumber {
+		t.Errorf("ReasonFor(joined) = %q, want AC01", got)
 	}
-	if got := reasonFor(fmt.Errorf("checking the creditor: %w", ErrAccountNotInParticipant)); got != iso20022.StatusReasonIncorrectAccountNumber {
-		t.Errorf("reasonFor(wrapped) = %q, want AC01", got)
+	if got := ReasonFor(fmt.Errorf("checking the creditor: %w", ErrAccountNotInParticipant)); got != iso20022.StatusReasonIncorrectAccountNumber {
+		t.Errorf("ReasonFor(wrapped) = %q, want AC01", got)
 	}
 }
 

@@ -60,13 +60,20 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	// Present in the map is not the same as reading its inbox. Send to one of
 	// the banks and drain: its goroutine has to be the thing that produces the
 	// dead letter, because nothing else runs a handler.
+	//
+	// A REJECTION, and of a payment that does not exist. Since Task 10 a bank's
+	// handler is the real one, and an acceptance is a message a payer's bank has
+	// nothing to do about — it would be handled successfully and leave no trace
+	// at all. A rejection naming a payment this network has never issued is work
+	// the handler cannot complete, which is what makes the actor's own goroutine
+	// the visible source of the failure.
 	if err := m.send(testConfig.ClearingHouseBIC, "AURODEFFXXX",
-		testEnvelope(testConfig.ClearingHouseBIC, "AURODEFFXXX", "x")); err != nil {
+		testRejection(testConfig.ClearingHouseBIC, "AURODEFFXXX", "x")); err != nil {
 		t.Fatalf("send: %v", err)
 	}
 	err = m.Drain(drainCtx(t))
 	if err == nil {
-		t.Fatal("Drain was clean; the bank's actor never ran its (refusing) placeholder handler")
+		t.Fatal("Drain was clean; the bank's actor never ran its handler")
 	}
 	if !strings.Contains(err.Error(), "Aurora Bank") {
 		t.Errorf("dead letter %q does not come from the bank's own actor", err)

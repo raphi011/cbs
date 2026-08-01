@@ -29,6 +29,44 @@
 // the sender beside them so that a message whose header cannot be read can
 // still be answered.
 //
+// # The credit transfer flow
+//
+// A SEPA credit transfer is four messages and three decisions, and no two of
+// them are made by the same institution:
+//
+//	payer's bank  --pacs.008-->  clearing house  --pacs.008-->  payee's bank
+//	payer's bank  <--pacs.002--  clearing house  <--pacs.002--  payee's bank
+//
+// Reading that clockwise:
+//
+//   - The PAYER'S BANK submits. Mesh.Submit runs that half synchronously, so a
+//     customer whose instruction fails their own bank's checks is told then and
+//     there — and then sends, after the unit of work has committed. What it does
+//     not answer is what the far side thinks; that arrives later, as a message.
+//   - The CLEARING HOUSE routes the instruction on, by the creditor agent named
+//     in it. It reads no store to do that: a clearing house that had to look a
+//     payment up to decide where to send it could not route a message about a
+//     payment it does not hold, which in a real network is every message.
+//   - The PAYEE'S BANK resolves the message by ADDRESS — that is what produces
+//     AC01 for an account number nobody holds — checks its own half, and answers
+//     ACCP or RJCT.
+//   - The CLEARING HOUSE clears the answer: an acceptance goes into the open
+//     cycle for its scheme, and a payment with no window open is refused with
+//     TM01, because the cut-off is the clearing house's and no bank refuses its
+//     own customer's instruction on account of it. Then it tells the payer's
+//     bank.
+//   - The PAYER'S BANK, on a rejection, gives the payer their money back.
+//
+// Which institution runs which half is decided entirely by whose inbox the
+// message landed in. That, rather than the XML, is what the mesh is for.
+//
+// A rejection therefore HALF-HAPPENS for an interval: the clearing house has
+// rejected the payment and the payer's money is still in their own bank's
+// clearing suspense, until a second actor, in a second unit of work, reverses
+// it. payment.RejectAtCSMTx documents that seam; the mesh does not hide it — a
+// reversal that fails has nobody to answer, so it becomes a dead letter and
+// Drain returns it.
+//
 // # Unbounded queues, and what that costs
 //
 // An actor's inbox is an unbounded slice, not a buffered channel. A fixed
@@ -83,4 +121,20 @@
 // authentication, no signature, and no cut-off enforced by anything but the
 // clearing cycle's own state. What the mesh models is the SHAPE of interbank
 // messaging — who may know what, and when — not its infrastructure.
+//
+// The clock is literally one: every header this package stamps is dated from
+// payment.Network.Now, the same source the payments themselves are booked from
+// (see Mesh.now). A mesh with a clock of its own would be a second answer to
+// what time it is, and under the frozen clock the tests run on the two would be
+// a year apart — a pacs.008 dated after the payment it carries. Two banks in a
+// real network do not share a clock, and every timestamp comparison between them
+// is a comparison across two, which is why real cut-offs are stated in a named
+// time zone and enforced with a tolerance. None of that is modelled here.
+//
+// One store, likewise, is not one bank's. The actors are told apart by
+// ledger.BookID and nothing enforces that a handler stays in its own book, so
+// the boundary is asserted rather than given: ops.go narrows what each actor may
+// CALL, and the recorder in books_test.go watches which books each one actually
+// reaches. The measurements are in TestABankHandlerTouchesOnlyItsOwnBook, and
+// one of them is a genuine crossing that this arrangement is what found.
 package mesh

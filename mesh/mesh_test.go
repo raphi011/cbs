@@ -237,6 +237,28 @@ func testEnvelope(from, to iso20022.BIC, id string) iso20022.Envelope {
 	}
 }
 
+// testRejection is testEnvelope's rejecting twin: the same valid pacs.002,
+// saying no.
+//
+// The two are not interchangeable, and which one a test wants is a question
+// about behaviour rather than about fixtures. An acceptance is a message a
+// payer's bank has nothing to do about, so a handler that received one and did
+// nothing is indistinguishable from one that was never run. A rejection is work.
+func testRejection(from, to iso20022.BIC, id string) iso20022.Envelope {
+	env := testEnvelope(from, to, id)
+	doc := env.Document.(*iso20022.Pacs002)
+	doc.FIToFIPmtStsRpt.OrgnlGrpInfAndSts.GrpSts = iso20022.GroupStatusRejected
+	code := iso20022.StatusReasonNotSpecifiedAgentGenerated
+	doc.FIToFIPmtStsRpt.TxInfAndSts[0].TxSts = iso20022.TransactionStatusRejected
+	doc.FIToFIPmtStsRpt.TxInfAndSts[0].StsRsnInf = &iso20022.StatusReasonInformation{
+		Orgtr: &iso20022.PartyIdentification{
+			Id: &iso20022.PartyChoice{OrgId: &iso20022.OrganisationIdentification{AnyBIC: from}},
+		},
+		Rsn: iso20022.StatusReasonChoice{Cd: &code},
+	}
+	return env
+}
+
 // The helper the other tests depend on has to be checked by a test of its own.
 // If testEnvelope stopped being valid, send would fail at the marshaller and
 // several tests here would go on passing for the wrong reason —
@@ -711,9 +733,13 @@ func TestDrainThatTimesOutStillReportsTheDeadLetters(t *testing.T) {
 	}
 }
 
-// An actor with no behaviour yet REFUSES what it is sent. Tasks 10-13 replace
-// these handlers; until they do, a message to one must not look like a message
-// that was dealt with.
+// An actor with no behaviour yet REFUSES what it is sent: a message to one must
+// not look like a message that was dealt with.
+//
+// The clearing house is the one addressed here because newTestMesh builds its
+// mesh over NO network, and a clearing house with no payments to clear keeps the
+// placeholder — see unhandled. On a mesh that has one, Task 10 gave it a real
+// handler; the central bank keeps the placeholder either way until Task 12.
 func TestAMessageToAnActorWithNoHandlerIsADeadLetter(t *testing.T) {
 	m := newTestMesh(t)
 	if err := m.Start(context.Background()); err != nil {

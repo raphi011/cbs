@@ -5,11 +5,14 @@
 // reason that is mechanical and worth stating rather than rediscovering. These
 // build a Network, which means a store, which means store/testenv — and
 // store/mem imports payment, so an in-package test file importing it back is an
-// import cycle. translate_test.go's reason-table tests need reasonTable and
-// reasonFor, which are unexported and are meant to stay that way. Neither half
-// can move to the other's package, and a test-only export to bridge them would
-// be API surface outliving the reason for it. Go allows both packages in one
-// directory; this is what that facility is for.
+// import cycle. translate_test.go's reason-table tests need reasonTable, which
+// is unexported and is meant to stay that way — the table is this package's own
+// classification, not something a caller chooses between. ReasonFor beside it is
+// now exported, because mesh's handlers ask for a code, but that changes nothing
+// here: reasonTable alone keeps the two halves apart. Neither half can move to
+// the other's package, and a test-only export to bridge them would be API
+// surface outliving the reason for it. Go allows both packages in one directory;
+// this is what that facility is for.
 package payment_test
 
 import (
@@ -623,7 +626,7 @@ func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) err
 // reported as one.
 //
 // partyTx's two lookups fail with ErrParticipantNotFound and
-// ErrAccountNotInParticipant, which reasonFor turns into RC01 "bank identifier
+// ErrAccountNotInParticipant, which ReasonFor turns into RC01 "bank identifier
 // incorrect" and AC01 "incorrect account number". If it translated EVERY error
 // that way — the shape checkPartyTx uses, and the shape partyTx had until the
 // first review — a dropped connection would tell another bank its address was
@@ -892,9 +895,11 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	// ErrAccountNotInParticipant is what becomes AC01 "incorrect account
 	// number" on the wire — the code the receiving bank sends back. The
 	// mapping itself is pinned by TestReasonForKnownErrors in translate_test.go,
-	// which is in the other package in this directory: reasonFor is unexported
-	// and networkWithOnePayment needs testenv, and no one package can reach
-	// both. The chain is covered across the two files rather than in one.
+	// which is in the other package in this directory: that test drives
+	// reasonTable, which is unexported, and networkWithOnePayment needs testenv,
+	// and no one package can reach both. The chain is covered across the two
+	// files rather than in one — and end to end, on the wire, by
+	// mesh's TestCreditTransferToAnUnknownAccountComesBackAsAC01.
 	if !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Errorf("CreditTransferRequest on an unknown IBAN = %v, want ErrAccountNotInParticipant", err)
 	}
