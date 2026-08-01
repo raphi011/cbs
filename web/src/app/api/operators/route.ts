@@ -58,20 +58,27 @@ export async function GET() {
     // short.
   }
 
-  const banks = await Promise.all(
-    roster.map(async (pid): Promise<OperatorStatus> => {
-      // pid always comes from this same roster, so its position is always
-      // found and bankUrl never throws here — the port is always derivable.
-      // What is not guaranteed is that anything is bound to it: a bank
-      // admitted at runtime gets a derived port and no listener until the
-      // server restarts, so probe() failing against that port is what tells
-      // admitted from provisioned, not a thrown error.
-      return { operator: `bank/${pid}`, live: await probe(bankUrl(pid, roster, CFG)) };
-    }),
-  );
+  // Every probe below is independent — none needs another's answer — so they
+  // run in one Promise.all rather than the central bank's waiting its turn
+  // behind the banks': serialized, that's up to one more probe timeout added
+  // to every load of this route for no reason.
+  const [centralBankLive, banks] = await Promise.all([
+    probe(institutionUrl("central-bank", CFG)),
+    Promise.all(
+      roster.map(async (pid): Promise<OperatorStatus> => {
+        // pid always comes from this same roster, so its position is always
+        // found and bankUrl never throws here — the port is always derivable.
+        // What is not guaranteed is that anything is bound to it: a bank
+        // admitted at runtime gets a derived port and no listener until the
+        // server restarts, so probe() failing against that port is what tells
+        // admitted from provisioned, not a thrown error.
+        return { operator: `bank/${pid}`, live: await probe(bankUrl(pid, roster, CFG)) };
+      }),
+    ),
+  ]);
 
   const out: OperatorStatus[] = [
-    { operator: "central-bank", live: await probe(institutionUrl("central-bank", CFG)) },
+    { operator: "central-bank", live: centralBankLive },
     { operator: "clearing-house", live: csmLive },
     ...banks,
   ];

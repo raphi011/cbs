@@ -52,8 +52,10 @@ not one of their own. **To add a section, add its entry to `navFor` and its
 `page.tsx` in the same commit; `src/lib/nav-integrity.test.ts` holds the two
 together, and also holds the quiz's `EXPLORE_ROUTES` against the route tree.**
 Old `/participants/…` links are forwarded by `app/participants/[...rest]/page.tsx`.
-Each persona gets its own shell from `components/shell/`; the customer's has no
-left panel, and `plain-shell` is the lobby's and Learn's.
+The central bank, the clearing house and a bank's back office share one
+`ConsoleShell` from `components/shell/`, parameterised by identity; the
+customer's shell has no left panel, a different-enough arrangement that it
+doesn't join that group. `plain-shell` is the lobby's and Learn's.
 
 **Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`.
 

@@ -137,7 +137,9 @@ export function StatementTable({
                 </TableRow>
                 {!retail && openTx === row.txId && (
                   <TableRow className="bg-muted/40 hover:bg-muted/40">
-                    <TableCell colSpan={retail ? 4 : 5} className="p-0">
+                    {/* This row only renders when !retail (the row above),
+                        so the column count is always 5 — no ternary needed. */}
+                    <TableCell colSpan={5} className="p-0">
                       <div className="space-y-2 px-4 py-3">
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                           Underlying GL transaction <IdText id={row.txId} /> — one balanced double entry

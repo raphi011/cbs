@@ -31,6 +31,18 @@ import { homeFor, useIdentity, type Identity } from "@/lib/identity";
 // of a frozen account is one of the better lessons available here. A bank with
 // no listener is not — it is shown as awaiting provisioning and cannot be
 // chosen, because entering it would mean a console whose every request 502s.
+//
+// This control is out-of-fiction scaffolding, and deliberately so. Every
+// persona's page reaches only its own operator — a retail client has no
+// clearing-house connection (see endpoints.ts, identity.ts,
+// handlers_bank_payment.go) — but useIdentityDirectory, which this picker
+// calls, fires GET /members at the clearing house and a deposit-accounts
+// list at every bank, from inside the customer's own shell. That is not the
+// persona boundary leaking; it is the seat-switcher, which by its nature has
+// to see the whole cast to offer it, sitting outside the fiction it lets you
+// step into. The honest alternative — a customer who can never see who else
+// exists — would make the app harder to explore for no teaching gain, so the
+// scaffolding stays and is named here rather than left to look like a bug.
 export function IdentityPicker() {
   const [open, setOpen] = useState(false);
   const router = useRouter();
