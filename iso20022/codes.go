@@ -32,6 +32,46 @@ type ServiceLevel string
 // ServiceLevelSEPA is the SEPA rulebook.
 const ServiceLevelSEPA ServiceLevel = "SEPA"
 
+// LocalInstrument names the local instrument — the clearing-scheme-specific
+// convention a payment or collection is processed under — in the standard's
+// external local-instrument code list. See LocalInstrumentChoice for the
+// element it fills.
+type LocalInstrument string
+
+// LocalInstrumentCore (CORE) identifies the SEPA Core Direct Debit scheme.
+// It is the EPC guidelines' AT-20, mandatory on every SEPA Core collection —
+// the ISO standard itself leaves LclInstrm optional, which is exactly why
+// xmllint validating a collection without it proves nothing about EPC
+// conformance. It is the only member declared: this package models Core
+// Direct Debit and no other SEPA direct debit scheme (there is no B2B
+// variant here).
+const LocalInstrumentCore LocalInstrument = "CORE"
+
+// SequenceType places a direct debit collection within its mandate's
+// lifecycle. It is the EPC guidelines' AT-21, mandatory on every SEPA Core
+// collection though the ISO standard again leaves it optional.
+//
+// This is the single element that most distinguishes a direct debit
+// collection from a credit transfer: pacs.008 has nothing that answers "is
+// this the first time this mandate has been exercised" because a credit
+// transfer has no mandate to exercise. A debtor's bank reads SeqTp to decide
+// whether it should expect a first-collection reconciliation or a routine
+// recurring one.
+type SequenceType string
+
+const (
+	// SequenceTypeFirst (FRST): the first collection under this mandate.
+	SequenceTypeFirst SequenceType = "FRST"
+	// SequenceTypeRecurring (RCUR): a later collection under a mandate whose
+	// first collection has already happened.
+	SequenceTypeRecurring SequenceType = "RCUR"
+	// SequenceTypeOneOff (OOFF): the only collection a mandate authorises.
+	SequenceTypeOneOff SequenceType = "OOFF"
+	// SequenceTypeFinal (FNAL): the last collection under a mandate that is
+	// being closed out.
+	SequenceTypeFinal SequenceType = "FNAL"
+)
+
 // GroupStatus is the status of a whole message in a pacs.002.
 //
 // It is separate from TransactionStatus because a message is a BULK: a file of

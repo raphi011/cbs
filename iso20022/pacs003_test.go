@@ -30,6 +30,27 @@ func TestPacs003RoundTrip(t *testing.T) {
 	if got := tx[0].DbtrAgt.FinInstnId.BICFI; got != "AURTSESSXXX" {
 		t.Fatalf("DbtrAgt = %q, want AURTSESSXXX", got)
 	}
+	// AT-20 and AT-21: the EPC-mandatory local instrument and sequence type
+	// that the ISO schema itself leaves optional.
+	if tx[0].PmtTpInf == nil || tx[0].PmtTpInf.LclInstrm == nil || tx[0].PmtTpInf.LclInstrm.Cd == nil {
+		t.Fatalf("LclInstrm/Cd missing, want %v", LocalInstrumentCore)
+	}
+	if got := *tx[0].PmtTpInf.LclInstrm.Cd; got != LocalInstrumentCore {
+		t.Fatalf("LclInstrm/Cd = %q, want %q", got, LocalInstrumentCore)
+	}
+	if tx[0].PmtTpInf.SeqTp == nil {
+		t.Fatalf("SeqTp missing, want %v", SequenceTypeRecurring)
+	}
+	if got := *tx[0].PmtTpInf.SeqTp; got != SequenceTypeRecurring {
+		t.Fatalf("SeqTp = %q, want %q", got, SequenceTypeRecurring)
+	}
+	// AT-02: the Creditor Identifier the mandate was issued under.
+	if got := tx[0].DrctDbtTx.CdtrSchmeId.Id.PrvtId.Othr.Id; got != "IT66ZZZVERDE0001" {
+		t.Fatalf("CdtrSchmeId/Othr/Id = %q, want IT66ZZZVERDE0001", got)
+	}
+	if got := tx[0].DrctDbtTx.CdtrSchmeId.Id.PrvtId.Othr.SchmeNm.Prtry; got != "SEPA" {
+		t.Fatalf("CdtrSchmeId/SchmeNm/Prtry = %q, want SEPA", got)
+	}
 }
 
 func TestPacs003Validate(t *testing.T) {
@@ -86,6 +107,65 @@ func TestPacs003Validate(t *testing.T) {
 		d.FIToFICstmrDrctDbt.GrpHdr.TtlIntrBkSttlmAmt.Value = "not-a-number"
 		if err := d.validate(); !errors.Is(err, ErrAmountFormat) {
 			t.Fatalf("validate() = %v, want it to wrap ErrAmountFormat", err)
+		}
+	})
+	t.Run("a collection with no payment type information is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no local instrument is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a local instrument with both code and proprietary is an invalid choice", func(t *testing.T) {
+		d := valid()
+		prtry := "X"
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm.Prtry = &prtry
+		if err := d.validate(); !errors.Is(err, ErrInvalidChoice) {
+			t.Fatalf("validate() = %v, want it to wrap ErrInvalidChoice", err)
+		}
+	})
+	t.Run("a local instrument given only by proprietary identifier is a missing element", func(t *testing.T) {
+		d := valid()
+		prtry := "X"
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm.Cd = nil
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm.Prtry = &prtry
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no sequence type is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.SeqTp = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no creditor identifier is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DrctDbtTx.CdtrSchmeId.Id.PrvtId.Othr.Id = ""
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no creditor identifier scheme is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DrctDbtTx.CdtrSchmeId.Id.PrvtId.Othr.SchmeNm.Prtry = ""
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("a collection with no mandate signature date is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DrctDbtTx.MndtRltdInf.DtOfSgntr = ISODate{}
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
 		}
 	})
 }

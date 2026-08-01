@@ -102,6 +102,11 @@ func (t CreditTransferTransaction) validate() error {
 	if err := t.PmtId.validate(); err != nil {
 		return err
 	}
+	if t.PmtTpInf != nil {
+		if err := t.PmtTpInf.validate(); err != nil {
+			return fmt.Errorf("PmtTpInf: %w", err)
+		}
+	}
 	if err := t.IntrBkSttlmAmt.validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
 	}

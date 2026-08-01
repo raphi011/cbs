@@ -44,6 +44,10 @@
           <SvcLvl>
             <Cd>SEPA</Cd>
           </SvcLvl>
+          <LclInstrm>
+            <Cd>CORE</Cd>
+          </LclInstrm>
+          <SeqTp>RCUR</SeqTp>
         </PmtTpInf>
         <IntrBkSttlmAmt Ccy="EUR">45.90</IntrBkSttlmAmt>
         <ChrgBr>SLEV</ChrgBr>
@@ -52,6 +56,18 @@
             <MndtId>mnd-0001</MndtId>
             <DtOfSgntr>2026-01-15</DtOfSgntr>
           </MndtRltdInf>
+          <CdtrSchmeId>
+            <Id>
+              <PrvtId>
+                <Othr>
+                  <Id>IT66ZZZVERDE0001</Id>
+                  <SchmeNm>
+                    <Prtry>SEPA</Prtry>
+                  </SchmeNm>
+                </Othr>
+              </PrvtId>
+            </Id>
+          </CdtrSchmeId>
         </DrctDbtTx>
         <Cdtr>
           <Nm>Bella Bruno</Nm>

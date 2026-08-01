@@ -31,8 +31,19 @@ type Document interface {
 	// namespace is the XML namespace of the message's root element.
 	namespace() string
 
-	// validate reports whether the message satisfies the EPC guidelines'
-	// mandatory elements and its xsd:choice constraints.
+	// validate reports whether the message is missing an element this
+	// package treats as mandatory, or breaks an xsd:choice constraint.
+	//
+	// "Mandatory" is not simply "the ISO standard requires it": several
+	// elements the standard itself leaves minOccurs="0" are mandatory in the
+	// EPC guidelines this package targets — pacs.003's SeqTp, LclInstrm and
+	// CdtrSchmeId, and MandateRelatedInformation's MndtId and DtOfSgntr, are
+	// exactly that case, and validate() enforces the EPC requirement even
+	// though the schema alone would accept the element's absence. It is not,
+	// however, a full implementation of either rule book: a code-set field
+	// such as ChrgBr is checked for PRESENCE, not for carrying the one value
+	// SEPA allows, and validate() does not cross-check a group header's
+	// NbOfTxs or TtlIntrBkSttlmAmt against the transactions beneath it.
 	validate() error
 }
 

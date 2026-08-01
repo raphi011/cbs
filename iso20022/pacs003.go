@@ -85,26 +85,120 @@ func (h DirectDebitGroupHeader) validate() error {
 // the mandate can still check the identifier and the signature date against a
 // dispute.
 //
-// DtOfSgntr is mandatory in the standard. payment.Mandate has CreatedAt and no
-// signature date, so sub-project 7b must either add one or map CreatedAt and
-// document the elision.
+// Both fields are minOccurs="0" in MandateRelatedInformation14 — the ISO
+// standard requires NEITHER. Both are mandatory in the EPC guidelines: this
+// package keeps that distinction sharp elsewhere on purpose (see CashAccount's
+// doc comment) and it matters here for the same reason — a debtor's bank
+// cannot check a dispute against a mandate identifier or signature date that
+// never arrived. payment.Mandate has CreatedAt and no signature date, so
+// sub-project 7b must either add one or map CreatedAt and document the
+// elision.
 type MandateRelatedInformation struct {
 	MndtId    string  `xml:"MndtId"`
 	DtOfSgntr ISODate `xml:"DtOfSgntr"`
 }
 
+// validate enforces both EPC-mandatory fields. DtOfSgntr counts as absent when
+// it is the zero ISODate: a zero date marshals as 0001-01-01, which is a date
+// no mandate was ever signed on, so treating it as "present but wrong" instead
+// of "absent" would be the more misleading choice.
 func (m MandateRelatedInformation) validate() error {
 	if m.MndtId == "" {
 		return fmt.Errorf("%w: MndtRltdInf/MndtId", ErrMissingElement)
 	}
+	if m.DtOfSgntr.IsZero() {
+		return fmt.Errorf("%w: MndtRltdInf/DtOfSgntr", ErrMissingElement)
+	}
 	return nil
 }
 
-// DirectDebitTransaction wraps the mandate information. The standard also
-// allows the creditor scheme identification and a pre-notification reference
-// here; neither is used.
+// PersonIdentificationScheme names the scheme an "other" person identifier was
+// issued under. This package's only use of it is fixed by the EPC guidelines:
+// CdtrSchmeId's Othr/Id is always a Creditor Identifier, and SchmeNm always
+// says so with the literal proprietary value SEPA — not a member of the ISO
+// external code list, which is why only Prtry is carried here and not a full
+// Cd/Prtry choice.
+type PersonIdentificationScheme struct {
+	Prtry string `xml:"Prtry"`
+}
+
+func (s PersonIdentificationScheme) validate() error {
+	if s.Prtry == "" {
+		return fmt.Errorf("%w: SchmeNm/Prtry", ErrMissingElement)
+	}
+	return nil
+}
+
+// GenericPersonIdentification carries one non-BIC, non-account identifier for
+// a party. In this package's only use, Id is the Creditor Identifier — EPC
+// AT-02 — and SchmeNm says, per the guidelines, that it is one.
+type GenericPersonIdentification struct {
+	Id      string                     `xml:"Id"`
+	SchmeNm PersonIdentificationScheme `xml:"SchmeNm"`
+}
+
+func (g GenericPersonIdentification) validate() error {
+	if g.Id == "" {
+		return fmt.Errorf("%w: Othr/Id", ErrMissingElement)
+	}
+	return g.SchmeNm.validate()
+}
+
+// PersonIdentification is the standard's PersonIdentification13: a date and
+// place of birth, or one or more "other" identifiers. This package carries
+// exactly one Othr — the Creditor Identifier — and nothing else: SEPA's use of
+// this type is not about the creditor being a natural person, only about which
+// arm of Party38Choice the standard puts a proprietary-scheme identifier in.
+type PersonIdentification struct {
+	Othr GenericPersonIdentification `xml:"Othr"`
+}
+
+func (p PersonIdentification) validate() error { return p.Othr.validate() }
+
+// PartyChoice is the standard's Party38Choice: an organisation identification
+// or a private one. CdtrSchmeId always uses the private arm — PrvtId — because
+// that is where the standard puts the Creditor Identifier, regardless of
+// whether the creditor is itself a company. OrgId is not carried.
+type PartyChoice struct {
+	PrvtId PersonIdentification `xml:"PrvtId"`
+}
+
+func (p PartyChoice) validate() error { return p.PrvtId.validate() }
+
+// CreditorSchemeIdentification is CdtrSchmeId: the Creditor Identifier the
+// mandate was issued under — EPC AT-02, mandatory on every SEPA Core
+// collection, though PartyIdentification135 leaves the whole element optional
+// in the standard.
+//
+// It is what lets the debtor's bank check a collection against a mandate
+// scoped to a specific creditor without ever having seen that creditor's own
+// records: the identifier is assigned by a national scheme (a country's
+// central bank or an equivalent authority), not chosen by the creditor, so it
+// cannot be forged the way a free-text creditor name could be. The standard's
+// PartyIdentification135 also allows a name and postal address here; the EPC
+// guidelines do not require them and neither is carried.
+type CreditorSchemeIdentification struct {
+	Id PartyChoice `xml:"Id"`
+}
+
+func (c CreditorSchemeIdentification) validate() error { return c.Id.validate() }
+
+// DirectDebitTransaction wraps the mandate information and the creditor
+// scheme identification. The standard also allows a pre-notification
+// identifier and date here (PreNtfctnId, PreNtfctnDt); neither is used.
 type DirectDebitTransaction struct {
-	MndtRltdInf MandateRelatedInformation `xml:"MndtRltdInf"`
+	MndtRltdInf MandateRelatedInformation    `xml:"MndtRltdInf"`
+	CdtrSchmeId CreditorSchemeIdentification `xml:"CdtrSchmeId"`
+}
+
+func (t DirectDebitTransaction) validate() error {
+	if err := t.MndtRltdInf.validate(); err != nil {
+		return err
+	}
+	if err := t.CdtrSchmeId.validate(); err != nil {
+		return fmt.Errorf("CdtrSchmeId: %w", err)
+	}
+	return nil
 }
 
 // DirectDebitTransactionInformation is one collection.
@@ -127,9 +221,31 @@ type DirectDebitTransactionInformation struct {
 	RmtInf         *RemittanceInformation        `xml:"RmtInf,omitempty"`
 }
 
+// validate enforces, alongside the checks pacs.008's equivalent method makes,
+// the two EPC-mandatory elements of PmtTpInf that PaymentTypeInformation
+// itself does not require (see that type's doc comment for why): LclInstrm
+// must be present and given BY CODE — AT-20 names the scheme CORE, and only
+// the Cd arm of the choice can carry a code, so a collection that supplied
+// Prtry instead is exactly as non-conformant as one with no LclInstrm at all —
+// and SeqTp must be present.
 func (t DirectDebitTransactionInformation) validate() error {
 	if err := t.PmtId.validate(); err != nil {
 		return err
+	}
+	if t.PmtTpInf == nil {
+		return fmt.Errorf("%w: PmtTpInf", ErrMissingElement)
+	}
+	if err := t.PmtTpInf.validate(); err != nil {
+		return fmt.Errorf("PmtTpInf: %w", err)
+	}
+	if t.PmtTpInf.LclInstrm == nil {
+		return fmt.Errorf("%w: PmtTpInf/LclInstrm", ErrMissingElement)
+	}
+	if t.PmtTpInf.LclInstrm.Cd == nil {
+		return fmt.Errorf("%w: PmtTpInf/LclInstrm/Cd", ErrMissingElement)
+	}
+	if t.PmtTpInf.SeqTp == nil {
+		return fmt.Errorf("%w: PmtTpInf/SeqTp", ErrMissingElement)
 	}
 	if err := t.IntrBkSttlmAmt.validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)
@@ -137,8 +253,8 @@ func (t DirectDebitTransactionInformation) validate() error {
 	if t.ChrgBr == "" {
 		return fmt.Errorf("%w: ChrgBr", ErrMissingElement)
 	}
-	if err := t.DrctDbtTx.MndtRltdInf.validate(); err != nil {
-		return err
+	if err := t.DrctDbtTx.validate(); err != nil {
+		return fmt.Errorf("DrctDbtTx: %w", err)
 	}
 	if err := t.Cdtr.validate(); err != nil {
 		return fmt.Errorf("Cdtr: %w", err)

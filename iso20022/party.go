@@ -214,10 +214,60 @@ type ServiceLevelChoice struct {
 	Cd ServiceLevel `xml:"Cd"`
 }
 
-// PaymentTypeInformation carries the service level, local instrument and
-// category purpose. Only the service level is used here.
+// LocalInstrumentChoice names the local instrument a payment or collection
+// travels under: by a member of the standard's external code list, or by a
+// proprietary identifier — never both, never neither.
+//
+// Unlike ServiceLevelChoice, BOTH arms are modelled with pointers and an
+// exactly-one validate(), the way AccountIdentification4Choice is. SEPA Core
+// direct debit always uses Cd=CORE — see LocalInstrumentCore — but a caller
+// outside this package's own messages could plausibly need Prtry, and this is
+// a genuine xsd:choice in the schema, not a case (like SvcLvl) where the
+// second arm is simply never reachable in this system.
+type LocalInstrumentChoice struct {
+	Cd    *LocalInstrument `xml:"Cd,omitempty"`
+	Prtry *string          `xml:"Prtry,omitempty"`
+}
+
+func (c LocalInstrumentChoice) validate() error {
+	switch {
+	case c.Cd != nil && c.Prtry != nil:
+		return fmt.Errorf("%w: LclInstrm has both Cd and Prtry", ErrInvalidChoice)
+	case c.Cd == nil && c.Prtry == nil:
+		return fmt.Errorf("%w: LclInstrm has neither Cd nor Prtry", ErrInvalidChoice)
+	default:
+		return nil
+	}
+}
+
+// PaymentTypeInformation carries the service level, local instrument,
+// sequence type and category purpose. Only the first three are used here;
+// category purpose is not carried.
+//
+// LclInstrm and SeqTp are pointers and optional at this type's level even
+// though pacs.003 treats both as mandatory (EPC AT-20, AT-21): this struct is
+// SHARED with pacs.008, whose SEPA Credit Transfer never carries either, and
+// a credit transfer's golden document must keep marshalling exactly as it did
+// before these two fields existed. It is pacs003.go's validate(), not this
+// type's, that enforces their presence — the same way EPC-versus-ISO
+// mandatoriness is decided per message elsewhere in this package.
 type PaymentTypeInformation struct {
-	SvcLvl *ServiceLevelChoice `xml:"SvcLvl,omitempty"`
+	SvcLvl    *ServiceLevelChoice    `xml:"SvcLvl,omitempty"`
+	LclInstrm *LocalInstrumentChoice `xml:"LclInstrm,omitempty"`
+	SeqTp     *SequenceType          `xml:"SeqTp,omitempty"`
+}
+
+// validate checks only the structural constraint this type owns: if LclInstrm
+// is present, its choice is well-formed. It does NOT require LclInstrm or
+// SeqTp to be present — see the type doc comment for why that decision
+// belongs to the message, not here.
+func (t PaymentTypeInformation) validate() error {
+	if t.LclInstrm != nil {
+		if err := t.LclInstrm.validate(); err != nil {
+			return fmt.Errorf("PmtTpInf/LclInstrm: %w", err)
+		}
+	}
+	return nil
 }
 
 // ClearingSystemIdentification names the clearing system a payment settles
