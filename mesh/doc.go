@@ -49,8 +49,13 @@
 // No test in this package waits for a DURATION to decide that work has
 // finished, and none should: Drain blocks until no message is in flight and
 // then returns, which is what lets a test say "submit, drain, assert" and mean
-// it. Durations appear only as deadlines — the moment at which a wedged handler
-// stops being worth waiting for. The counter behind it is
+// it. Durations appear as deadlines — the moment at which a wedged handler
+// stops being worth waiting for — and in exactly one place as a negative:
+// TestStopWaitsForARunningHandler gives Stop 50ms to NOT return. That one is
+// one-sided by construction, since a Stop that failed to wait returns in
+// microseconds, so it can only ever pass falsely, never fail falsely. It is
+// the only assertion in the package that is not deterministic, and it is
+// labelled as such where it stands. The counter behind Drain is
 // incremented before a message is enqueued and decremented only after the
 // handler that consumed it has returned, so a message that begets a message
 // never shows a moment of quiet in the middle of a chain.

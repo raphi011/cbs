@@ -91,4 +91,11 @@ func TestStartRefusesTwoParticipantsWithOneBIC(t *testing.T) {
 	if err := m.Start(context.Background()); err == nil {
 		t.Fatal("Start accepted two participants under one BIC")
 	}
+	// And it left the mesh as it found it. Registering the first bank and then
+	// failing on the second would leave a half-populated mesh that a retry
+	// could not fix, because the retry would collide with what the failed
+	// attempt had itself created.
+	if got := len(m.actors); got != 2 {
+		t.Errorf("after the refusal the mesh holds %d actors, want the 2 institutions only", got)
+	}
 }

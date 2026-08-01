@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,9 +319,12 @@ func TestSendAfterStopIsRefusedAndLeavesDrainQuiet(t *testing.T) {
 // store underneath a handler that was still writing to it.
 //
 // The negative half is asserted by waiting: Stop runs in a goroutine and must
-// still be blocked while the handler is. That direction is reliable rather than
-// hopeful — a Stop that did not wait would return in microseconds, not in the
-// 50 milliseconds this allows it.
+// still be blocked while the handler is. This is the one assertion in the
+// package that is not deterministic, and it is one-sided — a Stop that did not
+// wait returns in microseconds, so a machine wedged for 50 milliseconds makes
+// this pass when it should fail, and nothing makes it fail when it should pass.
+// The counterfactual confirms it bites: with the join loop removed it fails on
+// every run.
 func TestStopWaitsForARunningHandler(t *testing.T) {
 	m := newTestMesh(t)
 	entered := make(chan struct{})
@@ -359,6 +363,90 @@ func TestStopWaitsForARunningHandler(t *testing.T) {
 	case <-finished:
 	default:
 		t.Fatal("Stop returned before the handler finished")
+	}
+}
+
+// Stop does not throw away what is already queued. Closing an inbox stops it
+// taking NEW messages; everything in it when Stop was called is still handled.
+//
+// This is the property Stop's deadline has to be sized against, and the one its
+// doc comment used to state backwards — it said queued messages were discarded,
+// which would have made a shutdown lose work silently and made a caller size a
+// context for one handler when it is really sizing it for the whole queue.
+func TestStopDeliversWhatIsAlreadyQueued(t *testing.T) {
+	m := newTestMesh(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var handled atomic.Int32
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		if handled.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "1")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// Only once the first message is inside the handler is the second one
+	// certain to be waiting in the inbox rather than already dealt with.
+	<-entered
+	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "2")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	// Closing the inboxes is Stop's first act, and it is done here directly so
+	// that it cannot race the handler waking up. Called from a goroutine beside
+	// close(release) it did race, and the earlier version of this test passed
+	// with the queue reporting closed-before-drained — it was asserting which
+	// of the two won, not what Stop guarantees.
+	for _, a := range m.actors {
+		a.q.close()
+	}
+	close(release)
+
+	if err := m.Stop(drainCtx(t)); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := handled.Load(); got != 2 {
+		t.Fatalf("the actor delivered %d of the 2 messages; the queued one was dropped when its inbox closed", got)
+	}
+}
+
+// A Stop that times out leaves the mesh running, so calling it again finishes
+// the job. The alternative — marking the mesh stopped on the way out — would
+// return nil from the second call while an actor was still going, and would
+// leak the mesh context for the life of the process.
+func TestStopCanBeRetriedAfterATimeout(t *testing.T) {
+	m := newTestMesh(t)
+	release := make(chan struct{})
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		<-release
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", "x")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := m.Stop(ctx); err == nil {
+		t.Fatal("Stop returned nil while a handler was wedged")
+	}
+
+	close(release)
+	if err := m.Stop(drainCtx(t)); err != nil {
+		t.Fatalf("the retried Stop: %v", err)
+	}
+	if m.ctx.Err() == nil {
+		t.Error("a completed Stop left the mesh context live; every handler context leaks with it")
 	}
 }
 
@@ -414,6 +502,91 @@ func TestAStoppedMeshDoesNotRestart(t *testing.T) {
 	}
 	if err := m.Start(context.Background()); err == nil {
 		t.Fatal("a stopped mesh restarted")
+	}
+}
+
+// An actor registered on a stopped mesh would have no goroutine reading its
+// inbox: a send to it would report success, count a message in flight and hang
+// the next Drain out to its deadline. A black hole that answers "sent" is worse
+// than a refusal.
+func TestAddingAnActorToAStoppedMeshIsAnError(t *testing.T) {
+	m := newTestMesh(t)
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := m.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := m.addActor("DDDDDEFFXXX", "D", func(context.Context, iso20022.BIC, []byte) error { return nil }); err == nil {
+		t.Fatal("a stopped mesh accepted a new actor, whose inbox nothing will ever read")
+	}
+	if _, ok := m.actors["DDDDDEFFXXX"]; ok {
+		t.Error("the refused actor was registered anyway")
+	}
+}
+
+// A Drain that hangs on a message nobody has picked up must say so. Reporting
+// "(idle)" while an inbox holds work is the bare deadline this design says it
+// avoids, at the moment naming something would help most.
+func TestDrainNamesAnInboxNobodyIsReading(t *testing.T) {
+	// Deliberately NOT started: no goroutine exists, so the message is certain
+	// to sit unread rather than being picked up before the deadline.
+	m := newTestMesh(t)
+	if err := m.send("AAAADEFFXXX", "BBBBDEFFXXX", testEnvelope("AAAADEFFXXX", "BBBBDEFFXXX", "x")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := m.Drain(ctx)
+	if err == nil {
+		t.Fatal("Drain returned nil with a message sitting in an inbox")
+	}
+	if !strings.Contains(err.Error(), "BBBBDEFFXXX") {
+		t.Errorf("Drain error %q does not name the inbox holding the message", err)
+	}
+}
+
+// A Drain that gives up still hands over the failures it collected. Holding
+// them back would attribute a handler's error to whichever later Drain happened
+// to pick it up.
+func TestDrainThatTimesOutStillReportsTheDeadLetters(t *testing.T) {
+	m := newTestMesh(t)
+	boom := errors.New("boom")
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	var n atomic.Int32
+	// One actor, two messages, one goroutine: the first message's dead letter
+	// is recorded before the second is even popped, so there is nothing here
+	// for a deadline to race.
+	m.actors["AAAADEFFXXX"].handle = func(ctx context.Context, from iso20022.BIC, raw []byte) error {
+		if n.Add(1) == 1 {
+			return boom
+		}
+		close(blocked)
+		<-release
+		return nil
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { close(release); _ = m.Stop(context.Background()) })
+
+	for _, id := range []string{"1", "2"} {
+		if err := m.send("CCCCDEFFXXX", "AAAADEFFXXX", testEnvelope("CCCCDEFFXXX", "AAAADEFFXXX", id)); err != nil {
+			t.Fatalf("send %s: %v", id, err)
+		}
+	}
+	<-blocked
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := m.Drain(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Drain = %v, want the deadline", err)
+	}
+	if !errors.Is(err, boom) {
+		t.Fatalf("Drain = %v; the dead letter it already had was left behind for some later Drain", err)
 	}
 }
 
