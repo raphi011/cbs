@@ -758,21 +758,19 @@ export function useIdentityDirectory(): {
   const isProvisioned = useIsProvisioned();
   const list = participants.data ?? [];
 
+  // The probe has spoken when it has an answer or has failed. Waiting is the
+  // only state that must not fire a query: an unprovisioned bank's fetch 502s
+  // and, with retry: false, that error is cached for the life of the page. A
+  // failed probe is not an answer, so it falls back to the same optimism
+  // `isProvisioned` already applies — better a 502 on one bank than every
+  // bank silently dark because the probe itself couldn't be reached.
+  const probeSettled = operators.data !== undefined || operators.isError;
+
   const results = useQueries({
     queries: list.map((p) => ({
       queryKey: qk.depositAccounts(p.id),
       queryFn: () => api.listDepositAccounts(p.id),
-      // `isProvisioned` guesses "yes" while the probe is still in flight — right
-      // for a badge, wrong for deciding whether to fire a request. Participants
-      // is one hop over the same roster the probe takes three sequential legs
-      // to answer, so on a fresh load `participants.data` is routinely there
-      // before `operators.data` is: gating on `isProvisioned` alone fires every
-      // bank's query on that guess, including one just admitted and still
-      // listener-less. That 502s, and with `retry: false` the failure sits in
-      // the query cache for the rest of the page's life — disabling the query
-      // once the probe corrects itself does not clear an already-errored
-      // result. Waiting for `operators.data` to exist closes that window.
-      enabled: operators.data !== undefined && isProvisioned(`bank/${p.id}`),
+      enabled: probeSettled && isProvisioned(`bank/${p.id}`),
     })),
   });
 
