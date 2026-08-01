@@ -66,7 +66,9 @@ function Brand({ collapsed }: { collapsed?: boolean }) {
       href="/"
       className="flex flex-col gap-0.5 px-3 py-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md"
     >
-      <span className="text-base font-semibold tracking-tight">Ledger</span>
+      <span className="text-base font-semibold tracking-tight text-[color:var(--identity-accent,inherit)]">
+        Ledger
+      </span>
       <span className="text-xs text-muted-foreground">
         Core banking explorer
       </span>

@@ -1,5 +1,6 @@
 "use client";
 
+import { accentFor } from "@/lib/accent";
 import { navFor, type Identity } from "@/lib/identity";
 import { ShellFrame } from "./shell-frame";
 import { SidebarNav } from "./sidebar-nav";
@@ -21,6 +22,7 @@ export function ConsoleShell({
   return (
     <ShellFrame
       topbar={<Topbar />}
+      accent={accentFor(identity)}
       sidebar={(collapsed, toggle) => (
         <SidebarNav items={items} collapsed={collapsed} onToggle={toggle} />
       )}

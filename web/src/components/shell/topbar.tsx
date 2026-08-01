@@ -38,7 +38,7 @@ export function Topbar({
   mobileSidebar?: React.ReactNode;
 }) {
   return (
-    <header className="flex h-14 items-center gap-2 border-b px-4">
+    <header className="flex h-14 items-center gap-2 border-b border-t-2 border-t-[color:var(--identity-accent,transparent)] px-4">
       {mobile && mobileSidebar}
       {mobile && (
         <Link
