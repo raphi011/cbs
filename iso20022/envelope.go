@@ -38,16 +38,16 @@ type Document interface {
 	// elements the standard itself leaves minOccurs="0" are mandatory in the
 	// EPC guidelines this package targets — pacs.003's SeqTp, LclInstrm and
 	// CdtrSchmeId, MandateRelatedInformation's MndtId and DtOfSgntr, and
-	// pacs.002's StsId and StsRsnInf/Orgtr, are exactly that case, and
-	// validate() enforces the EPC requirement even though the schema alone
-	// would accept the element's absence. It is not, however, a full
-	// implementation of either rule book: a code-set field such as ChrgBr is
-	// checked for PRESENCE, not for carrying the one value SEPA allows, and
-	// validate() does not cross-check a group header's NbOfTxs or
-	// TtlIntrBkSttlmAmt against the transactions beneath it. One
-	// EPC-mandatory element is also deliberately not modelled at all and so
-	// cannot be enforced: pacs.002's TxInfAndSts/OrgnlTxRef — see
-	// PaymentTransactionStatus for why.
+	// pacs.002's StsId and StsRsnInf/Orgtr, and pacs.004's RtrId, RtrRsnInf
+	// and RtrRsnInf/Orgtr, are exactly that case, and validate() enforces the
+	// EPC requirement even though the schema alone would accept the element's
+	// absence. It is not, however, a full implementation of either rule book:
+	// a code-set field such as ChrgBr is checked for PRESENCE, not for
+	// carrying the one value SEPA allows, and validate() does not cross-check
+	// a group header's NbOfTxs or TtlIntrBkSttlmAmt against the transactions
+	// beneath it. One EPC-mandatory element is also deliberately not modelled
+	// at all and so cannot be enforced: OrgnlTxRef, which pacs.002 and
+	// pacs.004 both require — see PaymentTransactionStatus for why.
 	validate() error
 }
 

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>VERDITMMXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CSMBFRPPXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>VERDITMMXXX-20260803-000044</BizMsgIdr>
+    <MsgDefIdr>pacs.004.001.09</MsgDefIdr>
+    <CreDt>2026-08-03T08:15:00Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.004.001.09">
+    <PmtRtr>
+      <GrpHdr>
+        <MsgId>VERDITMMXXX-20260803-000044</MsgId>
+        <CreDtTm>2026-08-03T08:15:00Z</CreDtTm>
+        <NbOfTxs>1</NbOfTxs>
+        <TtlRtrdIntrBkSttlmAmt Ccy="EUR">3000.00</TtlRtrdIntrBkSttlmAmt>
+        <IntrBkSttlmDt>2026-08-04</IntrBkSttlmDt>
+        <SttlmInf>
+          <SttlmMtd>CLRG</SttlmMtd>
+          <ClrSys>
+            <Prtry>CBS</Prtry>
+          </ClrSys>
+        </SttlmInf>
+      </GrpHdr>
+      <TxInf>
+        <RtrId>rtn-0001</RtrId>
+        <OrgnlGrpInf>
+          <OrgnlMsgId>AURTSESSXXX-20260731-000001</OrgnlMsgId>
+          <OrgnlMsgNmId>pacs.008.001.08</OrgnlMsgNmId>
+        </OrgnlGrpInf>
+        <OrgnlEndToEndId>INV-2026-0042</OrgnlEndToEndId>
+        <OrgnlTxId>pay-0001</OrgnlTxId>
+        <OrgnlIntrBkSttlmAmt Ccy="EUR">3000.00</OrgnlIntrBkSttlmAmt>
+        <RtrdIntrBkSttlmAmt Ccy="EUR">3000.00</RtrdIntrBkSttlmAmt>
+        <ChrgBr>SLEV</ChrgBr>
+        <RtrRsnInf>
+          <Orgtr>
+            <Id>
+              <OrgId>
+                <AnyBIC>VERDITMMXXX</AnyBIC>
+              </OrgId>
+            </Id>
+          </Orgtr>
+          <Rsn>
+            <Cd>AC04</Cd>
+          </Rsn>
+          <AddtlInf>beneficiary account closed 2026-08-02</AddtlInf>
+        </RtrRsnInf>
+      </TxInf>
+    </PmtRtr>
+  </Document>
+</Envelope>
