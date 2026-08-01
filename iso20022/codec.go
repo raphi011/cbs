@@ -53,8 +53,8 @@ func Marshal(env Envelope) ([]byte, error) {
 // Envelope, a second top-level element (complete or not) anywhere after the
 // first one, a repeated AppHdr or Document inside one envelope, a DTD after a
 // complete envelope, an unknown message definition, a header that disagrees
-// with the document's namespace, a missing Document, and a document missing a
-// mandatory element are each an error. The sections below are the authority on
+// with the document's namespace, a missing Document, a header that is not
+// itself valid, and a document missing a mandatory element are each an error. The sections below are the authority on
 // the exact set; this sentence is a summary and does not promise to be
 // exhaustive.
 //
@@ -134,6 +134,22 @@ func Marshal(env Envelope) ([]byte, error) {
 // Elements this codec does NOT dispatch on may repeat freely; they are
 // skipped either way. See TestUnmarshalAcceptsUndispatchedElementsAnywhere.
 //
+// # The header is validated on the way in, not only on the way out
+//
+// hdr.validate() runs here rather than only in Marshal, and that symmetry is
+// load-bearing rather than tidy. Unmarshal already refuses a document missing
+// a mandatory element, so a header that Marshal would refuse had to be
+// refused too: without it, Unmarshal accepted an envelope whose Fr or To
+// carried no well-formed BIC, and the value it returned could then never be
+// re-marshalled — err == nil on the way in and an error on the way back out,
+// for bytes this package had itself just accepted. FuzzUnmarshal asserts
+// exactly that round trip and found this within seconds of first being run;
+// see TestUnmarshalRejectsAHeaderItCouldNotReMarshal.
+//
+// It subsumes the older MsgDefIdr != "" check, which was the same
+// ErrMissingElement on the same element and is now one of the four things
+// AppHdr.validate() covers.
+//
 // A second, SEPARATE guard (rootClosed below) covers the case where the
 // first top-level element closes WITHOUT ever producing a valid result — an
 // empty or incomplete first <Envelope> followed by more content. That case
@@ -190,8 +206,8 @@ func Unmarshal(data []byte) (Envelope, error) {
 					return Envelope{}, err
 				}
 				depth-- // DecodeElement consumed AppHdr's own EndElement too.
-				if hdr.MsgDefIdr == "" {
-					return Envelope{}, fmt.Errorf("%w: AppHdr/MsgDefIdr", ErrMissingElement)
+				if err := hdr.validate(); err != nil {
+					return Envelope{}, err
 				}
 				haveHdr = true
 			case "Document":

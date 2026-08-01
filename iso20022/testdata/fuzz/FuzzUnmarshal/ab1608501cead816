@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("000000000000000000000000000000000000000<Envelope>000<AppHdr xmlns=\"urn:iso:std:iso:20022:tech:xsd:head.001.001.02\"><MsgDefIdr>pacs.002.001.10</MsgDefIdr></AppHdr><Document xmlns=\"urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10\"><FIToFIPmtStsRpt><GrpHdr><MsgId>0</MsgId></GrpHdr><OrgnlGrpInfAndSts><OrgnlMsgId>0</OrgnlMsgId><OrgnlMsgNmId>0</OrgnlMsgNmId></OrgnlGrpInfAndSts></FIToFIPmtStsRpt></Document>0</Envelope> ")

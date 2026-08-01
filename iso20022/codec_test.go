@@ -3,6 +3,9 @@ package iso20022
 import (
 	"encoding/xml"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -558,5 +561,93 @@ func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
 				t.Fatalf("Body = %q, want hello", doc.Body)
 			}
 		})
+	}
+}
+
+// TestUnmarshalRejectsAHeaderItCouldNotReMarshal closes the decode/encode
+// asymmetry FuzzUnmarshal found: an AppHdr carrying nothing but a MsgDefIdr
+// used to satisfy Unmarshal and then fail Marshal on the very next call, so
+// this package accepted bytes it could not reproduce.
+//
+// The document below is deliberately VALID — the point is that the header
+// alone decides it, and that the error is the same one Marshal would have
+// raised, only raised at the boundary where the bytes actually arrived.
+func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
+	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<MsgDefIdr>test.001.001.01</MsgDefIdr></AppHdr>` + testDocumentXML + `</Envelope>`
+
+	if _, err := Unmarshal([]byte(in)); !errors.Is(err, ErrBICFormat) {
+		t.Fatalf("Unmarshal() = %v, want it to wrap ErrBICFormat", err)
+	}
+
+	// The same header with agents but no business message identifier: a
+	// different member of AppHdr.validate()'s four checks, so that this test
+	// pins the delegation rather than one branch of it.
+	noBizMsgIdr := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<MsgDefIdr>test.001.001.01</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` + testDocumentXML + `</Envelope>`
+
+	if _, err := Unmarshal([]byte(noBizMsgIdr)); !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("Unmarshal() = %v, want it to wrap ErrMissingElement", err)
+	}
+}
+
+// TestUnmarshalledEnvelopesAlwaysReMarshal is FuzzUnmarshal's property stated
+// as an ordinary test, so that it holds in a normal `go test` run and not only
+// under the fuzzer, which CI does not invoke.
+func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
+	for _, file := range []string{"pacs008.xml", "pacs003.xml", "pacs002.xml", "pacs004.xml"} {
+		t.Run(file, func(t *testing.T) {
+			golden, err := os.ReadFile(filepath.Join("testdata", file))
+			if err != nil {
+				t.Fatalf("reading %s: %v", file, err)
+			}
+			env, err := Unmarshal(golden)
+			if err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+			if _, err := Marshal(env); err != nil {
+				t.Fatalf("a document that unmarshalled failed to marshal: %v", err)
+			}
+		})
+	}
+}
+
+// TestUnmarshalSurvivesHostileInput is the safety net for the one function here
+// that reads bytes it did not write. Every case must return an error and none
+// may panic — the loop asserting no panic is the point, not the errors.
+func TestUnmarshalSurvivesHostileInput(t *testing.T) {
+	cases := []string{
+		``,
+		`<`,
+		`<Envelope>`,
+		`<Envelope></Envelope>`,
+		`<Envelope><AppHdr/></Envelope>`,
+		`<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+			`<MsgDefIdr>pacs.008.001.08</MsgDefIdr></AppHdr></Envelope>`,
+		`<Envelope><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"/></Envelope>`,
+		`<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+			`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+			`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+			`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>pacs.008.001.08</MsgDefIdr>` +
+			`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
+			`<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">` +
+			`<FIToFICstmrCdtTrf></FIToFICstmrCdtTrf></Document></Envelope>`,
+		strings.Repeat(`<a>`, 5000),
+		"\x00\x01\x02",
+	}
+	for i, in := range cases {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("case %d panicked: %v", i, r)
+				}
+			}()
+			if _, err := Unmarshal([]byte(in)); err == nil {
+				t.Fatalf("case %d: Unmarshal() = nil, want an error", i)
+			}
+		}()
 	}
 }
