@@ -1502,8 +1502,8 @@ Example — a SEPA credit transfer end to end, across three listeners:
 
 ```bash
 CB=http://localhost:8081; CSM=http://localhost:8082; H='-H Content-Type:application/json'
-A=$(curl -s $H -X POST $CB/members -d '{"name":"Bank A"}' | jq -r .id)
-B=$(curl -s $H -X POST $CB/members -d '{"name":"Bank B"}' | jq -r .id)
+A=$(curl -s $H -X POST $CB/members -d '{"name":"Bank A","bic":"AURODEFFXXX"}' | jq -r .id)
+B=$(curl -s $H -X POST $CB/members -d '{"name":"Bank B","bic":"VERDITMMXXX"}' | jq -r .id)
 
 # A bank's own listener. Its port is its identity, so no path names the bank.
 BANK_A=http://localhost:8083; BANK_B=http://localhost:8084

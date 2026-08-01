@@ -514,13 +514,16 @@ export interface NameRequest {
   name: string;
 }
 
-// POST /participants. `assets` is the set of assets the bank joins with — one
+// POST /participants. `bic` is required: the bank's ISO 9362 business
+// identifier code, what a counterparty addresses it by and what the mesh
+// routes on. `assets` is the set of assets the bank joins with — one
 // suspense, reserve and settlement account is provisioned per entry, and only
 // those assets can hold money at this bank afterwards. Omitting it (or sending
 // an empty array) means ["EUR"]; that is a default for the joining *set*, not
 // for the asset of any individual account.
 export interface AddParticipantRequest {
   name: string;
+  bic: string;
   assets?: string[];
 }
 

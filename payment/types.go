@@ -209,13 +209,22 @@ type Payment struct {
 
 	Status PaymentStatus
 
-	// RejectCode is the external-code-set reason a rejection carries on the
-	// wire, and RejectReason is the free text beside it.
+	// RejectCode is the external-code-set reason a REJECTION (Status ==
+	// Rejected, set by RejectPaymentTx) carries on the wire, and RejectReason
+	// is the free text beside it.
 	//
-	// Both, not either. The code is what makes a rejection machine-actionable
-	// — it is the entire point of ISO 20022's external code sets — and the
-	// text is what says the part no code can. A rejection produced inside this
-	// system without a code would be one the mesh could not put in a pacs.002.
+	// Both, not either, for a rejection: the code is what makes it
+	// machine-actionable — it is the entire point of ISO 20022's external
+	// code sets — and the text is what says the part no code can. A rejection
+	// produced inside this system without a code would be one the mesh could
+	// not put in a pacs.002.
+	//
+	// A RETURN (Status == Returned, set by ReturnPaymentTx) is not a
+	// rejection and does not set RejectCode: pacs.004 draws its reason from a
+	// different external code set, iso20022.ReturnReason, not this one, and
+	// giving a return a StatusReason here would misrepresent which set it
+	// actually carries on the wire. RejectReason is reused as the return's
+	// free text because the two share the same shape, not the same meaning.
 	RejectCode   iso20022.StatusReason
 	RejectReason string
 

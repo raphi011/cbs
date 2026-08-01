@@ -30,6 +30,10 @@ export function CreateParticipantDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
+  // The bank's ISO 9362 business identifier code — what a counterparty
+  // addresses it by, and what the mesh routes on. Required: POST /members
+  // 422s without one (payment.Participant.BIC).
+  const [bic, setBic] = useState("");
   // The assets the bank joins with. Each one provisions a suspense, reserve
   // and settlement account, and a bank can only hold money in an asset it
   // joined with — so this is the one screen that decides it, and it cannot be
@@ -48,13 +52,15 @@ export function CreateParticipantDialog({
   function submit(e: React.FormEvent) {
     e.preventDefault();
     const trimmed = name.trim();
-    if (!trimmed || assets.length === 0) return;
+    const trimmedBic = bic.trim();
+    if (!trimmed || !trimmedBic || assets.length === 0) return;
     add.mutate(
-      { name: trimmed, assets },
+      { name: trimmed, bic: trimmedBic, assets },
       {
         onSuccess: (p) => {
           setOpen(false);
           setName("");
+          setBic("");
           setAssets(["EUR"]);
           toast.success(
             `${p.name} admitted. Its reserve accounts are open; it gets a listener ` +
@@ -99,6 +105,21 @@ export function CreateParticipantDialog({
             />
           </div>
           <div className="space-y-2">
+            <FieldLabel htmlFor="participant-bic" required>
+              BIC
+            </FieldLabel>
+            <Input
+              id="participant-bic"
+              value={bic}
+              placeholder="e.g. AURODEFFXXX"
+              onChange={(e) => setBic(e.target.value.toUpperCase())}
+            />
+            <p className="text-xs text-muted-foreground">
+              The bank&apos;s ISO 9362 business identifier code — what a
+              counterparty addresses it by, and what the mesh routes on.
+            </p>
+          </div>
+          <div className="space-y-2">
             <FieldLabel required>Assets</FieldLabel>
             <div className="flex flex-wrap gap-2">
               {(known.data ?? []).map((a) => {
@@ -125,7 +146,12 @@ export function CreateParticipantDialog({
           <DialogFooter>
             <Button
               type="submit"
-              disabled={add.isPending || !name.trim() || assets.length === 0}
+              disabled={
+                add.isPending ||
+                !name.trim() ||
+                !bic.trim() ||
+                assets.length === 0
+              }
             >
               {add.isPending ? "Creating…" : "Create participant"}
             </Button>

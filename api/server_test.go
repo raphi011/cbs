@@ -1151,6 +1151,36 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 	assertEqual(t, "rejected entity", rejected[0].EntityID, second)
 }
 
+// TestRejectPaymentRendersItsCode pins that a rejection's external
+// status-reason code — not just its free text — reaches the wire: on the
+// reject response itself, and on every later read of the payment.
+// handleRejectPayment always attaches MS03 (StatusReasonNotSpecifiedAgentGenerated) —
+// the API exposes no way for a caller to name a more specific one — so that is
+// the value pinned here.
+func TestRejectPaymentRendersItsCode(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := auditFixture(t, h)
+
+	var aAccounts, bAccounts []depositAccountDTO
+	getJSON(t, bank(h, a), "/deposit-accounts", &aAccounts)
+	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	payID := doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"amount":1000
+	}`, http.StatusCreated)["id"].(string)
+
+	rejected := doJSON(t, csm(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusOK)
+	assertEqual(t, "reject code on the reject response", rejected["rejectCode"].(string), "MS03")
+	assertEqual(t, "reject reason on the reject response", rejected["rejectReason"].(string), "card lost")
+
+	reread := doJSON(t, csm(h), "GET", "/payments/"+payID, "", http.StatusOK)
+	assertEqual(t, "reject code on a later read", reread["rejectCode"].(string), "MS03")
+	assertEqual(t, "reject reason on a later read", reread["rejectReason"].(string), "card lost")
+}
+
 // TestAuditMandateEvents covers the two mandate events, which no payment flow
 // emits on its own.
 func TestAuditMandateEvents(t *testing.T) {

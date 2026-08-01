@@ -403,6 +403,11 @@ func TestSDD_Return(t *testing.T) {
 	returned, err := sys.ReturnPayment(ctx, pay.ID, "insufficient funds at debtor")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
+	// A return is not a rejection: it carries no StatusReason. pacs.004 draws
+	// its reason from iso20022.ReturnReason instead — a different external
+	// code set — and ReturnPaymentTx does not set RejectCode, only the free
+	// text. See the RejectCode doc comment on payment.Payment.
+	assertEqual(t, "return sets no reject code", string(returned.RejectCode), "")
 
 	// Money fully unwound across all three ledgers.
 	assertEqual(t, "alice refunded", customerBalance(t, a, alice), 100000)

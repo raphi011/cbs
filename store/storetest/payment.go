@@ -282,14 +282,25 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		var got payment.Payment
+		var listed []payment.Payment
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			var err error
-			got, err = tx.GetPayment(ctx, p.ID)
+			if got, err = tx.GetPayment(ctx, p.ID); err != nil {
+				return err
+			}
+			listed, err = tx.ListPayments(ctx)
 			return err
 		})
 
 		assertEqual(t, "reject code", string(got.RejectCode), "AC04")
 		assertEqual(t, "reject reason", got.RejectReason, "creditor account is closed")
+		// paymentColumns is shared between the get and list queries, so a
+		// positional bug would likely bite both alike — but the BIC case
+		// asserts both paths for the same reason, and a future list query
+		// that builds its own column list is exactly what only this second
+		// assertion would catch.
+		assertEqual(t, "reject code in listings", string(listed[0].RejectCode), "AC04")
+		assertEqual(t, "reject reason in listings", listed[0].RejectReason, "creditor account is closed")
 	})
 
 	t.Run("PaymentListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
