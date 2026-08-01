@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
@@ -147,6 +148,69 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 	if leg.Status != ledger.Reversed {
 		t.Errorf("the rejected collection's debtor leg is %v, want Reversed — the payer's money is still in suspense", leg.Status)
 	}
+}
+
+// TestSeedRejectIsOneUnitOfWork pins the shape of the seed's composite, not
+// just its result: both halves run on ONE transaction, so a reversal that fails
+// takes the clearing house's transition down with it. Run as two units of work
+// the seed would build a dataset containing a Rejected payment whose payer
+// never got their money back — the half-happened state RejectAtCSMTx names, and
+// one the seed has never produced.
+//
+// The forced failure is a leg that has already been reversed, which is what a
+// retried rejection produces. b.reject reports it the way the whole builder
+// does, by panicking with a seedErr, so the call goes through recoverBuild.
+func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
+	ctx := context.Background()
+	net := testNetwork(t)
+
+	// Any Accepted payment: it has a posted debtor leg and the CSM's half
+	// takes it, exactly as the one the seed itself rejects.
+	payments, err := net.ListPayments(ctx)
+	if err != nil {
+		t.Fatalf("list payments: %v", err)
+	}
+	var target payment.Payment
+	for _, p := range payments {
+		if p.Status == payment.Accepted && p.DebtorLegTx != "" {
+			target = p
+		}
+	}
+	if target.ID == "" {
+		t.Fatal("no accepted payment with a posted leg in the seed data")
+	}
+	if err := net.ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
+		t.Fatalf("reverse the leg out from under the composite: %v", err)
+	}
+
+	b := &builder{ctx: ctx, net: net}
+	err = rejectErr(b, target.ID, iso20022.StatusReasonDuplication, "duplicate instruction")
+	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
+		t.Fatalf("reject = %v, want ErrTransactionAlreadyReversed", err)
+	}
+
+	after, err := net.GetPayment(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("get payment: %v", err)
+	}
+	if after.Status != payment.Accepted {
+		t.Errorf("status after the failed rejection = %v, want Accepted", after.Status)
+	}
+	if after.RejectReason != "" {
+		t.Errorf("reject reason after the failed rejection = %q, want empty", after.RejectReason)
+	}
+}
+
+// rejectErr runs b.reject and returns the error it would otherwise panic with,
+// the way Populate does.
+func rejectErr(b *builder, id payment.PaymentID, code iso20022.StatusReason, reason string) (err error) {
+	defer func() {
+		if e := recoverBuild(recover()); e != nil {
+			err = e
+		}
+	}()
+	b.reject(id, code, reason)
+	return nil
 }
 
 func TestAccountStatusCoverage(t *testing.T) {

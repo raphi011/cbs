@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/interest"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
@@ -1218,6 +1220,63 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 
 	doJSON(t, csm(h), "POST", "/payments/"+payID+"/reject", `{"reason":"card lost"}`, http.StatusOK)
 	assertEqual(t, "payer's book balance after the rejection", bookOf(), before)
+}
+
+// TestRejectWholePaymentIsOneUnitOfWork pins the shape of the route's
+// composite, not just its happy path: both halves run on ONE transaction, so a
+// reversal that fails takes the clearing house's transition down with it and no
+// caller can read a Rejected payment whose money is still in suspense.
+//
+// That outcome is real in the mesh, where the CSM and the payer's bank are two
+// actors — RejectAtCSMTx's doc comment is about exactly this — and it is what
+// this synchronous route has never produced. Run as two units of work the
+// rejection below would stick, and the operator would be told the payment was
+// refused while the payer's money sat in clearing suspense with nothing left to
+// reverse it.
+//
+// The forced failure is a leg that has already been reversed, which is what a
+// retried rejection produces. It is set up through the network rather than over
+// HTTP because no route can reverse a leg on its own — which is the same reason
+// this test calls rejectWholePayment directly.
+func TestRejectWholePaymentIsOneUnitOfWork(t *testing.T) {
+	ctx := context.Background()
+	h := newServer(t, nil)
+	a, b, _ := auditFixture(t, h)
+
+	var aAccounts, bAccounts []depositAccountDTO
+	getJSON(t, bank(h, a), "/deposit-accounts", &aAccounts)
+	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	payID := doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"amount":1000
+	}`, http.StatusCreated)["id"].(string)
+
+	p, err := h.network().GetPayment(ctx, payment.PaymentID(payID))
+	if err != nil {
+		t.Fatalf("get payment: %v", err)
+	}
+	if err := h.network().ReverseDebtorLeg(ctx, p, "reversed already"); err != nil {
+		t.Fatalf("reverse the leg out from under the composite: %v", err)
+	}
+
+	_, err = h.rejectWholePayment(ctx, payment.PaymentID(payID), iso20022.StatusReasonDuplication, "card lost")
+	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
+		t.Fatalf("rejectWholePayment = %v, want ErrTransactionAlreadyReversed", err)
+	}
+
+	reread := doJSON(t, csm(h), "GET", "/payments/"+payID, "", http.StatusOK)
+	assertEqual(t, "status after the failed rejection", reread["status"].(string), "Accepted")
+	// The DTO omits both rejection fields when they are empty, so the whole
+	// rolled-back transition is "neither key is there".
+	if v, ok := reread["rejectReason"]; ok {
+		t.Errorf("rejectReason = %v after the failed rejection, want the field absent", v)
+	}
+	if v, ok := reread["rejectCode"]; ok {
+		t.Errorf("rejectCode = %v after the failed rejection, want the field absent", v)
+	}
 }
 
 // TestAuditMandateEvents covers the two mandate events, which no payment flow

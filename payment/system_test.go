@@ -1994,11 +1994,14 @@ func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
 	}
 }
 
-// The composition sites that stand in for the mesh — the reject route, the
-// seed, and the reject helper above — run the two halves in ONE unit of work,
-// and that is what keeps the half-happened outcome off the synchronous routes:
-// a reversal that fails takes the transition down with it, so no caller ever
-// reads a Rejected payment whose money is still in suspense.
+// The composition sites that stand in for the mesh run the two halves in ONE
+// unit of work, and that is what keeps the half-happened outcome off the
+// synchronous routes: a reversal that fails takes the transition down with it,
+// so no caller ever reads a Rejected payment whose money is still in suspense.
+//
+// This pins the reject helper above, and it pins nothing else — the other two
+// sites are other packages' code and carry their own tests,
+// api.TestRejectWholePaymentIsOneUnitOfWork and seed.TestSeedRejectIsOneUnitOfWork.
 //
 // The mesh does not get this, and is not meant to: there the two halves are two
 // actors, and a failed reversal is a dead letter.

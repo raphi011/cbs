@@ -1426,11 +1426,13 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // roadmap assigns to sub-project 8; 7b's job is to expose the seam honestly,
 // not to close it.
 //
-// The synchronous routes that still compose both halves — api's
-// rejectWholePayment, the seed's reject — pass ONE transaction to both, so the
-// gap is not open there and never has been: a failed reversal takes the
-// transition down with it. TestAFailedReversalRollsBackTheWholeRejection is the
-// pin.
+// The synchronous routes that still compose both halves pass ONE transaction to
+// both, so the gap is not open there and never has been: a failed reversal
+// takes the transition down with it. Each site is pinned separately, because a
+// shared shape is not a shared test — api's rejectWholePayment by
+// TestRejectWholePaymentIsOneUnitOfWork, the seed's reject by
+// TestSeedRejectIsOneUnitOfWork, and this package's own reject test helper by
+// TestAFailedReversalRollsBackTheWholeRejection.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied
