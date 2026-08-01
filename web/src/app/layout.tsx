@@ -3,7 +3,8 @@ import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
 import { Providers } from "@/components/providers";
-import { AppShell } from "@/components/app-shell";
+import { ConceptPanelProvider } from "@/components/concept-panel-provider";
+import { PersonaShell } from "@/components/shell/persona-shell";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -34,7 +35,9 @@ export default function RootLayout({
     >
       <body className="min-h-full">
         <Providers>
-          <AppShell>{children}</AppShell>
+          <ConceptPanelProvider>
+            <PersonaShell>{children}</PersonaShell>
+          </ConceptPanelProvider>
         </Providers>
       </body>
     </html>

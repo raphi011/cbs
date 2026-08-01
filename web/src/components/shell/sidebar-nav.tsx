@@ -1,0 +1,130 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
+
+import { cn } from "@/lib/utils";
+import type { NavItem } from "@/lib/identity";
+import { Button } from "@/components/ui/button";
+import { ResetButton } from "@/components/reset-button";
+
+function NavLinks({
+  items,
+  collapsed,
+  onNavigate,
+}: {
+  items: NavItem[];
+  collapsed?: boolean;
+  onNavigate?: () => void;
+}) {
+  const pathname = usePathname();
+  return (
+    <nav className="flex flex-col gap-0.5">
+      {items.map(({ href, label, icon: Icon, exact }) => {
+        const active = exact ? pathname === href : pathname.startsWith(href);
+        return (
+          <Link
+            key={href}
+            href={href}
+            onClick={onNavigate}
+            // Native tooltip + accessible name when icon-only; no shadcn tooltip dep.
+            title={collapsed ? label : undefined}
+            aria-label={collapsed ? label : undefined}
+            className={cn(
+              "flex items-center rounded-md text-sm font-medium transition-colors",
+              collapsed ? "justify-center px-0 py-2" : "gap-2.5 px-3 py-2",
+              active
+                ? "bg-accent text-accent-foreground"
+                : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+            )}
+          >
+            <Icon className="size-4 shrink-0" />
+            {!collapsed && label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+function Brand({ home, collapsed }: { home: string; collapsed?: boolean }) {
+  if (collapsed) {
+    return (
+      <Link
+        href={home}
+        title="Ledger"
+        aria-label="Ledger — Core banking explorer"
+        className="flex size-8 items-center justify-center rounded-md text-base font-semibold tracking-tight"
+      >
+        L
+      </Link>
+    );
+  }
+  return (
+    <Link href={home} className="flex flex-col gap-0.5 px-3 py-1">
+      <span className="text-base font-semibold tracking-tight">Ledger</span>
+      <span className="text-xs text-muted-foreground">
+        Core banking explorer
+      </span>
+    </Link>
+  );
+}
+
+// A persona's sidebar: brand + links + reset + a collapse toggle. Driven by
+// the panel's collapsed state; when collapsed everything renders icon-only.
+export function SidebarNav({
+  items,
+  home,
+  collapsed,
+  onToggle,
+  onNavigate,
+}: {
+  items: NavItem[];
+  // Where the brand links to: this persona's own home, not "/".
+  home: string;
+  collapsed: boolean;
+  onToggle: () => void;
+  onNavigate?: () => void;
+}) {
+  return (
+    <div className="flex h-full flex-col border-r bg-card">
+      <div
+        className={cn(
+          "flex h-14 items-center border-b",
+          collapsed && "justify-center",
+        )}
+      >
+        <Brand home={home} collapsed={collapsed} />
+      </div>
+      <div className={cn("flex-1 overflow-y-auto", collapsed ? "px-2 py-3" : "p-3")}>
+        <NavLinks items={items} collapsed={collapsed} onNavigate={onNavigate} />
+      </div>
+      <div className="border-t py-3">
+        {/* Resetting the system is the central bank's act, and ResetButton
+            already addresses cb("/admin/reset") explicitly, which is correct
+            rather than awkward wherever you happen to be standing. */}
+        <ResetButton collapsed={collapsed} />
+        <div className={cn("mt-2 flex", collapsed ? "justify-center px-2" : "px-3")}>
+          <Button
+            variant="ghost"
+            size={collapsed ? "icon" : "sm"}
+            onClick={onToggle}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={cn(!collapsed && "w-full justify-start gap-2")}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="size-4" />
+            ) : (
+              <>
+                <PanelLeftClose className="size-4" />
+                Collapse
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
