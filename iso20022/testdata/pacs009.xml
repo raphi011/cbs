@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CSMXFRPPXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CBSEDEFFXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>CSM-SETTLE-1</BizMsgIdr>
+    <MsgDefIdr>pacs.009.001.08</MsgDefIdr>
+    <CreDt>2026-08-01T10:30:00Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.009.001.08">
+    <FICdtTrf>
+      <GrpHdr>
+        <MsgId>CSM-SETTLE-1</MsgId>
+        <CreDtTm>2026-08-01T10:30:00Z</CreDtTm>
+        <NbOfTxs>1</NbOfTxs>
+        <TtlIntrBkSttlmAmt Ccy="EUR">2500.00</TtlIntrBkSttlmAmt>
+        <IntrBkSttlmDt>2026-08-01</IntrBkSttlmDt>
+        <SttlmInf>
+          <SttlmMtd>CLRG</SttlmMtd>
+        </SttlmInf>
+      </GrpHdr>
+      <CdtTrfTxInf>
+        <PmtId>
+          <InstrId>cyc_1:bank_1</InstrId>
+          <EndToEndId>cyc_1:bank_1</EndToEndId>
+          <TxId>cyc_1:bank_1</TxId>
+        </PmtId>
+        <IntrBkSttlmAmt Ccy="EUR">2500.00</IntrBkSttlmAmt>
+        <IntrBkSttlmDt>2026-08-01</IntrBkSttlmDt>
+        <Dbtr>
+          <FinInstnId>
+            <BICFI>AURODEFFXXX</BICFI>
+          </FinInstnId>
+        </Dbtr>
+        <Cdtr>
+          <FinInstnId>
+            <BICFI>VERDITMMXXX</BICFI>
+          </FinInstnId>
+        </Cdtr>
+      </CdtTrfTxInf>
+    </FICdtTrf>
+  </Document>
+</Envelope>

@@ -15,6 +15,17 @@ The cross-check is
 `TestGoldenFilesValidateAgainstTheSchema` in `xmllint_test.go`, which validates
 them against the official XSDs when `xmllint` and the schemas are present.
 
+`pacs009.xml` is different: it is this repository's own construction, not an
+EPC sample. The EPC Implementation Guidelines cover the four customer
+messages above; they say nothing about the FI-to-FI settlement leg, because
+EPC governs SEPA Credit Transfer and SEPA Direct Debit between PSPs and their
+customers, not a clearing house's own settlement instruction to a central
+bank. `pacs009.xml`'s shape therefore follows the ISO 20022 schema directly —
+`pacs.009.001.08`'s `FIToFIFinancialInstitutionCreditTransfer` — rather than
+an implementation guideline, and the cross-check against `pacs.009.001.08.xsd`
+is the same `TestGoldenFilesValidateAgainstTheSchema` when that schema is
+present.
+
 **To enable the schema check**, download the message schemas from
 <https://www.iso20022.org/iso-20022-message-definitions> into `testdata/xsd/`
 using the file names the test expects:
@@ -24,6 +35,7 @@ using the file names the test expects:
     testdata/xsd/pacs.003.001.08.xsd
     testdata/xsd/pacs.002.001.10.xsd
     testdata/xsd/pacs.004.001.09.xsd
+    testdata/xsd/pacs.009.001.08.xsd
 
 The directory is not committed: the schemas are redistributed under ISO's terms
 and are not this repository's to vendor. The test skips when they are absent.
@@ -36,7 +48,7 @@ and are not this repository's to vendor. The test skips when they are absent.
 which sets `ISO20022_REQUIRE_SCHEMAS=1`. With that variable set to any
 non-empty value, a missing `xmllint` or a missing schema is a failure rather
 than a skip — so a machine or a CI job that has the schemas notices when they
-go away, instead of quietly reporting `PASS` for eight checks that never ran.
+go away, instead of quietly reporting `PASS` for ten checks that never ran.
 
 **Identities.** Every file uses the same cast, matching `seed/seed.go`:
 

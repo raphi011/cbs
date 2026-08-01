@@ -63,7 +63,7 @@ func TestSchemaCheckIsRequiredOnlyWhenAsked(t *testing.T) {
 //
 // It cannot be a required test by default. There is no usable pure-Go XSD
 // validator, and taking a cgo dependency on libxml2 would cost this repository
-// its "no dependencies beyond pgx" property for a check that runs on four
+// its "no dependencies beyond pgx" property for a check that runs on five
 // files. So it shells out to xmllint and skips when the tool or the schemas are
 // absent — see testdata/README.md for how to obtain them.
 //
@@ -87,6 +87,7 @@ func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 		"pacs003.xml": "pacs.003.001.08.xsd",
 		"pacs002.xml": "pacs.002.001.10.xsd",
 		"pacs004.xml": "pacs.004.001.09.xsd",
+		"pacs009.xml": "pacs.009.001.08.xsd",
 	}
 
 	// validate writes one fragment to a temporary file and runs xmllint over
