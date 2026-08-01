@@ -109,15 +109,20 @@ func Marshal(env Envelope) ([]byte, error) {
 //
 // Once the root has closed on a valid envelope, what remains is scrutinised:
 // a further xml.StartElement is refused, whether it is another <Envelope> or
-// anything else; xml.CharData holding non-blank text is refused; and an
-// xml.Directive is refused, because a DOCTYPE's internal subset can declare
-// entities and so is the one trailing construct that carries content of its
-// own — a DTD arriving after a complete business message has no legitimate
-// meaning. What stays legal is what carries nothing: whitespace, comments and
-// processing instructions. See TestUnmarshalRejectsASecondValidEnvelope,
+// anything else; and an xml.Directive is refused, because a DOCTYPE's internal
+// subset can declare entities and so is the one trailing construct that carries
+// content of its own — a DTD arriving after a complete business message has no
+// legitimate meaning. What stays legal is what carries nothing: whitespace,
+// comments and processing instructions. See
+// TestUnmarshalRejectsASecondValidEnvelope,
 // TestUnmarshalRejectsATrailingDirective,
 // TestUnmarshalAcceptsTrailingWhitespaceAndComments and
 // TestUnmarshalAcceptsATrailingProcessingInstruction.
+//
+// Non-blank character data is refused OUTSIDE the root in either direction,
+// which is a wider rule than the three above and deliberately not conditioned
+// on having a result yet. See the xml.CharData case below and
+// TestUnmarshalRejectsTextOutsideTheEnvelope.
 //
 // The envelope-level guard says nothing about repetition INSIDE one envelope,
 // so both elements this codec dispatches on are guarded where they are
@@ -131,8 +136,20 @@ func Marshal(env Envelope) ([]byte, error) {
 // TestUnmarshalRejectsASecondAppHdrInTheSameEnvelope, which pins both
 // positions.
 //
-// Elements this codec does NOT dispatch on may repeat freely; they are
-// skipped either way. See TestUnmarshalAcceptsUndispatchedElementsAnywhere.
+// The envelope's OWN children that this codec does not dispatch on may repeat
+// freely; they are skipped either way. See
+// TestUnmarshalAcceptsUndispatchedElementsAnywhere.
+//
+// That is scoped to the envelope's children on purpose, because it is not true
+// one level down. Inside a subtree handed to dec.DecodeElement — an AppHdr, or
+// any message — encoding/xml is LAST-WINS for a repeated scalar child, so a
+// second <BizMsgIdr> or a second <MsgDefIdr> is neither skipped nor refused: it
+// silently replaces the first. Two banks reading the same bytes with different
+// parsers can therefore disagree about which value was sent, and this codec
+// takes the last. It is a known residual rather than a defect being fixed here:
+// every actor in this repository decodes through this same function, so they
+// agree with each other, and the package doc states plainly that
+// interoperability with a foreign parser is not what this envelope is for.
 //
 // # The header is validated on the way in, not only on the way out
 //
@@ -249,8 +266,18 @@ func Unmarshal(data []byte) (Envelope, error) {
 				rootClosed = true
 			}
 		case xml.CharData:
-			if result != nil && depth == 0 && len(bytes.TrimSpace(t)) != 0 {
-				return Envelope{}, errors.New("iso20022: unexpected text content after a valid envelope closed")
+			// Depth 0 is OUTSIDE the root element, in either direction: the
+			// prolog before <Envelope> and whatever follows </Envelope> are the
+			// same position as far as the XML grammar is concerned, and XML 1.0
+			// forbids character data in both. The guard used to fire only once
+			// a result existed, which made it a trailing-content rule and left
+			// the prolog open — so "junk<Envelope>…</Envelope>" was accepted
+			// while "<Envelope>…</Envelope>junk" was refused, and a conforming
+			// parser handed the first would reject what this one returned.
+			// encoding/xml is lenient in the prolog and will not raise it for
+			// us, so it is raised here.
+			if depth == 0 && len(bytes.TrimSpace(t)) != 0 {
+				return Envelope{}, errors.New("iso20022: unexpected text content outside the envelope")
 			}
 		case xml.Directive:
 			// encoding/xml surfaces <!DOCTYPE ...> here, internal subset and

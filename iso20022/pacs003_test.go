@@ -123,6 +123,17 @@ func TestPacs003Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
 		}
 	})
+	t.Run("a service level present but empty is a missing element", func(t *testing.T) {
+		// The nil case above leaves the empty-Cd branch of
+		// PaymentTypeInformation.validate() unpinned; this is that branch. See
+		// the identical subtest in pacs008_test.go — the check is in the type
+		// they share, so one message pinning it would not prove the other does.
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.SvcLvl = &ServiceLevelChoice{}
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
 	t.Run("a collection with no local instrument is a missing element", func(t *testing.T) {
 		d := valid()
 		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm = nil

@@ -103,6 +103,17 @@ func TestPacs008Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
 		}
 	})
+	t.Run("a service level present but empty is a missing element", func(t *testing.T) {
+		// Distinct from the case above: SvcLvl is PRESENT and its Cd is blank.
+		// Setting SvcLvl = nil exercises the nil branch and leaves the empty-Cd
+		// branch unpinned — that branch could be deleted with the whole suite
+		// still green, which is what this subtest exists to prevent.
+		d := valid()
+		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].PmtTpInf.SvcLvl = &ServiceLevelChoice{}
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
 	t.Run("a sequence type is not an allowed element", func(t *testing.T) {
 		// SeqTp exists in pacs.003's PaymentTypeInformation27 but has no
 		// element at all in pacs.008's own PaymentTypeInformation28. The

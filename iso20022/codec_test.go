@@ -564,6 +564,73 @@ func TestUnmarshalAcceptsUndispatchedElementsAnywhere(t *testing.T) {
 	}
 }
 
+// TestUnmarshalRejectsTextOutsideTheEnvelope closes the last asymmetry in the
+// trailing-content rules: text after </Envelope> was refused while text before
+// <Envelope> was accepted, so the same junk was fatal in one position and
+// invisible in the other.
+//
+// XML 1.0 forbids character data in the prolog, so a conforming parser rejects
+// the leading case outright — meaning this codec used to return a value for
+// bytes another parser would refuse to read at all. encoding/xml is lenient
+// there and will not raise it, so Unmarshal does.
+func TestUnmarshalRejectsTextOutsideTheEnvelope(t *testing.T) {
+	body := envelopeAround(testDocumentXML)
+
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"before the root", "junk" + body},
+		{"after the root", body + "junk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Unmarshal([]byte(tc.in)); err == nil {
+				t.Fatal("Unmarshal() = nil, want an error")
+			}
+		})
+	}
+
+	// Whitespace outside the root is not content and stays legal in both
+	// positions — the guard trims before it judges, so widening it must not
+	// have made a pretty-printed document illegal.
+	if _, err := Unmarshal([]byte("\n  " + body + "\n")); err != nil {
+		t.Fatalf("Unmarshal() error = %v; whitespace around the root is not content", err)
+	}
+}
+
+// TestUnmarshalTakesTheLastOfARepeatedScalar pins a known residual rather than
+// a desired behaviour, so that the doc comment claiming it stays honest.
+//
+// Inside a subtree handed to dec.DecodeElement, encoding/xml is last-wins for a
+// repeated scalar child: a second <BizMsgIdr> silently replaces the first
+// rather than being skipped or refused. The envelope's own children are
+// guarded against exactly this (a second <AppHdr> or <Document> is an error);
+// one level down, they are not. A parser that took the first value would
+// disagree with this one about the same bytes.
+//
+// It is left as-is because every actor in this repository decodes through this
+// function and so agrees with itself, and because the package doc says
+// interoperability with a foreign parser is not what this envelope is for. If
+// that ever stops being true, this test is where the decision is recorded, and
+// it will fail the moment the behaviour changes.
+func TestUnmarshalTakesTheLastOfARepeatedScalar(t *testing.T) {
+	in := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>FIRST</BizMsgIdr><BizMsgIdr>SECOND</BizMsgIdr>` +
+		`<MsgDefIdr>test.001.001.01</MsgDefIdr>` +
+		`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` + testDocumentXML + `</Envelope>`
+
+	env, err := Unmarshal([]byte(in))
+	if err != nil {
+		t.Fatalf("Unmarshal() error = %v; a repeated scalar inside AppHdr is accepted, not refused", err)
+	}
+	if got := env.AppHdr.BizMsgIdr; got != "SECOND" {
+		t.Fatalf("BizMsgIdr = %q, want %q — encoding/xml is last-wins here and the "+
+			"codec doc comment says so", got, "SECOND")
+	}
+}
+
 // TestUnmarshalRejectsAHeaderItCouldNotReMarshal closes the decode/encode
 // asymmetry FuzzUnmarshal found: an AppHdr carrying nothing but a MsgDefIdr
 // used to satisfy Unmarshal and then fail Marshal on the very next call, so

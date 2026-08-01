@@ -156,7 +156,11 @@ func TestBranchAndFinancialInstitutionValidate(t *testing.T) {
 	})
 }
 
-func TestPartyIdentificationRequiresAName(t *testing.T) {
+// TestPartyIdentificationRequiresSomeIdentification pins the floor: a party
+// element that identifies its party in NO way is refused. A name alone
+// satisfies it; so does an identification alone, which is the case
+// TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName covers.
+func TestPartyIdentificationRequiresSomeIdentification(t *testing.T) {
 	if err := (PartyIdentification{}).validate(); !errors.Is(err, ErrMissingElement) {
 		t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
 	}
