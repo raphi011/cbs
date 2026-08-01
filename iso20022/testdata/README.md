@@ -7,7 +7,10 @@ application header and one ISO 20022 message.
 of the EPC Implementation Guidelines. They are *not* copies of the EPC's own
 sample files, which are distributed as PDFs. That matters, because these files
 are the entire basis for the claim that this package emits real messages — a
-mistake here propagates silently into everything downstream. The cross-check is
+mistake here propagates silently into everything downstream. They match those
+element lists in every respect but one, identified deliberately: `pacs002.xml`
+carries no `TxInfAndSts/OrgnlTxRef`, which the EPC guidelines make mandatory —
+see `PaymentTransactionStatus` for why it is elided. The cross-check is
 `TestGoldenFilesValidateAgainstTheSchema` in `xmllint_test.go`, which validates
 them against the official XSDs when `xmllint` and the schemas are present.
 

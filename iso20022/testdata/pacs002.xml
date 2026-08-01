@@ -32,15 +32,24 @@
         <GrpSts>PART</GrpSts>
       </OrgnlGrpInfAndSts>
       <TxInfAndSts>
+        <StsId>CSMBFRPPXXX-STS-000123-01</StsId>
         <OrgnlEndToEndId>INV-2026-0042</OrgnlEndToEndId>
         <OrgnlTxId>pay-0001</OrgnlTxId>
         <TxSts>ACCP</TxSts>
       </TxInfAndSts>
       <TxInfAndSts>
+        <StsId>CSMBFRPPXXX-STS-000123-02</StsId>
         <OrgnlEndToEndId>INV-2026-0043</OrgnlEndToEndId>
         <OrgnlTxId>pay-0002</OrgnlTxId>
         <TxSts>RJCT</TxSts>
         <StsRsnInf>
+          <Orgtr>
+            <Id>
+              <OrgId>
+                <AnyBIC>CSMBFRPPXXX</AnyBIC>
+              </OrgId>
+            </Id>
+          </Orgtr>
           <Rsn>
             <Cd>AM04</Cd>
           </Rsn>

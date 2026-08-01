@@ -88,19 +88,113 @@ func (i IBAN) Validate() error {
 	return nil
 }
 
-// PartyIdentification names a non-financial party: a debtor or a creditor.
+// OrganisationIdentification is OrganisationIdentification29, the OrgId arm of
+// Party38Choice: how a party that is an ORGANISATION rather than a person is
+// identified.
 //
-// The standard allows a postal address and a private or organisation
-// identification here. Neither is carried: this system knows a customer's name
-// and nothing else about them, and emitting empty optional elements would be
+// Only AnyBIC is carried. The standard also allows an LEI and a list of generic
+// identifiers; neither is needed by the one element in this package that
+// reaches OrgId — pacs.002's StsRsnInf/Orgtr, where the EPC guidelines restrict
+// the originator of a status to a BIC or a name and nothing else.
+//
+// AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
+// for character the same as BICFIDec2014Identifier's — verified in all three of
+// this package's message schemas. The BIC type is therefore the right one here
+// and not merely a convenient one. What differs is the ROLE: BICFI addresses an
+// agent that is party to the payment, AnyBIC identifies any organisation at
+// all, which is why the standard keeps two element names for one lexical space.
+type OrganisationIdentification struct {
+	AnyBIC BIC `xml:"AnyBIC"`
+}
+
+func (o OrganisationIdentification) validate() error {
+	if o.AnyBIC == "" {
+		return fmt.Errorf("%w: OrgId/AnyBIC", ErrMissingElement)
+	}
+	return o.AnyBIC.Validate()
+}
+
+// PartyChoice is the standard's Party38Choice: an organisation identification
+// or a private one — never both, never neither. Another xsd:choice; see the
+// package doc.
+//
+// Both of this package's users of it take a different arm, which is the point
+// of the type carrying both. pacs.003's CdtrSchmeId uses PrvtId, because that
+// is where the standard puts a Creditor Identifier regardless of whether the
+// creditor is itself a company. pacs.002's StsRsnInf/Orgtr uses OrgId, because
+// the party issuing a status is a PSP or a clearing house and is identified by
+// its BIC. Neither arm is a subset of the other and neither is the "normal"
+// one: which arm applies is decided by the ELEMENT, not by the party.
+//
+// Party38Choice is byte-identical in pacs.002.001.10, pacs.003.001.08 and
+// pacs.008.001.08, so widening this type from one arm to two carries none of
+// the version-skew risk that SeqTp did — see PaymentTypeInformation.
+type PartyChoice struct {
+	OrgId  *OrganisationIdentification `xml:"OrgId,omitempty"`
+	PrvtId *PersonIdentification       `xml:"PrvtId,omitempty"`
+}
+
+func (p PartyChoice) validate() error {
+	switch {
+	case p.OrgId != nil && p.PrvtId != nil:
+		return fmt.Errorf("%w: Party38Choice has both OrgId and PrvtId", ErrInvalidChoice)
+	case p.OrgId != nil:
+		return p.OrgId.validate()
+	case p.PrvtId != nil:
+		return p.PrvtId.validate()
+	default:
+		return fmt.Errorf("%w: Party38Choice has neither OrgId nor PrvtId", ErrInvalidChoice)
+	}
+}
+
+// PartyIdentification is the standard's PartyIdentification135: a party named,
+// identified, or both.
+//
+// The standard also allows a postal address, a country of residence and contact
+// details here. None is carried: this system knows a customer's name and
+// nothing else about them, and emitting empty optional elements would be
 // invalid rather than merely uninformative.
+//
+// Nm and Id are BOTH optional at this type's level, and that is deliberate,
+// because the element being modelled decides which one applies. A pacs.008 or
+// pacs.003 Dbtr/Cdtr must carry Nm — EPC AT-P001 and AT-E001 — and carries no
+// Id, because this system holds no organisation or private identifier for a
+// customer. A pacs.002 StsRsnInf/Orgtr must carry Id/OrgId/AnyBIC, or Nm if
+// (and only if) the clearing house issuing the status has no BIC. Requiring Nm
+// here would make the second case unrepresentable; the messages enforce their
+// own requirement, the same way PaymentTypeInformation leaves LclInstrm to
+// pacs003.go. What this type does enforce is the floor the standard implies
+// without stating: a party element that identifies its party in NO way is a
+// party nobody can act on.
 type PartyIdentification struct {
-	Nm string `xml:"Nm"`
+	Nm string       `xml:"Nm,omitempty"`
+	Id *PartyChoice `xml:"Id,omitempty"`
 }
 
 func (p PartyIdentification) validate() error {
+	if p.Nm == "" && p.Id == nil {
+		return fmt.Errorf("%w: Nm or Id", ErrMissingElement)
+	}
+	if p.Id != nil {
+		if err := p.Id.validate(); err != nil {
+			return fmt.Errorf("Id: %w", err)
+		}
+	}
+	return nil
+}
+
+// validateNamedParty is the rule PartyIdentification itself cannot state: a
+// CUSTOMER party — the debtor or the creditor of a pacs.008 or a pacs.003 —
+// must carry a name (EPC AT-P001, AT-E001), whereas the same Go type also
+// models pacs.002's Orgtr, which is identified by BIC instead. It lives here,
+// rather than being written out twice, because both messages want the identical
+// rule; WHICH messages want it is the part that belongs to the messages.
+func validateNamedParty(element string, p PartyIdentification) error {
+	if err := p.validate(); err != nil {
+		return fmt.Errorf("%s: %w", element, err)
+	}
 	if p.Nm == "" {
-		return fmt.Errorf("%w: Nm", ErrMissingElement)
+		return fmt.Errorf("%w: %s/Nm", ErrMissingElement, element)
 	}
 	return nil
 }

@@ -155,16 +155,6 @@ type PersonIdentification struct {
 
 func (p PersonIdentification) validate() error { return p.Othr.validate() }
 
-// PartyChoice is the standard's Party38Choice: an organisation identification
-// or a private one. CdtrSchmeId always uses the private arm — PrvtId — because
-// that is where the standard puts the Creditor Identifier, regardless of
-// whether the creditor is itself a company. OrgId is not carried.
-type PartyChoice struct {
-	PrvtId PersonIdentification `xml:"PrvtId"`
-}
-
-func (p PartyChoice) validate() error { return p.PrvtId.validate() }
-
 // CreditorSchemeIdentification is CdtrSchmeId: the Creditor Identifier the
 // mandate was issued under — EPC AT-02, mandatory on every SEPA Core
 // collection, though PartyIdentification135 leaves the whole element optional
@@ -256,8 +246,8 @@ func (t DirectDebitTransactionInformation) validate() error {
 	if err := t.DrctDbtTx.validate(); err != nil {
 		return fmt.Errorf("DrctDbtTx: %w", err)
 	}
-	if err := t.Cdtr.validate(); err != nil {
-		return fmt.Errorf("Cdtr: %w", err)
+	if err := validateNamedParty("Cdtr", t.Cdtr); err != nil {
+		return err
 	}
 	if err := t.CdtrAcct.validate(); err != nil {
 		return fmt.Errorf("CdtrAcct: %w", err)
@@ -265,8 +255,8 @@ func (t DirectDebitTransactionInformation) validate() error {
 	if err := t.CdtrAgt.validate(); err != nil {
 		return fmt.Errorf("CdtrAgt: %w", err)
 	}
-	if err := t.Dbtr.validate(); err != nil {
-		return fmt.Errorf("Dbtr: %w", err)
+	if err := validateNamedParty("Dbtr", t.Dbtr); err != nil {
+		return err
 	}
 	if err := t.DbtrAcct.validate(); err != nil {
 		return fmt.Errorf("DbtrAcct: %w", err)

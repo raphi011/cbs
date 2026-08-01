@@ -165,6 +165,64 @@ func TestPartyIdentificationRequiresAName(t *testing.T) {
 	}
 }
 
+// TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName pins the widening
+// that pacs.002's Orgtr required: a party may be identified without being
+// named, because the party issuing a status is a PSP known by its BIC. The
+// name requirement did not disappear where it applies — it moved to
+// validateNamedParty, which the two customer-carrying messages call; see
+// TestNamedPartyStillRequiresAName below.
+func TestPartyIdentificationAcceptsAnIdentifierInsteadOfAName(t *testing.T) {
+	byBIC := PartyIdentification{Id: &PartyChoice{
+		OrgId: &OrganisationIdentification{AnyBIC: "CSMBFRPPXXX"},
+	}}
+	if err := byBIC.validate(); err != nil {
+		t.Fatalf("validate() = %v, want nil", err)
+	}
+
+	t.Run("both arms of Party38Choice is an invalid choice", func(t *testing.T) {
+		p := PartyIdentification{Id: &PartyChoice{
+			OrgId:  &OrganisationIdentification{AnyBIC: "CSMBFRPPXXX"},
+			PrvtId: &PersonIdentification{},
+		}}
+		if err := p.validate(); !errors.Is(err, ErrInvalidChoice) {
+			t.Fatalf("validate() = %v, want it to wrap ErrInvalidChoice", err)
+		}
+	})
+	t.Run("neither arm of Party38Choice is an invalid choice", func(t *testing.T) {
+		p := PartyIdentification{Id: &PartyChoice{}}
+		if err := p.validate(); !errors.Is(err, ErrInvalidChoice) {
+			t.Fatalf("validate() = %v, want it to wrap ErrInvalidChoice", err)
+		}
+	})
+	t.Run("a malformed AnyBIC is a format error", func(t *testing.T) {
+		p := PartyIdentification{Id: &PartyChoice{
+			OrgId: &OrganisationIdentification{AnyBIC: "CSMBFRPPX"},
+		}}
+		if err := p.validate(); !errors.Is(err, ErrBICFormat) {
+			t.Fatalf("validate() = %v, want it to wrap ErrBICFormat", err)
+		}
+	})
+}
+
+// TestNamedPartyStillRequiresAName is the other half of the widening: a debtor
+// or a creditor identified only by an organisation identifier satisfies
+// PartyIdentification and must still be refused, because EPC AT-P001 and
+// AT-E001 make the name mandatory for a CUSTOMER party.
+func TestNamedPartyStillRequiresAName(t *testing.T) {
+	byBIC := PartyIdentification{Id: &PartyChoice{
+		OrgId: &OrganisationIdentification{AnyBIC: "AURTSESSXXX"},
+	}}
+	if err := byBIC.validate(); err != nil {
+		t.Fatalf("PartyIdentification.validate() = %v, want nil for this fixture", err)
+	}
+	if err := validateNamedParty("Dbtr", byBIC); !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("validateNamedParty() = %v, want it to wrap ErrMissingElement", err)
+	}
+	if err := validateNamedParty("Dbtr", PartyIdentification{Nm: "Alice Andersson"}); err != nil {
+		t.Fatalf("validateNamedParty() = %v, want nil", err)
+	}
+}
+
 // TestOptionalCompositesAreOmitted pins the encoding/xml hazard the package doc
 // describes: an optional composite element that is not a pointer would emit an
 // empty element, which the schema rejects.

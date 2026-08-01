@@ -120,8 +120,8 @@ func (t CreditTransferTransaction) validate() error {
 	if t.ChrgBr == "" {
 		return fmt.Errorf("%w: ChrgBr", ErrMissingElement)
 	}
-	if err := t.Dbtr.validate(); err != nil {
-		return fmt.Errorf("Dbtr: %w", err)
+	if err := validateNamedParty("Dbtr", t.Dbtr); err != nil {
+		return err
 	}
 	if err := t.DbtrAcct.validate(); err != nil {
 		return fmt.Errorf("DbtrAcct: %w", err)
@@ -132,8 +132,8 @@ func (t CreditTransferTransaction) validate() error {
 	if err := t.CdtrAgt.validate(); err != nil {
 		return fmt.Errorf("CdtrAgt: %w", err)
 	}
-	if err := t.Cdtr.validate(); err != nil {
-		return fmt.Errorf("Cdtr: %w", err)
+	if err := validateNamedParty("Cdtr", t.Cdtr); err != nil {
+		return err
 	}
 	if err := t.CdtrAcct.validate(); err != nil {
 		return fmt.Errorf("CdtrAcct: %w", err)
