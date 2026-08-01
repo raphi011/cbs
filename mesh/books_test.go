@@ -537,16 +537,32 @@ var structCarriedBooks = map[string]structCarriedBook{
 //	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
 //	    []ledger.BookID{ledger.NetworkBook})
 //
-// is satisfied by a CSM handler that records a payment or moves a cycle along,
-// with no posting required.
+// is satisfied by a CSM handler that moves a cycle along — OpenCycle,
+// CloseCycle — with no posting required. Note that today's InitiatePaymentTx
+// also posts the debtor leg into the debtor bank's book, so it records that book
+// too; Task 8 is what separates the CSM's half from it.
 //
 // And nothing in this repository EVER posts under NetworkBook. It labels
 // entities that belong to no single bank; it is not a chart of accounts
 // (payment/system.go, on CentralBankBook, says so), and no ledger.NewBook is
-// ever bound to it. A clearing posting moves the participants' clearing
-// positions in their OWN books, so it contributes those books to touched() and
-// not this one. Do not go looking for a NetworkBook posting: there is none to
-// find.
+// ever bound to it. Clearing posts nothing at all. Settlement does, and in three
+// places — the netting transaction in the CENTRAL BANK's book (CentralBankBook),
+// the mirror leg in each participant's own book, and each creditor leg in the
+// creditor's book. None of them is NetworkBook, so a handler that settles
+// contributes those books and not this one. Do not go looking for a NetworkBook
+// posting: there is none to find.
+//
+// # This is a property of today's domain layer, not a structural invariant
+//
+// What makes a network-scoped write visible is that the domain happens to
+// allocate an id and append an audit event under NetworkBook. Nothing enforces
+// that. If Task 8's or Task 10's new CSM-side cycle-add writes its rows without
+// an audit event, it records NOTHING, and TestTheCSMTouchesOnlyTheNetworkBook
+// fails with exactly the empty set the OLD note wrongly predicted — for an
+// entirely different reason. Whoever hits that failure needs both stories: the
+// recorder is not blind to network rows, but it sees them only through the id
+// and the audit event, so a network-scoped write must keep its audit event or
+// the recorder cannot see it at all.
 //
 // A previous version of this note claimed the exact reverse — that NetworkBook
 // arrived only through postings — and would have sent Task 10 hunting for a
@@ -1605,7 +1621,7 @@ func (w *chainWalk) carrierOf(ref typeRef, where string) (bookArg, string) {
 	if elems, wrapper := unwrap(ref.expr); wrapper != "" {
 		for _, e := range elems {
 			if w.carriesBook(typeRef{expr: e, imports: ref.imports, pkg: ref.pkg}, map[string]bool{}) {
-				w.refusef("%s is a %s of %s, which carries a ledger.BookID. "+
+				w.refusef("%s is %s of %s, which carries a ledger.BookID. "+
 					"This parser records a book that is the argument or a top-level field of it, "+
 					"so decide what this one means and teach it the shape.", where, wrapper, exprString(ref.expr))
 				return noBook, ""
@@ -1928,18 +1944,18 @@ func modulePath(t *testing.T) string {
 func unwrap(e ast.Expr) ([]ast.Expr, string) {
 	switch t := e.(type) {
 	case *ast.StarExpr:
-		return []ast.Expr{t.X}, "pointer"
+		return []ast.Expr{t.X}, "a pointer"
 	case *ast.ArrayType:
 		// Len is nil for a slice and set for a fixed array. They are different
 		// types and the refusal quotes this word back at whoever reads it.
 		if t.Len != nil {
-			return []ast.Expr{t.Elt}, "array"
+			return []ast.Expr{t.Elt}, "an array"
 		}
-		return []ast.Expr{t.Elt}, "slice"
+		return []ast.Expr{t.Elt}, "a slice"
 	case *ast.MapType:
-		return []ast.Expr{t.Key, t.Value}, "map"
+		return []ast.Expr{t.Key, t.Value}, "a map"
 	case *ast.Ellipsis:
-		return []ast.Expr{t.Elt}, "variadic"
+		return []ast.Expr{t.Elt}, "a variadic"
 	}
 	return nil, ""
 }
@@ -1950,12 +1966,17 @@ func exprString(e ast.Expr) string {
 	switch t := e.(type) {
 	case *ast.Ident:
 		return t.Name
+	case *ast.BasicLit:
+		return t.Value
 	case *ast.SelectorExpr:
 		return exprString(t.X) + "." + t.Sel.Name
 	case *ast.StarExpr:
 		return "*" + exprString(t.X)
 	case *ast.ArrayType:
-		return "[]" + exprString(t.Elt)
+		if t.Len == nil {
+			return "[]" + exprString(t.Elt)
+		}
+		return "[" + exprString(t.Len) + "]" + exprString(t.Elt)
 	case *ast.MapType:
 		return "map[" + exprString(t.Key) + "]" + exprString(t.Value)
 	case *ast.Ellipsis:
