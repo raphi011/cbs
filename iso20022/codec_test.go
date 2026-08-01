@@ -3,6 +3,8 @@ package iso20022
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -598,6 +600,79 @@ func TestUnmarshalRejectsTextOutsideTheEnvelope(t *testing.T) {
 	}
 }
 
+// TestUnmarshalAcceptsALeadingByteOrderMark pins the one position in a document
+// where U+FEFF is not character data.
+//
+// XML 1.0 §4.3.3 and Appendix F make a leading UTF-8 byte order mark part of
+// the entity's ENCODING AUTODETECTION rather than its content, so a conforming
+// parser accepts it — and producers on the .NET and Windows stacks emit one by
+// default, which very much includes real bank and CSM middleware. encoding/xml
+// surfaces it as the first xml.CharData token, carrying the three bytes
+// EF BB BF, and bytes.TrimSpace does not trim them: U+FEFF is not
+// unicode.IsSpace. So the text-outside-the-root guard, once widened to fire at
+// depth 0 in EITHER direction, refused every BOM'd document — the exact
+// inversion of the asymmetry it was widened to close, since here a conforming
+// parser accepts what this one refused. Nothing in this repository noticed
+// because Marshal never emits a BOM.
+//
+// Anywhere other than first, U+FEFF is ZERO WIDTH NO-BREAK SPACE: ordinary
+// character data, and still refused outside the root. Both halves are pinned,
+// because a fix that trimmed the mark unconditionally would reopen the very
+// hole the widening closed.
+func TestUnmarshalAcceptsALeadingByteOrderMark(t *testing.T) {
+	bom := string(utf8BOM)
+
+	t.Run("before the XML declaration", func(t *testing.T) {
+		env, err := Unmarshal([]byte(bom + wantEnvelopeXML))
+		if err != nil {
+			t.Fatalf("Unmarshal() error = %v, want a leading BOM to be accepted", err)
+		}
+		if got := env.AppHdr.BizMsgIdr; got != "AURTSESSXXX-20260731-000001" {
+			t.Fatalf("BizMsgIdr = %q, want the same value the un-marked document yields", got)
+		}
+	})
+
+	// The golden files rather than only the synthetic envelope: these are the
+	// bytes a counterparty would send, and a BOM'd copy of one is the shape of
+	// the message this guard was refusing.
+	for _, file := range []string{"pacs008.xml", "pacs003.xml", "pacs002.xml", "pacs004.xml"} {
+		t.Run(file, func(t *testing.T) {
+			golden, err := os.ReadFile(filepath.Join("testdata", file))
+			if err != nil {
+				t.Fatalf("reading %s: %v", file, err)
+			}
+			plain, err := Unmarshal(golden)
+			if err != nil {
+				t.Fatalf("Unmarshal(%s) error = %v", file, err)
+			}
+			marked, err := Unmarshal(append([]byte(bom), golden...))
+			if err != nil {
+				t.Fatalf("Unmarshal(BOM + %s) error = %v, want the BOM to be accepted", file, err)
+			}
+			if marked.AppHdr != plain.AppHdr {
+				t.Fatalf("BOM changed the header: %+v, want %+v", marked.AppHdr, plain.AppHdr)
+			}
+			if fmt.Sprintf("%T", marked.Document) != fmt.Sprintf("%T", plain.Document) {
+				t.Fatalf("BOM changed the document type: %T, want %T", marked.Document, plain.Document)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   string
+	}{
+		{"after the root", wantEnvelopeXML + bom},
+		{"before the root but not first", "\n" + bom + wantEnvelopeXML},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := Unmarshal([]byte(tc.in)); err == nil {
+				t.Fatal("Unmarshal() = nil; U+FEFF anywhere but the first byte is character data")
+			}
+		})
+	}
+}
+
 // TestUnmarshalTakesTheLastOfARepeatedScalar pins a known residual rather than
 // a desired behaviour, so that the doc comment claiming it stays honest.
 //
@@ -648,7 +723,7 @@ func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
 	}
 
 	// The same header with agents but no business message identifier: a
-	// different member of AppHdr.validate()'s four checks, so that this test
+	// different member of AppHdr.validate()'s five checks, so that this test
 	// pins the delegation rather than one branch of it.
 	noBizMsgIdr := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
@@ -661,9 +736,53 @@ func TestUnmarshalRejectsAHeaderItCouldNotReMarshal(t *testing.T) {
 	}
 }
 
+// TestUnmarshalRejectsAHeaderWithNoCreationDate is the CreDt case of the same
+// asymmetry, and it is worse than the others because it does not fail on the
+// way back out — it INVENTS.
+//
+// head.001.001.02 declares CreDt with minOccurs defaulted to 1, and xmllint
+// refuses a header without it ("Missing child element(s). Expected is one of
+// ( BizSvc, MktPrctc, CreDt )"). AppHdr.validate() used to check four things
+// and not this one, so a header with no <CreDt> was accepted, decoded to the
+// zero time, and re-marshalled as <CreDt>0001-01-01T00:00:00Z</CreDt>: a
+// schema-VALID document carrying a business fact — the moment the header was
+// created — that nobody sent. The round trip holds, which is exactly why
+// FuzzUnmarshal cannot find it; silent fabrication is not a crash.
+func TestUnmarshalRejectsAHeaderWithNoCreationDate(t *testing.T) {
+	noCreDt := `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+		`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+		`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+		`<BizMsgIdr>AURTSESSXXX-20260731-000001</BizMsgIdr>` +
+		`<MsgDefIdr>test.001.001.01</MsgDefIdr></AppHdr>` + testDocumentXML + `</Envelope>`
+
+	env, err := Unmarshal([]byte(noCreDt))
+	if !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("Unmarshal() = %v (CreDt = %v), want it to wrap ErrMissingElement",
+			err, env.AppHdr.CreDt)
+	}
+
+	// The other end of the same gap: Marshal must not manufacture a creation
+	// timestamp for a header this repository built without one either.
+	fabricated := testEnvelope()
+	fabricated.AppHdr.CreDt = ISODateTime{}
+	out, err := Marshal(fabricated)
+	if !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("Marshal() = %v, want it to wrap ErrMissingElement; it emitted\n%s", err, out)
+	}
+}
+
 // TestUnmarshalledEnvelopesAlwaysReMarshal is FuzzUnmarshal's property stated
-// as an ordinary test, so that it holds in a normal `go test` run and not only
-// under the fuzzer, which CI does not invoke.
+// as an ordinary test, under a name that says what the property IS.
+//
+// It does not add coverage, and the comment here used to claim it did — "so
+// that it holds in a normal `go test` run and not only under the fuzzer, which
+// CI does not invoke". That is wrong twice over: a plain `go test` runs
+// FuzzUnmarshal over its seed corpus, and those seeds are f.Add-ed from these
+// same four golden files. assertGoldenRoundTrip has been asserting it since
+// before this branch as well. What this test buys is that the property has a
+// name a reader can grep for and a failure message that names it, rather than
+// arriving as a fuzz seed failing. That is a smaller claim, and it is the true
+// one.
 func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 	for _, file := range []string{"pacs008.xml", "pacs003.xml", "pacs002.xml", "pacs004.xml"} {
 		t.Run(file, func(t *testing.T) {
@@ -684,37 +803,83 @@ func TestUnmarshalledEnvelopesAlwaysReMarshal(t *testing.T) {
 
 // TestUnmarshalSurvivesHostileInput is the safety net for the one function here
 // that reads bytes it did not write. Every case must return an error and none
-// may panic — the loop asserting no panic is the point, not the errors.
+// may panic.
+//
+// It asserts the error CLASS per case rather than merely non-nilness. An
+// earlier version listed these same inputs and checked only err != nil, which
+// locked in — without ever observing it — that the empty string and
+// <Envelope></Envelope> came back as a bare io.EOF: neither
+// ErrMissingElement: AppHdr nor ErrMissingElement: Document, and the one error
+// a transport layer is idiomatically required to read as "the peer closed
+// cleanly, read more" rather than "these bytes are bad". Sub-project 7b puts
+// this function behind a channel or an HTTP handler, where a framing bug that
+// truncates a body would then have surfaced as a clean disconnect.
+//
+// So io.EOF may never escape Unmarshal, for ANY input — that is asserted for
+// every case, including the ones whose sentinel is deliberately left open
+// because the input is not a structurally recognisable envelope at all.
 func TestUnmarshalSurvivesHostileInput(t *testing.T) {
-	cases := []string{
-		``,
-		`<`,
-		`<Envelope>`,
-		`<Envelope></Envelope>`,
-		`<Envelope><AppHdr/></Envelope>`,
-		`<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
-			`<MsgDefIdr>pacs.008.001.08</MsgDefIdr></AppHdr></Envelope>`,
-		`<Envelope><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"/></Envelope>`,
-		`<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
-			`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
-			`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
-			`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>pacs.008.001.08</MsgDefIdr>` +
-			`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
-			`<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">` +
-			`<FIToFICstmrCdtTrf></FIToFICstmrCdtTrf></Document></Envelope>`,
-		strings.Repeat(`<a>`, 5000),
-		"\x00\x01\x02",
+	cases := []struct {
+		name string
+		in   string
+		// want is the sentinel the caller may match on, or nil when the input
+		// is malformed XML rather than a recognisable envelope missing
+		// something — those cases still have to be a non-EOF error.
+		want error
+	}{
+		{name: "empty", in: ``},
+		{name: "one angle bracket", in: `<`},
+		{name: "unclosed root", in: `<Envelope>`},
+		{name: "empty envelope", in: `<Envelope></Envelope>`, want: ErrMissingElement},
+		{name: "AppHdr in no namespace", in: `<Envelope><AppHdr/></Envelope>`},
+		{
+			name: "header with only a MsgDefIdr",
+			in: `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+				`<MsgDefIdr>pacs.008.001.08</MsgDefIdr></AppHdr></Envelope>`,
+			want: ErrBICFormat,
+		},
+		{
+			name: "document with no header",
+			in:   `<Envelope><Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08"/></Envelope>`,
+			want: ErrMissingElement,
+		},
+		{
+			name: "valid header, empty document",
+			in: `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
+				`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
+				`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
+				`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>pacs.008.001.08</MsgDefIdr>` +
+				`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
+				`<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">` +
+				`<FIToFICstmrCdtTrf></FIToFICstmrCdtTrf></Document></Envelope>`,
+			want: ErrMissingElement,
+		},
+		// The root-name check fires on the first token, so this one never
+		// reaches any nesting logic and is a duplicate of the `<a>` case as far
+		// as the code is concerned. It is kept because it is cheap, and the
+		// case below is the one that actually walks 5 000 levels — inside an
+		// <Envelope>, where dec.Skip has to do the walking.
+		{name: "deep nesting at the root", in: strings.Repeat(`<a>`, 5000)},
+		{name: "deep nesting inside the envelope", in: `<Envelope>` + strings.Repeat(`<a>`, 5000)},
+		{name: "control characters", in: "\x00\x01\x02"},
 	}
-	for i, in := range cases {
-		func() {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			defer func() {
 				if r := recover(); r != nil {
-					t.Fatalf("case %d panicked: %v", i, r)
+					t.Fatalf("panicked: %v", r)
 				}
 			}()
-			if _, err := Unmarshal([]byte(in)); err == nil {
-				t.Fatalf("case %d: Unmarshal() = nil, want an error", i)
+			_, err := Unmarshal([]byte(tc.in))
+			if err == nil {
+				t.Fatal("Unmarshal() = nil, want an error")
 			}
-		}()
+			if errors.Is(err, io.EOF) {
+				t.Fatalf("Unmarshal() = %v, which is io.EOF; a transport reads that as a clean close", err)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("Unmarshal() = %v, want it to wrap %v", err, tc.want)
+			}
+		})
 	}
 }

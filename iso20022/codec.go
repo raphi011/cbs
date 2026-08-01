@@ -8,6 +8,12 @@ import (
 	"io"
 )
 
+// utf8BOM is the UTF-8 encoding of U+FEFF, the byte order mark.
+//
+// Written as bytes rather than as the character, because Go's own compiler
+// rejects a literal BOM anywhere but the first position of a source file.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
 // Marshal renders an envelope as an XML document.
 //
 // It validates the whole tree first, so a message that would be rejected by a
@@ -54,18 +60,21 @@ func Marshal(env Envelope) ([]byte, error) {
 // first one, a repeated AppHdr or Document inside one envelope, a DTD after a
 // complete envelope, an unknown message definition, a header that disagrees
 // with the document's namespace, a missing Document, a header that is not
-// itself valid, and a document missing a mandatory element are each an error. The sections below are the authority on
-// the exact set; this sentence is a summary and does not promise to be
-// exhaustive.
+// itself valid, and a document missing a mandatory element are each an error.
+// The sections below are the authority on the exact set; this sentence is a
+// summary and does not promise to be exhaustive.
 //
-// Four checks return a plain error rather than one of this package's
+// Five checks return a plain error rather than one of this package's
 // sentinels: the root's name, there being only one top-level element, what may
-// follow a closed envelope, and a repeated AppHdr or Document. Each says the
-// input is a structurally different document, not a mandatory element that
-// happens to be missing, so naming them ErrMissingElement would misname the
-// problem. A missing Document is deliberately NOT among them — that one really
-// is an absent mandatory element, and reporting it as anything else was a bug
-// once already.
+// follow a closed envelope, a repeated AppHdr or Document, and input that
+// never contained a root element at all. Each says the input is a structurally
+// different document, not a mandatory element that happens to be missing, so
+// naming them ErrMissingElement would misname the problem. A missing Document
+// is deliberately NOT among them — that one really is an absent mandatory
+// element, and reporting it as anything else was a bug once already. Nor is a
+// missing AppHdr: an envelope that opened and closed carrying neither element
+// used to come back as a bare io.EOF, which is the same defect one element
+// over. See the notEOF section below.
 //
 // It reads the input as a single stream of tokens from one *xml.Decoder,
 // rather than unmarshalling into a struct and then re-parsing a captured
@@ -121,8 +130,23 @@ func Marshal(env Envelope) ([]byte, error) {
 //
 // Non-blank character data is refused OUTSIDE the root in either direction,
 // which is a wider rule than the three above and deliberately not conditioned
-// on having a result yet. See the xml.CharData case below and
-// TestUnmarshalRejectsTextOutsideTheEnvelope.
+// on having a result yet. Its one exception is a leading UTF-8 byte order
+// mark, which XML 1.0 §4.3.3 makes part of the entity's encoding
+// autodetection rather than character data, so a conforming parser accepts it
+// and this one must too. See the xml.CharData case below,
+// TestUnmarshalRejectsTextOutsideTheEnvelope and
+// TestUnmarshalAcceptsALeadingByteOrderMark.
+//
+// # io.EOF never escapes
+//
+// Every error this function returns goes through notEOF, and the end-of-input
+// branch reports what was actually missing rather than handing back the
+// decoder's io.EOF. io.EOF is the one error a transport layer is idiomatically
+// required to read as "the peer closed cleanly, read more" rather than "this
+// content is bad", and sub-project 7b puts this function behind a network
+// boundary — where a framing bug that truncated a body would otherwise arrive
+// as a clean disconnect. See TestUnmarshalSurvivesHostileInput, which asserts
+// the sentinel class of every hostile case and that none of them is io.EOF.
 //
 // The envelope-level guard says nothing about repetition INSIDE one envelope,
 // so both elements this codec dispatches on are guarded where they are
@@ -164,7 +188,7 @@ func Marshal(env Envelope) ([]byte, error) {
 // see TestUnmarshalRejectsAHeaderItCouldNotReMarshal.
 //
 // It subsumes the older MsgDefIdr != "" check, which was the same
-// ErrMissingElement on the same element and is now one of the four things
+// ErrMissingElement on the same element and is now one of the five things
 // AppHdr.validate() covers.
 //
 // A second, SEPARATE guard (rootClosed below) covers the case where the
@@ -180,6 +204,11 @@ func Unmarshal(data []byte) (Envelope, error) {
 	haveHdr := false
 	depth := 0
 	rootClosed := false
+	// tokens counts what the decoder has handed over. Only one rule needs it,
+	// and it needs only the value 1: a byte order mark is a property of the
+	// entity's very start, so it can be recognised in the first token and
+	// nowhere else. See the xml.CharData case.
+	tokens := 0
 	var result *Envelope
 
 	for {
@@ -192,9 +221,18 @@ func Unmarshal(data []byte) (Envelope, error) {
 				if haveHdr {
 					return Envelope{}, fmt.Errorf("%w: Document", ErrMissingElement)
 				}
+				if rootClosed {
+					// An envelope that opened and closed without a header. The
+					// document cannot be named, so AppHdr is the element to
+					// report — and it is a missing mandatory element, exactly
+					// as Document is.
+					return Envelope{}, fmt.Errorf("%w: AppHdr", ErrMissingElement)
+				}
+				return Envelope{}, errors.New("iso20022: input contains no root element")
 			}
-			return Envelope{}, err
+			return Envelope{}, notEOF(err)
 		}
+		tokens++
 
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -220,7 +258,7 @@ func Unmarshal(data []byte) (Envelope, error) {
 					return Envelope{}, errors.New("iso20022: a second AppHdr in one envelope")
 				}
 				if err := dec.DecodeElement(&hdr, &t); err != nil {
-					return Envelope{}, err
+					return Envelope{}, notEOF(err)
 				}
 				depth-- // DecodeElement consumed AppHdr's own EndElement too.
 				if err := hdr.validate(); err != nil {
@@ -244,7 +282,7 @@ func Unmarshal(data []byte) (Envelope, error) {
 				}
 				doc := dt.make()
 				if err := dec.DecodeElement(doc, &t); err != nil {
-					return Envelope{}, err
+					return Envelope{}, notEOF(err)
 				}
 				if err := doc.validate(); err != nil {
 					return Envelope{}, err
@@ -256,7 +294,7 @@ func Unmarshal(data []byte) (Envelope, error) {
 				// walk into it, so the depth count stays correct for whatever
 				// follows.
 				if err := dec.Skip(); err != nil {
-					return Envelope{}, err
+					return Envelope{}, notEOF(err)
 				}
 				depth--
 			}
@@ -276,8 +314,31 @@ func Unmarshal(data []byte) (Envelope, error) {
 			// parser handed the first would reject what this one returned.
 			// encoding/xml is lenient in the prolog and will not raise it for
 			// us, so it is raised here.
-			if depth == 0 && len(bytes.TrimSpace(t)) != 0 {
-				return Envelope{}, errors.New("iso20022: unexpected text content outside the envelope")
+			//
+			// A leading UTF-8 byte order mark is the one thing at depth 0 that
+			// LOOKS like character data and is not. XML 1.0 §4.3.3 and
+			// Appendix F make it part of the entity's encoding autodetection,
+			// so a conforming parser accepts it — and .NET and Windows
+			// producers, which is to say a great deal of real bank and CSM
+			// middleware, emit one by default. encoding/xml hands it over as
+			// the first token, an xml.CharData of the three bytes EF BB BF, and
+			// bytes.TrimSpace does not remove them because U+FEFF is not
+			// unicode.IsSpace. Refusing it would be this asymmetry inverted:
+			// this codec rejecting what a conforming parser accepts, which for
+			// a codec whose whole job is reading a counterparty's message is a
+			// payment that does not happen.
+			//
+			// Only in the FIRST token, though. The mark is a property of the
+			// entity's start; anywhere else U+FEFF is ZERO WIDTH NO-BREAK
+			// SPACE, ordinary character data, and stays refused — trimming it
+			// unconditionally would reopen the hole this guard was widened to
+			// close.
+			text := []byte(t)
+			if tokens == 1 {
+				text = bytes.TrimPrefix(text, utf8BOM)
+			}
+			if depth == 0 && len(bytes.TrimSpace(text)) != 0 {
+				return Envelope{}, errors.New("iso20022: unexpected character data outside the envelope")
 			}
 		case xml.Directive:
 			// encoding/xml surfaces <!DOCTYPE ...> here, internal subset and
@@ -289,4 +350,25 @@ func Unmarshal(data []byte) (Envelope, error) {
 			}
 		}
 	}
+}
+
+// notEOF keeps io.EOF from escaping Unmarshal.
+//
+// A caller of Unmarshal is a caller at a boundary: bytes arrived from
+// somewhere else and something has to decide what they were. io.EOF is the one
+// error that already has a meaning at such a boundary — "the peer closed
+// cleanly, read more" — and it is not the meaning any answer here has. A
+// truncated body from a framing bug would otherwise report itself as a clean
+// disconnect, which is the failure mode that hides rather than the one that
+// stops.
+//
+// The wrapping is deliberately %v and not %w: the point is that
+// errors.Is(err, io.EOF) is FALSE for everything this function returns. The
+// original text is kept because it is the only thing that says where the input
+// ran out.
+func notEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("iso20022: input ended mid-document: %v", err)
+	}
+	return err
 }

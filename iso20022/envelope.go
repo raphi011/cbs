@@ -128,6 +128,21 @@ type AppHdr struct {
 	CreDt     ISODateTime   `xml:"CreDt"`
 }
 
+// validate checks the five elements head.001.001.02 makes 1..1 and this
+// package carries. It runs on both sides of the codec — Marshal will not emit
+// a header it fails, and Unmarshal will not return one.
+//
+// CreDt is checked for the same reason the other four are, and is the one that
+// mattered most. The schema declares it with minOccurs defaulted to 1, so a
+// header without it is invalid; but the Go zero value of a time is a perfectly
+// marshallable timestamp, so an unchecked CreDt did not fail on the way back
+// out — it INVENTED. A message with no <CreDt> was accepted and re-emitted as
+// <CreDt>0001-01-01T00:00:00Z</CreDt>: a schema-valid document asserting the
+// moment the header was created, which nobody had sent. Silent fabrication of
+// a business fact is worse than the round-trip error the receive-path
+// validation was added to eliminate, and the round trip holding is exactly why
+// FuzzUnmarshal could not find it. See
+// TestUnmarshalRejectsAHeaderWithNoCreationDate.
 func (h AppHdr) validate() error {
 	if err := h.Fr.FIId.FinInstnId.BICFI.Validate(); err != nil {
 		return fmt.Errorf("AppHdr/Fr: %w", err)
@@ -140,6 +155,9 @@ func (h AppHdr) validate() error {
 	}
 	if h.MsgDefIdr == "" {
 		return fmt.Errorf("%w: AppHdr/MsgDefIdr", ErrMissingElement)
+	}
+	if h.CreDt.IsZero() {
+		return fmt.Errorf("%w: AppHdr/CreDt", ErrMissingElement)
 	}
 	return nil
 }
