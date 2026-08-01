@@ -172,6 +172,7 @@ describe("navFor", () => {
     const nav = navFor({ persona: "customer", pid: "bank_1", did: "dep_9" });
     expect(nav.map((n) => n.href)).toEqual([
       "/customer/bank_1/dep_9",
+      "/customer/bank_1/dep_9/send",
       "/customer/bank_1/dep_9/activity",
     ]);
   });

@@ -100,6 +100,10 @@ export const qk = {
   // requests, and only one of them is a customer's to make.
   csmDirectory: (scheme: string, value: string) =>
     ["clearing-house", "directory", scheme, value] as const,
+  bankPayment: (pid: string, payid: string) =>
+    ["participants", pid, "payments", payid] as const,
+  bankDirectory: (pid: string, scheme: string, value: string) =>
+    ["participants", pid, "directory", scheme, value] as const,
 
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,

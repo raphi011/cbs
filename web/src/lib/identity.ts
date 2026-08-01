@@ -13,6 +13,7 @@ import {
   RefreshCw,
   ScrollText,
   Search,
+  Send,
   Users,
   Wallet,
 } from "lucide-react";
@@ -137,6 +138,7 @@ export function navFor(identity: Identity): NavItem[] {
       const base = `/customer/${identity.pid}/${identity.did}`;
       return [
         { href: base, label: "Account", icon: Wallet, exact: true },
+        { href: `${base}/send`, label: "Send", icon: Send },
         { href: `${base}/activity`, label: "Activity", icon: Receipt },
       ];
     }

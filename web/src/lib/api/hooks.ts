@@ -92,6 +92,18 @@ export function useCsmDirectory(scheme: string, value: string) {
   });
 }
 
+// A customer's payee lookup, on their own bank's listener. `retry: false` because
+// a 404 here is an answer — nobody holds that IBAN — and retrying it three times
+// only delays telling them so.
+export function useBankDirectory(pid: string, scheme: string, value: string) {
+  return useQuery({
+    queryKey: qk.bankDirectory(pid, scheme, value),
+    queryFn: () => api.resolveIdentifierAtBank(pid, scheme, value),
+    enabled: pid !== "" && scheme !== "" && value !== "",
+    retry: false,
+  });
+}
+
 // --- Central bank ---------------------------------------------------------
 
 export function useReserves() {
@@ -670,6 +682,26 @@ export function useBankPayments(pid: string) {
     queryKey: qk.bankPayments(pid),
     queryFn: () => api.bankPayments(pid),
     enabled: pid !== "",
+  });
+}
+
+// The second half of a 202: ask about the identifier you were given. Today the
+// answer is already final; 7b makes the wait real, and a client shaped this way
+// will not need rewriting when it does.
+export function useBankPayment(pid: string, payid: string) {
+  return useQuery({
+    queryKey: qk.bankPayment(pid, payid),
+    queryFn: () => api.bankPayment(pid, payid),
+    enabled: pid !== "" && payid !== "",
+  });
+}
+
+export function useSubmitPayment(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").InitiatePaymentRequest) =>
+      api.submitPayment(pid, body),
+    onSuccess: () => invalidateNetwork(qc),
   });
 }
 

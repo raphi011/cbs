@@ -350,6 +350,13 @@ export interface Payment {
   createdAt: string;
 }
 
+// What a bank answers a customer's instruction with: an identifier to ask about,
+// not an outcome. See api/handlers_bank_payment.go's acceptedPaymentDTO — and the
+// reason it is 202 and not 201, which is that 7b makes the wait real.
+export interface AcceptedPayment {
+  paymentId: string;
+}
+
 export interface Mandate {
   id: string;
   debtor: PartyRef;

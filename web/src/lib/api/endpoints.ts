@@ -7,6 +7,7 @@ import { bank, cb, csm } from "./operator";
 import type { OperatorStatus } from "./backend-url";
 import type {
   Account,
+  AcceptedPayment,
   Asset,
   AuditEvent,
   AuditQuery,
@@ -94,6 +95,18 @@ export function resolveIdentifierAtCsm(
   value: string,
 ): Promise<DirectoryEntry> {
   return request("GET", csm(`/directory${qs({ scheme, value })}`));
+}
+
+// The same question asked of a customer's own bank. A bank is a scheme
+// participant with directory access, and validating a payee's address before
+// accepting an instruction is what it uses that for. This is the one a customer's
+// browser may call; the CSM's is an operator's.
+export function resolveIdentifierAtBank(
+  pid: string,
+  scheme: string,
+  value: string,
+): Promise<DirectoryEntry> {
+  return request("GET", bank(pid, `/directory${qs({ scheme, value })}`));
 }
 
 // --- Central bank ---------------------------------------------------------
@@ -493,6 +506,19 @@ export function listPayments(): Promise<Payment[]> {
 // party to: a 403 would confirm that the id names something real.
 export function bankPayments(pid: string): Promise<Payment[]> {
   return request("GET", bank(pid, "/payments"));
+}
+
+export function bankPayment(pid: string, payid: string): Promise<Payment> {
+  return request("GET", bank(pid, `/payments/${payid}`));
+}
+
+// A customer's instruction, submitted to their own bank. The answer is 202 with
+// an identifier rather than the payment: the outcome comes from asking again.
+export function submitPayment(
+  pid: string,
+  body: InitiatePaymentRequest,
+): Promise<AcceptedPayment> {
+  return request("POST", bank(pid, "/payments"), body);
 }
 
 export function getPayment(payid: string): Promise<Payment> {
