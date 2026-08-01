@@ -38,7 +38,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run run-pg dev dev-pg dev-split clean test test-pg db-up db-down
+.PHONY: help install build run run-pg dev dev-pg dev-split clean test test-pg test-schemas db-up db-down
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -113,6 +113,19 @@ test: ## Run the Go and web suites against the in-memory store (no setup)
 test-pg: db-up ## Run the Go suite against the docker-compose Postgres
 	set -euo pipefail
 	TEST_DATABASE_URL="$(DB_URL)" go test ./...
+
+# The one check that iso20022's golden documents are really schema-valid rather
+# than merely round-trip-stable. It is not part of `test`, because it needs
+# xmllint and the official XSDs, which are registration-walled and not this
+# repository's to vendor — see iso20022/testdata/README.md.
+#
+# ISO20022_REQUIRE_SCHEMAS is what makes it a check rather than an aspiration:
+# with it set, an absent tool or an absent schema FAILS instead of skipping. A
+# skip is not a pass, and without this target there was no way for anyone who
+# had the schemas to say so.
+test-schemas: ## Run the iso20022 golden-file schema check, requiring xmllint and testdata/xsd
+	set -euo pipefail
+	ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/ -run TestGoldenFilesValidateAgainstTheSchema -v
 
 # The entities dev-split starts. Names, not ids: ids are generated (bank_1,
 # bank_3, …) and -entity matches on a slugified name too. This list is the

@@ -28,6 +28,16 @@ using the file names the test expects:
 The directory is not committed: the schemas are redistributed under ISO's terms
 and are not this repository's to vendor. The test skips when they are absent.
 
+**A skip is not a pass.** Once you have the schemas, run the check as a
+*required* one:
+
+    make test-schemas
+
+which sets `ISO20022_REQUIRE_SCHEMAS=1`. With that variable set to any
+non-empty value, a missing `xmllint` or a missing schema is a failure rather
+than a skip — so a machine or a CI job that has the schemas notices when they
+go away, instead of quietly reporting `PASS` for eight checks that never ran.
+
 **Identities.** Every file uses the same cast, matching `seed/seed.go`:
 
 | Entity | BIC | IBAN |

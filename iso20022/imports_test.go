@@ -3,15 +3,49 @@ package iso20022
 import (
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-// modulePath is this repository's module path. An import beginning with it is
-// an import of this repository.
-const modulePath = "github.com/raphi011/cbs"
+// goModPath is where this package's test binary finds the module declaration.
+// Tests run in the package's own directory, so the module root is one level up.
+const goModPath = "../go.mod"
+
+// modulePath reads this repository's module path out of go.mod.
+//
+// It used to be a const spelling "github.com/raphi011/cbs" out by hand, which
+// made the guard below decoupled from the only place the module path is
+// actually declared: rename the module and the test keeps passing while
+// checking a string that appears nowhere. That was demonstrated — the package
+// copied verbatim into a module named "scratch" passed unchanged. A constant
+// somebody must remember to update is precisely the arrangement this test
+// exists to replace, one level down.
+//
+// It fails rather than skips when it cannot find the declaration. A guard that
+// cannot locate its own input has stopped guarding, and saying so is the whole
+// point.
+func modulePath(t *testing.T) string {
+	t.Helper()
+
+	b, err := os.ReadFile(goModPath)
+	if err != nil {
+		t.Fatalf("reading %s: %v; this test cannot check what it cannot read", goModPath, err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module ")
+		if !ok {
+			continue
+		}
+		if path := strings.TrimSpace(rest); path != "" {
+			return path
+		}
+	}
+	t.Fatalf("no module declaration in %s; this test cannot tell what an import of this repository looks like", goModPath)
+	return ""
+}
 
 // TestPackageImportsNothingFromThisRepository enforces the constraint the
 // package doc calls load-bearing: these are the STANDARD's types, and an import
@@ -24,10 +58,19 @@ const modulePath = "github.com/raphi011/cbs"
 // fact. That is the arrangement this project has been burned by repeatedly, so
 // it is a test now.
 //
+// It asserts the stronger property too: every import is STDLIB. "No repository
+// imports" was the narrower half of the constraint — a third-party library
+// would have sailed through it — and the project's actual rule is no
+// dependencies beyond pgx, which this package has no business acquiring for
+// itself. The stdlib test is a cheap one: an import path whose first element
+// carries a dot names a host, and no standard-library path does.
+//
 // Non-test files only. A test may legitimately need something from the
 // repository, and nothing a test imports ends up in the package's own
 // dependency graph.
 func TestPackageImportsNothingFromThisRepository(t *testing.T) {
+	module := modulePath(t)
+
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatalf("globbing package files: %v", err)
@@ -52,9 +95,13 @@ func TestPackageImportsNothingFromThisRepository(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: unquoting import %s: %v", file, spec.Path.Value, err)
 			}
-			if path == modulePath || strings.HasPrefix(path, modulePath+"/") {
+			if path == module || strings.HasPrefix(path, module+"/") {
 				t.Errorf("%s imports %q; this package must import nothing from this repository — "+
 					"the conversion boundary belongs on the payment side", file, path)
+				continue
+			}
+			if first, _, _ := strings.Cut(path, "/"); strings.Contains(first, ".") {
+				t.Errorf("%s imports %q, which is not in the standard library; this package takes no dependencies", file, path)
 			}
 		}
 	}
