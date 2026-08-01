@@ -762,7 +762,17 @@ export function useIdentityDirectory(): {
     queries: list.map((p) => ({
       queryKey: qk.depositAccounts(p.id),
       queryFn: () => api.listDepositAccounts(p.id),
-      enabled: isProvisioned(`bank/${p.id}`),
+      // `isProvisioned` guesses "yes" while the probe is still in flight — right
+      // for a badge, wrong for deciding whether to fire a request. Participants
+      // is one hop over the same roster the probe takes three sequential legs
+      // to answer, so on a fresh load `participants.data` is routinely there
+      // before `operators.data` is: gating on `isProvisioned` alone fires every
+      // bank's query on that guess, including one just admitted and still
+      // listener-less. That 502s, and with `retry: false` the failure sits in
+      // the query cache for the rest of the page's life — disabling the query
+      // once the probe corrects itself does not clear an already-errored
+      // result. Waiting for `operators.data` to exist closes that window.
+      enabled: operators.data !== undefined && isProvisioned(`bank/${p.id}`),
     })),
   });
 
@@ -778,7 +788,11 @@ export function useIdentityDirectory(): {
     // and firing the per-bank queries on a guess is what this exists to avoid.
     isLoading:
       participants.isLoading || operators.isLoading || results.some((r) => r.isLoading),
-    error: participants.error ?? results.find((r) => r.error)?.error ?? null,
+    // The roster is the page: no roster, no cast to show. One bank's accounts
+    // failing to load is not — that bank's card degrades on its own (an empty
+    // customer list) and the rest of the lobby stands, so a per-bank fetch
+    // error never becomes a page-level error here.
+    error: participants.error ?? null,
   };
 }
 
