@@ -106,6 +106,9 @@ export const qk = {
   mandate: (mid: string) => ["mandates", mid] as const,
   payments: () => ["payments"] as const,
   payment: (payid: string) => ["payments", payid] as const,
+  // Nested under the participant, because these are that bank's legs and not
+  // the network's list filtered.
+  bankPayments: (pid: string) => ["participants", pid, "payments"] as const,
   cycles: () => ["cycles"] as const,
   cycle: (cid: string) => ["cycles", cid] as const,
   paymentAudit: (q?: AuditQuery) => auditKey(["payments", "audit"], q),

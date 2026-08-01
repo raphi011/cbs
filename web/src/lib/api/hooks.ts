@@ -665,6 +665,14 @@ export function usePayments() {
   return useQuery({ queryKey: qk.payments(), queryFn: api.listPayments });
 }
 
+export function useBankPayments(pid: string) {
+  return useQuery({
+    queryKey: qk.bankPayments(pid),
+    queryFn: () => api.bankPayments(pid),
+    enabled: pid !== "",
+  });
+}
+
 export function usePayment(payid: string) {
   return useQuery({
     queryKey: qk.payment(payid),

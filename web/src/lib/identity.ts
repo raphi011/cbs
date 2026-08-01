@@ -123,7 +123,7 @@ export function navFor(identity: Identity): NavItem[] {
       const base = `/bank/${identity.pid}`;
       return [
         { href: base, label: "Customers", icon: Users, exact: true },
-        // Payments — this bank's own legs — arrives in Task 11.
+        { href: `${base}/payments`, label: "Payments", icon: ArrowLeftRight },
         { href: `${base}/ledger`, label: "General ledger", icon: BookOpen },
         { href: `${base}/transactions`, label: "Transactions", icon: ArrowLeftRight },
         { href: `${base}/facilities`, label: "Facilities", icon: Landmark },

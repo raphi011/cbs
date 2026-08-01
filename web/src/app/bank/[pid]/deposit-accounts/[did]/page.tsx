@@ -277,7 +277,7 @@ export default function DepositAccountDetailPage() {
   const { byCode, isLoading: assetsLoading } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
 
-  const back = `/bank/${pid}/deposit-accounts`;
+  const back = `/bank/${pid}`;
 
   if (error) {
     return (
@@ -286,7 +286,7 @@ export default function DepositAccountDetailPage() {
           href={back}
           className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
-          <ArrowLeft className="size-4" /> Deposit accounts
+          <ArrowLeft className="size-4" /> Customer accounts
         </Link>
         <ErrorState error={error} onRetry={() => refetch()} />
       </div>
@@ -301,7 +301,7 @@ export default function DepositAccountDetailPage() {
         href={back}
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="size-4" /> Deposit accounts
+        <ArrowLeft className="size-4" /> Customer accounts
       </Link>
 
       {isLoading || assetsLoading || !account ? (

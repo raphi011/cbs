@@ -140,7 +140,15 @@ describe("navFor", () => {
 
   it("scopes every bank entry to the bank's own pid", () => {
     const nav = navFor({ persona: "bank", pid: "bank_1" });
-    expect(nav.length).toBeGreaterThan(0);
+    expect(nav.map((n) => n.href)).toEqual([
+      "/bank/bank_1",
+      "/bank/bank_1/payments",
+      "/bank/bank_1/ledger",
+      "/bank/bank_1/transactions",
+      "/bank/bank_1/facilities",
+      "/bank/bank_1/audit",
+      "/bank/bank_1/deposit-audit",
+    ]);
     for (const item of nav) {
       expect(item.href.startsWith("/bank/bank_1")).toBe(true);
     }

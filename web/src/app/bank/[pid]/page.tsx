@@ -1,150 +1,141 @@
 "use client";
 
+import Link from "next/link";
 import { useParams } from "next/navigation";
+import { ChevronRight } from "lucide-react";
 
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Money } from "@/components/money";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { IdText } from "@/components/id-text";
+import { EnumBadge } from "@/components/enum-badge";
+import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
+import { Money } from "@/components/money";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAssetLookup, useParticipant, useReserve, useTotals } from "@/lib/api/hooks";
-import type { HintKey } from "@/components/hint-content";
+import { OpenDepositAccountForm } from "@/components/forms/open-deposit-account-form";
+import {
+  useAssetLookup,
+  useDepositAccounts,
+  useDepositBalance,
+  useReserve,
+  useTotals,
+} from "@/lib/api/hooks";
+import type { DepositAccount } from "@/lib/types";
 
-export default function ParticipantOverview() {
+function DepositAccountRow({ pid, account }: { pid: string; account: DepositAccount }) {
+  const { data } = useDepositBalance(pid, account.id);
+  const { byCode } = useAssetLookup();
+  const asset = byCode.get(account.asset);
+  const iban = account.identifiers.find((i) => i.scheme === "IBAN");
+  return (
+    <Link
+      href={`/bank/${pid}/deposit-accounts/${account.id}`}
+      className="flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium">{account.name}</span>
+        <EnumBadge value={account.status} />
+        {iban ? (
+          <span className="font-mono text-xs text-muted-foreground">{iban.value}</span>
+        ) : (
+          <IdText id={account.id} />
+        )}
+      </span>
+      <span className="flex items-center gap-3">
+        <span className="text-right text-sm font-medium">
+          {asset ? (
+            <Money amount={data?.available ?? 0} asset={asset} />
+          ) : (
+            <Skeleton className="ml-auto h-4 w-16" />
+          )}
+          <span className="block text-xs font-normal text-muted-foreground">available</span>
+        </span>
+        <ChevronRight className="size-4 text-muted-foreground" />
+      </span>
+    </Link>
+  );
+}
+
+// A back office opens on its customers. The internal-accounts card of raw ids
+// that used to be here is gone: the chart of accounts is one click away under
+// General ledger, and a bank's home is the people it holds money for.
+export default function BankHome() {
   const params = useParams();
   const pid = typeof params.pid === "string" ? params.pid : "";
-  const { data: p } = useParticipant(pid);
-  const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
-  const { data: totals, isLoading: totalsLoading } = useTotals(pid);
+  const accounts = useDepositAccounts(pid);
+  const { data: totals } = useTotals(pid);
+  const { data: reserve } = useReserve(pid);
   const { byCode } = useAssetLookup();
 
-  // A bank holds one suspense, reserve and settlement account per asset it
-  // operates in, so the list is the customer subledger plus three rows per
-  // asset. A euro-only bank looks exactly as it always did.
-  const accounts: { label: string; id: string; hint: HintKey }[] = p
-    ? [
-        {
-          label: "Customer subledger",
-          id: p.customerSubledger,
-          hint: "ledger-vs-subledger" as HintKey,
-        },
-        ...(p.assets ?? []).flatMap((a) => [
-          {
-            label: `Clearing suspense (${a.asset})`,
-            id: a.suspense,
-            hint: "clearing-suspense" as HintKey,
-          },
-          {
-            label: `Reserve at central bank (${a.asset})`,
-            id: a.reserve,
-            hint: "reserve-account" as HintKey,
-          },
-          {
-            label: `Settlement, central-bank ledger (${a.asset})`,
-            id: a.settlement,
-            hint: "central-bank-reserves" as HintKey,
-          },
-        ]),
-      ]
-    : [];
-
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Card size="sm">
+          <CardContent>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Reserves at the central bank
+              <Hint id="reserve-account" />
+            </p>
+            <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
+              {(reserve ?? []).map((r) => {
+                const asset = byCode.get(r.asset);
+                return asset ? (
+                  <p key={r.asset}>
+                    <Money amount={r.reserve} asset={asset} />
+                  </p>
+                ) : (
+                  <Skeleton key={r.asset} className="h-6 w-24" />
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+        <Card size="sm">
+          <CardContent>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Customer deposits
+              <Hint id="derived-balance" />
+            </p>
+            <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
+              {(totals ?? []).map((t) => {
+                const asset = byCode.get(t.asset);
+                return asset ? (
+                  <p key={t.asset}>
+                    <Money amount={t.deposits} asset={asset} />
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      less <Money amount={t.overdrafts} asset={asset} /> drawn
+                    </span>
+                  </p>
+                ) : (
+                  <Skeleton key={t.asset} className="h-6 w-24" />
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            Central-bank reserves
-            <Hint id="central-bank-reserves" />
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="flex items-center gap-1.5 text-base">
+            Customer accounts
+            <Hint id="balance-available" />
           </CardTitle>
+          <OpenDepositAccountForm pid={pid} />
         </CardHeader>
         <CardContent>
-          {reserveLoading ? (
-            <Skeleton className="h-8 w-32" />
-          ) : (
-            (reserve ?? []).map((r) => {
-              const asset = byCode.get(r.asset);
-              return asset ? (
-                <p key={r.asset} className="text-2xl font-semibold">
-                  <Money amount={r.reserve} asset={asset} />
-                </p>
-              ) : (
-                <Skeleton key={r.asset} className="h-8 w-32" />
-              );
-            })
-          )}
-          <p className="mt-1 text-sm text-muted-foreground">
-            One reserve per asset the bank operates in, each starting at zero.
-            Funding a deposit account raises the reserve in that account&apos;s
-            asset in step — funding is modelled as the bank placing cash on
-            reserve.
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Internal accounts</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {accounts.map((a) => (
-            <div
-              key={a.label}
-              className="flex items-center justify-between gap-3"
-            >
-              <span className="flex items-center gap-1.5 text-sm">
-                {a.label}
-                <Hint id={a.hint} />
-              </span>
-              <IdText id={a.id} />
+          {accounts.error ? (
+            <ErrorState error={accounts.error} onRetry={() => accounts.refetch()} />
+          ) : accounts.isLoading ? (
+            <Skeleton className="h-32 w-full" />
+          ) : accounts.data && accounts.data.length > 0 ? (
+            <div className="divide-y rounded-lg border">
+              {accounts.data.map((a) => (
+                <DepositAccountRow key={a.id} pid={pid} account={a} />
+              ))}
             </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      <Card className="md:col-span-2">
-        <CardHeader>
-          <CardTitle className="text-base">Customer totals</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {totalsLoading ? (
-            <Skeleton className="h-8 w-48" />
-          ) : totals && totals.length > 0 ? (
-            totals.map((t) => {
-              const totalsAsset = byCode.get(t.asset);
-              return totalsAsset ? (
-                <div
-                  key={t.asset}
-                  className="flex items-center justify-between gap-3 text-sm"
-                >
-                  <span className="font-medium">{t.asset}</span>
-                  <span className="flex items-center gap-4">
-                    <span>
-                      <Money amount={t.deposits} asset={totalsAsset} />
-                      <span className="ml-1 text-xs text-muted-foreground">
-                        deposits
-                      </span>
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Money amount={t.overdrafts} asset={totalsAsset} />
-                      <span className="text-xs text-muted-foreground">
-                        overdrafts (derived)
-                      </span>
-                      <Hint id="derived-balance" />
-                    </span>
-                  </span>
-                </div>
-              ) : (
-                <Skeleton key={t.asset} className="h-8 w-48" />
-              );
-            })
           ) : (
             <p className="text-sm text-muted-foreground">
-              No customer deposits yet.
+              No deposit accounts yet. Open one, then fund it to start the money loop.
             </p>
           )}
         </CardContent>

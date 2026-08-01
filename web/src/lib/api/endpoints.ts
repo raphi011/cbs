@@ -484,6 +484,17 @@ export function listPayments(): Promise<Payment[]> {
   return request("GET", csm("/payments"));
 }
 
+// One bank's own legs: the payments it sent and the ones it received, and
+// nothing else. Same pattern as the clearing house's GET /payments, different
+// operator, different answer — the port is the caller identity the single server
+// did not have, which is why it listed every payment to everybody.
+//
+// GET /payments/{id} on a bank answers 404, not 403, for a payment it is not
+// party to: a 403 would confirm that the id names something real.
+export function bankPayments(pid: string): Promise<Payment[]> {
+  return request("GET", bank(pid, "/payments"));
+}
+
 export function getPayment(payid: string): Promise<Payment> {
   return request("GET", csm(`/payments/${payid}`));
 }
