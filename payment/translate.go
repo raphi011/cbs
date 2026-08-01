@@ -892,6 +892,431 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 	}, nil
 }
 
+// ---------------------------------------------------------------------------
+// Inbound: messages to payment requests
+// ---------------------------------------------------------------------------
+//
+// The direction sub-project 7b exists for. Everything above renders something
+// this system already decided; everything below reads an instruction another
+// bank decided, and the difference is that nothing here can be trusted to be
+// self-consistent. A received message is the only thing the receiver has, and it
+// carries no internal identifier of this system's — which is the constraint that
+// shapes the whole half.
+
+// CreditTransferRequest turns a received pacs.008 into a request this system
+// can act on.
+//
+// Both parties are resolved by ADDRESS — Network.ResolveIdentifierTx against the
+// IBAN the message carries — and never by an internal account id, because the
+// message has no element for one and inventing a place to smuggle it through
+// would make the whole sub-project a lie. That is also why an unresolvable IBAN
+// comes back as ErrAccountNotInParticipant and becomes AC01 on the wire: from
+// the receiver's side, an address it cannot resolve IS an incorrect account
+// number.
+//
+// The scheme is the MESSAGE's. A pacs.008 under this system's rulebook is a SEPA
+// credit transfer, so SchemeSEPACT is not a default that could have been
+// something else — it is what the message being a pacs.008 means. What the
+// message does NOT get to decide is the asset: an instruction quoting a currency
+// the scheme does not settle in is refused rather than reinterpreted, because a
+// receiver that took the sender's currency and its own scheme's scale would book
+// a number neither bank wrote down. See settledIn.
+//
+// It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
+// or posted. That is InitiatePayment's job, and the separation is what lets the
+// mesh translate a message without a write and reject it before one.
+func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
+	body := doc.FIToFICstmrCdtTrf
+	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	amount, err := s.settledIn(SchemeSEPACT, tx.IntrBkSttlmAmt)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	return InitiatePaymentRequest{
+		Scheme:      SchemeSEPACT,
+		Debtor:      debtor,
+		Creditor:    creditor,
+		Amount:      amount,
+		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
+		Description: remittanceIn(tx.RmtInf),
+	}, nil
+}
+
+// DirectDebitRequest turns a received pacs.003 into a request this system can
+// act on.
+//
+// It resolves by address exactly as CreditTransferRequest does, and differs in
+// the two ways the direction implies. The message travels FROM the creditor's
+// bank, so the account elements are read for what they are rather than by
+// position — a reader that took the first account element as the debtor's, as it
+// is in a pacs.008, would produce a collection pointing the wrong way and
+// resolve both parties successfully while doing it.
+//
+// And it carries a mandate. An empty MndtId is refused here rather than left for
+// SDD.Validate, which would refuse it too: this is another bank's claim on this
+// bank's customer's account, the mandate is the only thing that makes it
+// authorised, and the message that came with no mandate should not become a
+// request that looks like one.
+func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
+	body := doc.FIToFICstmrDrctDbt
+	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	amount, err := s.settledIn(SchemeSEPADD, tx.IntrBkSttlmAmt)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	mandate := tx.DrctDbtTx.MndtRltdInf.MndtId
+	if mandate == "" {
+		return InitiatePaymentRequest{}, fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
+	}
+	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	return InitiatePaymentRequest{
+		Scheme:      SchemeSEPADD,
+		Debtor:      debtor,
+		Creditor:    creditor,
+		Amount:      amount,
+		MandateID:   MandateID(mandate),
+		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
+		Description: remittanceIn(tx.RmtInf),
+	}, nil
+}
+
+// onlyTransaction is the receiver's side of NbOfTxs, plus this system's own
+// limit of one payment per message.
+//
+// The count is CHECKED and not recomputed, which is the whole reason the element
+// is a string carrying the sender's assertion — see CreditTransferGroupHeader.
+// TestSettlementMessageNbOfTxsSurvivesATruncatedFile pins that neither the
+// encoder nor the decoder touches it, so a file that lost a transaction in
+// transit arrives saying so; this is the only place in the system that acts on
+// it. A truncated file read as a complete one is a payment that silently never
+// happened.
+//
+// More than one transaction is refused rather than partially read. The standard
+// is a bulk format and this system is not: an InitiatePaymentRequest is one
+// payment, and quietly translating the first of five would drop four.
+//
+// Neither refusal is a sentinel from errors.go, and that is deliberate. There is
+// no condition in this system's own vocabulary for "the file you sent
+// contradicts itself" or "this agent does not do bulk" — the same situation
+// namedPartyOf is in — so both fall to MS03 through reasonFor's default, which
+// says "this agent could not carry it out". The free text beside the code is
+// where the detail reaches the sender, and it says which count disagreed.
+func onlyTransaction[T any](element string, txs []T, nbOfTxs string) (T, error) {
+	var zero T
+	if err := checkNbOfTxs(element, txs, nbOfTxs); err != nil {
+		return zero, err
+	}
+	if len(txs) != 1 {
+		return zero, fmt.Errorf("payment: %s carries %d transactions; this system reads one payment per message",
+			element, len(txs))
+	}
+	return txs[0], nil
+}
+
+// settledIn reads an inbound amount as minor units of the scheme's asset.
+//
+// Two questions, and the order between them is load-bearing. The SCALE comes
+// from ledger.LookupAsset on the currency the message names, exactly as amountOf
+// takes it from the asset on the way out and for the same reason: this ledger is
+// multi-asset and a two-decimal assumption is wrong the first time a scheme in
+// another asset arrives. Only then is the currency compared with the scheme's,
+// so that a mismatch is reported as what it is — a message this scheme does not
+// settle — rather than as a complaint about the number's shape.
+//
+// The comparison itself cannot be skipped. Reading a USD amount at a euro scheme
+// and posting it into euro accounts would be a currency conversion at a rate of
+// one, performed silently, which is the failure ErrAssetMismatch exists to make
+// visible. See TestCreditTransferRequestRefusesAMessageInAnotherAsset.
+func (s *Network) settledIn(scheme SchemeID, amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, error) {
+	sc, ok := s.scheme(scheme)
+	if !ok {
+		return 0, fmt.Errorf("%w: %s", ErrSchemeNotFound, scheme)
+	}
+	minor, asset, err := amountIn(amt)
+	if err != nil {
+		return 0, err
+	}
+	if asset != sc.Asset() {
+		return 0, fmt.Errorf("%w: message is in %s, %s settles in %s", ErrAssetMismatch, asset, scheme, sc.Asset())
+	}
+	return minor, nil
+}
+
+// amountIn is the inverse of amountOf: a decimal on the wire becomes minor units
+// of the asset the message names, at that asset's own scale.
+//
+// A currency this ledger does not define is refused rather than read at some
+// default, because there is no default that is right — the same refusal amountOf
+// makes on the way out. Minor refuses a value with more fraction digits than the
+// scale allows rather than rounding it, which is what keeps a message this
+// system cannot represent exactly from becoming a number it can.
+func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.AssetCode, error) {
+	asset := ledger.AssetCode(amt.Ccy)
+	def, err := ledger.LookupAsset(asset)
+	if err != nil {
+		return 0, "", err
+	}
+	minor, err := amt.Minor(def.Scale)
+	if err != nil {
+		return 0, "", fmt.Errorf("%w: %s %s", err, amt.Ccy, amt.Value)
+	}
+	return ledger.Amount(minor), asset, nil
+}
+
+// partiesIn resolves both sides of a received message from the addresses it
+// carries.
+//
+// One read transaction for the pair, so both are resolved against the same
+// snapshot of the directory: a bank added between the two lookups could
+// otherwise make one side ambiguous and the other not, and which one depended on
+// timing.
+func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.CashAccount) (debtor, creditor PartyRef, err error) {
+	dbtrID, err := identifierIn("DbtrAcct", dbtrAcct)
+	if err != nil {
+		return PartyRef{}, PartyRef{}, err
+	}
+	cdtrID, err := identifierIn("CdtrAcct", cdtrAcct)
+	if err != nil {
+		return PartyRef{}, PartyRef{}, err
+	}
+	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		if debtor, err = s.addressedPartyTx(ctx, tx, dbtrID); err != nil {
+			return err
+		}
+		creditor, err = s.addressedPartyTx(ctx, tx, cdtrID)
+		return err
+	})
+	return debtor, creditor, err
+}
+
+// addressedPartyTx turns one quoted address into the party it names.
+//
+// It drives ResolveIdentifierTx rather than reimplementing the sweep, which
+// matters for a property that is easy to lose: two banks holding one identifier
+// is ErrIdentifierAmbiguous there, not the first hit, and choosing between them
+// here would route another bank's payment on the strength of listing order.
+//
+// # Only a NOT-FOUND becomes a domain error
+//
+// The same discipline partyTx documents for the outbound direction, and a
+// sharper hazard here, because for a directory lookup a not-found IS the
+// expected failure and `if err != nil { return ErrAccountNotInParticipant }` is
+// the obvious shape. It is wrong: that error becomes AC01 "incorrect account
+// number" in the pacs.002 this system sends back, so a dropped connection or a
+// cancelled context would tell another bank its customer's IBAN was bad and send
+// it hunting a fault that does not exist.
+//
+// An AMBIGUOUS address is passed through unchanged for the same reason rather
+// than a different one. AC01 would again be a false statement about the sender's
+// data — the IBAN is fine, and it is this network's own directory that cannot
+// say whose it is — so it falls to MS03 through reasonFor's default, which
+// claims only that this agent could not carry the instruction out. See
+// TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
+// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both
+// fail on the collapsed shape.
+func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+	ref, err := s.ResolveIdentifierTx(ctx, tx, ident)
+	if errors.Is(err, deposit.ErrIdentifierNotFound) {
+		return PartyRef{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ident.Value)
+	}
+	if err != nil {
+		return PartyRef{}, err
+	}
+	return ref, nil
+}
+
+// identifierIn reads the address a received message quotes for one party. It is
+// the inverse of ibanOf and cashAccount, and it is where the nil arm they never
+// produce actually arrives.
+//
+// AccountIdentification4Choice's arms are pointers because encoding/xml cannot
+// express an xsd:choice. Outbound, cashAccount builds the choice in one place
+// from a value that cannot be nil, so no code above ever dereferences it.
+// Inbound there is no such guarantee: Othr is a legal arm, a counterparty is
+// free to send it, and this system cannot resolve a card PAN or a generic
+// identifier to an account. That is ErrUnaddressableAccount — the message
+// addresses something this bank cannot address — and it is a refusal rather
+// than a dereference of a pointer that is nil for a perfectly ordinary reason.
+//
+// # The compaction gap, which this function does not close
+//
+// The value is compacted, which is a no-op for anything that came off the wire
+// and is done anyway so that the identifier this returns is in one canonical
+// form. What compaction cannot do is run backwards: iso20022.IBAN's doc records
+// that matching a received IBAN against a stored one means compacting BOTH
+// sides, and the STORED side is not compacted anywhere — the network directory
+// matches identifier values exactly (ResolveIdentifierTx, and the deposit
+// store's contract). So an account whose stored address carries display
+// separators, as seed.go's readable SE89-AURORA-1001 does, cannot be reached
+// from the wire at all: this system emits the compact form for it and then
+// cannot resolve what it emitted.
+//
+// It is not closed here because the fix is not here. Comparing compacted values
+// on both sides is a change to the directory's own comparison, in the deposit
+// layer where "matches both halves of the pair exactly" is a store contract that
+// storetest enforces; a fallback in this function would be this package
+// reimplementing the sweep it was told not to reimplement, and would still not
+// help any other caller. It is recorded rather than assumed away, and pinned by
+// TestCreditTransferRequestCannotReachAStoredIBANWithSeparators so that it is a
+// property with a test rather than a surprise the mesh discovers.
+func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier, error) {
+	if acct.Id.IBAN == nil {
+		return deposit.Identifier{}, fmt.Errorf("%w: %s/Id/IBAN", ErrUnaddressableAccount, element)
+	}
+	iban := acct.Id.IBAN.Compact()
+	if err := iban.Validate(); err != nil {
+		return deposit.Identifier{}, fmt.Errorf("%w: %s: %w", ErrUnaddressableAccount, element, err)
+	}
+	return deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: string(iban)}, nil
+}
+
+// endToEndIn is the inverse of endToEndOf: the value the guidelines reserve for
+// "the sender had no reference" comes back as no reference.
+//
+// Storing the literal would not merely be untidy. EndToEndID is deduplicated —
+// InitiatePayment refuses a reference it has already seen, and an empty one is
+// never an identity — so every reference-less payment in the network would share
+// one reference, and the second to arrive would be rejected as a duplicate of
+// the first. Two unrelated customers, colliding on a value neither of them
+// chose. See TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference, which
+// initiates twice for exactly that reason.
+func endToEndIn(id string) string {
+	if id == "NOTPROVIDED" {
+		return ""
+	}
+	return id
+}
+
+// remittanceIn is what the payment is for, or nothing at all. The element is
+// optional and the pointer is genuinely nil for most messages; see
+// remittanceOf, which omits it rather than sending an empty one.
+func remittanceIn(r *iso20022.RemittanceInformation) string {
+	if r == nil {
+		return ""
+	}
+	return r.Ustrd
+}
+
+// ReadStatus reads a received pacs.002 as what it says about the original
+// message and what it says about each transaction in it.
+//
+// Two return values because they are two different facts, and the mesh acts on
+// them at different granularities: the OriginalMessage is how a status is
+// matched back to something this system sent — there is no other link, which is
+// what makes clearing asynchronous rather than merely delayed — and each report
+// is the fate of one payment inside it.
+//
+// It returns no error, and that is a claim rather than an omission. Every
+// element it reads is either mandatory in a document that has been through
+// Unmarshal, or optional and absent-means-absent: a missing OrgnlCreDtTm is the
+// zero time because the sender did not say, and an acceptance carries no reason
+// element because StatusReasonChoice requires exactly one arm and there is
+// nothing truthful to put in one. There is no way to hand this function a
+// pacs.002 it must refuse, so it does not pretend there is.
+//
+// Two things in the message are deliberately dropped. GrpSts is derived from the
+// per-transaction statuses by the sender — see groupStatusOf — so keeping it
+// would be keeping a summary beside the thing it summarises, and a receiver that
+// trusted the summary over the detail would act on the wrong one when they
+// disagreed. StsId names the STATUS rather than the payment; it is what a later
+// query would quote to ask about one particular status, and nothing in this
+// system asks such a question yet. Both are recorded here rather than left as
+// silent omissions.
+func ReadStatus(doc *iso20022.Pacs002) (OriginalMessage, []TransactionStatusReport) {
+	rpt := doc.FIToFIPmtStsRpt
+	orig := OriginalMessage{
+		MsgID:     rpt.OrgnlGrpInfAndSts.OrgnlMsgId,
+		MsgDefIdr: rpt.OrgnlGrpInfAndSts.OrgnlMsgNmId,
+	}
+	if t := rpt.OrgnlGrpInfAndSts.OrgnlCreDtTm; t != nil {
+		orig.CreDtTm = t.Time
+	}
+	out := make([]TransactionStatusReport, 0, len(rpt.TxInfAndSts))
+	for _, s := range rpt.TxInfAndSts {
+		r := TransactionStatusReport{
+			EndToEndID: s.OrgnlEndToEndId,
+			TxID:       s.OrgnlTxId,
+			Status:     s.TxSts,
+		}
+		// The code and the text are both kept, because they say different
+		// things: the code is what makes a rejection machine-actionable and the
+		// text is what says the part no code can. Dropping either is a silent
+		// loss — see TransactionStatusReport.
+		if s.StsRsnInf != nil {
+			r.Text = s.StsRsnInf.AddtlInf
+			if s.StsRsnInf.Rsn.Cd != nil {
+				r.Code = *s.StsRsnInf.Rsn.Cd
+			}
+		}
+		out = append(out, r)
+	}
+	return orig, out
+}
+
+// ReadSettlement reads a received pacs.009 as the legs it instructs.
+//
+// Each leg's scale comes from ledger.LookupAsset on that leg's OWN currency,
+// never from a constant and never from the first leg's: one settlement message
+// may carry legs from several cycles, and a cycle's asset is a property of its
+// scheme. That is the same reason TtlIntrBkSttlmAmt is absent on the way out —
+// a sum across assets is not a number.
+//
+// The sender's NbOfTxs is checked against what arrived before any leg is read.
+// This is a settlement instruction: a leg lost in transit is a bank that does
+// not get paid, and reading the survivors as a complete instruction would settle
+// the cycle and leave no record that anything went missing.
+func ReadSettlement(doc *iso20022.Pacs009) ([]SettlementLeg, error) {
+	body := doc.FICdtTrf
+	if err := checkNbOfTxs("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs); err != nil {
+		return nil, err
+	}
+	legs := make([]SettlementLeg, 0, len(body.CdtTrfTxInf))
+	for i, tx := range body.CdtTrfTxInf {
+		amount, asset, err := amountIn(tx.IntrBkSttlmAmt)
+		if err != nil {
+			return nil, fmt.Errorf("CdtTrfTxInf[%d]: %w", i, err)
+		}
+		legs = append(legs, SettlementLeg{
+			From:      tx.Dbtr.FinInstnId.BICFI,
+			To:        tx.Cdtr.FinInstnId.BICFI,
+			Amount:    amount,
+			Asset:     asset,
+			Reference: tx.PmtId.EndToEndId,
+		})
+	}
+	return legs, nil
+}
+
+// checkNbOfTxs holds a sender to its own count. It is onlyTransaction's first
+// half, split out for the one message this system reads in bulk: a settlement
+// instruction is many legs by nature, so the count matters there and the
+// one-transaction limit does not apply.
+func checkNbOfTxs[T any](element string, txs []T, nbOfTxs string) error {
+	declared, err := strconv.Atoi(nbOfTxs)
+	if err != nil {
+		return fmt.Errorf("payment: GrpHdr/NbOfTxs is %q, which is not a count", nbOfTxs)
+	}
+	if declared != len(txs) {
+		return fmt.Errorf("payment: GrpHdr/NbOfTxs declares %d transactions and %s carries %d",
+			declared, element, len(txs))
+	}
+	return nil
+}
+
 // SettlementLeg is one bank's movement in a settlement instruction: who pays,
 // who is paid, how much, and which closed cycle it discharges.
 //

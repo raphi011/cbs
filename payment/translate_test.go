@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/raphi011/cbs/iso20022"
 )
@@ -162,6 +163,262 @@ func TestReasonForUnwraps(t *testing.T) {
 	}
 	if got := reasonFor(fmt.Errorf("checking the creditor: %w", ErrAccountNotInParticipant)); got != iso20022.StatusReasonIncorrectAccountNumber {
 		t.Errorf("reasonFor(wrapped) = %q, want AC01", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Inbound: reading a status report and a settlement instruction
+// ---------------------------------------------------------------------------
+//
+// These two readers need no Network, so they are tested in this package rather
+// than in message_test.go — the split between the two files is mechanical, and
+// described at the top of that one.
+
+// readNow is the instant these tests write their messages at. It is not the
+// network's clock, for the reason messageNow is not: a message is created when
+// it is sent, not when the thing it reports on happened.
+var readNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
+
+// ReadStatus separates what the report says about the GROUP from what it says
+// about each transaction, because a bulk message's fate is two different facts.
+//
+// The report is built, marshalled and read back off the wire rather than
+// inspected as a struct: a reader that read its own input would be a tautology,
+// and the claim is about what a receiver sees.
+func TestReadStatusSeparatesGroupFromTransaction(t *testing.T) {
+	orig := OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08", CreDtTm: readNow.Add(-time.Hour)}
+	sent := []TransactionStatusReport{
+		{EndToEndID: "e2e-1", TxID: "pay_1", Status: iso20022.TransactionStatusAccepted},
+		{
+			EndToEndID: "e2e-2",
+			TxID:       "pay_2",
+			Status:     iso20022.TransactionStatusRejected,
+			Code:       iso20022.StatusReasonClosedAccountNumber,
+			Text:       "creditor account is closed",
+		},
+	}
+	env, err := StatusMessage(orig, sent, MessageContext{
+		From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: readNow,
+	})
+	if err != nil {
+		t.Fatalf("StatusMessage: %v", err)
+	}
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got, reports := ReadStatus(back.Document.(*iso20022.Pacs002))
+
+	// The GROUP half. All three fields point BACKWARDS at the message being
+	// reported on — never at this report, whose own MsgId is VERDE-1. A reader
+	// that took the status report's own header here would hand the mesh an
+	// identifier that matches nothing it ever sent.
+	if got.MsgID != orig.MsgID {
+		t.Errorf("original message id = %q, want %q", got.MsgID, orig.MsgID)
+	}
+	if got.MsgDefIdr != orig.MsgDefIdr {
+		t.Errorf("original definition = %q, want %q", got.MsgDefIdr, orig.MsgDefIdr)
+	}
+	if !got.CreDtTm.Equal(orig.CreDtTm) {
+		t.Errorf("original creation time = %s, want %s", got.CreDtTm, orig.CreDtTm)
+	}
+
+	// The TRANSACTION half: one report per TxInfAndSts, in order.
+	if len(reports) != len(sent) {
+		t.Fatalf("got %d transaction reports, want one per TxInfAndSts (%d)", len(reports), len(sent))
+	}
+	for i, want := range sent {
+		if reports[i] != want {
+			t.Errorf("report[%d] = %+v, want %+v", i, reports[i], want)
+		}
+	}
+	// Spelled out for the rejection, because the two elements are separately
+	// losable and each loss is silent: the code is what makes the rejection
+	// machine-actionable and the text is what the person working the exception
+	// queue reads.
+	if reports[1].Code != iso20022.StatusReasonClosedAccountNumber {
+		t.Errorf("rejection code = %q, want AC04", reports[1].Code)
+	}
+	if reports[1].Text != "creditor account is closed" {
+		t.Errorf("rejection text = %q, want the free text beside the code", reports[1].Text)
+	}
+	// An acceptance carries no reason element at all — StatusReasonChoice
+	// requires exactly one arm, so there is nothing truthful to put in one — and
+	// a reader must not invent a code for it.
+	if reports[0].Code != "" {
+		t.Errorf("accepted transaction came back with code %q, want none", reports[0].Code)
+	}
+}
+
+// A report whose original creation time was omitted comes back as the zero
+// time, not as a fabricated instant. The element is optional precisely because
+// a sender may not know it; see originalCreationOf, which omits it on the way
+// out for the same reason.
+func TestReadStatusLeavesAnAbsentCreationTimeZero(t *testing.T) {
+	env, err := StatusMessage(
+		OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08"},
+		[]TransactionStatusReport{{EndToEndID: "e2e-1", Status: iso20022.TransactionStatusAccepted}},
+		MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: readNow},
+	)
+	if err != nil {
+		t.Fatalf("StatusMessage: %v", err)
+	}
+	got, _ := ReadStatus(env.Document.(*iso20022.Pacs002))
+	if !got.CreDtTm.IsZero() {
+		t.Errorf("original creation time = %s, want the zero time: the message did not say", got.CreDtTm)
+	}
+}
+
+// One leg per transaction, both parties by BIC, and the reference that says
+// which cycle the leg discharges.
+func TestReadSettlementIsOneLegPerTransaction(t *testing.T) {
+	sent := []SettlementLeg{
+		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: 250000, Asset: "EUR", Reference: "cyc_1:bank_1"},
+		{From: "NORDSESSXXX", To: "VERDITMMXXX", Amount: 100000, Asset: "EUR", Reference: "cyc_1:bank_3"},
+	}
+	env, err := SettlementMessage(sent, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: readNow})
+	if err != nil {
+		t.Fatalf("SettlementMessage: %v", err)
+	}
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got, err := ReadSettlement(back.Document.(*iso20022.Pacs009))
+	if err != nil {
+		t.Fatalf("ReadSettlement: %v", err)
+	}
+	if len(got) != len(sent) {
+		t.Fatalf("got %d legs, want %d", len(got), len(sent))
+	}
+	for i := range sent {
+		if got[i] != sent[i] {
+			t.Errorf("leg[%d] = %+v, want %+v", i, got[i], sent[i])
+		}
+	}
+	// Spelled out, because a reader that swapped them produces a settlement that
+	// pays the wrong bank and is otherwise indistinguishable.
+	if got[0].From != "AURODEFFXXX" || got[0].To != "VERDITMMXXX" {
+		t.Errorf("leg 0 settles %s -> %s, want AURODEFFXXX -> VERDITMMXXX", got[0].From, got[0].To)
+	}
+}
+
+// The scale comes from ledger.LookupAsset on the message's own currency, never
+// from a constant — and an eight-decimal asset is what makes the difference
+// visible.
+//
+// The document is built by hand rather than by SettlementMessage, and that is
+// the finding rather than a shortcut: ActiveCurrencyAndAmount caps any currency
+// at five fraction digits, so a BTC leg cannot be marshalled and this message
+// cannot arrive over the wire. What it can do is reach ReadSettlement, which is
+// enough to distinguish the two implementations — at the asset's scale of 8,
+// 0.00250000 is 250000 satoshi; at a hardcoded 2 it is ErrAmountScale, an error
+// where an amount should be.
+func TestReadSettlementTakesItsScaleFromTheAsset(t *testing.T) {
+	doc := &iso20022.Pacs009{FICdtTrf: iso20022.FIToFIFinancialInstitutionCreditTransfer{
+		GrpHdr: iso20022.CreditTransferGroupHeader{MsgId: "CSM-1", NbOfTxs: "1"},
+		CdtTrfTxInf: []iso20022.FinancialInstitutionCreditTransferTransaction{{
+			PmtId:          iso20022.PaymentIdentification{EndToEndId: "cyc_1:bank_1"},
+			IntrBkSttlmAmt: iso20022.ActiveCurrencyAndAmount{Ccy: "BTC", Value: "0.00250000"},
+			Dbtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "AURODEFFXXX"}},
+			Cdtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"}},
+		}},
+	}}
+
+	got, err := ReadSettlement(doc)
+	if err != nil {
+		t.Fatalf("ReadSettlement of a BTC leg: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d legs, want 1", len(got))
+	}
+	if got[0].Amount != 250000 || got[0].Asset != "BTC" {
+		t.Errorf("leg = %d %s, want 250000 BTC (0.00250000 at the asset's scale of 8)", got[0].Amount, got[0].Asset)
+	}
+}
+
+// A currency the ledger has never heard of is refused rather than read at some
+// default scale. This is a settlement instruction, so the alternative to
+// refusing is moving central-bank reserves by a number nobody can interpret.
+func TestReadSettlementRefusesAnUnknownCurrency(t *testing.T) {
+	doc := &iso20022.Pacs009{FICdtTrf: iso20022.FIToFIFinancialInstitutionCreditTransfer{
+		GrpHdr: iso20022.CreditTransferGroupHeader{MsgId: "CSM-1", NbOfTxs: "1"},
+		CdtTrfTxInf: []iso20022.FinancialInstitutionCreditTransferTransaction{{
+			PmtId:          iso20022.PaymentIdentification{EndToEndId: "r"},
+			IntrBkSttlmAmt: iso20022.ActiveCurrencyAndAmount{Ccy: "XYZ", Value: "25.00"},
+			Dbtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "AURODEFFXXX"}},
+			Cdtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"}},
+		}},
+	}}
+	if _, err := ReadSettlement(doc); err == nil {
+		t.Fatal("read a settlement leg in a currency the ledger does not define")
+	}
+}
+
+// The receiver that TestSettlementMessageNbOfTxsSurvivesATruncatedFile was
+// waiting for.
+//
+// That test truncates a settlement instruction after it is built, marshals it,
+// reads it back and asserts the sender's count of 2 is still there beside the
+// one leg that survived — and then stops, because nothing existed to act on the
+// discrepancy. This is the act: a settlement instruction that declares two legs
+// and carries one is refused, rather than settling the one and leaving a bank
+// unpaid with no record of why.
+func TestReadSettlementRefusesATruncatedFile(t *testing.T) {
+	env, err := SettlementMessage([]SettlementLeg{
+		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: 250000, Asset: "EUR", Reference: "cyc_1:bank_1"},
+		{From: "NORDSESSXXX", To: "VERDITMMXXX", Amount: 100000, Asset: "EUR", Reference: "cyc_1:bank_3"},
+	}, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: readNow})
+	if err != nil {
+		t.Fatalf("SettlementMessage: %v", err)
+	}
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	doc := back.Document.(*iso20022.Pacs009)
+	doc.FICdtTrf.CdtTrfTxInf = doc.FICdtTrf.CdtTrfTxInf[:1]
+
+	_, err = ReadSettlement(doc)
+	if err == nil {
+		t.Fatal("settled a file that declared two legs and carried one")
+	}
+	if !strings.Contains(err.Error(), "NbOfTxs") {
+		t.Errorf("error = %v, want it to name the count the sender asserted", err)
+	}
+}
+
+// A count that is not a number is refused rather than ignored. Atoi's zero value
+// on failure is 0, so a reader that dropped the error would compare every
+// transaction list against zero and refuse every well-formed message — or, worse,
+// treat the check as satisfied. NbOfTxs is a string in this package because it
+// is what the sender asserted, and an assertion that is not a count is not one.
+func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
+	doc := &iso20022.Pacs009{FICdtTrf: iso20022.FIToFIFinancialInstitutionCreditTransfer{
+		GrpHdr: iso20022.CreditTransferGroupHeader{MsgId: "CSM-1", NbOfTxs: "many"},
+		CdtTrfTxInf: []iso20022.FinancialInstitutionCreditTransferTransaction{{
+			PmtId:          iso20022.PaymentIdentification{EndToEndId: "r"},
+			IntrBkSttlmAmt: iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "25.00"},
+			Dbtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "AURODEFFXXX"}},
+			Cdtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"}},
+		}},
+	}}
+	if _, err := ReadSettlement(doc); err == nil {
+		t.Fatal("accepted a settlement instruction whose NbOfTxs is not a number")
 	}
 }
 
