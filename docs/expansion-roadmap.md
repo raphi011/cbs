@@ -312,6 +312,7 @@ ships.
 
 Specs: [`7a`](superpowers/specs/2026-07-31-iso20022-messages-design.md) ·
 [`7b`](superpowers/specs/2026-08-01-iso20022-mesh-design.md)
+Plans: [`7b`](superpowers/plans/2026-08-01-iso20022-mesh.md)
 
 Retires the largest remaining payments fiction — *"No ISO 20022 message
 parsing"* (`README.md:1016`) — by making the message the interface between
