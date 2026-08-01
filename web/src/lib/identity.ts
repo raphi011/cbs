@@ -9,10 +9,12 @@ import {
   Landmark,
   LayoutDashboard,
   Network,
+  Receipt,
   RefreshCw,
   ScrollText,
   Search,
   Users,
+  Wallet,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -131,9 +133,12 @@ export function navFor(identity: Identity): NavItem[] {
         { href: `${base}/deposit-audit`, label: "Deposit audit", icon: ScrollText },
       ];
     }
-    case "customer":
-      // The customer's screens arrive with Task 12; a nav entry pointing at a
-      // route with no file is what nav-integrity.test.ts exists to reject.
-      return [];
+    case "customer": {
+      const base = `/customer/${identity.pid}/${identity.did}`;
+      return [
+        { href: base, label: "Account", icon: Wallet, exact: true },
+        { href: `${base}/activity`, label: "Activity", icon: Receipt },
+      ];
+    }
   }
 }

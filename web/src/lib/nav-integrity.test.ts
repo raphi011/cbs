@@ -21,11 +21,10 @@ const IDENTITIES: Identity[] = [
 ];
 
 // Routes a later task builds. Each line is deleted by the task that creates its
-// page, so this list is empty when 6b is done — an entry that outlives its task
-// is a nav link pointing at nothing, which is what this file exists to reject.
-const PENDING = new Set([
-  `/customer/${PID}/${DID}`, // Task 12 builds the customer's screens
-]);
+// page, so this list is empty now that 6b's last pending route (the customer's
+// home, Task 12) has one — an entry that outlives its task is a nav link
+// pointing at nothing, which is what this file exists to reject.
+const PENDING = new Set<string>([]);
 
 // An App Router route renders src/app/<segments>/page.tsx. A dynamic segment is
 // a directory literally named [pid] / [did].

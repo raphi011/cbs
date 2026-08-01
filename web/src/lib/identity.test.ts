@@ -166,7 +166,13 @@ describe("navFor", () => {
     }
   });
 
-  it("has no customer nav until the customer screens exist", () => {
-    expect(navFor({ persona: "customer", pid: "bank_1", did: "dep_9" })).toEqual([]);
+  // Send arrives in Task 13 and is inserted between these two, in the order the
+  // tab strip shows them.
+  it("gives a customer the screens they have, all under their own account", () => {
+    const nav = navFor({ persona: "customer", pid: "bank_1", did: "dep_9" });
+    expect(nav.map((n) => n.href)).toEqual([
+      "/customer/bank_1/dep_9",
+      "/customer/bank_1/dep_9/activity",
+    ]);
   });
 });

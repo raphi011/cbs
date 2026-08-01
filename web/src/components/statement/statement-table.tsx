@@ -45,6 +45,7 @@ export function StatementTable({
   pid,
   asset,
   amountHintId = "statement-amount",
+  retail = false,
 }: {
   rows: StatementRow[];
   book?: number;
@@ -56,6 +57,11 @@ export function StatementTable({
   // — see EntryAmount above.
   asset: Asset;
   amountHintId?: HintKey;
+  // Retail framing: no contra column, no expandable GL detail, no reconciliation
+  // banner. A customer's statement is dates, descriptions, amounts and a running
+  // balance; the double entry behind it is the bank's business, and linking to it
+  // would navigate out of the persona.
+  retail?: boolean;
 }) {
   const [openTx, setOpenTx] = useState<string | null>(null);
   const { byCode } = useAssetLookup();
@@ -63,7 +69,9 @@ export function StatementTable({
   if (rows.length === 0) {
     return (
       <div className="rounded-lg border py-10 text-center text-sm text-muted-foreground">
-        No transactions yet. Fund the account or post one to see it here.
+        {retail
+          ? "No activity yet. Money arriving or leaving this account will appear here."
+          : "No transactions yet. Fund the account or post one to see it here."}
       </div>
     );
   }
@@ -78,7 +86,7 @@ export function StatementTable({
             <TableRow>
               <TableHead>Date</TableHead>
               <TableHead>Description</TableHead>
-              <TableHead>Contra</TableHead>
+              {!retail && <TableHead>Contra</TableHead>}
               <TableHead className="text-right">
                 <span className="inline-flex items-center gap-1.5">
                   Amount
@@ -92,8 +100,12 @@ export function StatementTable({
             {rows.map((row) => (
               <Fragment key={row.txId}>
                 <TableRow
-                  className="cursor-pointer"
-                  onClick={() => setOpenTx((cur) => (cur === row.txId ? null : row.txId))}
+                  className={cn(!retail && "cursor-pointer")}
+                  onClick={
+                    retail
+                      ? undefined
+                      : () => setOpenTx((cur) => (cur === row.txId ? null : row.txId))
+                  }
                 >
                   <TableCell className="whitespace-nowrap">{formatDate(row.date)}</TableCell>
                   <TableCell>
@@ -111,9 +123,11 @@ export function StatementTable({
                       )}
                     </span>
                   </TableCell>
-                  <TableCell>
-                    <ContraCell pid={pid} contra={row.contra} />
-                  </TableCell>
+                  {!retail && (
+                    <TableCell>
+                      <ContraCell pid={pid} contra={row.contra} />
+                    </TableCell>
+                  )}
                   <TableCell>
                     <AmountCell amount={row.delta} asset={asset} signed />
                   </TableCell>
@@ -121,9 +135,9 @@ export function StatementTable({
                     <Money amount={row.runningBalance} asset={asset} />
                   </TableCell>
                 </TableRow>
-                {openTx === row.txId && (
+                {!retail && openTx === row.txId && (
                   <TableRow className="bg-muted/40 hover:bg-muted/40">
-                    <TableCell colSpan={5} className="p-0">
+                    <TableCell colSpan={retail ? 4 : 5} className="p-0">
                       <div className="space-y-2 px-4 py-3">
                         <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                           Underlying GL transaction <IdText id={row.txId} /> — one balanced double entry
@@ -163,7 +177,8 @@ export function StatementTable({
         </Table>
       </div>
 
-      {book != null &&
+      {!retail &&
+        book != null &&
         (reconciles ? (
           <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950 dark:text-emerald-300">
             ✓ Running balance reconciles to the book balance{" "}
