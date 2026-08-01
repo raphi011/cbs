@@ -13,8 +13,12 @@ package iso20022
 type SettlementMethod string
 
 // SettlementMethodClearing means the payment settles through a clearing system
-// rather than through accounts the two agents hold with each other. It is the
-// only method SEPA uses, and the only one this system implements.
+// rather than through accounts the two agents hold with each other.
+//
+// It is the only method this system implements, which is not the same as the
+// only one the scheme allows: the SCT Inter-PSP IG also permits INGA and INDA
+// (idx 1.9), and the SDD Core IG restricts the element not at all (idx 1.10).
+// See SettlementInstruction.
 const SettlementMethodClearing SettlementMethod = "CLRG"
 
 // ChargeBearer says who pays the transaction charges.

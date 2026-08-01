@@ -3,6 +3,8 @@ package iso20022
 import (
 	"encoding/xml"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -224,6 +226,61 @@ func TestNamedPartyStillRequiresAName(t *testing.T) {
 	}
 	if err := validateNamedParty("Dbtr", PartyIdentification{Nm: "Alice Andersson"}); err != nil {
 		t.Fatalf("validateNamedParty() = %v, want nil", err)
+	}
+}
+
+// TestSettlementInstructionChecksPresenceNotValue pins the sentence
+// SettlementInstruction's doc comment now makes about the CODE, as opposed to
+// the ones it makes about the guidelines.
+//
+// The comment used to say the settlement method "is always CLRG for SEPA",
+// which is false of the scheme — the SCT Inter-PSP IG allows INGA and INDA too,
+// and the SDD Core IG restricts the element not at all — and was never true of
+// this code, which has only ever checked that SttlmMtd is non-empty. A comment
+// asserting a narrowing next to code that does not narrow is the failure mode
+// this repository keeps hitting, so both halves are asserted here: absence is
+// an error, and a value this system does not itself produce is not.
+func TestSettlementInstructionChecksPresenceNotValue(t *testing.T) {
+	if err := (SettlementInstruction{}).validate(); !errors.Is(err, ErrMissingElement) {
+		t.Fatalf("validate() with no SttlmMtd = %v, want it to wrap ErrMissingElement", err)
+	}
+	// CLRG is what this system emits. INGA and INDA are the other two the SCT
+	// guidelines allow, so a counterparty may send either; neither is refused.
+	for _, mtd := range []SettlementMethod{SettlementMethodClearing, "INGA", "INDA"} {
+		if err := (SettlementInstruction{SttlmMtd: mtd}).validate(); err != nil {
+			t.Fatalf("validate() with SttlmMtd = %q returned %v, want nil — this codec checks presence, not value",
+				mtd, err)
+		}
+	}
+}
+
+// TestRemittanceInformationCarriesTheUnstructuredArmOnly pins the two claims
+// RemittanceInformation's doc comment makes about this package: it models the
+// unstructured arm and nothing else, and it does not re-check the schema's
+// Max140Text bound.
+//
+// The comment used to say the EPC guidelines allow "ONE unstructured line",
+// full stop, which reads as an exclusion the guidelines do not make — either
+// arm may be present. Correcting that leaves behind a statement about the code,
+// and this is it.
+func TestRemittanceInformationCarriesTheUnstructuredArmOnly(t *testing.T) {
+	if n := reflect.TypeOf(RemittanceInformation{}).NumField(); n != 1 {
+		t.Fatalf("RemittanceInformation has %d fields, want 1; the doc comment says only the unstructured arm is modelled", n)
+	}
+
+	// Marshal rather than validate: RemittanceInformation has no validate() of
+	// its own, so the only way to observe "the bound is not re-checked" is to
+	// put an over-long line through the whole encode path and see it come out.
+	env := assertGoldenRoundTrip(t, "pacs008.xml")
+	long := strings.Repeat("x", 200)
+	env.Document.(*Pacs008).FIToFICstmrCdtTrf.CdtTrfTxInf[0].RmtInf = &RemittanceInformation{Ustrd: long}
+
+	out, err := Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v; the Max140Text bound is the schema's and is not enforced here", err)
+	}
+	if !strings.Contains(string(out), long) {
+		t.Fatalf("Marshal() dropped or truncated the remittance line:\n%s", out)
 	}
 }
 

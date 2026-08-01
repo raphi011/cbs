@@ -16,14 +16,35 @@
 //
 // Base ISO 20022 permits a great deal that SEPA forbids. The European Payments
 // Council's Implementation Guidelines are a constrained SUBSET of the standard:
-// accounts are identified by IBAN and nothing else, the currency is euro, the
-// charge bearer is always SLEV, the settlement method is always CLRG, and
-// remittance information is a single unstructured line of at most 140
-// characters.
+// accounts are identified by IBAN and nothing else, the currency is euro, and
+// the charge bearer is always SLEV — "Only 'SLEV' is allowed" (SCT Inter-PSP IG
+// idx 2.28, SDD Core IG idx 2.26).
 //
 // This package implements the EPC subset. The relationship is itself worth
 // knowing: the standard is a superset, and a scheme narrows it until only one
 // thing can be meant.
+//
+// Two further narrowings are THIS PACKAGE's and not the scheme's, and the
+// difference is worth keeping visible, because a claim about the standard
+// travels further than a claim about the code — the README, the hint content
+// and the quiz all copy from here:
+//
+//   - Settlement method. The guidelines allow CLRG, INGA and INDA for a credit
+//     transfer (SCT Inter-PSP IG idx 1.9) and restrict a direct debit not at
+//     all (SDD Core IG idx 1.10). This package declares CLRG alone, because
+//     that is the only method this system produces, and checks SttlmMtd for
+//     presence rather than for value. See SettlementInstruction.
+//   - Remittance information. Either the structured or the unstructured arm may
+//     be present (SCT Inter-PSP IG idx 2.137, SDD Core IG idx 2.156), and the
+//     2025 SCT IG adds an extended option. This package models the unstructured
+//     arm only, which the scheme does limit to one occurrence of Max140Text.
+//     See RemittanceInformation.
+//
+// Every claim above about what the guidelines require carries its index into
+// the Implementation Guidelines, so the next reader can check it against the
+// clause rather than against a 400-page PDF. Two of these claims were false
+// before a review fetched the guidelines; a citation is what makes the third
+// one cheap to falsify.
 //
 // # The envelope
 //

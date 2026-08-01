@@ -276,9 +276,20 @@ func (a BranchAndFinancialInstitution) validate() error {
 // RemittanceInformation is what the payment is for, as far as the two customers
 // are concerned. The banks do not read it.
 //
-// The EPC guidelines allow ONE unstructured line of at most 140 characters, so
-// this is a string and not a slice. Structured remittance information exists in
-// the standard and is not used in SEPA credit transfers.
+// The guidelines allow EITHER arm: "Either 'Structured' or 'Unstructured' may
+// be present" (SCT Inter-PSP IG idx 2.137, SDD Core IG idx 2.156), and the 2025
+// SCT IG adds an Extended Remittance Information option under
+// LclInstrm/Cd = "PERI". So "SEPA remittance is one unstructured line" is a
+// description of this PACKAGE and not of the scheme.
+//
+// What is true of the scheme is the narrower part: the unstructured arm is
+// limited to one occurrence of Max140Text, which is why Ustrd is a string and
+// not a slice. This package models that arm and no other — the structured arm
+// is a deliberate omission, listed with the rest in the design document — and
+// it does not re-check the 140-character bound, for the same reason it checks
+// ChrgBr for presence rather than for value: this is a codec, and the schema is
+// where a length is enforced. See
+// TestRemittanceInformationCarriesTheUnstructuredArmOnly.
 type RemittanceInformation struct {
 	Ustrd string `xml:"Ustrd,omitempty"`
 }
@@ -392,9 +403,21 @@ type ClearingSystemIdentification struct {
 	Prtry string `xml:"Prtry,omitempty"`
 }
 
-// SettlementInstruction says how interbank settlement happens. For SEPA the
-// method is always CLRG — through a clearing system rather than across accounts
-// the two agents hold with each other.
+// SettlementInstruction says how interbank settlement happens.
+//
+// The scheme is less narrow here than one code suggests. The SCT Inter-PSP IG
+// allows three methods — "Only 'CLRG', 'INGA' and 'INDA' are allowed" (idx 1.9
+// for pacs.008, idx 1.11 for pacs.004) — and the SDD Core IG imposes no SEPA
+// restriction at all (idx 1.10 is a plain SettlementMethod2Code). "SEPA means
+// CLRG" is this repository's clearing house, not the rule book.
+//
+// CLRG — settling through a clearing system rather than across accounts the two
+// agents hold with each other — is therefore the only member codes.go declares,
+// because it is the only one this system produces. validate() checks SttlmMtd
+// for PRESENCE and not for value, so a counterparty's INGA or INDA is decoded
+// and re-emitted rather than refused. Both halves are pinned by
+// TestSettlementInstructionChecksPresenceNotValue, because a comment saying
+// "always CLRG" next to code that accepts anything is how this one went wrong.
 type SettlementInstruction struct {
 	SttlmMtd SettlementMethod              `xml:"SttlmMtd"`
 	ClrSys   *ClearingSystemIdentification `xml:"ClrSys,omitempty"`

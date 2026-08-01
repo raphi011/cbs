@@ -1,6 +1,11 @@
 # Handoff: sub-project 7b, the mesh and the actors
 
-Paste the block below into a fresh session in `~/Git/cbs`.
+Paste the block below into a fresh session in `~/Git/cbs-product-catalogue` —
+the worktree that already has `spec/iso20022-messages` checked out. Not
+`~/Git/cbs`: git refuses to check the same branch out in two worktrees, so
+starting there means the first thing you do fails. If you want your own
+isolated tree, create a new worktree from that branch rather than reusing the
+main repo.
 
 ---
 
@@ -42,9 +47,15 @@ roadmap's original wording because it is written down.
 
 ## What just landed that you build on
 
-**Sub-project 7a, the `iso20022` package, is done**: 31 commits on
+**Sub-project 7a, the `iso20022` package, is done**: the whole of
 `spec/iso20022-messages` (based on `spec/operator-split-api`), **unmerged and
-unpushed**. Read
+unpushed**. The commit count moves every time a review round lands — it was
+written here as "31" and was already 32 by the time the branch was reviewed —
+so count it rather than trusting a number in a document:
+
+    git rev-list --count $(git merge-base spec/operator-split-api HEAD)..HEAD
+
+Read
 `docs/superpowers/specs/2026-07-31-iso20022-messages-design.md` for the
 reasoning. The facts you need:
 
@@ -103,9 +114,16 @@ Four, none of them blocking, all recorded in
    that would do it** — revisit the decision then, with a real consumer to
    justify the size.
 2. **`StsRsnInf/Orgtr` given as `PrvtId` is representable and not refused.** ISO
-   allows it, EPC forbids it (a PSP is not a natural person), and `xmllint`
-   accepts it. Enforcing it needs either a widened `ErrElementNotAllowed` or a
-   new sentinel. Unresolved.
+   allows it, EPC does not — `PrvtId` appears nowhere under `Orgtr` in either
+   IG — and `xmllint` accepts it. Do **not** generalise from "a PSP is not a
+   natural person": that was this document's original reason and it is wrong.
+   The SCT Inter-PSP IG idx 3.9 limits `Orgtr` to "'AnyBIC' to identify the PSP
+   or CSM originating the status or 'Name' to indicate the CSM when it has no
+   BIC", and the SDD Core IG idx 3.9 is broader still — "or 'Name' to indicate
+   the **Debtor** or CSM when it has no BIC". So `Orgtr` is not restricted to
+   financial institutions, and under SDD it may name a natural person; what it
+   may never do is identify one via `PrvtId`. Enforcing that needs either a
+   widened `ErrElementNotAllowed` or a new sentinel. Unresolved.
 3. **`OrgnlEndToEndId` and `OrgnlTxId` are each EPC-mandatory (`1..1`)** on both
    `pacs.002` and `pacs.004`, but both messages model them as a one-of. Tighten
    together or not at all.
@@ -130,7 +148,10 @@ Four, none of them blocking, all recorded in
 - **A skip is not a pass.** `TestGoldenFilesValidateAgainstTheSchema` skips
   unless `xmllint` and `testdata/xsd/*.xsd` are both present; the schemas are
   not committed (not this repo's to redistribute). `testdata/README.md` says
-  where to get them. It validates both the `Document` and the `AppHdr`.
+  where to get them. It validates both the `Document` and the `AppHdr`. Once
+  you have the schemas, run `make test-schemas` — it sets
+  `ISO20022_REQUIRE_SCHEMAS=1`, which turns every skip in that test into a
+  failure. A reviewer has run it against the official XSDs: 8/8 pass.
 - **Domain facts are duplicated across four layers on purpose** (`CLAUDE.md`):
   `README.md` is authoritative, then `web/src/components/hint-content.ts`, the
   quiz chapters, then `store/pg/schema/0001_init.sql`. 7b makes
@@ -159,10 +180,14 @@ Four, none of them blocking, all recorded in
 
 Be clear-eyed about this before you build on it:
 
-- **31 commits, unmerged, unpushed, and the last three are unreviewed.** Every
-  earlier task got at least one review round, and those rounds found real
-  defects in Tasks 4, 7, 8, 9 and 10 — including one that only surfaced because
-  a reviewer fetched the genuine EPC guidelines and read them.
+- **Thirty-odd commits, unmerged and unpushed** (count them with the command
+  above). Every earlier task got at least one review round, and those rounds
+  found real defects in Tasks 4, 7, 8, 9 and 10 — including one that only
+  surfaced because a reviewer fetched the genuine EPC guidelines and read them.
+  The last three commits were reviewed after this document was written; that
+  round found two Critical defects on the receive path, both now fixed, and its
+  report is
+  `.superpowers/sdd/2026-08-01-iso20022-mesh/p1-review-report.md`.
 - **The plan says to hold the merge until 7b's plan exists.** Nothing imports
   `iso20022`, which is the spec's stated main cost; 7b following immediately is
   the mitigation the whole arrangement depends on. That is why you are here.
