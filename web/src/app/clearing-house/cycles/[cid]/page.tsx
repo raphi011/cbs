@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
@@ -14,21 +14,15 @@ import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import { NetPositionsTable } from "@/components/net-positions-table";
 import { ConfirmAction } from "@/components/forms/confirm-action";
-import {
-  useCloseCycle,
-  useCycle,
-  useSettleCycle,
-} from "@/lib/api/hooks";
+import { useCloseCycle, useCycle } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { formatDateTime } from "@/lib/dates";
 
 export default function CycleDetailPage() {
   const params = useParams();
-  const router = useRouter();
   const cid = typeof params.cid === "string" ? params.cid : "";
   const { data: c, isLoading, error, refetch } = useCycle(cid);
   const closeCycle = useCloseCycle();
-  const settle = useSettleCycle();
 
   return (
     <div className="space-y-5">
@@ -71,21 +65,11 @@ export default function CycleDetailPage() {
                   }}
                 />
               )}
-              {c.status === "Closed" && (
-                <ConfirmAction
-                  trigger={<Button size="sm">Settle</Button>}
-                  title="Settle cycle"
-                  description="Moves the net amounts across central-bank reserves, discharging the obligations."
-                  confirmLabel="Settle"
-                  pending={settle.isPending}
-                  onConfirm={async () => {
-                    const s = await settle.mutateAsync(c.id, {
-                      onError: (err) => toast.error(describeError(err)),
-                    });
-                    toast.success("Cycle settled");
-                    if (s) router.push(`/clearing-house/settlements/${s.id}`);
-                  }}
-                />
+              {c.status === "Closed" && !c.settlementId && (
+                <p className="text-xs text-muted-foreground">
+                  Netted and awaiting settlement. Moving reserves is the central
+                  bank&apos;s act, not the clearing house&apos;s.
+                </p>
               )}
             </div>
           </div>

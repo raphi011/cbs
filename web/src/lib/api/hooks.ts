@@ -99,6 +99,13 @@ export function useCentralBankAudit(q: AuditQuery = {}) {
   });
 }
 
+export function useCentralBankCycles() {
+  return useQuery({
+    queryKey: qk.centralBankCycles(),
+    queryFn: api.centralBankCycles,
+  });
+}
+
 // --- Assets -----------------------------------------------------------
 
 export function useAssets() {
@@ -636,6 +643,7 @@ function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.settlements() });
   qc.invalidateQueries({ queryKey: qk.reserves() });
   qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
+  qc.invalidateQueries({ queryKey: qk.centralBankCycles() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 

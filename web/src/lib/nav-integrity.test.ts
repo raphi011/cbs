@@ -24,7 +24,6 @@ const IDENTITIES: Identity[] = [
 // page, so this list is empty when 6b is done — an entry that outlives its task
 // is a nav link pointing at nothing, which is what this file exists to reject.
 const PENDING = new Set([
-  "/central-bank/audit", // Task 9 splits the audit half out of the central bank's console
   `/customer/${PID}/${DID}`, // Task 12 builds the customer's screens
 ]);
 

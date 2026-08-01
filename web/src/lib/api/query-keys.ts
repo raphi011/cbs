@@ -23,6 +23,10 @@ export const qk = {
   reserve: (pid: string) => ["central-bank", "reserves", pid] as const,
   centralBankAudit: (q?: AuditQuery) =>
     auditKey(["central-bank", "audit"], q),
+  // Keyed under the central bank rather than shared with the clearing house's
+  // cycles(): the same rows read from a different listener, which can be
+  // individually down, and for a different reason.
+  centralBankCycles: () => ["central-bank", "cycles"] as const,
 
   // Network-wide: assets are defined in code, not per book.
   assets: () => ["assets"] as const,

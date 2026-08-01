@@ -94,6 +94,16 @@ export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", cb(`/audit${qs({ ...q })}`));
 }
 
+// The cycles the central bank is asked to settle, read from its own listener.
+//
+// A settlement instruction in the real thing IS a closed cycle and its net
+// positions, so this is part of the act rather than a widening. What the central
+// bank still cannot read is an individual payment — GET /payments is the
+// clearing house's, and a real central bank does not see one.
+export function centralBankCycles(): Promise<ClearingCycle[]> {
+  return request("GET", cb("/cycles"));
+}
+
 // --- Assets -----------------------------------------------------------
 
 // Every asset the system knows. Network-wide and read-only, like listSchemes:
