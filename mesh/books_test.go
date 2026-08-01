@@ -8,16 +8,21 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -35,9 +40,10 @@ import (
 // a method it legitimately holds, because a BookID is an ordinary argument and
 // one is as valid as another. This notices that.
 //
-// Every ledger.Tx method takes `book BookID` as its FIRST argument after ctx
-// (ledger/store.go), which is what makes this a decorator and not a
-// re-architecture: there is one place per method to record, and no plumbing.
+// Every book-scoped method reachable through a payment.Tx takes the book as its
+// first argument after ctx, in every one of the four layers, which is what makes
+// this a decorator and not a re-architecture: there is one place per method to
+// record, and no plumbing.
 //
 // It is test-only, and deliberately so. In production the boundary is the
 // interfaces plus, from sub-project 8, one store per entity; this exists to
@@ -100,14 +106,29 @@ func (s *recordingStore) reset() {
 }
 
 // recordingTx is one unit of work over a recordingStore: a payment.Tx that notes
-// the book of every book-scoped ledger.Tx call before delegating.
+// the book of every book-scoped call before delegating.
 //
-// It EMBEDS payment.Tx, so everything else — the payment, deposit, lending and
-// product methods, and ledger's three unbooked ones — is promoted untouched. The
-// overrides below are exactly the book-scoped ledger.Tx methods, and
-// TestRecordingTxOverridesEveryBookScopedMethod is what keeps that "exactly"
-// true: an override that went missing would be silently replaced by the promoted
-// method, which records nothing.
+// "Every book-scoped call" means all four layers, not just the ledger. A
+// payment.Tx embeds deposit.Tx, which embeds product.Tx, which embeds ledger.Tx,
+// and lending.Tx beside them — and every one of those layers is book-scoped in
+// the same way, because a book IS a bank. Wrapping only ledger.Tx would have
+// left a handler free to read another bank's deposit register, its holds, its
+// catalogue or its loan book without touching a single recorded method, and the
+// TestXTouchesOnly… assertions built on this would have read stronger than they
+// were. The parser walks the embedding chain to find them, so the next method
+// added to any of the four is covered without anyone remembering to add it here.
+//
+// payment.Tx's OWN methods take no book: participants, payments, mandates,
+// cycles and settlements belong to no single bank and live under
+// ledger.NetworkBook. They are correctly absent from the overrides below, and
+// the consequence is worth being straight about — writing a Payment row records
+// nothing, so what puts ledger.NetworkBook into touched() is the network
+// postings a handler makes, not the row it writes.
+//
+// It EMBEDS payment.Tx, so everything else is promoted untouched.
+// TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
+// exactly right: one that went missing would be silently replaced by the
+// promoted method, which records nothing.
 type recordingTx struct {
 	payment.Tx
 	rec *recordingStore
@@ -115,10 +136,13 @@ type recordingTx struct {
 
 var _ payment.Tx = (*recordingTx)(nil)
 
-// The overrides. Each is the same two statements — note the book, then call
-// through — and TestEveryRecordingTxMethodNotesItsBookThenDelegates holds them
-// to that shape, because an override that forgot either half would look wrapped
-// and be worthless.
+// The overrides, grouped by the layer that declares them. Each is the same two
+// statements — note the book, then call through — and
+// TestEveryRecordingTxMethodNotesItsBookThenDelegates holds them to that shape,
+// because an override that forgot either half would look wrapped and be
+// worthless.
+
+// --- ledger.Tx ---
 
 func (r *recordingTx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
 	r.rec.note(book)
@@ -230,6 +254,152 @@ func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, 
 	return r.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
 }
 
+// --- product.Tx ---
+
+func (r *recordingTx) PutProduct(ctx context.Context, book ledger.BookID, p product.Product) error {
+	r.rec.note(book)
+	return r.Tx.PutProduct(ctx, book, p)
+}
+
+func (r *recordingTx) GetProduct(ctx context.Context, book ledger.BookID, id product.ID) (product.Product, error) {
+	r.rec.note(book)
+	return r.Tx.GetProduct(ctx, book, id)
+}
+
+func (r *recordingTx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Product, error) {
+	r.rec.note(book)
+	return r.Tx.ListProducts(ctx, book)
+}
+
+func (r *recordingTx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
+	r.rec.note(book)
+	return r.Tx.PutProductVersion(ctx, book, v)
+}
+
+func (r *recordingTx) ListProductVersions(ctx context.Context, book ledger.BookID, id product.ID) ([]product.Version, error) {
+	r.rec.note(book)
+	return r.Tx.ListProductVersions(ctx, book, id)
+}
+
+func (r *recordingTx) GetProductVersionAsOf(ctx context.Context, book ledger.BookID, id product.ID, day time.Time) (product.Version, error) {
+	r.rec.note(book)
+	return r.Tx.GetProductVersionAsOf(ctx, book, id, day)
+}
+
+// --- deposit.Tx ---
+
+func (r *recordingTx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
+	r.rec.note(book)
+	return r.Tx.PutDepositAccount(ctx, book, a)
+}
+
+func (r *recordingTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+	r.rec.note(book)
+	return r.Tx.GetDepositAccount(ctx, book, id)
+}
+
+func (r *recordingTx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
+	r.rec.note(book)
+	return r.Tx.ListDepositAccounts(ctx, book)
+}
+
+func (r *recordingTx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+	r.rec.note(book)
+	return r.Tx.ListDepositAccountsByIdentifier(ctx, book, ident)
+}
+
+func (r *recordingTx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
+	r.rec.note(book)
+	return r.Tx.PutHold(ctx, book, h)
+}
+
+func (r *recordingTx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID) (deposit.Hold, error) {
+	r.rec.note(book)
+	return r.Tx.GetHold(ctx, book, id)
+}
+
+func (r *recordingTx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
+	r.rec.note(book)
+	return r.Tx.ListHoldsForAccount(ctx, book, id)
+}
+
+func (r *recordingTx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
+	r.rec.note(book)
+	return r.Tx.ActiveHoldTotal(ctx, book, id, now)
+}
+
+func (r *recordingTx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
+	r.rec.note(book)
+	return r.Tx.PutSnapshot(ctx, book, s)
+}
+
+func (r *recordingTx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.AccountID, dateKey string) (deposit.Snapshot, error) {
+	r.rec.note(book)
+	return r.Tx.GetSnapshot(ctx, book, id, dateKey)
+}
+
+func (r *recordingTx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Snapshot, error) {
+	r.rec.note(book)
+	return r.Tx.ListSnapshotsForAccount(ctx, book, id)
+}
+
+func (r *recordingTx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, terms deposit.OverdraftTerms) error {
+	r.rec.note(book)
+	return r.Tx.PutOverdraftTerms(ctx, book, terms)
+}
+
+func (r *recordingTx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
+	r.rec.note(book)
+	return r.Tx.ListOverdraftTermsForAccount(ctx, book, id)
+}
+
+func (r *recordingTx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
+	r.rec.note(book)
+	return r.Tx.GetOverdraftTermsAsOf(ctx, book, id, day)
+}
+
+// --- lending.Tx ---
+
+func (r *recordingTx) PutFacility(ctx context.Context, book ledger.BookID, f lending.Facility) error {
+	r.rec.note(book)
+	return r.Tx.PutFacility(ctx, book, f)
+}
+
+func (r *recordingTx) GetFacility(ctx context.Context, book ledger.BookID, id lending.FacilityID) (lending.Facility, error) {
+	r.rec.note(book)
+	return r.Tx.GetFacility(ctx, book, id)
+}
+
+func (r *recordingTx) ListFacilities(ctx context.Context, book ledger.BookID) ([]lending.Facility, error) {
+	r.rec.note(book)
+	return r.Tx.ListFacilities(ctx, book)
+}
+
+func (r *recordingTx) PutInstallment(ctx context.Context, book ledger.BookID, i lending.Installment) error {
+	r.rec.note(book)
+	return r.Tx.PutInstallment(ctx, book, i)
+}
+
+func (r *recordingTx) ListInstallments(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.Installment, error) {
+	r.rec.note(book)
+	return r.Tx.ListInstallments(ctx, book, id)
+}
+
+func (r *recordingTx) PutFacilityTerms(ctx context.Context, book ledger.BookID, terms lending.FacilityTerms) error {
+	r.rec.note(book)
+	return r.Tx.PutFacilityTerms(ctx, book, terms)
+}
+
+func (r *recordingTx) ListFacilityTerms(ctx context.Context, book ledger.BookID, id lending.FacilityID) ([]lending.FacilityTerms, error) {
+	r.rec.note(book)
+	return r.Tx.ListFacilityTerms(ctx, book, id)
+}
+
+func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
+	r.rec.note(book)
+	return r.Tx.GetFacilityTermsAsOf(ctx, book, id, day)
+}
+
 // ---------------------------------------------------------------------------
 // The guard on the guard
 // ---------------------------------------------------------------------------
@@ -240,30 +410,39 @@ func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, 
 // through exactly the method nobody wrapped, and every book assertion in this
 // package would stay green while it did.
 //
-// It parses ledger/store.go rather than holding a hand-written list, for the
-// same reason payment's TestReasonTableCoversEverySentinel does: a list is a
-// second copy, and a second copy drifts. It parses THIS file for the other half
-// rather than using reflect, because reflect cannot tell a method a type
-// declares from one it inherits — which is the only distinction that matters
-// here.
+// It WALKS the interface embedding chain from payment.Tx rather than reading a
+// list of files, for the same reason it parses rather than holding a list of
+// methods: a list is a second copy and a second copy drifts. Wrapping only
+// ledger.Tx was the first version of this test, and it was wrong — deposit,
+// product and lending are book-scoped in exactly the same way, so a handler
+// reading another bank's deposit register passed it. Walking means a fifth layer
+// embedded into payment.Tx tomorrow is covered by this test on the day it lands.
+//
+// It parses THIS file for the other half rather than using reflect, because
+// reflect cannot tell a method a type declares from one it inherits — which is
+// the only distinction that matters here.
 func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
-	want := bookScopedLedgerMethods(t)
-	if len(want) == 0 {
-		t.Fatal("parsed ledger/store.go and found no book-scoped methods on Tx; the parser is wrong, not the decorator")
+	methods := bookScopedTxMethods(t)
+	if len(methods) == 0 {
+		t.Fatal("walked payment.Tx and found no book-scoped methods; the parser is wrong, not the decorator")
+	}
+	want := make([]string, 0, len(methods))
+	for _, m := range methods {
+		want = append(want, m.Name)
 	}
 	got := recordingTxMethods(t)
 
-	for _, name := range want {
-		if !slices.Contains(got, name) {
-			t.Errorf("recordingTx does not declare %s.\n"+
-				"ledger.Tx.%s takes a book, so a handler can reach any book through it.\n"+
-				"Embedding promotes it silently and records nothing: declare the override.", name, name)
+	for _, m := range methods {
+		if !slices.Contains(got, m.Name) {
+			t.Errorf("recordingTx does not declare %s (%s.Tx).\n"+
+				"It takes a book, so a handler can reach any book through it.\n"+
+				"Embedding promotes it silently and records nothing: declare the override.", m.Name, m.Pkg)
 		}
 	}
 	for _, name := range got {
 		if !slices.Contains(want, name) {
-			t.Errorf("recordingTx declares %s, which is not a book-scoped method on ledger.Tx.\n"+
-				"Either it was renamed in ledger/store.go and this override is now dead, or it\n"+
+			t.Errorf("recordingTx declares %s, which is not a book-scoped method reachable through payment.Tx.\n"+
+				"Either it was renamed in its own layer and this override is now dead, or it\n"+
 				"shadows something it should not.", name)
 		}
 	}
@@ -327,31 +506,31 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 	rec := newRecordingStore(testenv.New(t, clock).Payment())
 	ctx := context.Background()
 
-	names := bookScopedLedgerMethods(t)
-	if len(names) == 0 {
+	methods := bookScopedTxMethods(t)
+	if len(methods) == 0 {
 		t.Fatal("no book-scoped methods parsed; the parser is wrong, not the recorder")
 	}
-	for _, name := range names {
+	for _, m := range methods {
 		rec.reset()
-		book := ledger.BookID("book_" + name)
+		book := ledger.BookID("book_" + m.Name)
 		_ = rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-			m := reflect.ValueOf(tx).MethodByName(name)
-			if !m.IsValid() {
-				t.Errorf("recordingTx has no method %s", name)
+			fn := reflect.ValueOf(tx).MethodByName(m.Name)
+			if !fn.IsValid() {
+				t.Errorf("recordingTx has no method %s (%s.Tx)", m.Name, m.Pkg)
 				return nil
 			}
-			args := make([]reflect.Value, m.Type().NumIn())
+			args := make([]reflect.Value, fn.Type().NumIn())
 			args[0] = reflect.ValueOf(ctx)
 			args[1] = reflect.ValueOf(book)
 			for i := 2; i < len(args); i++ {
-				args[i] = reflect.Zero(m.Type().In(i))
+				args[i] = reflect.Zero(fn.Type().In(i))
 			}
-			m.Call(args)
+			fn.Call(args)
 			return nil
 		})
 		got := rec.touched()
 		if len(got) != 1 || got[0] != book {
-			t.Errorf("calling %s on book %q recorded %v, want exactly [%s]", name, book, got, book)
+			t.Errorf("calling %s (%s.Tx) on book %q recorded %v, want exactly [%s]", m.Name, m.Pkg, book, got, book)
 		}
 	}
 }
@@ -361,13 +540,15 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 // A decorator that noted and returned a zero value would satisfy every book
 // assertion in this package while quietly detaching the mesh from its store —
 // the failure mode where the boundary check passes because nothing happens at
-// all. Two probes, one write and one read: NextID has to allocate from real
-// state, and GetLedger has to bring back the store's own not-found sentinel.
+// all. Three probes across two layers: NextID has to allocate from real state,
+// GetLedger has to bring back the ledger's own not-found sentinel, and
+// GetDepositAccount the deposit layer's — the layer this recorder did not cover
+// in its first version, and the one whose absence nothing else here would show.
 //
-// Both legs also cover a thing the per-method test does not: View wraps its Tx
-// as Update does. A read-only unit of work is exactly where a cross-entity read
-// hides — reading another bank's ledger needs no write — so a View that handed
-// back the bare Tx would leave the whole read side unrecorded.
+// The read legs also cover a thing the per-method test does not: View wraps its
+// Tx as Update does. A read-only unit of work is exactly where a cross-entity
+// read hides — reading another bank's register needs no write — so a View that
+// handed back the bare Tx would leave the whole read side unrecorded.
 func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	rec := newRecordingStore(testenv.New(t, clock).Payment())
@@ -398,6 +579,9 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	err = rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		if _, err := tx.GetLedger(ctx, read, "ldg_nope"); !errors.Is(err, ledger.ErrLedgerNotFound) {
 			t.Errorf("GetLedger on a missing row returned %v, want ledger.ErrLedgerNotFound from the store underneath", err)
+		}
+		if _, err := tx.GetDepositAccount(ctx, read, "dep_nope"); !errors.Is(err, deposit.ErrAccountNotFound) {
+			t.Errorf("GetDepositAccount on a missing row returned %v, want deposit.ErrAccountNotFound from the store underneath", err)
 		}
 		return nil
 	})
@@ -452,75 +636,229 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Parsing
+// Parsing: walking the Tx embedding chain
 // ---------------------------------------------------------------------------
 
-// bookScopedLedgerMethods is every method on ledger.Tx that takes a book, in
-// declaration order.
-//
-// "Takes a book" means `book BookID` as the argument right after ctx, which is
-// the property that makes the decorator a decorator and not a re-architecture:
-// one place per method to record, and no plumbing. A method that took a BookID
-// somewhere else would break that, so this fails on it rather than skipping it —
-// silently skipping is how a method ends up unwrapped.
-func bookScopedLedgerMethods(t *testing.T) []string {
-	t.Helper()
-	_, file := parseMeshFile(t, filepath.Join("..", "ledger", "store.go"))
+// bookMethod is one book-scoped method and the layer that declares it.
+type bookMethod struct {
+	Pkg  string // the declaring package's directory name: ledger, product, …
+	Name string
+}
 
-	var out []string
-	for _, d := range file.Decls {
-		gd, ok := d.(*ast.GenDecl)
-		if !ok || gd.Tok != token.TYPE {
-			continue
+// bookScopedTxMethods is every book-scoped method reachable through payment.Tx,
+// found by walking the interface embedding chain from payment/store.go.
+//
+// # What counts as book-scoped
+//
+// A method is book-scoped when its SECOND parameter — the one straight after
+// ctx — is a ledger.BookID. That is the rule, and it is deliberately about the
+// TYPE and the POSITION rather than the parameter's name: the name is
+// documentation, the type is the fact, and the position is what every override
+// relies on.
+//
+// The type is matched in either spelling, because both occur: bare `BookID`
+// inside package ledger, `ledger.BookID` in product, deposit and lending.
+//
+// A method that takes a BookID somewhere OTHER than second is an error here, not
+// a skip. Silently skipping is precisely how a method ends up unwrapped, and the
+// uniform position is what lets every override be the same two lines.
+//
+// Methods with NO BookID are not book-scoped, and their absence is correct
+// rather than an oversight. They are of two kinds. ledger's AppendAudit,
+// ListAudit and Now are not per-book at all — the audit log is deliberately
+// cross-book, which is why the audit table has no foreign key. All of
+// payment.Tx's own methods — participants, payments, mandates, cycles,
+// settlements — are network-scoped: they belong to no single bank and are stored
+// under ledger.NetworkBook, so there is no book argument to record. Neither kind
+// is a way to read another bank's books, which is what this recorder is for.
+//
+// # Why it walks rather than reading a list of files
+//
+// A hand-listed set of files is a second copy of the layering, and it drifts the
+// same way a hand-listed set of methods would: the first version of this test
+// read ledger/store.go alone and therefore called a decorator complete while
+// deposit, product and lending were entirely unrecorded. Walking the chain means
+// the test's idea of "everything payment.Tx can reach" is Go's.
+func bookScopedTxMethods(t *testing.T) []bookMethod {
+	t.Helper()
+	module := modulePath(t)
+
+	var out []bookMethod
+	seen := map[string]bool{}
+
+	var walk func(dir string)
+	walk = func(dir string) {
+		if seen[dir] {
+			return // ledger.Tx is reached through product and through lending
 		}
-		for _, s := range gd.Specs {
-			ts, ok := s.(*ast.TypeSpec)
-			if !ok || ts.Name.Name != "Tx" {
+		seen[dir] = true
+		iface, imports := findTxInterface(t, dir)
+		if iface == nil {
+			return
+		}
+		for _, f := range iface.Methods.List {
+			// An embedded interface has no name. Recurse into the package that
+			// declares it, resolving the qualifier through the importing file's
+			// own import block rather than assuming the alias is the directory.
+			if len(f.Names) == 0 {
+				sel, ok := f.Type.(*ast.SelectorExpr)
+				if !ok {
+					t.Errorf("%s/Tx embeds %T, which this walk does not understand", dir, f.Type)
+					continue
+				}
+				qualifier, ok := sel.X.(*ast.Ident)
+				if !ok || sel.Sel.Name != "Tx" {
+					t.Errorf("%s/Tx embeds something other than a package's Tx", dir)
+					continue
+				}
+				path, ok := imports[qualifier.Name]
+				if !ok {
+					t.Errorf("%s/Tx embeds %s.Tx but the file imports no %s", dir, qualifier.Name, qualifier.Name)
+					continue
+				}
+				rel, inModule := strings.CutPrefix(path, module+"/")
+				if !inModule {
+					t.Errorf("%s/Tx embeds %s, which is outside this module", dir, path)
+					continue
+				}
+				walk(filepath.Join("..", rel))
 				continue
 			}
-			it, ok := ts.Type.(*ast.InterfaceType)
+			fn, ok := f.Type.(*ast.FuncType)
 			if !ok {
-				t.Fatal("ledger.Tx is not an interface type")
+				continue
 			}
-			for _, m := range it.Methods.List {
-				fn, ok := m.Type.(*ast.FuncType)
-				if !ok || len(m.Names) != 1 {
-					continue // an embedded interface, not a method
-				}
-				name := m.Names[0].Name
-				switch pos := bookParamIndex(fn); pos {
-				case -1:
-					continue // AppendAudit, ListAudit, Now: not book-scoped
-				case 1:
-					out = append(out, name)
-				default:
-					t.Errorf("ledger.Tx.%s takes its book at argument %d, not straight after ctx.\n"+
-						"The recorder relies on that position; move it back, or teach this test the new rule.", name, pos)
-				}
+			name := f.Names[0].Name
+			switch pos := bookParamIndex(fn); pos {
+			case -1:
+				continue // not book-scoped
+			case 1:
+				out = append(out, bookMethod{Pkg: filepath.Base(dir), Name: name})
+			default:
+				t.Errorf("%s.Tx.%s takes its book at argument %d, not straight after ctx.\n"+
+					"Every override relies on that position; move it back, or teach this test the new rule.",
+					filepath.Base(dir), name, pos)
 			}
 		}
+	}
+	walk(filepath.Join("..", "payment"))
+
+	// Names are unique across the chain — Go rejects an interface that embeds
+	// two methods of one name — so a duplicate here means the walk visited
+	// something twice and every count taken from it is wrong.
+	byName := map[string]string{}
+	for _, m := range out {
+		if prev, dup := byName[m.Name]; dup {
+			t.Errorf("%s found in both %s and %s; the walk is double-counting", m.Name, prev, m.Pkg)
+		}
+		byName[m.Name] = m.Pkg
 	}
 	return out
 }
 
-// bookParamIndex is the position of a `book BookID` parameter in a flattened
-// argument list, or -1.
+// findTxInterface returns the `Tx` interface declared in a package directory,
+// together with that file's imports so an embedded qualifier can be resolved.
+func findTxInterface(t *testing.T, dir string) (*ast.InterfaceType, map[string]string) {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatalf("listing %s: %v", dir, err)
+	}
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		_, file := parseMeshFile(t, path)
+		for _, d := range file.Decls {
+			gd, ok := d.(*ast.GenDecl)
+			if !ok || gd.Tok != token.TYPE {
+				continue
+			}
+			for _, s := range gd.Specs {
+				ts, ok := s.(*ast.TypeSpec)
+				if !ok || ts.Name.Name != "Tx" {
+					continue
+				}
+				iface, ok := ts.Type.(*ast.InterfaceType)
+				if !ok {
+					t.Fatalf("%s: Tx is not an interface type", path)
+				}
+				return iface, fileImports(file)
+			}
+		}
+	}
+	t.Fatalf("no `type Tx interface` found in %s", dir)
+	return nil, nil
+}
+
+// fileImports maps the qualifier a file uses onto the import path behind it,
+// honouring an explicit alias.
+func fileImports(file *ast.File) map[string]string {
+	out := make(map[string]string, len(file.Imports))
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		name := path[strings.LastIndex(path, "/")+1:]
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		out[name] = path
+	}
+	return out
+}
+
+// modulePath is this repository's module path, read from go.mod so that an
+// import path can be turned into a directory without hard-coding it.
+func modulePath(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "go.mod"))
+	if err != nil {
+		t.Fatalf("reading go.mod: %v", err)
+	}
+	for line := range strings.Lines(string(b)) {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "module "); ok {
+			return strings.TrimSpace(rest)
+		}
+	}
+	t.Fatal("go.mod declares no module path")
+	return ""
+}
+
+// bookParamIndex is the position of the first ledger.BookID parameter in a
+// flattened argument list, or -1. See bookScopedTxMethods for the rule.
 func bookParamIndex(fn *ast.FuncType) int {
 	i := -1
 	for _, f := range fn.Params.List {
-		id, isIdent := f.Type.(*ast.Ident)
 		if len(f.Names) == 0 {
 			i++
+			if isBookID(f.Type) {
+				return i
+			}
 			continue
 		}
-		for _, n := range f.Names {
+		for range f.Names {
 			i++
-			if n.Name == "book" && isIdent && id.Name == "BookID" {
+			if isBookID(f.Type) {
 				return i
 			}
 		}
 	}
 	return -1
+}
+
+// isBookID reports whether a parameter's type is ledger.BookID, in either
+// spelling: bare inside package ledger, qualified everywhere else.
+func isBookID(e ast.Expr) bool {
+	switch typ := e.(type) {
+	case *ast.Ident:
+		return typ.Name == "BookID"
+	case *ast.SelectorExpr:
+		pkg, ok := typ.X.(*ast.Ident)
+		return ok && pkg.Name == "ledger" && typ.Sel.Name == "BookID"
+	}
+	return false
 }
 
 // recordingTxMethods is every method declared DIRECTLY on recordingTx in this
