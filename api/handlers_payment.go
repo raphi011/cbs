@@ -203,13 +203,44 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
 }
 
+// initiateWholePayment runs all three halves of an initiation — the
+// submitting bank's, the receiving bank's and the clearing house's — in one
+// unit of work.
+//
+// One process playing all three actors is exactly what the mesh replaces, and
+// this route is the last place it still happens: the operator's POST /payments
+// answers 201 with an Accepted payment, so it has to perform the whole
+// choreography itself. Sub-project 7b's api handoff is what removes it.
+//
+// The three calls share a Tx deliberately. Run as three units of work, an
+// instruction the far side refuses would leave an Initiated payment behind
+// with the payer's money already in suspense — a real outcome in the mesh,
+// where the two banks genuinely are two actors, but not one this synchronous
+// route has ever produced or its callers know how to read.
+func (s *Server) initiateWholePayment(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
+	net := s.network()
+	var out payment.Payment
+	err := net.Store().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := net.SubmitPaymentTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		if err := net.AcceptInboundTx(ctx, tx, p); err != nil {
+			return err
+		}
+		out, err = net.AcceptAtCSMTx(ctx, tx, p.ID)
+		return err
+	})
+	return out, err
+}
+
 func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
 	var req initiatePaymentRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.network().InitiatePayment(r.Context(), req.toDomain())
+	p, err := s.initiateWholePayment(r.Context(), req.toDomain())
 	if err != nil {
 		writeError(w, err)
 		return

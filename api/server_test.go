@@ -166,7 +166,7 @@ func TestSCTEndToEnd(t *testing.T) {
 	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
-	// accounts need one before InitiatePayment will accept them.
+	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SCT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SCT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 
@@ -1003,7 +1003,7 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
-	// accounts need one before InitiatePayment will accept them.
+	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"AUDIT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"AUDIT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
@@ -2038,7 +2038,7 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
-	// accounts need one before InitiatePayment will accept them.
+	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"VD-ALICE-0001"}]}`, http.StatusCreated)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"VD-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice["id"].(string)+`","amount":100000,"description":"opening"}`, http.StatusOK)

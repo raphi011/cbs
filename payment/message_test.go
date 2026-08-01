@@ -68,7 +68,7 @@ func networkWithOnePayment(t *testing.T) (*Network, Payment) {
 	sys, aurora, verde, alice, bruno := addressedBanks(t)
 
 	openCycle(t, ctx, sys, SchemeSEPACT)
-	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPACT,
 		Debtor:      PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
 		Creditor:    PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
@@ -94,7 +94,7 @@ func networkWithOneCollection(t *testing.T) (*Network, Payment, Mandate) {
 	assertNoError(t, err)
 
 	openCycle(t, ctx, sys, SchemeSEPADD)
-	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPADD,
 		Debtor:      debtor,
 		Creditor:    creditor,
@@ -818,7 +818,7 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("debtor and creditor resolved to the same account %+v", got.Debtor)
 	}
 	// The address comes back too, and it is the one the message quoted. It is
-	// what InitiatePayment checks against the account it resolves to, so losing
+	// what submission checks against the account it resolves to, so losing
 	// it here would silently turn "the payment records the address it was sent
 	// to" into "the payment records whatever address the account happens to
 	// hold".
@@ -1051,7 +1051,7 @@ func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 // endToEndOf writes on the way out — and the consequence of getting it wrong is
 // not cosmetic.
 //
-// EndToEndID is deduplicated: InitiatePayment refuses a second payment carrying
+// EndToEndID is deduplicated: submission refuses a second payment carrying
 // a reference it has already seen, and an empty one is never an identity. A
 // translator that stored the literal string would give every reference-less
 // payment in the network the same reference, and the SECOND one to arrive would
@@ -1078,10 +1078,10 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	if req.EndToEndID != "" {
 		t.Errorf("end-to-end id = %q, want it empty: NOTPROVIDED means the sender had none", req.EndToEndID)
 	}
-	if _, err := n.InitiatePayment(ctx, req); err != nil {
+	if _, err := initiate(ctx, n, req); err != nil {
 		t.Fatalf("initiating a reference-less payment: %v", err)
 	}
-	if _, err := n.InitiatePayment(ctx, req); err != nil {
+	if _, err := initiate(ctx, n, req); err != nil {
 		t.Fatalf("a second reference-less payment was refused: %v", err)
 	}
 }
@@ -1186,7 +1186,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	fundAccount(t, ctx, n, aurora, alice, 500000)
 	openCycle(t, ctx, n, SchemeSEPACT)
 
-	p, err := n.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, n, InitiatePaymentRequest{
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
@@ -1240,7 +1240,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	// account it resolved to, through the same comparison, so a fix that stopped
 	// at resolution would fail here with ErrIdentifierMismatch — the directory
 	// and addressFor disagreeing about what an address is.
-	accepted, err := n.InitiatePayment(ctx, got)
+	accepted, err := initiate(ctx, n, got)
 	if err != nil {
 		t.Fatalf("initiating the translated payment: %v", err)
 	}

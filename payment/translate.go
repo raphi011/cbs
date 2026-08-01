@@ -368,7 +368,7 @@ func remittanceOf(text string) *iso20022.RemittanceInformation {
 // settles at T+1 and SDD at T+2, so the two are days apart by design and a
 // message that used Now would instruct settlement on the wrong day.
 //
-// A payment with no value date has not been through InitiatePayment, and gets
+// A payment with no value date has not been through SubmitPayment, and gets
 // the message's own creation date rather than the zero time. The zero time
 // marshals as 0001-01-01 — a schema-valid date asserting settlement in the
 // first century, which is the same silent fabrication AppHdr.CreDt's validation
@@ -923,7 +923,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // a number neither bank wrote down. See settledIn.
 //
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
-// or posted. That is InitiatePayment's job, and the separation is what lets the
+// or posted. That is SubmitPaymentTx's job, and the separation is what lets the
 // mesh translate a message without a write and reject it before one.
 func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
 	body := doc.FIToFICstmrCdtTrf
@@ -1185,7 +1185,7 @@ func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier
 // "the sender had no reference" comes back as no reference.
 //
 // Storing the literal would not merely be untidy. EndToEndID is deduplicated —
-// InitiatePayment refuses a reference it has already seen, and an empty one is
+// SubmitPaymentTx refuses a reference it has already seen, and an empty one is
 // never an identity — so every reference-less payment in the network would share
 // one reference, and the second to arrive would be rejected as a duplicate of
 // the first. Two unrelated customers, colliding on a value neither of them

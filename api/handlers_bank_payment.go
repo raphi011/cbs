@@ -83,11 +83,27 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	// A bank submits on behalf of its own customer and nobody else's. This is
 	// scoping, not authorization: it says which instructions this listener is
 	// for, and verifies nothing about who is calling it.
-	if dom.Debtor.Participant != s.boundPID {
-		writeUnprocessable(w, "the debtor must be an account at this bank")
+	//
+	// Which bank may submit depends on the scheme's direction. A push is
+	// submitted by the payer's bank; a PULL is submitted by the CREDITOR's
+	// bank, because a direct debit is a collection the payee's bank initiates.
+	//
+	// Requiring the debtor unconditionally — which is what this did before —
+	// was the wrong bank for every direct debit. It was invisible while one
+	// process validated both ends regardless of who called.
+	submitter := dom.Debtor.Participant
+	if sc, ok := s.network().Scheme(dom.Scheme); ok && sc.Direction() == payment.Pull {
+		submitter = dom.Creditor.Participant
+	}
+	if submitter != s.boundPID {
+		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
 		return
 	}
-	p, err := s.network().InitiatePayment(r.Context(), dom)
+	// The submitting bank's half and nothing else. The payment comes back
+	// Initiated and in no cycle; the counterparty's answer and the clearing
+	// house's acceptance arrive later, which is exactly what the 202 below has
+	// been promising since 6a.
+	p, err := s.network().SubmitPayment(r.Context(), dom)
 	if err != nil {
 		writeError(w, err)
 		return

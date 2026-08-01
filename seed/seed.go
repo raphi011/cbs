@@ -302,19 +302,44 @@ func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledg
 	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
+// initiate runs all three halves of an initiation — the submitting bank's, the
+// receiving bank's and the clearing house's — in one unit of work, leaving the
+// payment Accepted in its scheme's open cycle.
+//
+// The seed is one process building a scenario, so it plays every actor; the
+// mesh is what makes them separate. Composing the three halves here rather
+// than calling one method that does all three is the point of the split: there
+// is no such method, precisely so that no caller can validate both ends of a
+// payment by accident.
+func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
+	var out payment.Payment
+	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := b.net.SubmitPaymentTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		if err := b.net.AcceptInboundTx(ctx, tx, p); err != nil {
+			return err
+		}
+		out, err = b.net.AcceptAtCSMTx(ctx, tx, p.ID)
+		return err
+	}))
+	return out
+}
+
 func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
-	return must(b.net.InitiatePayment(b.ctx, payment.InitiatePaymentRequest{
+	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
 		Debtor:      b.ref(dp, d),
 		Creditor:    b.ref(cp, c),
 		Amount:      amount,
 		EndToEndID:  e2e,
 		Description: desc,
-	}))
+	})
 }
 
 func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
-	return must(b.net.InitiatePayment(b.ctx, payment.InitiatePaymentRequest{
+	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPADD,
 		Debtor:      b.ref(dp, d),
 		Creditor:    b.ref(cp, c),
@@ -322,7 +347,7 @@ func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *paymen
 		MandateID:   mandate,
 		EndToEndID:  e2e,
 		Description: desc,
-	}))
+	})
 }
 
 func (b *builder) build() {
@@ -533,7 +558,8 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 	// before SetOverdraftTerms ran carry the opening row's zero rate, and the
 	// days between that and the SCT below recompute against a drawn balance of
 	// zero, because he isn't overdrawn yet. The SCT
-	// overdraws him immediately: its debtor leg posts at InitiatePayment, so
+	// overdraws him immediately: its debtor leg posts in the debtor bank's half of
+	// submission, so
 	// the balance moves right away without its clearing cycle needing to
 	// close or settle. Then 45 days pass and interest accrues, a charge
 	// capitalizes it, a backdated repricing lands (see below), and 15 more

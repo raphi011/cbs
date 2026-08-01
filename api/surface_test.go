@@ -452,6 +452,49 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 	}
 }
 
+// A direct debit is submitted by the CREDITOR's bank, and the bound-bank check
+// has to know that.
+//
+// This is the live defect the split exposed: the handler demanded the debtor be
+// at the submitting bank on every submission, which is the wrong bank for every
+// collection. It was invisible while one process validated both ends regardless
+// of who called — the payee's bank got a 422 for its own customer's collection,
+// and the payer's bank could have collected on the payee's behalf.
+func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
+	h := newServer(t, nil)
+	payerBank, payeeBank, _ := threeBanks(t, h)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
+
+	mandate := doJSON(t, csm(h), "POST", "/mandates", `{
+		"debtor":{"participant":"`+payerBank.pid+`","account":"`+payerBank.account+`"},
+		"creditor":{"participant":"`+payeeBank.pid+`","account":"`+payeeBank.account+`"},
+		"maxAmount":0
+	}`, http.StatusCreated)["id"].(string)
+
+	collection := `{
+		"scheme":"sepa.dd",
+		"debtor":{"participant":"` + payerBank.pid + `","account":"` + payerBank.account + `"},
+		"creditor":{"participant":"` + payeeBank.pid + `","account":"` + payeeBank.account + `"},
+		"amount":10000,
+		"mandateId":"` + mandate + `",
+		"endToEndId":"collection-1"
+	}`
+
+	// The payee's bank submits it, and is the right bank to.
+	doJSON(t, bank(h, payeeBank.pid), "POST", "/payments", collection, http.StatusAccepted)
+
+	// The payer's bank submitting the same collection is refused: a bank does
+	// not collect on somebody else's behalf.
+	doJSON(t, bank(h, payerBank.pid), "POST", "/payments", `{
+		"scheme":"sepa.dd",
+		"debtor":{"participant":"`+payerBank.pid+`","account":"`+payerBank.account+`"},
+		"creditor":{"participant":"`+payeeBank.pid+`","account":"`+payeeBank.account+`"},
+		"amount":10000,
+		"mandateId":"`+mandate+`",
+		"endToEndId":"collection-2"
+	}`, http.StatusUnprocessableEntity)
+}
+
 // A bank may not submit a payment drawn on somebody else's customer.
 func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	h := newServer(t, nil)

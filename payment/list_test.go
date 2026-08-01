@@ -34,7 +34,7 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
 	st := runCycle(t, sys, SchemeSEPACT, func() {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme:   SchemeSEPACT,
 			Debtor:   PartyRef{Participant: a.ID, Account: alice},
 			Creditor: PartyRef{Participant: b.ID, Account: bob},

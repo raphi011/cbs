@@ -538,9 +538,13 @@ var structCarriedBooks = map[string]structCarriedBook{
 //	    []ledger.BookID{ledger.NetworkBook})
 //
 // is satisfied by a CSM handler that moves a cycle along — OpenCycle,
-// CloseCycle — with no posting required. Note that today's InitiatePaymentTx
-// also posts the debtor leg into the debtor bank's book, so it records that book
-// too; Task 8 is what separates the CSM's half from it.
+// CloseCycle, and now AcceptAtCSMTx — with no posting required. Task 8 is what
+// separated the CSM's half out: initiation used to post the debtor leg in the
+// same call that took the payment into a cycle, so one handler recorded both
+// the bank's book and this one. The clearing house's half now writes the
+// payment and the cycle and posts nothing, which is exactly the shape this
+// assertion wants — and it keeps its audit event, which is the ONLY reason
+// those network rows are visible here at all.
 //
 // And nothing in this repository EVER posts under NetworkBook. It labels
 // entities that belong to no single bank; it is not a chart of accounts

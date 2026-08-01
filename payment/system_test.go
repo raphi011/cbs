@@ -49,6 +49,37 @@ func accountsOf(t *testing.T, p *Participant) ParticipantAccounts {
 	return accts
 }
 
+// initiate runs all three halves of an initiation — the submitting bank's, the
+// receiving bank's and the clearing house's — in one unit of work, and returns
+// the payment Accepted in its scheme's open cycle.
+//
+// It is what InitiatePayment used to be, and it is a TEST helper rather than a
+// method because there is deliberately no such method any more: a single call
+// that validates both ends of a payment is precisely the thing sub-project 7b
+// removed. Every test below that is not about the split uses this, so those
+// tests keep asserting the end state the whole choreography produces; the
+// tests that ARE about the split call the halves directly.
+//
+// One Tx for all three, so a payment the far side refuses leaves nothing
+// behind — which is what these tests were written against. In the mesh the
+// three halves are three actors and three units of work, and a refusal after
+// the debtor leg is posted is a reversal (Task 9).
+func initiate(ctx context.Context, sys *Network, req InitiatePaymentRequest) (Payment, error) {
+	var out Payment
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		p, err := sys.SubmitPaymentTx(ctx, tx, req)
+		if err != nil {
+			return err
+		}
+		if err := sys.AcceptInboundTx(ctx, tx, p); err != nil {
+			return err
+		}
+		out, err = sys.AcceptAtCSMTx(ctx, tx, p.ID)
+		return err
+	})
+	return out, err
+}
+
 // setupTwoBanks creates two participant banks, opens a customer account at
 // each (Alice at Bank A, Bob at Bank B), and funds Alice with 100000. The
 // returned account IDs are deposit account IDs; their backing GL account IDs
@@ -177,7 +208,7 @@ func TestSCT_HappyPath(t *testing.T) {
 	var pay Payment
 	runCycle(t, sys, SchemeSEPACT, func() {
 		var err error
-		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme:      SchemeSEPACT,
 			Debtor:      PartyRef{Participant: a.ID, Account: alice},
 			Creditor:    PartyRef{Participant: b.ID, Account: bob},
@@ -218,7 +249,7 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPACT,
 		Debtor:      PartyRef{Participant: a.ID, Account: alice},
 		Creditor:    PartyRef{Participant: b.ID, Account: bob},
@@ -270,12 +301,12 @@ func TestSCT_Netting(t *testing.T) {
 	assertNoError(t, sys.Deposit(ctx, b.ID, bob, 50000, "Bob opening deposit"))
 
 	st := runCycle(t, sys, SchemeSEPACT, func() {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertNoError(t, err)
-		_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
 		})
@@ -303,7 +334,7 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -326,7 +357,7 @@ func TestSDD_HappyPath(t *testing.T) {
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
-		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
 		})
@@ -368,7 +399,7 @@ func TestSDD_MandateValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := sys.OpenCycle(ctx, SchemeSEPADD)
 			assertNoError(t, err)
-			_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+			_, err = initiate(ctx, sys, InitiatePaymentRequest{
 				Scheme: SchemeSEPADD, Amount: tc.amount, MandateID: tc.mandateID,
 				Debtor: debtor, Creditor: creditor,
 			})
@@ -392,7 +423,7 @@ func TestSDD_Return(t *testing.T) {
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
-		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor,
 		})
@@ -544,13 +575,13 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	assertNoError(t, err)
 
 	// Bank B pays 20000 it has the reserves for.
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 20000,
 		Debtor: PartyRef{Participant: b.ID, Account: bob.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
 	})
 	assertNoError(t, err)
 	// Bank C pays 60000 its customer can afford on overdraft and it cannot.
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 60000,
 		Debtor: PartyRef{Participant: c.ID, Account: carol.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
 	})
@@ -601,7 +632,7 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		st := runCycle(t, sys, SchemeSEPACT, func() {
 			for i := range banks {
 				j := (i + 1) % len(banks)
-				_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+				_, err := initiate(ctx, sys, InitiatePaymentRequest{
 					Scheme: SchemeSEPACT, Amount: ledger.Amount(1000 * (i + 1)),
 					Debtor:   PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
 					Creditor: PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
@@ -640,7 +671,7 @@ func TestStateMachineGuards(t *testing.T) {
 	mkPayment := func() (Payment, CycleID) {
 		cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
 		assertNoError(t, err)
-		p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
@@ -692,7 +723,7 @@ func TestRejectPayment_ReversesDebtorLeg(t *testing.T) {
 
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 40000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -716,9 +747,9 @@ func TestDuplicateEndToEndID(t *testing.T) {
 		Scheme: SchemeSEPACT, Amount: 1000, EndToEndID: "e2e-1",
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	}
-	_, err = sys.InitiatePayment(ctx, req)
+	_, err = initiate(ctx, sys, req)
 	assertNoError(t, err)
-	_, err = sys.InitiatePayment(ctx, req)
+	_, err = initiate(ctx, sys, req)
 	assertError(t, err, ErrDuplicateEndToEndID)
 }
 
@@ -730,29 +761,39 @@ func TestInitiatePayment_Validation(t *testing.T) {
 	assertNoError(t, err)
 
 	t.Run("unknown scheme", func(t *testing.T) {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: "nope", Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrSchemeNotFound)
 	})
 	t.Run("non-positive amount", func(t *testing.T) {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 0,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrInvalidPaymentAmount)
 	})
 	t.Run("account not in participant", func(t *testing.T) {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
 	t.Run("no open cycle", func(t *testing.T) {
-		_, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
-			Scheme: SchemeSEPADD, Amount: 1000, // no SDD cycle open
+		// The cut-off belongs to the clearing house, so this refusal comes
+		// from its half and not from either bank's: both banks accept a
+		// collection they are perfectly happy with, and AcceptAtCSMTx is what
+		// finds no window open for sepa.dd. A mandate is needed to get that
+		// far at all — without one the creditor's own bank refuses first.
+		m, err := sys.CreateMandate(ctx,
+			PartyRef{Participant: a.ID, Account: alice},
+			PartyRef{Participant: b.ID, Account: bob}, 0)
+		assertNoError(t, err)
+
+		_, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID, // no SDD cycle open
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertError(t, err, ErrCycleNotOpen)
@@ -830,7 +871,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 
 	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -877,15 +918,22 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
-	from, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
-	assertNoError(t, err)
+	// The payer's leg has to be flawless for this test to be about the payee's.
+	// Since the split, the debtor's own bank runs its whole half — account,
+	// asset, address, funds — before the creditor's bank sees the payment at
+	// all, so a payer with no IBAN would fail with ErrUnaddressableAccount and
+	// the asset check under test would never run.
+	from := openCustomer(t, ctx, alpha, "Anna", "SE89-ALPHA-0001")
+	fundAccount(t, ctx, sys, alpha, from, 100000)
 	to, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
 	assertNoError(t, err)
+	assertNoError(t, beta.Deposit.AddIdentifier(ctx, to.ID,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-BETA-0001"}))
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000,
 		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
 		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
@@ -906,15 +954,20 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
+	// Both accounts are addressable, so the only thing wrong with this payment
+	// is the payer's asset: with the asset check removed the payment gets
+	// further rather than failing for a second reason, which is what makes the
+	// counterfactual on this test sharp.
 	from, err := alpha.OpenCustomerAccount(ctx, "Anna", "BTC")
 	assertNoError(t, err)
-	to, err := beta.OpenCustomerAccount(ctx, "Bruno", testAsset)
-	assertNoError(t, err)
+	assertNoError(t, alpha.Deposit.AddIdentifier(ctx, from.ID,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-ALPHA-0001"}))
+	to := openCustomer(t, ctx, beta, "Bruno", "IT60-BETA-0001")
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000,
 		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
 		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
@@ -923,10 +976,13 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 }
 
 // SEPA Direct Debit used to inherit the asset check only because SDD.Validate
-// happened to call validateFunds. Now that the check runs unconditionally in
-// InitiatePaymentTx, before any scheme's Validate is reached, it applies to
-// SDD structurally rather than by that scheme's choice. A valid mandate keeps
-// SDD's own mandate guards out of the way, so this isolates the asset check.
+// happened to call validateFunds. It now runs unconditionally in each bank's
+// own half, before any scheme's Validate is reached, so it applies to SDD
+// structurally rather than by that scheme's choice. A valid mandate keeps SDD's
+// own mandate guards out of the way, so this isolates the asset check.
+//
+// Both ends are in BTC, so either half would catch it; a pull is submitted by
+// the creditor's bank, so the half that does is the creditor's.
 func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -952,7 +1008,7 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	_, err = sys.OpenCycle(ctx, SchemeSEPADD)
 	assertNoError(t, err)
 
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID,
 		Debtor: debtor, Creditor: creditor,
 	})
@@ -1020,7 +1076,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) 
 
 	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	pay, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -1293,14 +1349,14 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 	// Bruno has no IBAN at all: an SCT cannot address him.
 	bruno := openCustomerWithoutIdentifier(t, ctx, verde, "Bruno")
 
-	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
 		Amount:   10_00,
 	})
 	if !errors.Is(err, ErrUnaddressableAccount) {
-		t.Fatalf("InitiatePayment = %v, want ErrUnaddressableAccount", err)
+		t.Fatalf("initiation = %v, want ErrUnaddressableAccount", err)
 	}
 }
 
@@ -1315,7 +1371,7 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
 	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
 
-	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{Participant: aurora.ID, Account: alice.ID},
 		Creditor: PartyRef{
@@ -1326,7 +1382,7 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 		Amount: 10_00,
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
-		t.Fatalf("InitiatePayment = %v, want ErrIdentifierMismatch", err)
+		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
 	}
 }
 
@@ -1344,7 +1400,7 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
 	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
 
-	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{
 			Participant: aurora.ID, Account: alice.ID,
@@ -1355,7 +1411,7 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 		Amount:   10_00,
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
-		t.Fatalf("InitiatePayment = %v, want ErrIdentifierMismatch", err)
+		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
 	}
 }
 
@@ -1389,7 +1445,7 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	assertNoError(t, verde.Deposit.AddIdentifier(ctx, bruno.ID, brunoPAN))
 
 	// Creditor leg.
-	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
@@ -1400,7 +1456,7 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	}
 
 	// Debtor leg.
-	_, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
@@ -1414,7 +1470,7 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	// candidate each, so the ordinary payment goes through and records IBANs.
 	var pay Payment
 	runCycle(t, net, SchemeSEPACT, func() {
-		pay, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, net, InitiatePaymentRequest{
 			Scheme:   SchemeSEPACT,
 			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
 			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
@@ -1446,7 +1502,7 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 	var pay Payment
 	runCycle(t, net, SchemeSEPACT, func() {
 		var err error
-		pay, err = net.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, net, InitiatePaymentRequest{
 			Scheme:   SchemeSEPACT,
 			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
 			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
@@ -1486,20 +1542,20 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 	assertNoError(t, aurora.Deposit.AddIdentifier(ctx, alice.ID,
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}))
 
-	_, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
 		Amount:   10_00,
 	})
 	if !errors.Is(err, ErrAmbiguousAddress) {
-		t.Fatalf("InitiatePayment = %v, want ErrAmbiguousAddress", err)
+		t.Fatalf("initiation = %v, want ErrAmbiguousAddress", err)
 	}
 
 	// Naming one of them is how the caller gets past it — the refusal is a
 	// question, not a dead end.
 	runCycle(t, net, SchemeSEPACT, func() {
-		pay, err := net.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err := initiate(ctx, net, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT,
 			Debtor: PartyRef{
 				Participant: aurora.ID, Account: alice.ID,
@@ -1539,7 +1595,7 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 
 	var pay Payment
 	runCycle(t, sys, SchemeSEPADD, func() {
-		pay, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
 		})
@@ -1582,7 +1638,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	openCycle(t, ctx, sys, SchemeSEPADD)
 
 	// Someone else's account, drawn on under Alice's mandate.
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: PartyRef{Participant: a.ID, Account: carla.ID}, Creditor: creditor,
 	})
@@ -1591,7 +1647,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	}
 
 	// Alice's account, collected by a creditor she never authorised.
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: debtor, Creditor: PartyRef{Participant: b.ID, Account: other.ID},
 	})
@@ -1611,5 +1667,186 @@ func TestSchemesDeclareTheirIdentifierScheme(t *testing.T) {
 	}
 	if got := (SDD{}).AddressedBy(); got != deposit.IdentifierIBAN {
 		t.Fatalf("SDD.AddressedBy() = %q, want %q", got, deposit.IdentifierIBAN)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The split: a submitting bank's half and a receiving bank's half
+// ---------------------------------------------------------------------------
+
+// networkWithTwoBanks is the split's credit-transfer fixture: two addressed
+// banks, a funded payer at the first, a payee at the second, and the request
+// between them.
+//
+// No cycle is opened, deliberately. Submission no longer looks for one — which
+// cycle a payment joins is the clearing house's business, and every test below
+// that submits without opening one is evidence of that.
+func networkWithTwoBanks(t *testing.T) (*Network, InitiatePaymentRequest) {
+	t.Helper()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+	return sys, InitiatePaymentRequest{
+		Scheme:      SchemeSEPACT,
+		Amount:      25000,
+		Debtor:      PartyRef{Participant: a.ID, Account: alice},
+		Creditor:    PartyRef{Participant: b.ID, Account: bob},
+		Description: "Invoice 42",
+	}
+}
+
+// networkWithACollection is the direct-debit fixture: two addressed banks, a
+// mandate the payee holds over the payer, and the collection request under it.
+// fund is what the payer's account holds, so a caller can build both a
+// collectable and an uncollectable one.
+func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, InitiatePaymentRequest, MandateID) {
+	t.Helper()
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a := addParticipant(t, ctx, sys, "Bank A")
+	b := addParticipant(t, ctx, sys, "Bank B")
+	payer := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
+	payee := openCustomer(t, ctx, b, "Biller", "SE89-BANKB-0001")
+	if fund > 0 {
+		fundAccount(t, ctx, sys, a, payer, fund)
+	}
+	debtor := PartyRef{Participant: a.ID, Account: payer.ID}
+	creditor := PartyRef{Participant: b.ID, Account: payee.ID}
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+	return sys, InitiatePaymentRequest{
+		Scheme:      SchemeSEPADD,
+		Amount:      25000,
+		MandateID:   m.ID,
+		Debtor:      debtor,
+		Creditor:    creditor,
+		Description: "Electricity bill",
+	}, m.ID
+}
+
+func networkWithAMandate(t *testing.T) (*Network, InitiatePaymentRequest) {
+	t.Helper()
+	sys, req, _ := networkWithACollection(t, 100000)
+	return sys, req
+}
+
+func networkWithARevokedMandate(t *testing.T) (*Network, InitiatePaymentRequest) {
+	t.Helper()
+	sys, req, id := networkWithACollection(t, 100000)
+	assertNoError(t, sys.RevokeMandate(context.Background(), id))
+	return sys, req
+}
+
+// networkWithAnUnfundedDebtor is the collection fixture whose payer cannot
+// cover it. The creditor's bank cannot see that, which is the point.
+func networkWithAnUnfundedDebtor(t *testing.T) (*Network, InitiatePaymentRequest) {
+	t.Helper()
+	sys, req, _ := networkWithACollection(t, 0)
+	return sys, req
+}
+
+// networkWithASubmittedPayment is a push payment that has been submitted and
+// nothing more: Initiated, its debtor leg posted, in no cycle, and not yet
+// answered by the creditor's bank.
+func networkWithASubmittedPayment(t *testing.T) (*Network, Payment) {
+	t.Helper()
+	n, req := networkWithTwoBanks(t)
+	p, err := n.SubmitPayment(context.Background(), req)
+	assertNoError(t, err)
+	return n, p
+}
+
+// closeCreditorAccount closes the payee's account at the payee's own bank.
+func closeCreditorAccount(t *testing.T, n *Network, p Payment) {
+	t.Helper()
+	ctx := context.Background()
+	bank, err := n.GetParticipant(ctx, p.Creditor.Participant)
+	assertNoError(t, err)
+	assertNoError(t, bank.Deposit.Close(ctx, p.Creditor.Account))
+}
+
+// Initiated becomes an observable state for the first time. Today
+// InitiatePaymentTx transitions straight to Accepted inside the submitting
+// transaction, so no caller has ever seen it; the mesh needs the payment to
+// exist, with its debtor leg posted, while the creditor's bank has not yet
+// answered.
+func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
+	n, req := networkWithTwoBanks(t)
+
+	p, err := n.SubmitPayment(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SubmitPayment: %v", err)
+	}
+	if p.Status != Initiated {
+		t.Errorf("status = %v, want Initiated", p.Status)
+	}
+	if p.CycleID != "" {
+		t.Errorf("cycle = %q, want empty — adding to a cycle is the CSM's act", p.CycleID)
+	}
+	// The debtor leg IS posted: the payer's money has left, which is what makes
+	// a later rejection a reversal rather than a cancellation.
+	if p.DebtorLegTx == "" {
+		t.Error("no debtor leg posted; a push payment's money leaves at submission")
+	}
+}
+
+// A pull posts nothing at submission. The creditor's bank has no access to the
+// debtor's account and the money has not moved; the debtor's bank posts the
+// leg when it accepts the collection.
+func TestSubmitPostsNothingForAPullPayment(t *testing.T) {
+	n, req := networkWithAMandate(t)
+	p, err := n.SubmitPayment(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SubmitPayment: %v", err)
+	}
+	if p.DebtorLegTx != "" {
+		t.Error("a direct debit posted a debtor leg at submission; the debtor's bank has not seen it yet")
+	}
+	if p.Status != Initiated {
+		t.Errorf("status = %v, want Initiated", p.Status)
+	}
+}
+
+// The submitting half must NOT check the far side. This is the assertion that
+// makes the whole sub-project real: before it, InitiatePaymentTx read both
+// banks' books in one transaction.
+func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
+	n, req := networkWithTwoBanks(t)
+	// A creditor account that does not exist. Before the split this was a
+	// synchronous ErrAccountNotInParticipant; now it is the creditor bank's to
+	// discover and answer with AC01.
+	req.Creditor.Account = "no-such-account"
+
+	if _, err := n.SubmitPayment(context.Background(), req); err != nil {
+		t.Fatalf("SubmitPayment refused a payment whose far side it cannot see: %v", err)
+	}
+}
+
+func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
+	n, p := networkWithASubmittedPayment(t)
+	closeCreditorAccount(t, n, p)
+
+	err := n.AcceptInbound(context.Background(), p)
+	if !errors.Is(err, deposit.ErrAccountClosed) {
+		t.Fatalf("AcceptInbound = %v, want the closed-account error", err)
+	}
+}
+
+// The creditor's bank holds the mandate, so it validates it — synchronously,
+// at submission. The debtor's bank validates funds, asynchronously, on
+// receipt. That is who holds what in SEPA, and it is the seam that survives
+// the eventual store split.
+func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
+	n, req := networkWithARevokedMandate(t)
+	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrMandateRevoked) {
+		t.Fatalf("SubmitPayment with a revoked mandate = %v, want ErrMandateRevoked", err)
+	}
+
+	n2, req2 := networkWithAnUnfundedDebtor(t)
+	p, err := n2.SubmitPayment(context.Background(), req2)
+	if err != nil {
+		t.Fatalf("SubmitPayment refused for lack of funds it cannot see: %v", err)
+	}
+	if err := n2.AcceptInbound(context.Background(), p); !errors.Is(err, deposit.ErrInsufficientAvailable) {
+		t.Fatalf("AcceptInbound = %v, want insufficient funds", err)
 	}
 }

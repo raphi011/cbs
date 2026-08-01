@@ -44,12 +44,12 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 
 	var payments []PaymentID
 	st := runCycle(t, sys, SchemeSEPACT, func() {
-		p1, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		p1, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})
 		assertNoError(t, err)
-		p2, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		p2, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
 		})
@@ -157,7 +157,7 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
@@ -185,12 +185,12 @@ func TestFailedInitiationLeavesNoAuditTrail(t *testing.T) {
 	assertNoError(t, err)
 
 	before := len(paymentAudit(t, sys, ""))
-	_, err = sys.InitiatePayment(ctx, InitiatePaymentRequest{
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 999999, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 	})
 	if err == nil {
-		t.Fatal("InitiatePayment succeeded, want an insufficient-funds failure")
+		t.Fatal("initiation succeeded, want an insufficient-funds failure")
 	}
 
 	after := paymentAudit(t, sys, "")
@@ -231,7 +231,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 
 	var payID PaymentID
 	runCycle(t, sys, SchemeSEPADD, func() {
-		p, err := sys.InitiatePayment(ctx, InitiatePaymentRequest{
+		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 20000, MandateID: m.ID,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		})

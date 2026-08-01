@@ -145,6 +145,14 @@ func (s *Network) RegisterScheme(sc Scheme) {
 	s.schemes[sc.ID()] = sc
 }
 
+// Scheme looks up a registered scheme, for callers outside this package that
+// have to ask the scheme a question before they can act on a payment — which
+// bank submits it, for one (see api's bank submit handler).
+//
+// It is a wrapper over the unexported scheme rather than a rename of it, so
+// that the dozens of internal call sites stay as they are.
+func (s *Network) Scheme(id SchemeID) (Scheme, bool) { return s.scheme(id) }
+
 // scheme looks up a registered scheme.
 func (s *Network) scheme(id SchemeID) (Scheme, bool) {
 	s.mu.RLock()
@@ -550,10 +558,10 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor P
 	// authorizes a future direct debit from the debtor to the creditor, and
 	// MaxAmount is one integer — an integer that means one thing at the
 	// debtor's scale and another at the creditor's is not a limit on anything.
-	// InitiatePaymentTx would refuse every payment such a mandate could
-	// authorize (both legs are checked against the scheme's asset, and these
-	// two cannot both match it), so this only makes the refusal happen where
-	// it can be understood instead of at first use.
+	// Submission would refuse every payment such a mandate could authorize
+	// (each leg is checked against the scheme's asset by its own bank, and
+	// these two cannot both match it), so this only makes the refusal happen
+	// where it can be understood instead of at first use.
 	if debtorAcct.Asset != creditorAcct.Asset {
 		return Mandate{}, fmt.Errorf("%w: debtor %s, creditor %s",
 			ErrAssetMismatch, debtorAcct.Asset, creditorAcct.Asset)
@@ -962,24 +970,44 @@ type InitiatePaymentRequest struct {
 	Metadata    map[string]string
 }
 
-// InitiatePayment validates and accepts a payment into the open clearing
-// cycle for its scheme. It immediately posts the debtor leg — the payer's
-// money leaves their account into the bank's clearing suspense — value-dated
-// to the scheme's settlement date. The creditor is paid later, at settlement.
-func (s *Network) InitiatePayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
+// SubmitPayment is SubmitPaymentTx in its own unit of work.
+func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.InitiatePaymentTx(ctx, tx, req)
+		out, err = s.SubmitPaymentTx(ctx, tx, req)
 		return err
 	})
 	return out, err
 }
 
-// InitiatePaymentTx is InitiatePayment within a caller-supplied unit of work.
-// The funds check, the debtor-leg posting and the payment record share one Tx,
-// so two concurrent payments cannot both spend the same balance.
-func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaymentRequest) (Payment, error) {
+// SubmitPaymentTx is the SUBMITTING bank's half of what used to be
+// InitiatePaymentTx, and which half that is depends on the scheme's direction.
+//
+// For a push (SCT) the debtor's bank submits, so the debtor half runs: the
+// account, the asset, the address, the funds, and the debtor leg posted. For a
+// pull (SDD) the CREDITOR's bank submits, so the creditor half runs and
+// NOTHING is posted — the debtor's bank posts the leg when it accepts the
+// collection, which is the only moment either the funds or the account are in
+// view.
+//
+// The roadmap called this "the creditor-account check moving out of
+// InitiatePaymentTx". That is true for a credit transfer and backwards for a
+// direct debit. The rule that covers both is the one above.
+//
+// The payment is left Initiated and in NO cycle. Adding it to one is the
+// clearing house's act, on receiving the counterparty's ACCP, because clearing
+// is what a clearing house does — see AcceptAtCSMTx, which is where
+// ErrCycleNotOpen went.
+//
+// What the far side gets here is TEXT validation and nothing else: its ids are
+// stored and used as lookup keys, so they must be safe to write, but whether
+// the account behind them exists is not a question this bank can ask.
+// TestSubmitDoesNotCheckTheCreditorAccount is the pin.
+func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymentRequest) (Payment, error) {
+	// Common validation: everything that needs neither book. It runs before the
+	// branch so that a malformed instruction is refused the same way whichever
+	// bank is submitting it.
 	scheme, ok := s.scheme(req.Scheme)
 	if !ok {
 		return Payment{}, ErrSchemeNotFound
@@ -987,43 +1015,12 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	if req.Amount <= 0 {
 		return Payment{}, ErrInvalidPaymentAmount
 	}
-	debtorAccount, err := s.checkPartyTx(ctx, tx, "debtor", req.Debtor)
-	if err != nil {
+	if err := validateParty("debtor", req.Debtor); err != nil {
 		return Payment{}, err
 	}
-	creditorAccount, err := s.checkPartyTx(ctx, tx, "creditor", req.Creditor)
-	if err != nil {
+	if err := validateParty("creditor", req.Creditor); err != nil {
 		return Payment{}, err
 	}
-	// Both legs must be denominated in the scheme's asset. This runs for every
-	// scheme unconditionally — unlike a check tucked inside a scheme's own
-	// Validate, it cannot be skipped by a scheme (e.g. a future card scheme)
-	// whose Validate does something other than call validateFunds.
-	if debtorAccount.Asset != scheme.Asset() || creditorAccount.Asset != scheme.Asset() {
-		return Payment{}, ErrAssetMismatch
-	}
-	// Both legs must be addressable in the scheme's addressing scheme, and a
-	// quoted address must belong to the account it is quoted for.
-	//
-	// This sits beside the asset check and for the same reason: it is the one
-	// moment both ends are in view and neither is written, and running it here
-	// rather than inside a scheme's Validate means it applies to every scheme
-	// rather than only the ones whose Validate calls validateFunds.
-	//
-	// The addresses come BACK, and are written onto the request's own refs
-	// before the payment is built from them: a caller that quoted nothing gets
-	// the account's address filled in rather than a stored payment with an empty
-	// one. req is a value, so this mutates nothing the caller owns.
-	debtorAddress, err := addressFor(scheme, req.Debtor, debtorAccount)
-	if err != nil {
-		return Payment{}, err
-	}
-	creditorAddress, err := addressFor(scheme, req.Creditor, creditorAccount)
-	if err != nil {
-		return Payment{}, err
-	}
-	req.Debtor.Identifier = debtorAddress
-	req.Creditor.Identifier = creditorAddress
 	if err := ledger.ValidateText("endToEndId", req.EndToEndID); err != nil {
 		return Payment{}, err
 	}
@@ -1045,18 +1042,10 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 		}
 	}
 
-	cycle, err := tx.GetOpenCycle(ctx, req.Scheme)
-	if errors.Is(err, ErrCycleNotFound) {
-		return Payment{}, ErrCycleNotOpen
-	} else if err != nil {
-		return Payment{}, err
-	}
-
 	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
 	if err != nil {
 		return Payment{}, err
 	}
-
 	now := s.now()
 	p := Payment{
 		ID:          PaymentID(id),
@@ -1067,7 +1056,6 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 		MandateID:   req.MandateID,
 		EndToEndID:  req.EndToEndID,
 		Status:      Initiated,
-		CycleID:     cycle.ID,
 		BookingDate: now,
 		ValueDate:   now.Add(scheme.SettlementDelay()),
 		Description: req.Description,
@@ -1075,35 +1063,241 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 		CreatedAt:   now,
 	}
 
-	if err := scheme.Validate(ctx, &p, SchemeContext{Network: s, Tx: tx, Now: now}); err != nil {
+	sc := SchemeContext{Network: s, Tx: tx, Now: now}
+	push := scheme.Direction() == Push
+	if push {
+		err = s.debtorSideTx(ctx, tx, scheme, &p, sc)
+	} else {
+		err = s.creditorSideTx(ctx, tx, scheme, &p, sc)
+	}
+	if err != nil {
 		return Payment{}, err
 	}
+
 	// Two events, because initiation and acceptance are two different facts: the
-	// instruction arrived and passed scheme validation, and — below, once the
-	// payer's funds are in suspense and the payment has joined a cycle — the
-	// network took responsibility for it. A rejected instruction rolls back with
-	// the transaction, so neither event is ever recorded for one.
+	// instruction arrived and passed its submitting bank's checks, and — later,
+	// once the counterparty has answered and the clearing house has taken it
+	// into a cycle — the network took responsibility for it. A refused
+	// instruction rolls back with the transaction, so neither event is ever
+	// recorded for one.
 	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentInitiated, string(p.ID), p); err != nil {
 		return Payment{}, err
 	}
 
-	// Debtor leg: money leaves the payer into the bank's clearing suspense.
+	if push {
+		if err := s.postDebtorLegTx(ctx, tx, scheme, &p); err != nil {
+			return Payment{}, err
+		}
+	}
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
+}
+
+// AcceptInbound is AcceptInboundTx in its own unit of work.
+func (s *Network) AcceptInbound(ctx context.Context, p Payment) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return s.AcceptInboundTx(ctx, tx, p)
+	})
+}
+
+// AcceptInboundTx is the RECEIVING bank's half: the half SubmitPaymentTx did
+// not run, because the bank that ran that one could not see this side.
+//
+// For a push the receiver is the creditor's bank, and its half is a check —
+// the account exists, is in the scheme's asset, is addressable, and can be
+// credited at all. Nothing is posted: the payee is paid at settlement, out of
+// the creditor bank's suspense, exactly as before.
+//
+// For a pull the receiver is the DEBTOR's bank, and its half is the one that
+// moves money: it checks the account, the asset, the address and the funds,
+// and posts the debtor leg. That posting is the whole reason a direct debit
+// posts nothing at submission — until this runs, the payer's money has not
+// moved and no actor has looked at their account.
+//
+// It writes the payment back only when it changed something (the debtor leg
+// for a pull, a back-filled far address for either), and without an audit
+// event: the payment's lifecycle events are the submitting bank's initiation
+// and the clearing house's acceptance, and a bank that appended one here would
+// be recording a network fact for an act that is entirely its own. The act
+// itself is not invisible — for a pull it is a posting in the bank's own book,
+// which the mesh's recorder sees positionally (mesh/books_test.go).
+func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, p Payment) error {
+	scheme, ok := s.scheme(p.Scheme)
+	if !ok {
+		return ErrSchemeNotFound
+	}
+	before := p
+	sc := SchemeContext{Network: s, Tx: tx, Now: s.now()}
+	if scheme.Direction() == Push {
+		if err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+			return err
+		}
+	} else {
+		if err := s.debtorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+			return err
+		}
+		if err := s.postDebtorLegTx(ctx, tx, scheme, &p); err != nil {
+			return err
+		}
+	}
+	if p.Debtor == before.Debtor && p.Creditor == before.Creditor && p.DebtorLegTx == before.DebtorLegTx {
+		return nil
+	}
+	return tx.PutPayment(ctx, p)
+}
+
+// AcceptAtCSM is AcceptAtCSMTx in its own unit of work.
+func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.AcceptAtCSMTx(ctx, tx, id)
+		return err
+	})
+	return out, err
+}
+
+// AcceptAtCSMTx is the CLEARING HOUSE's half: it takes a payment both banks
+// have now looked at into the open cycle for its scheme, and only then is the
+// payment Accepted.
+//
+// This is where ErrCycleNotOpen went. Which cycle a payment clears in is not
+// something either bank decides — a bank that refused its own customer's
+// instruction because the CSM had no cut-off window open would be answering a
+// question it was never asked. The clearing house owns the cut-off, so the
+// clearing house owns the refusal, and on the wire it is a pacs.002 carrying
+// TM01 rather than an error returned to a customer.
+//
+// It writes network rows (the payment, the cycle) and appends the acceptance
+// event, which is what makes the act visible to the mesh's book recorder at
+// all: network-scoped writes reach it only through the id allocation and the
+// audit event. See the note in mesh/books_test.go.
+func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
+	p, err := tx.GetPayment(ctx, id)
+	if err != nil {
+		return Payment{}, err
+	}
+	cycle, err := tx.GetOpenCycle(ctx, p.Scheme)
+	if errors.Is(err, ErrCycleNotFound) {
+		return Payment{}, ErrCycleNotOpen
+	} else if err != nil {
+		return Payment{}, err
+	}
+
+	if err := transition(&p, Accepted); err != nil {
+		return Payment{}, err
+	}
+	p.CycleID = cycle.ID
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	cycle.PaymentIDs = append(cycle.PaymentIDs, p.ID)
+	if err := tx.PutCycle(ctx, cycle); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentAccepted, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
+}
+
+// debtorSideTx is everything a payment's own debtor bank checks about it: the
+// account is one of its own, denominated in the scheme's asset, addressable in
+// the scheme's addressing scheme, and good for the money.
+//
+// The asset check now runs per LEG rather than across both.
+//
+// Sub-project 1 put it in InitiatePaymentTx precisely because that was the one
+// moment both ends were in view. The mesh removes that moment: no single
+// actor sees both accounts. Each bank therefore checks its own leg against the
+// scheme's asset, which is strictly weaker — two banks could each hold a
+// conforming account in a scheme neither is entitled to — and strictly what a
+// real bank can do. The stronger check that remains is the ledger's, at
+// settlement, exactly as sub-project 1's log describes.
+//
+// The address comes BACK and is written onto the payment's own ref: a caller
+// that quoted nothing gets the account's address filled in rather than a
+// stored payment with an empty one.
+func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) error {
+	account, err := s.checkPartyTx(ctx, tx, "debtor", p.Debtor)
+	if err != nil {
+		return err
+	}
+	if account.Asset != scheme.Asset() {
+		return ErrAssetMismatch
+	}
+	address, err := addressFor(scheme, p.Debtor, account)
+	if err != nil {
+		return err
+	}
+	p.Debtor.Identifier = address
+	// The funds check. It is the debtor bank's alone, which is why Scheme.Validate
+	// is now only ever this: the receiving side of a pull and the submitting
+	// side of a push are the same bank looking at the same account.
+	return scheme.Validate(ctx, p, sc)
+}
+
+// creditorSideTx is everything a payment's own creditor bank checks about it:
+// the account is one of its own, denominated in the scheme's asset,
+// addressable, able to receive a credit at all, and — for a pull — covered by
+// a mandate it holds.
+//
+// See debtorSideTx for why the asset check is per leg and weaker than it was.
+//
+// The creditable check is NEW, and it is here rather than at settlement
+// because this is the moment the payee's bank first looks at the payee's
+// account. Without it a payment reaches settlement and credits a closed
+// account, where the money strands: Close needs a zero balance, no withdrawal
+// can reach the credit afterwards, and Closed is terminal. Network.DepositTx
+// has refused a closed account for the same reason since cash first landed in
+// one.
+func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) error {
+	account, err := s.checkPartyTx(ctx, tx, "creditor", p.Creditor)
+	if err != nil {
+		return err
+	}
+	if account.Asset != scheme.Asset() {
+		return ErrAssetMismatch
+	}
+	address, err := addressFor(scheme, p.Creditor, account)
+	if err != nil {
+		return err
+	}
+	p.Creditor.Identifier = address
+	creditor, err := s.participantTx(ctx, tx, p.Creditor.Participant)
+	if err != nil {
+		return err
+	}
+	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
+		return err
+	}
+	// The mandate, which in SEPA the CREDITOR holds — so it is checked by the
+	// creditor's bank, and for a pull that means synchronously, at submission.
+	return scheme.ValidateMandate(ctx, p, sc)
+}
+
+// postDebtorLegTx moves the payer's money out of their account and into their
+// own bank's clearing suspense. Whoever runs it is the debtor's bank: the
+// submitting bank for a push, the receiving bank for a pull.
+func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment) error {
 	// The deposit layer is the authority for the funds/status check (run in
-	// Validate above); the GL posting here references the deposit account's
+	// debtorSideTx); the GL posting here references the deposit account's
 	// backing GL account.
 	debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
 	if err != nil {
-		return Payment{}, err
+		return err
 	}
 	// The suspense account the money lands in is the one for the scheme's
 	// asset: a euro scheme clears through the bank's euro suspense.
 	debtorAccts, err := debtor.AccountsFor(scheme.Asset())
 	if err != nil {
-		return Payment{}, err
+		return err
 	}
 	debtorGL, err := debtor.glAccountTx(ctx, tx, p.Debtor.Account)
 	if err != nil {
-		return Payment{}, err
+		return err
 	}
 	// The two legs of this one event take economic effect on different days,
 	// which is why an entry carries its own value date.
@@ -1116,37 +1310,23 @@ func (s *Network) InitiatePaymentTx(ctx context.Context, tx Tx, req InitiatePaym
 	//
 	// The clearing-suspense leg carries the settlement date, because that is
 	// when the bank's position against the scheme actually settles.
+	now := s.now()
 	posted, err := debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":debit",
 		Description:    p.Description,
 		BookingDate:    now,
 		ValueDate:      p.ValueDate,
-		Metadata:       paymentMetadata(&p),
+		Metadata:       paymentMetadata(p),
 		Entries: []ledger.Entry{
 			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Debit, ValueDate: now},
 			{AccountID: debtorAccts.Suspense, Amount: p.Amount, Direction: ledger.Credit, ValueDate: p.ValueDate},
 		},
 	})
 	if err != nil {
-		return Payment{}, err
+		return err
 	}
 	p.DebtorLegTx = posted.ID
-
-	if err := transition(&p, Accepted); err != nil {
-		return Payment{}, err
-	}
-	if err := tx.PutPayment(ctx, p); err != nil {
-		return Payment{}, err
-	}
-
-	cycle.PaymentIDs = append(cycle.PaymentIDs, p.ID)
-	if err := tx.PutCycle(ctx, cycle); err != nil {
-		return Payment{}, err
-	}
-	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentAccepted, string(p.ID), p); err != nil {
-		return Payment{}, err
-	}
-	return p, nil
+	return nil
 }
 
 // RejectPayment rejects a payment before it has cleared, reversing the debtor

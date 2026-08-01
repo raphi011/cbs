@@ -56,9 +56,23 @@ type Scheme interface {
 	// effect; it determines the value date of the postings.
 	SettlementDelay() time.Duration
 
-	// Validate checks scheme-specific preconditions (funds, mandate, ...)
-	// before a payment is accepted.
+	// Validate checks the preconditions the DEBTOR's bank owns — the funds,
+	// and anything else that can only be read in the payer's own book.
+	//
+	// It is one half of a pair, and which actor runs it depends on the
+	// direction: the submitting bank for a push, the receiving bank for a
+	// pull. The other half is ValidateMandate.
 	Validate(ctx context.Context, p *Payment, sc SchemeContext) error
+
+	// ValidateMandate checks the preconditions the CREDITOR's bank owns. In
+	// SEPA that is the mandate, because the mandate is a document the creditor
+	// holds; a scheme with no mandate has nothing to check here and says so by
+	// returning nil.
+	//
+	// It is on the interface rather than reached by a type assertion because
+	// the two halves are one decision — who may check what — and a scheme that
+	// implemented only one of them would be silently half-validated.
+	ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) error
 }
 
 // SchemeContext gives a scheme read access to the rest of the network during
@@ -81,10 +95,11 @@ type SchemeContext struct {
 // amount. The deposit layer is the authority for the funds/status check; a
 // shortfall surfaces as deposit.ErrInsufficientAvailable.
 //
-// The asset check (both legs must be denominated in the scheme's asset) does
-// not live here: it runs unconditionally in Network.InitiatePaymentTx, before
-// any scheme's Validate is reached, so it applies to every scheme rather than
-// only the ones whose Validate happens to call this helper.
+// The asset check (each leg must be denominated in the scheme's asset) does
+// not live here: it runs unconditionally in Network.debtorSideTx and
+// Network.creditorSideTx, before any scheme's Validate is reached, so it
+// applies to every scheme rather than only the ones whose Validate happens to
+// call this helper.
 func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 	part, err := sc.Network.participantTx(ctx, sc.Tx, p.Debtor.Participant)
 	if err != nil {
@@ -120,6 +135,12 @@ func (SCT) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return validateFunds(ctx, p, sc)
 }
 
+// ValidateMandate has nothing to check: a credit transfer is the payer
+// instructing their own bank, and the instruction IS the authorisation. A
+// mandate quoted on one is simply ignored rather than refused, exactly as it
+// was before this half existed.
+func (SCT) ValidateMandate(context.Context, *Payment, SchemeContext) error { return nil }
+
 // ---------------------------------------------------------------------------
 // SEPA Direct Debit (SDD)
 // ---------------------------------------------------------------------------
@@ -140,7 +161,16 @@ func (SDD) RequiresMandate() bool                 { return true }
 func (SDD) AllowsReturn() bool                    { return true }
 func (SDD) SettlementDelay() time.Duration        { return 48 * time.Hour } // T+2
 
-func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
+// ValidateMandate is the half the CREDITOR's bank runs, because in SEPA the
+// creditor holds the mandate. It is synchronous, at submission, and its
+// failures are 422s rather than pacs.002 rejections — your own bank refusing
+// your collection is not a message from a counterparty.
+//
+// A real debtor's bank keeps mandate records of its own and can reject a
+// collection with MD01 on the wire. This system's mandates live once, in the
+// network's own store, so that rejection has nowhere to come from; the limit
+// is worth naming rather than discovering.
+func (SDD) ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if p.MandateID == "" {
 		return ErrMandateRequired
 	}
@@ -163,5 +193,16 @@ func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	if m.MaxAmount > 0 && p.Amount > m.MaxAmount {
 		return ErrMandateExceeded
 	}
+	return nil
+}
+
+// Validate is now only the funds check, which the DEBTOR's bank runs on
+// receipt. It is the one fact about a direct debit that only the debtor's own
+// bank holds.
+//
+// It is identical to SCT.Validate, which is correct and not a smell: both say
+// "the receiving side checks funds", and they differ in WHO the receiving side
+// is — the payee's bank for a push, the payer's for a pull.
+func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return validateFunds(ctx, p, sc)
 }
