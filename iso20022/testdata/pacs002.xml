@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CSMBFRPPXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>AURTSESSXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>CSMBFRPPXXX-20260731-000123</BizMsgIdr>
+    <MsgDefIdr>pacs.002.001.10</MsgDefIdr>
+    <CreDt>2026-07-31T09:30:05Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10">
+    <FIToFIPmtStsRpt>
+      <GrpHdr>
+        <MsgId>CSMBFRPPXXX-20260731-000123</MsgId>
+        <CreDtTm>2026-07-31T09:30:05Z</CreDtTm>
+      </GrpHdr>
+      <OrgnlGrpInfAndSts>
+        <OrgnlMsgId>AURTSESSXXX-20260731-000001</OrgnlMsgId>
+        <OrgnlMsgNmId>pacs.008.001.08</OrgnlMsgNmId>
+        <OrgnlCreDtTm>2026-07-31T09:30:00Z</OrgnlCreDtTm>
+        <GrpSts>PART</GrpSts>
+      </OrgnlGrpInfAndSts>
+      <TxInfAndSts>
+        <OrgnlEndToEndId>INV-2026-0042</OrgnlEndToEndId>
+        <OrgnlTxId>pay-0001</OrgnlTxId>
+        <TxSts>ACCP</TxSts>
+      </TxInfAndSts>
+      <TxInfAndSts>
+        <OrgnlEndToEndId>INV-2026-0043</OrgnlEndToEndId>
+        <OrgnlTxId>pay-0002</OrgnlTxId>
+        <TxSts>RJCT</TxSts>
+        <StsRsnInf>
+          <Rsn>
+            <Cd>AM04</Cd>
+          </Rsn>
+          <AddtlInf>available balance 1200.00 below instructed 3000.00</AddtlInf>
+        </StsRsnInf>
+      </TxInfAndSts>
+    </FIToFIPmtStsRpt>
+  </Document>
+</Envelope>
