@@ -62,8 +62,8 @@ export default function BankHome() {
   const params = useParams();
   const pid = typeof params.pid === "string" ? params.pid : "";
   const accounts = useDepositAccounts(pid);
-  const { data: totals } = useTotals(pid);
-  const { data: reserve } = useReserve(pid);
+  const { data: totals, isLoading: totalsLoading } = useTotals(pid);
+  const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
   const { byCode } = useAssetLookup();
 
   return (
@@ -75,18 +75,24 @@ export default function BankHome() {
               Reserves at the central bank
               <Hint id="reserve-account" />
             </p>
-            <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
-              {(reserve ?? []).map((r) => {
-                const asset = byCode.get(r.asset);
-                return asset ? (
-                  <p key={r.asset}>
-                    <Money amount={r.reserve} asset={asset} />
-                  </p>
-                ) : (
-                  <Skeleton key={r.asset} className="h-6 w-24" />
-                );
-              })}
-            </div>
+            {reserveLoading ? (
+              <Skeleton className="mt-1 h-6 w-24" />
+            ) : reserve && reserve.length > 0 ? (
+              <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
+                {reserve.map((r) => {
+                  const asset = byCode.get(r.asset);
+                  return asset ? (
+                    <p key={r.asset}>
+                      <Money amount={r.reserve} asset={asset} />
+                    </p>
+                  ) : (
+                    <Skeleton key={r.asset} className="h-6 w-24" />
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">No reserves yet.</p>
+            )}
           </CardContent>
         </Card>
         <Card size="sm">
@@ -95,21 +101,27 @@ export default function BankHome() {
               Customer deposits
               <Hint id="derived-balance" />
             </p>
-            <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
-              {(totals ?? []).map((t) => {
-                const asset = byCode.get(t.asset);
-                return asset ? (
-                  <p key={t.asset}>
-                    <Money amount={t.deposits} asset={asset} />
-                    <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      less <Money amount={t.overdrafts} asset={asset} /> drawn
-                    </span>
-                  </p>
-                ) : (
-                  <Skeleton key={t.asset} className="h-6 w-24" />
-                );
-              })}
-            </div>
+            {totalsLoading ? (
+              <Skeleton className="mt-1 h-6 w-24" />
+            ) : totals && totals.length > 0 ? (
+              <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
+                {totals.map((t) => {
+                  const asset = byCode.get(t.asset);
+                  return asset ? (
+                    <p key={t.asset}>
+                      <Money amount={t.deposits} asset={asset} />
+                      <span className="ml-2 text-xs font-normal text-muted-foreground">
+                        less <Money amount={t.overdrafts} asset={asset} /> drawn
+                      </span>
+                    </p>
+                  ) : (
+                    <Skeleton key={t.asset} className="h-6 w-24" />
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-1 text-sm text-muted-foreground">No customer deposits yet.</p>
+            )}
           </CardContent>
         </Card>
       </div>
