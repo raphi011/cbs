@@ -6,9 +6,11 @@
 // deposit, not payment. That is deliberate and load-bearing: the package's
 // claim is that these are the STANDARD's types, and an import of ledger.Amount
 // would quietly make that false, because the next reader could no longer tell
-// which fields came from ISO 20022 and which came from here. The one conversion
-// boundary that results lives in payment/translate.go, which is the right place
-// for a translator.
+// which fields came from ISO 20022 and which came from here. The cost is one
+// conversion boundary, and sub-project 7b is what pays it: nothing imports this
+// package yet, so the translator does not exist. It belongs on the payment
+// side rather than here — a translator that lived in this package would be the
+// same import, only pointing the other way.
 //
 // # The standard and the scheme's profile of it
 //
