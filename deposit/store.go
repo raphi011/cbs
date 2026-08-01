@@ -35,7 +35,8 @@ type Tx interface {
 	ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]Account, error)
 
 	// ListDepositAccountsByIdentifier returns every account in the book holding
-	// this exact (scheme, value) pair.
+	// this (scheme, value) pair, compared with Identifier.Matches — the scheme
+	// exactly, the value under that scheme's own rule.
 	//
 	// It returns a slice rather than one account and a not-found sentinel
 	// because "an address resolves to exactly one account" is a DOMAIN rule and
@@ -118,8 +119,14 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     REPLACES the stored set; both readers bring it back. Identifiers are not
 //     separately writable, which is the condition under which store/pg is
 //     allowed a real FOREIGN KEY on them.
-//   - ListDepositAccountsByIdentifier matches both halves of the pair exactly,
-//     is book-scoped like everything else here, orders created_at then seq, and
+//   - ListDepositAccountsByIdentifier matches with Identifier.Matches — the
+//     scheme exactly, and the value under that scheme's comparison rule, which
+//     for an IBAN means with display separators stripped from BOTH sides. A
+//     store that compared raw values would refuse a lookup the other store
+//     answers, and an account stored as SE89-AURORA-1001 would be unreachable
+//     from a message carrying SE89AURORA1001 — which is the same address.
+//     (ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.) It is
+//     book-scoped like everything else here, orders created_at then seq, and
 //     returns an empty slice — never a sentinel — when nothing matches. It must
 //     NOT enforce uniqueness: storetest/IdentifierUniquenessIsNotEnforced pins
 //     that two accounts in one book may hold the same identifier, because the

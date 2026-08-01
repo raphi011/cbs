@@ -1156,24 +1156,21 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	}
 }
 
-// The compaction gap, recorded as a test rather than as a hope.
+// The round trip over SEED-SHAPED addresses, which is the one that would have
+// caught the gap this task closed.
 //
-// iso20022.IBAN.Compact is not reversible, and its doc comment leaves matching a
-// received IBAN against a stored one to this sub-project. This translator
-// resolves the address the MESSAGE carries, which is compact by construction,
-// against the network directory — and the directory matches identifier values
-// exactly (see ResolveIdentifierTx and the deposit store's contract). So an
-// account whose stored address carries display separators, as every account in
-// seed.go does, cannot be reached from the wire at all: this system emits
-// SE89AURORA1001 for it and then cannot resolve what it emitted.
+// Every other test here uses accounts stored with canonical compact IBANs, and
+// they all passed while the system was emitting an address it could not then
+// resolve: seed.go stores the readable SE89-AURORA-1001, ibanOf compacts it to
+// SE89AURORA1001 for the wire, and compaction does not run backwards. The
+// directory now compares both sides in their canonical form — see
+// deposit.Identifier.MatchValue — so the address survives the round trip, and
+// this test is what says so.
 //
-// The fix is not here. Matching compacted values on both sides is a change to
-// the DIRECTORY's comparison — deposit's identifier lookup, which is where the
-// store contract's "matches both halves of the pair exactly" lives, and which
-// this package must not reimplement. This test exists so that the limitation is
-// a stated, failing-on-change property rather than a surprise the mesh
-// discovers: whoever closes it will delete this test, and should.
-func TestCreditTransferRequestCannotReachAStoredIBANWithSeparators(t *testing.T) {
+// Both banks' accounts are stored separated, and differently: hyphens on one
+// side and spaces on the other, because those are two separators and a fix that
+// learned only one would resolve the debtor and lose the creditor.
+func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
 	aurora, err := n.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", euroOnly)
@@ -1181,10 +1178,8 @@ func TestCreditTransferRequestCannotReachAStoredIBANWithSeparators(t *testing.T)
 	verde, err := n.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", euroOnly)
 	assertNoError(t, err)
 
-	// The seed's readable form. Legal as an identifier, legal in a document
-	// once compacted, and unreachable coming back.
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
-	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60X0542811101000000123456")
+	bruno := openCustomer(t, ctx, verde, "Bruno", "IT60 X054 2811 1010 0000 0123 456")
 	fundAccount(t, ctx, n, aurora, alice, 500000)
 	openCycle(t, ctx, n, SchemeSEPACT)
 
@@ -1192,7 +1187,11 @@ func TestCreditTransferRequestCannotReachAStoredIBANWithSeparators(t *testing.T)
 		Scheme:   SchemeSEPACT,
 		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
 		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
-		Amount:   250000,
+		// No end-to-end id, so that the translated request can be initiated
+		// against this same network below without colliding with the payment
+		// it was built from — the dedup ErrDuplicateEndToEndID is real and is
+		// pinned elsewhere.
+		Amount: 250000,
 	})
 	assertNoError(t, err)
 
@@ -1200,9 +1199,54 @@ func TestCreditTransferRequestCannotReachAStoredIBANWithSeparators(t *testing.T)
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
-	if _, err := n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008)); !errors.Is(err, ErrAccountNotInParticipant) {
-		t.Fatalf("CreditTransferRequest = %v, want ErrAccountNotInParticipant.\n"+
-			"If this now resolves, the directory has learned to compact both sides; delete this test.", err)
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// The document carries the compact form and nothing else: that is what makes
+	// the resolution below a real question rather than a lookup of the string
+	// that was stored.
+	if strings.Contains(string(raw), "SE89-AURORA-1001") {
+		t.Errorf("the message carries the display form of the debtor's IBAN:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), "SE89AURORA1001") {
+		t.Errorf("the message does not carry the compact form of the debtor's IBAN:\n%s", raw)
+	}
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	got, err := n.CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	if err != nil {
+		t.Fatalf("CreditTransferRequest on seed-shaped addresses: %v", err)
+	}
+	if !got.Debtor.SameParty(p.Debtor) {
+		t.Errorf("debtor resolved to %+v, want %+v", got.Debtor, p.Debtor)
+	}
+	if !got.Creditor.SameParty(p.Creditor) {
+		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
+	}
+	// The request records the address the MESSAGE quoted, which is the compact
+	// form — not the stored one. Both name the same account, and it is the
+	// quoted one that is true of this payment.
+	if got.Debtor.Identifier.Value != "SE89AURORA1001" {
+		t.Errorf("debtor address = %q, want the compact form the message carried", got.Debtor.Identifier.Value)
+	}
+	// And it is accepted: initiation checks the quoted address against the
+	// account it resolved to, through the same comparison, so a fix that stopped
+	// at resolution would fail here with ErrIdentifierMismatch — the directory
+	// and addressFor disagreeing about what an address is.
+	accepted, err := n.InitiatePayment(ctx, got)
+	if err != nil {
+		t.Fatalf("initiating the translated payment: %v", err)
+	}
+	// What the accepted payment RECORDS is the account's stored form, which is
+	// addressFor's choice: a payment's recorded address is one the account
+	// actually holds, written the way this bank writes it. See addressFor.
+	if accepted.Debtor.Identifier.Value != "SE89-AURORA-1001" {
+		t.Errorf("the accepted payment records the debtor address %q, want the account's stored form",
+			accepted.Debtor.Identifier.Value)
 	}
 }
 

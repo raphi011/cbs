@@ -1152,27 +1152,24 @@ func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Ide
 // addresses something this bank cannot address — and it is a refusal rather
 // than a dereference of a pointer that is nil for a perfectly ordinary reason.
 //
-// # The compaction gap, which this function does not close
+// # Compaction, and why this function does not have to solve it
 //
-// The value is compacted, which is a no-op for anything that came off the wire
-// and is done anyway so that the identifier this returns is in one canonical
-// form. What compaction cannot do is run backwards: iso20022.IBAN's doc records
-// that matching a received IBAN against a stored one means compacting BOTH
-// sides, and the STORED side is not compacted anywhere — the network directory
-// matches identifier values exactly (ResolveIdentifierTx, and the deposit
-// store's contract). So an account whose stored address carries display
-// separators, as seed.go's readable SE89-AURORA-1001 does, cannot be reached
-// from the wire at all: this system emits the compact form for it and then
-// cannot resolve what it emitted.
+// The value is compacted here, which is a no-op for anything that came off the
+// wire — the schema's pattern admits no separators — and is done anyway so that
+// what this returns is in one canonical form regardless of who built the
+// document. What compaction cannot do is run backwards, and this repository
+// stores the DISPLAY form: seed.go writes SE89-AURORA-1001 for an account whose
+// pacs.008 carries SE89AURORA1001.
 //
-// It is not closed here because the fix is not here. Comparing compacted values
-// on both sides is a change to the directory's own comparison, in the deposit
-// layer where "matches both halves of the pair exactly" is a store contract that
-// storetest enforces; a fallback in this function would be this package
-// reimplementing the sweep it was told not to reimplement, and would still not
-// help any other caller. It is recorded rather than assumed away, and pinned by
-// TestCreditTransferRequestCannotReachAStoredIBANWithSeparators so that it is a
-// property with a test rather than a surprise the mesh discovers.
+// Matching those is not this function's job and must not be, because a fallback
+// here would help no other caller and would mean this package second-guessing
+// the directory it was told to use. It belongs to the comparison itself, and
+// that is where it now lives: deposit.Identifier.MatchValue canonicalises BOTH
+// sides for the IBAN scheme, ListDepositAccountsByIdentifier compares with it in
+// both stores, and storetest holds the two implementations together. What
+// reaches ResolveIdentifierTx from here is therefore an address it can resolve
+// whichever form the account was opened with. See
+// TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses.
 func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier, error) {
 	if acct.Id.IBAN == nil {
 		return deposit.Identifier{}, fmt.Errorf("%w: %s/Id/IBAN", ErrUnaddressableAccount, element)

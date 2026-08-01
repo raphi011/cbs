@@ -72,8 +72,13 @@ var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
 // Compaction is NOT reversible: SE89AURORA1001 cannot tell you where the
 // hyphens were. Code matching a received IBAN against a stored identifier must
 // therefore compact BOTH sides and compare, rather than compacting one and
-// hoping. That is sub-project 7b's problem, and this comment is where it is
-// recorded.
+// hoping. That was left to sub-project 7b, and 7b did it: the repository's
+// account directory compares identifiers in a canonical form rather than
+// literally, so an account opened with the readable form resolves from a message
+// carrying the compact one. The rule is stated on that side, in the layer that
+// owns the comparison; the separator set is duplicated there rather than
+// imported, because this package imports nothing from the repository, and a test
+// on that side pins the two copies together.
 type IBAN string
 
 // Compact returns the IBAN with display separators removed.

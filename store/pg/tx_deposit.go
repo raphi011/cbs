@@ -200,20 +200,45 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 }
 
 // ListDepositAccountsByIdentifier returns every account in the book holding
-// this exact (scheme, value) pair. EXISTS rather than a JOIN, so that an
-// account with the pair recorded twice — which nothing here prevents; see
-// deposit_account_identifiers in the schema — still surfaces once and not
-// twice.
+// this (scheme, value) pair. EXISTS rather than a JOIN, so that an account with
+// the pair recorded twice — which nothing here prevents; see
+// deposit_account_identifiers in the schema — still surfaces once and not twice.
+//
+// The scheme matches exactly and the VALUE matches under the scheme's own
+// comparison rule, which for an IBAN means with display separators removed from
+// both sides: the register stores SE89-AURORA-1001 and a pacs.008 carries
+// SE89AURORA1001, and those are one address. See deposit.Identifier.MatchValue,
+// which is where the rule and its reasons live.
+//
+// The predicate is chosen in Go from the scheme rather than written as a CASE,
+// because only the IBAN arm may strip anything: an identifier scheme whose
+// values legitimately contain hyphens would have two addresses silently merged.
+// This SQL is the third place the separator set is written — the other two are
+// deposit.ibanSeparators and iso20022.IBAN — and it is the one the compiler
+// cannot check, so it is pinned by
+// storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators,
+// which runs against this store and store/mem and fails if they disagree.
+//
+// It defeats the (book_id, scheme, value) index on the identifier table, which
+// is the honest cost of comparing a derived form. The fix, on a database that
+// held enough rows to care, is an index on the same expression rather than a
+// normalised column: a stored compact value would take the readable IBAN out of
+// every statement and worked example in the repository, which is the trade
+// sub-project 5 refused.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+	value := `i.value = $3`
+	if ident.Scheme == deposit.IdentifierIBAN {
+		value = `replace(replace(i.value, ' ', ''), '-', '') = $3`
+	}
 	rows, err := t.tx.Query(ctx, `
 		SELECT `+depositAccountColumns+`
 		FROM deposit_accounts a
 		WHERE a.book_id = $1 AND EXISTS (
 			SELECT 1 FROM deposit_account_identifiers i
 			WHERE i.book_id = a.book_id AND i.deposit_account_id = a.id
-			  AND i.scheme = $2 AND i.value = $3)
+			  AND i.scheme = $2 AND `+value+`)
 		ORDER BY a.created_at ASC NULLS FIRST, a.seq`,
-		string(book), string(ident.Scheme), ident.Value)
+		string(book), string(ident.Scheme), ident.MatchValue())
 	if err != nil {
 		return nil, fmt.Errorf("pg: list deposit accounts by identifier: %w", err)
 	}

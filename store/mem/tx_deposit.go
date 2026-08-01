@@ -103,11 +103,16 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 // The whole Account — identifiers included — is the map value, so
 // PutDepositAccount and both readers need no change at all. Only the lookup is
 // new, and in a map it is a scan; there are four banks.
+//
+// The comparison is deposit.Identifier.Matches and not ==, because an IBAN is
+// stored in its display form and arrives off the wire compact, and those are one
+// address. store/pg must answer this lookup identically — it does the same
+// comparison in SQL — and storetest is what holds the two together.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
 	out := make([]deposit.Account, 0)
 	for _, a := range t.state.depositAccounts[book] {
 		for _, got := range a.Identifiers {
-			if got == ident {
+			if got.Matches(ident) {
 				out = append(out, copyDepositAccount(a))
 				break
 			}

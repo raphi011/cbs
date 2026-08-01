@@ -265,6 +265,18 @@ CREATE TABLE deposit_account_identifiers (
 );
 
 -- ListDepositAccountsByIdentifier. Not UNIQUE, on purpose; see above.
+--
+-- It serves every scheme EXCEPT IBAN, and that exception is worth stating here
+-- rather than leaving someone to discover it from a query plan. An IBAN is
+-- stored in its readable display form (SE89-AURORA-1001) and arrives from a
+-- payment message compact (SE89AURORA1001); they are one address, so the lookup
+-- compares both sides with the separators removed and this index, which is on
+-- the raw value, cannot answer it. An index on the same expression would —
+-- replace() is IMMUTABLE, so a functional index is legal — and that is the fix
+-- if a book here ever held enough accounts to care. Normalising the stored value
+-- instead would take the readable IBAN out of every statement, worked example
+-- and screenshot in the repository, which is the trade this schema already
+-- refused when it declined to enforce mod-97 check digits.
 CREATE INDEX deposit_account_identifiers_lookup_idx
     ON deposit_account_identifiers (book_id, scheme, value);
 

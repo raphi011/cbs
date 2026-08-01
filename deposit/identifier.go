@@ -2,6 +2,7 @@ package deposit
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/raphi011/cbs/ledger"
 )
@@ -36,6 +37,65 @@ const IdentifierIBAN IdentifierScheme = "IBAN"
 type Identifier struct {
 	Scheme IdentifierScheme
 	Value  string
+}
+
+// ibanSeparators are the characters an IBAN is DISPLAYED with and is never
+// stored or transmitted with.
+//
+// The set is the same one iso20022.IBAN.Compact strips, and it is written out
+// twice rather than shared because that package must import nothing from this
+// repository and this one must not acquire a message codec to compare two
+// strings. Two copies of a rule is a drift risk, so it is pinned:
+// TestMatchValueAgreesWithTheWireCompaction fails if either side learns a
+// separator the other has not.
+var ibanSeparators = strings.NewReplacer(" ", "", "-", "")
+
+// MatchValue is the form two identifiers are compared BY, as against the form
+// one is stored IN.
+//
+// For an IBAN those differ, and the difference is a fact about IBANs rather than
+// about this repository: the canonical stored and transmitted form has no
+// separators, and the DISPLAY form is grouped for readability. This repository
+// writes the display form — seed.go's SE89-AURORA-1001 is what a statement, a
+// worked example and a screenshot all show — while an IBAN arriving in a
+// pacs.008 is compact, because that is the only form the schema's pattern
+// admits. They are one address.
+//
+// Compaction is not reversible: SE89AURORA1001 cannot say where the hyphens
+// were. So the only way to match a received address against a stored one is to
+// compact BOTH sides, which is what this method exists to do — see
+// iso20022.IBAN.Compact, whose doc records the same rule from the message side.
+// Before it existed, this system emitted an address it could then not resolve,
+// and every account the seed creates was unreachable from the wire.
+//
+// Every other scheme matches EXACTLY. No other address kind this system carries
+// has a display form — a card PAN is sixteen digits — and stripping punctuation
+// out of arbitrary identifiers would silently merge two addresses that a scheme
+// deliberately keeps apart.
+//
+// It changes nothing about what is stored or returned. A payment records the
+// address it was quoted, a register keeps the value it was given, and only the
+// COMPARISON is canonical. That is why it is a method here rather than a
+// normalisation at write time: normalising on the way in would replace the
+// readable form the rest of the repository teaches with opaque digits, which is
+// the trade sub-project 5 already refused when it declined mod-97 validation.
+func (i Identifier) MatchValue() string {
+	if i.Scheme != IdentifierIBAN {
+		return i.Value
+	}
+	return ibanSeparators.Replace(i.Value)
+}
+
+// Matches reports whether two identifiers name the same address: the same
+// scheme, and the same value under that scheme's comparison rule.
+//
+// Store implementations must use this for ListDepositAccountsByIdentifier
+// rather than ==, and it is the only thing they may use — a store that compared
+// raw values would refuse a lookup the other store answers, which is the one
+// divergence the store layer must never introduce. See
+// storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
+func (i Identifier) Matches(o Identifier) bool {
+	return i.Scheme == o.Scheme && i.MatchValue() == o.MatchValue()
 }
 
 // Validate checks that both halves are present and free of control characters.

@@ -400,6 +400,113 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
+	// An IBAN matches through its display separators, in BOTH directions, and
+	// both stores must do it the same way.
+	//
+	// This is the case that makes a received payment message resolvable at all.
+	// An IBAN is canonically transmitted compact and this repository stores the
+	// readable form — seed.go writes SE89-AURORA-1001, and a pacs.008 for that
+	// account carries SE89AURORA1001 — so a store comparing raw values leaves
+	// every seeded account unreachable from the wire, and the system emits an
+	// address it cannot then resolve. The rule is deposit.Identifier.MatchValue;
+	// store/mem applies it in Go and store/pg in SQL, which is two
+	// implementations of one rule and exactly what this suite exists to hold
+	// together.
+	//
+	// The fixture stores one form and looks up the other, then the reverse. A
+	// fixture whose two sides were both compact would pass against the unfixed
+	// code and prove nothing.
+	t.Run("ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		const pan = deposit.IdentifierScheme("PAN")
+		stored := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
+		spaced := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89 AURORA 1001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			// dep_1 holds the readable form, dep_2 the compact one. Two accounts
+			// so that each direction is tested against a row stored the other
+			// way, rather than both times against the same one.
+			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{stored},
+			}); err != nil {
+				return err
+			}
+			if err := tx.PutDepositAccount(ctx, bookB, deposit.Account{
+				ID: "dep_2", Name: "Bruno", Asset: "EUR",
+				Identifiers: []deposit.Identifier{compact},
+			}); err != nil {
+				return err
+			}
+			// A scheme with no display form, holding a value that carries a
+			// hyphen anyway.
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_3", Name: "Cara", Asset: "EUR",
+				Identifiers: []deposit.Identifier{{Scheme: pan, Value: "4111-1111"}},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			// Compact query, hyphenated row: the payment-message direction.
+			hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, compact)
+			if err != nil {
+				return err
+			}
+			if len(hit) != 1 || hit[0].ID != "dep_1" {
+				t.Fatalf("compact lookup of a hyphenated row = %#v, want just dep_1", hit)
+			}
+			// Spaces are separators too, and the group-of-four display form uses
+			// them rather than hyphens.
+			hit, err = tx.ListDepositAccountsByIdentifier(ctx, bookA, spaced)
+			if err != nil {
+				return err
+			}
+			if len(hit) != 1 || hit[0].ID != "dep_1" {
+				t.Fatalf("spaced lookup of a hyphenated row = %#v, want just dep_1", hit)
+			}
+			// Hyphenated query, compact row: the reverse, which a store that
+			// only compacted the QUERY would fail.
+			hit, err = tx.ListDepositAccountsByIdentifier(ctx, bookB, stored)
+			if err != nil {
+				return err
+			}
+			if len(hit) != 1 || hit[0].ID != "dep_2" {
+				t.Fatalf("hyphenated lookup of a compact row = %#v, want just dep_2", hit)
+			}
+			// What must NOT happen: the separators are removed, not treated as
+			// wildcards, and a different account number stays a different one.
+			other := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}
+			none, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, other)
+			if err != nil {
+				return err
+			}
+			if len(none) != 0 {
+				t.Fatalf("lookup of a different IBAN = %#v, want none", none)
+			}
+			// And the rule is the IBAN's, not every scheme's. A card PAN whose
+			// value happens to carry a hyphen is a different address from one
+			// without: nothing outside IdentifierIBAN has a display form, and a
+			// store stripping punctuation from arbitrary identifiers would merge
+			// two addresses a scheme keeps apart.
+			held, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, deposit.Identifier{Scheme: pan, Value: "4111-1111"})
+			if err != nil {
+				return err
+			}
+			if len(held) != 1 || held[0].ID != "dep_3" {
+				t.Fatalf("exact PAN lookup = %#v, want just dep_3", held)
+			}
+			stripped, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, deposit.Identifier{Scheme: pan, Value: "41111111"})
+			if err != nil {
+				return err
+			}
+			if len(stripped) != 0 {
+				t.Fatalf("PAN lookup with the hyphen removed = %#v, want none — only an IBAN has a display form", stripped)
+			}
+			return nil
+		})
+	})
+
 	// The store does NOT enforce uniqueness, and this test is what keeps it
 	// that way.
 	//

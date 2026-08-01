@@ -1535,8 +1535,24 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 		}
 		return inScheme[0], nil
 	}
+	// Matches and not ==, and the payment records the account's STORED form.
+	//
+	// The two differ for exactly one reason today: an IBAN is stored in its
+	// readable display form and quoted on the wire compact, and those are one
+	// address (deposit.Identifier.MatchValue). A payment translated out of a
+	// received pacs.008 quotes what the message carried, so == would refuse a
+	// party this bank had just successfully resolved BY that address — the
+	// directory and this check would disagree about what an address is, which is
+	// the shape of bug that only shows up once a real message arrives.
+	//
+	// Returning the stored identifier rather than the quoted one keeps the
+	// invariant that a payment's recorded address is one the account actually
+	// holds, in the form this bank writes it. The quoted form is not lost — it
+	// is what the message says, and the message is what the counterparty keeps.
+	// TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses drives
+	// both halves.
 	for _, ident := range inScheme {
-		if ident == ref.Identifier {
+		if ident.Matches(ref.Identifier) {
 			return ident, nil
 		}
 	}
