@@ -3,57 +3,40 @@
 import Link from "next/link";
 
 import { PageHeader } from "@/components/page-header";
-import { CreateParticipantDialog } from "@/components/create-participant-dialog";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Money, UnresolvedAmount } from "@/components/money";
 import { IdText } from "@/components/id-text";
 import { Hint } from "@/components/hint";
 import type { HintKey } from "@/components/hint-content";
 import { ErrorState } from "@/components/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  useAssetLookup,
-  useCycles,
-  useParticipants,
-  usePayments,
-  useReserves,
-  useSettlements,
-} from "@/lib/api/hooks";
-import type { Participant, Reserve } from "@/lib/types";
+import { useCycles, useIsProvisioned, useParticipants, usePayments, useSettlements } from "@/lib/api/hooks";
+import { backendFor, homeFor } from "@/lib/identity";
+import type { Participant } from "@/lib/types";
 
 // A payment is "in flight" until it reaches a terminal state. Settled, Rejected
 // and Returned payments are done; everything before that is still moving.
 const IN_FLIGHT = new Set(["Initiated", "Accepted", "Cleared"]);
 
-export default function Home() {
+// This screen used to also show a "Total reserves" stat and a per-bank
+// reserve figure, both read from `useReserves()` → the central bank's
+// `GET /reserves`. That made it the only screen in the app reading a listener
+// whose whole point is that it belongs to someone else — the lobby's own copy
+// says the clearing house sees payments and the central bank sees reserves.
+// Removing them is the point of the operator split, not a gap: this page
+// keeps membership, payments, cycles, settlements, schemes and directory, and
+// reserves live at /central-bank now.
+export default function ClearingHouse() {
   const { data: participants, isLoading, error, refetch } = useParticipants();
-  const { data: reserves, isLoading: reservesLoading } = useReserves();
   const { data: cycles } = useCycles();
   const { data: payments } = usePayments();
   const { data: settlements } = useSettlements();
+  const isProvisioned = useIsProvisioned();
 
-  // A bank holds one reserve account per asset, so both of these are per
-  // asset. Reserves in different assets are different things: picking whichever
-  // row came first, or adding them up, would state a number that is not true of
-  // anything.
-  const reservesFor = (pid: string) =>
-    (reserves ?? []).filter((r) => r.participant === pid);
-
-  // Sum per asset code. A code means the same asset everywhere — the
-  // definitions are compiled in, not registered per book — so the codes are
-  // the only key the sum needs.
-  const totalsByAsset = (reserves ?? []).reduce<Record<string, number>>(
-    (totals, r) => ({ ...totals, [r.asset]: (totals[r.asset] ?? 0) + r.reserve }),
-    {},
-  );
-  const assetTotals = Object.entries(totalsByAsset).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
   const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
   const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
   const settlementCount = (settlements ?? []).length;
@@ -61,30 +44,16 @@ export default function Home() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Dashboard"
+        title="Clearing house"
         hint="clearing-vs-settlement"
         description="An interbank payment network running on a double-entry ledger. Each participant is a member bank; they meet at the central bank to settle."
-        actions={<CreateParticipantDialog />}
       />
 
       <HowMoneyMoves />
 
       {/* Network at a glance — degrades to zeros while the lists load. */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <Stat label="Member banks">{participants?.length ?? 0}</Stat>
-        <Stat label="Total reserves" hint="central-bank-reserves">
-          {assetTotals.length === 0 ? (
-            reservesLoading ? (
-              <Skeleton className="h-6 w-20" />
-            ) : (
-              <span className="text-sm text-muted-foreground">None yet.</span>
-            )
-          ) : (
-            assetTotals.map(([code, total]) => (
-              <AssetTotalRow key={code} code={code} total={total} />
-            ))
-          )}
-        </Stat>
         <Stat label="Open cycles" hint="netting">
           {openCycles}
         </Stat>
@@ -110,18 +79,23 @@ export default function Home() {
           </div>
         ) : participants && participants.length === 0 ? (
           <Card>
-            <CardContent className="flex flex-col items-start gap-3 py-10">
-              <p className="text-sm text-muted-foreground">
-                No participants yet. Create your first member bank to start
-                moving money.
-              </p>
-              <CreateParticipantDialog />
+            <CardContent className="py-10 text-sm text-muted-foreground">
+              {/* Admission is the central bank's act: opening a member's
+                  reserve and settlement accounts happens in its own book, so
+                  there is no "create participant" button here — see
+                  /central-bank. */}
+              No participants yet. A member bank is admitted at the central
+              bank, not here.
             </CardContent>
           </Card>
         ) : (
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {participants?.map((p) => (
-              <ParticipantCard key={p.id} participant={p} reserves={reservesFor(p.id)} />
+              <ParticipantCard
+                key={p.id}
+                participant={p}
+                provisioned={isProvisioned(backendFor({ persona: "bank", pid: p.id }))}
+              />
             ))}
           </div>
         )}
@@ -130,71 +104,37 @@ export default function Home() {
   );
 }
 
-// One asset code's reserve total, summed across every participant. Summing is
-// only meaningful within an asset, which is why there is a row per code rather
-// than one number.
-function AssetTotalRow({
-  code,
-  total,
-}: {
-  code: string;
-  total: number;
-}) {
-  const { byCode, isLoading } = useAssetLookup();
-  const asset = byCode.get(code);
-  if (!asset) {
-    return <UnresolvedAmount code={code} isLoading={isLoading} className="block" />;
-  }
-  return (
-    <span className="block">
-      <Money amount={total} asset={asset} />
-    </span>
-  );
-}
-
-// One member-bank card: name, id, and one reserve line per asset it holds.
+// One member-bank card: name and id. No reserve figure — see the file-level
+// comment above. Unprovisioned banks are shown, not linked: entering one
+// would mean a console whose every request 502s, the same rule the lobby and
+// the identity picker already follow.
 function ParticipantCard({
   participant: p,
-  reserves,
+  provisioned,
 }: {
   participant: Participant;
-  reserves: Reserve[];
+  provisioned: boolean;
 }) {
-  const { byCode, isLoading } = useAssetLookup();
-  return (
-    <Link href={`/bank/${p.id}`}>
-      <Card className="h-full transition-colors hover:border-foreground/30">
-        <CardHeader>
-          <CardTitle className="text-base">{p.name}</CardTitle>
-          <IdText id={p.id} />
-        </CardHeader>
-        <CardContent>
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            Reserves
-            <Hint id="central-bank-reserves" />
-          </p>
-          {reserves.length === 0 ? (
-            isLoading ? (
-              <Skeleton className="h-6 w-20" />
-            ) : (
-              <p className="text-sm text-muted-foreground">None yet.</p>
-            )
-          ) : (
-            reserves.map((r) => {
-              const asset = byCode.get(r.asset);
-              return asset ? (
-                <p key={r.asset} className="text-lg font-semibold">
-                  <Money amount={r.reserve} asset={asset} />
-                </p>
-              ) : (
-                <Skeleton key={r.asset} className="h-6 w-20" />
-              );
-            })
-          )}
-        </CardContent>
-      </Card>
-    </Link>
+  const body = (
+    <Card
+      className={
+        provisioned ? "h-full transition-colors hover:border-foreground/30" : "h-full opacity-70"
+      }
+    >
+      <CardHeader>
+        <CardTitle className="text-base">{p.name}</CardTitle>
+        <IdText id={p.id} />
+      </CardHeader>
+      <CardContent>
+        {provisioned ? (
+          <p className="text-sm text-muted-foreground">Member of the network.</p>
+        ) : (
+          <p className="text-sm text-muted-foreground">Awaiting provisioning.</p>
+        )}
+      </CardContent>
+    </Card>
   );
+  return provisioned ? <Link href={homeFor({ persona: "bank", pid: p.id })}>{body}</Link> : body;
 }
 
 // Compact single-metric card for the "at a glance" row.
