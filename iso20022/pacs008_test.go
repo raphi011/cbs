@@ -96,6 +96,13 @@ func TestPacs008Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrAmountFormat", err)
 		}
 	})
+	t.Run("a transaction with no service level is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].PmtTpInf.SvcLvl = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
 	t.Run("a sequence type is not an allowed element", func(t *testing.T) {
 		// SeqTp exists in pacs.003's PaymentTypeInformation27 but has no
 		// element at all in pacs.008's own PaymentTypeInformation28. The

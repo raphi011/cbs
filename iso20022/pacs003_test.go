@@ -116,6 +116,13 @@ func TestPacs003Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
 		}
 	})
+	t.Run("a collection with no service level is a missing element", func(t *testing.T) {
+		d := valid()
+		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.SvcLvl = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
 	t.Run("a collection with no local instrument is a missing element", func(t *testing.T) {
 		d := valid()
 		d.FIToFICstmrDrctDbt.DrctDbtTxInf[0].PmtTpInf.LclInstrm = nil
