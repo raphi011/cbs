@@ -1,0 +1,94 @@
+package mesh
+
+import (
+	"context"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/testenv"
+)
+
+// euroOnly is the asset set a SEPA bank joins with.
+var euroOnly = []ledger.AssetCode{"EUR"}
+
+// rosterNetwork is a payment network holding exactly the banks it is given.
+func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Network {
+	t.Helper()
+	clock := func() time.Time { return testTime }
+	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
+	for name, bic := range bics {
+		if _, err := net.AddParticipant(context.Background(), name, bic, euroOnly); err != nil {
+			t.Fatalf("AddParticipant %s: %v", name, err)
+		}
+	}
+	return net
+}
+
+// The mesh is N+2: one actor per member bank, plus the clearing house and the
+// central bank. The banks come from the roster, which is the store, which is
+// why this is the one test in the package that needs one — and why it runs
+// against Postgres too when TEST_DATABASE_URL is set.
+func TestStartGivesEveryParticipantAnActor(t *testing.T) {
+	net := rosterNetwork(t, map[string]iso20022.BIC{
+		"Aurora Bank": "AURODEFFXXX",
+		"Banca Verde": "VERDITMMXXX",
+	})
+	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(context.Background()) })
+
+	want := []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", testConfig.ClearingHouseBIC, testConfig.CentralBankBIC}
+	for _, bic := range want {
+		if _, ok := m.actors[bic]; !ok {
+			t.Errorf("no actor for %s", bic)
+		}
+	}
+	if got := len(m.actors); got != len(want) {
+		t.Errorf("mesh has %d actors, want %d", got, len(want))
+	}
+
+	// Present in the map is not the same as reading its inbox. Send to one of
+	// the banks and drain: its goroutine has to be the thing that produces the
+	// dead letter, because nothing else runs a handler.
+	if err := m.send(testConfig.ClearingHouseBIC, "AURODEFFXXX",
+		testEnvelope(testConfig.ClearingHouseBIC, "AURODEFFXXX", "x")); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	err = m.Drain(drainCtx(t))
+	if err == nil {
+		t.Fatal("Drain was clean; the bank's actor never ran its (refusing) placeholder handler")
+	}
+	if !strings.Contains(err.Error(), "Aurora Bank") {
+		t.Errorf("dead letter %q does not come from the bank's own actor", err)
+	}
+}
+
+// Two banks sharing a BIC is a routing table that cannot say which one a
+// message is for. The store permits it — participants.bic has no unique
+// constraint, because a BIC identifies an institution and not a row — so the
+// mesh is where it has to be refused, and it refuses at startup rather than at
+// the first payment that goes to the wrong bank.
+func TestStartRefusesTwoParticipantsWithOneBIC(t *testing.T) {
+	net := rosterNetwork(t, map[string]iso20022.BIC{
+		"Aurora Bank":   "AURODEFFXXX",
+		"Aurora Bank 2": "AURODEFFXXX",
+	})
+	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(context.Background()) })
+	if err := m.Start(context.Background()); err == nil {
+		t.Fatal("Start accepted two participants under one BIC")
+	}
+}
