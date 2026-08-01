@@ -57,6 +57,12 @@ const LocalInstrumentCore LocalInstrument = "CORE"
 // transfer has no mandate to exercise. A debtor's bank reads SeqTp to decide
 // whether it should expect a first-collection reconciliation or a routine
 // recurring one.
+//
+// The ISO code set, SequenceType3Code, has a fifth member, RPRE
+// (representment: a re-presentation of a collection returned earlier for
+// insufficient funds). It is not declared here because it is not part of the
+// SEPA Core rulebook this package models — the same reason LocalInstrument
+// declares only CORE and not every member of its own external code list.
 type SequenceType string
 
 const (

@@ -106,6 +106,13 @@ func (t CreditTransferTransaction) validate() error {
 		if err := t.PmtTpInf.validate(); err != nil {
 			return fmt.Errorf("PmtTpInf: %w", err)
 		}
+		// SeqTp has no element in PaymentTypeInformation28 at all — see
+		// PaymentTypeInformation's doc comment. PaymentTypeInformation.validate()
+		// cannot refuse it, because SeqTp is legal there for pacs.003; only a
+		// message that actually is a pacs.008 knows to reject it.
+		if t.PmtTpInf.SeqTp != nil {
+			return fmt.Errorf("%w: PmtTpInf/SeqTp", ErrElementNotAllowed)
+		}
 	}
 	if err := t.IntrBkSttlmAmt.validate(); err != nil {
 		return fmt.Errorf("IntrBkSttlmAmt: %w", err)

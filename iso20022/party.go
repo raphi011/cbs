@@ -246,25 +246,44 @@ func (c LocalInstrumentChoice) validate() error {
 //
 // LclInstrm and SeqTp are pointers and optional at this type's level even
 // though pacs.003 treats both as mandatory (EPC AT-20, AT-21): this struct is
-// SHARED with pacs.008, whose SEPA Credit Transfer never carries either, and
-// a credit transfer's golden document must keep marshalling exactly as it did
-// before these two fields existed. It is pacs003.go's validate(), not this
-// type's, that enforces their presence — the same way EPC-versus-ISO
-// mandatoriness is decided per message elsewhere in this package.
+// SHARED with pacs.008, and a credit transfer's golden document must keep
+// marshalling exactly as it did before these two fields existed.
+//
+// The two are NOT symmetric, and must not be read as if they were. LclInstrm
+// IS an element of pacs.008's own PaymentTypeInformation28 — EPC's SEPA
+// Credit Transfer simply never populates it, which is a rulebook convention
+// this package chooses to follow, not a schema constraint. SeqTp has NO
+// element in PaymentTypeInformation28 at all: a pacs.008 that set it would
+// marshal successfully and be rejected by the real XSD. pacs008.go's own
+// validate() therefore refuses a non-nil SeqTp outright — see there — rather
+// than merely declining to require it. It is pacs003.go's validate(), not
+// this shared type's, that enforces LclInstrm's presence for a collection —
+// the same way EPC-versus-ISO mandatoriness is decided per message elsewhere
+// in this package.
 type PaymentTypeInformation struct {
 	SvcLvl    *ServiceLevelChoice    `xml:"SvcLvl,omitempty"`
 	LclInstrm *LocalInstrumentChoice `xml:"LclInstrm,omitempty"`
 	SeqTp     *SequenceType          `xml:"SeqTp,omitempty"`
 }
 
-// validate checks only the structural constraint this type owns: if LclInstrm
-// is present, its choice is well-formed. It does NOT require LclInstrm or
-// SeqTp to be present — see the type doc comment for why that decision
-// belongs to the message, not here.
+// validate enforces SvcLvl/Cd — EPC-mandatory for every message this package
+// emits, though ISO leaves SvcLvl optional in both PaymentTypeInformation27
+// and PaymentTypeInformation28 — and, if LclInstrm is present, that its
+// choice is well-formed. It does NOT require LclInstrm to be present: that
+// decision differs by message (see the type doc comment) and belongs to the
+// message's own validate(). SeqTp is not touched here at all, for the same
+// reason and then some — see the type doc comment for why pacs.008 must
+// reject it rather than simply not require it.
 func (t PaymentTypeInformation) validate() error {
+	if t.SvcLvl == nil {
+		return fmt.Errorf("%w: SvcLvl", ErrMissingElement)
+	}
+	if t.SvcLvl.Cd == "" {
+		return fmt.Errorf("%w: SvcLvl/Cd", ErrMissingElement)
+	}
 	if t.LclInstrm != nil {
 		if err := t.LclInstrm.validate(); err != nil {
-			return fmt.Errorf("PmtTpInf/LclInstrm: %w", err)
+			return fmt.Errorf("LclInstrm: %w", err)
 		}
 	}
 	return nil

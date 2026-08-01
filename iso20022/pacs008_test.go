@@ -96,4 +96,17 @@ func TestPacs008Validate(t *testing.T) {
 			t.Fatalf("validate() = %v, want it to wrap ErrAmountFormat", err)
 		}
 	})
+	t.Run("a sequence type is not an allowed element", func(t *testing.T) {
+		// SeqTp exists in pacs.003's PaymentTypeInformation27 but has no
+		// element at all in pacs.008's own PaymentTypeInformation28. The
+		// struct is shared between the two messages, so nothing in the Go
+		// type system stops a caller from setting it on a credit transfer;
+		// validate() is what must refuse it.
+		d := valid()
+		seqTp := SequenceTypeFirst
+		d.FIToFICstmrCdtTrf.CdtTrfTxInf[0].PmtTpInf.SeqTp = &seqTp
+		if err := d.validate(); !errors.Is(err, ErrElementNotAllowed) {
+			t.Fatalf("validate() = %v, want it to wrap ErrElementNotAllowed", err)
+		}
+	})
 }

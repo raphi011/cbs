@@ -25,6 +25,18 @@ var (
 	// checked rather than typed — see the package doc.
 	ErrInvalidChoice = errors.New("iso20022: exactly one member of a choice must be set")
 
+	// ErrElementNotAllowed is returned when an element is set that the ISO
+	// schema does not merely leave optional for this particular message, but
+	// does not define at all. It is the mirror image of ErrMissingElement:
+	// where that sentinel means an element the wire format requires never
+	// arrived, this one means an element the wire format has no room for was
+	// supplied anyway. pacs.008's SeqTp is this package's first case — a
+	// field legal in pacs.003's PaymentTypeInformation27 and absent from
+	// pacs.008's own PaymentTypeInformation28 entirely, because a struct
+	// shared between the two messages cannot express "this field exists only
+	// for one of my two users" through Go's type system alone.
+	ErrElementNotAllowed = errors.New("iso20022: element not allowed for this message")
+
 	// ErrBICFormat is returned by BIC.Validate for a value that is not a
 	// structurally valid ISO 9362 business identifier code.
 	ErrBICFormat = errors.New("iso20022: malformed BIC")
