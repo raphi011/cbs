@@ -24,6 +24,11 @@ import (
 //     different handlers: the bank's reads are narrowed to its own legs, and its
 //     POST accepts a customer instruction and answers 202 with an identifier.
 //     Same pattern, different operator, different answer.
+//   - The four cycle and settlement reads are on the central bank as well as the
+//     clearing house, with the same handlers and the same answers. They are not
+//     two views of one thing: the clearing house reads them because it closed the
+//     cycle and wants to know whether it settled, and the central bank reads them
+//     because a closed cycle and its net positions are the instruction it acts on.
 var allowedOverlaps = []string{
 	"GET /assets",
 	"GET /directory",
@@ -31,6 +36,10 @@ var allowedOverlaps = []string{
 	"GET /payments",
 	"GET /payments/{payid}",
 	"POST /payments",
+	"GET /cycles",
+	"GET /cycles/{cid}",
+	"GET /settlements",
+	"GET /settlements/{sid}",
 }
 
 func surfaces(t *testing.T) map[string][]string {
@@ -264,6 +273,46 @@ func TestSettlingIsTheCentralBanksAct(t *testing.T) {
 	if len(settlements) != 1 {
 		t.Fatalf("the clearing house sees %d settlements, want 1", len(settlements))
 	}
+}
+
+// TestTheCentralBankCanReadTheCycleItSettles is the read half of
+// TestSettlingIsTheCentralBanksAct.
+//
+// Settling is the central bank's act, and an operator who cannot see the closed
+// cycle or its net positions cannot perform it — the console would offer a
+// settle button with nothing to name. A settlement instruction in the real thing
+// IS a closed cycle and its positions, so reading them is part of the act rather
+// than a widening of the surface. What the central bank still cannot see is an
+// individual payment, which is the boundary that matters.
+func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
+	h := newServer(t, nil)
+	cid := closedCycle(t, h)
+
+	var cycles []clearingCycleDTO
+	getJSON(t, cb(h), "/cycles", &cycles)
+	if len(cycles) != 1 || cycles[0].ID != cid {
+		t.Fatalf("the central bank sees %v, want the one closed cycle %s", cycles, cid)
+	}
+
+	got := doJSON(t, cb(h), "GET", "/cycles/"+cid, "", http.StatusOK)
+	if got["status"] != "Closed" {
+		t.Fatalf("cycle status = %v, want Closed", got["status"])
+	}
+
+	sid := doJSON(t, cb(h), "POST", "/settlements",
+		`{"cycleId":"`+cid+`"}`, http.StatusOK)["id"].(string)
+
+	// And it can read back what it did, without asking the clearing house.
+	var settlements []settlementDTO
+	getJSON(t, cb(h), "/settlements", &settlements)
+	if len(settlements) != 1 {
+		t.Fatalf("the central bank sees %d settlements, want 1", len(settlements))
+	}
+	doJSON(t, cb(h), "GET", "/settlements/"+sid, "", http.StatusOK)
+
+	// The boundary that matters is untouched: an individual payment is still
+	// the clearing house's, and a central bank does not see one.
+	assertStatus(t, cb(h), "GET", "/payments", "", http.StatusNotFound)
 }
 
 // closedCycle builds the smallest thing that can be settled: two banks, one

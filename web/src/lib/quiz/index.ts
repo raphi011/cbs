@@ -19,16 +19,7 @@ import { chapter as ch16 } from "./chapters/16-multi-asset-accounting";
 import { chapter as ch17 } from "./chapters/17-lending-and-amortization";
 import { chapter as ch18 } from "./chapters/18-interest-overdrafts-and-arrears";
 
-/** Network-level explorer routes a question may deep-link to. */
-export const EXPLORE_ROUTES = [
-  "/",
-  "/payments",
-  "/mandates",
-  "/cycles",
-  "/settlements",
-  "/central-bank",
-  "/schemes",
-] as const;
+export { EXPLORE_ROUTES, type ExploreRoute } from "./types";
 
 export const chapters: Chapter[] = [
   ch01, ch02, ch03, ch04, ch05, ch06, ch07,

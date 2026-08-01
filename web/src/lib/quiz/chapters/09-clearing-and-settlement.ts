@@ -78,7 +78,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "The [[settlement-delay|settlement window]] creates a period where the payment has been initiated but interbank [[clearing-vs-settlement|settlement]] has not completed. The bank carries counterparty risk. [[holds]] bridge the gap for customers by reserving funds without posting final entries until settlement confirms.",
-      explore: { label: "View settlement cycles", href: "/cycles" },
+      explore: { label: "View settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "multi",
@@ -97,7 +97,7 @@ export const chapter: Chapter = {
       answers: [0, 2],
       explanation:
         "[[clearing-vs-settlement|Clearing]] covers exchanging payment instructions and calculating [[netting|net positions]]. Reserve movement and payment finality happen at [[clearing-vs-settlement|settlement]], not during clearing. The customer's account is debited at initiation, before clearing even begins.",
-      explore: { label: "View settlement cycles", href: "/cycles" },
+      explore: { label: "View settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "mc",
@@ -115,7 +115,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "Nostro/vostro accounts are mirror accounts that two banks maintain with each other. After [[clearing-vs-settlement|settlement]] completes, each bank checks that what it expected to receive matches what actually arrived — any discrepancy is investigated and resolved. These accounts are a post-settlement reconciliation tool, not the mechanism that computes [[net-positions]].",
-      explore: { label: "View settlements", href: "/settlements" },
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
       kind: "mc",
@@ -132,7 +132,7 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "Domestic wire transfers using an RTGS (Real-Time Gross Settlement) system settle at T+0 — each payment is individually and immediately finalized. [[settlement-delay]] for ACH is T+1 to T+2, checks T+1 to T+5, and international wires T+1 to T+3.",
-      explore: { label: "View settlement cycles", href: "/cycles" },
+      explore: { label: "View settlement cycles", href: "/clearing-house/cycles" },
     },
     {
       kind: "truefalse",
@@ -161,7 +161,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "During the [[settlement-delay|settlement window]], the payment instruction has been sent but reserves have not yet moved. If the sending bank fails or the instruction is recalled (where permitted), the receiving bank may not receive the funds even though it has already credited its customer. This exposure is counterparty risk — eliminated only at [[clearing-vs-settlement|settlement]] finality.",
-      explore: { label: "View settlements", href: "/settlements" },
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
       kind: "numeric",
@@ -255,7 +255,7 @@ export const chapter: Chapter = {
       answers: [0, 1, 2],
       explanation:
         "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. At settlement, the suspense is unwound: the bank's reserve-at-central-bank asset adjusts, and the suspense balance returns to zero. Option D describes a [[reserve-account]], not a suspense account.",
-      explore: { label: "View settlements", href: "/settlements" },
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
       kind: "truefalse",
@@ -267,7 +267,7 @@ export const chapter: Chapter = {
       answer: true,
       explanation:
         "Both schemes implement [[settlement-model-net|net settlement]]: payments accumulate during a clearing cycle, net positions are computed at cut-off, and only the net balances settle through reserve movements at the central bank. The direction of initiation differs (push vs pull, mandate required for direct debit), but both schemes settle on the same net basis.",
-      explore: { label: "View schemes", href: "/schemes" },
+      explore: { label: "View schemes", href: "/clearing-house/schemes" },
     },
     {
       kind: "numeric",
@@ -299,7 +299,7 @@ export const chapter: Chapter = {
       answers: [1, 3, 4],
       explanation:
         "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, the creditor leg delivers funds to the payee, and finality is achieved — the payment can no longer be unwound. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.",
-      explore: { label: "View settlements", href: "/settlements" },
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
       kind: "numeric",

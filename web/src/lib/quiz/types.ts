@@ -4,6 +4,32 @@ import type { NumericUnit } from "./units";
 export type QuestionKind = "mc" | "truefalse" | "multi" | "numeric";
 export type Difficulty = "intro" | "core" | "challenge";
 
+/**
+ * Explorer routes a question may deep-link to.
+ *
+ * It lives here rather than in index.ts so `explore.href` can be typed against
+ * it: index.ts imports the chapters and the chapters import this file, so the
+ * other direction would be a cycle. Typing it is what makes the compiler hold
+ * every chapter to the allowlist — before this it was `string`, and only a
+ * runtime test caught a stale one.
+ */
+export const EXPLORE_ROUTES = [
+  // The lobby. "See the ledger" still lands somewhere real: the cast, and a
+  // seat to pick.
+  "/",
+  // The central bank's home is the reserves table, which is what the questions
+  // naming it mean — so this one did not move.
+  "/central-bank",
+  "/clearing-house",
+  "/clearing-house/payments",
+  "/clearing-house/mandates",
+  "/clearing-house/cycles",
+  "/clearing-house/settlements",
+  "/clearing-house/schemes",
+] as const;
+
+export type ExploreRoute = (typeof EXPLORE_ROUTES)[number];
+
 interface BaseQuestion {
   /** Stable, globally unique, e.g. "ch2-q3". */
   id: string;
@@ -13,8 +39,8 @@ interface BaseQuestion {
   explanation: string;
   /** Drives the right sidebar while this question is on screen. */
   concept?: HintKey;
-  /** Optional deep-link to a relevant explorer page (network-level routes only). */
-  explore?: { href: string; label: string };
+  /** Optional deep-link to a relevant explorer page (operator-level routes only). */
+  explore?: { href: ExploreRoute; label: string };
   difficulty?: Difficulty;
 }
 

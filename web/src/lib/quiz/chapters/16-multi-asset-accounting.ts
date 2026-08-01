@@ -182,7 +182,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "SEPA is the *Single Euro Payments Area*, and a 'SEPA dollar transfer' is not a thing that exists. A scheme in another currency is **another scheme**, with its own rulebook, cycles and settlement arrangements — which is why [[scheme-asset|`Asset()` sits on the scheme]] rather than on the payment. It is a fact about the rails, not a limit of the model.",
-      explore: { href: "/schemes", label: "Registered schemes" },
+      explore: { href: "/clearing-house/schemes", label: "Registered schemes" },
     },
     {
       kind: "mc",
@@ -211,7 +211,7 @@ export const chapter: Chapter = {
       answer: false,
       explanation:
         "There is deliberately **no fallback**. The member fails the whole batch before anything is posted — exactly the treatment an underfunded member gets. [[participant-assets|Defaulting to euro would settle a dollar cycle in the wrong money]], quietly, in the one place in the system where money becomes final. The asset is resolved once from the cycle's scheme and used for every member in the batch.",
-      explore: { href: "/settlements", label: "Settlements" },
+      explore: { href: "/clearing-house/settlements", label: "Settlements" },
     },
     {
       kind: "multi",
@@ -279,7 +279,7 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "It is a payment **and** a trade, and the trade is priced. That is why a cross-border transfer arrives at a worse rate than the one on the news: the FX leg is a separate, priced transaction bundled into the payment's presentation. Modelling it needs the [[fx-position-account|full FX machinery]] — position accounts, a rate source, a spread booked to revenue — none of which exists here, so [[scheme-asset|the mismatch is refused]] instead. (The debtor and creditor legs are indeed separate postings, but that is true of every payment and has nothing to do with currency.)",
-      explore: { href: "/payments", label: "Payments" },
+      explore: { href: "/clearing-house/payments", label: "Payments" },
     },
     {
       kind: "truefalse",

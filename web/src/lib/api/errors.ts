@@ -23,7 +23,7 @@ export function messageForStatus(status: number): string {
     case 422:
       return "Not allowed in the current state (insufficient funds, frozen account, or invalid transition).";
     case 502:
-      return "The backend is unreachable. Is `go run ./cmd/server` running on :8080?";
+      return "That operator's backend is unreachable. Is `go run ./cmd/server` running?";
     case 500:
       return "The backend hit an unexpected error.";
     default:

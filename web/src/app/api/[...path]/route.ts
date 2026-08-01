@@ -1,5 +1,12 @@
 import { type NextRequest, NextResponse } from "next/server";
 
+import {
+  backendConfig,
+  bankUrl,
+  institutionUrl,
+  type Institution,
+} from "@/lib/api/backend-url";
+
 // This catch-all Route Handler proxies every browser request to the Go backend.
 // Because the browser only ever talks to its own origin (/api/...), CORS is
 // impossible by construction. We normalize transport errors into a clean 502 so
@@ -14,26 +21,11 @@ import { type NextRequest, NextResponse } from "next/server";
 // be explicit: this is a live proxy, never prerendered.
 export const dynamic = "force-dynamic";
 
-// The two institutions sit at the base port and the next one; member banks
-// follow in registration order. That mirrors cmd/server's plan(), deliberately:
-// with no configuration at all, `make dev` works and the ports are predictable.
-//
-// BACKENDS overrides it — a JSON object of operator key to base URL — for a
-// deployment that binds elsewhere. A bank's key is its participant id.
-const BASE_PORT = Number(process.env.BASE_PORT ?? 8081);
-const HOST = process.env.BACKEND_HOST ?? "http://localhost";
-const OVERRIDES: Record<string, string> = process.env.BACKENDS
-  ? JSON.parse(process.env.BACKENDS)
-  : {};
-
+// Read once per process: the environment does not change under a running server,
+// and JSON.parse of BACKENDS on every request would be waste.
+const CFG = backendConfig(process.env);
 const CENTRAL_BANK = "central-bank";
 const CLEARING_HOUSE = "clearing-house";
-
-function institutionUrl(key: string): string {
-  if (OVERRIDES[key]) return OVERRIDES[key];
-  const offset = key === CENTRAL_BANK ? 0 : 1;
-  return `${HOST}:${BASE_PORT + offset}`;
-}
 
 // A bank's port depends on where it sits in the roster, which only the clearing
 // house can answer. The roster is read once and cached for the life of the
@@ -44,7 +36,7 @@ let rosterCache: Promise<string[]> | null = null;
 
 function roster(): Promise<string[]> {
   if (!rosterCache) {
-    rosterCache = fetch(`${institutionUrl(CLEARING_HOUSE)}/members`, {
+    rosterCache = fetch(`${institutionUrl(CLEARING_HOUSE, CFG)}/members`, {
       cache: "no-store",
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("roster unavailable"))))
@@ -57,19 +49,6 @@ function roster(): Promise<string[]> {
   return rosterCache;
 }
 
-async function bankUrl(pid: string): Promise<string> {
-  if (OVERRIDES[pid]) return OVERRIDES[pid];
-  const ids = await roster();
-  const index = ids.indexOf(pid);
-  if (index < 0) {
-    throw new Error(
-      `no listener for bank ${pid}. A participant admitted at runtime has no ` +
-        `listener until the server restarts — admission is not provisioning.`,
-    );
-  }
-  return `${HOST}:${BASE_PORT + 2 + index}`;
-}
-
 // resolve splits an incoming path into the backend that serves it and the path
 // that backend expects. Returns null when the first segment names no operator.
 async function resolve(
@@ -77,12 +56,12 @@ async function resolve(
 ): Promise<{ base: string; rest: string[]; key: string } | null> {
   const [head, ...tail] = segments;
   if (head === CENTRAL_BANK || head === CLEARING_HOUSE) {
-    return { base: institutionUrl(head), rest: tail, key: head };
+    return { base: institutionUrl(head as Institution, CFG), rest: tail, key: head };
   }
   if (head === "bank") {
     const [pid, ...rest] = tail;
     if (!pid) return null;
-    return { base: await bankUrl(pid), rest, key: `bank/${pid}` };
+    return { base: bankUrl(pid, await roster(), CFG), rest, key: `bank/${pid}` };
   }
   return null;
 }

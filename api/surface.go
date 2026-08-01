@@ -50,6 +50,14 @@ func (s *Server) centralBankRouter() *router {
 	// read side, because it needs to know whether the cycle it closed has
 	// settled and reading is not doing.
 	mux.HandleFunc("POST /settlements", s.handleSettleCycle)
+	// A central bank settles on instruction, and the instruction IS a closed
+	// cycle and its net positions — so it has to be able to read them. What it
+	// still cannot reach is an individual payment: GET /payments is the clearing
+	// house's, and a real central bank does not see one.
+	mux.HandleFunc("GET /cycles", s.handleListCycles)
+	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
+	mux.HandleFunc("GET /settlements", s.handleListSettlements)
+	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	// Reset clears the store and reseeds it. It belongs to one operator
 	// because Server.resetMu serializes it per process, and the central bank

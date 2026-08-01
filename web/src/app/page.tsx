@@ -1,285 +1,244 @@
 "use client";
 
 import Link from "next/link";
+import { Building2, GraduationCap, Landmark, Network } from "lucide-react";
 
-import { PageHeader } from "@/components/page-header";
-import { CreateParticipantDialog } from "@/components/create-participant-dialog";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Money, UnresolvedAmount } from "@/components/money";
-import { IdText } from "@/components/id-text";
-import { Hint } from "@/components/hint";
-import type { HintKey } from "@/components/hint-content";
+import { EnumBadge } from "@/components/enum-badge";
 import { ErrorState } from "@/components/error-state";
+import { Hint } from "@/components/hint";
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  useAssetLookup,
-  useCycles,
-  useParticipants,
-  usePayments,
-  useReserves,
-  useSettlements,
-} from "@/lib/api/hooks";
-import type { Participant, Reserve } from "@/lib/types";
+import { useAssetLookup, useIdentityDirectory, useReserves } from "@/lib/api/hooks";
+import { homeFor } from "@/lib/identity";
+import type { DepositAccount, Participant, Reserve } from "@/lib/types";
 
-// A payment is "in flight" until it reaches a terminal state. Settled, Rejected
-// and Returned payments are done; everything before that is still moving.
-const IN_FLIGHT = new Set(["Initiated", "Accepted", "Cleared"]);
+// The lobby. `/` never redirects: a first-time visitor is shown the cast and
+// picks one. Remembering the last identity would save a repeat visitor a click
+// and cost the newcomer the one screen that makes the app's structure obvious,
+// which for a teaching system is the wrong trade — so nothing is persisted.
+export default function Lobby() {
+  const { banks, isLoading, error } = useIdentityDirectory();
+  const { data: reserves } = useReserves();
 
-export default function Home() {
-  const { data: participants, isLoading, error, refetch } = useParticipants();
-  const { data: reserves, isLoading: reservesLoading } = useReserves();
-  const { data: cycles } = useCycles();
-  const { data: payments } = usePayments();
-  const { data: settlements } = useSettlements();
-
-  // A bank holds one reserve account per asset, so both of these are per
-  // asset. Reserves in different assets are different things: picking whichever
-  // row came first, or adding them up, would state a number that is not true of
-  // anything.
-  const reservesFor = (pid: string) =>
-    (reserves ?? []).filter((r) => r.participant === pid);
-
-  // Sum per asset code. A code means the same asset everywhere — the
-  // definitions are compiled in, not registered per book — so the codes are
-  // the only key the sum needs.
-  const totalsByAsset = (reserves ?? []).reduce<Record<string, number>>(
-    (totals, r) => ({ ...totals, [r.asset]: (totals[r.asset] ?? 0) + r.reserve }),
-    {},
-  );
-  const assetTotals = Object.entries(totalsByAsset).sort(([a], [b]) =>
-    a.localeCompare(b),
-  );
-  const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
-  const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
-  const settlementCount = (settlements ?? []).length;
+  if (error) return <ErrorState error={error} />;
 
   return (
-    <div className="space-y-6">
-      <PageHeader
-        title="Dashboard"
-        hint="clearing-vs-settlement"
-        description="An interbank payment network running on a double-entry ledger. Each participant is a member bank; they meet at the central bank to settle."
-        actions={<CreateParticipantDialog />}
-      />
-
-      <HowMoneyMoves />
-
-      {/* Network at a glance — degrades to zeros while the lists load. */}
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-5">
-        <Stat label="Member banks">{participants?.length ?? 0}</Stat>
-        <Stat label="Total reserves" hint="central-bank-reserves">
-          {assetTotals.length === 0 ? (
-            reservesLoading ? (
-              <Skeleton className="h-6 w-20" />
-            ) : (
-              <span className="text-sm text-muted-foreground">None yet.</span>
-            )
-          ) : (
-            assetTotals.map(([code, total]) => (
-              <AssetTotalRow key={code} code={code} total={total} />
-            ))
-          )}
-        </Stat>
-        <Stat label="Open cycles" hint="netting">
-          {openCycles}
-        </Stat>
-        <Stat label="In-flight payments" hint="payment-lifecycle">
-          {inFlight}
-        </Stat>
-        <Stat label="Settlements" hint="settlement-model-net">
-          {settlementCount}
-        </Stat>
+    <div className="mx-auto max-w-4xl space-y-8 py-4">
+      <div className="space-y-2">
+        <h1 className="text-3xl font-semibold tracking-tight">Who are you today?</h1>
+        <p className="max-w-prose text-sm text-muted-foreground">
+          There is no observer who sees all of this. A back office sees one
+          bank&apos;s customers, a customer sees one account, the clearing house
+          sees payments and the central bank sees reserves. Each of them talks to
+          a different listener. Pick a seat.
+        </p>
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">
-          Member banks
-        </h2>
-        {error ? (
-          <ErrorState error={error} onRetry={() => refetch()} />
-        ) : isLoading ? (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Skeleton className="h-28" />
-            <Skeleton className="h-28" />
-            <Skeleton className="h-28" />
+        <h2 className="text-sm font-medium text-muted-foreground">Institutions</h2>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <InstitutionCard
+            href={homeFor({ persona: "central-bank" })}
+            icon={<Landmark className="size-4" />}
+            title="Central bank"
+            hint="central-bank-reserves"
+            body="Reserves, and settling a closed cycle by moving them. It never sees an individual payment."
+          />
+          <InstitutionCard
+            href={homeFor({ persona: "clearing-house" })}
+            icon={<Network className="size-4" />}
+            title="Clearing house"
+            hint="clearing-vs-settlement"
+            body="Every payment in the network, the clearing cycles, the schemes, the mandates and the directory."
+          />
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">Member banks</h2>
+        {isLoading && banks.length === 0 ? (
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Skeleton className="h-24" />
+            <Skeleton className="h-24" />
           </div>
-        ) : participants && participants.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-start gap-3 py-10">
-              <p className="text-sm text-muted-foreground">
-                No participants yet. Create your first member bank to start
-                moving money.
-              </p>
-              <CreateParticipantDialog />
-            </CardContent>
-          </Card>
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {participants?.map((p) => (
-              <ParticipantCard key={p.id} participant={p} reserves={reservesFor(p.id)} />
+          <div className="grid gap-4 sm:grid-cols-2">
+            {banks.map(({ participant, provisioned }) => (
+              <BankCard
+                key={participant.id}
+                participant={participant}
+                provisioned={provisioned}
+                reserves={(reserves ?? []).filter((r) => r.participant === participant.id)}
+              />
             ))}
           </div>
         )}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground">
+          Customers
+          <Hint id="account-addressing" />
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          A customer identity is one deposit account — there is no party master
+          here, so a second account would be a second identity.
+        </p>
+        {banks
+          .filter((b) => b.provisioned)
+          .map(({ participant, accounts }) => (
+            <div key={participant.id} className="space-y-1">
+              <p className="text-xs font-medium text-muted-foreground">{participant.name}</p>
+              <div className="divide-y rounded-lg border">
+                {accounts.length === 0 ? (
+                  <p className="px-3 py-2.5 text-sm text-muted-foreground">
+                    No customer accounts yet.
+                  </p>
+                ) : (
+                  accounts.map((account) => (
+                    <CustomerRow key={account.id} pid={participant.id} account={account} />
+                  ))
+                )}
+              </div>
+            </div>
+          ))}
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">Or just read</h2>
+        <Link href="/learn">
+          <Card className="transition-colors hover:border-foreground/30">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <GraduationCap className="size-4" />
+                Learn
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                Eighteen chapters, from double-entry bookkeeping to arrears.
+              </p>
+            </CardContent>
+          </Card>
+        </Link>
       </section>
     </div>
   );
 }
 
-// One asset code's reserve total, summed across every participant. Summing is
-// only meaningful within an asset, which is why there is a row per code rather
-// than one number.
-function AssetTotalRow({
-  code,
-  total,
+function InstitutionCard({
+  href,
+  icon,
+  title,
+  hint,
+  body,
 }: {
-  code: string;
-  total: number;
+  href: string;
+  icon: React.ReactNode;
+  title: string;
+  hint: "central-bank-reserves" | "clearing-vs-settlement";
+  body: string;
 }) {
-  const { byCode, isLoading } = useAssetLookup();
-  const asset = byCode.get(code);
-  if (!asset) {
-    return <UnresolvedAmount code={code} isLoading={isLoading} className="block" />;
-  }
   return (
-    <span className="block">
-      <Money amount={total} asset={asset} />
-    </span>
-  );
-}
-
-// One member-bank card: name, id, and one reserve line per asset it holds.
-function ParticipantCard({
-  participant: p,
-  reserves,
-}: {
-  participant: Participant;
-  reserves: Reserve[];
-}) {
-  const { byCode, isLoading } = useAssetLookup();
-  return (
-    <Link href={`/participants/${p.id}`}>
+    <Link href={href}>
       <Card className="h-full transition-colors hover:border-foreground/30">
         <CardHeader>
-          <CardTitle className="text-base">{p.name}</CardTitle>
-          <IdText id={p.id} />
+          <CardTitle className="flex items-center gap-2 text-base">
+            {icon}
+            {title}
+            <Hint id={hint} />
+          </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            Reserves
-            <Hint id="central-bank-reserves" />
-          </p>
-          {reserves.length === 0 ? (
-            isLoading ? (
-              <Skeleton className="h-6 w-20" />
-            ) : (
-              <p className="text-sm text-muted-foreground">None yet.</p>
-            )
-          ) : (
-            reserves.map((r) => {
-              const asset = byCode.get(r.asset);
-              return asset ? (
-                <p key={r.asset} className="text-lg font-semibold">
-                  <Money amount={r.reserve} asset={asset} />
-                </p>
-              ) : (
-                <Skeleton key={r.asset} className="h-6 w-20" />
-              );
-            })
-          )}
+          <p className="text-sm text-muted-foreground">{body}</p>
         </CardContent>
       </Card>
     </Link>
   );
 }
 
-// Compact single-metric card for the "at a glance" row.
-function Stat({
-  label,
-  hint,
-  children,
+// A bank admitted at runtime has reserve accounts and no listener until the
+// server restarts — admission is an operational act, and modelling it as an API
+// call that instantly yields a running bank teaches the wrong thing. It is shown
+// and not offered: a console whose every request 502s is worse than a sentence.
+function BankCard({
+  participant,
+  provisioned,
+  reserves,
 }: {
-  label: string;
-  hint?: HintKey;
-  children: React.ReactNode;
+  participant: Participant;
+  provisioned: boolean;
+  reserves: Reserve[];
 }) {
-  return (
-    <Card size="sm">
+  const { byCode, isLoading: assetLoading } = useAssetLookup();
+
+  const body = (
+    <Card
+      className={
+        provisioned ? "h-full transition-colors hover:border-foreground/30" : "h-full opacity-70"
+      }
+    >
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Building2 className="size-4" />
+          {participant.name}
+        </CardTitle>
+      </CardHeader>
       <CardContent>
-        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          {label}
-          {hint && <Hint id={hint} />}
-        </p>
-        <div className="mt-1 text-2xl font-semibold tabular-nums">{children}</div>
+        {provisioned ? (
+          <>
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Reserves
+              <Hint id="reserve-account" />
+            </p>
+            {reserves.length === 0 ? (
+              <p className="text-sm text-muted-foreground">None yet.</p>
+            ) : (
+              reserves.map((r) => {
+                const asset = byCode.get(r.asset);
+                return asset ? (
+                  <p key={r.asset} className="text-lg font-semibold">
+                    <Money amount={r.reserve} asset={asset} />
+                  </p>
+                ) : (
+                  <UnresolvedAmount key={r.asset} code={r.asset} isLoading={assetLoading} />
+                );
+              })
+            )}
+          </>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            <span className="font-medium text-foreground">Awaiting provisioning.</span> It was
+            admitted to the network and has its reserve accounts, but no listener of its own
+            until the server restarts.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
+
+  return provisioned ? (
+    <Link href={homeFor({ persona: "bank", pid: participant.id })}>{body}</Link>
+  ) : (
+    body
+  );
 }
 
-// The teaching centrepiece: the five-step life of money through the system,
-// each step linking to the concept that explains it. Visible even with no data
-// so a first-time visitor knows what to do.
-const STEPS: { title: string; body: string; hint: HintKey }[] = [
-  {
-    title: "Create",
-    body: "A member bank joins the network.",
-    hint: "double-entry",
-  },
-  {
-    title: "Fund",
-    body: "Credit a deposit account; the bank's central-bank reserve rises in step.",
-    hint: "reserve-account",
-  },
-  {
-    title: "Pay",
-    body: "A payment is initiated from one bank's customer to another's.",
-    hint: "payment-lifecycle",
-  },
-  {
-    title: "Clear",
-    body: "Payments are grouped into a cycle and netted to a single figure per bank.",
-    hint: "netting",
-  },
-  {
-    title: "Settle",
-    body: "Reserves move at the central bank by each bank's net position.",
-    hint: "clearing-vs-settlement",
-  },
-];
-
-function HowMoneyMoves() {
+// Frozen and Closed accounts are listed and selectable on purpose: seeing the
+// customer view of a frozen account is one of the better lessons here.
+function CustomerRow({ pid, account }: { pid: string; account: DepositAccount }) {
+  const iban = account.identifiers.find((i) => i.scheme === "IBAN");
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-base">How money moves</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <ol className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          {STEPS.map((step, i) => (
-            <li key={step.title} className="flex gap-3 lg:flex-col lg:gap-2">
-              <span
-                aria-hidden
-                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-foreground"
-              >
-                {i + 1}
-              </span>
-              <div className="space-y-1">
-                <p className="flex items-center gap-1.5 text-sm font-medium">
-                  {step.title}
-                  <Hint id={step.hint} />
-                </p>
-                <p className="text-xs leading-relaxed text-muted-foreground">
-                  {step.body}
-                </p>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </CardContent>
-    </Card>
+    <Link
+      href={homeFor({ persona: "customer", pid, did: account.id })}
+      className="flex items-center justify-between gap-3 px-3 py-2.5 transition-colors hover:bg-muted/50"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="truncate text-sm font-medium">{account.name}</span>
+        <EnumBadge value={account.status} />
+      </span>
+      {iban && <span className="font-mono text-xs text-muted-foreground">{iban.value}</span>}
+    </Link>
   );
 }

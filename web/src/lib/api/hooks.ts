@@ -5,6 +5,7 @@ import { useMemo } from "react";
 
 import {
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -12,7 +13,8 @@ import {
 import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
-import type { Asset, AuditQuery } from "@/lib/types";
+import { backendFor } from "@/lib/identity";
+import type { Asset, AuditQuery, DepositAccount, Participant } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -42,14 +44,70 @@ export function useAddParticipant() {
       qc.invalidateQueries({ queryKey: qk.participants() });
       // participant.added is a network-scope audit event.
       qc.invalidateQueries({ queryKey: qk.paymentAudit() });
+      // The new bank has no listener yet, but useOperators' staleTime is
+      // Infinity — without this it would never re-probe, and the freshly
+      // admitted bank would render as a normal, clickable, dead console
+      // instead of "awaiting provisioning".
+      qc.invalidateQueries({ queryKey: qk.operators() });
     },
   });
+}
+
+// --- Operators (Next-side, not a backend area) ----------------------------
+
+// Which operators have a listener behind them, and a predicate over the answer.
+//
+// staleTime is Infinity because ports are static by design: a bank admitted at
+// runtime gets no listener until the server restarts, so the answer cannot change
+// under a running page. Re-probing six listeners on every mount would be waste.
+export function useOperators() {
+  return useQuery({
+    queryKey: qk.operators(),
+    queryFn: api.listOperators,
+    staleTime: Infinity,
+  });
+}
+
+// Answers `backendFor(identity)`. Optimistic while the probe is in flight and
+// when it failed: an unknown answer must not make a working console look dead.
+export function useIsProvisioned(): (operatorKey: string) => boolean {
+  const { data } = useOperators();
+  return (operatorKey: string) => {
+    const row = data?.find((o) => o.operator === operatorKey);
+    return row ? row.live : true;
+  };
 }
 
 // --- Schemes --------------------------------------------------------------
 
 export function useSchemes() {
   return useQuery({ queryKey: qk.schemes(), queryFn: api.listSchemes });
+}
+
+// --- Directory --------------------------------------------------------------
+
+// Resolves an external address to the account that holds it. `retry: false`
+// because a 404 here is an answer — nobody holds that IBAN — and retrying it
+// three times only delays saying so.
+export function useCsmDirectory(scheme: string, value: string) {
+  return useQuery({
+    queryKey: qk.csmDirectory(scheme, value),
+    queryFn: () => api.resolveIdentifierAtCsm(scheme, value),
+    enabled: scheme !== "" && value !== "",
+    retry: false,
+  });
+}
+
+// A customer's payee lookup, on their own bank's listener. `retry: false` because
+// a 404 here is an answer — nobody holds that IBAN — and retrying it three times
+// only delays telling them so.
+export function useBankDirectory(pid: string, scheme: string, value: string) {
+  return useQuery({
+    queryKey: qk.bankDirectory(pid, scheme, value),
+    queryFn: () => api.resolveIdentifierAtBank(pid, scheme, value),
+    enabled: pid !== "" && scheme !== "" && value !== "",
+    retry: false,
+  });
 }
 
 // --- Central bank ---------------------------------------------------------
@@ -70,6 +128,13 @@ export function useCentralBankAudit(q: AuditQuery = {}) {
   return useQuery({
     queryKey: qk.centralBankAudit(q),
     queryFn: () => api.centralBankAudit(q),
+  });
+}
+
+export function useCentralBankCycles() {
+  return useQuery({
+    queryKey: qk.centralBankCycles(),
+    queryFn: api.centralBankCycles,
   });
 }
 
@@ -103,7 +168,7 @@ export function useAssetLookup() {
     for (const a of q.data ?? []) m.set(a.code, a);
     return m;
   }, [q.data]);
-  return { byCode, isLoading: q.isLoading, error: q.error };
+  return { byCode, isLoading: q.isLoading, error: q.error, refetch: () => q.refetch() };
 }
 
 // --- Ledger: accounts tree ------------------------------------------------
@@ -610,11 +675,40 @@ function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.settlements() });
   qc.invalidateQueries({ queryKey: qk.reserves() });
   qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
+  qc.invalidateQueries({ queryKey: qk.centralBankCycles() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 
 export function usePayments() {
   return useQuery({ queryKey: qk.payments(), queryFn: api.listPayments });
+}
+
+export function useBankPayments(pid: string) {
+  return useQuery({
+    queryKey: qk.bankPayments(pid),
+    queryFn: () => api.bankPayments(pid),
+    enabled: pid !== "",
+  });
+}
+
+// The second half of a 202: ask about the identifier you were given. Today the
+// answer is already final; 7b makes the wait real, and a client shaped this way
+// will not need rewriting when it does.
+export function useBankPayment(pid: string, payid: string) {
+  return useQuery({
+    queryKey: qk.bankPayment(pid, payid),
+    queryFn: () => api.bankPayment(pid, payid),
+    enabled: pid !== "" && payid !== "",
+  });
+}
+
+export function useSubmitPayment(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").InitiatePaymentRequest) =>
+      api.submitPayment(pid, body),
+    onSuccess: () => invalidateNetwork(qc),
+  });
 }
 
 export function usePayment(payid: string) {
@@ -700,6 +794,75 @@ export function useSettlement(sid: string) {
     queryFn: () => api.getSettlement(sid),
     enabled: sid !== "",
   });
+}
+
+// --- Identities -------------------------------------------------------------
+
+// Every identity in the system, in one place: each member bank with its customer
+// accounts. The lobby and the identity picker both need exactly this, so they
+// share one set of queries rather than each fetching its own.
+//
+// The honest cost of the split is visible here. The roster comes from the
+// clearing house's GET /members, and each bank's accounts come from that bank's
+// own listener — so drawing one list touches five backends. That is why this is
+// a shared hook rather than an optimisation.
+//
+// A bank admitted at runtime has a store row and no listener until the server
+// restarts. Its query is not fired at all: it would 502 forever, and four
+// failing requests plus a dead console is a worse answer than one row saying so.
+export interface BankEntry {
+  participant: Participant;
+  accounts: DepositAccount[];
+  provisioned: boolean;
+}
+
+export function useIdentityDirectory(): {
+  banks: BankEntry[];
+  isLoading: boolean;
+  error: unknown;
+} {
+  const participants = useParticipants();
+  const operators = useOperators();
+  const isProvisioned = useIsProvisioned();
+  const list = participants.data ?? [];
+
+  // The probe has spoken when it has an answer or has failed. Waiting is the
+  // only state that must not fire a query: an unprovisioned bank's fetch 502s
+  // and, with retry: false, that error is cached for the life of the page. A
+  // failed probe is not an answer, so it falls back to the same optimism
+  // `isProvisioned` already applies — better a 502 on one bank than every
+  // bank silently dark because the probe itself couldn't be reached.
+  const probeSettled = operators.data !== undefined || operators.isError;
+
+  const results = useQueries({
+    queries: list.map((p) => ({
+      queryKey: qk.depositAccounts(p.id),
+      queryFn: () => api.listDepositAccounts(p.id),
+      enabled:
+        probeSettled && isProvisioned(backendFor({ persona: "bank", pid: p.id })),
+    })),
+  });
+
+  const banks = list.map((participant, i) => ({
+    participant,
+    accounts: results[i]?.data ?? [],
+    provisioned: isProvisioned(
+      backendFor({ persona: "bank", pid: participant.id }),
+    ),
+  }));
+
+  return {
+    banks,
+    // The probe is part of the load: until it answers, "provisioned" is a guess
+    // and firing the per-bank queries on a guess is what this exists to avoid.
+    isLoading:
+      participants.isLoading || operators.isLoading || results.some((r) => r.isLoading),
+    // The roster is the page: no roster, no cast to show. One bank's accounts
+    // failing to load is not — that bank's card degrades on its own (an empty
+    // customer list) and the rest of the lobby stands, so a per-bank fetch
+    // error never becomes a page-level error here.
+    error: participants.error ?? null,
+  };
 }
 
 // Reset the whole backend to the sample dataset, then invalidate every query so

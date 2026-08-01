@@ -23,9 +23,16 @@ export const qk = {
   reserve: (pid: string) => ["central-bank", "reserves", pid] as const,
   centralBankAudit: (q?: AuditQuery) =>
     auditKey(["central-bank", "audit"], q),
+  // Keyed under the central bank rather than shared with the clearing house's
+  // cycles(): the same rows read from a different listener, which can be
+  // individually down, and for a different reason.
+  centralBankCycles: () => ["central-bank", "cycles"] as const,
 
   // Network-wide: assets are defined in code, not per book.
   assets: () => ["assets"] as const,
+
+  // Next-side, not a backend area: which listeners are actually there.
+  operators: () => ["operators"] as const,
 
   // Ledger layer (all nested under the participant so a post can invalidate
   // a whole subtree at once).
@@ -88,11 +95,24 @@ export const qk = {
     ["participants", pid, "facilities", fid, "schedule"] as const,
   totals: (pid: string) => ["participants", pid, "totals"] as const,
 
+  // Keyed by the listener that answered as well as the address: the same
+  // question asked of the clearing house and of a bank are two different
+  // requests, and only one of them is a customer's to make.
+  csmDirectory: (scheme: string, value: string) =>
+    ["clearing-house", "directory", scheme, value] as const,
+  bankPayment: (pid: string, payid: string) =>
+    ["participants", pid, "payments", payid] as const,
+  bankDirectory: (pid: string, scheme: string, value: string) =>
+    ["participants", pid, "directory", scheme, value] as const,
+
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,
   mandate: (mid: string) => ["mandates", mid] as const,
   payments: () => ["payments"] as const,
   payment: (payid: string) => ["payments", payid] as const,
+  // Nested under the participant, because these are that bank's legs and not
+  // the network's list filtered.
+  bankPayments: (pid: string) => ["participants", pid, "payments"] as const,
   cycles: () => ["cycles"] as const,
   cycle: (cid: string) => ["cycles", cid] as const,
   paymentAudit: (q?: AuditQuery) => auditKey(["payments", "audit"], q),

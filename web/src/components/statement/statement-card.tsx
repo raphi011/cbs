@@ -24,7 +24,7 @@ export function StatementCard({
   const { rows, book, isLoading, error, refetch } = useStatement(pid, did, account.glAccount);
   const recent = rows.slice(0, 10);
   const hasMore = rows.length > recent.length;
-  const statementHref = `/participants/${pid}/deposit-accounts/${did}/statement`;
+  const statementHref = `/bank/${pid}/deposit-accounts/${did}/statement`;
 
   return (
     <Card>

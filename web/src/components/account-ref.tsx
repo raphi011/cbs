@@ -25,7 +25,7 @@ export function AccountRef({
   return (
     <span className="inline-flex items-center gap-1.5">
       <Link
-        href={`/participants/${pid}/accounts/${id}`}
+        href={`/bank/${pid}/accounts/${id}`}
         className="hover:underline"
         onClick={(e) => e.stopPropagation()}
       >

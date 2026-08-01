@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Plus } from "lucide-react";
 import { toast } from "sonner";
 
@@ -20,8 +19,10 @@ import { FieldLabel } from "./field-label";
 import { useAddParticipant, useAssets } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
-// Creates a participant (member bank). On success it navigates to the new
-// participant's overview so the user lands in the right context.
+// Creates a participant (member bank). It does not navigate to the new bank's
+// console: a bank admitted at runtime has no listener until the server
+// restarts, so that console would 502 on every request — exactly what the
+// lobby and identity picker refuse to walk into.
 export function CreateParticipantDialog({
   trigger,
 }: {
@@ -36,7 +37,6 @@ export function CreateParticipantDialog({
   // for an omitted list.
   const [assets, setAssets] = useState<string[]>(["EUR"]);
   const known = useAssets();
-  const router = useRouter();
   const add = useAddParticipant();
 
   function toggleAsset(code: string) {
@@ -56,8 +56,10 @@ export function CreateParticipantDialog({
           setOpen(false);
           setName("");
           setAssets(["EUR"]);
-          toast.success(`Created ${p.name}`);
-          router.push(`/participants/${p.id}`);
+          toast.success(
+            `${p.name} admitted. Its reserve accounts are open; it gets a listener ` +
+              `of its own when the server restarts — admission is not provisioning.`,
+          );
         },
         onError: (err) => toast.error(describeError(err)),
       },

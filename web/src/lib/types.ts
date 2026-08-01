@@ -307,6 +307,18 @@ export interface AccountIdentifier {
   value: string;
 }
 
+// What GET /directory answers: enough to tell a caller who an address belongs
+// to before they pay it. `identifier` is echoed back so a client that fired
+// several lookups at once can tell the answers apart. See
+// api/handlers_directory.go's directoryEntryDTO.
+export interface DirectoryEntry {
+  participant: string;
+  account: string;
+  name: string;
+  asset: string;
+  identifier: AccountIdentifier;
+}
+
 export interface PartyRef {
   participant: string;
   account: string;
@@ -336,6 +348,13 @@ export interface Payment {
   debtorLegTx?: string;
   creditorLegTx?: string;
   createdAt: string;
+}
+
+// What a bank answers a customer's instruction with: an identifier to ask about,
+// not an outcome. See api/handlers_bank_payment.go's acceptedPaymentDTO — and the
+// reason it is 202 and not 201, which is that 7b makes the wait real.
+export interface AcceptedPayment {
+  paymentId: string;
 }
 
 export interface Mandate {

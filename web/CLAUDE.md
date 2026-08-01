@@ -32,14 +32,30 @@ Stack: Next.js 16 (App Router) · React 19 · Tailwind v4 (no config file; token
 
 **Proxy / no CORS by construction.** `src/app/api/[...path]/route.ts` forwards every request to the Go backend. The browser only ever calls same-origin `/api/...`, so CORS is impossible and a downed backend surfaces as a clean 502.
 
-**There is no single backend.** Each entity has a listener of its own (see the operator-split API spec): `:8081` the central bank, `:8082` the clearing house, then one per member bank in registration order. A request therefore has to say which one it is for, and the first segment after `/api` is the operator key — `central-bank`, `clearing-house`, or `bank/<pid>`, which the proxy strips before forwarding. **Build those paths with `cb()`, `csm()` and `bank(pid, …)` from `src/lib/api/operator.ts`; never hand-write one.** A bank's port is resolved from its position in the clearing house's `GET /members` roster, mirroring `cmd/server`'s `plan()`, so `make dev` needs no configuration; `BACKENDS` (JSON, operator key → base URL) overrides it. A participant admitted at runtime has **no listener until the server restarts** — admission is not provisioning — and the proxy says so rather than hanging.
+**There is no single backend.** Each entity has a listener of its own (see the operator-split API spec): `:8081` the central bank, `:8082` the clearing house, then one per member bank in registration order. A request therefore has to say which one it is for, and the first segment after `/api` is the operator key — `central-bank`, `clearing-house`, or `bank/<pid>`, which the proxy strips before forwarding. **Build those paths with `cb()`, `csm()` and `bank(pid, …)` from `src/lib/api/operator.ts`; never hand-write one.** A bank's port is resolved from its position in the clearing house's `GET /members` roster, mirroring `cmd/server`'s `plan()`, so `make dev` needs no configuration; `BACKENDS` (JSON, operator key → base URL) overrides it. A participant admitted at runtime has **no listener until the server restarts** — admission is not provisioning — and the proxy says so rather than hanging. The port derivation itself lives in `src/lib/api/backend-url.ts`, shared by the proxy and by `app/api/operators/route.ts`, which probes every operator so the lobby can tell an un-provisioned bank from a running one.
 
 **Data layer grows in three files, one section per backend area:**
 `src/lib/api/endpoints.ts` (one typed fn per route) → `src/lib/api/query-keys.ts` (key factory; ledger/deposit keys nest under `["participants", pid, …]` so one invalidate clears a subtree) → `src/lib/api/hooks.ts` (query/mutation hooks; mutations invalidate keys). `errors.ts` maps HTTP status → friendly text via `describeError`.
 
 **Types & money.** `src/lib/types.ts` mirrors `api/dto.go` verbatim (exact JSON field names); enums in `src/lib/enums.ts` are the exact Go `String()` wire values. **All amounts are integers in the minor units of their asset** — cents for EUR, satoshi for BTC — and the asset's `scale` is what converts one to a human-readable major-unit string. `src/lib/money.ts` is the source of truth, and every formatter in it takes the asset it is rendering; there is no default scale, because assuming 2 renders 1 BTC as "1,000,000.00". `<MoneyInput>` edits major units and emits minor units at the given asset's scale, and resyncs its text when the asset changes or the parent clears the value — never mid-keystroke. Scales come from `useAssetLookup()`, one network-wide `GET /assets` shared by every caller (asset definitions live in Go, not in a per-book table). A code that has not resolved yet means **do not render a number**.
 
-**Routing.** Network-wide pages at `src/app/{payments,mandates,cycles,settlements,central-bank,schemes}` (global because a payment spans two participants). Participant-scoped pages under `src/app/participants/[pid]/`; to add a section, append to the `tabs` array in `[pid]/layout.tsx` and add the page.
+**Routing is by persona.** Who you are is the top-level structure, and it lines
+up with the operator split: `/central-bank/…` (reserves, its own audit, and
+settling a closed cycle), `/clearing-house/…` (payments, mandates, cycles,
+settlements, schemes, directory), `/bank/[pid]/…` (one bank's back office,
+including its own payment legs), `/customer/[pid]/[did]/…` (one deposit account,
+retail-framed). `/` is a lobby and never redirects; `/learn/*` sits outside the
+persona system. `src/lib/identity.ts` derives the `Identity` from the pathname
+and owns `homeFor`/`navFor`/`backendFor` — the last being the operator key the
+proxy routes on, which is why a customer resolves to their *bank's* listener and
+not one of their own. **To add a section, add its entry to `navFor` and its
+`page.tsx` in the same commit; `src/lib/nav-integrity.test.ts` holds the two
+together, and also holds the quiz's `EXPLORE_ROUTES` against the route tree.**
+Old `/participants/…` links are forwarded by `app/participants/[...rest]/page.tsx`.
+The central bank, the clearing house and a bank's back office share one
+`ConsoleShell` from `components/shell/`, parameterised by identity; the
+customer's shell has no left panel, a different-enough arrangement that it
+doesn't join that group. `plain-shell` is the lobby's and Learn's.
 
 **Reusable primitives — don't rebuild these** (`src/components/`): `Hint` (the `?` popover, registry in `hint-content.ts`), `Money`/`MoneyInput`/`AmountCell`, `DataTable`, `EnumBadge`, `ConfirmAction`, `Combobox` + domain pickers in `pickers/` (`ParticipantPicker`, `DepositAccountPicker`, `GLAccountPicker`) — use these for ID entry, never free-text. `PageHeader`, `FieldLabel`, `IdText` (monospace ID display), `ErrorState`.
 

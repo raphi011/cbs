@@ -4,8 +4,10 @@
 
 import { request, qs } from "./client";
 import { bank, cb, csm } from "./operator";
+import type { OperatorStatus } from "./backend-url";
 import type {
   Account,
+  AcceptedPayment,
   Asset,
   AuditEvent,
   AuditQuery,
@@ -24,6 +26,7 @@ import type {
   ProductVersion,
   Product,
   DescriptionRequest,
+  DirectoryEntry,
   Facility,
   FundRequest,
   Hold,
@@ -78,6 +81,34 @@ export function listSchemes(): Promise<Scheme[]> {
   return request("GET", csm("/schemes"));
 }
 
+// --- Directory ------------------------------------------------------------
+
+// Resolving an address on the clearing house's listener: the operator whose job
+// "which bank holds this?" is. 404 when nobody holds it, 409 when two banks do —
+// an ambiguous address is an error rather than a first hit, following the
+// settlement rule about not defaulting quietly.
+//
+// A customer's lookup is NOT this function. It goes to their own bank's listener
+// (see resolveIdentifierAtBank), because a retail client has no CSM connection.
+export function resolveIdentifierAtCsm(
+  scheme: string,
+  value: string,
+): Promise<DirectoryEntry> {
+  return request("GET", csm(`/directory${qs({ scheme, value })}`));
+}
+
+// The same question asked of a customer's own bank. A bank is a scheme
+// participant with directory access, and validating a payee's address before
+// accepting an instruction is what it uses that for. This is the one a customer's
+// browser may call; the CSM's is an operator's.
+export function resolveIdentifierAtBank(
+  pid: string,
+  scheme: string,
+  value: string,
+): Promise<DirectoryEntry> {
+  return request("GET", bank(pid, `/directory${qs({ scheme, value })}`));
+}
+
 // --- Central bank ---------------------------------------------------------
 
 export function listReserves(): Promise<Reserve[]> {
@@ -91,6 +122,16 @@ export function getReserve(pid: string): Promise<Reserve[]> {
 
 export function centralBankAudit(q: AuditQuery = {}): Promise<AuditEvent[]> {
   return request("GET", cb(`/audit${qs({ ...q })}`));
+}
+
+// The cycles the central bank is asked to settle, read from its own listener.
+//
+// A settlement instruction in the real thing IS a closed cycle and its net
+// positions, so this is part of the act rather than a widening. What the central
+// bank still cannot read is an individual payment — GET /payments is the
+// clearing house's, and a real central bank does not see one.
+export function centralBankCycles(): Promise<ClearingCycle[]> {
+  return request("GET", cb("/cycles"));
 }
 
 // --- Assets -----------------------------------------------------------
@@ -456,6 +497,30 @@ export function listPayments(): Promise<Payment[]> {
   return request("GET", csm("/payments"));
 }
 
+// One bank's own legs: the payments it sent and the ones it received, and
+// nothing else. Same pattern as the clearing house's GET /payments, different
+// operator, different answer — the port is the caller identity the single server
+// did not have, which is why it listed every payment to everybody.
+//
+// GET /payments/{id} on a bank answers 404, not 403, for a payment it is not
+// party to: a 403 would confirm that the id names something real.
+export function bankPayments(pid: string): Promise<Payment[]> {
+  return request("GET", bank(pid, "/payments"));
+}
+
+export function bankPayment(pid: string, payid: string): Promise<Payment> {
+  return request("GET", bank(pid, `/payments/${payid}`));
+}
+
+// A customer's instruction, submitted to their own bank. The answer is 202 with
+// an identifier rather than the payment: the outcome comes from asking again.
+export function submitPayment(
+  pid: string,
+  body: InitiatePaymentRequest,
+): Promise<AcceptedPayment> {
+  return request("POST", bank(pid, "/payments"), body);
+}
+
 export function getPayment(payid: string): Promise<Payment> {
   return request("GET", csm(`/payments/${payid}`));
 }
@@ -528,6 +593,20 @@ export function listSettlements(): Promise<Settlement[]> {
 
 export function getSettlement(sid: string): Promise<Settlement> {
   return request("GET", csm(`/settlements/${sid}`));
+}
+
+// --- Operators (Next-side, not a backend route) ----------------------------
+
+export type { OperatorStatus } from "./backend-url";
+
+// Which operators have a listener behind them. Served by the Next app itself:
+// deployment topology is not domain data, and no backend knows where its
+// siblings are bound. See app/api/operators/route.ts, which shares the type.
+//
+// It is the one path here that is not built with cb()/csm()/bank(), because it
+// names no operator — it is the question "which of them are there?".
+export function listOperators(): Promise<OperatorStatus[]> {
+  return request("GET", "/operators");
 }
 
 // --- Admin ----------------------------------------------------------------
