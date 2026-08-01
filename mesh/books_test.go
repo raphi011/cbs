@@ -161,9 +161,11 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // payment.Tx's OWN methods are network-scoped: participants, payments, mandates,
 // cycles and settlements belong to no single bank and live under
 // ledger.NetworkBook. They are correctly absent from the overrides below, and
-// the consequence is worth being straight about — writing a Payment row records
-// nothing, so what puts ledger.NetworkBook into touched() is the network
-// postings a handler makes, not the row it writes.
+// they still leave a trace — not through the row, but through the ID the row
+// needed and the audit event it wrote, both of which are taken under
+// NetworkBook. See the block above the tests, which spells that out for Task 10
+// and pins it with a test, because an earlier version of this comment claimed
+// the exact opposite.
 //
 // It EMBEDS payment.Tx, so everything else is promoted untouched.
 // TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
@@ -513,28 +515,44 @@ var structCarriedBooks = map[string]structCarriedBook{
 // READ THIS BEFORE WRITING TestTheCSMTouchesOnlyTheNetworkBook (Task 10)
 // ---------------------------------------------------------------------------
 //
-// ledger.NetworkBook reaches touched() through POSTINGS, never through rows.
+// ledger.NetworkBook reaches touched() through ID ALLOCATION and AUDIT, never
+// through a posting.
 //
-// A clearing house handler that only writes network-scoped rows — PutPayment,
-// PutCycle, PutSettlement, PutMandate, PutParticipant — records NOTHING. Those
-// methods take no book (see structCarriedBooks for why PutParticipant's own
-// BookID field does not count), so a unit of work made entirely of them leaves
-// touched() EMPTY.
+// The Put* methods for network-scoped rows — PutPayment, PutCycle,
+// PutSettlement, PutMandate, PutParticipant — take no book and record nothing
+// themselves. But no network row is written on its own: the domain allocates its
+// id first, with NextID(ctx, ledger.NetworkBook, …), and writes an audit event
+// under BookID: ledger.NetworkBook. Both of those ARE recorded — NextID
+// positionally, AppendAudit through its struct — so a handler that only writes
+// network rows records touched = [network].
+//
+// Measured, not assumed: OpenCycle writes one ClearingCycle, posts nothing, and
+// records exactly [network]. TestWritingANetworkRowRecordsTheNetworkBook is the
+// pin. The allocation sites are payment/system.go NextID(…, NetworkBook, …) for
+// "bank", "mnd", "cyc", "set" and "pay", and payment/audit.go, which takes an
+// "evt" id under NetworkBook and then appends the event under it.
 //
 // So the brief's
 //
 //	assertBooksTouched(t, "clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
 //	    []ledger.BookID{ledger.NetworkBook})
 //
-// passes only if the CSM handler also POSTS something under NetworkBook — which
-// the real clearing flow does, since a cleared payment moves the participants'
-// clearing positions. If that assertion fails with `touched [] want [network]`,
-// the handler has not posted yet; it is not a bug in the recorder, and it is not
-// a reason to relax the assertion to "empty is fine". An empty set means the
-// handler wrote rows and moved no money.
+// is satisfied by a CSM handler that records a payment or moves a cycle along,
+// with no posting required.
 //
-// The same goes the other way: do not expect PutPayment to contribute
-// NetworkBook on its own.
+// And nothing in this repository EVER posts under NetworkBook. It labels
+// entities that belong to no single bank; it is not a chart of accounts
+// (payment/system.go, on CentralBankBook, says so), and no ledger.NewBook is
+// ever bound to it. A clearing posting moves the participants' clearing
+// positions in their OWN books, so it contributes those books to touched() and
+// not this one. Do not go looking for a NetworkBook posting: there is none to
+// find.
+//
+// A previous version of this note claimed the exact reverse — that NetworkBook
+// arrived only through postings — and would have sent Task 10 hunting for a
+// posting that cannot exist. It is left recorded here rather than quietly
+// replaced, because the reason it was wrong is the reason this file distrusts
+// unpinned prose.
 
 // ---------------------------------------------------------------------------
 // The guard on the guard
@@ -879,6 +897,29 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 	}
 }
 
+// TestWritingANetworkRowRecordsTheNetworkBook pins the note above, which the
+// previous round got backwards.
+//
+// OpenCycle is the smallest network-scoped write there is: one ClearingCycle
+// row, no posting anywhere. If NetworkBook only arrived through postings — as
+// the old note claimed — this would record nothing. It records [network],
+// because the cycle's id comes from NextID under NetworkBook and its audit event
+// is appended under it.
+func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
+	clock := func() time.Time { return testTime }
+	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	net := payment.NewNetwork(rec, clock)
+
+	if _, err := net.OpenCycle(context.Background(), payment.SchemeSEPACT); err != nil {
+		t.Fatalf("OpenCycle: %v", err)
+	}
+	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{ledger.NetworkBook}) {
+		t.Errorf("opening a cycle touched %v, want [%s].\n"+
+			"A network-scoped write records its book through NextID and AppendAudit, not through a posting.",
+			got, ledger.NetworkBook)
+	}
+}
+
 // TestEveryAuditEventTheDomainAppendsCarriesABook turns bookOf's last sentence
 // from a claim into a check.
 //
@@ -1123,13 +1164,16 @@ type Tx interface {
 	ViaPointer(ctx context.Context, f *Filter) error
 	ViaSlice(ctx context.Context, fs []Filter) error
 	ViaMap(ctx context.Context, m map[string]Filter) error
+	ViaArray(ctx context.Context, fs [2]Filter) error
 }
 `)
 	w := walkTxChain(root, module, "probe")
-	for _, want := range []string{"pointer", "slice", "map"} {
+	// A fixed array is named as one rather than called a slice: the refusal
+	// quotes the word back at whoever has to act on it.
+	for _, want := range []string{"pointer", "slice", "map", "array"} {
 		assertRefused(t, w, want)
 	}
-	for _, name := range []string{"ViaPointer", "ViaSlice", "ViaMap"} {
+	for _, name := range []string{"ViaPointer", "ViaSlice", "ViaMap", "ViaArray"} {
 		assertNoCandidate(t, w, name)
 	}
 }
@@ -1163,8 +1207,40 @@ type Tx interface {
 	assertNoCandidate(t, w, "Nested")
 }
 
+// TestTheParserRefusesABookPromotedThroughAnUnexportedEmbeddedType constructs
+// the hole the second re-review found in the fix for the first one.
+//
+// Go promotes an unexported embedded type's EXPORTED fields, so `o.BookID` is
+// readable from any package even though `inner` is not nameable from one. The
+// first version of exportedField tested the embedded type's own name, decided
+// `inner` was out of reach, and skipped the field — giving `refusals=[]
+// methods=[]`, a silent skip inside the very rule written to make silent skips
+// impossible.
+//
+// This is the fourth instance of one failure: a category the parser could not
+// see. It is a test rather than a comment for that exact reason.
+func TestTheParserRefusesABookPromotedThroughAnUnexportedEmbeddedType(t *testing.T) {
+	root, module := probeModule(t, `
+type inner struct {
+	BookID ledger.BookID
+}
+
+type Outer struct {
+	inner
+	Note string
+}
+
+type Tx interface {
+	Promoted(ctx context.Context, o Outer) error
+}
+`)
+	w := walkTxChain(root, module, "probe")
+	assertRefused(t, w, "carries a ledger.BookID")
+	assertNoCandidate(t, w, "Promoted")
+}
+
 // TestTheParserFollowsOnlyFieldsTheDecoratorCouldName is the other side of the
-// three refusals: the shape that must NOT be refused.
+// refusals: the shape that must NOT be refused.
 //
 // A book behind an unexported field is not a blind spot, it is out of reach —
 // recordingTx is written in package mesh and cannot name it. Refusing it would
@@ -1546,7 +1622,7 @@ func (w *chainWalk) carrierOf(ref typeRef, where string) (bookArg, string) {
 	var fields []string
 	for _, f := range decl.typ.Fields.List {
 		if !exportedField(f) {
-			continue // see reachableField
+			continue // see exportedField
 		}
 		fieldRef := typeRef{expr: f.Type, imports: decl.imports, pkg: decl.pkg}
 		book := w.isBookID(fieldRef)
@@ -1647,19 +1723,30 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // BookID`), so the transitive scan reaches four books through them. But a
 // handler that used one of those handles to read a book would do it by calling
 // through to the Tx — PutTransaction, BookBalance, ListAudit — and every one of
-// those IS recorded. The Tx is the choke point; a live handle is a route TO it,
-// not around it.
+// those IS recorded. None of the four caches anything; Network.bind builds all
+// four over the same payment.Tx through the view adapters; recordingStore wraps
+// Update AND View; and the stores are separate packages, so an unexported book
+// cannot scope a store operation from outside its own. The Tx is the choke
+// point; a live handle is a route TO it, not around it.
 //
-// An embedded field is exported when its type name is, which is the same rule Go
-// applies to the promoted selector.
+// That is a statement about the code as it stands, and sub-project 8 must
+// revisit it rather than inherit it: the moment any entity gets a handle that
+// answers from a cache, a materialised view, or anything else that does not go
+// through the Tx, this exclusion stops holding and a book behind an unexported
+// field becomes reachable without being recorded.
+//
+// An EMBEDDED field is always followed, whatever its type's name. Go promotes an
+// unexported embedded type's EXPORTED fields, so `type Outer struct { inner }`
+// with `inner` carrying an exported BookID makes o.BookID readable from any
+// package — the book is reachable even though the thing holding it is not
+// nameable. An earlier version of this function tested the embedded type's own
+// name and therefore skipped that shape silently, which is precisely the failure
+// the refusals exist to end: a category the parser could not see. The recursion
+// applies this same rule to the promoted struct's own fields, so an unexported
+// field one level down is still correctly out of reach.
 func exportedField(f *ast.Field) bool {
 	if len(f.Names) == 0 {
-		name := exprString(f.Type)
-		if i := strings.LastIndex(name, "."); i >= 0 {
-			name = name[i+1:]
-		}
-		name = strings.TrimLeft(name, "*[]")
-		return name != "" && ast.IsExported(name)
+		return true
 	}
 	for _, n := range f.Names {
 		if n.IsExported() {
@@ -1843,6 +1930,11 @@ func unwrap(e ast.Expr) ([]ast.Expr, string) {
 	case *ast.StarExpr:
 		return []ast.Expr{t.X}, "pointer"
 	case *ast.ArrayType:
+		// Len is nil for a slice and set for a fixed array. They are different
+		// types and the refusal quotes this word back at whoever reads it.
+		if t.Len != nil {
+			return []ast.Expr{t.Elt}, "array"
+		}
 		return []ast.Expr{t.Elt}, "slice"
 	case *ast.MapType:
 		return []ast.Expr{t.Key, t.Value}, "map"
