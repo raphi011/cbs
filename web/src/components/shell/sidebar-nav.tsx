@@ -48,21 +48,24 @@ function NavLinks({
   );
 }
 
-function Brand({ home, collapsed }: { home: string; collapsed?: boolean }) {
+function Brand({ collapsed }: { collapsed?: boolean }) {
   if (collapsed) {
     return (
       <Link
-        href={home}
+        href="/"
         title="Ledger"
         aria-label="Ledger — Core banking explorer"
-        className="flex size-8 items-center justify-center rounded-md text-base font-semibold tracking-tight"
+        className="flex size-8 items-center justify-center rounded-md text-base font-semibold tracking-tight text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md"
       >
         L
       </Link>
     );
   }
   return (
-    <Link href={home} className="flex flex-col gap-0.5 px-3 py-1">
+    <Link
+      href="/"
+      className="flex flex-col gap-0.5 px-3 py-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md"
+    >
       <span className="text-base font-semibold tracking-tight">Ledger</span>
       <span className="text-xs text-muted-foreground">
         Core banking explorer
@@ -71,18 +74,17 @@ function Brand({ home, collapsed }: { home: string; collapsed?: boolean }) {
   );
 }
 
-// A persona's sidebar: brand + links + reset + a collapse toggle. Driven by
-// the panel's collapsed state; when collapsed everything renders icon-only.
+// A persona's sidebar: brand (link to /) + links + reset + a collapse toggle.
+// The brand wordmark is always a link to the lobby — the root of the app and
+// the way back from any persona console. When the sidebar is collapsed,
+// everything renders icon-only. Driven by the panel's collapsed state.
 export function SidebarNav({
   items,
-  home,
   collapsed,
   onToggle,
   onNavigate,
 }: {
   items: NavItem[];
-  // Where the brand links to: this persona's own home, not "/".
-  home: string;
   collapsed: boolean;
   onToggle: () => void;
   onNavigate?: () => void;
@@ -95,7 +97,7 @@ export function SidebarNav({
           collapsed && "justify-center",
         )}
       >
-        <Brand home={home} collapsed={collapsed} />
+        <Brand collapsed={collapsed} />
       </div>
       <div className={cn("flex-1 overflow-y-auto", collapsed ? "px-2 py-3" : "p-3")}>
         <NavLinks items={items} collapsed={collapsed} onNavigate={onNavigate} />
