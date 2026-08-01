@@ -95,6 +95,31 @@ func (a ActiveCurrencyAndAmount) Minor(scale uint8) (int64, error) {
 // This reuses Minor(5) rather than a second parser: Minor already rejects
 // exactly the malformed shapes (non-digits, a second '.', and so on) that
 // would make a value unrepresentable, and five is that ceiling, not a guess.
+//
+// # The reuse carries a bound this method does not otherwise state
+//
+// Minor(5) zero-pads the fraction to five places and parses the result as an
+// int64, so a value whose padded digits exceed MaxInt64 is refused as
+// ErrAmountFormat — "value out of range" — even though it is a perfectly legal
+// decimal. For a two-decimal currency the padding multiplies by a thousand, so
+// the effective ceiling is MaxInt64/1000: 92,233,720,368,547.75 passes and
+// 92,233,720,368,547.76 does not, at SIXTEEN significant digits.
+//
+// The standard's own ceiling is different and larger: ActiveCurrencyAndAmount
+// has totalDigits="18", so 999999999999999.99 is legal and this method refuses
+// it. The gap is an artifact of the reuse, not a rule from anywhere, and it is
+// stated here because a caller reading "checks FORMAT, not scale" would
+// otherwise have no way to know that magnitude is checked at all — payment's
+// amountOf depends on this method for exactly that refusal and documents the
+// same bound from the other side.
+//
+// It errs toward refusal, so nothing invalid escapes; what escapes is a valid
+// amount no system in this repository can reach (ninety-two trillion euro, and
+// ledger.Amount is an int64 of minor units). Closing the gap properly means
+// factoring Minor's lexing into a helper this method can call without the
+// int64 conversion, then checking fractionDigits and totalDigits directly. That
+// is a change to this package's validation semantics rather than a bug fix, so
+// it is recorded rather than smuggled in beside a translator.
 func (a ActiveCurrencyAndAmount) Validate() error {
 	if a.Ccy == "" {
 		return fmt.Errorf("%w: Ccy", ErrMissingElement)

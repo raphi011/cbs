@@ -198,13 +198,37 @@ func agentOf(b iso20022.BIC) iso20022.BranchAndFinancialInstitution {
 // would be wrong the first time a scheme in another asset arrives — which is
 // exactly the shape of mistake sub-project 1 recorded.
 //
-// The rendered amount is then checked, and this is not belt and braces: the
-// standard caps ActiveCurrencyAndAmount at FIVE fraction digits for any
-// currency, so an asset this ledger is perfectly happy to hold can have no
-// representation on the wire at all. Bitcoin, at eight, is one — and it is in
-// this repository's asset table today. The same check catches the other end of
-// the bound: a euro amount above roughly 9.2e15 minor units renders as nineteen
-// significant digits, one past the standard's eighteen.
+// The rendered amount is then checked, and the check ASKS THE CODEC rather than
+// deciding for itself. That framing is the whole of it: this function does not
+// know what ISO 20022 permits and does not try to, it asks iso20022 whether
+// iso20022 can carry the value, and refuses early if not. So the bound below is
+// a description of that package's Validate at the time of writing, and if
+// Validate is ever tightened or loosened this function needs no change.
+//
+// Two ways an amount this ledger holds is refused, one large and one small:
+//
+//   - FRACTION DIGITS. The standard caps ActiveCurrencyAndAmount at five for any
+//     currency, so an asset scaled finer than that has no representation on the
+//     wire at all. Bitcoin, at eight, is one — and it is in this repository's
+//     asset table today, so this is a live limit rather than a hypothetical.
+//     ErrAmountScale. See TestSettlementMessageTakesItsScaleFromTheAsset.
+//
+//   - MAGNITUDE, and here the honest number is not the one you would guess. The
+//     refusal is NOT the standard's eighteen-total-digit ceiling: iso20022's
+//     Validate implements its shape check by calling Minor(5), which zero-pads
+//     the fraction to five places and parses the result as an int64, so the real
+//     bound is MaxInt64 / 10^(5-scale) — for a two-decimal asset,
+//     9,223,372,036,854,775 minor units, at SIXTEEN rendered digits. That is an
+//     int64 overflow inside the validator's own padding, an artifact of how the
+//     check is written, not a property of ISO 20022. It bites in one direction
+//     only, refusing legal seventeen- and eighteen-digit values, so nothing
+//     invalid escapes; it is recorded rather than worked around because a
+//     workaround here would be this package second-guessing the codec, which is
+//     exactly what "ask the codec" avoids. Enforcing the standard's actual
+//     ceiling belongs in iso20022.ActiveCurrencyAndAmount.Validate, which is
+//     where the bound would then also be testable. ErrAmountFormat, which is the
+//     wrong sentinel for a well-formed number and is part of the same artifact.
+//     Both edges are pinned by TestSettlementMessageAmountBound.
 //
 // Neither was found by FuzzTranslate, and that is worth recording rather than
 // hiding. Two and a half million executions did not reach either, because the
@@ -247,15 +271,33 @@ func amountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveCurrenc
 // not address — both errors are correct, and only this one can be turned into a
 // pacs.002 for the customer. Delete the check and FuzzTranslate fails in under
 // a second on the address "0"; that is what it is for.
-func ibanOf(field string, id deposit.Identifier) (iso20022.CashAccount, error) {
+//
+// It returns the IBAN rather than the CashAccount that wraps it, because a
+// pacs.003 needs the same value in two places — CdtrAcct and, standing in for
+// the Creditor Identifier, CdtrSchmeId — and the alternative was reaching back
+// into the built element for it through a pointer that only happens never to be
+// nil. See cashAccount.
+func ibanOf(field string, id deposit.Identifier) (iso20022.IBAN, error) {
 	if id.Scheme != deposit.IdentifierIBAN || id.Value == "" {
-		return iso20022.CashAccount{}, fmt.Errorf("%w: %s", ErrUnaddressableAccount, field)
+		return "", fmt.Errorf("%w: %s", ErrUnaddressableAccount, field)
 	}
 	iban := iso20022.IBAN(id.Value).Compact()
 	if err := iban.Validate(); err != nil {
-		return iso20022.CashAccount{}, fmt.Errorf("%w: %s: %w", ErrUnaddressableAccount, field, err)
+		return "", fmt.Errorf("%w: %s: %w", ErrUnaddressableAccount, field, err)
 	}
-	return iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{IBAN: &iban}}, nil
+	return iban, nil
+}
+
+// cashAccount wraps a validated IBAN as the account element of a message.
+//
+// It takes the IBAN by value and takes its address here, which is the whole
+// reason it exists: AccountIdentification4Choice's arms are pointers because
+// encoding/xml cannot express an xsd:choice, and a pointer arm is an invitation
+// to a nil dereference somewhere downstream. Building the choice in exactly one
+// place, from a value that cannot be nil, means no other function in this file
+// ever has to dereference it.
+func cashAccount(iban iso20022.IBAN) iso20022.CashAccount {
+	return iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{IBAN: &iban}}
 }
 
 // namedPartyOf is the customer element of a pacs.008 or a pacs.003.
@@ -374,14 +416,34 @@ func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor me
 // from the account, because a payment records the address actually quoted to
 // reach a party on that occasion — see PartyRef — and an account may hold
 // several or have had one withdrawn since.
+//
+// # Only a NOT-FOUND becomes a domain error
+//
+// The obvious shape here — `if err != nil { return ErrAccountNotInParticipant }`
+// — is the one checkPartyTx uses, and it is wrong in this function in a way it
+// is not wrong there, because of what happens downstream. These errors are
+// destined for reasonFor and then for a counterparty's pacs.002:
+// ErrParticipantNotFound becomes RC01 "bank identifier incorrect" and
+// ErrAccountNotInParticipant becomes AC01 "incorrect account number". A dropped
+// database connection, or a caller that cancelled the context this function now
+// takes, would be reported to another bank as a defect in ITS message. The
+// counterparty would then investigate an address that was never wrong.
+//
+// So a store failure is returned unchanged and falls to MS03 through reasonFor's
+// default, which says "this agent could not carry it out" — true, unhelpful, and
+// vastly better than a confident false statement about someone else's data. See
+// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure.
 func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messageParty, error) {
 	part, err := s.participantTx(ctx, tx, ref.Participant)
 	if err != nil {
-		return messageParty{}, ErrParticipantNotFound
+		return messageParty{}, err
 	}
 	acct, err := tx.GetDepositAccount(ctx, part.BookID, ref.Account)
 	if err != nil {
-		return messageParty{}, ErrAccountNotInParticipant
+		if errors.Is(err, deposit.ErrAccountNotFound) {
+			return messageParty{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ref.Account)
+		}
+		return messageParty{}, err
 	}
 	return messageParty{BIC: part.BIC, Name: acct.Name, Identifier: ref.Identifier}, nil
 }
@@ -422,7 +484,7 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	dbtrAcct, err := ibanOf("DbtrAcct", debtor.Identifier)
+	dbtrIBAN, err := ibanOf("DbtrAcct", debtor.Identifier)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -430,7 +492,7 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	cdtrAcct, err := ibanOf("CdtrAcct", creditor.Identifier)
+	cdtrIBAN, err := ibanOf("CdtrAcct", creditor.Identifier)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -447,11 +509,11 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 		IntrBkSttlmAmt: amt,
 		ChrgBr:         iso20022.ChargeBearerFollowingServiceLevel,
 		Dbtr:           dbtr,
-		DbtrAcct:       dbtrAcct,
+		DbtrAcct:       cashAccount(dbtrIBAN),
 		DbtrAgt:        agentOf(debtor.BIC),
 		CdtrAgt:        agentOf(creditor.BIC),
 		Cdtr:           cdtr,
-		CdtrAcct:       cdtrAcct,
+		CdtrAcct:       cashAccount(cdtrIBAN),
 		RmtInf:         remittanceOf(p.Description),
 	}}
 
@@ -503,7 +565,7 @@ func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledg
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	cdtrAcct, err := ibanOf("CdtrAcct", creditor.Identifier)
+	cdtrIBAN, err := ibanOf("CdtrAcct", creditor.Identifier)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -511,7 +573,7 @@ func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledg
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	dbtrAcct, err := ibanOf("DbtrAcct", debtor.Identifier)
+	dbtrIBAN, err := ibanOf("DbtrAcct", debtor.Identifier)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -554,13 +616,13 @@ func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledg
 				// TestDirectDebitMessageDatesTheSignatureFromTheMandate.
 				DtOfSgntr: iso20022.ISODate{Time: m.CreatedAt},
 			},
-			CdtrSchmeId: creditorSchemeIdentification(cdtrAcct),
+			CdtrSchmeId: creditorSchemeIdentification(cdtrIBAN),
 		},
 		Cdtr:     cdtr,
-		CdtrAcct: cdtrAcct,
+		CdtrAcct: cashAccount(cdtrIBAN),
 		CdtrAgt:  agentOf(creditor.BIC),
 		Dbtr:     dbtr,
-		DbtrAcct: dbtrAcct,
+		DbtrAcct: cashAccount(dbtrIBAN),
 		DbtrAgt:  agentOf(debtor.BIC),
 		RmtInf:   remittanceOf(p.Description),
 	}}
@@ -596,12 +658,12 @@ func directDebit(p Payment, m Mandate, debtor, creditor messageParty, asset ledg
 // a mandate scoped to a real CI would find a value it cannot look up. That is
 // the cost, recorded rather than assumed away. See
 // TestDirectDebitMessageStandsTheCreditorsIBANInForTheCreditorIdentifier.
-func creditorSchemeIdentification(acct iso20022.CashAccount) iso20022.CreditorSchemeIdentification {
+func creditorSchemeIdentification(iban iso20022.IBAN) iso20022.CreditorSchemeIdentification {
 	return iso20022.CreditorSchemeIdentification{
 		Id: iso20022.PartyChoice{
 			PrvtId: &iso20022.PersonIdentification{
 				Othr: iso20022.GenericPersonIdentification{
-					Id:      string(*acct.Id.IBAN),
+					Id:      string(iban),
 					SchmeNm: iso20022.PersonIdentificationScheme{Prtry: "SEPA"},
 				},
 			},

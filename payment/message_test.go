@@ -288,6 +288,14 @@ func TestDirectDebitMessageStandsTheCreditorsIBANInForTheCreditorIdentifier(t *t
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
+	// This is the test that is ABOUT the substitution, and CdtrSchmeId is the
+	// deepest subtree this task invents a value for — CreditorSchemeIdentification,
+	// PartyChoice, PersonIdentification, GenericPersonIdentification. The test
+	// making the claim should be the one asserting the document is valid, rather
+	// than leaning on another test that happens to marshal a pacs.003.
+	if _, err := iso20022.Marshal(env); err != nil {
+		t.Fatalf("the collection carrying the substituted creditor identifier is not valid: %v", err)
+	}
 	tx := env.Document.(*iso20022.Pacs003).FIToFICstmrDrctDbt.DrctDbtTxInf[0]
 	id := tx.DrctDbtTx.CdtrSchmeId.Id.PrvtId.Othr
 	if id.Id != string(p.Creditor.Identifier.Value) {
@@ -443,15 +451,33 @@ func TestSettlementMessageNbOfTxsSurvivesATruncatedFile(t *testing.T) {
 	doc := env.Document.(*iso20022.Pacs009)
 	doc.FICdtTrf.CdtTrfTxInf = doc.FICdtTrf.CdtTrfTxInf[:1]
 
-	if got := doc.FICdtTrf.GrpHdr.NbOfTxs; got != "2" {
-		t.Fatalf("NbOfTxs = %q after truncation, want the sender's original assertion of 2", got)
-	}
-	// And the truncated document is still well-formed: nothing in the codec
+	// The truncated document is still well-formed: nothing in the codec
 	// cross-checks the count, so the discrepancy is the RECEIVER's to catch.
 	// That is the division of labour the element encodes.
-	if _, err := iso20022.Marshal(env); err != nil {
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
 		t.Fatalf("Marshal refused the truncated document: %v", err)
 	}
+
+	// Read it back off the wire rather than off the struct we just truncated.
+	// Asserting NbOfTxs on the in-memory document would be a tautology —
+	// reslicing a sibling field cannot change a string — and the claim is about
+	// what a RECEIVER sees. This is where an encoder that "helpfully"
+	// recomputed the count on the way out would be caught.
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal refused the truncated document: %v", err)
+	}
+	got := back.Document.(*iso20022.Pacs009).FICdtTrf
+	if got.GrpHdr.NbOfTxs != "2" {
+		t.Errorf("NbOfTxs off the wire = %q, want the sender's original assertion of 2", got.GrpHdr.NbOfTxs)
+	}
+	if len(got.CdtTrfTxInf) != 1 {
+		t.Fatalf("got %d transactions off the wire, want the 1 that survived truncation", len(got.CdtTrfTxInf))
+	}
+	// The two disagree, the codec accepted it, and that disagreement is the
+	// only evidence a leg went missing. A receiver deriving the count from the
+	// slice would have destroyed it.
 }
 
 // The amount's scale comes from the asset definition, never from a two-decimal
@@ -490,16 +516,49 @@ func TestSettlementMessageTakesItsScaleFromTheAsset(t *testing.T) {
 	}
 }
 
-// The other end of the same bound: a euro amount above roughly 9.2e15 minor
-// units renders as nineteen significant digits, one past the standard's
-// eighteen, and is refused by the translator rather than by a counterparty's
-// parser.
-func TestSettlementMessageRefusesAnAmountTooLargeForTheStandard(t *testing.T) {
-	_, err := SettlementMessage([]SettlementLeg{
-		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: math.MaxInt64, Asset: "EUR", Reference: "r"},
-	}, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: messageNow})
-	if !errors.Is(err, iso20022.ErrAmountFormat) {
-		t.Fatalf("SettlementMessage of MaxInt64 = %v, want ErrAmountFormat", err)
+// The magnitude bound, pinned at the exact minor unit where it flips.
+//
+// A test at math.MaxInt64 — which is what this was — proves nothing: it is
+// orders of magnitude past every candidate threshold, so it passes whatever the
+// real bound is, and it let amountOf's doc comment claim a bound the code did
+// not have (nineteen digits, the standard's eighteen-digit ceiling) for a whole
+// review cycle. The number in the prose needs a test that would fail if the
+// number were wrong, which means testing the pair astride it.
+//
+// 9,223,372,036,854,775 is MaxInt64/1000, and the thousand is iso20022's
+// Validate padding a two-decimal fraction out to five places before parsing it
+// as an int64. That is where the limit comes from — see amountOf. It is NOT the
+// standard's totalDigits="18": the third case here is a legal seventeen-digit
+// amount that this codec refuses anyway, and it is asserted so that the
+// over-refusal is a recorded, tested property rather than a surprise. Widening
+// Validate to the standard's real ceiling would flip that third case, and this
+// test is what would make someone update the prose at the same time.
+func TestSettlementMessageAmountBound(t *testing.T) {
+	settle := func(minor ledger.Amount) error {
+		_, err := SettlementMessage([]SettlementLeg{
+			{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: minor, Asset: "EUR", Reference: "r"},
+		}, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: messageNow})
+		return err
+	}
+
+	// Sixteen rendered digits: 92233720368547.75. The last amount that fits.
+	if err := settle(9223372036854775); err != nil {
+		t.Errorf("MaxInt64/1000 minor units of EUR refused: %v", err)
+	}
+	// One minor unit more. Same digit count, same shape, over the int64 bound
+	// the validator's padding imposes.
+	if err := settle(9223372036854776); !errors.Is(err, iso20022.ErrAmountFormat) {
+		t.Errorf("one minor unit past the bound = %v, want ErrAmountFormat", err)
+	}
+	// Seventeen digits: 999999999999999.99. Legal under the standard's
+	// eighteen-digit ceiling, representable in ledger.Amount, refused here. The
+	// bound is the codec's implementation, not the standard.
+	if err := settle(99999999999999999); !errors.Is(err, iso20022.ErrAmountFormat) {
+		t.Errorf("a legal 17-digit amount = %v, want the codec's ErrAmountFormat refusal", err)
+	}
+	// And the far end, which is all the old test covered.
+	if err := settle(math.MaxInt64); !errors.Is(err, iso20022.ErrAmountFormat) {
+		t.Errorf("MaxInt64 = %v, want ErrAmountFormat", err)
 	}
 }
 
@@ -511,5 +570,146 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 	}, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: messageNow})
 	if err == nil {
 		t.Fatal("rendered an amount in an asset the ledger does not define")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Refusals, and the one error that must NOT become a wire reason code
+// ---------------------------------------------------------------------------
+
+// A store failure is not a defect in the counterparty's message, and must not be
+// reported as one.
+//
+// partyTx's two lookups fail with ErrParticipantNotFound and
+// ErrAccountNotInParticipant, which reasonFor turns into RC01 "bank identifier
+// incorrect" and AC01 "incorrect account number". If it translated EVERY error
+// that way — the shape checkPartyTx uses, and the shape this function had until
+// the review — a cancelled caller or a dropped connection would tell another
+// bank its address was wrong, and send it looking for a fault it does not have.
+//
+// What this pins end to end is that a cancellation stays a cancellation. Note
+// where it is caught: store/mem checks ctx.Err() before it opens the view, so on
+// the default test run the error never reaches partyTx at all. Under
+// TEST_DATABASE_URL it travels through the driver and out of the closure, which
+// is the path the fix is actually about. The assertion is the same either way,
+// and it is the pair with the two tests below — those confirm a genuine
+// not-found still DOES produce its domain error, so the fix did not simply
+// stop translating.
+func TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err == nil {
+		t.Fatal("built a message on a cancelled context")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want it to carry context.Canceled", err)
+	}
+	if errors.Is(err, ErrParticipantNotFound) || errors.Is(err, ErrAccountNotInParticipant) {
+		t.Errorf("a cancelled context surfaced as %v, which reaches a counterparty as RC01 or AC01", err)
+	}
+}
+
+func TestCreditTransferMessageRefusesAnUnknownParticipant(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx := context.Background()
+	p.Creditor.Participant = "no-such-bank"
+
+	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if !errors.Is(err, ErrParticipantNotFound) {
+		t.Fatalf("CreditTransferMessage = %v, want ErrParticipantNotFound", err)
+	}
+}
+
+func TestCreditTransferMessageRefusesAnAccountTheBankDoesNotHold(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx := context.Background()
+	p.Creditor.Account = "no-such-account"
+
+	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if !errors.Is(err, ErrAccountNotInParticipant) {
+		t.Fatalf("CreditTransferMessage = %v, want ErrAccountNotInParticipant", err)
+	}
+}
+
+// A payment whose scheme is not registered has no asset, and therefore no scale
+// to render its amount at. Guessing euro is the multi-asset mistake amountOf
+// exists to prevent, so it is refused instead.
+func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx := context.Background()
+	p.Scheme = "sepa.invented"
+
+	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if !errors.Is(err, ErrSchemeNotFound) {
+		t.Fatalf("CreditTransferMessage = %v, want ErrSchemeNotFound", err)
+	}
+}
+
+// A collection with no mandate is refused before the message is built. MndtId is
+// EPC-mandatory and a pacs.003 without it is invalid, but the reason to catch it
+// here is stronger than validity: a direct debit with no mandate is not a
+// badly-formed message, it is an unauthorised claim on someone's account.
+func TestDirectDebitMessageRefusesACollectionWithNoMandate(t *testing.T) {
+	n, p, _ := networkWithOneCollection(t)
+	ctx := context.Background()
+
+	_, err := n.DirectDebitMessage(ctx, p, Mandate{}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if !errors.Is(err, ErrMandateRequired) {
+		t.Fatalf("DirectDebitMessage = %v, want ErrMandateRequired", err)
+	}
+}
+
+// A return with no reason is refused. RtrRsnInf is EPC-mandatory and
+// ReturnReasonChoice needs exactly one arm, so there is nothing to put in the
+// element — and a return that does not say why it came back is the one thing the
+// creditor's bank cannot act on.
+func TestReturnMessageRefusesAReturnWithNoReason(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+
+	_, err := n.ReturnMessage(p, "", "no code given",
+		MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if !errors.Is(err, iso20022.ErrMissingElement) {
+		t.Fatalf("ReturnMessage with no reason = %v, want ErrMissingElement", err)
+	}
+}
+
+// A settlement instruction with no legs is refused rather than emitted empty.
+// CdtTrfTxInf is 1..n, so the document would be invalid — but the reason to
+// refuse is that an instruction to settle nothing is not a thing anyone means to
+// send.
+func TestSettlementMessageRefusesAnEmptyInstruction(t *testing.T) {
+	_, err := SettlementMessage(nil, MessageContext{From: "CSMXFRPPXXX", To: "CBSEDEFFXXX", MsgID: "CSM-1", Now: messageNow})
+	if !errors.Is(err, iso20022.ErrMissingElement) {
+		t.Fatalf("SettlementMessage with no legs = %v, want ErrMissingElement", err)
+	}
+}
+
+// A status report about no transactions leaves GrpSts empty, and the document is
+// still valid — which is the claim groupStatusOf's comment makes and nothing
+// pinned until now. The element is optional in the standard precisely so that a
+// report can decline to characterise a group it says nothing about, and
+// OriginalGroupHeader.validate requires only OrgnlMsgId and OrgnlMsgNmId. A
+// future GrpSts check in that validator would break this silently.
+func TestStatusMessageWithNoTransactionsCharacterisesNoGroup(t *testing.T) {
+	env, err := StatusMessage(
+		OriginalMessage{MsgID: "AURO-1", MsgDefIdr: "pacs.008.001.08", CreDtTm: messageNow},
+		nil,
+		MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: messageNow},
+	)
+	if err != nil {
+		t.Fatalf("StatusMessage: %v", err)
+	}
+	if _, err := iso20022.Marshal(env); err != nil {
+		t.Fatalf("a report with no transaction statuses is not valid: %v", err)
+	}
+	rpt := env.Document.(*iso20022.Pacs002).FIToFIPmtStsRpt
+	if got := rpt.OrgnlGrpInfAndSts.GrpSts; got != "" {
+		t.Errorf("GrpSts = %q, want it absent — there is nothing to characterise", got)
+	}
+	if len(rpt.TxInfAndSts) != 0 {
+		t.Errorf("got %d transaction statuses, want none", len(rpt.TxInfAndSts))
 	}
 }
