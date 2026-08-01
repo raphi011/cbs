@@ -143,12 +143,16 @@ const (
 	// StatusReasonNotSpecifiedAgentGenerated (MS03): the agent rejected it and
 	// the reason has no code.
 	//
-	// This is the honest home for two conditions this system can produce and
-	// the code set has no member for: a collection within a valid mandate but
-	// over its ceiling, and a currency mismatch — which in a euro-only scheme
-	// cannot arise at all, and only exists here because this repository's
-	// ledger is multi-asset. Reaching for the nearest-looking code would put a
-	// false statement on the wire; MS03 says less, accurately.
+	// This is the honest home for conditions the external code set has no
+	// member for, because the rulebook behind the set does not contemplate
+	// them: a mandate that exists but does not cover the parties or the
+	// amount actually presented, a currency or asset mismatch that a
+	// single-currency scheme's code set never needed a member for, and
+	// various shapes of "this agent will not carry out what was asked" — an
+	// unrecognised scheme, a non-positive amount, an asset the agent does
+	// not operate in, or a return the scheme does not permit. Reaching for
+	// the nearest-looking code in any of these cases would put a false
+	// statement on the wire; MS03 says less, accurately.
 	StatusReasonNotSpecifiedAgentGenerated StatusReason = "MS03"
 	// StatusReasonBankIdentifierIncorrect (RC01): the BIC does not identify a
 	// reachable participant.

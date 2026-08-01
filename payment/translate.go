@@ -74,9 +74,13 @@ var reasonTable = []reasonMapping{
 	// --- Classified as never reaching a counterparty ---
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a
-	// judgement about the instruction, so there is nothing truthful to tell the
-	// sender. They surface as dead letters in the mesh, which is louder than a
-	// misleading code.
+	// judgement about the instruction, so there is nothing truthful to tell
+	// the sender. They are classified here as never reaching a counterparty;
+	// the mesh (Task 6) is where that classification becomes observable, as
+	// a dead letter rather than a wire message. Until the mesh exists,
+	// reasonFor cannot yet tell one of these apart from an error the table
+	// has never heard of at all — both return MS03 through the same
+	// fallback path. See TestReasonForEmptyCodeEntriesFallToMS03.
 
 	// A lookup for an id this system generated and then could not find is a
 	// bug here, not a defect in the message.

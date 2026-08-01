@@ -87,6 +87,63 @@ func TestReasonForKnownErrors(t *testing.T) {
 	}
 }
 
+// TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases pins that certain
+// sentinels are DELIBERATELY mapped to MS03 in reasonTable, as opposed to
+// merely falling through to it.
+//
+// A case in TestReasonForKnownErrors asserting reasonFor's output cannot
+// tell those two situations apart, because MS03 is also reasonFor's fallback
+// for an error the table has never heard of: mutating one of these entries'
+// Code to "" leaves such a case green. This test asserts against reasonTable
+// directly instead, so it fails on exactly that mutation.
+func TestReasonTableExplicitlyClassifiesAmbiguousMS03Cases(t *testing.T) {
+	for _, name := range []string{
+		// A valid mandate exists but this collection falls outside it — see
+		// the comment on ErrMandateMismatch/ErrMandateExceeded in
+		// reasonTable for why MD01 would misstate the condition.
+		"ErrMandateMismatch",
+		"ErrMandateExceeded",
+		// A currency mismatch SEPA's own code set never needed a member
+		// for — see the comment on ErrAssetMismatch in reasonTable.
+		"ErrAssetMismatch",
+	} {
+		var found bool
+		for _, m := range reasonTable {
+			if m.Name != name {
+				continue
+			}
+			found = true
+			if m.Code != iso20022.StatusReasonNotSpecifiedAgentGenerated {
+				t.Errorf("reasonTable[%s].Code = %q, want explicit MS03", name, m.Code)
+			}
+		}
+		if !found {
+			t.Errorf("reasonTable has no entry named %s", name)
+		}
+	}
+}
+
+// TestReasonForEmptyCodeEntriesFallToMS03 pins the claim in reasonTable's
+// "never reaching a counterparty" section: today, before the mesh (Task 6)
+// exists to make that classification observable as a dead letter,
+// reasonFor cannot tell one of these sentinels apart from an error it has
+// never heard of at all. Both return MS03 by exactly the same fallback path.
+func TestReasonForEmptyCodeEntriesFallToMS03(t *testing.T) {
+	var checked int
+	for _, m := range reasonTable {
+		if m.Code != "" {
+			continue
+		}
+		checked++
+		if got := reasonFor(m.Err); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
+			t.Errorf("reasonFor(%s) = %q, want MS03 (same fallback as an unmapped error)", m.Name, got)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("reasonTable has no empty-code entries; the table changed and this test no longer checks anything")
+	}
+}
+
 // An error the table does not know is MS03 and not a panic. A rejection that
 // crashed the actor rather than reaching the counterparty would be a worse
 // failure than an imprecise code.
