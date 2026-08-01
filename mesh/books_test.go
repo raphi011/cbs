@@ -40,11 +40,6 @@ import (
 // a method it legitimately holds, because a BookID is an ordinary argument and
 // one is as valid as another. This notices that.
 //
-// Every book-scoped method reachable through a payment.Tx takes the book as its
-// first argument after ctx, in every one of the four layers, which is what makes
-// this a decorator and not a re-architecture: there is one place per method to
-// record, and no plumbing.
-//
 // It is test-only, and deliberately so. In production the boundary is the
 // interfaces plus, from sub-project 8, one store per entity; this exists to
 // assert the boundary holds while the store is still shared, which is precisely
@@ -80,6 +75,11 @@ func (s *recordingStore) Close() error                    { return s.inner.Close
 // note records one book access. It is called from actor goroutines, so it takes
 // the lock — the mesh runs one goroutine per institution and they touch the same
 // store concurrently.
+//
+// What it records is NOT rolled back with the unit of work it was called in. A
+// handler that read another bank's book and then failed still read it, and a
+// recorder that forgot such a read on rollback would hide exactly the crossings
+// that go wrong.
 func (s *recordingStore) note(book ledger.BookID) {
 	s.mu.Lock()
 	s.books[book] = true
@@ -105,6 +105,38 @@ func (s *recordingStore) reset() {
 	s.mu.Unlock()
 }
 
+// everyBook is what an access records when its book is EMPTY.
+//
+// It exists for ListAudit. An AuditFilter with no BookID is not a read of no
+// book, it is a read of every book: store/mem/tx.go skips the comparison
+// entirely (`if f.BookID != "" && e.BookID != f.BookID`) and store/pg's
+// tx_audit.go omits the WHERE clause (`if f.BookID != "" { add("book_id = $%d",
+// …) }`). Recording nothing there would leave open the widest crossing in the
+// system — one call that reads every bank's audit trail, payloads included.
+//
+// It is a BookID no actor owns, so any assertion on an actor's own books fails
+// on it and names it, which is the point: an unfiltered audit read is not a
+// clean unit of work and must not look like one.
+const everyBook ledger.BookID = "(every book)"
+
+// bookOf is the book a struct-carried access touches.
+//
+// A book that arrives inside a struct can be empty, which a positional argument
+// in this repository never is. For a filter, empty means every book — see
+// everyBook. For a write it means an event belonging to no book, which is not
+// the same thing, and mapping both to everyBook therefore OVER-reports the
+// write. That is the deliberate direction: a guard that over-reports fails
+// loudly and gets looked at, while one that under-reports passes silently, which
+// is the failure this whole file exists to prevent. Nothing in this repository
+// appends an audit event without a book, so the over-report is unreachable in
+// practice.
+func bookOf(book ledger.BookID) ledger.BookID {
+	if book == "" {
+		return everyBook
+	}
+	return book
+}
+
 // recordingTx is one unit of work over a recordingStore: a payment.Tx that notes
 // the book of every book-scoped call before delegating.
 //
@@ -115,10 +147,15 @@ func (s *recordingStore) reset() {
 // left a handler free to read another bank's deposit register, its holds, its
 // catalogue or its loan book without touching a single recorded method, and the
 // TestXTouchesOnly… assertions built on this would have read stronger than they
-// were. The parser walks the embedding chain to find them, so the next method
-// added to any of the four is covered without anyone remembering to add it here.
+// were.
 //
-// payment.Tx's OWN methods take no book: participants, payments, mandates,
+// It also means both SHAPES of book argument. Most methods take `book BookID`
+// second; AppendAudit and ListAudit carry theirs inside AuditEvent.BookID and
+// AuditFilter.BookID. The second shape was missed once, on the false claim that
+// the audit log is not per-book — see structCarriedBooks, which is where a
+// method of that shape is now decided rather than overlooked.
+//
+// payment.Tx's OWN methods are network-scoped: participants, payments, mandates,
 // cycles and settlements belong to no single bank and live under
 // ledger.NetworkBook. They are correctly absent from the overrides below, and
 // the consequence is worth being straight about — writing a Payment row records
@@ -139,8 +176,7 @@ var _ payment.Tx = (*recordingTx)(nil)
 // The overrides, grouped by the layer that declares them. Each is the same two
 // statements — note the book, then call through — and
 // TestEveryRecordingTxMethodNotesItsBookThenDelegates holds them to that shape,
-// because an override that forgot either half would look wrapped and be
-// worthless.
+// deriving the expected note expression from each method's own parsed signature.
 
 // --- ledger.Tx ---
 
@@ -252,6 +288,18 @@ func (r *recordingTx) ValueDateBalance(ctx context.Context, book ledger.BookID, 
 func (r *recordingTx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	r.rec.note(book)
 	return r.Tx.ValueDatedSeries(ctx, book, id, normal, from, to)
+}
+
+// The two whose book travels inside the argument. See structCarriedBooks.
+
+func (r *recordingTx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
+	r.rec.note(bookOf(e.BookID))
+	return r.Tx.AppendAudit(ctx, e)
+}
+
+func (r *recordingTx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+	r.rec.note(bookOf(f.BookID))
+	return r.Tx.ListAudit(ctx, f)
 }
 
 // --- product.Tx ---
@@ -401,6 +449,64 @@ func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.Book
 }
 
 // ---------------------------------------------------------------------------
+// The decision the parser cannot make
+// ---------------------------------------------------------------------------
+
+// structCarriedBook is what was decided about one method whose book arrives
+// inside its argument rather than as its argument.
+type structCarriedBook struct {
+	// Scoping says whether that BookID SCOPES the operation — whether the store
+	// uses it to choose which book's data is read or written — or is merely a
+	// field on a row that lives somewhere else entirely.
+	Scoping bool
+	// Why is required when Scoping is false: the evidence for the exclusion, and
+	// the name of the test that makes it falsifiable. An exclusion nobody can
+	// disprove is how ListAudit stayed unrecorded for two rounds.
+	Why string
+}
+
+// structCarriedBooks records the decision for EVERY method whose book travels
+// inside a struct. The parser finds the candidates; this says what they mean.
+//
+// # Why a table and not a rule
+//
+// There are two shapes of book argument, and the parser can recognise both:
+// `book BookID` in second position, and a second-position struct with a BookID
+// field. What no signature reveals is what the store DOES with the second kind.
+// Compare, both of them structs with a BookID field in second position:
+//
+//   - ledger.AppendAudit(ctx, e AuditEvent) writes the row under e.BookID, and
+//     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/mem/tx.go
+//     compares e.BookID against f.BookID, store/pg's tx_audit.go writes book_id
+//     and adds `book_id = $n`. The field IS the scope.
+//   - payment.PutParticipant(ctx, p Participant) writes a network-scoped row
+//     under ledger.NetworkBook whatever p.BookID says. p.BookID is a column on
+//     that row — the name of the book this bank owns — not the book being
+//     written to. Recording it would make a clearing-house handler that admits a
+//     member look like it had reached into that member's ledger, and Task 10's
+//     TestTheCSMTouchesOnlyTheNetworkBook would fail on a handler doing exactly
+//     what it should.
+//
+// Those two are indistinguishable from the AST. So the parser's job is to make
+// sure none is FORGOTTEN, and this table's job is to say which is which — the
+// same division payment's reasonTable makes for its sentinels, and for the same
+// reason: a decision that cannot be automated must at least be compulsory.
+//
+// TestEveryStructCarriedBookIsDecided fails on a candidate with no entry and on
+// an entry with no candidate, so a new method of this shape cannot slip through
+// as either.
+var structCarriedBooks = map[string]structCarriedBook{
+	"AppendAudit": {Scoping: true},
+	"ListAudit":   {Scoping: true},
+	"PutParticipant": {
+		Scoping: false,
+		Why: "payment/store.go: participants are network-scoped and stored under ledger.NetworkBook. " +
+			"Participant.BookID names the book the bank owns; it does not scope this write. " +
+			"TestWritingAParticipantTouchesNoBankBook is the evidence.",
+	},
+}
+
+// ---------------------------------------------------------------------------
 // The guard on the guard
 // ---------------------------------------------------------------------------
 
@@ -435,7 +541,7 @@ func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
 	for _, m := range methods {
 		if !slices.Contains(got, m.Name) {
 			t.Errorf("recordingTx does not declare %s (%s.Tx).\n"+
-				"It takes a book, so a handler can reach any book through it.\n"+
+				"It carries a book, so a handler can reach any book through it.\n"+
 				"Embedding promotes it silently and records nothing: declare the override.", m.Name, m.Pkg)
 		}
 	}
@@ -448,16 +554,135 @@ func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
 	}
 }
 
+// TestEveryStructCarriedBookIsDecided is what stops the second shape being
+// forgotten the way it was forgotten once already.
+//
+// ListAudit went unrecorded for two rounds behind a comment claiming the audit
+// log was "not per-book at all", which was false and which nothing could
+// contradict, because the parser only knew about books in second position. Now
+// the parser finds both shapes, and a method whose book travels inside its
+// argument must be DECIDED — recorded as scoping, or excluded with evidence.
+// Neither silence nor an unbacked assertion is available.
+func TestEveryStructCarriedBookIsDecided(t *testing.T) {
+	candidates := map[string]bookMethod{}
+	for _, m := range txBookCandidates(t) {
+		if m.Carry == bookInsideTheArg {
+			candidates[m.Name] = m
+		}
+	}
+	if len(candidates) == 0 {
+		t.Fatal("found no struct-carried book arguments at all; the parser is wrong, not the table")
+	}
+
+	for name, m := range candidates {
+		decision, ok := structCarriedBooks[name]
+		if !ok {
+			t.Errorf("%s (%s.Tx) carries a book in %s.%s and structCarriedBooks does not decide it.\n"+
+				"Say whether that field scopes the operation — whether the store reads or writes\n"+
+				"another book because of it — and if it does not, say why and back it with a test.",
+				name, m.Pkg, m.Arg, m.Field)
+			continue
+		}
+		if !decision.Scoping && strings.TrimSpace(decision.Why) == "" {
+			t.Errorf("structCarriedBooks[%q] excludes the method without saying why.\n"+
+				"An exclusion nobody can disprove is how ListAudit stayed unrecorded.", name)
+		}
+	}
+	for name := range structCarriedBooks {
+		if _, ok := candidates[name]; !ok {
+			t.Errorf("structCarriedBooks decides %s, which no longer carries a book inside its argument.\n"+
+				"Either it was renamed, or its signature changed and this entry is now stale.", name)
+		}
+	}
+}
+
+// TestWritingAParticipantTouchesNoBankBook is the evidence behind the one
+// exclusion in structCarriedBooks, made falsifiable rather than asserted.
+//
+// The claim is that Participant.BookID is a column on a network-scoped row, not
+// the scope of the write. So writing a participant that NAMES a bank's book must
+// leave that book empty — and this reads the book back through the store to say
+// so, rather than trusting the recorder that is itself under test.
+//
+// If PutParticipant ever did write into p.BookID, this fails and the entry in
+// structCarriedBooks becomes wrong at the same moment, which is what makes the
+// exclusion a claim about the code rather than about the author's confidence.
+func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
+	clock := func() time.Time { return testTime }
+	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	ctx := context.Background()
+	victim := ledger.BookID("bank_verde")
+
+	if err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutParticipant(ctx, payment.Participant{
+			ID:        "p_aurora",
+			Name:      "Aurora Bank",
+			BIC:       "AURODEFFXXX",
+			BookID:    victim,
+			CreatedAt: testTime,
+		})
+	}); err != nil {
+		t.Fatalf("PutParticipant: %v", err)
+	}
+
+	// Nothing landed in the book the row names.
+	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		ledgers, err := tx.ListLedgers(ctx, victim)
+		if err != nil {
+			return err
+		}
+		if len(ledgers) != 0 {
+			t.Errorf("writing a participant put %d ledgers in %s; it is supposed to be a network-scoped row", len(ledgers), victim)
+		}
+		accounts, err := tx.ListAccounts(ctx, victim)
+		if err != nil {
+			return err
+		}
+		if len(accounts) != 0 {
+			t.Errorf("writing a participant put %d accounts in %s; it is supposed to be a network-scoped row", len(accounts), victim)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+
+	// And the row itself is readable without naming any book at all, which is
+	// what "network-scoped" means.
+	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := tx.GetParticipant(ctx, "p_aurora")
+		if err != nil {
+			return err
+		}
+		if p.BookID != victim {
+			t.Errorf("participant came back with BookID %q, want %q — the field is stored, it just does not scope the write", p.BookID, victim)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("GetParticipant: %v", err)
+	}
+}
+
 // TestEveryRecordingTxMethodNotesItsBookThenDelegates pins the two halves the
 // completeness test cannot see. A declared override that forgot to note records
 // nothing — the same silent hole, one layer in — and one that forgot to delegate
 // would hand every caller a zero value while looking perfectly wrapped.
 //
 // The check is on the SHAPE of the body, and the shape is deliberately uniform:
-// note the book, then call through. No method here needs anything else, so a
-// body that is not those two statements is a mistake rather than a variation,
-// and this says so with the method's name in it.
+// note the book, then call through. The note expression is derived from the
+// method's own parsed signature and from which shape of book argument it has, so
+// this is not a second hand-written list of anything. No method needs a third
+// statement, so a body that is not those two is a mistake rather than a
+// variation, and this says so with the method's name in it.
+//
+// A consequence worth naming: recordingTx may hold no helper methods, because
+// every method on it is checked against this shape. That is deliberate — reach
+// for a free function instead, as bookOf is.
 func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
+	shape := map[string]bookMethod{}
+	for _, m := range bookScopedTxMethods(t) {
+		shape[m.Name] = m
+	}
+
 	fset, file := parseMeshFile(t, "books_test.go")
 	var checked int
 	for _, d := range file.Decls {
@@ -467,16 +692,33 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 		}
 		checked++
 		recv := fd.Recv.List[0].Names[0].Name
+		names := paramNames(fd.Type)
+
+		m, known := shape[fd.Name.Name]
+		if !known {
+			continue // the completeness test reports this one; nothing to shape-check
+		}
+		if len(names) < 2 {
+			t.Errorf("recordingTx.%s takes no book argument", fd.Name.Name)
+			continue
+		}
+		var wantNote string
+		switch m.Carry {
+		case bookIsTheArg:
+			wantNote = recv + ".rec.note(" + names[1] + ")"
+		case bookInsideTheArg:
+			wantNote = recv + ".rec.note(bookOf(" + names[1] + "." + m.Field + "))"
+		}
 
 		if fd.Body == nil || len(fd.Body.List) != 2 {
 			t.Errorf("recordingTx.%s is not two statements; every override notes its book and delegates", fd.Name.Name)
 			continue
 		}
-		if got, want := render(t, fset, fd.Body.List[0]), recv+".rec.note(book)"; got != want {
+		if got := render(t, fset, fd.Body.List[0]); got != wantNote {
 			t.Errorf("recordingTx.%s starts with %q, want %q — an override that does not note records nothing",
-				fd.Name.Name, got, want)
+				fd.Name.Name, got, wantNote)
 		}
-		want := "return " + recv + ".Tx." + fd.Name.Name + "(" + strings.Join(paramNames(fd.Type), ", ") + ")"
+		want := "return " + recv + ".Tx." + fd.Name.Name + "(" + strings.Join(names, ", ") + ")"
 		if got := render(t, fset, fd.Body.List[1]); got != want {
 			t.Errorf("recordingTx.%s ends with %q, want %q — an override that does not delegate returns a zero value",
 				fd.Name.Name, got, want)
@@ -487,20 +729,31 @@ func TestEveryRecordingTxMethodNotesItsBookThenDelegates(t *testing.T) {
 	}
 }
 
+// errProbeDone unwinds the probe below without committing anything.
+var errProbeDone = errors.New("probe finished")
+
 // TestRecordingStoreRecordsTheBookOfEveryCall is the same claim as the two AST
 // tests, made at RUN time and end to end: every book-scoped method, called
 // through a recordingStore over the store the suite is configured with, leaves
 // its book and no other in touched().
 //
-// The AST tests read source, so between them and reality sit Update, View, the
+// The AST tests read source, so between them and reality sit Update, the
 // embedding and note itself. This drives all three, and it drives every method
 // rather than a chosen few, because "the wiring works" is a claim about the one
 // method nobody thought to spot-check.
 //
-// The store's answers are discarded on purpose. The arguments are zero values,
-// so most of these calls fail — which is fine and is the point: the book is
-// noted BEFORE the call goes through, so what is under test is reachable without
-// building a fixture per method.
+// Each method gets its OWN unit of work, and each ends by returning errProbeDone
+// so the work rolls back. That is not tidiness: the arguments are zero values
+// apart from the book, so many of these calls fail, and under store/pg a failed
+// statement aborts the transaction. Rolling back deliberately means the probe
+// asserts the SAME thing against both stores — that Update handed back exactly
+// the error the callback returned — instead of discarding an error that only
+// Postgres would ever have produced. The store's answer to the call itself is
+// still discarded, on purpose: the book is noted BEFORE the call goes through,
+// which is what makes every method reachable without a fixture apiece.
+//
+// What the recorder saw survives the rollback, because a read that happened and
+// was then rolled back still happened.
 func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	rec := newRecordingStore(testenv.New(t, clock).Payment())
@@ -513,25 +766,86 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 	for _, m := range methods {
 		rec.reset()
 		book := ledger.BookID("book_" + m.Name)
-		_ = rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 			fn := reflect.ValueOf(tx).MethodByName(m.Name)
 			if !fn.IsValid() {
 				t.Errorf("recordingTx has no method %s (%s.Tx)", m.Name, m.Pkg)
-				return nil
+				return errProbeDone
 			}
 			args := make([]reflect.Value, fn.Type().NumIn())
 			args[0] = reflect.ValueOf(ctx)
-			args[1] = reflect.ValueOf(book)
+			args[1] = bookArgument(t, fn.Type().In(1), m, book)
 			for i := 2; i < len(args); i++ {
 				args[i] = reflect.Zero(fn.Type().In(i))
 			}
 			fn.Call(args)
-			return nil
+			return errProbeDone
 		})
+		if !errors.Is(err, errProbeDone) {
+			t.Errorf("probing %s (%s.Tx): Update returned %v, want the callback's own error back", m.Name, m.Pkg, err)
+		}
 		got := rec.touched()
 		if len(got) != 1 || got[0] != book {
 			t.Errorf("calling %s (%s.Tx) on book %q recorded %v, want exactly [%s]", m.Name, m.Pkg, book, got, book)
 		}
+	}
+}
+
+// bookArgument builds the second argument of a book-scoped call: the book
+// itself, or a zero struct carrying it in the field the parser found.
+func bookArgument(t *testing.T, typ reflect.Type, m bookMethod, book ledger.BookID) reflect.Value {
+	t.Helper()
+	arg := reflect.New(typ).Elem()
+	switch m.Carry {
+	case bookIsTheArg:
+		arg.Set(reflect.ValueOf(book))
+	case bookInsideTheArg:
+		f := arg.FieldByName(m.Field)
+		if !f.IsValid() {
+			t.Fatalf("%s: %s has no field %s", m.Name, typ, m.Field)
+		}
+		f.Set(reflect.ValueOf(book))
+	}
+	return arg
+}
+
+// TestACrossBookAuditReadIsRecorded is the crossing the first two rounds left
+// wide open, written as a test rather than argued about in a comment.
+//
+// A handler holding a legitimate Tx can call ListAudit with any book's id and
+// read that bank's entire audit trail, Payload included — an auditable history
+// of every account opened, every hold taken, every posting made. Before the
+// override existed this recorded NOTHING, so Task 10's
+// TestABankHandlerTouchesOnlyItsOwnBook would have passed over it.
+//
+// The second half is the wider crossing still: an AuditFilter with no BookID
+// reads every book at once. That must not look like a clean unit of work either,
+// which is what everyBook is for.
+func TestACrossBookAuditReadIsRecorded(t *testing.T) {
+	clock := func() time.Time { return testTime }
+	rec := newRecordingStore(testenv.New(t, clock).Payment())
+	ctx := context.Background()
+	victim := ledger.BookID("bank_verde")
+
+	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.ListAudit(ctx, ledger.AuditFilter{BookID: victim})
+		return err
+	}); err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{victim}) {
+		t.Errorf("a unit of work that read %s's audit trail touched %v, want [%s]", victim, got, victim)
+	}
+
+	rec.reset()
+	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.ListAudit(ctx, ledger.AuditFilter{})
+		return err
+	}); err != nil {
+		t.Fatalf("unfiltered ListAudit: %v", err)
+	}
+	if got := rec.touched(); !slices.Equal(got, []ledger.BookID{everyBook}) {
+		t.Errorf("an unfiltered audit read touched %v, want [%s] — it reads every book, and must not pass for a quiet one", got, everyBook)
 	}
 }
 
@@ -540,15 +854,16 @@ func TestRecordingStoreRecordsTheBookOfEveryCall(t *testing.T) {
 // A decorator that noted and returned a zero value would satisfy every book
 // assertion in this package while quietly detaching the mesh from its store —
 // the failure mode where the boundary check passes because nothing happens at
-// all. Three probes across two layers: NextID has to allocate from real state,
-// GetLedger has to bring back the ledger's own not-found sentinel, and
-// GetDepositAccount the deposit layer's — the layer this recorder did not cover
-// in its first version, and the one whose absence nothing else here would show.
+// all. Probes across three layers: NextID has to allocate from real state,
+// GetLedger has to bring back the ledger's own not-found sentinel,
+// GetDepositAccount the deposit layer's, and ListAudit has to come back from a
+// store that really ran the query.
 //
-// The read legs also cover a thing the per-method test does not: View wraps its
+// The read legs also cover a thing the per-method probe does not: View wraps its
 // Tx as Update does. A read-only unit of work is exactly where a cross-entity
-// read hides — reading another bank's register needs no write — so a View that
-// handed back the bare Tx would leave the whole read side unrecorded.
+// read hides — reading another bank's register or its audit trail needs no write
+// — so a View that handed back the bare Tx would leave the whole read side
+// unrecorded.
 func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	rec := newRecordingStore(testenv.New(t, clock).Payment())
@@ -582,6 +897,13 @@ func TestRecordingTxReachesTheStoreUnderneath(t *testing.T) {
 		}
 		if _, err := tx.GetDepositAccount(ctx, read, "dep_nope"); !errors.Is(err, deposit.ErrAccountNotFound) {
 			t.Errorf("GetDepositAccount on a missing row returned %v, want deposit.ErrAccountNotFound from the store underneath", err)
+		}
+		events, err := tx.ListAudit(ctx, ledger.AuditFilter{BookID: read})
+		if err != nil {
+			t.Errorf("ListAudit returned %v; a delegating decorator runs the store's query", err)
+		}
+		if len(events) != 0 {
+			t.Errorf("ListAudit on an untouched book returned %d events, want none", len(events))
 		}
 		return nil
 	})
@@ -639,38 +961,66 @@ func TestTheRecorderIsSafeForConcurrentActorsAndSortsWhatItSaw(t *testing.T) {
 // Parsing: walking the Tx embedding chain
 // ---------------------------------------------------------------------------
 
-// bookMethod is one book-scoped method and the layer that declares it.
+// bookArg is HOW a method's second argument carries its book.
+type bookArg int
+
+const (
+	noBook bookArg = iota
+	// bookIsTheArg: `book ledger.BookID` — 50 of the 52.
+	bookIsTheArg
+	// bookInsideTheArg: a struct with a BookID field, as AuditEvent and
+	// AuditFilter have.
+	bookInsideTheArg
+)
+
+// bookMethod is one book-carrying method: where it is declared, how it carries
+// its book, and — for the struct shape — under what name.
 type bookMethod struct {
-	Pkg  string // the declaring package's directory name: ledger, product, …
-	Name string
+	Pkg   string // the declaring package's directory name: ledger, product, …
+	Name  string
+	Carry bookArg
+	Arg   string // the second parameter's name in the interface declaration
+	Field string // bookInsideTheArg only: the BookID field's name
 }
 
-// bookScopedTxMethods is every book-scoped method reachable through payment.Tx,
-// found by walking the interface embedding chain from payment/store.go.
+// txBookCandidates is every method reachable through payment.Tx whose second
+// argument carries a book, in either shape, found by walking the interface
+// embedding chain from payment/store.go.
 //
-// # What counts as book-scoped
+// # What counts as carrying a book
 //
-// A method is book-scoped when its SECOND parameter — the one straight after
-// ctx — is a ledger.BookID. That is the rule, and it is deliberately about the
-// TYPE and the POSITION rather than the parameter's name: the name is
-// documentation, the type is the fact, and the position is what every override
-// relies on.
+// The SECOND parameter — the one straight after ctx — either
 //
-// The type is matched in either spelling, because both occur: bare `BookID`
-// inside package ledger, `ledger.BookID` in product, deposit and lending.
+//  1. IS a ledger.BookID, or
+//  2. is a struct with a field of type ledger.BookID.
 //
-// A method that takes a BookID somewhere OTHER than second is an error here, not
-// a skip. Silently skipping is precisely how a method ends up unwrapped, and the
-// uniform position is what lets every override be the same two lines.
+// Both shapes exist and the parser must know both, because a parser that knew
+// only the first is precisely what let ListAudit go unrecorded behind a comment
+// asserting it was not per-book. A shape the parser cannot see is a shape nobody
+// is forced to think about, and the next one added would be missed the same way.
 //
-// Methods with NO BookID are not book-scoped, and their absence is correct
-// rather than an oversight. They are of two kinds. ledger's AppendAudit,
-// ListAudit and Now are not per-book at all — the audit log is deliberately
-// cross-book, which is why the audit table has no foreign key. All of
-// payment.Tx's own methods — participants, payments, mandates, cycles,
-// settlements — are network-scoped: they belong to no single bank and are stored
-// under ledger.NetworkBook, so there is no book argument to record. Neither kind
-// is a way to read another bank's books, which is what this recorder is for.
+// Whether shape 2 actually SCOPES the operation is not visible from any
+// signature — see structCarriedBooks, which is where that is decided. This
+// function's job is only to make sure none is forgotten.
+//
+// Three deliberate properties of the rule:
+//
+//   - Type and position, not name. The parameter is called `book` everywhere
+//     today, but a name is documentation and a type is a fact.
+//   - Either spelling of the type, resolved properly: a bare `BookID` counts
+//     only inside package ledger, and a qualified one is resolved through the
+//     file's own import block rather than by assuming the qualifier is spelled
+//     "ledger". A layer that wrote `import l "…/ledger"` is handled, which
+//     matters because the embed walk already honours aliases and two halves of
+//     one walk disagreeing is how a whole layer drops out silently.
+//   - A book carried anywhere OTHER than second is an error, not a skip.
+//     Silently skipping is how a method ends up unwrapped, and the uniform
+//     position is what lets every override be the same two lines.
+//
+// Methods carrying no book at all are correctly absent: ledger's Now (the
+// clock), and payment.Tx's readers and its writers for payments, mandates,
+// cycles and settlements, which are network-scoped and live under
+// ledger.NetworkBook.
 //
 // # Why it walks rather than reading a list of files
 //
@@ -679,9 +1029,10 @@ type bookMethod struct {
 // read ledger/store.go alone and therefore called a decorator complete while
 // deposit, product and lending were entirely unrecorded. Walking the chain means
 // the test's idea of "everything payment.Tx can reach" is Go's.
-func bookScopedTxMethods(t *testing.T) []bookMethod {
+func txBookCandidates(t *testing.T) []bookMethod {
 	t.Helper()
 	module := modulePath(t)
+	cache := map[string]*pkgAST{}
 
 	var out []bookMethod
 	seen := map[string]bool{}
@@ -692,11 +1043,12 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 			return // ledger.Tx is reached through product and through lending
 		}
 		seen[dir] = true
-		iface, imports := findTxInterface(t, dir)
-		if iface == nil {
+		pkg := loadPackage(t, cache, dir, module)
+		if pkg.iface == nil {
+			t.Errorf("no `type Tx interface` found in %s", dir)
 			return
 		}
-		for _, f := range iface.Methods.List {
+		for _, f := range pkg.iface.Methods.List {
 			// An embedded interface has no name. Recurse into the package that
 			// declares it, resolving the qualifier through the importing file's
 			// own import block rather than assuming the alias is the directory.
@@ -711,7 +1063,7 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 					t.Errorf("%s/Tx embeds something other than a package's Tx", dir)
 					continue
 				}
-				path, ok := imports[qualifier.Name]
+				path, ok := pkg.ifaceImports[qualifier.Name]
 				if !ok {
 					t.Errorf("%s/Tx embeds %s.Tx but the file imports no %s", dir, qualifier.Name, qualifier.Name)
 					continue
@@ -728,16 +1080,9 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 			if !ok {
 				continue
 			}
-			name := f.Names[0].Name
-			switch pos := bookParamIndex(fn); pos {
-			case -1:
-				continue // not book-scoped
-			case 1:
-				out = append(out, bookMethod{Pkg: filepath.Base(dir), Name: name})
-			default:
-				t.Errorf("%s.Tx.%s takes its book at argument %d, not straight after ctx.\n"+
-					"Every override relies on that position; move it back, or teach this test the new rule.",
-					filepath.Base(dir), name, pos)
+			m := classify(t, cache, module, pkg, f.Names[0].Name, fn)
+			if m.Carry != noBook {
+				out = append(out, m)
 			}
 		}
 	}
@@ -756,10 +1101,166 @@ func bookScopedTxMethods(t *testing.T) []bookMethod {
 	return out
 }
 
-// findTxInterface returns the `Tx` interface declared in a package directory,
-// together with that file's imports so an embedded qualifier can be resolved.
-func findTxInterface(t *testing.T, dir string) (*ast.InterfaceType, map[string]string) {
+// bookScopedTxMethods is the subset of the candidates that recordingTx must
+// override: every positional one, and every struct-carried one that
+// structCarriedBooks says really scopes its operation.
+func bookScopedTxMethods(t *testing.T) []bookMethod {
 	t.Helper()
+	var out []bookMethod
+	for _, m := range txBookCandidates(t) {
+		switch m.Carry {
+		case bookIsTheArg:
+			out = append(out, m)
+		case bookInsideTheArg:
+			decision, ok := structCarriedBooks[m.Name]
+			if !ok {
+				t.Errorf("%s carries a book in %s.%s and structCarriedBooks does not decide it; see TestEveryStructCarriedBookIsDecided",
+					m.Name, m.Arg, m.Field)
+				continue
+			}
+			if decision.Scoping {
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// classify decides how one interface method carries its book, and fails the
+// test if it carries one somewhere the decorator could not reach uniformly.
+func classify(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
+	t.Helper()
+	params := flatParams(fn)
+
+	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
+	for i, p := range params {
+		carry, field := carrierOf(t, cache, module, pkg, p.typ)
+		if carry == noBook {
+			continue
+		}
+		if i != 1 {
+			t.Errorf("%s.Tx.%s carries its book at argument %d, not straight after ctx.\n"+
+				"Every override relies on that position; move it back, or teach this test the new rule.",
+				filepath.Base(pkg.dir), name, i)
+			continue
+		}
+		found.Carry, found.Arg, found.Field = carry, p.name, field
+	}
+	return found
+}
+
+// carrierOf reports whether a parameter type carries a book, and how.
+func carrierOf(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, typ ast.Expr) (bookArg, string) {
+	t.Helper()
+	if isBookID(typ, pkg.ifaceImports, pkg.path, module) {
+		return bookIsTheArg, ""
+	}
+	decl, ok := lookupStruct(t, cache, module, pkg, typ)
+	if !ok {
+		return noBook, ""
+	}
+	var fields []string
+	for _, f := range decl.typ.Fields.List {
+		if !isBookID(f.Type, decl.imports, decl.path, module) {
+			continue
+		}
+		for _, n := range f.Names {
+			fields = append(fields, n.Name)
+		}
+	}
+	switch len(fields) {
+	case 0:
+		return noBook, ""
+	case 1:
+		return bookInsideTheArg, fields[0]
+	default:
+		t.Errorf("%s carries %d BookID fields (%s); the recorder would not know which one scopes the call",
+			render(t, token.NewFileSet(), typ), len(fields), strings.Join(fields, ", "))
+		return noBook, ""
+	}
+}
+
+// lookupStruct resolves a parameter's type to a struct declaration, in this
+// package or — following the file's imports — in another one inside the module.
+func lookupStruct(t *testing.T, cache map[string]*pkgAST, module string, pkg *pkgAST, typ ast.Expr) (structDecl, bool) {
+	t.Helper()
+	switch e := typ.(type) {
+	case *ast.Ident:
+		d, ok := pkg.structs[e.Name]
+		return d, ok
+	case *ast.SelectorExpr:
+		qualifier, ok := e.X.(*ast.Ident)
+		if !ok {
+			return structDecl{}, false
+		}
+		path, ok := pkg.ifaceImports[qualifier.Name]
+		if !ok {
+			return structDecl{}, false
+		}
+		rel, inModule := strings.CutPrefix(path, module+"/")
+		if !inModule {
+			return structDecl{}, false // stdlib and third-party carry no BookID
+		}
+		other := loadPackage(t, cache, filepath.Join("..", rel), module)
+		d, ok := other.structs[e.Sel.Name]
+		return d, ok
+	}
+	return structDecl{}, false
+}
+
+// isBookID reports whether a type expression is ledger.BookID.
+//
+// A bare `BookID` counts only inside package ledger, and a qualified one is
+// resolved through the importing file's own imports — never by comparing the
+// qualifier to the string "ledger", which would miss an aliased import and
+// silently drop every method in that layer.
+func isBookID(e ast.Expr, imports map[string]string, pkgPath, module string) bool {
+	ledgerPath := module + "/ledger"
+	switch typ := e.(type) {
+	case *ast.Ident:
+		return typ.Name == "BookID" && pkgPath == ledgerPath
+	case *ast.SelectorExpr:
+		qualifier, ok := typ.X.(*ast.Ident)
+		if !ok || typ.Sel.Name != "BookID" {
+			return false
+		}
+		return imports[qualifier.Name] == ledgerPath
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Parsing: reading a package
+// ---------------------------------------------------------------------------
+
+// structDecl is one struct type declaration, with what it needs to have its own
+// field types resolved.
+type structDecl struct {
+	typ     *ast.StructType
+	imports map[string]string
+	path    string // the declaring package's import path
+}
+
+// pkgAST is one package as this walk needs it: its Tx interface, the imports of
+// the file that declares it, and every struct type it declares.
+type pkgAST struct {
+	dir          string
+	path         string
+	iface        *ast.InterfaceType
+	ifaceImports map[string]string
+	structs      map[string]structDecl
+}
+
+// loadPackage parses every non-test file in a package directory once.
+func loadPackage(t *testing.T, cache map[string]*pkgAST, dir, module string) *pkgAST {
+	t.Helper()
+	if p, ok := cache[dir]; ok {
+		return p
+	}
+	rel := strings.TrimPrefix(filepath.ToSlash(dir), "../")
+	pkg := &pkgAST{dir: dir, path: module + "/" + rel, structs: map[string]structDecl{}}
+	cache[dir] = pkg
+
 	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
 	if err != nil {
 		t.Fatalf("listing %s: %v", dir, err)
@@ -769,6 +1270,7 @@ func findTxInterface(t *testing.T, dir string) (*ast.InterfaceType, map[string]s
 			continue
 		}
 		_, file := parseMeshFile(t, path)
+		imports := fileImports(file)
 		for _, d := range file.Decls {
 			gd, ok := d.(*ast.GenDecl)
 			if !ok || gd.Tok != token.TYPE {
@@ -776,19 +1278,21 @@ func findTxInterface(t *testing.T, dir string) (*ast.InterfaceType, map[string]s
 			}
 			for _, s := range gd.Specs {
 				ts, ok := s.(*ast.TypeSpec)
-				if !ok || ts.Name.Name != "Tx" {
+				if !ok {
 					continue
 				}
-				iface, ok := ts.Type.(*ast.InterfaceType)
-				if !ok {
-					t.Fatalf("%s: Tx is not an interface type", path)
+				switch typ := ts.Type.(type) {
+				case *ast.InterfaceType:
+					if ts.Name.Name == "Tx" {
+						pkg.iface, pkg.ifaceImports = typ, imports
+					}
+				case *ast.StructType:
+					pkg.structs[ts.Name.Name] = structDecl{typ: typ, imports: imports, path: pkg.path}
 				}
-				return iface, fileImports(file)
 			}
 		}
 	}
-	t.Fatalf("no `type Tx interface` found in %s", dir)
-	return nil, nil
+	return pkg
 }
 
 // fileImports maps the qualifier a file uses onto the import path behind it,
@@ -826,39 +1330,24 @@ func modulePath(t *testing.T) string {
 	return ""
 }
 
-// bookParamIndex is the position of the first ledger.BookID parameter in a
-// flattened argument list, or -1. See bookScopedTxMethods for the rule.
-func bookParamIndex(fn *ast.FuncType) int {
-	i := -1
-	for _, f := range fn.Params.List {
-		if len(f.Names) == 0 {
-			i++
-			if isBookID(f.Type) {
-				return i
-			}
-			continue
-		}
-		for range f.Names {
-			i++
-			if isBookID(f.Type) {
-				return i
-			}
-		}
-	}
-	return -1
+// param is one flattened parameter: `from, to time.Time` is two of them.
+type param struct {
+	name string
+	typ  ast.Expr
 }
 
-// isBookID reports whether a parameter's type is ledger.BookID, in either
-// spelling: bare inside package ledger, qualified everywhere else.
-func isBookID(e ast.Expr) bool {
-	switch typ := e.(type) {
-	case *ast.Ident:
-		return typ.Name == "BookID"
-	case *ast.SelectorExpr:
-		pkg, ok := typ.X.(*ast.Ident)
-		return ok && pkg.Name == "ledger" && typ.Sel.Name == "BookID"
+func flatParams(fn *ast.FuncType) []param {
+	var out []param
+	for _, f := range fn.Params.List {
+		if len(f.Names) == 0 {
+			out = append(out, param{typ: f.Type})
+			continue
+		}
+		for _, n := range f.Names {
+			out = append(out, param{name: n.Name, typ: f.Type})
+		}
 	}
-	return false
+	return out
 }
 
 // recordingTxMethods is every method declared DIRECTLY on recordingTx in this
@@ -892,14 +1381,11 @@ func receiverTypeName(fd *ast.FuncDecl) string {
 	return ""
 }
 
-// paramNames flattens a signature's parameter names in order, so that
-// `from, to time.Time` is two of them.
+// paramNames flattens a signature's parameter names in order.
 func paramNames(fn *ast.FuncType) []string {
-	var out []string
-	for _, f := range fn.Params.List {
-		for _, n := range f.Names {
-			out = append(out, n.Name)
-		}
+	out := make([]string, 0, len(fn.Params.List))
+	for _, p := range flatParams(fn) {
+		out = append(out, p.name)
 	}
 	return out
 }
