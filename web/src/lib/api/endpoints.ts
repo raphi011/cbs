@@ -25,6 +25,7 @@ import type {
   ProductVersion,
   Product,
   DescriptionRequest,
+  DirectoryEntry,
   Facility,
   FundRequest,
   Hold,
@@ -77,6 +78,22 @@ export function fundDeposit(pid: string, body: FundRequest): Promise<Balance> {
 
 export function listSchemes(): Promise<Scheme[]> {
   return request("GET", csm("/schemes"));
+}
+
+// --- Directory ------------------------------------------------------------
+
+// Resolving an address on the clearing house's listener: the operator whose job
+// "which bank holds this?" is. 404 when nobody holds it, 409 when two banks do —
+// an ambiguous address is an error rather than a first hit, following the
+// settlement rule about not defaulting quietly.
+//
+// A customer's lookup is NOT this function. It goes to their own bank's listener
+// (see resolveIdentifierAtBank), because a retail client has no CSM connection.
+export function resolveIdentifierAtCsm(
+  scheme: string,
+  value: string,
+): Promise<DirectoryEntry> {
+  return request("GET", csm(`/directory${qs({ scheme, value })}`));
 }
 
 // --- Central bank ---------------------------------------------------------

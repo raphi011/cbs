@@ -118,7 +118,6 @@ describe("navFor", () => {
     ]);
   });
 
-  // Directory arrives in Task 10, with the screen it names.
   it("gives the clearing house the network", () => {
     expect(navFor({ persona: "clearing-house" }).map((n) => n.href)).toEqual([
       "/clearing-house",
@@ -127,6 +126,7 @@ describe("navFor", () => {
       "/clearing-house/cycles",
       "/clearing-house/settlements",
       "/clearing-house/schemes",
+      "/clearing-house/directory",
     ]);
   });
 

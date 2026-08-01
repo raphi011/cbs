@@ -95,6 +95,12 @@ export const qk = {
     ["participants", pid, "facilities", fid, "schedule"] as const,
   totals: (pid: string) => ["participants", pid, "totals"] as const,
 
+  // Keyed by the listener that answered as well as the address: the same
+  // question asked of the clearing house and of a bank are two different
+  // requests, and only one of them is a customer's to make.
+  csmDirectory: (scheme: string, value: string) =>
+    ["clearing-house", "directory", scheme, value] as const,
+
   // Payment network (global — each object spans two participants).
   mandates: () => ["mandates"] as const,
   mandate: (mid: string) => ["mandates", mid] as const,

@@ -78,6 +78,20 @@ export function useSchemes() {
   return useQuery({ queryKey: qk.schemes(), queryFn: api.listSchemes });
 }
 
+// --- Directory --------------------------------------------------------------
+
+// Resolves an external address to the account that holds it. `retry: false`
+// because a 404 here is an answer — nobody holds that IBAN — and retrying it
+// three times only delays saying so.
+export function useCsmDirectory(scheme: string, value: string) {
+  return useQuery({
+    queryKey: qk.csmDirectory(scheme, value),
+    queryFn: () => api.resolveIdentifierAtCsm(scheme, value),
+    enabled: scheme !== "" && value !== "",
+    retry: false,
+  });
+}
+
 // --- Central bank ---------------------------------------------------------
 
 export function useReserves() {

@@ -11,6 +11,7 @@ import {
   Network,
   RefreshCw,
   ScrollText,
+  Search,
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -109,7 +110,7 @@ const CLEARING_HOUSE_NAV: NavItem[] = [
   { href: "/clearing-house/cycles", label: "Clearing cycles", icon: RefreshCw },
   { href: "/clearing-house/settlements", label: "Settlements", icon: Building2 },
   { href: "/clearing-house/schemes", label: "Schemes", icon: Network },
-  // Directory arrives in Task 10, with the screen it names.
+  { href: "/clearing-house/directory", label: "Directory", icon: Search },
 ];
 
 export function navFor(identity: Identity): NavItem[] {
