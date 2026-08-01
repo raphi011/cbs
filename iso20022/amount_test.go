@@ -107,3 +107,43 @@ func TestAmountRoundTrips(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateAdmitsNineteenDigitsAtScaleFive pins the one gap in Validate's
+// magnitude check, so that the doc comment stating it is a claim with a test
+// behind it rather than a confession without one.
+//
+// Validate checks shape by calling Minor(5), which pads the fraction to five
+// places and parses the result as an int64. For a value that ALREADY has five
+// fraction digits the padding is a no-op, so the only thing left is the int64
+// range — and MaxInt64 is nineteen digits, where ActiveCurrencyAndAmount's
+// totalDigits facet is eighteen. The value below is therefore invalid against
+// the schema and accepted here.
+//
+// It is inert in this repository today because no asset is scaled to five;
+// nothing enforces that, which is exactly why it is pinned. Implementing a real
+// totalDigits check flips this test, and whoever does it should replace it with
+// its opposite rather than delete it.
+func TestValidateAdmitsNineteenDigitsAtScaleFive(t *testing.T) {
+	// 9223372036854775807 minor units at scale 5 — MaxInt64, rendered.
+	a := ActiveCurrencyAndAmount{Ccy: "XXX", Value: "92233720368547.75807"}
+
+	digits := 0
+	for _, r := range a.Value {
+		if r != '.' {
+			digits++
+		}
+	}
+	if digits != 19 {
+		t.Fatalf("the fixture has %d digits, want 19; it no longer tests what it says", digits)
+	}
+	if err := a.Validate(); err != nil {
+		t.Fatalf("Validate = %v, want nil — this test records that the check does NOT enforce totalDigits=18", err)
+	}
+
+	// One minor unit more overflows the int64 and IS refused, which shows the
+	// acceptance above is the int64 range talking and not a digit count.
+	over := ActiveCurrencyAndAmount{Ccy: "XXX", Value: "92233720368547.75808"}
+	if err := over.Validate(); !errors.Is(err, ErrAmountFormat) {
+		t.Errorf("Validate(MaxInt64+1 at scale 5) = %v, want ErrAmountFormat", err)
+	}
+}

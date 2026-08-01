@@ -113,13 +113,25 @@ func (a ActiveCurrencyAndAmount) Minor(scale uint8) (int64, error) {
 // amountOf depends on this method for exactly that refusal and documents the
 // same bound from the other side.
 //
-// It errs toward refusal, so nothing invalid escapes; what escapes is a valid
-// amount no system in this repository can reach (ninety-two trillion euro, and
-// ledger.Amount is an int64 of minor units). Closing the gap properly means
-// factoring Minor's lexing into a helper this method can call without the
-// int64 conversion, then checking fractionDigits and totalDigits directly. That
-// is a change to this package's validation semantics rather than a bug fix, so
-// it is recorded rather than smuggled in beside a translator.
+// The bound is not uniformly conservative, and it is worth being exact about
+// which way it errs, because it goes BOTH ways depending on the scale:
+//
+//   - Below five fraction digits the padding multiplies, so the ceiling is
+//     tighter than the standard's and legal values are refused. Two decimals
+//     divides the int64 range by a thousand, as above.
+//   - At exactly five, the padding is a no-op and the check degenerates to
+//     "fits in an int64". 92233720368547.75807 is nineteen significant digits,
+//     one past totalDigits="18", and this method ACCEPTS it. See
+//     TestValidateAdmitsNineteenDigitsAtScaleFive.
+//   - Above five, the fraction-digit check refuses first, so the question does
+//     not arise.
+//
+// So an invalid amount can escape, at one scale, and this method must not be
+// read as a totalDigits check. Closing the gap properly means factoring Minor's
+// lexing into a helper this method can call without the int64 conversion, then
+// checking fractionDigits and totalDigits directly. That is a change to this
+// package's validation semantics rather than a bug fix, so it is recorded rather
+// than smuggled in beside a translator.
 func (a ActiveCurrencyAndAmount) Validate() error {
 	if a.Ccy == "" {
 		return fmt.Errorf("%w: Ccy", ErrMissingElement)

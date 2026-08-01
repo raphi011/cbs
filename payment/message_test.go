@@ -577,25 +577,88 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 // Refusals, and the one error that must NOT become a wire reason code
 // ---------------------------------------------------------------------------
 
+// failingTx is a Tx whose deposit-account lookup fails with an error of the
+// caller's choosing. Everything else is the real transaction, promoted by
+// embedding — so a participant still resolves, and the failure lands on exactly
+// the one call the test is about.
+type failingTx struct {
+	Tx
+	err error
+}
+
+func (t failingTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+	return deposit.Account{}, t.err
+}
+
+// failingStore wraps a real Store and hands every view a failingTx.
+//
+// This exists because there is no other way to reach partyTx's error path. Both
+// stores check ctx.Err() before opening a transaction — store/mem at mem.go:109
+// and store/pg at pg.go:188 — so a cancelled context never gets as far as the
+// closure, and a real database failure cannot be provoked on demand from a test.
+// A synthetic error injected at the seam reaches the code under test on BOTH
+// stores and depends on no driver behaviour at all.
+type failingStore struct {
+	Store
+	err error
+}
+
+func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) error) error {
+	return s.Store.View(ctx, func(ctx context.Context, tx Tx) error {
+		return fn(ctx, failingTx{Tx: tx, err: s.err})
+	})
+}
+
 // A store failure is not a defect in the counterparty's message, and must not be
 // reported as one.
 //
 // partyTx's two lookups fail with ErrParticipantNotFound and
 // ErrAccountNotInParticipant, which reasonFor turns into RC01 "bank identifier
 // incorrect" and AC01 "incorrect account number". If it translated EVERY error
-// that way — the shape checkPartyTx uses, and the shape this function had until
-// the review — a cancelled caller or a dropped connection would tell another
-// bank its address was wrong, and send it looking for a fault it does not have.
+// that way — the shape checkPartyTx uses, and the shape partyTx had until the
+// first review — a dropped connection would tell another bank its address was
+// wrong and send it looking for a fault it does not have.
 //
-// What this pins end to end is that a cancellation stays a cancellation. Note
-// where it is caught: store/mem checks ctx.Err() before it opens the view, so on
-// the default test run the error never reaches partyTx at all. Under
-// TEST_DATABASE_URL it travels through the driver and out of the closure, which
-// is the path the fix is actually about. The assertion is the same either way,
-// and it is the pair with the two tests below — those confirm a genuine
-// not-found still DOES produce its domain error, so the fix did not simply
-// stop translating.
+// This is the test that pins it, and it is the second attempt. The first was a
+// cancelled context, which cannot reach partyTx on either store (see
+// failingStore) and therefore passed with the bug reinstated — a test asserting
+// coverage it did not have, which is the exact failure this repository keeps
+// hitting. Reinstating the pre-fix body now fails this test on both stores.
 func TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx := context.Background()
+
+	// "connection reset by peer" is the case that matters: not a not-found, not
+	// anything the payment did, just the database going away mid-message.
+	dropped := errors.New("connection reset by peer")
+	broken := NewNetwork(failingStore{Store: n.Store(), err: dropped}, func() time.Time { return fixedTime })
+
+	_, err := broken.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err == nil {
+		t.Fatal("built a message while the store was failing")
+	}
+	if !errors.Is(err, dropped) {
+		t.Errorf("error = %v, want it to carry the store's own failure", err)
+	}
+	// The assertion the fix exists for. Either sentinel here becomes a reason
+	// code on the wire, blaming the counterparty for this system's outage.
+	if errors.Is(err, ErrAccountNotInParticipant) {
+		t.Errorf("a store failure surfaced as ErrAccountNotInParticipant, which reaches a counterparty as AC01 \"incorrect account number\"")
+	}
+	if errors.Is(err, ErrParticipantNotFound) {
+		t.Errorf("a store failure surfaced as ErrParticipantNotFound, which reaches a counterparty as RC01 \"bank identifier incorrect\"")
+	}
+}
+
+// A cancelled caller gets a cancellation back, not a reason code.
+//
+// This does NOT exercise partyTx, and saying so is the point of the comment:
+// both stores check ctx.Err() before opening a transaction, so the error is
+// raised at the View boundary and the closure never runs. What it pins is the
+// weaker end-to-end property that nothing between View and the caller swallows
+// or relabels the cancellation. The partyTx path itself is covered by the test
+// above, which injects a synthetic failure instead.
+func TestCreditTransferMessageReturnsACancellationUnchanged(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

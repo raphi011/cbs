@@ -220,15 +220,24 @@ func agentOf(b iso20022.BIC) iso20022.BranchAndFinancialInstitution {
 //     bound is MaxInt64 / 10^(5-scale) — for a two-decimal asset,
 //     9,223,372,036,854,775 minor units, at SIXTEEN rendered digits. That is an
 //     int64 overflow inside the validator's own padding, an artifact of how the
-//     check is written, not a property of ISO 20022. It bites in one direction
-//     only, refusing legal seventeen- and eighteen-digit values, so nothing
-//     invalid escapes; it is recorded rather than worked around because a
-//     workaround here would be this package second-guessing the codec, which is
-//     exactly what "ask the codec" avoids. Enforcing the standard's actual
-//     ceiling belongs in iso20022.ActiveCurrencyAndAmount.Validate, which is
-//     where the bound would then also be testable. ErrAmountFormat, which is the
-//     wrong sentinel for a well-formed number and is part of the same artifact.
-//     Both edges are pinned by TestSettlementMessageAmountBound.
+//     check is written, not a property of ISO 20022. Below scale 5 it bites too
+//     hard, refusing legal seventeen- and eighteen-digit values;
+//     AT scale 5 exactly, the padding is a no-op and the check degenerates to
+//     "fits in an int64", which ADMITS nineteen-digit values the schema's
+//     totalDigits="18" forbids. So it is not merely conservative, and an earlier
+//     version of this comment claiming "nothing invalid escapes" was wrong. The
+//     gap is inert here only because no asset in ledger.Assets() is scaled to 5
+//     — EUR and USD are 2, BTC is 8 and refused outright — and nothing enforces
+//     that, so adding one would open it. See
+//     TestValidateAdmitsNineteenDigitsAtScaleFive in iso20022.
+//
+//     It is recorded rather than worked around because a workaround here would
+//     be this package second-guessing the codec, which is exactly what "ask the
+//     codec" avoids. Enforcing the standard's actual ceiling belongs in
+//     iso20022.ActiveCurrencyAndAmount.Validate, which is where the bound would
+//     then also be testable. The sentinel is ErrAmountFormat, which is the wrong
+//     one for a well-formed number and is part of the same artifact. Both edges
+//     of the scale-2 bound are pinned by TestSettlementMessageAmountBound.
 //
 // Neither was found by FuzzTranslate, and that is worth recording rather than
 // hiding. Two and a half million executions did not reach either, because the
@@ -431,8 +440,17 @@ func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor me
 //
 // So a store failure is returned unchanged and falls to MS03 through reasonFor's
 // default, which says "this agent could not carry it out" — true, unhelpful, and
-// vastly better than a confident false statement about someone else's data. See
-// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure.
+// vastly better than a confident false statement about someone else's data.
+//
+// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure pins it,
+// and how it does so is worth knowing before anyone "simplifies" it. There is no
+// way to provoke a real store failure here: both stores check ctx.Err() before
+// they open a transaction, so even a cancelled context is refused at the View
+// boundary and this function is never entered. The test therefore injects a
+// synthetic error through a decorating Store. The first version of that test did
+// use a cancelled context, and it passed with this bug reinstated — which is why
+// the mechanism is spelled out rather than left as an implementation detail of
+// a test file.
 func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messageParty, error) {
 	part, err := s.participantTx(ctx, tx, ref.Participant)
 	if err != nil {
