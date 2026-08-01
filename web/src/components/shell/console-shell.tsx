@@ -5,14 +5,18 @@ import { ShellFrame } from "./shell-frame";
 import { SidebarNav } from "./sidebar-nav";
 import { Topbar } from "./topbar";
 
-export function BankShell({
-  pid,
+// The central bank, the clearing house and a member bank are the same
+// software with a different nav: one ShellFrame/SidebarNav/Topbar wiring,
+// parameterised by the identity that decides which items it shows. A pid
+// distinguishes one bank from another the same way it distinguishes one
+// persona from the next.
+export function ConsoleShell({
+  identity,
   children,
 }: {
-  pid: string;
+  identity: Identity;
   children: React.ReactNode;
 }) {
-  const identity: Identity = { persona: "bank", pid };
   const items = navFor(identity);
   return (
     <ShellFrame

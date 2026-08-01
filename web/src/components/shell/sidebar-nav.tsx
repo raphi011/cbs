@@ -55,7 +55,7 @@ function Brand({ collapsed }: { collapsed?: boolean }) {
         href="/"
         title="Ledger"
         aria-label="Ledger — Core banking explorer"
-        className="flex size-8 items-center justify-center rounded-md text-base font-semibold tracking-tight text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-md"
+        className="flex size-8 items-center justify-center rounded-md text-base font-semibold tracking-tight text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         L
       </Link>
