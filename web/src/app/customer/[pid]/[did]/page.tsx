@@ -29,11 +29,21 @@ export default function CustomerOverview() {
   const { data: account, isLoading, error, refetch } = useDepositAccount(pid, did);
   const { data: balance, isLoading: balanceLoading } = useDepositBalance(pid, did);
   const { data: bank } = useParticipant(pid);
-  const { byCode } = useAssetLookup();
+  const { byCode, error: assetError, refetch: refetchAssets } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
   const iban = account?.identifiers.find((i) => i.scheme === "IBAN");
 
-  if (error) return <ErrorState error={error} onRetry={() => refetch()} />;
+  // The asset lookup failing is a distinct fact from it still being in
+  // flight — folding it into the loading guard below would leave a customer
+  // staring at a skeleton forever if GET /assets never answers.
+  if (error || assetError) {
+    return (
+      <ErrorState
+        error={error ?? assetError}
+        onRetry={() => (error ? refetch() : refetchAssets())}
+      />
+    );
+  }
   if (isLoading || !account || !asset) return <Skeleton className="h-64 w-full" />;
 
   // The headroom below zero, which a customer thinks of as part of what they can

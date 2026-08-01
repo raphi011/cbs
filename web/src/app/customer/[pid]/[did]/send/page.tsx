@@ -44,7 +44,7 @@ export default function CustomerSend() {
     error: balanceError,
   } = useDepositBalance(pid, did);
   const { data: schemes } = useSchemes();
-  const { byCode } = useAssetLookup();
+  const { byCode, error: assetError } = useAssetLookup();
   const submit = useSubmitPayment(pid);
 
   const [iban, setIban] = useState("");
@@ -66,7 +66,10 @@ export default function CustomerSend() {
   const closed = account?.status === "Closed";
   const ownIban = account?.identifiers.find((i) => i.scheme === "IBAN");
 
-  if (accountError) return <ErrorState error={accountError} />;
+  // Folding an assets failure into "still loading" would leave a customer
+  // staring at a skeleton with no error and no retry — the account can be
+  // fine while /assets is the thing that is down.
+  if (accountError || assetError) return <ErrorState error={accountError ?? assetError} />;
   if (!account || !asset) return <Skeleton className="h-64 w-full" />;
 
   // The scheme settles in one asset and this account holds one; a mismatch is not

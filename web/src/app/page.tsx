@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Building2, GraduationCap, Landmark, Network } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Money } from "@/components/money";
+import { Money, UnresolvedAmount } from "@/components/money";
 import { EnumBadge } from "@/components/enum-badge";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
@@ -171,7 +171,7 @@ function BankCard({
   provisioned: boolean;
   reserves: Reserve[];
 }) {
-  const { byCode } = useAssetLookup();
+  const { byCode, isLoading: assetLoading } = useAssetLookup();
 
   const body = (
     <Card
@@ -202,7 +202,7 @@ function BankCard({
                     <Money amount={r.reserve} asset={asset} />
                   </p>
                 ) : (
-                  <Skeleton key={r.asset} className="h-6 w-20" />
+                  <UnresolvedAmount key={r.asset} code={r.asset} isLoading={assetLoading} />
                 );
               })
             )}

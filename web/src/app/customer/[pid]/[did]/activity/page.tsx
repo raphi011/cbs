@@ -16,7 +16,7 @@ export default function CustomerActivity() {
   const did = typeof params.did === "string" ? params.did : "";
 
   const { data: account, error: accountError } = useDepositAccount(pid, did);
-  const { byCode } = useAssetLookup();
+  const { byCode, error: assetError, refetch: refetchAssets } = useAssetLookup();
   const asset = account ? byCode.get(account.asset) : undefined;
   const { rows, book, isLoading, error, refetch } = useStatement(
     pid,
@@ -24,8 +24,16 @@ export default function CustomerActivity() {
     account?.glAccount ?? "",
   );
 
-  if (accountError || error) {
-    return <ErrorState error={accountError ?? error} onRetry={() => refetch()} />;
+  // assetError is kept out of the loading guard below: if /assets never
+  // answers, `asset` never resolves either, and folding the two together
+  // would show a permanent skeleton instead of the error it actually is.
+  if (accountError || error || assetError) {
+    return (
+      <ErrorState
+        error={accountError ?? error ?? assetError}
+        onRetry={() => (accountError || error ? refetch() : refetchAssets())}
+      />
+    );
   }
   if (!account || !asset || isLoading) return <Skeleton className="h-64 w-full" />;
 

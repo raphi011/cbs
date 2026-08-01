@@ -9,7 +9,7 @@ import { IdText } from "@/components/id-text";
 import { EnumBadge } from "@/components/enum-badge";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
-import { Money } from "@/components/money";
+import { Money, UnresolvedAmount } from "@/components/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OpenDepositAccountForm } from "@/components/forms/open-deposit-account-form";
 import {
@@ -22,8 +22,8 @@ import {
 import type { DepositAccount } from "@/lib/types";
 
 function DepositAccountRow({ pid, account }: { pid: string; account: DepositAccount }) {
-  const { data } = useDepositBalance(pid, account.id);
-  const { byCode } = useAssetLookup();
+  const { data, isLoading: balanceLoading } = useDepositBalance(pid, account.id);
+  const { byCode, isLoading: assetLoading } = useAssetLookup();
   const asset = byCode.get(account.asset);
   const iban = account.identifiers.find((i) => i.scheme === "IBAN");
   return (
@@ -42,10 +42,18 @@ function DepositAccountRow({ pid, account }: { pid: string; account: DepositAcco
       </span>
       <span className="flex items-center gap-3">
         <span className="text-right text-sm font-medium">
-          {asset ? (
-            <Money amount={data?.available ?? 0} asset={asset} />
-          ) : (
+          {!asset ? (
+            <UnresolvedAmount
+              code={account.asset}
+              isLoading={assetLoading}
+              className="ml-auto block text-right"
+            />
+          ) : balanceLoading || !data ? (
+            // Never default to 0 while the balance is still in flight — a
+            // fetched zero and a not-yet-fetched amount are different facts.
             <Skeleton className="ml-auto h-4 w-16" />
+          ) : (
+            <Money amount={data.available} asset={asset} />
           )}
           <span className="block text-xs font-normal text-muted-foreground">available</span>
         </span>
@@ -62,9 +70,19 @@ export default function BankHome() {
   const params = useParams();
   const pid = typeof params.pid === "string" ? params.pid : "";
   const accounts = useDepositAccounts(pid);
-  const { data: totals, isLoading: totalsLoading } = useTotals(pid);
-  const { data: reserve, isLoading: reserveLoading } = useReserve(pid);
-  const { byCode } = useAssetLookup();
+  const {
+    data: totals,
+    isLoading: totalsLoading,
+    error: totalsError,
+    refetch: refetchTotals,
+  } = useTotals(pid);
+  const {
+    data: reserve,
+    isLoading: reserveLoading,
+    error: reserveError,
+    refetch: refetchReserve,
+  } = useReserve(pid);
+  const { byCode, isLoading: assetLoading } = useAssetLookup();
 
   return (
     <div className="space-y-6">
@@ -75,7 +93,9 @@ export default function BankHome() {
               Reserves at the central bank
               <Hint id="reserve-account" />
             </p>
-            {reserveLoading ? (
+            {reserveError ? (
+              <ErrorState error={reserveError} onRetry={() => refetchReserve()} />
+            ) : reserveLoading ? (
               <Skeleton className="mt-1 h-6 w-24" />
             ) : reserve && reserve.length > 0 ? (
               <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
@@ -86,7 +106,7 @@ export default function BankHome() {
                       <Money amount={r.reserve} asset={asset} />
                     </p>
                   ) : (
-                    <Skeleton key={r.asset} className="h-6 w-24" />
+                    <UnresolvedAmount key={r.asset} code={r.asset} isLoading={assetLoading} />
                   );
                 })}
               </div>
@@ -101,7 +121,9 @@ export default function BankHome() {
               Customer deposits
               <Hint id="derived-balance" />
             </p>
-            {totalsLoading ? (
+            {totalsError ? (
+              <ErrorState error={totalsError} onRetry={() => refetchTotals()} />
+            ) : totalsLoading ? (
               <Skeleton className="mt-1 h-6 w-24" />
             ) : totals && totals.length > 0 ? (
               <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
@@ -115,7 +137,7 @@ export default function BankHome() {
                       </span>
                     </p>
                   ) : (
-                    <Skeleton key={t.asset} className="h-6 w-24" />
+                    <UnresolvedAmount key={t.asset} code={t.asset} isLoading={assetLoading} />
                   );
                 })}
               </div>
