@@ -45,6 +45,39 @@ func sample009() Envelope {
 	}
 }
 
+// TestPacs009GoldenRoundTrip pins testdata/pacs009.xml the same way
+// TestPacs008RoundTrip and its siblings pin their own golden files: this is
+// what actually holds FinancialInstitutionCreditTransferTransaction's field
+// order and Pacs009's namespace to the committed sample. Without it, nothing
+// in this package's non-skipping test run ever reads pacs009.xml — the
+// schema check skips without vendored XSDs, and the fuzz corpus only checks
+// that Marshal succeeds on it, not that the bytes match.
+func TestPacs009GoldenRoundTrip(t *testing.T) {
+	env := assertGoldenRoundTrip(t, "pacs009.xml")
+
+	doc, ok := env.Document.(*Pacs009)
+	if !ok {
+		t.Fatalf("Document is %T, want *Pacs009", env.Document)
+	}
+	tx := doc.FICdtTrf.CdtTrfTxInf
+	if len(tx) != 1 {
+		t.Fatalf("CdtTrfTxInf has %d entries, want 1", len(tx))
+	}
+	if got := tx[0].Dbtr.FinInstnId.BICFI; got != "AURODEFFXXX" {
+		t.Fatalf("debtor agent = %q, want AURODEFFXXX", got)
+	}
+	if got := tx[0].Cdtr.FinInstnId.BICFI; got != "VERDITMMXXX" {
+		t.Fatalf("creditor agent = %q, want VERDITMMXXX", got)
+	}
+	minor, err := tx[0].IntrBkSttlmAmt.Minor(2)
+	if err != nil {
+		t.Fatalf("Minor() error = %v", err)
+	}
+	if minor != 250000 {
+		t.Fatalf("amount = %d minor units, want 250000", minor)
+	}
+}
+
 func TestPacs009RoundTrips(t *testing.T) {
 	raw, err := Marshal(sample009())
 	if err != nil {

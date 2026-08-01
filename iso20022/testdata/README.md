@@ -50,7 +50,8 @@ non-empty value, a missing `xmllint` or a missing schema is a failure rather
 than a skip — so a machine or a CI job that has the schemas notices when they
 go away, instead of quietly reporting `PASS` for ten checks that never ran.
 
-**Identities.** Every file uses the same cast, matching `seed/seed.go`:
+**Identities.** The four customer-message files (`pacs008.xml`, `pacs003.xml`,
+`pacs002.xml`, `pacs004.xml`) use the same cast, matching `seed/seed.go`:
 
 | Entity | BIC | IBAN |
 | --- | --- | --- |
@@ -60,3 +61,22 @@ go away, instead of quietly reporting `PASS` for ten checks that never ran.
 
 The IBANs are the seed's `SE89-AURORA-1001` and `IT60-VERDE-2002` in compact
 form. They carry no valid mod-97 check digit, on purpose — see `IBAN`.
+
+`pacs009.xml` uses a different, narrower cast, because it is not a customer
+message: both parties are financial institutions, and one of them is the
+central bank sub-project 7a introduced as an actor with nothing it could
+receive until this message existed.
+
+| Entity | BIC |
+| --- | --- |
+| Clearing house (as `Fr` / instructing agent) | `CSMXFRPPXXX` |
+| Central bank (as `To` / instructed agent) | `CBSEDEFFXXX` |
+| Aurora Bank (as `Dbtr`, the debiting settlement member) | `AURODEFFXXX` |
+| Banca Verde (as `Cdtr`, the crediting settlement member) | `VERDITMMXXX` |
+
+`CSMXFRPPXXX` and `AURODEFFXXX` are deliberately not `CSMBFRPPXXX` and
+`AURTSESSXXX`: they are this system's settlement-layer identities, distinct
+from the customer-facing BICs above, and are what the rest of sub-project 7b
+uses for the clearing house's and Aurora Bank's roles at the settlement
+layer. Banca Verde's BIC is the same in both roles — `VERDITMMXXX` — because
+sub-project 7b did not need to give it a separate settlement identity.
