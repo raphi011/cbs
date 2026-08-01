@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 )
 
 // TestReasonTableCoversEverySentinel is the mechanism 7a asked for: a new
@@ -360,8 +361,8 @@ func TestReadSettlementRefusesAnUnknownCurrency(t *testing.T) {
 			Cdtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"}},
 		}},
 	}}
-	if _, err := ReadSettlement(doc); err == nil {
-		t.Fatal("read a settlement leg in a currency the ledger does not define")
+	if _, err := ReadSettlement(doc); !errors.Is(err, ledger.ErrAssetNotFound) {
+		t.Fatalf("ReadSettlement of an undefined currency = %v, want ledger.ErrAssetNotFound", err)
 	}
 }
 
@@ -417,8 +418,15 @@ func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
 			Cdtr:           iso20022.BranchAndFinancialInstitution{FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"}},
 		}},
 	}}
-	if _, err := ReadSettlement(doc); err == nil {
+	_, err := ReadSettlement(doc)
+	if err == nil {
 		t.Fatal("accepted a settlement instruction whose NbOfTxs is not a number")
+	}
+	// There is no sentinel for "your file contradicts itself" — see
+	// onlyTransaction — so the specific thing asserted is that the error names
+	// the element, which is what reaches the sender as free text beside MS03.
+	if !strings.Contains(err.Error(), "NbOfTxs") {
+		t.Errorf("error = %v, want it to name the count that was not a count", err)
 	}
 }
 

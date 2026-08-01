@@ -348,10 +348,16 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
-	// The lookup is exact on both halves of the pair and scoped by book, like
-	// every other method here. Two banks holding the same value is a legal
-	// state, and each book sees only its own.
-	t.Run("ListDepositAccountsByIdentifierIsExactAndBookScoped", func(t *testing.T) {
+	// The SCHEME half of the pair is matched exactly, and the lookup is scoped
+	// by book like every other method here. Two banks holding the same value is
+	// a legal state, and each book sees only its own.
+	//
+	// The value half is matched under the scheme's own rule, which for an IBAN
+	// is not literal — see
+	// ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators, which is
+	// where that half lives. This case was called …IsExactAndBookScoped until
+	// the value stopped being matched exactly.
+	t.Run("ListDepositAccountsByIdentifierMatchesTheSchemeExactlyAndIsBookScoped", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
 
@@ -540,6 +546,59 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			if len(both) != 2 {
 				t.Fatalf("duplicate lookup returned %d accounts, want 2 — the store must not enforce uniqueness", len(both))
+			}
+			return nil
+		})
+	})
+
+	// Neither store enforces uniqueness ACROSS SPELLINGS either, and this is the
+	// case that keeps the write-side rule where it belongs.
+	//
+	// deposit.Register.checkIdentifierFreeTx refuses a second account taking an
+	// address another one at the bank already holds, and since the lookup became
+	// canonical that refusal covers both spellings of one IBAN. The refusal is a
+	// READ followed by a write, in the domain layer, with nothing behind it —
+	// and it has to stay there. A UNIQUE index on the compacted value would be
+	// the obvious way to make store/pg enforce the same thing, and it would
+	// reject a write the Go map accepts under the race that has no lock over it:
+	// the exact divergence the store layer must never introduce, and one that
+	// would only show up on Postgres.
+	//
+	// So both stores must ACCEPT the pair the register refuses, and one lookup
+	// must return both accounts — which is what makes the resulting ambiguity
+	// visible at read time (Register.ResolveIdentifier, and the network sweep
+	// above it) rather than lost in a constraint violation.
+	t.Run("IdentifierUniquenessIsNotEnforcedAcrossSpellings", func(t *testing.T) {
+		s := openDeposit(t, newStore)
+		display := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
+		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
+
+		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_1", Name: "Alice", Asset: "EUR",
+				Identifiers: []deposit.Identifier{display},
+			}); err != nil {
+				return err
+			}
+			// The write a race gets past the register. It must succeed on both
+			// stores; a constraint refusing it here is the divergence.
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
+				ID: "dep_2", Name: "Aaron", Asset: "EUR",
+				Identifiers: []deposit.Identifier{compact},
+			})
+		})
+
+		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+			for _, quoted := range []deposit.Identifier{display, compact} {
+				both, err := tx.ListDepositAccountsByIdentifier(ctx, bookA, quoted)
+				if err != nil {
+					return err
+				}
+				if len(both) != 2 {
+					t.Fatalf("lookup of %q returned %d accounts, want both spellings of the one address — "+
+						"the ambiguity has to be visible at read time, because no constraint stopped the write",
+						quoted.Value, len(both))
+				}
 			}
 			return nil
 		})

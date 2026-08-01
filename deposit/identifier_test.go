@@ -47,13 +47,18 @@ func TestIdentifierValidateReportsTheField(t *testing.T) {
 }
 
 func TestIdentifierEquality(t *testing.T) {
-	// Identifier is a comparable struct on purpose: Register.RemoveIdentifier
-	// and the uniqueness check both compare with ==, and a slice or a map in
-	// this type would break that.
+	// Identifier is a comparable struct on purpose: a slice or a map in this
+	// type would make even the zero-value test impossible. What == answers is
+	// "written the same way", which is not "the same address" — Matches is
+	// that question, and it is the one every caller deciding where money goes
+	// asks.
 	a := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
 	b := Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
 	if a != b {
 		t.Fatal("identical identifiers compare unequal")
+	}
+	if (Identifier{}) != (Identifier{}) {
+		t.Fatal("the zero identifier does not compare equal to itself")
 	}
 }
 

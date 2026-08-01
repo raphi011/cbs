@@ -32,8 +32,12 @@ const IdentifierIBAN IdentifierScheme = "IBAN"
 // than an IBAN field. Modelling it as a pair is what makes a card PAN a new
 // constant instead of a schema change.
 //
-// The struct is comparable: it holds two strings and nothing else, so == is the
-// identity test, which is what RemoveIdentifier and the uniqueness check use.
+// The struct is comparable: it holds two strings and nothing else. What ==
+// tests is whether two identifiers are written the same way, which is NOT the
+// same question as whether they name the same address — see Matches, which is
+// what routing, uniqueness, addition and withdrawal all use. == survives for
+// the questions it does answer: whether an identifier is the zero value, and
+// whether a stored value is literally unchanged.
 type Identifier struct {
 	Scheme IdentifierScheme
 	Value  string

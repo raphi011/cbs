@@ -7,6 +7,7 @@ package deposit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	. "github.com/raphi011/cbs/deposit"
@@ -216,5 +217,163 @@ func TestResolveIdentifierIsAmbiguousWhenTwoAccountsHoldIt(t *testing.T) {
 
 	if _, err := reg.ResolveIdentifier(ctx, iban); !errors.Is(err, ErrIdentifierAmbiguous) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// One address, two spellings
+// ---------------------------------------------------------------------------
+//
+// An IBAN is stored here in its readable display form and transmitted compact,
+// and the two are one address (Identifier.MatchValue). These tests pin that the
+// rule is ONE rule: what routing treats as the same address, uniqueness,
+// addition and withdrawal treat as the same address too. A layer that disagreed
+// with the others would be discovered by a payment, not by a compiler.
+
+var (
+	displayIBAN = Identifier{Scheme: IdentifierIBAN, Value: "SE89-AURORA-1001"}
+	compactIBAN = Identifier{Scheme: IdentifierIBAN, Value: "SE89AURORA1001"}
+)
+
+// A bank that has issued an address has issued it in every spelling. Letting a
+// second account take the other one would mint an address that resolves to two
+// accounts — which ResolveIdentifier then refuses for both of them, so the
+// damage lands on the innocent account as well as the new one.
+//
+// This is the write-side half of the read-side change, and it arrived through
+// the lookup rather than by editing this rule. It is pinned so that it is a
+// decision rather than a side effect.
+func TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	if _, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN); err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+	aaron, err := reg.OpenAccount(ctx, sub, "Aaron", testAsset, prd, 0)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+
+	if err := reg.AddIdentifier(ctx, aaron.ID, compactIBAN); !errors.Is(err, ErrIdentifierTaken) {
+		t.Fatalf("AddIdentifier(compact form of another account's IBAN) = %v, want ErrIdentifierTaken", err)
+	}
+	// And the original account is untouched — the refusal is a refusal, not a
+	// partial write.
+	got, err := reg.ResolveIdentifier(ctx, compactIBAN)
+	if err != nil {
+		t.Fatalf("ResolveIdentifier after the refusal: %v", err)
+	}
+	if got.Name != "Alice" {
+		t.Fatalf("the address now resolves to %s, want Alice", got.Name)
+	}
+}
+
+// The same address in the other spelling is not new information, so adding it
+// is the no-op that adding it twice already was.
+//
+// The consequence of getting this wrong is not a duplicate row: it is an
+// account that holds what looks like two addresses, which makes every payment
+// that quotes NEITHER of them ErrAmbiguousAddress — the account loses the
+// ability to be paid without one being named, and nothing reports it, because
+// both spellings resolve to it perfectly well.
+func TestAddIdentifierIsANoOpForAnotherSpellingTheAccountAlreadyHolds(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+
+	if err := reg.AddIdentifier(ctx, acct.ID, compactIBAN); err != nil {
+		t.Fatalf("AddIdentifier(another spelling of an address the account holds) = %v, want a no-op", err)
+	}
+	after, err := reg.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if len(after.Identifiers) != 1 {
+		t.Fatalf("identifiers = %#v, want the one address the account already had", after.Identifiers)
+	}
+	// The STORED spelling is the one kept. Rewriting it would edit what a
+	// statement shows and what every earlier payment recorded, on the strength
+	// of a call that told this bank nothing.
+	if after.Identifiers[0] != displayIBAN {
+		t.Errorf("identifier = %#v, want the stored display form %#v", after.Identifiers[0], displayIBAN)
+	}
+}
+
+// The sibling check inside one OpenAccount call, which is the path a request
+// body reaches directly: [X, X] is refused, and so is [X, X-written-differently],
+// because they are the same list.
+func TestOpenAccountRefusesTwoSpellingsOfOneAddressInOneCall(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+
+	_, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN, compactIBAN)
+	if !errors.Is(err, ErrIdentifierTaken) {
+		t.Fatalf("OpenAccount with both spellings of one IBAN = %v, want ErrIdentifierTaken", err)
+	}
+	// Nothing was opened: the refusal happens before any write, so the address
+	// is still free.
+	if _, err := reg.ResolveIdentifier(ctx, displayIBAN); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Fatalf("ResolveIdentifier after the refusal = %v, want ErrIdentifierNotFound", err)
+	}
+}
+
+// Withdrawal takes the address, whichever spelling names it.
+//
+// Removing an identifier that is not held is a no-op by design, so a literal
+// comparison here fails SILENTLY: a bank quoting the compact form would believe
+// it had withdrawn an address that is still live and still payable, with no
+// error anywhere to say otherwise. That is the worst of the three sites to get
+// wrong, which is why it is not left exact.
+func TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling(t *testing.T) {
+	ctx := context.Background()
+	reg, _, sub, prd := newTestRegister(t)
+	acct, err := reg.OpenAccount(ctx, sub, "Alice", testAsset, prd, 0, displayIBAN)
+	if err != nil {
+		t.Fatalf("OpenAccount: %v", err)
+	}
+
+	if err := reg.RemoveIdentifier(ctx, acct.ID, compactIBAN); err != nil {
+		t.Fatalf("RemoveIdentifier(the compact spelling): %v", err)
+	}
+	after, err := reg.GetAccount(ctx, acct.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if len(after.Identifiers) != 0 {
+		t.Fatalf("identifiers = %#v, want the address withdrawn", after.Identifiers)
+	}
+	if _, err := reg.ResolveIdentifier(ctx, displayIBAN); !errors.Is(err, ErrIdentifierNotFound) {
+		t.Fatalf("ResolveIdentifier after withdrawal = %v, want ErrIdentifierNotFound", err)
+	}
+
+	// The audit trail records the identifier as STORED, not as quoted: what
+	// happened is that the account's own address was withdrawn.
+	var payloads []string
+	if err := reg.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		events, err := tx.ListAudit(ctx, ledger.AuditFilter{
+			BookID:   reg.BookID(),
+			Scope:    ledger.ScopeDeposit,
+			EntityID: string(acct.ID),
+		})
+		if err != nil {
+			return err
+		}
+		for _, e := range events {
+			if e.Type == ledger.EventIdentifierRemoved {
+				payloads = append(payloads, string(e.Payload))
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reading the audit trail: %v", err)
+	}
+	if len(payloads) != 1 {
+		t.Fatalf("got %d identifier.removed events, want 1", len(payloads))
+	}
+	if !strings.Contains(payloads[0], displayIBAN.Value) {
+		t.Errorf("identifier.removed payload = %s, want the stored form %q", payloads[0], displayIBAN.Value)
 	}
 }

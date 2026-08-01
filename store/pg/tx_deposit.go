@@ -219,12 +219,14 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 // storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators,
 // which runs against this store and store/mem and fails if they disagree.
 //
-// It defeats the (book_id, scheme, value) index on the identifier table, which
-// is the honest cost of comparing a derived form. The fix, on a database that
-// held enough rows to care, is an index on the same expression rather than a
-// normalised column: a stored compact value would take the readable IBAN out of
-// every statement and worked example in the repository, which is the trade
-// sub-project 5 refused.
+// For the IBAN arm it gives up the VALUE column of the
+// (book_id, scheme, value) index — a predicate on replace(value, ...) cannot
+// use an index on value — which is the honest cost of comparing a derived form.
+// The (book_id, scheme) prefix still applies, so the scan is one bank's IBANs
+// rather than the table. The fix, on a database with enough rows to measure, is
+// an index on the same expression rather than a normalised column: a stored
+// compact value would take the readable IBAN out of every statement and worked
+// example in the repository, which is the trade sub-project 5 refused.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
 	value := `i.value = $3`
 	if ident.Scheme == deposit.IdentifierIBAN {

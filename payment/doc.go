@@ -62,8 +62,15 @@
 //     Payment struct stands in for the instruction. Scheme docs name the
 //     messages they correspond to.
 //   - No identifier format validation: an IBAN's check digit, length and
-//     country code go unchecked, and a BIC is not modelled at all. Addresses
-//     resolve by exact lookup against deposit.Identifier, not by parsing.
+//     country code go unchecked, and a participant's BIC is checked for
+//     structure only — there is no directory to look it up in. Addresses
+//     resolve by lookup against
+//     deposit.Identifier, not by parsing — literally, with one exception the
+//     readable stored form forces: an IBAN is compared with its display
+//     separators removed from both sides (deposit.Identifier.MatchValue), so
+//     that the SE89-AURORA-1001 this system stores and the SE89AURORA1001 a
+//     pacs.008 carries are the one address they are. No other scheme is
+//     normalised.
 //   - A single currency, using ledger.Amount (integer minor units).
 //   - One database transaction stands in for a settlement window. Every book —
 //     each participant's and the central bank's — lives in the same Store, told

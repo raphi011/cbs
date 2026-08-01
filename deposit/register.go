@@ -193,7 +193,14 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		// beats collapsing silently: a caller who listed one address twice
 		// either meant two different addresses and mistyped one, or is sending
 		// a list it has not deduplicated, and both are worth being told about.
-		if slices.Contains(identifiers[:i], ident) {
+		//
+		// ContainsFunc over Matches and not Contains over ==, because
+		// [SE89-AURORA-1001, SE89AURORA1001] is that same list written twice —
+		// see Identifier.MatchValue. Comparing literally here would let one
+		// call open an account holding two spellings of one address, which is
+		// exactly what this check exists to refuse, and would then be caught by
+		// nothing: the account resolves, so no lookup ever complains.
+		if slices.ContainsFunc(identifiers[:i], ident.Matches) {
 			return Account{}, ErrIdentifierTaken
 		}
 		if err := r.checkIdentifierFreeTx(ctx, tx, "", ident); err != nil {
@@ -639,10 +646,22 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 // added TO: it already holding the identifier is a no-op rather than a
 // collision, which is what makes a retried AddIdentifier succeed twice.
 //
+// "Already holds" is Identifier.Matches, because the lookup this delegates to
+// is: a bank that has issued SE89-AURORA-1001 has issued SE89AURORA1001, and
+// letting a second account take the other spelling would mint an ambiguous
+// address that every subsequent resolution refuses. The rule is one rule —
+// two identifiers that compact equal are one address — and it is the same one
+// on the read side, so uniqueness and routing cannot disagree about what has
+// been issued. See TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued.
+//
 // The check is a read followed by a write with no constraint behind it and no
 // lock above it, so two concurrent adds can both pass. That is deliberate — a
 // UNIQUE in store/pg would reject writes store/mem accepts — and the resulting
 // duplicate is caught by ResolveIdentifier, which refuses rather than guesses.
+// storetest/IdentifierUniquenessIsNotEnforcedAcrossSpellings pins that both
+// stores accept the pair of spellings this refuses, so that the refusal stays
+// this layer's and does not become a constraint one store has and the other
+// cannot.
 func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner AccountID, ident Identifier) error {
 	holders, err := tx.ListDepositAccountsByIdentifier(ctx, r.bookID, ident)
 	if err != nil {
@@ -679,8 +698,21 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 	if err := r.checkIdentifierFreeTx(ctx, tx, id, ident); err != nil {
 		return err
 	}
+	// Matches and not ==: an account holds an ADDRESS, and the two spellings of
+	// one IBAN are one address. Comparing literally would append the compact
+	// form beside the display form and leave the account holding what looks
+	// like two addresses — which nothing downstream would report, because both
+	// resolve to it, but which makes a payment quoting neither of them
+	// ErrAmbiguousAddress: the account would have lost the ability to be paid
+	// without an address being named. See addressFor in the payment package,
+	// and TestAddIdentifierIsANoOpForAnotherSpellingTheAccountAlreadyHolds.
+	//
+	// The stored form is the one KEPT. A caller adding the compact spelling of
+	// an address the account holds hyphenated has told this bank nothing new,
+	// and rewriting the stored value would edit what a statement shows and what
+	// every earlier payment recorded on the strength of a no-op.
 	for _, got := range acct.Identifiers {
-		if got == ident {
+		if got.Matches(ident) {
 			return nil // already held by this account: a no-op, not an error
 		}
 	}
@@ -693,6 +725,19 @@ func (r *Register) AddIdentifierTx(ctx context.Context, tx Tx, id AccountID, ide
 
 // RemoveIdentifier withdraws an external address. Removing one that is not held
 // is a no-op, for the same reason adding one twice is.
+//
+// It withdraws the address in EITHER spelling: a caller quoting SE89AURORA1001
+// withdraws an account's SE89-AURORA-1001, because they are one address and the
+// rest of the system already treats them as one. The alternative is worse than
+// inconsistent — removal of an unheld identifier is a no-op by design, so a
+// literal comparison would leave a bank that quoted the compact form believing
+// it had withdrawn an address that is still live and still payable, with no
+// error to say otherwise. See
+// TestRemoveIdentifierWithdrawsTheAddressInEitherSpelling.
+//
+// What the audit event records is the identifier as STORED, not as quoted. The
+// trail says what happened to the account, and what happened is that the
+// account's own address was withdrawn.
 //
 // Historical payments are unaffected: a payment stores the address it was sent
 // to, so removing it here cannot rewrite what a settled payment says.
@@ -709,22 +754,22 @@ func (r *Register) RemoveIdentifierTx(ctx context.Context, tx Tx, id AccountID, 
 		return err
 	}
 	kept := make([]Identifier, 0, len(acct.Identifiers))
-	found := false
+	var removed Identifier
 	for _, got := range acct.Identifiers {
-		if got == ident {
-			found = true
+		if got.Matches(ident) {
+			removed = got
 			continue
 		}
 		kept = append(kept, got)
 	}
-	if !found {
+	if removed == (Identifier{}) {
 		return nil
 	}
 	acct.Identifiers = kept
 	if err := tx.PutDepositAccount(ctx, r.bookID, acct); err != nil {
 		return err
 	}
-	return r.appendAuditTx(ctx, tx, ledger.EventIdentifierRemoved, string(id), ident)
+	return r.appendAuditTx(ctx, tx, ledger.EventIdentifierRemoved, string(id), removed)
 }
 
 // ResolveIdentifier returns the account this bank addresses by ident.

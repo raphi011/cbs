@@ -1039,8 +1039,11 @@ func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 	doc := env.Document.(*iso20022.Pacs008)
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt = iso20022.ActiveCurrencyAndAmount{Ccy: "XYZ", Value: "25.00"}
 
-	if _, err := n.CreditTransferRequest(ctx, doc); err == nil {
-		t.Fatal("read an amount in a currency the ledger does not define")
+	// ledger.ErrAssetNotFound and not merely "an error": the refusal must be
+	// the ledger saying it does not define this asset, not some later
+	// complaint about the number's shape at a scale that was guessed.
+	if _, err := n.CreditTransferRequest(ctx, doc); !errors.Is(err, ledger.ErrAssetNotFound) {
+		t.Fatalf("CreditTransferRequest in an undefined currency = %v, want ledger.ErrAssetNotFound", err)
 	}
 }
 
