@@ -353,19 +353,13 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // partiesOf resolves a payment's two sides to what a message says about them:
 // each bank's BIC and each account holder's name.
 //
-// # On the missing context
-//
-// This method takes none, and opens its read on context.Background(). That is a
-// consequence of the signature its callers were given — CreditTransferMessage
-// and DirectDebitMessage take a payment and a MessageContext and nothing else,
-// because a message is built from a payment and not from a request — and it is
-// the one place in this package where a store read is not cancellable. It is
-// tolerable because the read is two point lookups against data the caller has
-// already loaded the payment from; it is not something to copy. If the mesh
-// ever needs to abandon a message in flight, this grows a ctx and so do its two
-// callers, and nothing else changes: every function below partiesOf is pure.
-func (s *Network) partiesOf(p Payment) (debtor, creditor messageParty, err error) {
-	err = s.store.View(context.Background(), func(ctx context.Context, tx Tx) error {
+// It is the ONLY part of building an outbound message that touches the store,
+// and the reason the two Network methods above take a context while the four
+// pure builders below do not. That division is deliberate: a caller draining a
+// queue of messages can abandon the read, and everything after it is arithmetic
+// on values it already holds.
+func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor messageParty, err error) {
+	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		if debtor, err = s.partyTx(ctx, tx, p.Debtor); err != nil {
 			return err
@@ -399,12 +393,17 @@ func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messagePart
 // is being handed to next — the clearing house, on the first hop. Those are
 // different questions with different answers, and conflating them would model a
 // topology this system does not have: banks here meet at a CSM, never directly.
-func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.Envelope, error) {
+//
+// It takes a context because it reads the store: a payment records which
+// participant and which account each side is, and a message needs the BIC and
+// the account holder's NAME, neither of which a Payment carries. That is the
+// whole of the I/O, and it is why this is a method rather than a function.
+func (s *Network) CreditTransferMessage(ctx context.Context, p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOf(p)
+	debtor, creditor, err := s.partiesOf(ctx, p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -483,12 +482,12 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 // SENDER is the party being paid. A push scheme's message travels with the
 // money; a pull scheme's travels against it, which is why the creditor and its
 // agent come first in the transaction and why the mandate has to travel too.
-func (s *Network) DirectDebitMessage(p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
+func (s *Network) DirectDebitMessage(ctx context.Context, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOf(p)
+	debtor, creditor, err := s.partiesOf(ctx, p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -759,8 +758,14 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // therefore NOT the source of it — see that field — and the caller supplies the
 // return's own reason.
 //
-// This is a Network method although it reads no store: the amount's scale comes
-// from the scheme's asset, and only the Network holds the scheme registry.
+// This is a Network method although it reads no store, and it takes no context
+// for exactly that reason — the asymmetry with CreditTransferMessage and
+// DirectDebitMessage is the point rather than an oversight. It is a method
+// because the amount's scale comes from the scheme's asset and only the Network
+// holds the scheme registry, which is an in-memory map; there is no I/O here to
+// cancel. A pacs.004 names no parties: it refers to the original payment by
+// identifier and carries amounts, so nothing in it needs a BIC or an account
+// holder's name looked up.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
