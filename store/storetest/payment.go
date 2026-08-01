@@ -265,6 +265,63 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("SubmittedPaymentRoundTripsWithNoCycleAndNoDebtorLeg", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		// The shape the split invented, and the one every payment now passes
+		// through: Initiated, in NO cycle, and — for a pull — with no debtor
+		// leg either. Before it, a payment reached PutPayment only once it was
+		// already Accepted and already in a cycle, which is what every other
+		// fixture in this file still writes.
+		//
+		// Empty is a value here, not a missing one. payments.cycle_id is TEXT
+		// NOT NULL with no CHECK and no foreign key, so "" round-trips today;
+		// this case is what makes that a property of the CONTRACT rather than
+		// of the current DDL. A later CHECK (cycle_id <> ''), or the foreign
+		// key cycle_payments.cycle_id already carries, would make store/pg
+		// refuse a write store/mem accepts — and without this case the
+		// conformance suite would stay green while it did.
+		p := samplePayment("pay_1", "e2e-1", early)
+		p.Status = payment.Initiated
+		p.CycleID = ""
+		p.DebtorLegTx = ""
+		p.CreditorLegTx = ""
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutPayment(ctx, p)
+		})
+
+		var got payment.Payment
+		var listed []payment.Payment
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			var err error
+			if got, err = tx.GetPayment(ctx, p.ID); err != nil {
+				return err
+			}
+			listed, err = tx.ListPayments(ctx)
+			return err
+		})
+
+		assertEqual(t, "status", got.Status, payment.Initiated)
+		assertEqual(t, "cycle", string(got.CycleID), "")
+		assertEqual(t, "debtor leg", string(got.DebtorLegTx), "")
+		assertEqual(t, "status in listings", listed[0].Status, payment.Initiated)
+		assertEqual(t, "cycle in listings", string(listed[0].CycleID), "")
+
+		// And it is still found by the reference it claimed: an uncycled
+		// payment is a payment, so the duplicate check at submission — the
+		// only thing standing between a customer and paying twice — has to see
+		// it.
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			byRef, err := tx.GetPaymentByEndToEndID(ctx, "e2e-1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "end-to-end lookup", string(byRef.ID), "pay_1")
+			return nil
+		})
+	})
+
 	t.Run("RejectedPaymentKeepsItsCodeAndItsText", func(t *testing.T) {
 		s := openPayment(t, newStore)
 

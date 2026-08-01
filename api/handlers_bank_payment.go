@@ -54,9 +54,16 @@ func (s *Server) handleGetBankPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
-// acceptedPaymentDTO is what a bank answers a customer's instruction with: an
+// submittedPaymentDTO is what a bank answers a customer's instruction with: an
 // identifier to ask about, not an outcome.
-type acceptedPaymentDTO struct {
+//
+// Named for submission and not for acceptance, because since the split the two
+// are different things and this is the first: the 202 is HTTP's "I have taken
+// this in", and the payment it names is Initiated, in no cycle, and not yet
+// seen by the counterparty. Calling the type accepted — as it was while
+// submission produced an Accepted payment — now reads as a claim the response
+// does not make.
+type submittedPaymentDTO struct {
 	PaymentID string `json:"paymentId"`
 }
 
@@ -91,8 +98,19 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	// Requiring the debtor unconditionally — which is what this did before —
 	// was the wrong bank for every direct debit. It was invisible while one
 	// process validated both ends regardless of who called.
+	// A scheme nobody has registered cannot say which bank submits it, so it is
+	// refused here rather than falling through to the push rule — which would
+	// answer "a credit transfer is submitted by the payer's bank and a direct
+	// debit by the payee's" about a scheme that is neither and does not exist.
+	// SubmitPayment refuses it too; this is only about refusing it for the
+	// right reason.
+	sc, ok := s.network().Scheme(dom.Scheme)
+	if !ok {
+		writeError(w, payment.ErrSchemeNotFound)
+		return
+	}
 	submitter := dom.Debtor.Participant
-	if sc, ok := s.network().Scheme(dom.Scheme); ok && sc.Direction() == payment.Pull {
+	if sc.Direction() == payment.Pull {
 		submitter = dom.Creditor.Participant
 	}
 	if submitter != s.boundPID {
@@ -108,5 +126,5 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusAccepted, acceptedPaymentDTO{PaymentID: string(p.ID)})
+	writeJSON(w, http.StatusAccepted, submittedPaymentDTO{PaymentID: string(p.ID)})
 }

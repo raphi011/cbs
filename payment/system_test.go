@@ -71,7 +71,7 @@ func initiate(ctx context.Context, sys *Network, req InitiatePaymentRequest) (Pa
 		if err != nil {
 			return err
 		}
-		if err := sys.AcceptInboundTx(ctx, tx, p); err != nil {
+		if err := sys.AcceptInboundTx(ctx, tx, p.ID); err != nil {
 			return err
 		}
 		out, err = sys.AcceptAtCSMTx(ctx, tx, p.ID)
@@ -1816,16 +1816,57 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	// discover and answer with AC01.
 	req.Creditor.Account = "no-such-account"
 
-	if _, err := n.SubmitPayment(context.Background(), req); err != nil {
+	p, err := n.SubmitPayment(context.Background(), req)
+	if err != nil {
 		t.Fatalf("SubmitPayment refused a payment whose far side it cannot see: %v", err)
 	}
+
+	// And the check did not VANISH, it moved: the creditor's bank is the one
+	// that discovers the account does not exist, which is the AC01 the mesh
+	// answers with. Without this half the inventory's "nothing was dropped"
+	// would be a claim no test could contradict — a creditorSideTx that
+	// tolerated a missing account passed the whole suite before this line
+	// existed.
+	if err := n.AcceptInbound(context.Background(), p.ID); !errors.Is(err, ErrAccountNotInParticipant) {
+		t.Fatalf("AcceptInbound on an account the creditor's bank does not hold = %v, want ErrAccountNotInParticipant", err)
+	}
+}
+
+// A payment that is no longer Initiated must not be revived by an answer that
+// was in flight when it stopped being one.
+//
+// This is why AcceptInboundTx takes an ID and loads: given the payment by
+// value it wrote the caller's copy back, and this sequence — which Task 9 makes
+// routine and which RejectPaymentTx already permits, since it accepts an
+// Initiated payment — returned a rejected payment to Initiated with its
+// DebtorLegTx still naming the transaction the rejection had reversed. The
+// clearing house would then have accepted and settled it, paying the creditor
+// out of a suspense position that no longer existed.
+func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
+	ctx := context.Background()
+	n, p := networkWithASubmittedPayment(t)
+
+	rejected, err := n.RejectPayment(ctx, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
+	assertNoError(t, err)
+	assertEqual(t, "status after rejection", rejected.Status, Rejected)
+
+	// p is the copy submission returned: Initiated, with a debtor leg that has
+	// since been reversed. Exactly what a bank's handler would still be
+	// holding.
+	if err := n.AcceptInbound(ctx, p.ID); !errors.Is(err, ErrInvalidStateTransition) {
+		t.Fatalf("AcceptInbound on a rejected payment = %v, want ErrInvalidStateTransition", err)
+	}
+
+	stored, err := n.GetPayment(ctx, p.ID)
+	assertNoError(t, err)
+	assertEqual(t, "status after the late answer", stored.Status, Rejected)
 }
 
 func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
 	n, p := networkWithASubmittedPayment(t)
 	closeCreditorAccount(t, n, p)
 
-	err := n.AcceptInbound(context.Background(), p)
+	err := n.AcceptInbound(context.Background(), p.ID)
 	if !errors.Is(err, deposit.ErrAccountClosed) {
 		t.Fatalf("AcceptInbound = %v, want the closed-account error", err)
 	}
@@ -1835,6 +1876,15 @@ func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
 // at submission. The debtor's bank validates funds, asynchronously, on
 // receipt. That is who holds what in SEPA, and it is the seam that survives
 // the eventual store split.
+//
+// The funds half here is also the pull mirror of
+// TestSubmitDoesNotCheckTheCreditorAccount, as far as one can be written. The
+// account half of that mirror is not constructible: pointing the request's
+// debtor at an account that does not exist fails the mandate's SameParty
+// comparison with ErrMandateMismatch — a comparison of two stored refs, not a
+// look in the debtor's register — before the absence of any debtor-book read
+// could be observed. The property holds by construction: creditorSideTx never
+// calls checkPartyTx for the debtor.
 func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 	n, req := networkWithARevokedMandate(t)
 	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrMandateRevoked) {
@@ -1846,7 +1896,7 @@ func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitPayment refused for lack of funds it cannot see: %v", err)
 	}
-	if err := n2.AcceptInbound(context.Background(), p); !errors.Is(err, deposit.ErrInsufficientAvailable) {
+	if err := n2.AcceptInbound(context.Background(), p.ID); !errors.Is(err, deposit.ErrInsufficientAvailable) {
 		t.Fatalf("AcceptInbound = %v, want insufficient funds", err)
 	}
 }

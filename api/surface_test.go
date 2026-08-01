@@ -495,6 +495,27 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	}`, http.StatusUnprocessableEntity)
 }
 
+// An unknown scheme is answered as an unknown scheme, not as the wrong bank.
+//
+// Which bank may submit is a question only a registered scheme can answer, so
+// asking it first and falling through to the push rule when nobody answers
+// produces "a credit transfer is submitted by the payer's bank and a direct
+// debit by the payee's" — about a scheme that is neither.
+func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := threeBanks(t, h)
+
+	// Debtor at the OTHER bank, so the bound-bank check would refuse this with
+	// 422 if it ran first. It must not run first.
+	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
+		"scheme":"nope",
+		"debtor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
+		"creditor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
+		"amount":10000,
+		"endToEndId":"no-such-scheme"
+	}`, http.StatusNotFound)
+}
+
 // A bank may not submit a payment drawn on somebody else's customer.
 func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	h := newServer(t, nil)

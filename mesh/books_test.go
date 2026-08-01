@@ -546,6 +546,21 @@ var structCarriedBooks = map[string]structCarriedBook{
 // assertion wants — and it keeps its audit event, which is the ONLY reason
 // those network rows are visible here at all.
 //
+// # A BANK's expected set is [NetworkBook, its own book], not [its own book]
+//
+// The brief's draft for TestABankHandlerTouchesOnlyItsOwnBook wants
+// []ledger.BookID{h.debtorBook} for the submitting bank. That is not
+// satisfiable and never was: every payment id is allocated network-scoped —
+// payment/system.go's NextID(ctx, ledger.NetworkBook, "pay") — and submission
+// appends payment.initiated under NetworkBook. No version of creating a
+// payment avoids either. Correct the draft's want list rather than the domain.
+//
+// The invariant that actually makes this sub-project real is narrower and does
+// hold: NO BANK REACHES ANOTHER BANK'S BOOK, and the CSM reaches only this one.
+// NetworkBook is not another bank's book; it is the label for rows that belong
+// to no single bank, and a bank that creates or advances a payment necessarily
+// touches it.
+//
 // And nothing in this repository EVER posts under NetworkBook. It labels
 // entities that belong to no single bank; it is not a chart of accounts
 // (payment/system.go, on CentralBankBook, says so), and no ledger.NewBook is

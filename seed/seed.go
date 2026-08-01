@@ -318,7 +318,7 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 		if err != nil {
 			return err
 		}
-		if err := b.net.AcceptInboundTx(ctx, tx, p); err != nil {
+		if err := b.net.AcceptInboundTx(ctx, tx, p.ID); err != nil {
 			return err
 		}
 		out, err = b.net.AcceptAtCSMTx(ctx, tx, p.ID)

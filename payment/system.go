@@ -1096,9 +1096,9 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 }
 
 // AcceptInbound is AcceptInboundTx in its own unit of work.
-func (s *Network) AcceptInbound(ctx context.Context, p Payment) error {
+func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return s.AcceptInboundTx(ctx, tx, p)
+		return s.AcceptInboundTx(ctx, tx, id)
 	})
 }
 
@@ -1116,14 +1116,40 @@ func (s *Network) AcceptInbound(ctx context.Context, p Payment) error {
 // posts nothing at submission — until this runs, the payer's money has not
 // moved and no actor has looked at their account.
 //
+// It takes an ID and LOADS the payment, as AcceptAtCSMTx does, and it refuses
+// anything that is not still Initiated.
+//
+// Both halves of that are load-bearing, and taking the payment by value instead
+// was a genuine lost update rather than a theoretical one: submit, reject —
+// which reverses the debtor leg and RejectPaymentTx accepts an Initiated
+// payment, so this is an ordinary sequence — then answer with the copy the
+// submitting call returned, and the rejected payment came back Initiated with
+// DebtorLegTx still naming the reversed transaction, ready for the clearing
+// house to accept and settle. In the mesh the two acts are two actors and an
+// arbitrary interval apart, so the caller's copy is stale by construction.
+// TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated is the pin.
+//
 // It writes the payment back only when it changed something (the debtor leg
 // for a pull, a back-filled far address for either), and without an audit
-// event: the payment's lifecycle events are the submitting bank's initiation
-// and the clearing house's acceptance, and a bank that appended one here would
-// be recording a network fact for an act that is entirely its own. The act
-// itself is not invisible — for a pull it is a posting in the bank's own book,
-// which the mesh's recorder sees positionally (mesh/books_test.go).
-func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, p Payment) error {
+// event. The payment's lifecycle has two facts, not three — the submitting
+// bank's initiation and the clearing house's acceptance — and inventing a third
+// here would put a second payment.initiated in every payment's trail. Nothing
+// this half produces is lost by the omission: the CSM's payment.accepted event
+// carries the whole payment as its payload, back-filled address, DebtorLegTx
+// and all. The absence is pinned, not merely current — adding an event here
+// fails the four exact-sequence assertions at payment/audit_test.go:75, :169,
+// :245 and api/server_test.go:1090.
+func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) error {
+	p, err := tx.GetPayment(ctx, id)
+	if err != nil {
+		return err
+	}
+	// Initiated and nothing else: a payment the clearing house has already
+	// taken into a cycle does not need answering, and one that was rejected
+	// must not be revived by an answer that was in flight when it died.
+	if p.Status != Initiated {
+		return ErrInvalidStateTransition
+	}
 	scheme, ok := s.scheme(p.Scheme)
 	if !ok {
 		return ErrSchemeNotFound
@@ -1174,6 +1200,14 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 // event, which is what makes the act visible to the mesh's book recorder at
 // all: network-scoped writes reach it only through the id allocation and the
 // audit event. See the note in mesh/books_test.go.
+//
+// "On receiving the counterparty's ACCP" is a statement about WHEN the clearing
+// house runs this, not a precondition it checks. A payment record does not
+// distinguish an Initiated payment the far side has accepted from one it has
+// not yet seen, and this will take either into a cycle. That invariant lives in
+// the message flow — the CSM calls this from the pacs.002 handler and nowhere
+// else — so Tasks 10 and 11 own it, and the composition sites that stand in for
+// the mesh today own it by calling the halves in order.
 func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {

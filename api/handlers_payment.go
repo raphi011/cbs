@@ -212,6 +212,14 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 // answers 201 with an Accepted payment, so it has to perform the whole
 // choreography itself. Sub-project 7b's api handoff is what removes it.
 //
+// The same ten lines appear in seed/seed.go and payment/system_test.go. They
+// are not factored out because the three live in three packages with three
+// error conventions — writeError here, check() in the seed, t.Fatalf upstream
+// of the test helper — and because the one place a shared version could live,
+// payment itself, is precisely where the brief forbids it: a method that runs
+// all three halves is the second path into payment creation the split exists
+// to remove.
+//
 // The three calls share a Tx deliberately. Run as three units of work, an
 // instruction the far side refuses would leave an Initiated payment behind
 // with the payer's money already in suspense — a real outcome in the mesh,
@@ -225,7 +233,7 @@ func (s *Server) initiateWholePayment(ctx context.Context, req payment.InitiateP
 		if err != nil {
 			return err
 		}
-		if err := net.AcceptInboundTx(ctx, tx, p); err != nil {
+		if err := net.AcceptInboundTx(ctx, tx, p.ID); err != nil {
 			return err
 		}
 		out, err = net.AcceptAtCSMTx(ctx, tx, p.ID)
