@@ -28,11 +28,19 @@ const testAsset ledger.AssetCode = "EUR"
 
 var euroOnly = []ledger.AssetCode{testAsset}
 
-// testBIC is a structurally valid ISO 9362 BIC used across these tests. There
-// is no uniqueness constraint on it (see participants.bic's column comment),
-// so every test bank sharing it is not a fixture bug — only store/storetest's
-// participant fixture needs a BIC distinct from anything else it asserts.
+// testBIC is a structurally valid ISO 9362 BIC used as the default across
+// these tests. There is no uniqueness constraint on it (see participants.bic's
+// column comment), so a test bank sharing it with another is not automatically
+// a fixture bug — except where a test's own assertion turns on telling two
+// banks' BICs apart, which is what testBIC2 is for.
 const testBIC iso20022.BIC = "BANKDEFFXXX"
+
+// testBIC2 is a second, distinct BIC for fixtures where two banks' BICs must
+// be tellable apart — setupTwoBanks uses it for Bank B so that a test planting
+// one bank's BIC where the other's belongs (as
+// TestSubmitDerivesTheCounterpartyAgentFromTheRoster does) can actually catch
+// a derivation that silently passes the wrong value through.
+const testBIC2 iso20022.BIC = "BANKGB2LXXX"
 
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
@@ -111,13 +119,20 @@ func reject(ctx context.Context, sys *Network, id PaymentID, code iso20022.Statu
 // Both accounts carry an IBAN — not because this fixture is about addressing,
 // but because most of it is not: every scheme in play here is SEPA, so an
 // account it cannot address is not a usable test fixture at all.
+//
+// Bank A and Bank B are given DISTINCT BICs (testBIC and testBIC2) rather than
+// sharing testBIC the way single-bank fixtures do: this is the two-bank
+// fixture that TestSubmitDerivesTheCounterpartyAgentFromTheRoster builds on,
+// and a test that plants one bank's BIC where the other's belongs needs the
+// two to actually differ or the plant is indistinguishable from the roster
+// value it is meant to be wrong against.
 func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob deposit.AccountID) {
 	t.Helper()
 	ctx := context.Background()
 
 	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
-	b, err = sys.AddParticipant(ctx, "Bank B", testBIC, euroOnly)
+	b, err = sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	aliceAcct := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -1778,12 +1793,19 @@ func networkWithTwoBanks(t *testing.T) (*Network, InitiatePaymentRequest) {
 // mandate the payee holds over the payer, and the collection request under it.
 // fund is what the payer's account holds, so a caller can build both a
 // collectable and an uncollectable one.
+//
+// Bank A and Bank B get distinct BICs (testBIC / testBIC2), not addParticipant's
+// shared testBIC — same reason as setupTwoBanks: this is the pull direction's
+// two-bank fixture, and TestSubmitDerivesTheCounterpartyAgentFromTheRoster's
+// pull subtest plants one bank's BIC where the other's belongs.
 func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, InitiatePaymentRequest, MandateID) {
 	t.Helper()
 	ctx := context.Background()
 	sys := testNetwork(t)
-	a := addParticipant(t, ctx, sys, "Bank A")
-	b := addParticipant(t, ctx, sys, "Bank B")
+	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
+	assertNoError(t, err)
+	b, err := sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
+	assertNoError(t, err)
 	payer := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
 	payee := openCustomer(t, ctx, b, "Biller", "SE89-BANKB-0001")
 	if fund > 0 {
@@ -1917,13 +1939,16 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 
 // TestSubmitTakesTheCounterpartyNameFromTheRequest pins the direction rule: the
 // submitting bank fills in its OWN side from its own register and is TOLD the
-// counterparty's. It never reads the counterparty's register for either.
+// counterparty's NAME — the agent is derived from the roster instead, not taken
+// from the request (see TestSubmitDerivesTheCounterpartyAgentFromTheRoster).
+// It never reads the counterparty's register for either.
 func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	ctx := context.Background()
 	n, req := networkWithTwoBanks(t)
-	creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
-	assertNoError(t, err)
-	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
+	// No Agent set: this test is about the name, and the agent this bank would
+	// plant here is discarded and re-derived from the roster regardless — see
+	// networkWithTwoBanks on why setting one would just be dead input.
+	req.CreditorDetails = PartyDetails{Name: "Whoever The Payer Typed"}
 	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
 	// onto the payment unchanged would pass this test's name check; only an
 	// overwrite from the register catches it.
@@ -1996,6 +2021,16 @@ func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
 // Both directions, because which side is the counterparty follows the scheme's
 // direction and nothing else — a fix applied to the push arm alone would leave
 // the pull arm's collecting bank posting the debit in the payer's bank's book.
+//
+// The two fixtures this test uses (setupTwoBanks, networkWithACollection) give
+// their two banks DISTINCT BICs for exactly this test's sake: with both banks
+// on the same BIC, "the submitting bank's own" and "the roster's" are the same
+// byte string, so the assertion below passes whether or not the agent is
+// actually derived. Measured directly — deleting SubmitPaymentTx's
+// `counterparty.Agent = counterpartyBank.BIC` line passed both subtests before
+// the fixtures were split; giving Bank A and Bank B distinct BICs is what makes
+// the derivation this test names something the test can actually catch the
+// absence of.
 func TestSubmitDerivesTheCounterpartyAgentFromTheRoster(t *testing.T) {
 	t.Run("push: the creditor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()

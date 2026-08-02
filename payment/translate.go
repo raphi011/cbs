@@ -515,8 +515,9 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // each bank's BIC and each account holder's name.
 //
 // It reads NOTHING. Both are on the payment, put there at submission — the
-// bank's own side from its own register, the counterparty's from the
-// instruction. That is the whole of this change and the whole of why it matters:
+// bank's own side from its own register, the counterparty's name from the
+// instruction and its agent from the roster (see PartyDetails.Agent and
+// SubmitPaymentTx). That is the whole of this change and the whole of why it matters:
 // building an outbound message used to read the counterparty's deposit register
 // for the name on the account, which is a read of another bank's book on the
 // happy path of every submission.

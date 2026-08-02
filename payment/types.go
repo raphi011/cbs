@@ -270,8 +270,9 @@ type Payment struct {
 	EndToEndID string    // client reference (the ISO 20022 "end-to-end id")
 
 	// DebtorDetails and CreditorDetails are what a message says about each side.
-	// The submitting bank fills its OWN side from its own register and is TOLD
-	// the counterparty's; see SubmitPaymentTx.
+	// The submitting bank fills its OWN side from its own register; for the
+	// counterparty it is TOLD the name and derives the agent from the roster —
+	// see PartyDetails.Agent, PartyDetails.Name, and SubmitPaymentTx.
 	DebtorDetails   PartyDetails
 	CreditorDetails PartyDetails
 
