@@ -1416,21 +1416,11 @@ go run ./cmd/server        # :8081 central bank, :8082 clearing house, :8083+ on
 DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
 ```
 
-**One binary and, by default, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` still starts a single Go process — it just answers on six ports over one shared `payment.Network`.
+**One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports over one shared `payment.Network`.
 
-That default is not a convenience. `store/mem` is a map behind a mutex in one process's memory, so four bank *processes* would be four disconnected universes: a payment from Aurora to Verde would post into an Aurora that Verde has never heard of. Postgres is strictly optional here (`go test ./...`, `make dev` and `make run` all work with no database), so the split cannot require one.
+That is not a convenience. `store/mem` is a map behind a mutex in one process's memory, so four bank *processes* would be four disconnected universes: a payment from Aurora to Verde would post into an Aurora that Verde has never heard of. Postgres is strictly optional here (`go test ./...`, `make dev` and `make run` all work with no database), so the split cannot require one.
 
-`-entity` runs a single entity in its own process, which is the real topology — and it **refuses to start without `-database`**, saying why:
-
-```
-$ go run ./cmd/server -entity aurora
--entity requires -database. Separate processes cannot share the in-memory store:
-each would hold its own, and a payment between two banks would post into two
-systems that cannot see each other. Start with -database, or run every entity in
-one process (the default).
-```
-
-`make dev-split` is that mode for the whole cast. An entity is named by id or by name (`-entity aurora`, `-entity credit-soleil`), and keeps the port the whole-system plan gave it either way.
+A flag once ran a single entity in its own process against a shared Postgres, which is the real topology. It is gone, and what took its place is the `mesh`: the institutions are now separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message. They still share this process, this store and this clock — the mesh models the separation, it does not deploy it — so a listener started alone would serve its API while no message could reach it, and the failure would surface far from its cause. A genuine split is a larger job than a flag: `SettleCycleTx` posts into the central bank's book and every participant's inside one `Store.Update`, so splitting the processes means splitting the store, and splitting the store means a reconciliation-break concept this system does not have.
 
 **Ports are static, and admission is not provisioning.** A participant created at runtime through `POST /members` gets a store row, a chart of accounts and reserve accounts — and **no listener until the process restarts**. That is a decision rather than a limitation: admitting a member to a payment network is an operational act, and an API call that instantly yielded a running bank would teach the wrong thing.
 

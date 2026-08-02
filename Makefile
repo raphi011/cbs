@@ -38,7 +38,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run run-pg dev dev-pg dev-split clean test test-pg test-schemas db-up db-down
+.PHONY: help install build run run-pg dev dev-pg clean test test-pg test-schemas db-up db-down
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -126,24 +126,6 @@ test-pg: db-up ## Run the Go suite against the docker-compose Postgres
 test-schemas: ## Run the iso20022 golden-file schema check, requiring xmllint and testdata/xsd
 	set -euo pipefail
 	ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/ -run TestGoldenFilesValidateAgainstTheSchema -v
-
-# The entities dev-split starts. Names, not ids: ids are generated (bank_1,
-# bank_3, …) and -entity matches on a slugified name too. This list is the
-# seeded scenario's; a different dataset needs its own.
-ENTITIES     ?= central-bank clearing-house aurora banca-verde nordhaven credit-soleil
-
-# One entity per process, which is the real topology and the mode -entity
-# exists for. It needs a database: separate processes cannot share store/mem —
-# each would hold its own — and the binary refuses rather than letting that
-# fail later as a mystery. Each entity keeps the port the whole-system plan
-# gave it, so the addresses are the same as `make dev`.
-dev-split: db-up ## Run every entity as its own process against the container
-	set -euo pipefail
-	trap 'kill 0' EXIT INT TERM
-	for e in $(ENTITIES); do
-		go run ./cmd/server -entity "$$e" -database "$(DB_URL)" &
-	done
-	wait
 
 db-up: ## Start the Postgres container and wait until it accepts connections
 	set -euo pipefail

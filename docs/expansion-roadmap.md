@@ -284,7 +284,8 @@ settling moves to the central bank, where it belongs, and a bank's
 The deployment unit is the **listener, not the process** — `store/mem` is one
 process's memory, so N processes would be N disconnected universes, and
 Postgres-optional is load-bearing. One binary runs every listener by default;
-`-entity` runs one per process and refuses to start without a DSN, saying why.
+`-entity` ran one per process and refused to start without a DSN, saying why.
+(7b removed the flag — see below. One binary runs every listener, full stop.)
 
 Out of scope: splitting the store, splitting the call graph (inter-operator
 messaging is 7b's), authn/authz, and dynamic port allocation — a bank admitted
