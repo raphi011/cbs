@@ -1444,11 +1444,14 @@ The settlement layer. Reserves move in its book and nowhere else.
 |---|---|
 | `GET /reserves`, `GET /reserves/{pid}` | every bank's reserves, or one bank's — one row per asset |
 | `POST /members` | admit a bank: opens its reserve and settlement accounts here |
-| `POST /settlements` | settle a closed cycle (`{"cycleId": "..."}`) |
+| `GET /cycles`, `GET /cycles/{cid}` | the cycles it is instructed to settle, and their net positions |
+| `GET /settlements`, `GET /settlements/{sid}` | what it settled |
 | `GET /audit` | the central bank's own log |
 | `POST /admin/reset` | clear the store and rebuild the sample dataset |
 
-`POST /settlements` is the central bank's rather than the clearing house's because settlement moves reserves between accounts in the central bank's own book, and a clearing house that could do that would be a central bank. Before the split the CSM settled directly, because there was one server and nothing in the shape of the API could say otherwise. What is still not modelled is the *instruction* between them — today an operator closes a cycle on one console and settles it on another.
+**There is no `POST /settlements`, and its absence is the shape of what the message layer changed.** Settling used to be an operator's act: a human opened this console and pressed a button on a cycle somebody else had closed, with nothing between the two consoles but the two operators. The instruction between them is now modelled — the clearing house reaches a cut-off, sends a **`pacs.009`** carrying the closed cycle's net positions, and the central bank answers a `pacs.002`: `ACSC`, or `RJCT`/`AM04` when a net payer's reserve cannot cover its position. A route that let a human settle beside that would be a second way to settle the same cycle, racing the first.
+
+So the reads are what is left, and they are what the console watches settlement *with*: a cycle that is still `Closed` with no settlement against it is an instruction the central bank refused, and the net positions beside `GET /reserves` are why. The refusal's code travels in a message between two actors and is stored nowhere, which is exactly what an operator's console has to be able to reconstruct.
 
 ### The clearing house — `:8082`
 

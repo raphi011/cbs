@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -23,13 +26,24 @@ import (
 // destination and a pull towards its source. What comes back is a pacs.002
 // either way, and this actor treats it the same way either way.
 //
-// It holds a csmOps, which is four methods wide: nothing about clearing moves
-// money, and that is what makes clearing and settlement different jobs. What
-// that does NOT amount to is a compile-time ban on posting — GetParticipant
-// hands back live ledger and deposit handles bound to the bank it names, so a
-// clearing house that wanted another bank's book has one. See the note on
-// bankOps in ops.go for the whole of that hole. TestTheCSMTouchesOnlyTheNetworkBook
-// is what actually holds this actor to it.
+// # It also sits between the banks and the settlement agent
+//
+// Task 12 gave it a third job and a second counterparty. Reaching a cut-off nets
+// the batch and then INSTRUCTS the central bank to discharge the positions, in a
+// pacs.009, because moving reserves is not something a clearing house may do.
+// The answer to that instruction comes back here rather than to any bank, and
+// this actor turns it into per-payment news — which it can and the central bank
+// cannot, because it is the one that knows which payments are in the batch. See
+// closeCycle and receiveSettlementStatus.
+//
+// It holds a csmOps: nothing about clearing moves money, and that is what makes
+// clearing and settlement different jobs. What that does NOT amount to is a
+// compile-time ban on posting — GetParticipant hands back live ledger and deposit
+// handles bound to the bank it names, so a clearing house that wanted another
+// bank's book has one. See the note on bankOps in ops.go for the whole of that
+// hole. TestTheCSMTouchesOnlyTheNetworkBook is what actually holds this actor to
+// it, and TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends that
+// over the cut-off and the settlement conversation.
 type csm struct {
 	m   *Mesh
 	ops csmOps
@@ -49,6 +63,21 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	case *iso20022.Pacs003:
 		return c.relayDirectDebit(from, env, doc)
 	case *iso20022.Pacs002:
+		// Two kinds of status arrive here, and the SENDER is what tells them
+		// apart. A member bank's pacs.002 answers an instruction about one
+		// customer payment; the central bank's answers a settlement
+		// instruction about a whole cycle, and its OrgnlTxId is a cycle id
+		// rather than a payment id. Reading the second as the first would look
+		// up a payment that does not exist.
+		//
+		// By BIC rather than by trying the lookup and seeing what happens,
+		// because the central bank is not a member of this network: it holds no
+		// participant row, it never submits and it is never a payment's agent,
+		// so the only message it ever sends this actor is the answer to what
+		// this actor asked it.
+		if from == c.m.cfg.CentralBankBIC {
+			return c.receiveSettlementStatus(ctx, from, doc)
+		}
 		return c.receiveStatus(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", c.bic, env.AppHdr.MsgDefIdr)
@@ -320,6 +349,272 @@ func (c *csm) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.T
 		return fmt.Errorf("mesh: %s could not build its pacs.002 for %s: %w", c.bic, to, err)
 	}
 	return c.m.send(c.bic, to, env)
+}
+
+// ---------------------------------------------------------------------------
+// The cut-off, and the settlement it instructs
+// ---------------------------------------------------------------------------
+
+// closeCycle is the clearing house reaching a cut-off: it nets the batch, and
+// then asks the central bank to discharge it.
+//
+// Two steps, and the seam between them is the point of this task. Netting is
+// the clearing house's own act and moves nothing — CloseCycleTx posts NOTHING
+// at all, it transitions each payment to Cleared and writes the positions onto
+// the cycle. Discharging those positions moves central-bank reserves, which no
+// clearing house may do, so the second step is a MESSAGE to another institution
+// and not a call. Before the mesh the two were separate console buttons on
+// separate operators, with nothing between them; the pacs.009 is what was
+// missing.
+//
+// It runs synchronously on the CALLER's goroutine, for Mesh.Submit's reason: an
+// operator reaching a cut-off has an error to be told about, then and there. And
+// like Submit, the send is OUTSIDE the unit of work — a settlement instruction
+// enqueued from inside CloseCycleTx would be one the central bank could act on
+// against a cut-off the store then rolled back.
+//
+// The two failure modes are not the same, and the signature keeps them apart. A
+// refused cut-off netted nothing and is the caller's answer. A cycle that closed
+// and whose instruction could not be sent is HALF-HAPPENED — the payments are
+// Cleared and no settlement agent has been told — so the closed cycle comes back
+// beside the error rather than being swallowed. It is the same seam
+// RejectAtCSMTx documents, and the console is where it shows: a cycle that is
+// Closed and has no settlement.
+func (c *csm) closeCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
+	// Everything below is the clearing house's work, and is recorded as the
+	// clearing house's. See withActor.
+	ctx = withActor(ctx, c.bic)
+
+	closed, err := c.ops.CloseCycle(ctx, id)
+	if err != nil {
+		return payment.ClearingCycle{}, err
+	}
+	if err := c.instructSettlement(ctx, closed); err != nil {
+		return closed, fmt.Errorf("mesh: %s closed %s and could not instruct settlement: %w", c.bic, closed.ID, err)
+	}
+	return closed, nil
+}
+
+// instructSettlement sends the closed cycle's net positions to the central bank
+// as a pacs.009.
+//
+// A pacs.009 and not a pacs.008 because both parties to every leg are banks:
+// this moves a bank's own money, not a customer's. payment.SettlementMessage's
+// doc has the whole of that distinction, and the compiler holds it — Dbtr and
+// Cdtr in this message are agents and a customer cannot be put in one.
+//
+// # One instruction, one cycle, one asset
+//
+// A cycle belongs to one scheme and a scheme settles in one asset, so the asset
+// is read off the scheme once and every leg carries it. Two cycles in two assets
+// are therefore two cut-offs and two instructions, which is what
+// TestOneSettlementInstructionPerAsset measures. Nothing here would stop a
+// FUTURE caller putting two cycles in one message — payment.ReadSettlement
+// supports it deliberately — but this system does not, and the central bank
+// refuses a message that does; see cycleOf.
+//
+// # A cycle that nets to nothing instructs nothing
+//
+// An empty cycle, or one whose members' positions all cancel, has no leg to
+// send, and a pacs.009 with no transaction is not a message this codec will
+// build. Silence is correct there and is not the same as a failure: there is
+// nothing for a settlement agent to discharge. Every credit-transfer test in
+// this package closes an untouched direct-debit cycle for exactly that reason,
+// so the path is walked constantly rather than reasoned about.
+func (c *csm) instructSettlement(ctx context.Context, closed payment.ClearingCycle) error {
+	scheme, ok := c.ops.Scheme(closed.Scheme)
+	if !ok {
+		return fmt.Errorf("mesh: %s closed %s and holds no %q scheme to settle it in: %w",
+			c.bic, closed.ID, closed.Scheme, payment.ErrSchemeNotFound)
+	}
+	legs, err := c.settlementLegs(ctx, closed, scheme.Asset())
+	if err != nil {
+		return err
+	}
+	if len(legs) == 0 {
+		return nil
+	}
+
+	to := c.m.cfg.CentralBankBIC
+	env, err := payment.SettlementMessage(legs, payment.MessageContext{
+		From:  c.bic,
+		To:    to,
+		MsgID: c.m.nextMsgID(c.bic),
+		Now:   c.m.now(),
+	})
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not build the settlement instruction for %s: %w", c.bic, closed.ID, err)
+	}
+	return c.m.send(c.bic, to, env)
+}
+
+// settlementLegs turns a cycle's net positions into the legs of an instruction:
+// one per member with something to discharge, each against the CENTRAL BANK.
+//
+// Against the central bank and not against another member, because a
+// multilateral net position has no counterparty among the banks. Three banks
+// that each paid and were paid net out to one figure apiece, and the sum of
+// those figures is zero — but there is no pairing of payer to payee left in
+// them, which is precisely what netting destroys. Every position is therefore a
+// claim on or an obligation to the settlement agent, and the message says so:
+// a net payer's leg runs from that bank TO the central bank, a net receiver's
+// from the central bank to it.
+//
+// The reference on every leg is the CYCLE, which is what the central bank reads
+// to know what it is being asked to discharge. See payment.SettlementLeg.
+//
+// Members are visited in sorted id order rather than map order. The legs are the
+// message's transactions, so map iteration would put a different byte sequence
+// on the wire on every run for no reason — the same argument settlementLegsTx
+// makes one layer down for the entries of the stored transaction, arrived at
+// independently because these two orders are not each other's.
+//
+// A position of zero is left out. It nets to nothing, and a leg for it would be
+// an IntrBkSttlmAmt of zero, which the codec refuses (ActiveCurrencyAndAmount
+// requires a positive amount) and which would say a bank was instructed to move
+// nothing.
+func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, asset ledger.AssetCode) ([]payment.SettlementLeg, error) {
+	cb := c.m.cfg.CentralBankBIC
+	legs := make([]payment.SettlementLeg, 0, len(closed.NetPositions))
+	for _, pid := range slices.Sorted(maps.Keys(closed.NetPositions)) {
+		net := closed.NetPositions[pid]
+		if net == 0 {
+			continue
+		}
+		p, err := c.ops.GetParticipant(ctx, pid)
+		if err != nil {
+			return nil, fmt.Errorf("mesh: %s closed %s and cannot name the bank behind %s: %w", c.bic, closed.ID, pid, err)
+		}
+		leg := payment.SettlementLeg{
+			From:      p.BIC,
+			To:        cb,
+			Amount:    -net,
+			Asset:     asset,
+			Reference: string(closed.ID),
+		}
+		if net > 0 {
+			leg.From, leg.To, leg.Amount = cb, p.BIC, net
+		}
+		legs = append(legs, leg)
+	}
+	return legs, nil
+}
+
+// receiveSettlementStatus is the clearing house acting on what the CENTRAL BANK
+// said about a settlement instruction.
+//
+// The two outcomes are not symmetrical, and the asymmetry is a fact about who is
+// waiting for what.
+//
+// ACSC is news every bank in the batch has been waiting for since it submitted,
+// and it is fanned out per payment — see tellSettled. Settlement is the point of
+// finality: it is the moment a payee's bank has actually been paid, and before
+// the mesh a submitting bank could learn it only by reading the return value of
+// somebody else's call.
+//
+// RJCT is told to NOBODY, and that is deliberate rather than an omission. The
+// batch failed whole — SettleCycleTx is one unit of work, so nothing was posted
+// anywhere — which leaves every payment in the cycle exactly where the cut-off
+// left it: Cleared, with the payer's money still in its own bank's clearing
+// suspense. A bank told "rejected" would try to reverse a debtor leg that must
+// not be reversed, and bank.receiveStatus refuses to: it checks this network's
+// own record of the payment and finds it Cleared rather than Rejected, so the
+// message would become a dead letter at every recipient. There is nothing
+// truthful to tell a bank here, because nothing about its payments changed.
+//
+// What DID change is the cycle, and the cycle is where the failure is visible:
+// it stays Closed with no settlement against it. That is the state the central
+// bank's console reads, and the one the operator acts on — the reason is
+// recoverable from the net positions and the reserves, which is what the console
+// puts side by side. The code is logged here as well, because the code is the
+// one thing that arrives on the wire and is nowhere in the store.
+func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs002) error {
+	orig, reports := payment.ReadStatus(doc)
+	for _, r := range reports {
+		if r.TxID == "" {
+			// A status naming no cycle. The central bank quotes the cycle it was
+			// asked about even when it refuses, so this is a message this actor
+			// cannot act on and has nobody to ask about.
+			return fmt.Errorf("mesh: %s got a settlement status from %s naming no cycle", c.bic, from)
+		}
+		if r.Status != iso20022.TransactionStatusSettlementCompleted {
+			c.m.log.Error("mesh: settlement refused",
+				"clearing house", c.bic, "settlement agent", from,
+				"cycle", r.TxID, "status", r.Status, "code", r.Code, "reason", r.Text)
+			continue
+		}
+		if err := c.tellSettled(ctx, payment.CycleID(r.TxID), orig, r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tellSettled turns one settled CYCLE into one pacs.002 per PAYMENT, addressed
+// to the bank that submitted it.
+//
+// Per payment, because that is the unit a bank has an outstanding instruction
+// about: it sent a pacs.008 or a pacs.003 naming one payment and has heard ACCP
+// since, and ACSC is the answer that closes it. The central bank could not send
+// these — it is answering about a cycle and settlementOps holds no way to look a
+// payment up, which is the whole shape of "the central bank never sees an
+// individual payment".
+//
+// To the SUBMITTER, chosen by the scheme's direction exactly as tell does, and
+// for the same reason: the payer's bank pushed, or the payee's bank pulled, and
+// the other one never asked. On a push that is the payer's bank; on a pull it is
+// the payee's, which is the bank that has been waiting to be paid.
+//
+// The ORIGINAL message these refer back to is the SETTLEMENT INSTRUCTION, not
+// the bank's own pacs.008, and that is a limitation worth naming. A bank matches
+// on OrgnlTxId, which is the payment id and is right; but OrgnlMsgId names a
+// message that bank never sent and has never seen. It is the honest one
+// available — the clearing house does not keep each submitting bank's message id
+// — and a real network would, so that every hop of a payment's answer quotes the
+// instruction that started it.
+func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+	cycle, err := c.ops.GetCycle(ctx, id)
+	if err != nil {
+		return fmt.Errorf("mesh: %s was told %s settled and cannot read it: %w", c.bic, id, err)
+	}
+	for _, pid := range cycle.PaymentIDs {
+		p, err := c.ops.GetPayment(ctx, pid)
+		if err != nil {
+			return fmt.Errorf("mesh: %s was told %s settled and cannot read %s: %w", c.bic, id, pid, err)
+		}
+		scheme, ok := c.ops.Scheme(p.Scheme)
+		if !ok {
+			return fmt.Errorf("mesh: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
+				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound)
+		}
+		submitter, err := c.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
+		if err != nil {
+			return fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err)
+		}
+		if err := c.forward(submitter.BIC, orig, payment.TransactionStatusReport{
+			EndToEndID: endToEndOf(p),
+			TxID:       string(p.ID),
+			Status:     r.Status,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// endToEndOf is the payer's own reference for a payment, or the EPC's
+// convention where there is none.
+//
+// It repeats payment's unexported helper of the same name rather than reaching
+// for it, because these two references must agree: a bank matching the answer to
+// its instruction compares what it sent with what came back, and a status
+// quoting an empty string against a pacs.008 carrying NOTPROVIDED would not
+// match. See mesh.notProvided for the whole of that convention.
+func endToEndOf(p payment.Payment) string {
+	if p.EndToEndID == "" {
+		return notProvided
+	}
+	return p.EndToEndID
 }
 
 // answer rejects a message the clearing house could not carry out, back to

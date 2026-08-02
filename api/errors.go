@@ -91,8 +91,11 @@ func errorStatus(err error) int {
 		// The bank exists and the asset exists; this bank simply holds no
 		// accounts in it. 404 would read as "participant not found" on
 		// POST /participants/{pid}/deposits and GET /central-bank/reserves/
-		// {pid}, and as "cycle not found" on POST /cycles/{id}/settle. 422
-		// matches the sibling underfunded-member failure.
+		// {pid}. 422 matches the sibling underfunded-member failure. It no
+		// longer reaches a settlement route, because there is none: settling is
+		// performed on instruction now (mesh.centralBank), so this error comes
+		// back to the clearing house as a pacs.002 rather than to a caller as a
+		// status code.
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),

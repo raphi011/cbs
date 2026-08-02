@@ -114,8 +114,8 @@ var reasonTable = []reasonMapping{
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
 }
 
-// borrowedReasons classifies the errors a receiving bank's half produces that
-// this package did not declare.
+// borrowedReasons classifies the errors an actor's half produces that this
+// package did not declare.
 //
 // It is a second table and not more rows in the first, because reasonTable's
 // two guards are about payment/errors.go — every sentinel declared there must
@@ -123,15 +123,25 @@ var reasonTable = []reasonMapping{
 // break them or force them to be loosened into a check that no longer catches
 // an unclassified sentinel.
 //
-// There is exactly one member and it is the direct debit's whole point.
-// Scheme.Validate is a funds check run by the DEBTOR's bank, and the deposit
-// layer is the authority for it, so a collection against an empty account comes
-// back as deposit.ErrInsufficientAvailable and not as anything this package
-// names. Without an entry here ReasonFor falls through to MS03 — "the agent
-// rejected it and the reason has no code" — for the one refusal in SEPA that
-// has the most specific code of all. AM04 is what a real debtor's bank sends,
-// and it is what a creditor's collection system reads to decide whether to
-// re-present.
+// Both members are AM04, from two different layers, and they are two entries
+// rather than one because they are two distinct error values that no unwrapping
+// relates: neither wraps the other.
+//
+//   - deposit.ErrInsufficientAvailable is the direct debit's whole point.
+//     Scheme.Validate is a funds check run by the DEBTOR's bank, and the deposit
+//     layer is the authority for it, so a collection against an empty account
+//     comes back as deposit's error and not as anything this package names.
+//   - ledger.ErrInsufficientBalance is the same refusal one layer down and one
+//     institution over: a net payer whose RESERVE cannot cover its position at
+//     settlement. SettleCycleTx posts the mirror leg straight through
+//     ledger.PostTransactionTx, which refuses to take an asset account negative,
+//     so the error that reaches the central bank's handler is the ledger's.
+//
+// Without an entry, ReasonFor falls through to MS03 — "the agent rejected it and
+// the reason has no code" — for the two refusals that have the most specific
+// code of all. AM04 is what a real debtor's bank sends and what a real
+// settlement agent answers, and it is what the receiving system reads to decide
+// whether to re-present or unwind.
 //
 // A new member belongs here only if the error reaches ReasonFor at all, which
 // means a half that some mesh handler calls really returns it. The push flow
@@ -139,6 +149,7 @@ var reasonTable = []reasonMapping{
 // take a credit, and every way that fails is already a payment sentinel.
 var borrowedReasons = []reasonMapping{
 	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
+	{ledger.ErrInsufficientBalance, "ledger.ErrInsufficientBalance", iso20022.StatusReasonInsufficientFunds},
 }
 
 // ReasonFor maps an error to the code a pacs.002 should carry.
@@ -973,13 +984,16 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // the receiver's side, an address it cannot resolve IS an incorrect account
 // number.
 //
-// The scheme is the MESSAGE's. A pacs.008 under this system's rulebook is a SEPA
-// credit transfer, so SchemeSEPACT is not a default that could have been
-// something else — it is what the message being a pacs.008 means. What the
-// message does NOT get to decide is the asset: an instruction quoting a currency
-// the scheme does not settle in is refused rather than reinterpreted, because a
-// receiver that took the sender's currency and its own scheme's scale would book
-// a number neither bank wrote down. See settledIn.
+// The scheme is the MESSAGE's, and it takes two elements to name it rather than
+// one. Being a pacs.008 says the payment is a PUSH; the currency says which
+// asset it settles in; and this network has one scheme for that pair or it
+// refuses the message. Reading SchemeSEPACT off the message definition alone was
+// right while SEPA's was the only push scheme registered, and wrong the moment a
+// second one is — see schemeSettling, which is also where the refusal lives. What
+// the message does NOT get to decide is that it is settled at all: a currency no
+// push scheme settles in is refused rather than reinterpreted, because a receiver
+// that took the sender's currency and some scheme's scale would book a number
+// neither bank wrote down.
 //
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
 // or posted. That is SubmitPaymentTx's job, and the separation is what lets the
@@ -990,7 +1004,7 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	amount, err := s.settledIn(SchemeSEPACT, tx.IntrBkSttlmAmt)
+	scheme, amount, err := s.schemeSettling(Push, tx.IntrBkSttlmAmt)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -999,7 +1013,7 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 		return InitiatePaymentRequest{}, err
 	}
 	return InitiatePaymentRequest{
-		Scheme:      SchemeSEPACT,
+		Scheme:      scheme,
 		Debtor:      debtor,
 		Creditor:    creditor,
 		Amount:      amount,
@@ -1029,7 +1043,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	amount, err := s.settledIn(SchemeSEPADD, tx.IntrBkSttlmAmt)
+	scheme, amount, err := s.schemeSettling(Pull, tx.IntrBkSttlmAmt)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -1042,7 +1056,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 		return InitiatePaymentRequest{}, err
 	}
 	return InitiatePaymentRequest{
-		Scheme:      SchemeSEPADD,
+		Scheme:      scheme,
 		Debtor:      debtor,
 		Creditor:    creditor,
 		Amount:      amount,
@@ -1085,33 +1099,61 @@ func onlyTransaction[T any](element string, txs []T, nbOfTxs string) (T, error) 
 	return txs[0], nil
 }
 
-// settledIn reads an inbound amount as minor units of the scheme's asset.
+// schemeSettling is which of this network's schemes an inbound message
+// travelled under, together with its amount in minor units.
 //
-// Two questions, and the order between them is load-bearing. The SCALE comes
-// from ledger.LookupAsset on the currency the message names, exactly as amountOf
-// takes it from the asset on the way out and for the same reason: this ledger is
-// multi-asset and a two-decimal assumption is wrong the first time a scheme in
-// another asset arrives. Only then is the currency compared with the scheme's,
-// so that a mismatch is reported as what it is — a message this scheme does not
-// settle — rather than as a complaint about the number's shape.
+// The MESSAGE DEFINITION decides the direction and the CURRENCY decides the
+// asset, and between them there is exactly one scheme or there is a refusal.
+// That is a change from reading the scheme off the message definition alone,
+// which said a pacs.008 IS a SEPA credit transfer — true while the only push
+// scheme was SEPA's, and a real defect the moment a second one is registered:
+// this network's outbound side has always rendered a payment in whatever asset
+// its scheme settles in (amountOf takes the scale from the asset), so a system
+// that could SEND a dollar credit transfer and not RECEIVE one was
+// asymmetrical in a way nothing but a second scheme could reveal. The mesh's
+// two-asset settlement fixture is what revealed it.
 //
-// The comparison itself cannot be skipped. Reading a USD amount at a euro scheme
-// and posting it into euro accounts would be a currency conversion at a rate of
-// one, performed silently, which is the failure ErrAssetMismatch exists to make
-// visible. See TestCreditTransferRequestRefusesAMessageInAnotherAsset.
-func (s *Network) settledIn(scheme SchemeID, amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, error) {
-	sc, ok := s.scheme(scheme)
-	if !ok {
-		return 0, fmt.Errorf("%w: %s", ErrSchemeNotFound, scheme)
-	}
+// What has NOT changed is that the message does not get to choose. A currency no
+// scheme in this direction settles in is refused rather than reinterpreted,
+// because a receiver that took the sender's currency and some scheme's scale
+// would book a number neither bank wrote down; it is the same ErrAssetMismatch,
+// carrying the same meaning, and TestCreditTransferRequestRefusesAMessageInAnotherAsset
+// is still what pins it.
+//
+// Two schemes in one direction and one asset is AMBIGUOUS and is refused too.
+// Nothing in this repository registers such a pair, and a receiver that picked
+// one of them — the first in ID order, say — would resolve every message under a
+// rulebook chosen by alphabet. There is no information in a pacs.008 that could
+// break the tie, which is exactly why this is a refusal rather than a rule: what
+// a real network has here is the clearing arrangement the message arrived over,
+// and this system has one clearing house and no such element.
+//
+// The scale comes from ledger.LookupAsset on the currency the message names,
+// exactly as amountOf takes it from the asset on the way out. Reading the amount
+// FIRST, before any scheme is chosen, is what keeps a mismatch reported as what
+// it is — a message no scheme settles — rather than as a complaint about the
+// number's shape.
+func (s *Network) schemeSettling(dir SchemeDirection, amt iso20022.ActiveCurrencyAndAmount) (SchemeID, ledger.Amount, error) {
 	minor, asset, err := amountIn(amt)
 	if err != nil {
-		return 0, err
+		return "", 0, err
 	}
-	if asset != sc.Asset() {
-		return 0, fmt.Errorf("%w: message is in %s, %s settles in %s", ErrAssetMismatch, asset, scheme, sc.Asset())
+	var found []SchemeID
+	for _, sc := range s.ListSchemes() {
+		if sc.Direction() == dir && sc.Asset() == asset {
+			found = append(found, sc.ID())
+		}
 	}
-	return minor, nil
+	switch len(found) {
+	case 1:
+		return found[0], minor, nil
+	case 0:
+		return "", 0, fmt.Errorf("%w: message is in %s and no %s scheme in this network settles in it",
+			ErrAssetMismatch, asset, dir)
+	default:
+		return "", 0, fmt.Errorf("%w: message is in %s and %s schemes %v all settle in it, so nothing in it says which",
+			ErrAssetMismatch, asset, dir, found)
+	}
 }
 
 // amountIn is the inverse of amountOf: a decimal on the wire becomes minor units

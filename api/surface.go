@@ -46,14 +46,22 @@ func (s *Server) centralBankRouter() *router {
 	// central bank's own book, which is what makes it the central bank's act
 	// and not the clearing house's.
 	mux.HandleFunc("POST /members", s.handleAddParticipant)
-	// Settling is the central bank's act; the clearing house keeps the
-	// read side, because it needs to know whether the cycle it closed has
-	// settled and reading is not doing.
-	mux.HandleFunc("POST /settlements", s.handleSettleCycle)
-	// A central bank settles on instruction, and the instruction IS a closed
-	// cycle and its net positions — so it has to be able to read them. What it
-	// still cannot reach is an individual payment: GET /payments is the clearing
-	// house's, and a real central bank does not see one.
+	// There is no POST here, and its absence is the shape of what the mesh
+	// changed. Settling used to be an operator's act — a human opened the
+	// central bank's console and pressed a button on a cycle somebody else had
+	// closed, with nothing between the two consoles but the operators. A
+	// settlement is now performed on INSTRUCTION: the clearing house reaches a
+	// cut-off, sends a pacs.009, and the central bank's actor answers ACSC or
+	// RJCT/AM04 (mesh.centralBank). A route that let a human do it beside that
+	// would be a second way to settle the same cycle, racing the first.
+	//
+	// So the four reads below are what is left, and they are the whole point of
+	// keeping them: the console no longer drives settlement, it WATCHES it. A
+	// closed cycle with no settlement against it is an instruction the central
+	// bank refused, and the net positions beside the reserves are why.
+	//
+	// What it still cannot reach is an individual payment: GET /payments is the
+	// clearing house's, and a real central bank does not see one.
 	mux.HandleFunc("GET /cycles", s.handleListCycles)
 	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
 	mux.HandleFunc("GET /settlements", s.handleListSettlements)

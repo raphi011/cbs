@@ -27,6 +27,11 @@ export const qk = {
   // cycles(): the same rows read from a different listener, which can be
   // individually down, and for a different reason.
   centralBankCycles: () => ["central-bank", "cycles"] as const,
+  // And the settlements it performed, likewise read from its own listener
+  // rather than the clearing house's. Same rows, different operator: the
+  // central bank's console must not be reading another operator's port to find
+  // out what the central bank did.
+  centralBankSettlements: () => ["central-bank", "settlements"] as const,
 
   // Network-wide: assets are defined in code, not per book.
   assets: () => ["assets"] as const,

@@ -900,78 +900,156 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 		[]ledger.BookID{ledger.NetworkBook})
 }
 
-// TestTheCentralBankTouchesOnlyTheCentralBankBook belongs to Task 12, and is
-// deliberately absent here.
+// TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends the assertion
+// above over the two things Task 12 gave this actor: reaching a cut-off, and
+// the settlement conversation that follows it.
 //
-// The draft placed it in this task: submit, close the cycle, and assert the
-// central bank touched CentralBankBook. At Task 10 that assertion cannot mean
-// anything, and it was checked rather than assumed:
+// Same set, and that is the finding. The clearing house now nets a batch, builds
+// a pacs.009, reads two participants to name them in it, and fans the answer out
+// to the bank that submitted each payment — and none of that leaves NetworkBook,
+// because none of it posts and every row it reads belongs to no single bank.
+// GetParticipant is the one that could have gone the other way: it returns a
+// value with the named bank's Ledger, Deposit and Catalogue handles attached
+// (Network.bind), so a handler holding it can reach that bank's book through a
+// method it legitimately has. This measures that this one does not — it takes
+// the BIC off the value and nothing else.
 //
-//   - CloseCycleTx posts NOTHING. It transitions each payment to Cleared, writes
-//     the net positions onto the cycle and appends audit events — all
-//     network-scoped (payment/system.go). Money moves at SettleCycleTx, which is
-//     where the netting transaction in CentralBankBook is.
-//   - No actor closes a cycle, and closing one emits no pacs.009. The central
-//     bank's actor still runs the refusing placeholder from Task 6, so
-//     booksTouchedBy(CentralBankBIC) is EMPTY after a cut-off — and a test
-//     asserting an empty set against []ledger.BookID{CentralBankBook} fails,
-//     while one asserting nil would pass vacuously and go on passing after Task
-//     12 gave settlement a real actor.
-//
-// "Settlement is Task 12's title" is not the argument; the argument is that the
-// path does not exist, which the two bullets above are the evidence for. Task 12
-// owns this test, and it will be a real one there: settlement posts in three
-// places, one of them the netting transaction in the central bank's own book.
-//
-// TestClosingACycleSendsNoMessageAndTouchesNoBankBook is that evidence as a
-// test rather than as prose, and it is written to FAIL the day Task 12 lands.
+// That is the whole reason the recorder exists beside the interfaces in ops.go.
+// csmOps could not have expressed this: the method is on it, and must be.
+func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
 
-// TestClosingACycleSendsNoMessageAndTouchesNoBankBook is what stands in for the
-// central bank's assertion until settlement exists.
+	h.rec.reset()
+	h.closeCycle(t)
+	h.drain(t)
+
+	assertBooksTouched(t, "the clearing house, reaching a cut-off and instructing settlement",
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{ledger.NetworkBook})
+}
+
+// TestWhichBooksTheCentralBankReachesWhenItSettles is the test Task 10 deferred,
+// and the tripwire it left is what this replaces.
 //
-// Reaching the cut-off at Task 10 does three things and no others: it marks
-// every payment in the cycle Cleared, writes the net positions onto the cycle,
-// and records that. All of it is network-scoped, and none of it moves money —
-// which is the whole distinction between clearing and settlement, made
-// falsifiable rather than asserted.
+// Task 10 wrote TestClosingACycleSendsNoMessageAndTouchesNoBankBook and said in
+// its own doc that it was written to FAIL the day settlement landed: the moment
+// a closed cycle emits a pacs.009 the message count stops being zero, and the
+// moment the central bank's actor settles, CentralBankBook appears. Both
+// happened, both failures were watched, and this is what stands in its place —
+// the per-actor claim that was not available then, because the cut-off ran on a
+// bare context attributed to no actor and every per-actor set was empty by
+// construction. Now an actor does the work, so the question has an answer.
 //
-// It is deliberately a pin on the ABSENCE of settlement, so Task 12 will break
-// it: the moment a closed cycle emits a pacs.009 the message count stops being
-// zero, and the moment the central bank's actor settles, CentralBankBook appears.
-// That failure is the signal that Task 12 has started, and it is the point at
-// which TestTheCentralBankTouchesOnlyTheCentralBankBook replaces this.
-func TestClosingACycleSendsNoMessageAndTouchesNoBankBook(t *testing.T) {
+// # The drafted name said the opposite of the measurement
+//
+// Task 10 deferred it as TestTheCentralBankTouchesOnlyTheCentralBankBook. That
+// name is false, and it is renamed here for the reason
+// TestWhichBooksEachBankActuallyReaches was renamed: an assertion whose name
+// claims more than it measures is worse than no name, because the name is the
+// string a failure prints and a reader greps for.
+//
+// The central bank reaches EVERY book in this network when it settles, and Task
+// 10's own note said why without following the sentence through: settlement
+// posts in three places, and only one of them is the central bank's.
+//
+//   - CentralBankBook, for the netting transaction — the one posting that is
+//     genuinely this institution's own, moving reserves between the members'
+//     settlement accounts in its own chart of accounts.
+//   - Each PARTICIPANT's book, twice over. The mirror leg moves that bank's
+//     suspense against its reserve so the suspense returns to zero, and the
+//     creditor leg releases each payee's funds out of its bank's suspense into
+//     the payee's account. Both are postings in a member bank's ledger, made by
+//     the central bank's handler.
+//   - NetworkBook, for the settlement row's id and the audit events — the same
+//     route every network-scoped write takes here, and never through a posting.
+//     See the note above the tests.
+//
+// So the whole set is allBooks(), derived from the fixture rather than typed
+// out, and a third bank would be in it too.
+//
+// # What that measurement is evidence FOR
+//
+// Not a boundary violation. It is what a settlement window IS: one unit of work
+// that holds every member's accounts at once, checks that every net payer can
+// cover, and posts the whole batch or none of it. A settlement agent that could
+// not reach the members' books could not clear their suspense accounts, and the
+// money would settle at the central bank and stay stuck in transit at the banks.
+//
+// It is nonetheless the widest reach any actor in this system has, and the one
+// sub-project 8 will have the most to say about: when each entity gets its own
+// store, the mirror and creditor legs cannot be posted from here at all, and
+// this becomes a conversation — the central bank tells each bank its position is
+// discharged, and each bank posts its own two legs. This measurement is what
+// that change will be measured against.
+func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
 	h.drain(t)
 
 	h.rec.reset()
-	before := h.messagesSeen()
-	closed := h.closeCycle(t)
+	h.closeCycle(t)
 	h.drain(t)
 
-	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
-		t.Errorf("after the cut-off the payment is %v, want Cleared", got.Status)
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Fatalf("the payment is %v, want Settled — this test measures a settlement that happened", got.Status)
 	}
-	if len(closed.NetPositions) != 2 {
-		t.Errorf("the closed cycle has %d net positions, want one per bank", len(closed.NetPositions))
+	assertBooksTouched(t, "the central bank, settling a cycle",
+		h.booksTouchedBy(h.cfg.CentralBankBIC), h.allBooks())
+}
+
+// TestNeitherBankTouchesABookWhileTheCycleSettles is the counterpart of the
+// measurement above, and the strongest form the claim takes anywhere in this
+// package: across a cut-off the member banks reach NO book at all.
+//
+// TestWhichBooksEachBankActuallyReaches makes a claim about a credit transfer up
+// to acceptance, and TestWhichBooksEachBankReachesInAPull about a collection.
+// Neither could say anything about settlement, because at Task 10 there was
+// none. Now there is, and it is the moment at which reserves actually move — so
+// it is the point in the system's life where a bank reaching into the central
+// bank's book would be least visible and most wrong.
+//
+// The empty set is a MEASUREMENT and not a vacuum. The payer's bank runs a
+// handler over this window, attributed to it by the same mechanism every other
+// set here uses: it is handed the ACSC pacs.002 the clearing house fans out. It
+// touches nothing because an acceptance needs nothing from a bank —
+// bank.receiveStatus returns without reading any book unless the status is a
+// rejection. Measured: a receiving half that resolved the payee's participant and
+// listed its ledgers comes out [bank_3] and fails here.
+//
+// # What an empty set does NOT rule out, measured rather than assumed
+//
+// A bank that merely RE-READ the payment row would still pass this, and the
+// reason is the recorder's and not this test's: a network-scoped row reaches
+// touched() through the id its write allocated and the audit event that write
+// appended, never through the read itself (see the note above the tests). So
+// GetPayment and GetParticipant record nothing at all. The claim this makes is
+// therefore about BOOKS — no bank reads or writes any book, its own or anybody
+// else's, while a cycle settles — and it is not a claim that a bank learns
+// nothing.
+//
+// The payee's bank is in the loop for symmetry and its set is empty for a second
+// reason as well: on a push the clearing house fans the ACSC out to the SUBMITTER
+// alone, so that bank is handed no message at all over this window. An assertion
+// that it touched nothing is true of it and weaker than it looks, which is worth
+// saying rather than leaving to be discovered.
+//
+// It measures over the cut-off ONLY, resetting after the submission has drained,
+// so a book reached earlier can neither satisfy nor spoil it.
+func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
+
+	h.rec.reset()
+	h.closeCycle(t)
+	h.drain(t)
+
+	for _, who := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		if got := h.booksTouchedBy(who); len(got) != 0 {
+			t.Errorf("%s reached %v while the cycle settled; settlement is not a bank's work", who, got)
+		}
 	}
-	if got := h.messagesSeen(); got != before {
-		t.Errorf("closing a cycle put %d messages on the wire; at Task 10 clearing is not a conversation", got-before)
-	}
-	// Nobody's ledger moved — not the central bank's, not either member's — and
-	// the WHOLE-STORE set is what says so. Every book-scoped call any layer made
-	// while the cut-off ran is in it, so CentralBankBook or a member's book
-	// appearing there is the failure, whoever made the call.
-	//
-	// Not booksTouchedBy, deliberately. The cut-off is an operator's act driven
-	// on a bare context, so it is attributed to no actor at all and every
-	// per-actor set is empty by construction — an assertion that they are empty
-	// would be one that cannot fail, and it would go on not-failing after Task 12
-	// gave settlement a real actor. That is exactly the class of dud assertion
-	// this file exists to keep out; a per-actor claim needs an actor doing the
-	// work, which is what Task 12 supplies.
-	assertBooksTouched(t, "the cut-off", h.rec.touched(), []ledger.BookID{ledger.NetworkBook})
 }
 
 // ---------------------------------------------------------------------------

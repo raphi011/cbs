@@ -138,6 +138,13 @@ export function useCentralBankCycles() {
   });
 }
 
+export function useCentralBankSettlements() {
+  return useQuery({
+    queryKey: qk.centralBankSettlements(),
+    queryFn: api.centralBankSettlements,
+  });
+}
+
 // --- Assets -----------------------------------------------------------
 
 export function useAssets() {
@@ -676,6 +683,7 @@ function invalidateNetwork(qc: ReturnType<typeof useQueryClient>) {
   qc.invalidateQueries({ queryKey: qk.reserves() });
   qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
   qc.invalidateQueries({ queryKey: qk.centralBankCycles() });
+  qc.invalidateQueries({ queryKey: qk.centralBankSettlements() });
   qc.invalidateQueries({ queryKey: ["participants"] });
 }
 
@@ -769,14 +777,6 @@ export function useCloseCycle() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (cid: string) => api.closeCycle(cid),
-    onSuccess: () => invalidateNetwork(qc),
-  });
-}
-
-export function useSettleCycle() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (cid: string) => api.settleCycle(cid),
     onSuccess: () => invalidateNetwork(qc),
   });
 }

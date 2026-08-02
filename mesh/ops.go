@@ -105,13 +105,15 @@ type bankOps interface {
 // The comment on bankOps applies to all three — empty on purpose, grown by the
 // task that first needs a method.
 //
-// Four methods for the whole of clearing, and the shortness is the point: a
-// clearing house accepts a payment into a cycle, rejects one, asks which
-// direction it runs in, and looks up where to send the answer. Posting is a
-// bank's act and no method here is one — with the same exception the note above
-// records, since GetParticipant is on this interface too and hands over the same
-// live handles. So the ban on posting is the recorder's and not the compiler's;
-// TestTheCSMTouchesOnlyTheNetworkBook is what enforces it.
+// Seven methods for the whole of clearing: a clearing house accepts a payment
+// into a cycle, rejects one, reaches the cut-off, asks which direction a payment
+// runs in, and looks up where to send the answer. Posting is a bank's act or a
+// central bank's, and no method here is one — with the same exception the note
+// above records, since GetParticipant is on this interface too and hands over
+// the same live handles. So the ban on posting is the recorder's and not the
+// compiler's; TestTheCSMTouchesOnlyTheNetworkBook is what enforces it, and
+// TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends it over the
+// cut-off and the settlement conversation Task 12 added.
 type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
@@ -126,6 +128,22 @@ type csmOps interface {
 	// always does.
 	GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error)
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
+
+	// The cut-off, and what it now has to say afterwards.
+	//
+	// CloseCycle is the clearing house's own act: netting is what a clearing
+	// house is for, and no bank and no central bank may reach it. It posts
+	// nothing — see the note above the tests in books_test.go — so having it
+	// here does not give this actor a way to move money.
+	//
+	// GetCycle and GetPayment are what the ACSC fan-out needs and are reached
+	// only from it: a settlement is answered per CYCLE, and the banks waiting
+	// for an answer are the ones that submitted its PAYMENTS, which is a
+	// question about each payment's own direction. Both read network-scoped
+	// rows, as payments, cycles and mandates all do.
+	CloseCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error)
+	GetCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error)
+	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 }
 
 // settlementOps is the central bank's view: what a settlement handler may
@@ -133,8 +151,27 @@ type csmOps interface {
 //
 // The comment on bankOps applies to all three — empty on purpose, grown by the
 // task that first needs a method.
+//
+// One method, because settling a cycle is the only thing this institution does.
+// It is on this interface and on no other, so a bank handler or a clearing-house
+// handler cannot NAME it — which is what these interfaces narrow, and the whole
+// of what they narrow.
+//
+// It is emphatically not a ban on those handlers moving money, for the reason
+// the note on bankOps sets out at length: GetParticipant is on both of the other
+// interfaces and returns a value carrying live ledger and deposit handles bound
+// to whichever bank it names, so posting is reachable from either of them
+// through a method each legitimately holds. The recorder in books_test.go is
+// what watches for that, here as everywhere else in this package.
+//
+// And the method behind this one reaches further than the interface suggests.
+// SettleCycleTx posts in EVERY participant's book as well as the central bank's
+// — the mirror leg and the creditor leg are both postings in a member's ledger —
+// so the central bank is the widest-reaching actor in this system rather than
+// the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles measures
+// that rather than assuming it.
 type settlementOps interface {
-	// Grown by Tasks 12 and 13.
+	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error)
 }
 
 // *payment.Network satisfies all three today, and these assertions are what keep

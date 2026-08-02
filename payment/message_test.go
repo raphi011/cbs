@@ -1031,6 +1031,78 @@ func TestCreditTransferRequestRefusesAMessageInAnotherAsset(t *testing.T) {
 	}
 }
 
+// dollarPush and secondEuroPush are two push schemes registered only by the two
+// tests below. Both embed SCT, so a method added to Scheme reaches them without
+// a compile error that says nothing about what they are for.
+type dollarPush struct{ SCT }
+
+func (dollarPush) ID() SchemeID            { return "usd.ct" }
+func (dollarPush) Asset() ledger.AssetCode { return "USD" }
+
+type secondEuroPush struct{ SCT }
+
+func (secondEuroPush) ID() SchemeID { return "sepa.ct.instant" }
+
+// TestCreditTransferRequestReadsTheSchemeFromTheCurrency is the positive half of
+// the rule schemeSettling states.
+//
+// A pacs.008 says PUSH and nothing more; which push scheme it travelled under is
+// decided by the currency, because this network registers one scheme per
+// direction and asset. Before a second push scheme existed the two answers were
+// the same one and the distinction could not be observed — which is exactly why
+// it went unnoticed that this side hardcoded SEPA's while the outbound side has
+// always rendered a payment in whatever asset its own scheme settles in.
+func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	n.RegisterScheme(dollarPush{})
+	ctx := context.Background()
+
+	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	assertNoError(t, err)
+	doc := env.Document.(*iso20022.Pacs008)
+
+	// The euro message still resolves to the euro scheme, which is the half that
+	// must not change.
+	req, err := n.CreditTransferRequest(ctx, doc)
+	assertNoError(t, err)
+	assertEqual(t, "scheme of a euro pacs.008", req.Scheme, SchemeSEPACT)
+
+	// The same message in dollars resolves to the dollar scheme rather than
+	// being refused as a mismatch.
+	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt = iso20022.ActiveCurrencyAndAmount{Ccy: "USD", Value: "2500.00"}
+	req, err = n.CreditTransferRequest(ctx, doc)
+	assertNoError(t, err)
+	assertEqual(t, "scheme of a dollar pacs.008", req.Scheme, SchemeID("usd.ct"))
+	assertEqual(t, "amount in minor units", req.Amount, ledger.Amount(250000))
+}
+
+// TestCreditTransferRequestRefusesAnAmbiguousScheme is the other half, and it is
+// a refusal rather than a rule because there is nothing in the message to break
+// the tie.
+//
+// Two push schemes settling in the same asset is a network whose rulebook a
+// pacs.008 cannot name. Picking one — the first in ID order, say — would resolve
+// every euro message under a scheme chosen by alphabet, and the two could differ
+// in settlement model, value date and whether returns are allowed. What a real
+// network has here is the clearing arrangement the message arrived over; this
+// system has one clearing house and no such element, so it says so.
+func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	n.RegisterScheme(secondEuroPush{})
+	ctx := context.Background()
+
+	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	assertNoError(t, err)
+
+	_, err = n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	if !errors.Is(err, ErrAssetMismatch) {
+		t.Fatalf("CreditTransferRequest with two euro push schemes = %v, want ErrAssetMismatch", err)
+	}
+	if !strings.Contains(err.Error(), "sepa.ct.instant") {
+		t.Errorf("the refusal does not name the schemes it could not choose between: %v", err)
+	}
+}
+
 // A currency the ledger has never heard of is refused rather than read at some
 // default scale, because there is no default that is right — the same refusal
 // the outbound direction makes in TestSettlementMessageRefusesAnUnknownAsset.

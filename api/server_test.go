@@ -189,7 +189,7 @@ func TestSCTEndToEnd(t *testing.T) {
 	payID := pay["id"].(string)
 
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cyc+`"}`, http.StatusOK)
+	settle(t, h, cyc)
 
 	aliceBal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
 	if got := int64(aliceBal["book"].(float64)); got != 75000 {
@@ -577,9 +577,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	}`, http.StatusCreated)
 
 	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/close", "", http.StatusOK)
-	settlement := doJSON(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusOK)
-	assertEqual(t, "settled settlement asset", settlement["asset"].(string), "EUR")
-	sid := settlement["id"].(string)
+	sid := string(settle(t, h, cid).ID)
 
 	var settlements []settlementDTO
 	getJSON(t, csm(h), "/settlements", &settlements)
@@ -589,6 +587,64 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 
 	gotSettlement := doJSON(t, csm(h), "GET", "/settlements/"+sid, "", http.StatusOK)
 	assertEqual(t, "GET settlement asset", gotSettlement["asset"].(string), "EUR")
+}
+
+// settle discharges a closed cycle, driving the network directly.
+//
+// There is no HTTP route for it any more, and that is the change rather than a
+// gap in this harness. Settling is performed on INSTRUCTION now: the clearing
+// house reaches a cut-off, sends a pacs.009, and the central bank's actor
+// answers (mesh.centralBank). POST /settlements was the console button that did
+// it out of band, and it is gone, because a human settling a cycle beside the
+// instruction would be a second way to settle the same one.
+//
+// The Server does not hold a mesh yet — Task 14 is what puts one behind these
+// handlers — so a test that needs a SETTLED cycle to read reaches past the API
+// to the network the API is over. Every test that used this used the route for
+// the same reason: to reach the state, not to exercise the button.
+func settle(t *testing.T, h *Server, cid string) payment.Settlement {
+	t.Helper()
+	st, err := h.network().SettleCycle(context.Background(), payment.CycleID(cid))
+	if err != nil {
+		t.Fatalf("SettleCycle %s: %v", cid, err)
+	}
+	return st
+}
+
+// TestSettlementIsNoLongerAnHTTPAction is the pin on the deleted route.
+//
+// It is worth a test of its own because nothing else would notice: the console
+// that called it addressed a path built from a STRING, so deleting the route
+// left every compiler and linter on both sides of the wire perfectly happy and
+// the screen 404ing at runtime. A 404 asserted here is what makes the deletion a
+// decision rather than an accident, on the surface that used to serve it and on
+// the two that never did.
+func TestSettlementIsNoLongerAnHTTPAction(t *testing.T) {
+	h := newServer(t, nil)
+	cid := closedCycle(t, h)
+
+	// 405 and not 404 on the two /settlements, and the difference is the point
+	// rather than a quirk of the mux: GET /settlements is still there on both
+	// operators, so the PATH exists and the METHOD does not. That is exactly
+	// what "keep the reads, drop the action" means, said in a status code.
+	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
+	assertStatus(t, csm(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
+	// The shape this route had before the operator split is a plain 404: no
+	// path, no method, nowhere.
+	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
+
+	// The reads it left behind still answer, on both operators. They are what
+	// the console watches settlement with now.
+	var cycles []clearingCycleDTO
+	getJSON(t, cb(h), "/cycles", &cycles)
+	if len(cycles) != 1 || cycles[0].ID != cid {
+		t.Fatalf("the central bank sees %v, want the one closed cycle %s", cycles, cid)
+	}
+	var settlements []settlementDTO
+	getJSON(t, cb(h), "/settlements", &settlements)
+	if len(settlements) != 0 {
+		t.Fatalf("the central bank sees %d settlements before one happened", len(settlements))
+	}
 }
 
 // TestErrorMapping locks one error per HTTP status class.
@@ -1018,7 +1074,7 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 		"amount":25000
 	}`, http.StatusCreated)["id"].(string)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
-	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cyc+`"}`, http.StatusOK)
+	settle(t, h, cyc)
 	return a, b, pay
 }
 

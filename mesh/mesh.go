@@ -111,6 +111,18 @@ type Mesh struct {
 	// msgSeq numbers the messages this mesh emits. See nextMsgID.
 	msgSeq atomic.Uint64
 
+	// csm is the clearing house's behaviour, kept beside its actor because one
+	// of the things a clearing house does does not arrive in an inbox. A cut-off
+	// comes in from outside the mesh — an operator, or Task 14's HTTP handler —
+	// the same way a customer's payment instruction does, so Mesh.CloseCycle
+	// needs the handler itself and not the queue in front of it.
+	//
+	// It is nil on a mesh built over no network, which is the same precondition
+	// Submit has and is documented there.
+	//
+	// Written once, in New, before any goroutine exists that could read it.
+	csm *csm
+
 	mu     sync.Mutex
 	actors map[iso20022.BIC]*actor
 	// banks is the member banks by participant, which is how Submit finds the
@@ -174,21 +186,26 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 		busy:   make(map[iso20022.BIC]bool),
 		quiet:  quiet,
 	}
-	// The clearing house gets its behaviour here, because it has no store row to
-	// wait for: it IS the configuration. A mesh with no network keeps the
-	// refusing placeholder instead — clearing is a thing you do to payments, and
-	// there are none.
+	// Both institutions get their behaviour here, because neither has a store
+	// row to wait for: they ARE the configuration. A mesh with no network keeps
+	// the refusing placeholder for both — clearing and settlement are things you
+	// do to payments and cycles, and there are none.
+	//
+	// The clearing house is kept as a field as well as an actor, because reaching
+	// a cut-off is not a message: it comes in from outside the mesh, exactly as a
+	// customer's instruction does, and Mesh.CloseCycle runs it on the caller's
+	// goroutine. See Mesh.csm.
 	clearing := unhandled("clearing house")
+	settlement := unhandled("central bank")
 	if net != nil {
-		clearing = (&csm{m: m, ops: net, bic: cfg.ClearingHouseBIC}).handle
+		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC}
+		clearing = m.csm.handle
+		settlement = (&centralBank{m: m, ops: net, bic: cfg.CentralBankBIC}).handle
 	}
 	if err := m.addActor(cfg.ClearingHouseBIC, "clearing house", clearing); err != nil {
 		return nil, err
 	}
-	// The central bank keeps the placeholder either way. Settlement is Task 12's,
-	// and an actor that answered a settlement instruction with silence would make
-	// the missing half look like a working one.
-	if err := m.addActor(cfg.CentralBankBIC, "central bank", unhandled("central bank")); err != nil {
+	if err := m.addActor(cfg.CentralBankBIC, "central bank", settlement); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -201,11 +218,11 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 // missing half look like a working one. Drain returns it, which is exactly the
 // dead-letter path this package exists to keep visible.
 //
-// Two actors still have it after Task 10. The CENTRAL BANK has it always:
-// settlement is Task 12's, and there is nothing yet for it to do. The CLEARING
-// HOUSE has it only on a mesh built over no network — the transport's own tests
-// — because clearing is something you do to payments and a mesh with no store
-// has none.
+// After Task 12 it is reached on ONE kind of mesh: one built over no network,
+// which is the transport's own tests. Both institutions keep it there, because
+// clearing and settlement are things you do to payments and cycles and a mesh
+// with no store has neither. On a mesh with a network, every actor — both
+// institutions and every member bank — now has a real handler.
 func unhandled(name string) handler {
 	return func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return fmt.Errorf("mesh: %s has no handler for the %d bytes %s sent it", name, len(raw), from)
@@ -859,6 +876,34 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", submitter)
 	}
 	return b.submit(ctx, req)
+}
+
+// CloseCycle reaches a cut-off: the clearing house nets the batch and then
+// instructs the central bank to settle it.
+//
+// It is Submit's counterpart and shares its whole shape — synchronous, on the
+// caller's goroutine, marked as the clearing house's work, sending only after
+// the unit of work has committed — for the reasons csm.closeCycle sets out. What
+// differs is who is instructing: a customer instructs their bank, and an
+// operator (or Task 14's HTTP handler) reaches a cut-off. Neither arrives in an
+// inbox, which is why neither is a message.
+//
+// What it does NOT answer is whether the cycle settled. It returns the cycle as
+// the clearing house left it — Closed, with net positions — and settlement
+// happens later, at another actor, and comes back as a message. A caller that
+// wants to know reads the cycle again after the conversation has finished; a
+// test drains first. That is the same difference Submit makes, one layer up.
+//
+// It reads the clearing house's handler directly, so like Submit and Mesh.now it
+// exists only on a mesh that has a network. A mesh with none has no cycles to
+// close, so this is a precondition rather than an outcome — and it is refused
+// rather than dereferenced, because unlike Submit there is no map lookup on the
+// way in that would have caught it.
+func (m *Mesh) CloseCycle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
+	if m.csm == nil {
+		return payment.ClearingCycle{}, errors.New("mesh: no network, so there is no cycle to close")
+	}
+	return m.csm.closeCycle(ctx, id)
 }
 
 // submitterOf is the party whose bank hands a payment to the clearing house.

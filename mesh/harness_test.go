@@ -48,6 +48,14 @@ const (
 	debtorIBAN   = "DE89370400440532013000"
 	creditorIBAN = "IT60X0542811101000000123456"
 
+	// The same two customers' DOLLAR accounts, used only by the two-asset
+	// fixture. Separate addresses because they are separate accounts: an IBAN
+	// identifies an account and not a person, and the register refuses to hold
+	// one address on two accounts — which is exactly the property that makes
+	// ResolveIdentifier able to answer at all.
+	debtorUSDIBAN   = "DE21301204000000015228"
+	creditorUSDIBAN = "IT40S0542811101000000123457"
+
 	// unknownIBAN is well-formed and belongs to no account in this network. It
 	// is the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends
 	// to, and it has to be well-formed: an IBAN that failed the schema's own
@@ -84,6 +92,12 @@ type meshHarness struct {
 	debtorBook   ledger.BookID
 	creditorBook ledger.BookID
 
+	// The same two customers' dollar accounts. Zero values unless the fixture
+	// was built by newMeshHarnessWithTwoAssets, which is the only one that opens
+	// them; submitCreditTransferInUSD is the only thing that reads them.
+	debtorUSDAcct   deposit.Account
+	creditorUSDAcct deposit.Account
+
 	// mandate is the creditor's authority to collect from the debtor's account.
 	// Every fixture has one, including the ones whose collections are refused,
 	// because a collection quoting no mandate at all is refused by
@@ -105,12 +119,23 @@ type harnessOptions struct {
 	openCycles bool
 	// fundTheDebtor pays the opening deposit in. Withheld, the debtor's account
 	// exists, is addressable and is denominated in euro, and has nothing in it —
-	// which is the one condition that produces AM04 and no other.
+	// which is the condition that produces AM04 from the debtor's own BANK, on
+	// its funds check. (Task 12 added a second route to the same code, from the
+	// central bank and about a bank rather than a customer; see lendToTheDebtor.)
 	fundTheDebtor bool
 	// revokeMandate revokes the mandate after creating it. The mandate still
 	// EXISTS, so the collection is refused for being unauthorised rather than
 	// for naming a mandate this network has never heard of.
 	revokeMandate bool
+	// lendToTheDebtor opens the payer's account with an overdraft limit instead
+	// of paying an opening deposit in. It is what leaves the payer's BANK
+	// without reserves while the payer can still pay; see
+	// newMeshHarnessWithAnUnfundedReserve.
+	lendToTheDebtor bool
+	// twoAssets gives both banks and both customers a dollar side beside the
+	// euro one, and registers a dollar push scheme with a cut-off window of its
+	// own. See newMeshHarnessWithTwoAssets.
+	twoAssets bool
 }
 
 // newMeshHarness builds the network, opens a clearing cycle for each scheme, and
@@ -158,6 +183,63 @@ func newMeshHarnessWithARevokedMandate(t *testing.T) *meshHarness {
 	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true, revokeMandate: true})
 }
 
+// newMeshHarnessWithAnUnfundedReserve is the same network with the payer's bank
+// holding no central-bank reserves.
+//
+// It is the one fixture in this package whose condition belongs to a BANK's
+// balance sheet rather than a customer's account, and getting there needs the
+// two to be prised apart. Network.Deposit moves both at once — cash paid in
+// raises the customer's balance and the bank's reserve in one step, which is
+// what a deposit IS — so a fixture that funded the payer normally would fund its
+// bank too.
+//
+// So the payer's account is opened with an OVERDRAFT instead and never funded.
+// The bank has lent its customer money it has no reserves behind, which is a
+// real bank in a real morning: the payment passes its own funds check, the
+// debtor leg posts, the collection clears — and at the cut-off the bank is a net
+// payer of 250,000 against a reserve of nothing. Every earlier refusal in this
+// package is a bank saying no about a customer; this is the settlement agent
+// saying no about a bank.
+func newMeshHarnessWithAnUnfundedReserve(t *testing.T) *meshHarness {
+	t.Helper()
+	return newHarness(t, harnessOptions{openCycles: true, lendToTheDebtor: true})
+}
+
+// newMeshHarnessWithTwoAssets is the same network operating in dollars as well
+// as euro: both banks hold both, both customers have an account in each, and
+// there is a dollar push scheme with a cut-off window of its own.
+//
+// It exists for the one claim a single-asset fixture cannot make. A cycle
+// belongs to a scheme and a scheme settles in one asset, so "one settlement
+// instruction per asset" is not observable until two cycles in two assets close
+// together — and what it rules out is the arrangement that would net a euro
+// position against a dollar one, or put both in one IntrBkSttlmAmt.
+func newMeshHarnessWithTwoAssets(t *testing.T) *meshHarness {
+	t.Helper()
+	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true, twoAssets: true})
+}
+
+// schemeUSDCT and usdCT are a second push scheme, identical to SEPA credit
+// transfer in every respect except the unit it settles in.
+//
+// A scheme rather than a flag on the payment, because that is where this system
+// puts the asset: payment.Scheme.Asset says a scheme settles in one unit, and a
+// cross-currency payment is not one payment but a payment plus an FX trade. It
+// embeds payment.SCT rather than reimplementing the interface, so a method added
+// to Scheme tomorrow reaches this fixture without a compile error that says
+// nothing.
+const schemeUSDCT payment.SchemeID = "usd.ct"
+
+type usdCT struct{ payment.SCT }
+
+func (usdCT) ID() payment.SchemeID    { return schemeUSDCT }
+func (usdCT) Asset() ledger.AssetCode { return "USD" }
+
+// euroAndDollar is the asset set a bank in the two-asset fixture joins with. One
+// AddParticipant call provisions a suspense, a reserve and a central-bank
+// settlement account for each.
+var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
+
 func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	t.Helper()
 	ctx := context.Background()
@@ -167,18 +249,43 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	h.rec = newRecordingStore(testenv.New(t, clock).Payment())
 	h.net = payment.NewNetwork(h.rec, clock)
 
+	assets := euroOnly
+	if opts.twoAssets {
+		assets = euroAndDollar
+		h.net.RegisterScheme(usdCT{})
+	}
+
 	var err error
-	if h.debtor, err = h.net.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
+	if h.debtor, err = h.net.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", assets); err != nil {
 		t.Fatalf("AddParticipant Aurora: %v", err)
 	}
-	if h.creditor, err = h.net.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", euroOnly); err != nil {
+	if h.creditor, err = h.net.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", assets); err != nil {
 		t.Fatalf("AddParticipant Verde: %v", err)
 	}
-	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", debtorIBAN)
-	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", creditorIBAN)
+	// The payer's account is opened with an overdraft limit exactly when the
+	// fixture is withholding its bank's reserves, and never otherwise: an
+	// overdraft is a fact about this account, so a fixture that gave every payer
+	// one would make "the payer can pay" mean something different everywhere.
+	var limit ledger.Amount
+	if opts.lendToTheDebtor {
+		limit = harnessFunding
+	}
+	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit, debtorIBAN)
+	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0, creditorIBAN)
 	if opts.fundTheDebtor {
 		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
+		}
+	}
+	if opts.twoAssets {
+		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0, debtorUSDIBAN)
+		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0, creditorUSDIBAN)
+		// Funded on the same terms as the euro side, and separately, because a
+		// deposit raises the reserve in the funded account's OWN asset. A dollar
+		// cycle settles across dollar reserves and a euro balance is no use to
+		// it.
+		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+			t.Fatalf("Deposit USD: %v", err)
 		}
 	}
 
@@ -201,7 +308,11 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	}
 
 	if opts.openCycles {
-		for _, scheme := range []payment.SchemeID{payment.SchemeSEPACT, payment.SchemeSEPADD} {
+		schemes := []payment.SchemeID{payment.SchemeSEPACT, payment.SchemeSEPADD}
+		if opts.twoAssets {
+			schemes = append(schemes, schemeUSDCT)
+		}
+		for _, scheme := range schemes {
 			if _, err := h.net.OpenCycle(ctx, scheme); err != nil {
 				t.Fatalf("OpenCycle %s: %v", scheme, err)
 			}
@@ -236,13 +347,16 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	return h
 }
 
-// openCustomer opens a euro deposit account addressable by an IBAN.
-func (h *meshHarness) openCustomer(t *testing.T, p *payment.Participant, name, iban string) deposit.Account {
+// openCustomer opens a deposit account in one asset, addressable by an IBAN, with
+// an overdraft limit of the caller's choosing.
+func (h *meshHarness) openCustomer(t *testing.T, p *payment.Participant, name string,
+	asset ledger.AssetCode, overdraft ledger.Amount, iban string) deposit.Account {
+
 	t.Helper()
-	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, "EUR", p.ProductID, 0,
+	acct, err := p.Deposit.OpenAccount(context.Background(), p.CustomerSubledger, name, asset, p.ProductID, overdraft,
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban})
 	if err != nil {
-		t.Fatalf("OpenAccount %s: %v", name, err)
+		t.Fatalf("OpenAccount %s (%s): %v", name, asset, err)
 	}
 	return acct
 }
@@ -350,6 +464,36 @@ func (h *meshHarness) submitCreditTransferTo(t *testing.T, iban string) payment.
 	return p
 }
 
+// submitCreditTransferInUSD is the same push between the same two banks, in the
+// other asset and therefore under the other scheme.
+//
+// Both parties are the two customers' DOLLAR accounts, which is not a detail: a
+// payment's legs must both be denominated in its scheme's asset, so quoting the
+// euro account here would be refused by the payer's own bank before any message
+// was built. Only newMeshHarnessWithTwoAssets opens those accounts.
+func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
+	t.Helper()
+	p, err := h.mesh.Submit(context.Background(), payment.InitiatePaymentRequest{
+		Scheme: schemeUSDCT,
+		Debtor: payment.PartyRef{
+			Participant: h.debtorPID,
+			Account:     h.debtorUSDAcct.ID,
+			Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: debtorUSDIBAN},
+		},
+		Creditor: payment.PartyRef{
+			Participant: h.creditorPID,
+			Account:     h.creditorUSDAcct.ID,
+			Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: creditorUSDIBAN},
+		},
+		Amount:      harnessAmount,
+		Description: "invoice 43",
+	})
+	if err != nil {
+		t.Fatalf("Submit in USD: %v", err)
+	}
+	return p
+}
+
 // drain waits for every message in flight to be handled, and fails the test on
 // a dead letter.
 //
@@ -371,30 +515,46 @@ func (h *meshHarness) drainErr(t *testing.T) error {
 	return h.mesh.Drain(drainCtx(t))
 }
 
-// closeCycle reaches the SEPA credit transfer cut-off.
+// closeCycle reaches the cut-off on every window this fixture has open.
 //
-// It drives the network directly rather than through an actor, because at Task
-// 10 no actor closes a cycle: the clearing house's handlers move payments INTO
-// one, and the cut-off is still an operator's act. Task 12 is where closing a
-// cycle emits a pacs.009 and settlement becomes a conversation.
-func (h *meshHarness) closeCycle(t *testing.T) payment.ClearingCycle {
+// Through the MESH and not through the network, which is what changed at Task
+// 12: closing a cycle is the clearing house's act, and it now ends in a pacs.009
+// to the central bank rather than in a return value. Driving h.net directly
+// would close the cycle on a bare context — attributed to no actor, instructing
+// nobody — and every settlement assertion in this package would measure an
+// operator poking the store.
+//
+// EVERY open cycle, including the ones with nothing in them. A credit-transfer
+// test leaves the direct-debit window untouched, so this closes an empty cycle
+// on almost every run — which is exactly the path that must instruct nothing,
+// and it is walked constantly rather than reasoned about. See
+// csm.instructSettlement.
+//
+// It returns nothing. A cut-off in this system is now the START of a
+// conversation, and the ClearingCycle it used to hand back described the cycle
+// before the central bank had said anything about it — which is precisely the
+// value a test must not assert settlement from. Read the cycle back after a
+// drain instead.
+func (h *meshHarness) closeCycle(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	cycles, err := h.net.ListCycles(ctx)
 	if err != nil {
 		t.Fatalf("ListCycles: %v", err)
 	}
+	var closed int
 	for _, c := range cycles {
-		if c.Scheme == payment.SchemeSEPACT && c.Status == payment.CycleOpen {
-			closed, err := h.net.CloseCycle(ctx, c.ID)
-			if err != nil {
-				t.Fatalf("CloseCycle: %v", err)
-			}
-			return closed
+		if c.Status != payment.CycleOpen {
+			continue
 		}
+		if _, err := h.mesh.CloseCycle(ctx, c.ID); err != nil {
+			t.Fatalf("CloseCycle %s (%s): %v", c.ID, c.Scheme, err)
+		}
+		closed++
 	}
-	t.Fatal("no open SEPA credit transfer cycle to close")
-	return payment.ClearingCycle{}
+	if closed == 0 {
+		t.Fatal("no open cycle to close; this fixture was built without one")
+	}
 }
 
 // payment reads a payment back out of the store, which is the only way to learn
@@ -407,6 +567,43 @@ func (h *meshHarness) payment(t *testing.T, id payment.PaymentID) payment.Paymen
 		t.Fatalf("GetPayment %s: %v", id, err)
 	}
 	return p
+}
+
+// cycles is every clearing cycle this network holds, in the order it lists
+// them. It is how a test reads what a cut-off left behind — a settled cycle
+// carries a SettlementID and a refused one does not.
+func (h *meshHarness) cycles(t *testing.T) []payment.ClearingCycle {
+	t.Helper()
+	cycles, err := h.net.ListCycles(context.Background())
+	if err != nil {
+		t.Fatalf("ListCycles: %v", err)
+	}
+	return cycles
+}
+
+// instructionsTo is every settlement instruction an actor was handed, parsed, in
+// arrival order. instructionsSentTo counts them; this is for the tests that read
+// what is inside one.
+func (h *meshHarness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.Pacs009 {
+	t.Helper()
+	h.mu.Lock()
+	seen := append([]tappedMessage(nil), h.seen...)
+	h.mu.Unlock()
+
+	var out []*iso20022.Pacs009
+	for _, m := range seen {
+		if m.to != to {
+			continue
+		}
+		env, err := iso20022.Unmarshal(m.raw)
+		if err != nil {
+			t.Fatalf("a message to %s does not parse: %v", to, err)
+		}
+		if doc, ok := env.Document.(*iso20022.Pacs009); ok {
+			out = append(out, doc)
+		}
+	}
+	return out
 }
 
 // suspense is the balance of a bank's euro clearing suspense: money that has
@@ -492,7 +689,55 @@ func (h *meshHarness) messagesSeen() int {
 //
 // The LAST one, because a bank in a finished flow has received several and only
 // the most recent is the answer to what the test just did.
+//
+// The EMPTY code means "no reason at all", and it is a real assertion rather
+// than a skipped one. payment.statusReasonOf omits StsRsnInf entirely unless the
+// transaction was rejected, because StatusReasonChoice requires exactly one of a
+// code and a proprietary text and an acceptance has neither — so "the reason
+// element is absent" is the observable form of "this was not a rejection", and
+// a settlement completing is the case that needs to say so. Matching an empty
+// string against a present code would pass on nothing, which is why the two
+// cases are separate here.
 func (h *meshHarness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso20022.StatusReason) {
+	t.Helper()
+	doc := h.lastStatusTo(t, to)
+	if want == "" {
+		for _, s := range doc.FIToFIPmtStsRpt.TxInfAndSts {
+			if s.StsRsnInf != nil {
+				t.Errorf("the last pacs.002 to %s carries a reason (%+v); an acceptance has none", to, s.StsRsnInf)
+			}
+		}
+		return
+	}
+	for _, s := range doc.FIToFIPmtStsRpt.TxInfAndSts {
+		if s.StsRsnInf != nil && s.StsRsnInf.Rsn.Cd != nil && *s.StsRsnInf.Rsn.Cd == want {
+			return
+		}
+	}
+	t.Errorf("the last pacs.002 to %s carries no %s; its statuses are %+v", to, want, doc.FIToFIPmtStsRpt.TxInfAndSts)
+}
+
+// assertLastTxStatusTo checks the TRANSACTION status of the last pacs.002 an
+// actor received: ACCP, ACSC, RJCT.
+//
+// It is a separate assertion from the reason code and not a second argument to
+// one, because the two answer different questions and a test usually wants one
+// of them. The status is what happened; the code is why, and only a rejection
+// has one.
+func (h *meshHarness) assertLastTxStatusTo(t *testing.T, to iso20022.BIC, want iso20022.TransactionStatus) {
+	t.Helper()
+	doc := h.lastStatusTo(t, to)
+	for _, s := range doc.FIToFIPmtStsRpt.TxInfAndSts {
+		if s.TxSts == want {
+			return
+		}
+	}
+	t.Errorf("the last pacs.002 to %s carries no %s; its statuses are %+v", to, want, doc.FIToFIPmtStsRpt.TxInfAndSts)
+}
+
+// lastStatusTo is the most recent message an actor was handed, parsed as the
+// pacs.002 the caller expects it to be.
+func (h *meshHarness) lastStatusTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs002 {
 	t.Helper()
 	h.mu.Lock()
 	var last []byte
@@ -513,10 +758,42 @@ func (h *meshHarness) assertLastStatusTo(t *testing.T, to iso20022.BIC, want iso
 	if !ok {
 		t.Fatalf("the last message to %s is a %s, want a pacs.002", to, env.AppHdr.MsgDefIdr)
 	}
-	for _, s := range doc.FIToFIPmtStsRpt.TxInfAndSts {
-		if s.StsRsnInf != nil && s.StsRsnInf.Rsn.Cd != nil && *s.StsRsnInf.Rsn.Cd == want {
-			return
+	return doc
+}
+
+// instructionsSentTo is how many settlement instructions an actor was handed.
+//
+// pacs.009 and nothing else: it is the one message definition in this system
+// whose parties are both banks, so counting the type IS counting settlement
+// instructions.
+func (h *meshHarness) instructionsSentTo(to iso20022.BIC) int {
+	return h.messagesSentTo(to, "pacs.009.001.08")
+}
+
+// statusesSentTo is how many pacs.002 an actor was handed. It is what says a
+// party was told NOTHING, which is an assertion the last-message helpers cannot
+// make: they need a message to look at.
+func (h *meshHarness) statusesSentTo(to iso20022.BIC) int {
+	return h.messagesSentTo(to, "pacs.002.001.10")
+}
+
+// messagesSentTo counts one message definition delivered to one actor. Counted
+// after a Drain, when what was handed over is also what was sent.
+func (h *meshHarness) messagesSentTo(to iso20022.BIC, msgDef string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var n int
+	for _, m := range h.seen {
+		if m.to != to {
+			continue
+		}
+		env, err := iso20022.Unmarshal(m.raw)
+		if err != nil {
+			continue
+		}
+		if env.AppHdr.MsgDefIdr == msgDef {
+			n++
 		}
 	}
-	t.Errorf("the last pacs.002 to %s carries no %s; its statuses are %+v", to, want, doc.FIToFIPmtStsRpt.TxInfAndSts)
+	return n
 }

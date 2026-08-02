@@ -27,8 +27,9 @@ import (
 //   - The four cycle and settlement reads are on the central bank as well as the
 //     clearing house, with the same handlers and the same answers. They are not
 //     two views of one thing: the clearing house reads them because it closed the
-//     cycle and wants to know whether it settled, and the central bank reads them
-//     because a closed cycle and its net positions are the instruction it acts on.
+//     cycle and sent the instruction and wants to know whether it was discharged,
+//     and the central bank reads them because they are the only record its own
+//     operator has of what it answered — a cycle still Closed is one it refused.
 var allowedOverlaps = []string{
 	"GET /assets",
 	"GET /directory",
@@ -87,7 +88,7 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 
 // movedTo maps a pre-split pattern to the operator that serves it now and the
 // pattern it became. It returns an empty operator for the routes a later task
-// moves.
+// moves, and for the one route that has been deleted outright.
 //
 // Returning the operator as well as the pattern matters: a bank's audit log and
 // the central bank's both become "GET /audit", so a flat set of landed patterns
@@ -110,9 +111,17 @@ func movedTo(old string) (operator, pattern string) {
 		return "central-bank", old
 
 	case path == "/cycles/{cid}/settle":
-		// Settling moved operator as well as shape: the cycle is now the body
-		// of POST /settlements on the central bank.
-		return "central-bank", "POST /settlements"
+		// GONE, and not moved. Settling is no longer an operator's act on any
+		// surface: the clearing house reaches a cut-off, sends a pacs.009, and
+		// the central bank's actor answers it (mesh.centralBank). This route
+		// moved once already, to POST /settlements on the central bank, and that
+		// one is deleted too — see TestSettlementIsNoLongerAnHTTPAction, which is
+		// the pin on its absence rather than on its whereabouts.
+		//
+		// The empty operator is the same "not here" this switch uses for a route
+		// a later task moves, and the difference is worth stating: those come
+		// back, and this one does not.
+		return "", ""
 
 	case path == "/assets":
 		// On every operator; the disjointness allowlist is what records that.
@@ -247,25 +256,28 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 	}
 }
 
-// TestSettlingIsTheCentralBanksAct pins the operator, not the mechanism.
+// TestTheClearingHouseReadsTheSettlementItDidNotPerform is what is left of the
+// operator split's settlement assertion, and the rename is part of the finding.
 //
-// Settlement moves reserves between accounts in the central bank's own book; a
-// clearing house that could do that would be a central bank. Before the split
-// the CSM settled directly, because there was only one server to put the route
-// on and nothing in the shape of the API could say otherwise.
+// It was TestSettlingIsTheCentralBanksAct, and it pinned that by driving POST
+// /settlements on one operator and getting a 404 on the other. Neither half is
+// available now: the route is gone from every surface, so there is no HTTP act
+// left to attribute to anybody, and a test still called that would be naming an
+// assertion it no longer makes. TestSettlementIsNoLongerAnHTTPAction is where
+// the absence is pinned.
 //
-// The clearing house keeps GET /settlements: it needs to know whether the cycle
-// it closed has settled, and reading is not doing.
-func TestSettlingIsTheCentralBanksAct(t *testing.T) {
+// What survives is the READ, and it is the half that keeps mattering: the
+// clearing house closed the cycle and sent the instruction, so it has to be able
+// to find out whether the central bank discharged it. Reading is not doing, and
+// after Task 12 that sentence is the whole of the clearing house's relationship
+// with settlement.
+func TestTheClearingHouseReadsTheSettlementItDidNotPerform(t *testing.T) {
 	h := newServer(t, nil)
 	cid := closedCycle(t, h)
 
-	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
-
-	settlement := doJSON(t, cb(h), "POST", "/settlements",
-		`{"cycleId":"`+cid+`"}`, http.StatusOK)
-	if settlement["cycleId"] != cid {
-		t.Fatalf("settlement cycleId = %v, want %s", settlement["cycleId"], cid)
+	settlement := settle(t, h, cid)
+	if string(settlement.CycleID) != cid {
+		t.Fatalf("settlement cycleId = %v, want %s", settlement.CycleID, cid)
 	}
 
 	var settlements []settlementDTO
@@ -275,15 +287,19 @@ func TestSettlingIsTheCentralBanksAct(t *testing.T) {
 	}
 }
 
-// TestTheCentralBankCanReadTheCycleItSettles is the read half of
-// TestSettlingIsTheCentralBanksAct.
+// TestTheCentralBankCanReadTheCycleItSettles is the other half: what the central
+// bank's own console is left with.
 //
-// Settling is the central bank's act, and an operator who cannot see the closed
-// cycle or its net positions cannot perform it — the console would offer a
-// settle button with nothing to name. A settlement instruction in the real thing
-// IS a closed cycle and its positions, so reading them is part of the act rather
-// than a widening of the surface. What the central bank still cannot see is an
-// individual payment, which is the boundary that matters.
+// These four reads were added so that a human could see the cycle they were
+// about to settle. Nobody settles by hand any more, and they are MORE load
+// bearing rather than less: a closed cycle with no settlement against it is an
+// instruction the central bank refused, and these reads plus GET /reserves are
+// the only way an operator finds out. There is nothing else — the refusal's code
+// travels in a pacs.002 between two actors and is stored nowhere.
+//
+// What the central bank still cannot see is an individual payment, which is the
+// boundary that matters and which settling on instruction does not widen: the
+// pacs.009 it acts on names a cycle and net positions, and no payment at all.
 func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	h := newServer(t, nil)
 	cid := closedCycle(t, h)
@@ -299,8 +315,7 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 		t.Fatalf("cycle status = %v, want Closed", got["status"])
 	}
 
-	sid := doJSON(t, cb(h), "POST", "/settlements",
-		`{"cycleId":"`+cid+`"}`, http.StatusOK)["id"].(string)
+	sid := string(settle(t, h, cid).ID)
 
 	// And it can read back what it did, without asking the clearing house.
 	var settlements []settlementDTO

@@ -575,20 +575,33 @@ export function closeCycle(cid: string): Promise<ClearingCycle> {
   return request("POST", csm(`/cycles/${cid}/close`));
 }
 
-// Settle moves reserves to clear the net positions and returns the settlement.
-//
-// It is the CENTRAL BANK's route, not the clearing house's: the reserves move
-// in the central bank's own book, and a clearing house that could do that would
-// be a central bank. The cycle is the input and the settlement is the resource
-// created, which is why it is a body rather than a path segment.
-export function settleCycle(cid: string): Promise<Settlement> {
-  return request("POST", cb("/settlements"), { cycleId: cid });
-}
-
 // --- Payment: settlements -------------------------------------------------
+//
+// There is no settleCycle, and that is a decision rather than a gap. Settling is
+// performed on INSTRUCTION now: the clearing house reaches a cut-off, sends a
+// pacs.009 carrying the closed cycle's net positions, and the central bank
+// answers ACSC — or RJCT/AM04 when a net payer's reserve cannot cover. A
+// function here that POSTed a settlement would be a second way to settle the
+// same cycle, racing the first, and the backend no longer serves the route.
+//
+// The one that used to exist is worth remembering for HOW it broke rather than
+// why it went. Its path was cb("/settlements") — a string — so when the route
+// was deleted, tsc, eslint and next build all stayed green and the console
+// 404'd at runtime. Nothing on this side of the wire can catch that; only
+// loading the page can.
 
 export function listSettlements(): Promise<Settlement[]> {
   return request("GET", csm("/settlements"));
+}
+
+// The settlements the CENTRAL BANK performed, read from its own listener.
+//
+// The same rows listSettlements returns, and deliberately a second function
+// rather than a parameter on the first: an operator's console reads its own
+// port. A central bank asking the clearing house what the central bank did
+// would be exactly the confusion the operator split exists to remove.
+export function centralBankSettlements(): Promise<Settlement[]> {
+  return request("GET", cb("/settlements"));
 }
 
 export function getSettlement(sid: string): Promise<Settlement> {

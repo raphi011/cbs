@@ -91,7 +91,11 @@ func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
 		if m.Code == "" {
 			t.Errorf("%s is borrowed with no code, which is the MS03 fallback it exists to avoid", m.Name)
 		}
-		if contains(declared, strings.TrimPrefix(m.Name, "deposit.")) {
+		// The name without its package qualifier, whichever package it came
+		// from. Trimming one known prefix would stop catching the shadow the
+		// moment a third layer's error was borrowed, which is the sort of guard
+		// that quietly turns into a comment.
+		if _, bare, ok := strings.Cut(m.Name, "."); ok && contains(declared, bare) {
 			t.Errorf("%s names a sentinel errors.go declares; classify it in reasonTable instead", m.Name)
 		}
 		for _, own := range reasonTable {
@@ -111,6 +115,25 @@ func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
 // nothing it could act on.
 func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 	err := fmt.Errorf("checking withdrawal: %w", deposit.ErrInsufficientAvailable)
+	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
+		t.Errorf("ReasonFor(%v) = %q, want AM04", err, got)
+	}
+}
+
+// TestReasonForAnEmptyReserveIsAM04 is the pin on the second borrowed entry.
+//
+// A net payer whose reserve cannot cover its position is refused by the LEDGER,
+// inside SettleCycleTx: the mirror leg would take an asset account negative, and
+// PostTransactionTx will not. So the error that has to become a code is
+// ledger.ErrInsufficientBalance, one layer below the deposit error that
+// classifies the same condition for a customer's account.
+//
+// The same code for both is right rather than convenient: AM04 says "the account
+// cannot cover this", and the settlement agent answering a clearing house is
+// saying exactly what a debtor's bank says to a creditor's. MS03 is what it fell
+// to before, which told the clearing house nothing it could act on.
+func TestReasonForAnEmptyReserveIsAM04(t *testing.T) {
+	err := fmt.Errorf("posting the mirror leg: %w", ledger.ErrInsufficientBalance)
 	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
 		t.Errorf("ReasonFor(%v) = %q, want AM04", err, got)
 	}

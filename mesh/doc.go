@@ -107,6 +107,50 @@
 // banks — so the rejection goes to both, and the condition for the second is
 // exactly that there is money to give back. See mesh.csm's receiveStatus.
 //
+// # Settlement
+//
+// The third institution, and the only one that moves reserves. A cut-off is two
+// messages between the institutions and then one per payment out to the banks:
+//
+//	clearing house  --pacs.009-->  central bank
+//	clearing house  <--pacs.002--  central bank
+//	clearing house  --pacs.002-->  the bank that submitted each payment
+//
+// A cut-off does not arrive in an inbox. It comes in from outside the mesh the
+// way a customer's instruction does, so Mesh.CloseCycle runs the clearing
+// house's half synchronously and then sends, exactly as Mesh.Submit does for a
+// bank's.
+//
+// The CLEARING HOUSE nets the batch. That moves nothing at all — CloseCycleTx
+// posts nowhere, it marks each payment Cleared and writes the positions onto the
+// cycle — and then it INSTRUCTS, because discharging those positions moves
+// central-bank reserves and no clearing house may do that. The instruction is a
+// pacs.009 and not a pacs.008 because both parties to every leg are banks. Each
+// leg runs between one member and the settlement agent rather than between two
+// members: netting destroys the pairing of payer to payee, so what is left is
+// every bank's single claim on, or obligation to, the central bank.
+//
+// The CENTRAL BANK discharges them, whole or not at all. SettleCycleTx is one
+// unit of work holding every member's accounts at once, which is what a
+// settlement window is, and a net payer whose reserve cannot cover its position
+// aborts the batch — answered AM04, the same code a debtor's bank sends about a
+// customer's empty account, said about a bank instead of about a customer.
+// Before the mesh that refusal was a Go error returned to whoever pressed
+// settle, which is not something a clearing house can act on.
+//
+// The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
+// submitted it. The central bank could not: it answers about a CYCLE and holds
+// no way to look a payment up, which is the shape of "a central bank never sees
+// an individual payment".
+//
+// A REFUSAL is fanned out to nobody, and that asymmetry is the one thing here
+// worth stating twice. Nothing was posted, so every payment is exactly where the
+// cut-off left it — Cleared, with the payer's money still in its own bank's
+// clearing suspense — and a bank told "rejected" would try to reverse a debtor
+// leg that must not be reversed. There is nothing truthful to tell a bank,
+// because nothing about its payments changed. What changed is the cycle, and the
+// cycle is where the failure shows: still Closed, with no settlement against it.
+//
 // # Unbounded queues, and what that costs
 //
 // An actor's inbox is an unbounded slice, not a buffered channel. A fixed
