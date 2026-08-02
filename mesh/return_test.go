@@ -265,8 +265,9 @@ func TestARedeliveredReturnIsDeadLetteredAndNotAnswered(t *testing.T) {
 // it, and the answer comes back to the bank that asked.
 func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 	cases := []struct {
-		name   string
-		doctor func(*iso20022.Pacs004)
+		name     string
+		doctor   func(*iso20022.Pacs004)
+		wantText string
 	}{
 		{
 			// Two returns in one message, correctly counted. Nothing about it
@@ -276,6 +277,7 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 				d.PmtRtr.TxInf = append(d.PmtRtr.TxInf, d.PmtRtr.TxInf[0])
 				d.PmtRtr.GrpHdr.NbOfTxs = "2"
 			},
+			wantText: "TxInf carries 2",
 		},
 		{
 			// One transaction arrived and the sender says there were two. That
@@ -285,6 +287,7 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 			doctor: func(d *iso20022.Pacs004) {
 				d.PmtRtr.GrpHdr.NbOfTxs = "2"
 			},
+			wantText: `NbOfTxs says "2"`,
 		},
 	}
 	for _, tc := range cases {
@@ -306,8 +309,12 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 			// Answered, not dead-lettered: this is a judgement about the
 			// message, and the bank that sent it can act on the answer.
 			h.assertLastTxStatusTo(t, h.creditorBIC, iso20022.TransactionStatusRejected)
-			if got := h.lastStatusTo(t, h.creditorBIC); !strings.Contains(statusText(got), "one payment per message") {
-				t.Errorf("the refusal does not say what this agent refused: %q", statusText(got))
+			// The exact refusal, not merely a refusal: the two checks refuse
+			// different things and a bank reading the answer has to be able to
+			// tell which, so a test that accepted either would pass on a
+			// settlement agent that had lost one of them.
+			if got := statusText(h.lastStatusTo(t, h.creditorBIC)); !strings.Contains(got, tc.wantText) {
+				t.Errorf("the refusal is %q, want it to say %q", got, tc.wantText)
 			}
 			if got := h.payment(t, p.ID); got.Status != payment.Settled {
 				t.Errorf("the payment is %v; a refused return returns nothing", got.Status)

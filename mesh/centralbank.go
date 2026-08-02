@@ -176,16 +176,20 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 //
 // # One return per message, and the sender's own count must agree
 //
-// A pacs.004 can carry many, and this system's returning banks send one. Both
-// halves of that are checked here, and a message failing either is refused
-// WHOLE rather than half-executed, for cycleOf's reason one message definition
-// over: returning the first and dropping the rest would leave payments somebody
-// was told had been sent back and never were, with nothing anywhere recording
-// it. More than one transaction is the first half. The second is GrpHdr/NbOfTxs
-// disagreeing with what arrived — the same check payment.ReadSettlement makes
-// on an instruction, and it is here for the same reason: a transaction lost in
-// transit is a payer who does not get their money back, and a receiver that
-// acted on the survivors would answer for a message it did not have.
+// A pacs.004 can carry many, and this system's returning banks send one. Two
+// checks, stated separately because they refuse different things and a bank
+// reading the answer should be able to tell which. A message failing either is
+// refused WHOLE rather than half-executed, for cycleOf's reason one message
+// definition over: returning the first and dropping the rest would leave
+// payments somebody was told had been sent back and never were, with nothing
+// anywhere recording it.
+//
+// The first is the count that ARRIVED: more than one return is more than this
+// actor acts on. The second is the count the sender CLAIMED — the same check
+// payment.ReadSettlement makes on a settlement instruction, and here for the
+// same reason. A transaction lost in transit is a payer who never gets their
+// money back, and a receiver that acted on the survivors would be answering for
+// a message it did not have.
 //
 // # What is answered, and what is dead-lettered
 //
@@ -215,10 +219,13 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 	// Unmarshal refuses a pacs.004 with no transactions (iso20022's
 	// PaymentReturn.validate), so there is always a first one to answer about.
 	first := body.TxInf[0]
-	if n, said := len(body.TxInf), body.GrpHdr.NbOfTxs; n != 1 || said != "1" {
+	if n := len(body.TxInf); n != 1 {
 		return cb.answer(from, orig, first.OrgnlTxId, iso20022.TransactionStatusRejected,
-			fmt.Errorf("this settlement agent returns one payment per message; TxInf carries %d and GrpHdr/NbOfTxs says %q",
-				n, said))
+			fmt.Errorf("this settlement agent returns one payment per message; TxInf carries %d", n))
+	}
+	if said := body.GrpHdr.NbOfTxs; said != "1" {
+		return cb.answer(from, orig, first.OrgnlTxId, iso20022.TransactionStatusRejected,
+			fmt.Errorf("GrpHdr/NbOfTxs says %q and one transaction arrived; a return lost in transit is a payer who is not repaid", said))
 	}
 
 	id := payment.PaymentID(first.OrgnlTxId)
