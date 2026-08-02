@@ -1589,6 +1589,12 @@ func TestAuditDefaultLimitApplies(t *testing.T) {
 	h := newServer(t, nil)
 
 	// Each open/close pair is two payment-scope events; 51 pairs clears 100.
+	// No drain between closes, and the exact count at :1599 depends on that
+	// being safe: every cycle here nets to nothing (no payment was ever put in
+	// it), and instructSettlement declines to send a pacs.009 for an empty net
+	// (mesh/csm.go:550-552) — so no settlement chain starts and no third event
+	// per pair ever lands. A fixture change that puts one payment into any of
+	// these cycles turns this exact count into a race against that chain.
 	for range 51 {
 		cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 		assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -2773,9 +2779,11 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 // now nothing in this file held any of them, so the whole arm could have
 // drifted to 400 or 500 with every test still green.
 //
-// It also pins the back-fill over HTTP, which is where it matters: the DTO's
-// identifier field is optional and this is the shape every other payment test
-// in this file sends.
+// It also pins the DEBTOR back-fill over HTTP, which is where it matters: the
+// DTO's identifier field is optional and this is the shape every other payment
+// test in this file sends. It does NOT pin a creditor back-fill — see the
+// comment on the happy case below for why there is nothing of that shape
+// reachable through this route.
 func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -2819,10 +2827,21 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}`, http.StatusUnprocessableEntity)
 
 	// The happy case: the payee's address quoted, the payer's left to the
-	// back-fill. Both are on the stored payment in the end, and they are stamped
-	// at different MOMENTS — the debtor's by the payer's bank at submission, the
-	// creditor's by the PAYEE's bank when the pacs.008 gets there. Hence the read
-	// after the drain.
+	// back-fill. The debtor's identifier is stamped by the payer's own bank at
+	// submission, synchronously, and is on the 202 itself — that is the one
+	// property this case pins.
+	//
+	// The creditor identifier is NOT a back-fill: it is simply what this
+	// request already quoted, persisted by the payer's bank at submission and
+	// left untouched when the pacs.008 reaches the payee's bank —
+	// creditorSideTx (payment/system.go:1359) re-derives the same address and
+	// AcceptInboundTx (payment/system.go:1203) skips the write when nothing
+	// changed. The case just above (:2814) proves a push that quotes no
+	// creditor address at all is refused before submission ever reaches the
+	// mesh, so an async creditor back-fill is unreachable through this route —
+	// there is no api-level test for it, and this is not one either. No drain
+	// is needed before the GET below: nothing on this path is still in flight,
+	// and the value read back is the one already in the request.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
@@ -2831,9 +2850,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}`, http.StatusAccepted)
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")
-	drainServer(t, h)
 	carried := doJSON(t, csm(h), "GET", "/payments/"+pay["id"].(string), "", http.StatusOK)
-	assertEqual(t, "creditor address recorded by the payee's bank",
+	assertEqual(t, "creditor address persisted from the request",
 		carried["creditor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-BOB-0001")
 
 	// ErrAmbiguousAddress: give Alice a second IBAN and quote neither of hers.
