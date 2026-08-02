@@ -650,9 +650,35 @@ COMMENT ON COLUMN payments.debtor_name IS
     'exist — GET /directory resolves an address across the network and does '
     'read the resolved account''s name off its own bank''s register — but its '
     'answer never reaches the payment: what lands here is what was typed, not '
-    'what was resolved.) The four agent/name columns are therefore not a '
-    'cache: there is nothing to fall back to, and a NULL here would be an '
-    'unsendable payment.';
+    'what was resolved.) The two NAME columns are therefore not a cache: there '
+    'is nothing to fall back to, and a NULL here would be an unsendable '
+    'payment.';
+
+COMMENT ON COLUMN payments.creditor_agent IS
+    'The BIC of the bank holding this party''s account, and — unlike the two '
+    'name columns beside it — NOT what the instruction said. Both agent '
+    'columns are DERIVED at submission from the participants row for the '
+    'party this payment already names (payment.SubmitPaymentTx), and whatever '
+    'a caller supplied is discarded. The reason is what this element DOES: it '
+    'goes out as CdtrAgt/DbtrAgt and the clearing house ROUTES on it without '
+    'reading anything, so a payer allowed to assert it would be a payer '
+    'choosing which bank received the payment. Real SEPA is the same shape — '
+    'IBAN-only since 2016, the originating bank derives the routing. It is '
+    'therefore, TODAY, a redundant copy of what participants.bic holds for '
+    'creditor_participant — no operation in this system changes a BIC once a '
+    'bank is admitted, so the two cannot yet disagree. It is stored anyway, '
+    'and the reason is what the row is: a record of the message that WAS '
+    'SENT, not a view onto the roster as it stands now. PutParticipant is an '
+    'upsert (see store/storetest), so the day a BIC can be corrected is the '
+    'day a join would silently rewrite the address on every payment already '
+    'settled. There is no foreign key for the same reason. The parallel '
+    'comment on debtor_agent is deliberately not repeated; the two columns '
+    'are one rule.';
+
+COMMENT ON COLUMN payments.debtor_agent IS
+    'See creditor_agent: derived from the roster at submission, never taken '
+    'from the instruction, and stored rather than joined because this row '
+    'records the message that was sent.';
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
