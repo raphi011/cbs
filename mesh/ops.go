@@ -37,8 +37,10 @@ import (
 // decision. While they were empty they constrained nothing, and only the
 // recorder bit.
 //
-// Task 13 was the last flow, so every method below is one some handler in this
-// package calls today and there are no others. What that is worth is stated
+// Task 13 was the last new FLOW, and Task 15 is what has added to them since —
+// by moving a posting from one institution to another rather than by inventing
+// work. Either way every method below is one some handler in this package calls
+// today and there are no others. What that is worth is stated
 // exactly, in each interface's own note and nowhere more widely: a handler
 // cannot NAME a method its interface does not carry. It is not a ban on the
 // operation — see the note on GetParticipant below, which two of these three
@@ -89,6 +91,20 @@ import (
 // posting a return's legs by hand is reachable from here. What stops it is the
 // recorder in books_test.go, which measures that a returning bank touches no
 // book at all (TestWhichBooksAReturnReaches).
+//
+// # What Task 15 added, and why it is a bank's method at all
+//
+// One method, PostSettlementAdvice, and it is the first thing on this interface
+// that the settlement agent used to do TO a bank rather than something a bank
+// does. The mirror leg is a posting in the member's own ledger, so it belongs to
+// the member; what arrives from the settlement agent is a camt.053 saying what
+// the reserve account did.
+//
+// It takes the acting participant as an argument, as the two halves of a payment
+// do, and the domain refuses a statement about anybody else's reserve account
+// (payment.ErrStatementNotForThisBank). The actor passes its own id — see
+// bank.pid — so the interface cannot be used to book another member's cut-off
+// even though nothing in the SIGNATURE stops a caller naming one.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
@@ -136,6 +152,12 @@ type bankOps interface {
 	// settled payment to return; see bank.returnPayment for why that judgement
 	// is made here rather than left to the settlement agent.
 	ReturnMessage(p payment.Payment, reason iso20022.ReturnReason, text string, mc payment.MessageContext) (iso20022.Envelope, error)
+
+	// The bank's half of settlement, and it is the half that used to be done TO
+	// it. A member books its own mirror leg from the statement the settlement
+	// agent sent; nothing else in this mesh may post in that book, and nothing
+	// on this interface lets this bank post in anybody else's.
+	PostSettlementAdvice(ctx context.Context, by payment.ParticipantID, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
@@ -218,15 +240,20 @@ type csmOps interface {
 // through a method each legitimately holds. The recorder in books_test.go is
 // what watches for that, here as everywhere else in this package.
 //
-// And both methods behind it reach further than two methods suggest.
-// SettleCycleTx posts in EVERY participant's book as well as the central bank's
-// — the mirror leg and the creditor leg are both postings in a member's ledger —
-// and ReturnPaymentTx posts in three books, two of which belong to member
-// banks. So the central bank is the widest-reaching actor in this system rather
-// than the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles and
+// And both methods behind it still reach further than two methods suggest.
+// SettleCycleTx no longer posts the mirror leg — that is the member's own, made
+// from the statement this call hands back — but it does still post every
+// CREDITOR leg, which is a posting in the payee's bank's ledger, and
+// ReturnPaymentTx posts in three books, two of which belong to member banks. So
+// the central bank remains the widest-reaching actor in this system rather than
+// the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles and
 // TestWhichBooksAReturnReaches measure that rather than assuming it.
 type settlementOps interface {
-	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error)
+	// SettleCycle hands back the STATEMENTS beside the settlement, because the
+	// closing balance each carries is a claim about a moment inside the unit of
+	// work and cannot be re-read after it. Sending them is this actor's, not the
+	// domain's: see centralBank.advise.
+	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, []payment.SettlementStatement, error)
 	ReturnPayment(ctx context.Context, id payment.PaymentID, reason string) (payment.Payment, error)
 }
 

@@ -409,10 +409,9 @@ type SettlementAdvice struct {
 // is a claim about a moment. A balance read after the commit is a different
 // number the instant anything else settles, and a statement asserting the wrong
 // one is worse than no statement: the whole point of carrying Bal/CLBD is that a
-// member can check its own posting against it. SettleCycleTx does not build one
-// of these yet — that wiring is a later task — but the shape is fixed now
-// because the constraint it exists to satisfy has nothing to do with when the
-// caller arrives.
+// member can check its own posting against it. SettleCycleTx builds one per
+// member, inside the unit of work and after the netting transaction has posted,
+// and returns them beside the Settlement for exactly that reason.
 //
 // Movement is SIGNED — positive means the member's reserve went up — and the
 // message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the

@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -229,6 +230,90 @@ func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 	return payment.ClearingCycle{}
 }
 
+// TestEachMemberBooksTheStatementItWasSent is what the camt.053 is FOR, measured
+// at the far end: after a cut-off each member holds its own record of it, posted,
+// with the closing balance the settlement agent asserted.
+//
+// TestEachBankBooksItsOwnSettlementAndNoOtherBooks says which book each bank
+// touched; this says what it wrote there, and the two together are the whole of
+// the move. Three things per member, and each rules out a different way of
+// getting this wrong:
+//
+//   - Status is Posted and MirrorTx names a transaction. An advice left at
+//     Advised is a bank that was TOLD and did not book — the unreconciled
+//     position — and it is the state a failure leaves behind, so it has to be
+//     distinguished from success rather than assumed away.
+//   - Movement is SIGNED and opposite at the two banks. It travels as a magnitude
+//     plus CdtDbtInd and is reassembled by payment.ReadStatement, so a member that
+//     lost the sign in transit would post its mirror leg backwards — and the two
+//     banks are the only pair that can show it, since one of them is the net payer.
+//   - ClosingBalance equals what the central bank's book actually says the
+//     reserve account stands at. That is the assertion the whole message
+//     definition exists to make checkable: camt.053 was chosen over camt.054
+//     precisely because it carries a balance to check a posting against, and a
+//     statement quoting the wrong one would be worse than none.
+func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	cyc := h.creditTransferCycle(t)
+	if cyc.Status != payment.CycleSettled {
+		t.Fatalf("cycle is %v, want Settled — there is no statement to have been sent otherwise", cyc.Status)
+	}
+
+	for _, member := range []struct {
+		name string
+		pid  payment.ParticipantID
+		want ledger.Amount
+	}{
+		{"the payer's bank", h.debtorPID, -harnessAmount},
+		{"the payee's bank", h.creditorPID, harnessAmount},
+	} {
+		advice := h.advice(t, member.pid, cyc.ID)
+		if advice.Status != payment.AdvicePosted || advice.MirrorTx == "" {
+			t.Errorf("%s holds an advice that is %v with mirror %q, want Posted with a transaction",
+				member.name, advice.Status, advice.MirrorTx)
+		}
+		if advice.Movement != member.want {
+			t.Errorf("%s booked a movement of %d, want %d", member.name, advice.Movement, member.want)
+		}
+		reserve, err := h.net.ReserveBalance(context.Background(), member.pid, "EUR")
+		if err != nil {
+			t.Fatalf("ReserveBalance %s: %v", member.pid, err)
+		}
+		if advice.ClosingBalance != reserve {
+			t.Errorf("%s was told its reserve closed at %d; the central bank's book says %d",
+				member.name, advice.ClosingBalance, reserve)
+		}
+	}
+}
+
+// advice is one bank's own record of a cut-off, read out of that bank's book.
+//
+// Through the store rather than through a Network method, because there is no
+// such method: an advice is a member's own row and nothing in this system reads
+// another institution's yet. The unit of work is opened on a bare context, so the
+// recorder attributes the read to no actor and it cannot spoil a per-actor set.
+func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payment.CycleID) payment.SettlementAdvice {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetParticipant(ctx, id)
+	if err != nil {
+		t.Fatalf("GetParticipant %s: %v", id, err)
+	}
+	var out payment.SettlementAdvice
+	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		out, err = tx.GetSettlementAdvice(ctx, p.BookID, cycle, "EUR")
+		return err
+	}); err != nil {
+		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, cycle, err)
+	}
+	return out
+}
+
 // One instruction per asset. SettleCycleTx settles per asset, and a message
 // mixing currencies in one IntrBkSttlmAmt would not be expressible.
 func TestOneSettlementInstructionPerAsset(t *testing.T) {
@@ -435,10 +520,28 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 // TestTheSettlementChainIsTwoMessages names the conversation, the way
 // TestTheCreditTransferChainIsFourMessages names the push.
 //
-// Two between the institutions — the instruction and its answer — and then one
-// per PAYMENT out to the banks that submitted them. The fan-out is the clearing
-// house's and could not be the central bank's: it is answering about a cycle,
-// and it holds no method that could turn one into payments.
+// Two between the institutions — the instruction and its answer — and then two
+// fan-outs from them, which are two different things addressed to two different
+// sets of banks:
+//
+//   - one camt.053 per MEMBER whose position moved, from the CENTRAL BANK. It is
+//     a statement of that member's own reserve account, and it is what the member
+//     books its mirror leg from (bank.receiveStatement). Both banks get one here,
+//     because both had a non-zero net position.
+//   - one pacs.002 per PAYMENT, from the CLEARING HOUSE, out to the bank that
+//     submitted it. That fan-out could not be the central bank's: it is answering
+//     about a cycle, and it holds no method that could turn one into payments.
+//
+// # It is a SET and not a sequence, and the reason is the mesh
+//
+// The three messages this used to assert formed a chain — each was sent by the
+// handler of the one before, so their order was forced. The statements are not
+// in that chain: they go to two other actors' inboxes, and those goroutines run
+// concurrently with the clearing house's. Any of the four messages that follow
+// the instruction can be handled first, so a positional assertion here would be
+// flaky rather than strict. What IS forced is that the instruction comes first,
+// because everything else is sent from the handler that receives it, and that is
+// asserted on its own.
 func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
@@ -449,30 +552,37 @@ func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 	h.closeCycle(t)
 	h.drain(t)
 
-	want := []struct {
+	type hop struct {
 		from, to iso20022.BIC
 		msgDef   string
-	}{
-		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
-		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
-		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"},
+	}
+	instruction := hop{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"}
+	want := map[hop]int{
+		instruction: 1,
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}:            1,
+		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}:          1,
+		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"}: 1,
+		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"}:          1,
 	}
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen[before:]...)
 	h.mu.Unlock()
 
-	if len(seen) != len(want) {
-		t.Fatalf("the cut-off put %d messages on the wire, want %d", len(seen), len(want))
-	}
+	got := map[hop]int{}
 	for i, m := range seen {
 		env, err := iso20022.Unmarshal(m.raw)
 		if err != nil {
 			t.Fatalf("message %d does not parse: %v", i, err)
 		}
-		if m.from != want[i].from || m.to != want[i].to || env.AppHdr.MsgDefIdr != want[i].msgDef {
-			t.Errorf("message %d is %s -> %s (%s), want %s -> %s (%s)",
-				i, m.from, m.to, env.AppHdr.MsgDefIdr, want[i].from, want[i].to, want[i].msgDef)
+		h := hop{m.from, m.to, env.AppHdr.MsgDefIdr}
+		got[h]++
+		if i == 0 && h != instruction {
+			t.Errorf("the cut-off's first message is %s -> %s (%s), want the instruction %s -> %s (%s)",
+				h.from, h.to, h.msgDef, instruction.from, instruction.to, instruction.msgDef)
 		}
+	}
+	if !maps.Equal(got, want) {
+		t.Errorf("the cut-off put %v on the wire, want %v", got, want)
 	}
 }
 

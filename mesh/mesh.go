@@ -427,7 +427,7 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 	specs := make([]actorSpec, 0, len(ps))
 	banks := make(map[payment.ParticipantID]*bank, len(ps))
 	for _, p := range ps {
-		b := &bank{m: m, ops: m.net, bic: p.BIC}
+		b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
 		banks[p.ID] = b
 		specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
 	}
@@ -592,7 +592,7 @@ func (m *Mesh) AddBank(p *payment.Participant) error {
 	if m.net == nil {
 		return errors.New("mesh: no network, so there are no member banks to give actors to")
 	}
-	b := &bank{m: m, ops: m.net, bic: p.BIC}
+	b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
 	// The actor first, so that a BIC this mesh refuses leaves the bank index as
 	// it found it — the same ordering, for the same reason, as Start's.
 	if err := m.addActor(p.BIC, p.Name, b.handle); err != nil {

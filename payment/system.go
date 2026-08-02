@@ -25,9 +25,11 @@ import (
 // (participants, payments, mandates, cycles, settlements) live there too under
 // ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx,
 // one transaction reaches all of them, so an operation that touches several
-// banks is a single unit of work: SettleCycle moves reserves at the central
-// bank, mirrors the movement in every participant's book and pays out every
-// creditor inside one Update, and a failure anywhere leaves none of it behind.
+// banks is a single unit of work: SettleCycle moves reserves at the central bank
+// and pays out every creditor inside one Update, and a failure anywhere leaves
+// none of it behind. The mirror leg used to be in that list and is not any more
+// — it is the member's own posting now, made from the statement SettleCycle
+// hands back for each of them.
 //
 // This is what a real RTGS calls a settlement window: an interval during which
 // the settlement agent holds the participants' accounts, checks that every net
@@ -771,10 +773,14 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 	return c, nil
 }
 
-// SettleCycle settles a closed cycle. It moves each participant's net
-// position across reserve accounts at the central bank, mirrors that movement
-// in each bank's own reserve account (clearing its suspense to zero), and
-// posts the creditor leg of every payment so the payees receive their funds.
+// SettleCycle settles a closed cycle. It moves each participant's net position
+// across reserve accounts at the central bank, and posts the creditor leg of
+// every payment so the payees receive their funds.
+//
+// The MIRROR leg — a member's own suspense moving against its own reserve — is
+// no longer posted here. It is the member's act, and what this returns beside the
+// settlement is the STATEMENTS that tell each member what to post: see
+// SettleCycleTx and PostSettlementAdviceTx.
 //
 // # The settlement window
 //
@@ -792,25 +798,33 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // entries of the central bank's settlement transaction come out the same on
 // every run. That order is persisted — store/pg gives each entry an explicit
 // seq — so leaving it to Go's randomised map iteration would make the stored
-// transaction differ from run to run for no reason.
-func (s *Network) SettleCycle(ctx context.Context, id CycleID) (Settlement, error) {
+// transaction differ from run to run for no reason. The statements come out in
+// the same order, so the messages a caller sends do too.
+func (s *Network) SettleCycle(ctx context.Context, id CycleID) (Settlement, []SettlementStatement, error) {
 	var out Settlement
+	var statements []SettlementStatement
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.SettleCycleTx(ctx, tx, id)
+		out, statements, err = s.SettleCycleTx(ctx, tx, id)
 		return err
 	})
-	return out, err
+	return out, statements, err
 }
 
 // SettleCycleTx is SettleCycle within a caller-supplied unit of work.
-func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlement, error) {
+//
+// It returns the STATEMENTS beside the settlement because the closing balances
+// are a claim about a moment. A caller that re-read them after the commit would
+// be quoting whatever the accounts stand at then, and a statement asserting the
+// wrong balance is worse than none: the balance is the only thing a member can
+// check its own posting against.
+func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlement, []SettlementStatement, error) {
 	c, err := tx.GetCycle(ctx, id)
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
 	if c.Status != CycleClosed {
-		return Settlement{}, ErrCycleNotClosed
+		return Settlement{}, nil, ErrCycleNotClosed
 	}
 
 	// The cycle settles in its scheme's asset, resolved once here and used for
@@ -819,7 +833,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	// no reserve account to fall back to.
 	scheme, ok := s.scheme(c.Scheme)
 	if !ok {
-		return Settlement{}, ErrSchemeNotFound
+		return Settlement{}, nil, ErrSchemeNotFound
 	}
 	asset := scheme.Asset()
 
@@ -827,10 +841,41 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	//    participants. The net positions sum to zero, so this balances.
 	//
 	//    The participants are read in registration order so that both this
-	//    transaction's entries and the mirror postings below are deterministic.
+	//    transaction's entries and the statements below are deterministic.
 	legs, err := s.settlementLegsTx(ctx, tx, c, asset)
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
+	}
+
+	// The central bank's decision, and the whole of what it decides: can each net
+	// payer cover its position out of the reserves it holds HERE?
+	//
+	// It is checked explicitly because the ledger will not check it. A member's
+	// settlement account in this book is a LIABILITY — the central bank owes the
+	// member its reserve — and Book.checkSufficientBalance only guards Asset and
+	// Expense accounts. Until this task the refusal came from the MIRROR leg in
+	// the member's own book, where "Reserve at Central Bank" is an Asset; moving
+	// that leg to the bank would have taken AM04 with it and settled a cycle
+	// whose net payer was short, leaving the shortfall to surface at the bank as
+	// a dead letter.
+	//
+	// Refusing to take a member's reserve below zero is the central bank
+	// declining to extend uncollateralised intraday credit, which is the decision
+	// a settlement agent exists to make. ledger.ErrInsufficientBalance is
+	// returned rather than a new sentinel so that ReasonFor's borrowedReasons
+	// keeps mapping it to AM04 — same code, same layer, same meaning.
+	for _, leg := range legs {
+		if leg.net >= 0 {
+			continue
+		}
+		held, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+		if err != nil {
+			return Settlement{}, nil, err
+		}
+		if held+leg.net < 0 {
+			return Settlement{}, nil, fmt.Errorf("%w: %s is short %d in %s",
+				ledger.ErrInsufficientBalance, leg.participant.ID, -(held + leg.net), asset)
+		}
 	}
 
 	cbEntries := make([]ledger.Entry, 0, len(legs))
@@ -843,6 +888,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	}
 
 	var settlementTx ledger.TransactionID
+	statements := make([]SettlementStatement, 0, len(legs))
 	if len(cbEntries) > 0 {
 		posted, err := s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 			IdempotencyKey: string(c.ID) + ":settle",
@@ -850,32 +896,30 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 			Entries:        cbEntries,
 		})
 		if err != nil {
-			return Settlement{}, err
+			return Settlement{}, nil, err
 		}
 		settlementTx = posted.ID
 
-		// 2. Mirror each net movement in the participant's own ledger,
-		//    moving funds between its suspense and reserve so suspense
-		//    returns to zero and its reserve asset tracks the central bank.
-		//
-		//    The mirror leg is the MEMBER's act, and PostSettlementAdviceTx is
-		//    where it lives. Driving it from here is temporary: 15b.2 replaces
-		//    this loop with a statement per member, sent, and each member calls
-		//    the same method for itself. Calling it here first is what makes the
-		//    extraction checkable — nothing observable moves.
+		// 2. What each member is TOLD, in place of the mirror leg this used to
+		//    post in its book. The balance is read AFTER the posting and inside
+		//    the same unit of work, which is what makes it a CLOSING balance:
+		//    reading it before would produce an opening balance labelled CLBD,
+		//    which is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
-			if _, err := s.PostSettlementAdviceTx(ctx, tx, leg.participant.ID, AdvisedMovement{
-				Account: leg.accounts.Settlement,
-				Asset:   asset,
-				// ClosingBalance is not read here and is filled in 15b.2, when
-				// this call moves to the bank and the balance comes off a
-				// statement. Zero is honest: nothing has told this bank a
-				// balance yet.
-				Movement: leg.net,
-				CycleID:  c.ID,
-			}); err != nil {
-				return Settlement{}, err
+			closing, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+			if err != nil {
+				return Settlement{}, nil, err
 			}
+			statements = append(statements, SettlementStatement{
+				Member:         leg.participant.ID,
+				Agent:          leg.participant.BIC,
+				Account:        leg.accounts.Settlement,
+				Asset:          asset,
+				CycleID:        c.ID,
+				Movement:       leg.net,
+				ClosingBalance: closing,
+				ValueDate:      s.now(),
+			})
 		}
 	}
 
@@ -884,21 +928,22 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	//
 	//    The leg is the PAYEE's BANK's act, and PostCreditorLegTx is where it
 	//    lives — including the CheckCreditTx this loop could not afford while it
-	//    was the whole batch's unit of work. Driving it from here is temporary
-	//    in the same way the mirror leg above is: 15b.3 moves it to a message.
+	//    was the whole batch's unit of work. Driving it from here is temporary in
+	//    the way the mirror leg above was until this task: 15b.3 moves it to a
+	//    message too.
 	for _, pid := range c.PaymentIDs {
 		p, err := tx.GetPayment(ctx, pid)
 		if err != nil {
-			return Settlement{}, err
+			return Settlement{}, nil, err
 		}
 		if _, err := s.PostCreditorLegTx(ctx, tx, p.Creditor.Participant, pid); err != nil {
-			return Settlement{}, err
+			return Settlement{}, nil, err
 		}
 	}
 
 	settlementID, err := tx.NextID(ctx, ledger.NetworkBook, "set")
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
 	st := Settlement{
 		ID:           SettlementID(settlementID),
@@ -909,20 +954,26 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		SettledAt:    s.now(),
 	}
 	if err := tx.PutSettlement(ctx, st); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
+	}
+	// The settlement's own id, which only exists once the row above has been
+	// allocated one. It travels as Stmt/Id — the account servicer's reference for
+	// the statement — so a member can quote it back at the central bank.
+	for i := range statements {
+		statements[i].SettlementID = st.ID
 	}
 
 	c.Status = CycleSettled
 	c.SettlementID = st.ID
 	if err := tx.PutCycle(ctx, c); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
 	// One payment.settled per payment (above) plus one cycle.settled, all on
 	// this transaction — the batch is atomic, so its audit trail is too.
 	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleSettled, string(c.ID), st); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
-	return st, nil
+	return st, statements, nil
 }
 
 // settlementLeg pairs a participant with its non-zero net position in a cycle,
@@ -979,6 +1030,19 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, 
 	return legs, nil
 }
 
+// PostSettlementAdvice is PostSettlementAdviceTx in its own unit of work, which
+// is what a bank acting on a statement it has just been handed needs: the
+// message is the whole of the input, so there is nothing else to commit with it.
+func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
+	var out SettlementAdvice
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostSettlementAdviceTx(ctx, tx, by, m)
+		return err
+	})
+	return out, err
+}
+
 // PostSettlementAdviceTx is a member bank booking a cut-off it was told about:
 // the mirror leg, in its OWN ledger, and the row that records that it did.
 //
@@ -1000,10 +1064,12 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, 
 // exactly that. A settlement agent has no access to a member's ledger and no
 // business in it; what it has is a statement to send.
 //
-// SettleCycleTx still CALLS this, once per member, and 15b.2 is what replaces
-// that call with a statement each member acts on for itself. Extracting it
-// first, with every measurement unchanged, is what makes the move afterwards
-// provably a move and not a rewrite.
+// It no longer calls this at all. SettleCycleTx returns one SettlementStatement
+// per member, the settlement agent sends each as a camt.053, and the member that
+// receives it calls this for itself — see mesh's centralBank.advise and
+// bank.receiveStatement. TestEachBankBooksItsOwnSettlementAndNoOtherBooks is what
+// measures that the posting is now made in the acting bank's own book and in no
+// other.
 //
 // # The statement is checked before it is booked
 //

@@ -156,9 +156,12 @@ var reasonTable = []reasonMapping{
 //     comes back as deposit's error and not as anything this package names.
 //   - ledger.ErrInsufficientBalance is the same refusal one layer down and one
 //     institution over: a net payer whose RESERVE cannot cover its position at
-//     settlement. SettleCycleTx posts the mirror leg straight through
-//     ledger.PostTransactionTx, which refuses to take an asset account negative,
-//     so the error that reaches the central bank's handler is the ledger's.
+//     settlement. It used to come from the ledger itself, because SettleCycleTx
+//     posted the member's mirror leg and ledger.PostTransactionTx refuses to take
+//     an Asset account negative. That leg is the member's own now, so
+//     SettleCycleTx checks each net payer's reserve at the central bank itself
+//     and returns this same sentinel — deliberately this one, so that the code on
+//     the wire did not change when the posting moved. See SettleCycleTx.
 //
 // Without an entry, ReasonFor falls through to MS03 — "the agent rejected it and
 // the reason has no code" — for the two refusals that have the most specific

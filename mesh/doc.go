@@ -119,11 +119,39 @@
 // # Settlement
 //
 // The third institution, and the only one that moves reserves. A cut-off is two
-// messages between the institutions and then one per payment out to the banks:
+// messages between the institutions, one STATEMENT out to each member whose
+// position moved, and then one status per payment out to the banks:
 //
 //	clearing house  --pacs.009-->  central bank
+//	central bank    --camt.053-->  each member whose net position moved
 //	clearing house  <--pacs.002--  central bank
 //	clearing house  --pacs.002-->  the bank that submitted each payment
+//
+// The camt.053 is what makes the MIRROR LEG the member's own act. A bank's
+// clearing suspense holds money that has left a customer and not yet settled
+// between banks; the mirror leg is that suspense moving against the bank's
+// reserve, and it is a posting in the bank's own ledger. The settlement agent
+// used to make it, inside its own unit of work, in a book that was not its.
+// Now it states the movement and the closing balance, and the member books it
+// (bank.receiveStatement, payment.PostSettlementAdviceTx).
+//
+// A statement is not an instruction, so it is ANSWERED BY NOTHING: the central
+// bank has already settled, and there is nothing left to accept or refuse. A
+// member that cannot book what it was told produces a dead letter and an advice
+// row stuck at Advised, which is the unreconciled position in its most visible
+// form.
+//
+// It goes out BEFORE the answer, and the order is load-bearing: the pacs.002
+// becomes the per-payment fan-out, on which a payee's bank posts its creditor
+// leg out of the same suspense the mirror leg pays into. See centralBank.advise.
+//
+// The refusal moved with the leg. A net payer whose reserve cannot cover its
+// position used to be refused by the LEDGER, when the mirror leg took an Asset
+// account negative in the member's own book. A member's settlement account at
+// the central bank is a Liability, which the ledger does not guard, so
+// SettleCycleTx now checks each net payer's reserve itself and answers with the
+// same AM04. That is the central bank declining to extend uncollateralised
+// intraday credit, which is the decision a settlement agent exists to make.
 //
 // A cut-off does not arrive in an inbox. It comes in from outside the mesh the
 // way a customer's instruction does, so Mesh.CloseCycle runs the clearing
@@ -140,7 +168,7 @@
 // every bank's single claim on, or obligation to, the central bank.
 //
 // The CENTRAL BANK discharges them, whole or not at all. SettleCycleTx is one
-// unit of work holding every member's accounts at once, which is what a
+// unit of work holding every member's reserve account at once, which is what a
 // settlement window is, and a net payer whose reserve cannot cover its position
 // aborts the batch — answered AM04, the same code a debtor's bank sends about a
 // customer's empty account, said about a bank instead of about a customer.

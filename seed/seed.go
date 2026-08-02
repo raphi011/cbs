@@ -352,6 +352,44 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	}))
 }
 
+// settle runs all three institutions' halves of a cut-off — the settlement
+// agent's netting transaction and each member's booking of the advice it would
+// have been sent — in one unit of work, leaving the cycle Settled and every
+// bank's clearing suspense back at zero.
+//
+// It is initiate's argument applied to settlement, and it became necessary the
+// moment settlement stopped being one institution's act. There is no method that
+// plays all three, deliberately: the whole of Task 15 is that the central bank
+// cannot post in a member's book. The seed can, because the seed is not an
+// institution — it is one process building a fixed scenario before any actor
+// exists, and a conversation carried out at startup could not promise a fixed
+// outcome.
+//
+// The creditor legs are NOT composed here in this sub-task, because
+// SettleCycleTx still posts them. They move in with the same argument when it
+// stops.
+func (b *builder) settle(id payment.CycleID) {
+	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, statements, err := b.net.SettleCycleTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, st := range statements {
+			if _, err := b.net.PostSettlementAdviceTx(ctx, tx, st.Member, payment.AdvisedMovement{
+				Account:        st.Account,
+				Asset:          st.Asset,
+				Movement:       st.Movement,
+				ClosingBalance: st.ClosingBalance,
+				CycleID:        st.CycleID,
+				ValueDate:      st.ValueDate,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+
 // initSCT submits a credit transfer. It is the SUBMITTING (debtor's) bank, so
 // the request must name the counterparty: the NAME on the creditor's account,
 // taken from the account the seed itself already built — this is the seed
@@ -478,7 +516,7 @@ func (b *builder) build() {
 	b.initSCT(nord, nora, verde, bella, 40_000, "SCT-002", "Invoice 2025-77")
 	b.initSCT(verde, bruno, soleil, chloe, 30_000, "SCT-003", "Consulting fee")
 	must(b.net.CloseCycle(b.ctx, sct1.ID))
-	must(b.net.SettleCycle(b.ctx, sct1.ID))
+	b.settle(sct1.ID)
 
 	b.clock.advance(24 * time.Hour)
 
@@ -487,7 +525,7 @@ func (b *builder) build() {
 	b.initSDD(soleil, chloe, nord, nora, 20_000, m1.ID, "SDD-001", "Utility direct debit")
 	returned := b.initSDD(verde, bruno, aurora, aaron, 12_000, m2.ID, "SDD-002", "Gym membership")
 	must(b.net.CloseCycle(b.ctx, sdd1.ID))
-	must(b.net.SettleCycle(b.ctx, sdd1.ID))
+	b.settle(sdd1.ID)
 
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
 	must(b.net.ReturnPayment(b.ctx, returned.ID, "Debtor dispute — unauthorised collection"))

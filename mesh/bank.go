@@ -62,6 +62,16 @@ import (
 // are the settlement agent's, because reserves move. So this bank builds a
 // pacs.004, sends it to the clearing house, and waits (returnPayment,
 // receiveReturnStatus).
+//
+// # A fifth role, and the only one that answers nothing
+//
+// At a cut-off a member is TOLD what its reserve account did, in a camt.053 from
+// the settlement agent, and books its own mirror leg from it
+// (receiveStatement). It is the one inbound message in this type that produces
+// no pacs.002, because a statement is not an instruction: the settlement has
+// already happened and there is nothing to accept or refuse. It is also the only
+// role in which this bank posts without any customer of its own being involved —
+// what moves is its own position at the central bank.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -71,6 +81,19 @@ type bank struct {
 	// by ParticipantID instead, because that is what an instruction names; see
 	// Mesh.banks.
 	bic iso20022.BIC
+
+	// pid is which participant this actor IS, which is the question a settlement
+	// advice asks: a statement is about one bank's reserve account and a payment
+	// advice is about one bank's customer, and the answer must be this actor's
+	// own identity rather than a lookup.
+	//
+	// This is NOT the bank identity Task 18 owes payment.Network. That one is
+	// about narrowing ResolveIdentifierTx's sweep to "this bank's register", and
+	// it needs the DOMAIN layer to know whose register is whose. This is the
+	// mesh's own index turned around: Mesh.banks is already keyed by
+	// ParticipantID, so the actor is being told something the mesh knew when it
+	// built it. Nothing here narrows a sweep.
+	pid payment.ParticipantID
 }
 
 // handle dispatches on the message that arrived.
@@ -101,6 +124,8 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveDirectDebit(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs002:
 		return b.receiveStatus(ctx, doc)
+	case *iso20022.Camt053:
+		return b.receiveStatement(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", b.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -493,6 +518,49 @@ func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
 			b.m.log.Error("mesh: return refused",
 				"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
 		}
+	}
+	return nil
+}
+
+// receiveStatement is a bank booking its own share of a cut-off, from the
+// central bank's statement of its reserve account.
+//
+// # It answers nothing
+//
+// Every other inbound message in this package produces a pacs.002. This produces
+// none, and that is the message definition rather than an omission: a statement
+// is not an instruction and there is nothing to accept or refuse. The central
+// bank has already settled — finality is the premise of this whole conversation —
+// so a bank that answered "no" would be refusing something that has happened.
+//
+// What a failure produces instead is an ERROR, which this transport turns into a
+// dead letter, and an advice row left at Advised. Those two together are the
+// unreconciled position: told and not booked. Task 19 is the reconciliation that
+// makes it visible from inside the system rather than only in Drain.
+//
+// # One statement, one member
+//
+// This system's central bank sends a member a statement about that member's own
+// reserve account and about nothing else, so a document carrying several is one
+// this handler has no rule for. It is refused whole rather than partially
+// booked, for the reason cycleOf gives: booking the first and dropping the rest
+// would move a reserve mirror by the wrong amount with nothing recording it.
+//
+// The check that the account is THIS bank's is the domain's, not this handler's
+// — see payment.PostSettlementAdviceTx and ErrStatementNotForThisBank — because
+// it is a question about this bank's chart of accounts and the handler holds no
+// chart.
+func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso20022.Camt053) error {
+	moves, err := payment.ReadStatement(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the statement from %s: %w", b.bic, from, err)
+	}
+	if len(moves) != 1 {
+		return fmt.Errorf("mesh: %s got a statement from %s carrying %d accounts; a member is told about its own",
+			b.bic, from, len(moves))
+	}
+	if _, err := b.ops.PostSettlementAdvice(ctx, b.pid, moves[0]); err != nil {
+		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].CycleID, err)
 	}
 	return nil
 }

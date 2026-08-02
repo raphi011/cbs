@@ -52,15 +52,17 @@ import (
 // on those handlers moving money. GetParticipant is on both of the other two and
 // returns a value carrying live ledger and deposit handles bound to whichever
 // bank it names (Network.bind), and a member bank's ledger is exactly where the
-// mirror and creditor legs below go, so posting them is reachable from either of
-// those handlers through a method each legitimately holds. The recorder in
+// creditor legs below go, so posting them is reachable from either of those
+// handlers through a method each legitimately holds. The recorder in
 // books_test.go is what watches for that, here as everywhere else in this
 // package; see the note on bankOps in ops.go for the whole of the hole.
 //
-// Both methods behind this interface also reach much further than two methods
-// suggest. Settlement posts in every participant's book as well as the central
-// bank's, which is what SettleCycleTx is, and a return posts in three books of
-// which two are member banks'. See TestWhichBooksTheCentralBankReachesWhenItSettles
+// Both methods behind this interface also reach further than two methods
+// suggest. Settlement posts every CREDITOR leg in the payee's bank's book as
+// well as its own netting transaction in the central bank's, and a return posts
+// in three books of which two are member banks'. The mirror leg used to be on
+// that list and has left: it is the member's own posting now, made from the
+// statement advise sends. See TestWhichBooksTheCentralBankReachesWhenItSettles
 // and TestWhichBooksAReturnReaches for the measurements.
 type centralBank struct {
 	m   *Mesh
@@ -143,13 +145,67 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 		return cb.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 
-	if _, err := cb.ops.SettleCycle(ctx, id); err != nil {
+	_, statements, err := cb.ops.SettleCycle(ctx, id)
+	if err != nil {
 		if errors.Is(err, payment.ErrCycleNotClosed) || errors.Is(err, payment.ErrInvalidStateTransition) {
 			return fmt.Errorf("mesh: %s was told to settle %s again: %w", cb.bic, id, err)
 		}
 		return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
 	}
+	if err := cb.advise(statements); err != nil {
+		return err
+	}
 	return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// advise sends each member the statement of its own reserve account.
+//
+// # Why the members and not the clearing house
+//
+// The clearing house is the party that INSTRUCTED and is the one this actor
+// answers; the members are the parties whose accounts moved, and they are not
+// parties to that conversation at all. Each gets a message about its own account
+// and about no other, which is the whole of what an account servicer tells an
+// account holder.
+//
+// # After the unit of work, and before the answer
+//
+// After, for Mesh.Submit's reason: a statement enqueued from inside SettleCycleTx
+// would be one a bank could book against a settlement the store then rolled back.
+//
+// Before the answer, and the order is load-bearing rather than tidy. The
+// clearing house turns the ACSC into per-payment advices, and a payee's bank
+// posts its creditor leg out of its clearing suspense on those. The mirror leg
+// is what puts the money in that suspense. Both orders produce the same books at
+// rest — suspense is a Liability and the ledger does not guard those against
+// going negative — but only this one keeps the suspense from being transiently
+// overdrawn, and an actor's inbox is FIFO, so sending the statements first is
+// what makes the order deterministic rather than incidental.
+//
+// # A failed send is not a failed settlement
+//
+// The reserves have moved and the cycle is Settled: that is final, and this
+// actor cannot unsay it. So a send that fails comes back as an error to the
+// caller — which in this transport reaches Drain as a dead letter — and the
+// advice row at the bank that was never told stays absent. That is the
+// unreconciled position in its most visible form, and Task 19 is what makes it
+// detectable from inside the system.
+func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
+	for _, st := range statements {
+		env, err := payment.StatementMessage(st, payment.MessageContext{
+			From:  cb.bic,
+			To:    st.Agent,
+			MsgID: cb.m.nextMsgID(cb.bic),
+			Now:   cb.m.now(),
+		})
+		if err != nil {
+			return fmt.Errorf("mesh: %s could not build the statement for %s: %w", cb.bic, st.Agent, err)
+		}
+		if err := cb.m.send(cb.bic, st.Agent, env); err != nil {
+			return fmt.Errorf("mesh: %s settled %s and could not tell %s: %w", cb.bic, st.CycleID, st.Agent, err)
+		}
+	}
+	return nil
 }
 
 // receiveReturn is the central bank executing a return: the R-transaction, and

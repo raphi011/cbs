@@ -783,8 +783,9 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 // about: it sent a pacs.008 or a pacs.003 naming one payment and has heard ACCP
 // since, and ACSC is the answer that closes it. The central bank could not send
 // these: it is answering about a CYCLE, and settlementOps holds nothing that
-// turns one into the payments inside it — SettleCycle answers with a Settlement,
-// and neither GetCycle nor GetPayment is on that interface. It can act on a
+// turns one into the payments inside it — SettleCycle answers with a Settlement
+// and one statement per MEMBER, and neither GetCycle nor GetPayment is on that
+// interface. It can act on a
 // payment somebody else named to it, which is what a return is, and that is a
 // different thing from being able to enumerate a batch.
 //

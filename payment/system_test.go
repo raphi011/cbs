@@ -194,6 +194,14 @@ func fundAccount(t *testing.T, ctx context.Context, sys *Network, p *Participant
 
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
 // the settled settlement.
+//
+// It plays every institution, and has to. Settlement is no longer one of them:
+// the settlement agent posts its netting transaction and hands back one
+// statement per member, and each member books its own mirror leg from the
+// statement it is sent. A test that only called SettleCycle would leave every
+// bank's suspense holding the batch and its reserve mirror unmoved, which is not
+// a settled cut-off at all. See bookTheAdvices, and seed's builder.settle, which
+// is the same composite made for the same reason.
 func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settlement {
 	t.Helper()
 	ctx := context.Background()
@@ -202,9 +210,32 @@ func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settle
 	submit()
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	st, err := sys.SettleCycle(ctx, cyc.ID)
+	st, statements, err := sys.SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
+	bookTheAdvices(t, sys, statements)
 	return st
+}
+
+// bookTheAdvices is every member's half of a cut-off: each books the mirror leg
+// the statement it was sent advises.
+//
+// It is the test's stand-in for the messages the mesh carries — one camt.053 per
+// member, and each member calling PostSettlementAdvice for itself. This package
+// has no mesh and no actors, so it plays the members the way seed's builder does.
+func bookTheAdvices(t *testing.T, sys *Network, statements []SettlementStatement) {
+	t.Helper()
+	ctx := context.Background()
+	for _, st := range statements {
+		_, err := sys.PostSettlementAdvice(ctx, st.Member, AdvisedMovement{
+			Account:        st.Account,
+			Asset:          st.Asset,
+			Movement:       st.Movement,
+			ClosingBalance: st.ClosingBalance,
+			CycleID:        st.CycleID,
+			ValueDate:      st.ValueDate,
+		})
+		assertNoError(t, err)
+	}
 }
 
 // bookBalance returns the GL book balance of an arbitrary ledger account.
@@ -325,7 +356,7 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	assertNoError(t, err)
 
 	// 1. The batch is not taken down by one closed account.
-	_, err = sys.SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
 	// 2. The payment settled, because it did: the reserves moved and Bob's bank
@@ -391,7 +422,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
 		func() time.Time { return fixedTime })
 
-	if _, err := broken.SettleCycle(ctx, cyc.ID); err == nil {
+	if _, _, err := broken.SettleCycle(ctx, cyc.ID); err == nil {
 		t.Error("SettleCycle over a store that could not read the payee's account succeeded; " +
 			"a read that cannot answer is not permission to put the money somewhere else")
 	}
@@ -632,7 +663,7 @@ func TestSettleCycleIsAtomic(t *testing.T) {
 
 	before := reserveBalances(t, ctx, net)
 
-	_, err := net.SettleCycle(ctx, cycleID)
+	_, _, err := net.SettleCycle(ctx, cycleID)
 	if err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
@@ -676,7 +707,7 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	cbTxBefore, err := net.CentralBank().ListTransactions(ctx)
 	assertNoError(t, err)
 
-	_, err = net.SettleCycle(ctx, cycleID)
+	_, _, err = net.SettleCycle(ctx, cycleID)
 	if err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
@@ -861,19 +892,19 @@ func TestStateMachineGuards(t *testing.T) {
 
 	t.Run("settle before close", func(t *testing.T) {
 		_, cyc := mkPayment()
-		_, err := sys.SettleCycle(ctx, cyc)
+		_, _, err := sys.SettleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
 		_, _ = sys.CloseCycle(ctx, cyc)
-		_, _ = sys.SettleCycle(ctx, cyc)
+		_, _, _ = sys.SettleCycle(ctx, cyc)
 	})
 
 	t.Run("double settle", func(t *testing.T) {
 		_, cyc := mkPayment()
 		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(ctx, cyc)
+		_, _, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(ctx, cyc)
+		_, _, err = sys.SettleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
 	})
 
@@ -882,14 +913,14 @@ func TestStateMachineGuards(t *testing.T) {
 		_, err := sys.ReturnPayment(ctx, p.ID, "too early")
 		assertError(t, err, ErrInvalidStateTransition)
 		_, _ = sys.CloseCycle(ctx, cyc)
-		_, _ = sys.SettleCycle(ctx, cyc)
+		_, _, _ = sys.SettleCycle(ctx, cyc)
 	})
 
 	t.Run("reject after settle", func(t *testing.T) {
 		p, cyc := mkPayment()
 		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, err = sys.SettleCycle(ctx, cyc)
+		_, _, err = sys.SettleCycle(ctx, cyc)
 		assertNoError(t, err)
 		_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late")
 		assertError(t, err, ErrInvalidStateTransition)
@@ -1082,7 +1113,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 		return tx.PutParticipant(ctx, *stored)
 	}))
 
-	_, err = sys.SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.SettleCycle(ctx, cyc.ID)
 	assertError(t, err, ErrParticipantAssetNotFound)
 
 	// And nothing was posted: the batch fails whole, exactly as it does for a
@@ -1305,7 +1336,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) 
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	_, err = sys.SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.SettleCycle(ctx, cyc.ID)
 	assertError(t, err, ledger.ErrUnbalancedAsset)
 
 	// The whole batch fails, not the one payment: nothing settled, and Alice's

@@ -139,9 +139,12 @@
 //     each participant's and the central bank's — lives in the same Store, told
 //     apart by its ledger.BookID, and payment.Tx embeds deposit.Tx embeds
 //     ledger.Tx, so a single transaction reaches all three layers. SettleCycle
-//     moves the netted reserves, mirrors them in each bank's own books and pays
-//     out every creditor inside one Store.Update, so a net payer that cannot
-//     cover its position aborts the whole batch. That is the essence of a real
+//     moves the netted reserves and pays out every creditor inside one
+//     Store.Update, so a net payer that cannot cover its position aborts the
+//     whole batch. (The mirror leg in each bank's own books used to be in that
+//     unit of work too. It is the member's own posting now, made from the
+//     statement SettleCycle hands back — see PostSettlementAdviceTx.) That is the
+//     essence of a real
 //     RTGS settlement window: the settlement agent holds the participants'
 //     accounts, checks that every payer can cover, and posts all of it or none.
 //     What a real system adds is what happens next — queueing the batch,

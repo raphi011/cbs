@@ -660,9 +660,11 @@ var structCarriedBooks = map[string]structCarriedBook{
 // ever bound to it. Clearing posts nothing at all. Settlement does, and in three
 // places — the netting transaction in the CENTRAL BANK's book (CentralBankBook),
 // the mirror leg in each participant's own book, and each creditor leg in the
-// creditor's book. None of them is NetworkBook, so a handler that settles
-// contributes those books and not this one. Do not go looking for a NetworkBook
-// posting: there is none to find.
+// creditor's book. Those three are still the postings a cut-off makes; what
+// changed at Task 15b.2 is WHO makes the second, which is now the member itself
+// on the statement it was sent. None of them is NetworkBook, so a handler that
+// settles contributes those books and not this one. Do not go looking for a
+// NetworkBook posting: there is none to find.
 //
 // # This is a property of today's domain layer, not a structural invariant
 //
@@ -1099,9 +1101,9 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 // claims more than it measures is worse than no name, because the name is the
 // string a failure prints and a reader greps for.
 //
-// The central bank reaches EVERY book in this network when it settles, and Task
-// 10's own note said why without following the sentence through: settlement
-// posts in three places, and only one of them is the central bank's.
+// The central bank used to reach EVERY book in this network when it settled, and
+// Task 10's own note said why without following the sentence through: settlement
+// posted in three places, and only one of them was the central bank's.
 //
 //   - CentralBankBook, for the netting transaction — the one posting that is
 //     genuinely this institution's own, moving reserves between the members'
@@ -1109,35 +1111,41 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 //   - Each PARTICIPANT's book, twice over. The mirror leg moves that bank's
 //     suspense against its reserve so the suspense returns to zero, and the
 //     creditor leg releases each payee's funds out of its bank's suspense into
-//     the payee's account. Both are postings in a member bank's ledger, made by
+//     the payee's account. Both were postings in a member bank's ledger, made by
 //     the central bank's handler.
 //   - NetworkBook, for the settlement row's id and the audit events — the same
 //     route every network-scoped write takes here, and never through a posting.
 //     See the note above the tests.
 //
-// So the whole set is allBooks() — which is the fixture's two banks plus the
-// central bank's book and the network's, and which is a HELPER over this
-// fixture rather than a derivation from the network. It names h.debtorBook and
-// h.creditorBook explicitly, so a third bank in the fixture would be reached by
-// settlement and absent from this expectation, and this test would fail rather
-// than track it. That is the right failure — a set that grew silently would be
-// no measurement at all — but it is a thing to fix in the helper and not a
-// property this test already has.
+// # The MIRROR leg has left, and that is what this set now measures
+//
+// Task 15b.2 turned the mirror leg into a camt.053: the central bank sends each
+// member a statement of its own reserve account, and the member posts its own
+// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement). So
+// the payer's bank's book is no longer in this set — the settlement agent has
+// nothing left to do in it.
+//
+// The PAYEE's bank's book is still here, and it is here for the creditor leg
+// alone: SettleCycleTx still releases every payee's funds out of that bank's
+// suspense. That leg moves in 15b.3, and THAT is when this assertion reaches
+// [CentralBankBook, NetworkBook]. The set below is an intermediate state and not
+// the destination; do not read it as one.
 //
 // # What that measurement is evidence FOR
 //
-// Not a boundary violation. It is what a settlement window IS: one unit of work
-// that holds every member's accounts at once, checks that every net payer can
-// cover, and posts the whole batch or none of it. A settlement agent that could
-// not reach the members' books could not clear their suspense accounts, and the
-// money would settle at the central bank and stay stuck in transit at the banks.
+// The three books that remain are: the central bank's own, the network's, and
+// one member's — and the member's is there because of the ONE leg that has not
+// moved yet. What has already gone is the claim that a settlement agent posts in
+// every member's ledger.
 //
-// It is nonetheless the widest reach any actor in this system has, and the one
-// sub-project 8 will have the most to say about: when each entity gets its own
-// store, the mirror and creditor legs cannot be posted from here at all, and
-// this becomes a conversation — the central bank tells each bank its position is
-// discharged, and each bank posts its own two legs. This measurement is what
-// that change will be measured against.
+// What it cost is stated at the domain call rather than hidden here: the ledger's
+// refusal of an overdrawn net payer came from the mirror leg, in the member's own
+// book, where "Reserve at Central Bank" is an Asset account. A member's
+// settlement account HERE is a Liability, which ledger.Book.checkSufficientBalance
+// does not guard, so moving the leg without moving the check would have settled a
+// cycle whose net payer was short. SettleCycleTx now refuses that explicitly; see
+// TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction, which is the measurement
+// that would fail if it were ever deleted.
 func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -1151,48 +1159,61 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 		t.Fatalf("the payment is %v, want Settled — this test measures a settlement that happened", got.Status)
 	}
 	assertBooksTouched(t, "the central bank, settling a cycle",
-		h.booksTouchedBy(h.cfg.CentralBankBIC), h.allBooks())
+		h.booksTouchedBy(h.cfg.CentralBankBIC),
+		[]ledger.BookID{h.creditorBook, payment.CentralBankBook, ledger.NetworkBook})
 }
 
-// TestNeitherBankTouchesABookWhileTheCycleSettles is the counterpart of the
-// measurement above, and the strongest form the claim takes anywhere in this
-// package: across a cut-off the member banks reach NO book at all.
+// TestEachBankBooksItsOwnSettlementAndNoOtherBooks is the counterpart of the
+// measurement above: across a cut-off each member bank reaches its OWN book and
+// no other.
 //
 // TestWhichBooksEachBankActuallyReaches makes a claim about a credit transfer up
 // to acceptance, and TestWhichBooksEachBankReachesInAPull about a collection.
 // Neither could say anything about settlement, because at Task 10 there was
 // none. Now there is, and it is the moment at which reserves actually move — so
 // it is the point in the system's life where a bank reaching into the central
-// bank's book would be least visible and most wrong.
+// bank's book, or into the other bank's, would be least visible and most wrong.
 //
-// The empty set is a MEASUREMENT and not a vacuum. The payer's bank runs a
-// handler over this window, attributed to it by the same mechanism every other
-// set here uses: it is handed the ACSC pacs.002 the clearing house fans out. It
-// touches nothing because an acceptance needs nothing from a bank —
-// bank.receiveStatus returns without reading any book unless the status is a
-// rejection. Measured: a receiving half that resolved the payee's participant and
-// listed its ledgers comes out [bank_3] and fails here.
+// # The claim this used to make, and why it stopped being true
 //
-// # What an empty set does NOT rule out, measured rather than assumed
+// It was TestNeitherBankTouchesABookWhileTheCycleSettles, and it asserted the
+// empty set for both banks: "settlement is not a bank's work". That was a true
+// measurement of a system in which the settlement agent posted every member's
+// mirror leg inside its own unit of work — the banks touched nothing because
+// nothing was left for them to do. Task 15b.2 moved the mirror leg to the member
+// that owns the book, so both banks now post, and the old name claims the exact
+// opposite of what this measures. It is renamed rather than adjusted in place for
+// the reason TestWhichBooksEachBankActuallyReaches was renamed: the name is the
+// string a failure prints and a reader greps for, and one that outran its code is
+// worse than no name at all.
 //
-// A bank that merely RE-READ the payment row would still pass this, and the
-// reason is the recorder's and not this test's: a network-scoped row reaches
-// touched() through the id its write allocated and the audit event that write
-// appended, never through the read itself (see the note above the tests). So
-// GetPayment and GetParticipant record nothing at all. The claim this makes is
-// therefore about BOOKS — no bank reads or writes any book, its own or anybody
-// else's, while a cycle settles — and it is not a claim that a bank learns
-// nothing.
+// # What each bank reaches, and what is ABSENT
 //
-// The payee's bank is in the loop for symmetry and its set is empty for a second
-// reason as well: on a push the clearing house fans the ACSC out to the SUBMITTER
-// alone, so that bank is handed no message at all over this window. An assertion
-// that it touched nothing is true of it and weaker than it looks, which is worth
-// saying rather than leaving to be discovered.
+// Its own book, once, for the mirror leg — suspense against reserve, so the
+// suspense returns to zero. NetworkBook is NOT in either set, and that absence is
+// a measurement too: PostSettlementAdviceTx writes a book-scoped advice row and
+// posts in the bank's own ledger, and appends no audit event, so nothing in a
+// member's half of settlement allocates a network id. An unexpected NetworkBook
+// here would mean something did; read what touched it before changing this
+// expectation.
+//
+// The central bank's book is absent from both, which is the claim the old test
+// made most sharply and this one still makes: a member books its own mirror leg
+// from a statement, and never reads the account the statement is about.
+//
+// # What these sets do NOT rule out, measured rather than assumed
+//
+// A bank that merely RE-READ the payment row would still show only its own book,
+// and the reason is the recorder's and not this test's: a network-scoped row
+// reaches touched() through the id its write allocated and the audit event that
+// write appended, never through the read itself (see the note above the tests).
+// So GetPayment and GetParticipant record nothing at all. The claim here is about
+// BOOKS — no bank reads or writes any book but its own while a cycle settles —
+// and it is not a claim that a bank learns nothing.
 //
 // It measures over the cut-off ONLY, resetting after the submission has drained,
 // so a book reached earlier can neither satisfy nor spoil it.
-func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
+func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
 	h.drain(t)
@@ -1201,11 +1222,10 @@ func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
 	h.closeCycle(t)
 	h.drain(t)
 
-	for _, who := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
-		if got := h.booksTouchedBy(who); len(got) != 0 {
-			t.Errorf("%s reached %v while the cycle settled; settlement is not a bank's work", who, got)
-		}
-	}
+	assertBooksTouched(t, "the payer's bank, booking its own settlement",
+		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
+	assertBooksTouched(t, "the payee's bank, booking its own settlement",
+		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook})
 }
 
 // TestWhichBooksAReturnReaches is the last flow's measurement, and it is the

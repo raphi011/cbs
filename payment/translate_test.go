@@ -122,18 +122,25 @@ func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 
 // TestReasonForAnEmptyReserveIsAM04 is the pin on the second borrowed entry.
 //
-// A net payer whose reserve cannot cover its position is refused by the LEDGER,
-// inside SettleCycleTx: the mirror leg would take an asset account negative, and
-// PostTransactionTx will not. So the error that has to become a code is
-// ledger.ErrInsufficientBalance, one layer below the deposit error that
-// classifies the same condition for a customer's account.
+// A net payer whose reserve cannot cover its position is refused inside
+// SettleCycleTx, and ledger.ErrInsufficientBalance is what that refusal carries
+// — one layer below the deposit error that classifies the same condition for a
+// customer's account.
+//
+// It used to come from the LEDGER itself: the mirror leg would take an Asset
+// account negative and PostTransactionTx will not. The mirror leg is the
+// member's own posting since Task 15b.2, so SettleCycleTx checks each net
+// payer's reserve at the central bank itself and returns this same sentinel
+// deliberately — a member's settlement account there is a Liability, which the
+// ledger does not guard, and a new sentinel would have changed the code on the
+// wire for a refusal that did not change at all.
 //
 // The same code for both is right rather than convenient: AM04 says "the account
 // cannot cover this", and the settlement agent answering a clearing house is
 // saying exactly what a debtor's bank says to a creditor's. MS03 is what it fell
 // to before, which told the clearing house nothing it could act on.
 func TestReasonForAnEmptyReserveIsAM04(t *testing.T) {
-	err := fmt.Errorf("posting the mirror leg: %w", ledger.ErrInsufficientBalance)
+	err := fmt.Errorf("bank_1 is short 250000 in EUR: %w", ledger.ErrInsufficientBalance)
 	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
 		t.Errorf("ReasonFor(%v) = %q, want AM04", err, got)
 	}

@@ -131,7 +131,7 @@ func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
 		t.Fatal("fixture produced no audit events")
 	}
 
-	if _, err := sys.SettleCycle(ctx, cycleID); err == nil {
+	if _, _, err := sys.SettleCycle(ctx, cycleID); err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
 
