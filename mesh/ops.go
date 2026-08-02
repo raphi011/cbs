@@ -55,24 +55,48 @@ import (
 // interfaces cannot narrow, and exactly what the recorder in books_test.go is
 // for; closing it needs a narrower return, which is payment's to give and
 // sub-project 8's to want.
+//
+// # What Task 11 added, and why none of it widens the hole
+//
+// The pull flow needs four more methods and one of them deserves a note.
+// Scheme answers "who submits this, and who receives it" — the question the
+// direction decides and the one a handler cannot ask any other way. It reads a
+// map in memory, takes no unit of work and names no book, so unlike
+// GetParticipant it hands nothing over. GetMandate reads a network-scoped row:
+// mandates belong to no single bank, exactly as payments and cycles do.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
+	//
+	// Two messages, because which one a submission produces is the scheme's
+	// direction: a pacs.008 pushes money at the payee's bank, a pacs.003 asks
+	// the payer's bank for it. The mandate travels with the second because it is
+	// the only thing that makes the ask authorised.
 	SubmitPayment(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error)
 	CreditTransferMessage(ctx context.Context, p payment.Payment, mc payment.MessageContext) (iso20022.Envelope, error)
+	DirectDebitMessage(ctx context.Context, p payment.Payment, m payment.Mandate, mc payment.MessageContext) (iso20022.Envelope, error)
+	GetMandate(ctx context.Context, id payment.MandateID) (payment.Mandate, error)
 
-	// The receiving bank's half. CreditTransferRequest resolves the message by
-	// ADDRESS, which is the check that answers AC01; AcceptInbound is the half
-	// SubmitPaymentTx did not run.
+	// The receiving bank's half. CreditTransferRequest and DirectDebitRequest
+	// resolve the message by ADDRESS, which is the check that answers AC01;
+	// AcceptInbound is the half SubmitPaymentTx did not run — a check for the
+	// payee's bank on a push, and the posting of the debtor leg for the payer's
+	// bank on a pull.
 	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
+	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
 	AcceptInbound(ctx context.Context, id payment.PaymentID) error
 
 	// The payer's bank's half of a rejection: give the payer their money back.
 	// GetPayment is what establishes that there is a decision to act on — see
 	// ReverseDebtorLegTx, which does not look at the payment's status itself and
 	// says the caller must.
+	//
+	// Scheme is how a bank decides which of the two roles a status makes it play:
+	// the submitter waiting for an answer, or the bank holding money it must
+	// give back. For a push those are one bank and for a pull they are two.
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error)
+	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 	ReverseDebtorLeg(ctx context.Context, p payment.Payment, reason string) error
 }
 
@@ -81,20 +105,27 @@ type bankOps interface {
 // The comment on bankOps applies to all three — empty on purpose, grown by the
 // task that first needs a method.
 //
-// Three methods for the whole of clearing, and the shortness is the point: a
-// clearing house accepts a payment into a cycle, rejects one, and looks up where
-// to send the answer. Posting is a bank's act and no method here is one — with
-// the same exception the note above records, since GetParticipant is on this
-// interface too and hands over the same live handles. So the ban on posting is
-// the recorder's and not the compiler's; TestTheCSMTouchesOnlyTheNetworkBook is
-// what enforces it.
+// Four methods for the whole of clearing, and the shortness is the point: a
+// clearing house accepts a payment into a cycle, rejects one, asks which
+// direction it runs in, and looks up where to send the answer. Posting is a
+// bank's act and no method here is one — with the same exception the note above
+// records, since GetParticipant is on this interface too and hands over the same
+// live handles. So the ban on posting is the recorder's and not the compiler's;
+// TestTheCSMTouchesOnlyTheNetworkBook is what enforces it.
 type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
 
-	// GetParticipant is how a status is addressed back to the payment's own
-	// debtor bank. See the note on bankOps for what it also hands over.
+	// GetParticipant is how a status is addressed back to the bank that
+	// submitted the payment. See the note on bankOps for what it also hands over.
+	//
+	// Scheme is what says which bank that is: the payer's for a push, the payee's
+	// for a pull. Reading it off the payment's own scheme rather than off the
+	// message means the clearing house answers the instructing agent even when
+	// the message it is acting on came from the other one, which on a pull it
+	// always does.
 	GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error)
+	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 }
 
 // settlementOps is the central bank's view: what a settlement handler may

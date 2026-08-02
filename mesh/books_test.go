@@ -743,6 +743,78 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	}
 }
 
+// TestWhichBooksEachBankReachesInAPull is the same measurement for the other
+// direction, and its result is the surprise: the sets are IDENTICAL to the
+// push's, bank for bank, and every reason behind them is mirrored.
+//
+// Measured before it was written down, and worth setting out member by member
+// because "the same" is the sort of claim that is easy to state and easy to get
+// wrong.
+//
+// # The SUBMITTING bank, which here is the payee's
+//
+// [debtorBook, creditorBook, NetworkBook] — the same three the payer's bank
+// reaches when it submits a credit transfer, arrived at from the other side:
+//
+//   - NetworkBook, because submitting allocates the payment's id under it
+//     (payment/system.go's NextID(ctx, ledger.NetworkBook, "pay")) and appends
+//     payment.initiated under it. The mandate it loads to build the message is a
+//     network-scoped row too, and it contributes nothing further.
+//   - Its OWN book, because SubmitPaymentTx runs the creditor half for a pull:
+//     the payee's account, its asset, its address, and whether it can take a
+//     credit at all.
+//   - The DEBTOR's book, which is not its own, and this is the genuine crossing
+//     TestWhichBooksEachBankActuallyReaches found pointing the other way. Building
+//     the pacs.003 names the payer, and payment.partyTx reads the payer's deposit
+//     account out of the PAYER'S BANK'S register to get the name on it. Same
+//     cause, opposite direction, and it closes for the same reason: the request
+//     would have to carry the counterparty's name.
+//
+// # The RECEIVING bank, which here is the payer's, and which POSTS
+//
+// Every bank book, and neither NetworkBook nor the central bank's — again the
+// same as the push's receiver, and this one is the more informative half. Its
+// directory sweep is the same sweep: DirectDebitRequest resolves both parties by
+// address and ResolveIdentifierTx asks every member in turn, so answering "whose
+// IBAN is this" reads every member's register.
+//
+// What is new is that this half MOVES MONEY and NetworkBook still does not
+// appear. The debtor leg is posted here, and every id and audit event that
+// posting needs is taken under the payer's bank's own book. That is the note
+// above the tests made falsifiable: NetworkBook reaches the recorder through
+// network-scoped id allocation and audit events and never through a posting, so
+// the one handler in this package that posts on receipt is the one that proves
+// it. AcceptInboundTx deliberately appends no audit event of its own — the
+// payment's lifecycle has two facts and not three — which is why nothing in this
+// half allocates a network id either.
+func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
+	h := newMeshHarness(t)
+
+	h.rec.reset()
+	h.submitDirectDebit(t)
+	h.drain(t)
+
+	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
+		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
+	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
+
+	// Clearing a collection costs the clearing house exactly what clearing a
+	// credit transfer costs it, which is the point of relaying by an address the
+	// message carries: no store read to route, and nothing but network rows to
+	// clear.
+	assertBooksTouched(t, "the clearing house, clearing a collection", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
+		[]ledger.BookID{ledger.NetworkBook})
+
+	// And the payer's money moved without the central bank being involved. A
+	// direct debit is the first flow in this package where a receiving bank
+	// posts, so it is the first place that distinction could have been lost.
+	for _, who := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
+		if slices.Contains(h.booksTouchedBy(who), payment.CentralBankBook) {
+			t.Errorf("%s reached the central bank's book during a direct debit", who)
+		}
+	}
+}
+
 // TestTheCSMTouchesOnlyTheNetworkBook is the assertion the note above was
 // written for, and it holds: the clearing house's half writes the payment and
 // the cycle and posts nothing.

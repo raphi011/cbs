@@ -822,17 +822,60 @@ func (m *Mesh) takeDeadLetters() error {
 // the mesh entirely. The work is still the bank's, and it is marked as the
 // bank's, so the recorder attributes every book it touches to the bank and not
 // to whoever called in.
+//
+// # Which bank is handed the instruction
+//
+// The scheme's DIRECTION decides, and it is asked here rather than assumed. A
+// credit transfer is handed to the payer's bank, because the payer is
+// instructing their own bank to push. A direct debit is handed to the PAYEE's
+// bank, because a collection is the payee asking for money it is owed: the
+// payer's bank is the counterparty on that one and hears about it as a message
+// like any other counterparty does.
+//
+// Taking the debtor unconditionally — which is what this did through Task 10 —
+// is the wrong bank for every direct debit, and it is invisible until a pull
+// exists: the payment goes through, the books balance, and the only thing wrong
+// is that the wrong institution did the work and signed the message. api's
+// handleSubmitPayment asks the same question, for the same reason, one layer up.
+//
+// It reads the network to ask, so like Mesh.now it exists only on a mesh that
+// has one. A mesh built over no network has no participant roster and therefore
+// no bank actors, so every submission to it was already an error; this makes
+// that a precondition instead of an outcome.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
+	scheme, ok := m.net.Scheme(req.Scheme)
+	if !ok {
+		return payment.Payment{}, fmt.Errorf("mesh: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
+	}
+	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
+
 	m.mu.Lock()
-	b, ok := m.banks[req.Debtor.Participant]
+	b, ok := m.banks[submitter]
 	m.mu.Unlock()
 	if !ok {
 		// The mesh has no actor to play this bank, so nothing it submitted could
 		// ever be answered. Refusing here is better than accepting a payment that
 		// would sit Initiated for ever.
-		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", req.Debtor.Participant)
+		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", submitter)
 	}
 	return b.submit(ctx, req)
+}
+
+// submitterOf is the party whose bank hands a payment to the clearing house.
+//
+// One rule, two directions, and every actor in this package that has to name the
+// instructing agent uses it: Mesh.Submit to choose whose goroutine does the
+// submitting half, and csm.receiveStatus to choose whose inbox the answer goes
+// back to. Written once because the two must agree — an answer addressed to a
+// bank that did not submit is a message nobody was waiting for.
+//
+// It takes the two refs rather than a Payment, because Submit has only a request
+// and a request is not yet a payment.
+func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
+	if scheme.Direction() == payment.Pull {
+		return creditor
+	}
+	return debtor
 }
 
 // notProvided is what a message says where a reference is genuinely unavailable.

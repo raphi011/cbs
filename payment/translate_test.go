@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
@@ -68,6 +69,50 @@ func TestReasonTableNamesMatchTheirValues(t *testing.T) {
 	if len(seen) != len(sentinelNames(t)) {
 		t.Errorf("reasonTable holds %d distinct errors, errors.go declares %d sentinels",
 			len(seen), len(sentinelNames(t)))
+	}
+}
+
+// TestABorrowedReasonIsClassifiedAndDistinct is borrowedReasons' guard.
+//
+// Two things it must not become. It must not shadow a sentinel this package
+// declares — that decision belongs in reasonTable and nowhere else — and it must
+// not hold an entry that says nothing, because an empty code here would silently
+// mean "fall through to MS03", which is what having the table avoids.
+func TestABorrowedReasonIsClassifiedAndDistinct(t *testing.T) {
+	if len(borrowedReasons) == 0 {
+		t.Fatal("borrowedReasons is empty; delete it and ReasonFor's second loop, or say what it is for")
+	}
+	declared := sentinelNames(t)
+	for _, m := range borrowedReasons {
+		if m.Err == nil {
+			t.Errorf("%s maps to a nil error", m.Name)
+			continue
+		}
+		if m.Code == "" {
+			t.Errorf("%s is borrowed with no code, which is the MS03 fallback it exists to avoid", m.Name)
+		}
+		if contains(declared, strings.TrimPrefix(m.Name, "deposit.")) {
+			t.Errorf("%s names a sentinel errors.go declares; classify it in reasonTable instead", m.Name)
+		}
+		for _, own := range reasonTable {
+			if errors.Is(m.Err, own.Err) {
+				t.Errorf("%s is already classified as %s in reasonTable", m.Name, own.Name)
+			}
+		}
+	}
+}
+
+// TestReasonForAnEmptyAccountIsAM04 is the pin on the one borrowed entry.
+//
+// A direct debit against an account with nothing in it is refused by the DEBTOR
+// bank's funds check, which is the deposit layer's to make, so the error that
+// has to become a code is deposit's. AM04 is the code SEPA has for exactly this
+// and MS03 is what it fell to before, which told a creditor's collection system
+// nothing it could act on.
+func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
+	err := fmt.Errorf("checking withdrawal: %w", deposit.ErrInsufficientAvailable)
+	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
+		t.Errorf("ReasonFor(%v) = %q, want AM04", err, got)
 	}
 }
 

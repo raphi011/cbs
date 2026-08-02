@@ -114,6 +114,33 @@ var reasonTable = []reasonMapping{
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
 }
 
+// borrowedReasons classifies the errors a receiving bank's half produces that
+// this package did not declare.
+//
+// It is a second table and not more rows in the first, because reasonTable's
+// two guards are about payment/errors.go — every sentinel declared there must
+// appear, and nothing else may — and an entry from another package would either
+// break them or force them to be loosened into a check that no longer catches
+// an unclassified sentinel.
+//
+// There is exactly one member and it is the direct debit's whole point.
+// Scheme.Validate is a funds check run by the DEBTOR's bank, and the deposit
+// layer is the authority for it, so a collection against an empty account comes
+// back as deposit.ErrInsufficientAvailable and not as anything this package
+// names. Without an entry here ReasonFor falls through to MS03 — "the agent
+// rejected it and the reason has no code" — for the one refusal in SEPA that
+// has the most specific code of all. AM04 is what a real debtor's bank sends,
+// and it is what a creditor's collection system reads to decide whether to
+// re-present.
+//
+// A new member belongs here only if the error reaches ReasonFor at all, which
+// means a half that some mesh handler calls really returns it. The push flow
+// never produced one: its receiving half checks that the payee's account can
+// take a credit, and every way that fails is already a payment sentinel.
+var borrowedReasons = []reasonMapping{
+	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
+}
+
 // ReasonFor maps an error to the code a pacs.002 should carry.
 //
 // It is exported because the party that decides an error is worth telling a
@@ -131,10 +158,16 @@ var reasonTable = []reasonMapping{
 // crashed instead of answering would be a worse outcome than an imprecise
 // code, and the exhaustiveness test is what stops that path being reachable
 // for a sentinel.
+//
+// It consults borrowedReasons after reasonTable, and the order is stated rather
+// than incidental: this package's own classification of its own sentinels wins,
+// so a borrowed entry can never quietly override one that was decided here.
 func ReasonFor(err error) iso20022.StatusReason {
-	for _, m := range reasonTable {
-		if m.Code != "" && errors.Is(err, m.Err) {
-			return m.Code
+	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
+		for _, m := range table {
+			if m.Code != "" && errors.Is(err, m.Err) {
+				return m.Code
+			}
 		}
 	}
 	return iso20022.StatusReasonNotSpecifiedAgentGenerated

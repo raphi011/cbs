@@ -13,11 +13,17 @@ import (
 //
 // It sits between two banks that never address each other. Everything a bank
 // learns about the far side arrives through here, and everything this type does
-// falls out of that: it ROUTES a credit transfer onward, and it CLEARS the
-// answer — taking the payment into a cycle, or rejecting it — and passes that
-// answer back to the bank that started it.
+// falls out of that: it ROUTES an instruction onward, and it CLEARS the answer —
+// taking the payment into a cycle, or rejecting it — and passes that answer back
+// to the bank that started it.
 //
-// It holds a csmOps, which is three methods wide: nothing about clearing moves
+// The routing is where the two flows differ and the clearing is where they do
+// not. A credit transfer goes to the agent named as the creditor's, a collection
+// to the agent named as the debtor's, because a push travels towards the money's
+// destination and a pull towards its source. What comes back is a pacs.002
+// either way, and this actor treats it the same way either way.
+//
+// It holds a csmOps, which is four methods wide: nothing about clearing moves
 // money, and that is what makes clearing and settlement different jobs. What
 // that does NOT amount to is a compile-time ban on posting — GetParticipant
 // hands back live ledger and deposit handles bound to the bank it names, so a
@@ -40,6 +46,8 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs008:
 		return c.relayCreditTransfer(from, env, doc)
+	case *iso20022.Pacs003:
+		return c.relayDirectDebit(from, env, doc)
 	case *iso20022.Pacs002:
 		return c.receiveStatus(ctx, from, doc)
 	default:
@@ -47,21 +55,9 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	}
 }
 
-// relayCreditTransfer hands a credit transfer on to the creditor's agent.
-//
-// It reads no store, and that is a property worth keeping rather than an
-// accident of how little there is to do. The address it routes by is in the
-// message — CdtrAgt, the element that says which bank holds the payee — so a
-// clearing house that looked the payment up to decide where to send it would be
-// one that could not route a message about a payment it does not hold. Which is
-// every message, in a real network.
-//
-// The DOCUMENT travels unchanged and only the header is replaced. That is what
-// relaying is: the header says who is handing this to whom and is this hop's, the
-// document is what the payer's bank said and is not the clearing house's to
-// rewrite. Its GrpHdr/MsgId therefore stays the payer's bank's, which is what
-// the payee's bank quotes back as OrgnlMsgId and what lets the answer be matched
-// to the original all the way home.
+// relayCreditTransfer hands a credit transfer on to the CREDITOR's agent: the
+// bank that holds the payee, because a push travels towards the money's
+// destination.
 func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
 	ref := body.CdtTrfTxInf[0].PmtId
@@ -70,17 +66,64 @@ func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc 
 		MsgDefIdr: env.AppHdr.MsgDefIdr,
 		CreDtTm:   body.GrpHdr.CreDtTm.Time,
 	}
-
-	// One payment per message, here as everywhere else in this system. A bulk
-	// file has several creditor agents and therefore several destinations, and
-	// this clearing house has one routing decision per message to make. Refused
-	// rather than split: sending the first of five would drop four.
 	if n := len(body.CdtTrfTxInf); n != 1 {
-		return c.answer(from, orig, ref, iso20022.StatusReasonNotSpecifiedAgentGenerated,
-			fmt.Sprintf("this clearing house routes one payment per message; CdtTrfTxInf carries %d", n))
+		return c.refuseBulk(from, orig, ref, "CdtTrfTxInf", n)
 	}
+	return c.relay(from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI)
+}
 
-	to := body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI
+// relayDirectDebit hands a collection on to the DEBTOR's agent: the bank that
+// holds the payer, because a pull travels towards the money's source.
+//
+// One element different from relayCreditTransfer, and it is the whole direction
+// of the payment. Routing a pacs.003 by CdtrAgt would send the collection back
+// to the bank that sent it, which would answer its own instruction — and the
+// resolution inside DirectDebitRequest would succeed while it did, because both
+// parties resolve by address whoever is asking.
+func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs003) error {
+	body := doc.FIToFICstmrDrctDbt
+	ref := body.DrctDbtTxInf[0].PmtId
+	orig := payment.OriginalMessage{
+		MsgID:     body.GrpHdr.MsgId,
+		MsgDefIdr: env.AppHdr.MsgDefIdr,
+		CreDtTm:   body.GrpHdr.CreDtTm.Time,
+	}
+	if n := len(body.DrctDbtTxInf); n != 1 {
+		return c.refuseBulk(from, orig, ref, "DrctDbtTxInf", n)
+	}
+	return c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI)
+}
+
+// refuseBulk is this system's one-payment-per-message limit, stated to the
+// sender.
+//
+// A bulk file names several counterparty agents and therefore several
+// destinations, and this clearing house has one routing decision per message to
+// make. Refused rather than split: sending the first of five would drop four.
+func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, element string, n int) error {
+	return c.answer(from, orig, ref, iso20022.StatusReasonNotSpecifiedAgentGenerated,
+		fmt.Sprintf("this clearing house routes one payment per message; %s carries %d", element, n))
+}
+
+// relay forwards an instruction to the agent the message named, whichever
+// direction it runs in.
+//
+// It reads no store, and that is a property worth keeping rather than an
+// accident of how little there is to do. The address it routes by came out of
+// the message — CdtrAgt for a push, DbtrAgt for a pull — so a clearing house
+// that looked the payment up to decide where to send it would be one that could
+// not route a message about a payment it does not hold. Which is every message,
+// in a real network.
+//
+// The DOCUMENT travels unchanged and only the header is replaced. That is what
+// relaying is: the header says who is handing this to whom and is this hop's,
+// the document is what the submitting bank said and is not the clearing house's
+// to rewrite. Its GrpHdr/MsgId therefore stays that bank's, which is what the
+// receiving bank quotes back as OrgnlMsgId and what lets the answer be matched
+// to the original all the way home.
+func (c *csm) relay(from iso20022.BIC, env iso20022.Envelope, doc iso20022.Document,
+	orig payment.OriginalMessage, ref iso20022.PaymentIdentification, to iso20022.BIC) error {
+
 	relayed := iso20022.Envelope{
 		AppHdr: iso20022.AppHdr{
 			Fr:        iso20022.NewAgent(c.bic),
@@ -114,10 +157,26 @@ func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc 
 //   - RJCT: the payment is rejected with the code the payee's bank chose, and
 //     dropped from any cycle it had reached.
 //
-// The answer then goes to the payment's OWN debtor bank, looked up from the
-// payment rather than taken from the message's sender: the pacs.002 arrived from
-// the payee's bank, and the payer's bank is a third party neither of them
-// addressed.
+// # Who is told, and why it can be two banks
+//
+// The answer goes to the bank that SUBMITTED, looked up from the payment rather
+// than taken from the message's sender — the sender is the bank that just
+// decided, and the submitter is a third party neither of them addressed. Which
+// bank submitted is the scheme's direction and nothing else: the payer's bank
+// pushed, or the payee's bank pulled. See submitterOf.
+//
+// A REJECTION can need a second recipient, and only on a pull. By the time the
+// clearing house refuses a collection, the payer's bank has already posted the
+// debtor leg — that is what accepting a collection means — and that bank is not
+// the one that submitted. A rejection that never reached it would leave the
+// payer's money sitting in a clearing suspense against a payment this network
+// records as rejected: nobody would ever settle it and nobody would ever give it
+// back. So the payer's bank is told as well, and the condition is exactly the
+// money: a posted debtor leg, at a bank that is not the submitter.
+//
+// On a push the two are the same bank and there is one message, unchanged from
+// Task 10. On a pull refused BEFORE the payer's bank answered — an unroutable
+// agent, a bulk file — there is no leg, so there is one message again.
 //
 // # This handler does two writes, and the second may not happen
 //
@@ -161,25 +220,52 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 			return err
 		}
 
-		debtor, err := c.ops.GetParticipant(ctx, decided.Debtor.Participant)
-		if err != nil {
-			return fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, id, err)
-		}
-		if err := c.forward(debtor.BIC, orig, r); err != nil {
+		if err := c.tell(ctx, decided, orig, r); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// tell sends the decision to every bank that has to have it. See the note on
+// receiveStatus for which banks those are and why a rejected collection has two.
+func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+	scheme, ok := c.ops.Scheme(p.Scheme)
+	if !ok {
+		return fmt.Errorf("mesh: %s decided %s and holds no %q scheme to say who submitted it: %w",
+			c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
+	}
+	submitter, err := c.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
+	if err != nil {
+		return fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err)
+	}
+	if err := c.forward(submitter.BIC, orig, r); err != nil {
+		return err
+	}
+	// The payer's bank, when it is holding money against a payment that has just
+	// been rejected and is not the bank waiting for the answer. Only a pull
+	// reaches this.
+	if r.Status != iso20022.TransactionStatusRejected || p.DebtorLegTx == "" {
+		return nil
+	}
+	debtor, err := c.ops.GetParticipant(ctx, p.Debtor.Participant)
+	if err != nil {
+		return fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, p.ID, err)
+	}
+	if debtor.BIC == submitter.BIC {
+		return nil
+	}
+	return c.forward(debtor.BIC, orig, r)
+}
+
 // clear takes an accepted payment into the open cycle for its scheme, and turns
-// a refusal to do so into the rejection the payer's bank will be sent.
+// a refusal to do so into the rejection the submitting bank will be sent.
 //
 // The report comes back changed on that path, and that is the point: what the
-// payee's bank said was ACCP, and what the payer's bank must be told is RJCT
-// with the clearing house's own reason. Relaying the payee's acceptance while
-// rejecting the payment would tell the payer's bank the opposite of what
-// happened to its money.
+// answering bank said was ACCP, and what the submitting bank must be told is
+// RJCT with the clearing house's own reason. Relaying the acceptance while
+// rejecting the payment would tell the bank that instructed this the opposite of
+// what happened.
 func (c *csm) clear(ctx context.Context, id payment.PaymentID, r payment.TransactionStatusReport) (payment.Payment, payment.TransactionStatusReport, error) {
 	p, err := c.ops.AcceptAtCSM(ctx, id)
 	if err == nil {
@@ -202,19 +288,20 @@ func (c *csm) clear(ctx context.Context, id payment.PaymentID, r payment.Transac
 	return rejected, r, nil
 }
 
-// forward sends the status on to the payer's bank.
+// forward sends the status on to one bank. Which bank, and how many of them, is
+// tell's decision.
 //
 // It builds a NEW pacs.002 rather than relaying the one that arrived, and the
 // difference is in one element: the originator. A status report says who
 // DECIDED, and what this message reports is the clearing house's decision — this
-// payment is in a cycle, or this payment is rejected and out of one. The payee's
-// bank's own decision travelled in its own pacs.002, to this actor, carrying its
-// own originator. Each hop states what that hop decided, which is why relaying
-// the bytes would be wrong here and right for a pacs.008.
+// payment is in a cycle, or this payment is rejected and out of one. The
+// answering bank's own decision travelled in its own pacs.002, to this actor,
+// carrying its own originator. Each hop states what that hop decided, which is
+// why relaying the bytes would be wrong here and right for an instruction.
 //
-// The ORIGINAL message it refers back to is unchanged: that is the payer's bank's
-// pacs.008, which is what both hops are about and the only thing the payer's bank
-// can match on.
+// The ORIGINAL message it refers back to is unchanged: that is the submitting
+// bank's pacs.008 or pacs.003, which is what every hop is about and the only
+// thing that bank can match on.
 func (c *csm) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
 	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{r}, payment.MessageContext{
 		From:  c.bic,
@@ -230,8 +317,8 @@ func (c *csm) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.T
 
 // answer rejects a message the clearing house could not carry out, back to
 // whoever sent it. No payment changes state: these are refusals of the MESSAGE —
-// a bulk file, an unroutable creditor agent — decided before any payment was
-// looked up.
+// a bulk file, an agent this mesh cannot route to — decided before any payment
+// was looked up.
 func (c *csm) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, code iso20022.StatusReason, text string) error {
 	return c.forward(to, orig, payment.TransactionStatusReport{
 		EndToEndID: ref.EndToEndId,

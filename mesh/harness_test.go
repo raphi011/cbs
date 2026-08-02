@@ -84,29 +84,81 @@ type meshHarness struct {
 	debtorBook   ledger.BookID
 	creditorBook ledger.BookID
 
+	// mandate is the creditor's authority to collect from the debtor's account.
+	// Every fixture has one, including the ones whose collections are refused,
+	// because a collection quoting no mandate at all is refused by
+	// payment.SDD.ValidateMandate inside Submit — so none of the conditions these
+	// tests exist to provoke would ever be reached.
+	mandate payment.Mandate
+
 	mu   sync.Mutex
 	seen []tappedMessage
 }
 
-// newMeshHarness builds the network, opens a clearing cycle for SEPA credit
-// transfer, and starts the mesh.
+// harnessOptions is what the named constructors below vary, and nothing else
+// does. It is unexported and passed by value so that a variation is a field
+// with a name rather than a positional bool nobody can read at the call site.
+type harnessOptions struct {
+	// openCycles opens a cut-off window for BOTH schemes. Both, because a
+	// fixture that cleared credit transfers and not collections would answer
+	// TM01 to every direct debit for a reason the test did not ask for.
+	openCycles bool
+	// fundTheDebtor pays the opening deposit in. Withheld, the debtor's account
+	// exists, is addressable and is denominated in euro, and has nothing in it —
+	// which is the one condition that produces AM04 and no other.
+	fundTheDebtor bool
+	// revokeMandate revokes the mandate after creating it. The mandate still
+	// EXISTS, so the collection is refused for being unauthorised rather than
+	// for naming a mandate this network has never heard of.
+	revokeMandate bool
+}
+
+// newMeshHarness builds the network, opens a clearing cycle for each scheme, and
+// starts the mesh.
 func newMeshHarness(t *testing.T) *meshHarness {
 	t.Helper()
-	return newHarness(t, true)
+	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true})
 }
 
 // newMeshHarnessWithNoOpenCycle is the same network with no cut-off window open.
 //
-// A separate constructor rather than a flag on the first, because "there is no
-// open cycle" is not a variation on the fixture, it is the condition the test
-// that uses it exists to provoke: the clearing house refuses a payment it has
-// nowhere to clear, and answers TM01.
+// Each variation gets a NAMED constructor rather than callers assembling their
+// own harnessOptions, and the reason is in this one's name: "there is no open
+// cycle" is not a knob, it is the condition the tests that use it exist to
+// provoke — the clearing house refuses a payment it has nowhere to clear, and
+// answers TM01. A test that spelt the options out at its call site would be
+// stating a fixture where it means to state a hypothesis.
 func newMeshHarnessWithNoOpenCycle(t *testing.T) *meshHarness {
 	t.Helper()
-	return newHarness(t, false)
+	return newHarness(t, harnessOptions{fundTheDebtor: true})
 }
 
-func newHarness(t *testing.T, openCycle bool) *meshHarness {
+// newMeshHarnessWithAnUnfundedDebtor is the same network with the opening
+// deposit never paid in.
+//
+// It is the pull flow's counterpart to the unknown IBAN: the condition only the
+// DEBTOR's bank can see, and therefore the one that proves which bank answered.
+// A creditor's bank cannot know what is in the account it is collecting from —
+// that is the whole asymmetry a direct debit is built on — so an empty account
+// is a refusal that can only have come from the far side of the mesh.
+func newMeshHarnessWithAnUnfundedDebtor(t *testing.T) *meshHarness {
+	t.Helper()
+	return newHarness(t, harnessOptions{openCycles: true})
+}
+
+// newMeshHarnessWithARevokedMandate is the same network with the debtor's
+// authority withdrawn.
+//
+// The creditor's bank holds the mandate in SEPA, so this is the one refusal in
+// the pull flow that never reaches the wire: it happens inside Submit's own unit
+// of work, at the bank the collection was handed to. See
+// TestARevokedMandateIsRefusedSynchronously for what that costs.
+func newMeshHarnessWithARevokedMandate(t *testing.T) *meshHarness {
+	t.Helper()
+	return newHarness(t, harnessOptions{openCycles: true, fundTheDebtor: true, revokeMandate: true})
+}
+
+func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	t.Helper()
 	ctx := context.Background()
 	clock := func() time.Time { return testTime }
@@ -124,17 +176,35 @@ func newHarness(t *testing.T, openCycle bool) *meshHarness {
 	}
 	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", debtorIBAN)
 	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", creditorIBAN)
-	if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
-		t.Fatalf("Deposit: %v", err)
+	if opts.fundTheDebtor {
+		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+			t.Fatalf("Deposit: %v", err)
+		}
 	}
 
 	h.debtorBIC, h.creditorBIC = h.debtor.BIC, h.creditor.BIC
 	h.debtorPID, h.creditorPID = h.debtor.ID, h.creditor.ID
 	h.debtorBook, h.creditorBook = h.debtor.BookID, h.creditor.BookID
 
-	if openCycle {
-		if _, err := h.net.OpenCycle(ctx, payment.SchemeSEPACT); err != nil {
-			t.Fatalf("OpenCycle: %v", err)
+	// The mandate is created for every fixture, funded or not. It names the two
+	// parties by the same refs the request quotes, because SDD.ValidateMandate
+	// compares them party by party and a mandate over a different account is a
+	// mismatch rather than an authority. MaxAmount 0 is unlimited, so the amount
+	// is never what refuses a collection here.
+	if h.mandate, err = h.net.CreateMandate(ctx, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
+		t.Fatalf("CreateMandate: %v", err)
+	}
+	if opts.revokeMandate {
+		if err := h.net.RevokeMandate(ctx, h.mandate.ID); err != nil {
+			t.Fatalf("RevokeMandate: %v", err)
+		}
+	}
+
+	if opts.openCycles {
+		for _, scheme := range []payment.SchemeID{payment.SchemeSEPACT, payment.SchemeSEPADD} {
+			if _, err := h.net.OpenCycle(ctx, scheme); err != nil {
+				t.Fatalf("OpenCycle %s: %v", scheme, err)
+			}
 		}
 	}
 
@@ -202,11 +272,65 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 	t.Helper()
 	return payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
-		Debtor:      payment.PartyRef{Participant: h.debtorPID, Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]},
-		Creditor:    payment.PartyRef{Participant: h.creditorPID, Account: h.creditorAcct.ID, Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}},
+		Debtor:      h.debtorRef(),
+		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
 	}
+}
+
+// debtorRef and creditorRef are the harness's two customers as a payment names
+// them: which bank holds the account, which account, and the address quoted to
+// reach it.
+//
+// They are shared by the two flows and by the mandate, which is not tidiness: a
+// mandate authorises debits from an ACCOUNT and SDD.ValidateMandate compares the
+// refs party by party, so a fixture that built the mandate's parties and the
+// collection's parties separately could drift into a mismatch that looked like a
+// revoked mandate.
+func (h *meshHarness) debtorRef() payment.PartyRef {
+	return payment.PartyRef{Participant: h.debtorPID, Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]}
+}
+
+func (h *meshHarness) creditorRef(iban string) payment.PartyRef {
+	return payment.PartyRef{
+		Participant: h.creditorPID,
+		Account:     h.creditorAcct.ID,
+		Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban},
+	}
+}
+
+// directDebitRequest is the instruction the harness's PAYEE gives its own bank:
+// collect from Alice, under the mandate she signed.
+//
+// The mirror of creditTransferRequest, and the difference is who hands it in. A
+// credit transfer is the payer instructing their bank to push; a collection is
+// the payee instructing THEIR bank to pull, which is why Mesh.Submit routes it
+// to the creditor's actor and why nothing is posted when it is accepted.
+func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRequest {
+	t.Helper()
+	return payment.InitiatePaymentRequest{
+		Scheme:      payment.SchemeSEPADD,
+		Debtor:      h.debtorRef(),
+		Creditor:    h.creditorRef(creditorIBAN),
+		Amount:      harnessAmount,
+		MandateID:   h.mandate.ID,
+		Description: "subscription 7",
+	}
+}
+
+// submitDirectDebit runs the payee's collection through their own bank, and
+// returns what that bank answered. Like submitCreditTransfer it does NOT wait —
+// and unlike it, what comes back has moved no money at all: the debtor's bank
+// has not seen the collection yet, and until it does nobody has looked at the
+// account being collected from.
+func (h *meshHarness) submitDirectDebit(t *testing.T) payment.Payment {
+	t.Helper()
+	p, err := h.mesh.Submit(context.Background(), h.directDebitRequest(t))
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	return p
 }
 
 // submitCreditTransfer runs the payer's instruction through their own bank, and

@@ -30,6 +30,27 @@ import (
 // Which one is running is decided entirely by which actor's inbox the message
 // landed in. That is what makes "who may know what, and when" a question with an
 // answer here and not in the single-process version.
+//
+// # The same three roles, played by the other bank
+//
+// A direct debit is the same three, with the banks swapped and the money moving
+// at a different moment:
+//
+//   - the PAYEE's bank submits, because a collection is the payee asking for
+//     what it is owed — and its submission moves NOTHING. It cannot: the account
+//     being collected from is at the other bank and this one has never seen it.
+//   - the PAYER's bank receives the pacs.003 (receiveDirectDebit). This is the
+//     half that moves money, and it is the only moment either the account or the
+//     funds behind it are in view. AM04 comes from here and could come from
+//     nowhere else.
+//   - the PAYEE's bank receives the answer, and has nothing to undo, because it
+//     never had the money.
+//
+// So "the submitting bank posts" is a fact about a PUSH and not about this
+// system. The rule that covers both is that the DEBTOR's bank posts the debtor
+// leg, and the direction decides whether that is the bank submitting or the bank
+// answering. payment.SubmitPaymentTx and payment.AcceptInboundTx are the two
+// halves that say so.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -47,10 +68,10 @@ type bank struct {
 // whole reason this takes the sender as an argument rather than reading it out
 // of the header: the header is exactly what is unreadable.
 //
-// A message type this bank has no handler for is an ERROR and not a shrug. Tasks
-// 11 and 13 add the two arms that are missing (pacs.003 collections and pacs.004
-// returns), and until they do, a bank that answered one with silence would make
-// the missing half look like a working one.
+// A message type this bank has no handler for is an ERROR and not a shrug. Task
+// 13 adds the arm that is still missing (pacs.004 returns), and until it does, a
+// bank that answered one with silence would make the missing half look like a
+// working one.
 func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -59,6 +80,8 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs008:
 		return b.receiveCreditTransfer(ctx, from, env.AppHdr, doc)
+	case *iso20022.Pacs003:
+		return b.receiveDirectDebit(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs002:
 		return b.receiveStatus(ctx, doc)
 	default:
@@ -66,8 +89,15 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 	}
 }
 
-// submit is the payer's own bank taking its customer's instruction: the
-// submitting half, then the pacs.008 that hands it to the clearing house.
+// submit is a bank taking its own customer's instruction: the submitting half,
+// then the message that hands it to the clearing house.
+//
+// WHICH customer depends on the scheme. For a push it is the payer instructing
+// their bank, and this half moves their money into the bank's clearing suspense.
+// For a pull it is the payee instructing theirs, and this half moves nothing at
+// all — the account the money will come out of belongs to another bank's
+// customer, and this bank has never seen it. Mesh.Submit is what routes the
+// instruction to the right one of the two.
 //
 // Two steps and two failure modes, and they are not the same. A refused
 // instruction moved nothing and is the caller's answer. A message that could not
@@ -85,19 +115,48 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	}
 
 	to := b.m.cfg.ClearingHouseBIC
-	env, err := b.ops.CreditTransferMessage(ctx, p, payment.MessageContext{
+	env, err := b.instruct(ctx, p, payment.MessageContext{
 		From:  b.bic,
 		To:    to,
 		MsgID: b.m.nextMsgID(b.bic),
 		Now:   b.m.now(),
 	})
 	if err != nil {
-		return p, fmt.Errorf("mesh: %s submitted %s and could not build its pacs.008: %w", b.bic, p.ID, err)
+		return p, fmt.Errorf("mesh: %s submitted %s and could not build its instruction: %w", b.bic, p.ID, err)
 	}
 	if err := b.m.send(b.bic, to, env); err != nil {
 		return p, fmt.Errorf("mesh: %s submitted %s and could not send it: %w", b.bic, p.ID, err)
 	}
 	return p, nil
+}
+
+// instruct builds the interbank message a submission travels on: a pacs.008 for
+// a push, a pacs.003 for a pull.
+//
+// They are two message definitions and not one with a flag because they say
+// different things. A pacs.008 accompanies money that has already left the
+// payer; a pacs.003 asks for money that has not moved, which is why it must
+// carry the MANDATE — the debtor's standing authority for this creditor to
+// collect, and the only element that distinguishes a collection from a demand.
+//
+// The mandate is loaded here rather than carried on the payment because a
+// payment holds its MandateID and nothing else of it; the message needs the
+// document's own terms. It is a network-scoped row, like the payment itself: in
+// this system mandates live once, in the network's store, which is the
+// simplification SDD.ValidateMandate names.
+func (b *bank) instruct(ctx context.Context, p payment.Payment, mc payment.MessageContext) (iso20022.Envelope, error) {
+	scheme, ok := b.ops.Scheme(p.Scheme)
+	if !ok {
+		return iso20022.Envelope{}, fmt.Errorf("%w: %s", payment.ErrSchemeNotFound, p.Scheme)
+	}
+	if scheme.Direction() != payment.Pull {
+		return b.ops.CreditTransferMessage(ctx, p, mc)
+	}
+	mandate, err := b.ops.GetMandate(ctx, p.MandateID)
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return b.ops.DirectDebitMessage(ctx, p, mandate, mc)
 }
 
 // receiveCreditTransfer is the PAYEE's bank answering a credit transfer.
@@ -136,10 +195,55 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 	ref := body.CdtTrfTxInf[0].PmtId
 
 	if _, err := b.ops.CreditTransferRequest(ctx, doc); err != nil {
-		return b.answerCreditTransfer(from, orig, ref, err)
+		return b.answer(from, orig, ref, err)
 	}
+	return b.accept(ctx, from, orig, ref)
+}
+
+// receiveDirectDebit is the PAYER's bank answering a collection, and it is the
+// mirror of receiveCreditTransfer in every way except the one that matters.
+//
+// The two questions are the same two, in the same order. First, can this message
+// be resolved to an instruction at all — DirectDebitRequest, which resolves both
+// parties BY ADDRESS and produces AC01 for an IBAN nobody holds. Second, does
+// this bank's own half check out — AcceptInbound.
+//
+// What differs is what the second question DOES. On a push it is a check and
+// nothing more; here it is the posting. The payer's money leaves their account
+// for this bank's clearing suspense at the moment this handler says yes, because
+// this is the first moment any actor in the system has been able to look at that
+// account at all. So a refusal here is a refusal that no other party could have
+// made: AM04 is the payer's balance, and the bank that submitted this collection
+// has no way of knowing it.
+//
+// The resolved request is discarded for the same reason receiveCreditTransfer
+// discards its own — one store, one payment row, loaded by the identifier the
+// message carries. See that handler for the whole of it.
+func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs003) error {
+	body := doc.FIToFICstmrDrctDbt
+	orig := payment.OriginalMessage{
+		MsgID:     body.GrpHdr.MsgId,
+		MsgDefIdr: hdr.MsgDefIdr,
+		CreDtTm:   body.GrpHdr.CreDtTm.Time,
+	}
+	// Unmarshal refuses a pacs.003 with no transactions (iso20022's
+	// FIToFICustomerDirectDebit.validate), so there is always a first one to
+	// refer back by. More than one is refused below, by DirectDebitRequest.
+	ref := body.DrctDbtTxInf[0].PmtId
+
+	if _, err := b.ops.DirectDebitRequest(ctx, doc); err != nil {
+		return b.answer(from, orig, ref, err)
+	}
+	return b.accept(ctx, from, orig, ref)
+}
+
+// accept runs the receiving bank's own half and answers with the result. It is
+// the second of the two questions both receive handlers ask, and it is shared
+// because the direction changes what the half DOES and not what this actor does
+// about it.
+func (b *bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification) error {
 	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId)); err != nil {
-		// Already answered. A queue redelivers, so the same pacs.008 can arrive
+		// Already answered. A queue redelivers, so the same message can arrive
 		// twice — and the second time the payment is no longer Initiated, which
 		// is what this sentinel says. It must NOT become a rejection: payment's
 		// reasonTable classifies it with the empty code precisely because it
@@ -147,21 +251,27 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 		// sender's instruction, and ReasonFor would turn it into MS03 and reject,
 		// on the wire, a payment this bank in fact accepted. A dead letter is the
 		// right channel: nobody to answer, and visible in Drain.
+		//
+		// A redelivery that arrives while the payment is STILL Initiated does not
+		// reach here at all: AcceptInboundTx's pull arm returns nil on a payment
+		// that already has a debtor leg, so the collection is answered a second
+		// time with the same yes rather than with the ledger's idempotency
+		// refusal — which has no entry in reasonTable and would come back MS03.
 		if errors.Is(err, payment.ErrInvalidStateTransition) {
 			return fmt.Errorf("mesh: %s was sent %s again and it is no longer Initiated: %w", b.bic, ref.TxId, err)
 		}
-		return b.answerCreditTransfer(from, orig, ref, err)
+		return b.answer(from, orig, ref, err)
 	}
-	return b.answerCreditTransfer(from, orig, ref, nil)
+	return b.answer(from, orig, ref, nil)
 }
 
-// answerCreditTransfer sends the pacs.002 back to whoever handed the message
-// over: accepted if cause is nil, rejected with the code cause maps to if not.
+// answer sends the pacs.002 back to whoever handed the message over: accepted if
+// cause is nil, rejected with the code cause maps to if not.
 //
-// Back to the SENDER and not to the payer's bank, because those are different
-// parties and this bank was never given the payer's bank's address to answer at.
-// The clearing house relays; see csm.receiveStatus.
-func (b *bank) answerCreditTransfer(to iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, cause error) error {
+// Back to the SENDER and not to the bank that submitted, because those are
+// different parties and this bank was never given the submitter's address to
+// answer at. The clearing house relays; see csm.receiveStatus.
+func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification, cause error) error {
 	report := payment.TransactionStatusReport{
 		EndToEndID: ref.EndToEndId,
 		TxID:       ref.TxId,
@@ -189,7 +299,7 @@ func (b *bank) answerCreditTransfer(to iso20022.BIC, orig payment.OriginalMessag
 	return b.m.send(b.bic, to, env)
 }
 
-// receiveStatus is the payer's bank learning what became of its instruction.
+// receiveStatus is a bank learning what became of a payment it is party to.
 //
 // An ACCEPTANCE needs nothing from it. That is not an omission: the payment's
 // acceptance is the clearing house's act and the clearing house records it, so
@@ -197,10 +307,28 @@ func (b *bank) answerCreditTransfer(to iso20022.BIC, orig payment.OriginalMessag
 // the bank KNOWS — which, before the mesh, it could only learn by reading the
 // return value of the call that did the accepting.
 //
-// A REJECTION is where this bank has work: it reverses the debit that put the
-// payer's money into its clearing suspense. Two things are checked first, and
-// both are the caller-side decision ReverseDebtorLegTx says its caller must
-// make, because that function looks at neither.
+// A REJECTION is where there may be work, and whether there is depends on which
+// bank this is:
+//
+//   - The PAYER's bank reverses the debit that put its customer's money into its
+//     clearing suspense. That is the only work a rejection ever creates, and only
+//     this bank can do it — ReverseDebtorLegTx posts in the payment's own debtor
+//     bank's book, whoever calls it.
+//   - The bank that SUBMITTED, when that is somebody else, is being told the
+//     answer to its instruction and has nothing to undo. On a pull that is the
+//     payee's bank, which never held the money: its submission posted nothing,
+//     which is exactly what makes a collection a collection.
+//
+// For a push those are one bank and one message. For a pull they are two banks,
+// and the clearing house sends to both; see csm.receiveStatus for why the second
+// message exists and when it does not.
+//
+// Anything else is REFUSED. A bank that is neither the payer's bank nor the
+// submitter has been sent a decision about a payment that is none of its
+// business, and acting on one would mean reaching into another bank's ledger.
+// Nothing in the flow produces it, because the clearing house addresses a status
+// to those banks and no other; this is what makes the property the receiver's as
+// well as the router's.
 //
 // A status naming no transaction at all is skipped rather than refused. That is
 // the FF01 a clearing house sends when it could not parse a file: it names no
@@ -216,18 +344,31 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		if err != nil {
 			return fmt.Errorf("mesh: %s was told %s was rejected: %w", b.bic, r.TxID, err)
 		}
-		// Whose payer is this? ReverseDebtorLegTx posts in the book of the
-		// payment's OWN debtor bank, whoever runs it, so a bank that acted on a
-		// misrouted rejection would reverse a debit in somebody else's ledger.
-		// The clearing house addresses a status to that bank and no other, which
-		// makes this unreachable through the flow; it is here so that the
-		// property belongs to the receiver as well as to the router.
+		scheme, ok := b.ops.Scheme(p.Scheme)
+		if !ok {
+			return fmt.Errorf("mesh: %s was told %s was rejected and holds no %q scheme: %w",
+				b.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
+		}
+		// Whose payer is this? A bank that acted on a misrouted rejection would
+		// reverse a debit in somebody else's ledger, so the answer decides
+		// everything below.
 		debtor, err := b.ops.GetParticipant(ctx, p.Debtor.Participant)
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot tell whose payment %s is: %w", b.bic, p.ID, err)
 		}
 		if debtor.BIC != b.bic {
-			return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s", b.bic, p.ID, debtor.BIC)
+			// Not the payer's bank. The only other party with any business
+			// receiving this is the one that submitted and is waiting for an
+			// answer, and it has nothing to give back.
+			submitter, err := b.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
+			if err != nil {
+				return fmt.Errorf("mesh: %s cannot tell who submitted %s: %w", b.bic, p.ID, err)
+			}
+			if submitter.BIC != b.bic {
+				return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s and which %s submitted",
+					b.bic, p.ID, debtor.BIC, submitter.BIC)
+			}
+			continue
 		}
 		// And is it really rejected? A pacs.002 is not on its own a decision:
 		// this network's record of the payment is. Reversing on the message

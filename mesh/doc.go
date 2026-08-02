@@ -67,6 +67,46 @@
 // reversal that fails has nobody to answer, so it becomes a dead letter and
 // Drain returns it.
 //
+// # The direct debit flow
+//
+// A SEPA direct debit is the same four messages and the same three decisions,
+// made by the same institutions in the same order — with the two banks swapped
+// and the money moving at a different point in the chain:
+//
+//	payee's bank  --pacs.003-->  clearing house  --pacs.003-->  payer's bank
+//	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  payer's bank
+//
+// The PAYEE'S BANK submits, because a collection is the payee asking for what it
+// is owed, and its submission MOVES NOTHING: the account being collected from is
+// another bank's customer's, and this bank has never seen it. What it checks is
+// its own half — the payee's account — plus the MANDATE, because in SEPA the
+// creditor holds the mandate. A revoked one is refused there and then, at the
+// payee's own bank, as an error to the caller and not as a message; MD01 is
+// therefore a code this system never puts on the wire, and a real payer's bank
+// keeps mandate records of its own and can. payment.SDD.ValidateMandate says so
+// at the layer that owns the limit.
+//
+// The CLEARING HOUSE routes it to the DEBTOR's agent, the element that names the
+// bank holding the payer, because a pull travels towards the money's source
+// while a push travels towards its destination. That one element is the whole
+// difference in this actor.
+//
+// The PAYER'S BANK receives it, and this is the half that moves money. It
+// resolves by address exactly as a payee's bank does on a push, and then posts
+// the debtor leg — because this is the first moment any actor in the system has
+// been able to look at the account being collected from. AM04, an account that
+// cannot cover the amount, can only ever be said here.
+//
+// The rule that covers both flows, and that neither one on its own would tell
+// you, is that the DEBTOR's bank posts the debtor leg. Which bank that is stays
+// the same; whether it is submitting or answering is what the direction decides.
+//
+// One consequence is worth stating because it has no push counterpart. When the
+// clearing house rejects a collection the payer's bank has already accepted, the
+// bank waiting for an answer and the bank holding the money are two DIFFERENT
+// banks — so the rejection goes to both, and the condition for the second is
+// exactly that there is money to give back. See mesh.csm's receiveStatus.
+//
 // # Unbounded queues, and what that costs
 //
 // An actor's inbox is an unbounded slice, not a buffered channel. A fixed
