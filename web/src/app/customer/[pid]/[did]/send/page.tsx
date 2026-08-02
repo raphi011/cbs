@@ -50,6 +50,13 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
+  // What the payer says about the payee: this bank's own instruction cannot
+  // fill these in on the payer's behalf, because the account named above is
+  // at another bank, in a register this one may not read. PayeeLine below
+  // answers a different question — which bank an IBAN routes to — and does
+  // not populate them.
+  const [creditorAgent, setCreditorAgent] = useState("");
+  const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
   // shape 7b needs: the answer to "did it work?" is a second request, not a
   // return value.
@@ -84,7 +91,9 @@ export default function CustomerSend() {
     payee.data != null &&
     !payingSelf &&
     amount != null &&
-    amount > 0;
+    amount > 0 &&
+    creditorAgent.trim() !== "" &&
+    creditorName.trim() !== "";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -103,11 +112,17 @@ export default function CustomerSend() {
         },
         amount: amount!,
         description: reference.trim() || undefined,
+        // The payer's own account of who they're paying — see the state
+        // declarations above for why this bank cannot supply it instead.
+        creditorAgent: creditorAgent.trim().toUpperCase(),
+        creditorName: creditorName.trim(),
       });
       setAcceptedId(accepted.paymentId);
       setIban("");
       setAmount(null);
       setReference("");
+      setCreditorAgent("");
+      setCreditorName("");
     } catch (err) {
       toast.error(describeError(err));
     }
@@ -169,6 +184,32 @@ export default function CustomerSend() {
                 name={payee.data?.name}
                 bank={payee.data?.participant}
                 payingSelf={payingSelf}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="send-creditor-agent" required>
+                Payee&apos;s bank (BIC)
+              </FieldLabel>
+              <Input
+                id="send-creditor-agent"
+                value={creditorAgent}
+                placeholder="BNKADEFFXXX"
+                className="font-mono uppercase"
+                disabled={frozen || closed}
+                onChange={(e) => setCreditorAgent(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="send-creditor-name" required>
+                Payee&apos;s name
+              </FieldLabel>
+              <Input
+                id="send-creditor-name"
+                value={creditorName}
+                disabled={frozen || closed}
+                onChange={(e) => setCreditorName(e.target.value)}
               />
             </div>
 

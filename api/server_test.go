@@ -3071,6 +3071,58 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	}
 }
 
+// TestPostPaymentRequiresTheCounterpartyName is the dedicated pin for
+// payment.ErrCounterpartyNotNamed's 422 over HTTP. It is a 422 and not a 500:
+// well-formed JSON this system will not act on, the same class as the
+// addressing refusals TestPaymentAddressingRefusalsAre422 covers.
+//
+// Every other payment test in this file that could reach the counterparty
+// guard — TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 —
+// supplies creditorAgent/creditorName on every request precisely so it does
+// not hit this guard instead of its own subject; their comments say so. This
+// is the test that hits it on purpose, on all three ways a request can fail
+// to name the counterparty: naming neither field, an agent with no name, and
+// a name with no agent.
+//
+// It carries no balance assertion, unlike TestPaymentAddressingRefusalsAre422:
+// the counterparty check (payment/system.go, ahead of debtorSideTx/
+// creditorSideTx) runs before either side's leg is ever touched, so there is
+// no live-money regression a missing name could have caused here.
+func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
+	h := newServer(t, nil)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+
+	for _, tc := range []struct{ name, body string }{
+		{"neither field", `{
+			"scheme":"sepa.ct",
+			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"amount":1000
+		}`},
+		{"agent without a name", `{
+			"scheme":"sepa.ct",
+			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"amount":1000,
+			"creditorAgent":"BNKBDEFFXXX"
+		}`},
+		{"name without an agent", `{
+			"scheme":"sepa.ct",
+			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"amount":1000,
+			"creditorName":"Bob"
+		}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertStatus(t, csm(h), "POST", "/payments", tc.body, http.StatusUnprocessableEntity)
+		})
+	}
+}
+
 // TestDepositAccountDTOCarriesIdentifiers pins that depositAccountDTO renders
 // the account's identifiers, not just what the register knows about it.
 func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
