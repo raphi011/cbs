@@ -113,7 +113,7 @@ type Mesh struct {
 
 	// csm is the clearing house's behaviour, kept beside its actor because one
 	// of the things a clearing house does does not arrive in an inbox. A cut-off
-	// comes in from outside the mesh — an operator, or Task 14's HTTP handler —
+	// comes in from outside the mesh — an operator, or api's POST /cycles/{cid}/close —
 	// the same way a customer's payment instruction does, so Mesh.CloseCycle
 	// needs the handler itself and not the queue in front of it.
 	//
@@ -157,9 +157,9 @@ type Mesh struct {
 //
 // The member banks are NOT created here: they come from the participant roster,
 // which is a store read, and a constructor that did I/O could not be called
-// before the store was ready. Start reads the roster; addActor covers the banks
-// that join after that, which in this repository is all of them, because the
-// process starts the mesh before it seeds.
+// before the store was ready. Start reads the roster, which is why cmd/server
+// seeds first and starts the mesh second; AddBank covers the banks that join
+// after that, which is every bank a human admits over HTTP.
 //
 // net may be nil. A mesh with no network has no roster and therefore no member
 // banks; that is what the transport's own tests use, and it is the reason this
@@ -244,10 +244,10 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 // addActors registers a batch of actors under their BICs — all of them or none
 // — and, if the mesh is already running, starts their goroutines at once.
 //
-// Registering into a running mesh is the normal case, not a convenience: the
-// process starts the mesh before it seeds the participants, so every member
-// bank joins a mesh whose other actors are already reading their inboxes. See
-// TestAnActorAddedAfterStartReceives.
+// Registering into a running mesh is the normal case, not a convenience: a bank
+// admitted over HTTP joins a mesh whose other actors are already reading their
+// inboxes, and it has to be reachable before the request that admitted it has
+// answered. See TestAnActorAddedAfterStartReceives and AddBank.
 //
 // All or none, because the batch is a roster. A registration that failed
 // halfway would leave the mesh holding some banks and not others, unstarted,
@@ -271,9 +271,9 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 // the actors and closes their inboxes, then joins them; an actor registered
 // after that snapshot is in neither list, so its inbox is never closed and its
 // goroutine is never joined — a permanent leak, plus the same black hole. It is
-// not hypothetical: Task 16 starts the mesh before it seeds, so registering
-// actors into a running mesh is the normal path, and a shutdown racing a seed
-// is an ordinary thing to get wrong. Refusing from the moment Stop begins, and
+// not hypothetical: a bank admitted over HTTP registers into a running mesh (see
+// AddBank), so that is the normal path, and a shutdown racing an admission is an
+// ordinary thing to get wrong. Refusing from the moment Stop begins, and
 // setting that flag under the same lock Stop takes its snapshot under, closes
 // the window rather than narrowing it.
 func (m *Mesh) addActors(specs ...actorSpec) error {
@@ -366,6 +366,46 @@ func (m *Mesh) Start(ctx context.Context) error {
 	return nil
 }
 
+// AddBank gives one member bank an actor, and is how a bank that joined after
+// Start becomes reachable.
+//
+// Start reads the roster ONCE, which covers every bank that existed when it ran.
+// Admission is the other door: a bank admitted at runtime — the central bank's
+// POST /members — has a participant row, a chart of accounts and a reserve
+// account, and no actor. A bank with no actor is not a slow bank, it is an
+// unreachable one: Mesh.Submit refuses its customers' instructions outright, and
+// every pacs.008 addressed to it comes back RC01 from the clearing house,
+// because there is nothing in the routing table under its BIC. So the handler
+// that admits a bank is the handler that registers it, in that order, and
+// api.Server.handleAddParticipant is where that happens.
+//
+// It refuses a BIC some other actor already answers to, for addActors' reason
+// and with the consequence that matters here: two participants on one address
+// are not two banks in a mesh, they are one routing-table entry and one
+// goroutine reading an inbox nobody can address. The refusal reaches the
+// operator as the failure of the admission that caused it.
+//
+// It is the caller's job to notice. There is no way for this to be retried
+// later: a bank the mesh refused stays in the roster and stays unreachable until
+// the process restarts and Start reads the roster again — at which point Start
+// refuses the whole roster instead. See api's handleAddParticipant, which says
+// so in the response.
+func (m *Mesh) AddBank(p *payment.Participant) error {
+	if m.net == nil {
+		return errors.New("mesh: no network, so there are no member banks to give actors to")
+	}
+	b := &bank{m: m, ops: m.net, bic: p.BIC}
+	// The actor first, so that a BIC this mesh refuses leaves the bank index as
+	// it found it — the same ordering, for the same reason, as Start's.
+	if err := m.addActor(p.BIC, p.Name, b.handle); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.banks[p.ID] = b
+	m.mu.Unlock()
+	return nil
+}
+
 // Stop closes every inbox, waits for the actors to finish what they are already
 // doing, and returns the dead letters they produced, joined.
 //
@@ -394,7 +434,7 @@ func (m *Mesh) Start(ctx context.Context) error {
 // not deal with comes back to the caller. See
 // TestStopReportsWhatAHandlerCouldNotDoDuringShutdown.
 //
-// # The deadline, and why Tasks 14 and 16 must Drain first
+// # The deadline, and why every caller must Drain first
 //
 // The context given here bounds the handler in flight PLUS the whole depth of
 // every inbox at the moment of the close. It is not a bound on one handler.
@@ -407,9 +447,10 @@ func (m *Mesh) Start(ctx context.Context) error {
 // would have told it so never sent. Draining leaves Stop nothing to do but
 // join.
 //
-// That is an instruction for Task 14's Server.Reset, which must drain before it
-// truncates, and for Task 16's shutdown path. Neither does today — api holds no
-// mesh at all yet.
+// Both callers in this repository do it. api.Server.Reset drains before it
+// truncates, so no handler is left writing into a store the reset has emptied;
+// cmd/server drains before it stops, so a payment in flight when the process is
+// interrupted still reaches its end. Neither discards what comes back.
 //
 // # A Stop that times out leaves the mesh running
 //
@@ -830,7 +871,7 @@ func (m *Mesh) takeDeadLetters() error {
 // not theirs, a duplicate reference — is told so, then and there. What they are
 // NOT told is what the far side thinks: this returns an Initiated payment and
 // nothing more, and the fate of that payment arrives later, at another actor, as
-// a message. That is the whole difference the mesh makes, and it is why Task 14
+// a message. That is the whole difference the mesh makes, and it is why api
 // answers this with 202 Accepted rather than 201 Created.
 //
 // It runs on the CALLER's goroutine, not the bank actor's, and that is not a
@@ -885,7 +926,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // caller's goroutine, marked as the clearing house's work, sending only after
 // the unit of work has committed — for the reasons csm.closeCycle sets out. What
 // differs is who is instructing: a customer instructs their bank, and an
-// operator (or Task 14's HTTP handler) reaches a cut-off. Neither arrives in an
+// operator (or api's POST /cycles/{cid}/close) reaches a cut-off. Neither arrives in an
 // inbox, which is why neither is a message.
 //
 // What it does NOT answer is whether the cycle settled. It returns the cycle as
@@ -906,13 +947,60 @@ func (m *Mesh) CloseCycle(ctx context.Context, id payment.CycleID) (payment.Clea
 	return m.csm.closeCycle(ctx, id)
 }
 
+// Reject is the clearing house declining a payment it is holding, on an
+// operator's say-so rather than on a counterparty's.
+//
+// Every other rejection in this system is DECIDED by an actor that was sent a
+// message: the payee's bank cannot apply a credit, the payer's bank has no
+// funds, the clearing house has no open cycle. This one comes in from outside
+// the mesh, exactly as Submit, CloseCycle and Return do, and for the same
+// reason: an operator instructing is not a message arriving.
+//
+// # It is half of a rejection, and the other half is another actor's
+//
+// What runs here is the clearing house's own unit of work — the payment moves to
+// Rejected and leaves its cycle — and that is what the caller is told about,
+// synchronously, because it is what an operator can be answered about. The
+// payer's money is still in their own bank's clearing suspense at that point.
+// Giving it back is the PAYER's BANK's act, in its own book, and it happens
+// later: the pacs.002 this sends is what tells that bank to do it, and
+// bank.receiveStatus is what does it. A caller that wants to see the refund
+// reads the payer's balance after the conversation has finished; a test drains.
+//
+// That seam is the one RejectAtCSMTx's doc names and says the mesh is where it
+// stops being hidden. Before this, api ran both halves in one transaction — see
+// the deleted rejectWholePayment — so a reversal that failed took the rejection
+// down with it, which is an outcome two separate institutions cannot produce. It
+// now fails the way it really would: the rejection stands, the refund does not
+// happen, and the mesh reports a dead letter rather than nothing.
+//
+// # The message it refers back to
+//
+// A pacs.002 says which message it is about, and there ISN'T one — no bank sent
+// anything that provoked this. So the original message is named as unavailable,
+// by the same NOTPROVIDED convention answerUnreadable uses and for the same
+// honest reason: inventing a message id the payer's bank never sent would be
+// worse than saying there was none. Nothing downstream needs it — a bank matches
+// a status to a payment by the transaction reference, which is real here.
+//
+// Like CloseCycle it refuses on a mesh with no network rather than
+// dereferencing, and for CloseCycle's reason: it reaches the clearing house's
+// handler directly, so there is no map lookup on the way in that would have
+// caught it. See Mesh.Return for the other half of that asymmetry.
+func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, text string) (payment.Payment, error) {
+	if m.csm == nil {
+		return payment.Payment{}, errors.New("mesh: no network, so there is no payment to reject")
+	}
+	return m.csm.reject(ctx, id, code, text)
+}
+
 // Return sends a settled payment back: the R-transaction, and the last of this
 // system's four flows.
 //
 // It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
 // goroutine, sending only after the returning bank's half has run — because a
 // return arrives from outside the mesh in the same way both of those do. An
-// operator (or Task 14's HTTP handler) asks for it; no inbox is involved.
+// operator (or api's POST /payments/{payid}/return) asks for it; no inbox is involved.
 //
 // # Which bank is handed the instruction
 //

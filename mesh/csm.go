@@ -421,6 +421,52 @@ func (c *csm) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.T
 	return c.m.send(c.bic, to, env)
 }
 
+// reject is the clearing house declining a payment because an operator said so.
+//
+// It is receiveStatus's rejection arm without the message that would have
+// provoked it: the same RejectAtCSM, the same tell, the same banks told. Written
+// as its own three statements rather than by faking a pacs.002 and feeding it to
+// the handler, because a message this actor never received is not a thing to
+// invent — and because what a caller from outside the mesh needs back is the
+// payment, which a handler has no way to return.
+//
+// It runs synchronously on the CALLER's goroutine, and sends after the unit of
+// work has committed, for the reasons Mesh.Submit and closeCycle both set out. A
+// pacs.002 enqueued from inside the rejection would be one the payer's bank
+// could act on against a rejection the store then rolled back — and the act in
+// question is handing money back to a customer.
+//
+// tell is what fans it out, so the answer goes exactly where a counterparty's
+// rejection would have gone: to the bank that submitted the payment, and — on a
+// pull whose debtor leg has already posted — to the payer's bank as well, which
+// is the one holding the money. Two banks, one decision, and the same code path
+// that has been carrying that since Task 11.
+func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, text string) (payment.Payment, error) {
+	// Everything below is the clearing house's work, and is recorded as the
+	// clearing house's. See withActor.
+	ctx = withActor(ctx, c.bic)
+
+	p, err := c.ops.RejectAtCSM(ctx, id, code, text)
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	r := payment.TransactionStatusReport{
+		EndToEndID: endToEndOf(p),
+		TxID:       string(p.ID),
+		Status:     iso20022.TransactionStatusRejected,
+		Code:       code,
+		Text:       text,
+	}
+	// The rejection is a fact and the send may still fail, so the payment comes
+	// back BESIDE the error rather than being swallowed — closeCycle's shape, and
+	// the same half-happened outcome: a payment that is Rejected and whose payer
+	// has not been given their money back.
+	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r); err != nil {
+		return p, fmt.Errorf("mesh: %s rejected %s and could not say so: %w", c.bic, p.ID, err)
+	}
+	return p, nil
+}
+
 // ---------------------------------------------------------------------------
 // The cut-off, and the settlement it instructs
 // ---------------------------------------------------------------------------
