@@ -195,6 +195,7 @@ func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error
 const paymentColumns = `id, scheme,
 	debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
 	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
+	debtor_agent, debtor_name, creditor_agent, creditor_name,
 	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code, cycle_id,
 	booking_date, value_date, description, metadata, created_at,
 	debtor_leg_tx, creditor_leg_tx`
@@ -209,7 +210,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	}
 	_, err = t.tx.Exec(ctx, `
 		INSERT INTO payments (`+paymentColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
 		ON CONFLICT (id) DO UPDATE SET
 			scheme                     = EXCLUDED.scheme,
 			debtor_participant         = EXCLUDED.debtor_participant,
@@ -220,6 +221,10 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 			creditor_account           = EXCLUDED.creditor_account,
 			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
 			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
+			debtor_agent               = EXCLUDED.debtor_agent,
+			debtor_name                = EXCLUDED.debtor_name,
+			creditor_agent             = EXCLUDED.creditor_agent,
+			creditor_name              = EXCLUDED.creditor_name,
 			amount                     = EXCLUDED.amount,
 			mandate_id                 = EXCLUDED.mandate_id,
 			end_to_end_id              = EXCLUDED.end_to_end_id,
@@ -237,6 +242,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 		string(p.ID), string(p.Scheme),
 		string(p.Debtor.Participant), string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
 		string(p.Creditor.Participant), string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
+		string(p.DebtorDetails.Agent), p.DebtorDetails.Name, string(p.CreditorDetails.Agent), p.CreditorDetails.Name,
 		p.Amount, string(p.MandateID), p.EndToEndID, int16(p.Status), p.RejectReason, string(p.RejectCode), string(p.CycleID),
 		nullTime(p.BookingDate), nullTime(p.ValueDate), p.Description, metadata, nullTime(p.CreatedAt),
 		string(p.DebtorLegTx), string(p.CreditorLegTx))
@@ -256,6 +262,7 @@ func scanPayment(row pgx.Row) (payment.Payment, error) {
 	err := row.Scan(&p.ID, &p.Scheme,
 		&p.Debtor.Participant, &p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
 		&p.Creditor.Participant, &p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
+		&p.DebtorDetails.Agent, &p.DebtorDetails.Name, &p.CreditorDetails.Agent, &p.CreditorDetails.Name,
 		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.RejectCode, &p.CycleID,
 		&booking, &value, &p.Description, &metadata, &createdAt,
 		&p.DebtorLegTx, &p.CreditorLegTx)

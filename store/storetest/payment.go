@@ -716,6 +716,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
+		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
+	})
+
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
@@ -906,6 +910,41 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 		ValueDate:   createdAt.Add(24 * time.Hour),
 		Description: string(id),
 		CreatedAt:   createdAt,
+	}
+}
+
+// paymentRoundTripsPartyDetails pins that what a MESSAGE says about each side —
+// the agent's BIC and the account holder's name — survives a round trip through
+// both stores.
+//
+// It is stored rather than looked up because looking it up is a read of another
+// bank's deposit register, which is the crossing sub-project 8 exists to remove.
+// A store that dropped these fields would send the name-reading code back.
+func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+	p := samplePayment("pay_details", "e2e-details", early)
+	p.DebtorDetails = payment.PartyDetails{Agent: "AURODEFFXXX", Name: "Ada Lovelace"}
+	p.CreditorDetails = payment.PartyDetails{Agent: "BRVODEFFXXX", Name: "Grace Hopper"}
+
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutPayment(ctx, p)
+	}); err != nil {
+		t.Fatalf("PutPayment: %v", err)
+	}
+
+	var got payment.Payment
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		got, err = tx.GetPayment(ctx, p.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("GetPayment: %v", err)
+	}
+	if got.DebtorDetails != p.DebtorDetails {
+		t.Errorf("debtor details round-tripped as %+v, want %+v", got.DebtorDetails, p.DebtorDetails)
+	}
+	if got.CreditorDetails != p.CreditorDetails {
+		t.Errorf("creditor details round-tripped as %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
 	}
 }
 

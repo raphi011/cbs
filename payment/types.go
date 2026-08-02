@@ -195,6 +195,68 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 	return r.Participant == o.Participant && r.Account == o.Account
 }
 
+// PartyDetails is what a MESSAGE says about one side of a payment: which bank
+// holds the account, and the name on it. It is the whole of what a counterparty
+// bank is told, and the whole of what building an outbound message needs.
+//
+// It is SEPARATE from PartyRef because the two answer different questions. A
+// PartyRef names an account this system can resolve and act on; PartyDetails is
+// a statement made in a message, which the receiving bank does not verify and
+// has no business verifying. That is a restraint, not an inability — on its own
+// side it has the account in hand (creditorSideTx/debtorSideTx) and could
+// compare the name it finds there — and overwriting what the other bank
+// asserted would desynchronise the stored payment from the message already on
+// the wire.
+//
+// # Why it is stored on the payment rather than resolved
+//
+// It used to be resolved: payment.partyTx read the account out of the party's
+// own bank's deposit register to get the name on it. That is a read of ANOTHER
+// BANK'S BOOK on the happy path of every submission, measured by the recorder in
+// mesh/books_test.go and recorded there at length. A real payer's bank knows the
+// payee's name because the payer typed it in, not because building the
+// instruction went and found it, so the name travels on the instruction. That
+// is a claim about the payment and not about the whole system: GET /directory
+// still resolves an address across the network and does read the resolved
+// account's name off its own bank's register. What no longer happens is that
+// answer reaching a payment — what is stored is what was typed.
+//
+// Storing it is therefore not a cache. There is nothing to fall back to.
+type PartyDetails struct {
+	// Agent is the BIC of the bank holding this party's account.
+	//
+	// On a SUBMISSION it is never taken from the instruction, on either side.
+	// Both come from the roster — the participant row for the party the payment
+	// already names — because this element ROUTES: it goes out as
+	// CdtrAgt/DbtrAgt and the clearing house relays on it without a store read
+	// of its own. A payer allowed to assert it is a payer allowed to choose
+	// which bank receives their payment, which was measured doing exactly that
+	// before it was closed; see SubmitPaymentTx and
+	// mesh/books_test.go's TestAWrongCounterpartyAgentDoesNotMisroute. It is
+	// also what a real SEPA originating bank does: IBAN-only since 2016, the
+	// payer gives an address and a name and the bank derives the rest.
+	//
+	// On a RECEIVED message it is what the message said, read off the wire by
+	// CreditTransferRequest/DirectDebitRequest, which is a different question
+	// with a different answer — there the agent is the sender's assertion and
+	// this system records rather than verifies it.
+	Agent iso20022.BIC
+	// Name is the account holder's name. For the SUBMITTING bank's own side
+	// this is taken from its own deposit register, not from whatever the
+	// request supplied — a bank is the authority on its own customer's name,
+	// exactly as the Dbtr element on a real pacs.008 is what the originating
+	// bank holds on file, not a claim it takes on faith. For the COUNTERPARTY's
+	// side there is no register to be the authority: the instruction asserts
+	// it, because that is the only place it can come from. The asymmetry is
+	// the point — see SubmitPaymentTx.
+	//
+	// It is the ONLY thing about the counterparty a payer asserts. The name is
+	// carried because no bank can look it up without reading another bank's
+	// register; the agent is derived because routing is not the payer's to
+	// decide.
+	Name string
+}
+
 // Payment is a scheme-agnostic instruction to move funds from a debtor to a
 // creditor. The concrete behaviour (push/pull, mandate, settlement timing)
 // comes from its Scheme.
@@ -206,6 +268,13 @@ type Payment struct {
 	Amount     ledger.Amount
 	MandateID  MandateID // set for direct debits
 	EndToEndID string    // client reference (the ISO 20022 "end-to-end id")
+
+	// DebtorDetails and CreditorDetails are what a message says about each side.
+	// The submitting bank fills its OWN side from its own register; for the
+	// counterparty it is TOLD the name and derives the agent from the roster —
+	// see PartyDetails.Agent, PartyDetails.Name, and SubmitPaymentTx.
+	DebtorDetails   PartyDetails
+	CreditorDetails PartyDetails
 
 	Status PaymentStatus
 

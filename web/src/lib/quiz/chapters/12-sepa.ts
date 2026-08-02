@@ -319,5 +319,17 @@ export const chapter: Chapter = {
       explanation:
         "[[allows-return]] — a return fully unwinds the original settlement. The creditor received $200 when the [[creditor-leg]] posted at settlement; the return posts new compensating entries that exactly reverse that credit, reducing the creditor's balance by **$200**. The original entries remain in the ledger — only new offsetting entries are added.",
     },
+    {
+      kind: "truefalse",
+      id: "ch12-q21",
+      difficulty: "core",
+      concept: "counterparty-details",
+      prompt:
+        "When a bank submits a pacs.008, it looks up the payee's name in the payee's bank's deposit register before building the message.",
+      answer: false,
+      explanation:
+        "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it in `Payment.CreditorDetails` exactly as received, refusing to submit at all if it is missing (`ErrCounterpartyNotNamed`). The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's. The payee's **bank** is a different matter and is not taken from the instruction either: the BIC that goes out as `CdtrAgt` is *derived* from the roster, because the clearing house routes on that element and a payer who could type it could choose which bank got paid. Name from the payer, routing from the network — which is how SEPA has worked since it went IBAN-only in 2016. (A separate, pre-submission lookup, `GET /directory`, does resolve a name across the network for the payer to see — but that name is never wired into the payment; what gets stored is what was typed.)",
+      explore: { label: "View payments", href: "/clearing-house/payments" },
+    },
   ],
 };

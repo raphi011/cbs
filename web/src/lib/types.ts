@@ -659,6 +659,20 @@ export interface InitiatePaymentRequest {
   endToEndId?: string;
   description?: string;
   metadata?: Record<string, string> | null;
+  // debtorName and creditorName are the names on the two accounts. Only the
+  // COUNTERPARTY's is required — the creditor's on a push, the debtor's on a
+  // pull — because submission looks it up nowhere: the account is at another
+  // bank, and nothing on the path that builds a payment reads another bank's
+  // register.
+  //
+  // There is deliberately no debtorAgent or creditorAgent. A party's BIC is
+  // derived by the bank from its own roster, not asserted by the payer: the
+  // clearing house routes on that element, so a form that asked for it would
+  // let a payer choose which bank got paid. The backend's decoder rejects
+  // unknown fields, so sending one is a 400 rather than a value quietly
+  // ignored. See api/dto_payment.go's initiatePaymentRequest.
+  debtorName?: string;
+  creditorName?: string;
 }
 
 export interface OpenCycleRequest {

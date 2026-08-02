@@ -47,11 +47,13 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		p1, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		p2, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
+			CreditorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 		payments = []PaymentID{p1.ID, p2.ID}
@@ -160,6 +162,7 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 
@@ -188,6 +191,7 @@ func TestFailedInitiationLeavesNoAuditTrail(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 999999, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	if err == nil {
 		t.Fatal("initiation succeeded, want an insufficient-funds failure")
@@ -234,6 +238,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 20000, MandateID: m.ID,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 		payID = p.ID

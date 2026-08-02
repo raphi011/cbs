@@ -380,8 +380,9 @@ func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymen
 // The creditor's participant and account are the real ones and only the ADDRESS
 // varies, which is what makes an unresolvable address a message the debtor's
 // bank can build and send. That is the honest shape: a payer quotes an IBAN,
-// their bank has no way to check whose it is, and the bank at the other end is
-// the first party that can say. See TestCreditTransferToAnUnknownAccountComesBackAsAC01.
+// submission does not resolve it — the instruction carries what was quoted —
+// and the bank at the other end is the party whose answer decides whether it is
+// payable. See TestCreditTransferToAnUnknownAccountComesBackAsAC01.
 func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
@@ -390,6 +391,12 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
+		// Push: the creditor is the counterparty, so the request must name it —
+		// the NAME, and only the name. No Agent: the counterparty's BIC is derived
+		// from the roster by SubmitPaymentTx and anything set here is discarded.
+		// TestAWrongCounterpartyAgentDoesNotMisroute sets one on purpose, which is
+		// the only place in this package that should.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 	}
 }
 
@@ -430,6 +437,9 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
+		// Pull: the debtor is the counterparty, so the request must name it. See
+		// creditTransferRequest on why there is no Agent beside the name.
+		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
 	}
 }
 
@@ -487,6 +497,9 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		},
 		Amount:      harnessAmount,
 		Description: "invoice 43",
+		// Push: the creditor is the counterparty, so the request must name it. See
+		// creditTransferRequest on why there is no Agent beside the name.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)

@@ -28,11 +28,19 @@ const testAsset ledger.AssetCode = "EUR"
 
 var euroOnly = []ledger.AssetCode{testAsset}
 
-// testBIC is a structurally valid ISO 9362 BIC used across these tests. There
-// is no uniqueness constraint on it (see participants.bic's column comment),
-// so every test bank sharing it is not a fixture bug — only store/storetest's
-// participant fixture needs a BIC distinct from anything else it asserts.
+// testBIC is a structurally valid ISO 9362 BIC used as the default across
+// these tests. There is no uniqueness constraint on it (see participants.bic's
+// column comment), so a test bank sharing it with another is not automatically
+// a fixture bug — except where a test's own assertion turns on telling two
+// banks' BICs apart, which is what testBIC2 is for.
 const testBIC iso20022.BIC = "BANKDEFFXXX"
+
+// testBIC2 is a second, distinct BIC for fixtures where two banks' BICs must
+// be tellable apart — setupTwoBanks uses it for Bank B so that a test planting
+// one bank's BIC where the other's belongs (as
+// TestSubmitDerivesTheCounterpartyAgentFromTheRoster does) can actually catch
+// a derivation that silently passes the wrong value through.
+const testBIC2 iso20022.BIC = "BANKGB2LXXX"
 
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
@@ -111,13 +119,20 @@ func reject(ctx context.Context, sys *Network, id PaymentID, code iso20022.Statu
 // Both accounts carry an IBAN — not because this fixture is about addressing,
 // but because most of it is not: every scheme in play here is SEPA, so an
 // account it cannot address is not a usable test fixture at all.
+//
+// Bank A and Bank B are given DISTINCT BICs (testBIC and testBIC2) rather than
+// sharing testBIC the way single-bank fixtures do: this is the two-bank
+// fixture that TestSubmitDerivesTheCounterpartyAgentFromTheRoster builds on,
+// and a test that plants one bank's BIC where the other's belongs needs the
+// two to actually differ or the plant is indistinguishable from the roster
+// value it is meant to be wrong against.
 func setupTwoBanks(t *testing.T, sys *Network) (a, b *Participant, alice, bob deposit.AccountID) {
 	t.Helper()
 	ctx := context.Background()
 
 	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
-	b, err = sys.AddParticipant(ctx, "Bank B", testBIC, euroOnly)
+	b, err = sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	aliceAcct := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -243,11 +258,12 @@ func TestSCT_HappyPath(t *testing.T) {
 	runCycle(t, sys, SchemeSEPACT, func() {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
-			Scheme:      SchemeSEPACT,
-			Debtor:      PartyRef{Participant: a.ID, Account: alice},
-			Creditor:    PartyRef{Participant: b.ID, Account: bob},
-			Amount:      30000,
-			Description: "Invoice 42",
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Amount:          30000,
+			Description:     "Invoice 42",
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "status after initiation", pay.Status, Accepted)
@@ -284,11 +300,12 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme:      SchemeSEPACT,
-		Debtor:      PartyRef{Participant: a.ID, Account: alice},
-		Creditor:    PartyRef{Participant: b.ID, Account: bob},
-		Amount:      10000,
-		Description: "Rent",
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: a.ID, Account: alice},
+		Creditor:        PartyRef{Participant: b.ID, Account: bob},
+		Amount:          10000,
+		Description:     "Rent",
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 
@@ -338,11 +355,13 @@ func TestSCT_Netting(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
+			CreditorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -371,6 +390,7 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertError(t, err, deposit.ErrInsufficientAvailable)
 }
@@ -394,6 +414,7 @@ func TestSDD_HappyPath(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "value date T+2", pay.ValueDate, fixedTime.Add(48*time.Hour))
@@ -436,6 +457,7 @@ func TestSDD_MandateValidation(t *testing.T) {
 			_, err = initiate(ctx, sys, InitiatePaymentRequest{
 				Scheme: SchemeSEPADD, Amount: tc.amount, MandateID: tc.mandateID,
 				Debtor: debtor, Creditor: creditor,
+				DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 			})
 			assertError(t, err, tc.want)
 			// Tidy up the open cycle for the next sub-test.
@@ -459,7 +481,9 @@ func TestSDD_Return(t *testing.T) {
 	runCycle(t, sys, SchemeSEPADD, func() {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
-			Debtor: debtor, Creditor: creditor,
+			Debtor:        debtor,
+			Creditor:      creditor,
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -615,12 +639,14 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 20000,
 		Debtor: PartyRef{Participant: b.ID, Account: bob.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 	// Bank C pays 60000 its customer can afford on overdraft and it cannot.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 60000,
 		Debtor: PartyRef{Participant: c.ID, Account: carol.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 
@@ -671,8 +697,9 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 				j := (i + 1) % len(banks)
 				_, err := initiate(ctx, sys, InitiatePaymentRequest{
 					Scheme: SchemeSEPACT, Amount: ledger.Amount(1000 * (i + 1)),
-					Debtor:   PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
-					Creditor: PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+					Debtor:          PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
+					Creditor:        PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+					CreditorDetails: PartyDetails{Agent: banks[j].BIC, Name: accounts[j].Name},
 				})
 				assertNoError(t, err)
 			}
@@ -711,6 +738,7 @@ func TestStateMachineGuards(t *testing.T) {
 		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		return p, cyc.ID
@@ -763,6 +791,7 @@ func TestRejectionReversesTheDebtorLeg(t *testing.T) {
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 40000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
@@ -783,6 +812,7 @@ func TestDuplicateEndToEndID(t *testing.T) {
 	req := InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000, EndToEndID: "e2e-1",
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	}
 	_, err = initiate(ctx, sys, req)
 	assertNoError(t, err)
@@ -815,6 +845,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
@@ -832,6 +863,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID, // no SDD cycle open
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertError(t, err, ErrCycleNotOpen)
 	})
@@ -911,6 +943,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
@@ -971,9 +1004,11 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPACT, Amount: 1000,
-		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+		Scheme:          SchemeSEPACT,
+		Amount:          1000,
+		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1005,9 +1040,11 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPACT, Amount: 1000,
-		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+		Scheme:          SchemeSEPACT,
+		Amount:          1000,
+		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1046,8 +1083,12 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID,
-		Debtor: debtor, Creditor: creditor,
+		Scheme:        SchemeSEPADD,
+		Amount:        1000,
+		MandateID:     m.ID,
+		Debtor:        debtor,
+		Creditor:      creditor,
+		DebtorDetails: PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1116,6 +1157,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) 
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 
@@ -1387,10 +1429,11 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 	bruno := openCustomerWithoutIdentifier(t, ctx, verde, "Bruno")
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("initiation = %v, want ErrUnaddressableAccount", err)
@@ -1416,7 +1459,8 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 			// Somebody else's address, pointing at Bruno's account.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"},
 		},
-		Amount: 10_00,
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
@@ -1444,8 +1488,9 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 			// Bruno's address, pointing at Alice's account.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"},
 		},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
@@ -1483,10 +1528,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 
 	// Creditor leg.
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("creditor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
@@ -1494,10 +1540,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 
 	// Debtor leg.
 	_, err = initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("debtor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
@@ -1508,10 +1555,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	var pay Payment
 	runCycle(t, net, SchemeSEPACT, func() {
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
-			Scheme:   SchemeSEPACT,
-			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 	})
@@ -1540,10 +1588,11 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 	runCycle(t, net, SchemeSEPACT, func() {
 		var err error
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
-			Scheme:   SchemeSEPACT,
-			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 	})
@@ -1580,10 +1629,11 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}))
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrAmbiguousAddress) {
 		t.Fatalf("initiation = %v, want ErrAmbiguousAddress", err)
@@ -1598,8 +1648,9 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 				Participant: aurora.ID, Account: alice.ID,
 				Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"},
 			},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "chosen debtor address", pay.Debtor.Identifier,
@@ -1635,6 +1686,7 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -1678,6 +1730,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: PartyRef{Participant: a.ID, Account: carla.ID}, Creditor: creditor,
+		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Carla"},
 	})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted debtor = %v, want ErrMandateMismatch", err)
@@ -1687,6 +1740,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: debtor, Creditor: PartyRef{Participant: b.ID, Account: other.ID},
+		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 	})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted creditor = %v, want ErrMandateMismatch", err)
@@ -1728,6 +1782,10 @@ func networkWithTwoBanks(t *testing.T) (*Network, InitiatePaymentRequest) {
 		Debtor:      PartyRef{Participant: a.ID, Account: alice},
 		Creditor:    PartyRef{Participant: b.ID, Account: bob},
 		Description: "Invoice 42",
+		// Push: the creditor is the counterparty, so the request must name it —
+		// the NAME. Its BIC is derived from the roster, so setting one here would
+		// be setting a field SubmitPaymentTx discards.
+		CreditorDetails: PartyDetails{Name: "Bob"},
 	}
 }
 
@@ -1735,12 +1793,19 @@ func networkWithTwoBanks(t *testing.T) (*Network, InitiatePaymentRequest) {
 // mandate the payee holds over the payer, and the collection request under it.
 // fund is what the payer's account holds, so a caller can build both a
 // collectable and an uncollectable one.
+//
+// Bank A and Bank B get distinct BICs (testBIC / testBIC2), not addParticipant's
+// shared testBIC — same reason as setupTwoBanks: this is the pull direction's
+// two-bank fixture, and TestSubmitDerivesTheCounterpartyAgentFromTheRoster's
+// pull subtest plants one bank's BIC where the other's belongs.
 func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, InitiatePaymentRequest, MandateID) {
 	t.Helper()
 	ctx := context.Background()
 	sys := testNetwork(t)
-	a := addParticipant(t, ctx, sys, "Bank A")
-	b := addParticipant(t, ctx, sys, "Bank B")
+	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
+	assertNoError(t, err)
+	b, err := sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
+	assertNoError(t, err)
 	payer := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
 	payee := openCustomer(t, ctx, b, "Biller", "SE89-BANKB-0001")
 	if fund > 0 {
@@ -1757,6 +1822,9 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, Initiat
 		Debtor:      debtor,
 		Creditor:    creditor,
 		Description: "Electricity bill",
+		// Pull: the debtor is the counterparty, so the request must name it. See
+		// networkWithTwoBanks on why no Agent is set.
+		DebtorDetails: PartyDetails{Name: payer.Name},
 	}, m.ID
 }
 
@@ -1866,6 +1934,403 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	// existed.
 	if err := n.AcceptInbound(context.Background(), p.ID); !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Fatalf("AcceptInbound on an account the creditor's bank does not hold = %v, want ErrAccountNotInParticipant", err)
+	}
+}
+
+// TestSubmitTakesTheCounterpartyNameFromTheRequest pins the direction rule: the
+// submitting bank fills in its OWN side from its own register and is TOLD the
+// counterparty's NAME — the agent is derived from the roster instead, not taken
+// from the request (see TestSubmitDerivesTheCounterpartyAgentFromTheRoster).
+// It never reads the counterparty's register for either.
+func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
+	ctx := context.Background()
+	n, req := networkWithTwoBanks(t)
+	// No Agent set: this test is about the name, and the agent this bank would
+	// plant here is discarded and re-derived from the roster regardless — see
+	// networkWithTwoBanks on why setting one would just be dead input.
+	req.CreditorDetails = PartyDetails{Name: "Whoever The Payer Typed"}
+	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
+	// onto the payment unchanged would pass this test's name check; only an
+	// overwrite from the register catches it.
+	req.DebtorDetails = PartyDetails{Agent: "WRONGDEFFXXX", Name: "Not Alice At All"}
+
+	p, err := n.SubmitPayment(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitPayment: %v", err)
+	}
+	if got := p.CreditorDetails.Name; got != "Whoever The Payer Typed" {
+		t.Errorf("creditor name is %q, want the name the request carried", got)
+	}
+	// The debtor is this bank's own customer, so its name comes from its own
+	// register and NOT from the request — a payer does not get to rename
+	// themselves on an instruction. setupTwoBanks names the debtor's customer
+	// "Alice", so this is not merely non-empty but exactly the register value.
+	if p.DebtorDetails.Name != "Alice" {
+		t.Errorf("debtor name is %q, want the submitting bank's own register value %q, not what the request carried", p.DebtorDetails.Name, "Alice")
+	}
+	debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+	assertNoError(t, err)
+	if p.DebtorDetails.Agent != debtorBank.BIC {
+		t.Errorf("debtor agent is %q, want the submitting bank's own BIC %q", p.DebtorDetails.Agent, debtorBank.BIC)
+	}
+}
+
+// TestSubmitRefusesAnUnnamedCounterparty pins that the instruction must carry
+// what the message will need. Before this, a request that named no counterparty
+// was accepted and the failure surfaced later, when the message was built, out of
+// a bank's own register — which is exactly the read being removed.
+//
+// It is the NAME and only the name. There used to be a third subtest here, "no
+// agent", and it went with the guard that produced it: the counterparty's agent
+// is derived from the roster now (see TestSubmitDerivesTheCounterpartyAgentFromTheRoster
+// below), so an instruction that supplies none is not incomplete — it is
+// ordinary, and every request in this file is one. Keeping the subtest would
+// have meant keeping a disjunct that can no longer fire for the reason it was
+// written.
+func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		details PartyDetails
+	}{
+		{"no name", PartyDetails{}},
+		{"no name, and an agent supplied anyway", PartyDetails{Agent: testBIC}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, req := networkWithTwoBanks(t)
+			req.CreditorDetails = tc.details
+			if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrCounterpartyNotNamed) {
+				t.Errorf("got %v, want ErrCounterpartyNotNamed", err)
+			}
+		})
+	}
+}
+
+// TestSubmitDerivesTheCounterpartyAgentFromTheRoster is the domain half of
+// mesh/books_test.go's TestAWrongCounterpartyAgentDoesNotMisroute: the mesh test
+// measures that the payment reaches the right bank, and this one measures what
+// makes it so.
+//
+// The instruction names a BIC that is not the counterparty's — the SUBMITTING
+// bank's own, the worst case, because a message routed on it comes straight back
+// to its sender — and it is discarded rather than compared. Comparing would be
+// the weaker fix in a way worth stating: it would make a wrong BIC a refusal, so
+// a payer who typed one would have their payment rejected instead of routed,
+// which is not what SEPA does. IBAN-only since 2016 means the originating bank
+// derives routing and the payer never supplies it at all.
+//
+// Both directions, because which side is the counterparty follows the scheme's
+// direction and nothing else — a fix applied to the push arm alone would leave
+// the pull arm's collecting bank posting the debit in the payer's bank's book.
+//
+// The two fixtures this test uses (setupTwoBanks, networkWithACollection) give
+// their two banks DISTINCT BICs for exactly this test's sake: with both banks
+// on the same BIC, "the submitting bank's own" and "the roster's" are the same
+// byte string, so the assertion below passes whether or not the agent is
+// actually derived. Measured directly — deleting SubmitPaymentTx's
+// `counterparty.Agent = counterpartyBank.BIC` line passed both subtests before
+// the fixtures were split; giving Bank A and Bank B distinct BICs is what makes
+// the derivation this test names something the test can actually catch the
+// absence of.
+func TestSubmitDerivesTheCounterpartyAgentFromTheRoster(t *testing.T) {
+	t.Run("push: the creditor is the counterparty", func(t *testing.T) {
+		ctx := context.Background()
+		n, req := networkWithTwoBanks(t)
+		debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+		assertNoError(t, err)
+		creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
+		assertNoError(t, err)
+		req.CreditorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payer Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		if p.CreditorDetails.Agent != creditorBank.BIC {
+			t.Errorf("creditor agent is %q, want the roster's %q for %s", p.CreditorDetails.Agent, creditorBank.BIC, req.Creditor.Participant)
+		}
+		if p.CreditorDetails.Name != "Whoever The Payer Typed" {
+			t.Errorf("creditor name is %q, want the name the instruction carried — only the agent is derived", p.CreditorDetails.Name)
+		}
+	})
+
+	t.Run("pull: the debtor is the counterparty", func(t *testing.T) {
+		ctx := context.Background()
+		n, req, _ := networkWithACollection(t, 100000)
+		debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+		assertNoError(t, err)
+		creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
+		assertNoError(t, err)
+		req.DebtorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Biller Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		if p.DebtorDetails.Agent != debtorBank.BIC {
+			t.Errorf("debtor agent is %q, want the roster's %q for %s", p.DebtorDetails.Agent, debtorBank.BIC, req.Debtor.Participant)
+		}
+		if p.DebtorDetails.Name != "Whoever The Biller Typed" {
+			t.Errorf("debtor name is %q, want the name the instruction carried — only the agent is derived", p.DebtorDetails.Name)
+		}
+	})
+}
+
+// TestSubmitRefusesACounterpartyAtNoSuchBank is the other side of deriving the
+// agent: there has to be a roster row to derive it FROM.
+//
+// ErrParticipantNotFound and not ErrCounterpartyNotNamed, which is the accurate
+// one of the two — the instruction did name a bank, and the trouble is that no
+// such bank is a member. It is also what the wire needs: ReasonFor maps it to
+// RC01 "bank identifier incorrect", which is exactly the statement being made.
+//
+// This is a real widening of what the submitting bank checks, and it is worth
+// being explicit that it does not undo the split. The roster is network-scoped —
+// tx.GetParticipant takes no BookID — so this reads no bank's book, and the
+// creditor's ACCOUNT is still none of the submitting bank's business:
+// TestSubmitDoesNotCheckTheCreditorAccount above still passes with an account
+// that does not exist. A bank that is not a member cannot be routed to by
+// anybody, which is not a fact about the payee's bank at all.
+func TestSubmitRefusesACounterpartyAtNoSuchBank(t *testing.T) {
+	n, req := networkWithTwoBanks(t)
+	req.Creditor.Participant = "no-such-bank"
+
+	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
+		t.Errorf("got %v, want ErrParticipantNotFound", err)
+	}
+}
+
+// TestSubmitRefusesItsOwnPartyAtNoSuchBank pins checkPartyTx's PARTICIPANT arm,
+// which had no test at all: TestSubmitDoesNotCheckTheCreditorAccount covers the
+// account half of the same function, and nothing covered the half above it.
+//
+// It goes through the SUBMITTING bank's own side deliberately. The counterparty
+// arm is TestSubmitRefusesACounterpartyAtNoSuchBank's and reaches a different
+// function (the roster read in SubmitPaymentTx); this one reaches checkPartyTx,
+// which is also what AcceptInboundTx runs on the receiving side.
+func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
+	n, req := networkWithTwoBanks(t)
+	req.Debtor.Participant = "no-such-bank"
+
+	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
+		t.Errorf("got %v, want ErrParticipantNotFound", err)
+	}
+}
+
+// TestAcceptInboundDoesNotRewriteEitherPartysDetails pins a fix, not merely a
+// property: debtorSideTx and creditorSideTx run from AcceptInboundTx as well as
+// from SubmitPaymentTx, and in AcceptInboundTx the bank executing them is the
+// RECEIVING bank for that direction — the creditor's on a push, the debtor's on
+// a pull — not the submitting one. Filling PartyDetails from the register
+// there would silently overwrite what the submitting bank already stored (and
+// already sent, in the message SubmitAndInstruct built in the same unit of
+// work) with the receiving bank's own record of the same account, which need
+// not agree with what the payer typed. Checked on both directions, because the
+// two arms fail differently if this regresses: a pull always posts its debtor
+// leg in AcceptInboundTx, so its overwrite would be unconditional, while a
+// push's is gated behind AcceptInboundTx's dirty check and only shows up when
+// something else (an address back-fill) also changed.
+//
+// # The push subtest's precondition is asserted, not assumed
+//
+// That dirty check is `if p.Debtor == before.Debtor && p.Creditor ==
+// before.Creditor && p.DebtorLegTx == before.DebtorLegTx { return nil }`
+// (AcceptInboundTx). On a push nothing here changes DebtorLegTx, so the ONLY
+// thing that can make this half write at all is the creditor address being
+// back-filled — and that happens only because networkWithTwoBanks quotes no
+// Creditor.Identifier. Give that fixture an identifier and this subtest keeps
+// passing while pinning nothing: AcceptInboundTx would return before the write,
+// so an overwrite of CreditorDetails would never be persisted for the assertion
+// to catch.
+//
+// So the write is asserted. It is not a second subject — it is this subject's
+// precondition, and a precondition that lives in another function's fixture is
+// exactly the kind that rots silently.
+func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
+	t.Run("push", func(t *testing.T) {
+		ctx := context.Background()
+		n, req := networkWithTwoBanks(t)
+		creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
+		assertNoError(t, err)
+		// Deliberately NOT "Bob" — the real name on the creditor's own
+		// register (setupTwoBanks). If AcceptInboundTx's creditorSideTx (the
+		// creditor's bank, here the RECEIVING bank) overwrote CreditorDetails
+		// from its register, this would come back as "Bob".
+		req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		if p.Creditor.Identifier != (deposit.Identifier{}) {
+			t.Fatalf("the submitted payment already carries a creditor address (%+v), so AcceptInbound has nothing to change and this subtest can no longer fail; see the doc above", p.Creditor.Identifier)
+		}
+		assertNoError(t, n.AcceptInbound(ctx, p.ID))
+
+		after, err := n.GetPayment(ctx, p.ID)
+		assertNoError(t, err)
+		if after.Creditor == p.Creditor {
+			t.Fatalf("AcceptInbound wrote nothing back: the creditor is still %+v, so nothing this subtest asserts about CreditorDetails had to survive a PutPayment", after.Creditor)
+		}
+		if after.CreditorDetails != p.CreditorDetails {
+			t.Errorf("creditor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.CreditorDetails, p.CreditorDetails)
+		}
+		if after.DebtorDetails != p.DebtorDetails {
+			t.Errorf("debtor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.DebtorDetails, p.DebtorDetails)
+		}
+	})
+
+	t.Run("pull", func(t *testing.T) {
+		ctx := context.Background()
+		n, req, _ := networkWithACollection(t, 100000)
+		debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+		assertNoError(t, err)
+		// Deliberately NOT "Alice" — the real name on the debtor's own
+		// register (networkWithACollection). If AcceptInboundTx's
+		// debtorSideTx (the debtor's bank, here the RECEIVING bank) overwrote
+		// DebtorDetails from its register, this would come back as "Alice".
+		req.DebtorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payee Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		assertNoError(t, n.AcceptInbound(ctx, p.ID))
+
+		after, err := n.GetPayment(ctx, p.ID)
+		assertNoError(t, err)
+		if after.DebtorDetails != p.DebtorDetails {
+			t.Errorf("debtor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.DebtorDetails, p.DebtorDetails)
+		}
+		if after.CreditorDetails != p.CreditorDetails {
+			t.Errorf("creditor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.CreditorDetails, p.CreditorDetails)
+		}
+	})
+}
+
+// failingUpdateTx is a Tx whose PARTY lookups fail with an error of the caller's
+// choosing. Everything else is the real transaction, promoted by embedding.
+//
+// It is the Update-side counterpart of message_test.go's failingTx, and it has
+// to be a second type rather than a bigger first one: failingStore decorates
+// View alone, and checkPartyTx — the function these tests are about — runs
+// inside an Update, on the receiving bank's money path. failingTx's own doc
+// records that its GetDepositAccount override was deleted for exactly this
+// reason, that nothing reached it through a View. Nothing has changed about
+// that; what is added here is the other seam.
+//
+// The two failures are separate fields rather than one, because checkPartyTx
+// makes two reads and the first one failing hides the second. A single error
+// would leave the deposit-account arm untested while looking as though it were
+// covered.
+type failingUpdateTx struct {
+	Tx
+	participantErr error
+	accountErr     error
+}
+
+func (t failingUpdateTx) GetParticipant(ctx context.Context, id ParticipantID) (Participant, error) {
+	if t.participantErr != nil {
+		return Participant{}, t.participantErr
+	}
+	return t.Tx.GetParticipant(ctx, id)
+}
+
+func (t failingUpdateTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+	if t.accountErr != nil {
+		return deposit.Account{}, t.accountErr
+	}
+	return t.Tx.GetDepositAccount(ctx, book, id)
+}
+
+// failingUpdateStore wraps a real Store and hands every UPDATE a failingUpdateTx.
+// See message_test.go's failingStore for why a synthetic error at the seam is
+// the only way to provoke a store failure on demand that works on both stores.
+type failingUpdateStore struct {
+	Store
+	participantErr error
+	accountErr     error
+}
+
+func (s failingUpdateStore) Update(ctx context.Context, fn func(context.Context, Tx) error) error {
+	return s.Store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return fn(ctx, failingUpdateTx{Tx: tx, participantErr: s.participantErr, accountErr: s.accountErr})
+	})
+}
+
+// TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is checkPartyTx's half
+// of the property addressedPartyTx has pinned all along, and it is the half that
+// was missing while the hazard sat in the code.
+//
+// checkPartyTx used to collapse every error from either of its two reads into a
+// domain sentinel — `if err != nil { return ErrAccountNotInParticipant }`, and
+// the same shape one line up for the participant. That is on the MONEY path:
+// AcceptInboundTx runs it through creditorSideTx/debtorSideTx, mesh/bank.go's
+// answer hands whatever comes back to ReasonFor, and AC01 "incorrect account
+// number" goes out in a pacs.002. So a dropped connection at the RECEIVING bank
+// told the SENDING bank its customer's IBAN was wrong — and on a push the
+// payer's debit is then reversed, so a fault that a retry would have cleared
+// became a permanent rejection carrying a false reason.
+//
+// Both reads and both directions, which is four subtests for two lines of fix,
+// and the count is the point rather than thoroughness for its own sake: the
+// participant arm and the account arm are separate collapses that were both
+// there, and creditorSideTx and debtorSideTx are separate call sites that reach
+// the same function on opposite sides of the money.
+//
+// What is asserted is not merely "an error came back". The sentinel that must
+// NOT come back is named, because an error that is technically non-nil and still
+// maps to AC01 is the whole bug; and ReasonFor is called directly, because the
+// wire code is the thing that reaches the counterparty.
+func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
+	dropped := errors.New("connection reset by peer")
+
+	for _, tc := range []struct {
+		name           string
+		participantErr error
+		accountErr     error
+	}{
+		{"the participant read fails", dropped, nil},
+		{"the deposit-account read fails", nil, dropped},
+	} {
+		for _, dir := range []struct {
+			name  string
+			setup func(t *testing.T) (*Network, InitiatePaymentRequest)
+		}{
+			{"push", func(t *testing.T) (*Network, InitiatePaymentRequest) {
+				n, req := networkWithTwoBanks(t)
+				return n, req
+			}},
+			{"pull", func(t *testing.T) (*Network, InitiatePaymentRequest) {
+				n, req, _ := networkWithACollection(t, 100000)
+				req.DebtorDetails = PartyDetails{Name: "Alice"}
+				return n, req
+			}},
+		} {
+			t.Run(tc.name+", "+dir.name, func(t *testing.T) {
+				ctx := context.Background()
+				n, req := dir.setup(t)
+				p, err := n.SubmitPayment(ctx, req)
+				assertNoError(t, err)
+
+				// The same store, decorated only from here on: the payment had
+				// to be submitted successfully for there to be one to answer.
+				broken := NewNetwork(failingUpdateStore{
+					Store:          n.Store(),
+					participantErr: tc.participantErr,
+					accountErr:     tc.accountErr,
+				}, func() time.Time { return fixedTime })
+
+				err = broken.AcceptInbound(ctx, p.ID)
+				if !errors.Is(err, dropped) {
+					t.Fatalf("AcceptInbound over a broken store = %v, want the store's own error", err)
+				}
+				if errors.Is(err, ErrAccountNotInParticipant) {
+					t.Error("a store failure surfaced as ErrAccountNotInParticipant, which reaches the sender as AC01 \"incorrect account number\" — the number is not the problem")
+				}
+				if errors.Is(err, ErrParticipantNotFound) {
+					t.Error("a store failure surfaced as ErrParticipantNotFound, which reaches the sender as RC01 \"bank identifier incorrect\" — the bank is not the problem")
+				}
+				if got := ReasonFor(err); got != iso20022.StatusReasonNotSpecifiedAgentGenerated {
+					t.Errorf("ReasonFor(a store failure) = %q, want MS03: the only true thing to say is that this agent could not carry the instruction out", got)
+				}
+			})
+		}
 	}
 }
 
@@ -1981,6 +2446,7 @@ func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	before, err := sys.GetCycle(ctx, cyc.ID)

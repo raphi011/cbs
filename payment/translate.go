@@ -77,6 +77,14 @@ var reasonTable = []reasonMapping{
 	{ErrParticipantAssetNotFound, "ErrParticipantAssetNotFound", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 	{ErrSchemeUnsupportedReturn, "ErrSchemeUnsupportedReturn", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
+	// An instruction naming no counterparty is refused at submission, before
+	// any leg posts and before any message could exist to carry a reason back
+	// — but it is classified here rather than below, alongside the other
+	// malformed-instruction refusals, because nothing distinguishes it from
+	// them: a bad amount and a missing counterparty are the same category of
+	// defect, said about a different field.
+	{ErrCounterpartyNotNamed, "ErrCounterpartyNotNamed", iso20022.StatusReasonNotSpecifiedAgentGenerated},
+
 	// --- Classified as never reaching a counterparty ---
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a
@@ -271,10 +279,14 @@ func (mc MessageContext) orgtr() *iso20022.PartyIdentification {
 // it: the bank that holds the account, the name on the account, and the address
 // the payment quoted to reach it.
 //
-// It exists so that the conversion itself is a pure function of resolved data,
-// with the store reads on one side of the line and the mapping on the other.
-// That is what lets FuzzTranslate drive the mapping over names and addresses no
-// fixture builder would have thought of — and the store would never hold.
+// It exists so that the conversion itself — creditTransfer, directDebit — is a
+// pure function of resolved data, decoupled from whatever produces that data.
+// partiesOf is the one production producer, and it reads no store to build one
+// (see partiesOf's own doc); fuzz_test.go is the other, deliberate producer:
+// buildCreditTransfer constructs messageParty values directly, skipping
+// partiesOf and CreditTransferMessage entirely, which is what lets
+// FuzzTranslate drive the mapping over names and addresses no fixture builder —
+// and now no submission path either — would have thought to try.
 type messageParty struct {
 	BIC        iso20022.BIC
 	Name       string
@@ -502,76 +514,33 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // partiesOf resolves a payment's two sides to what a message says about them:
 // each bank's BIC and each account holder's name.
 //
-// It is the ONLY part of building an outbound message that touches the store,
-// and the reason the two Network methods above take a context while the four
-// pure builders below do not. That division is deliberate: a caller draining a
-// queue of messages can abandon the read, and everything after it is arithmetic
-// on values it already holds.
-func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor messageParty, err error) {
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		debtor, creditor, err = s.partiesOfTx(ctx, tx, p)
-		return err
-	})
-	return debtor, creditor, err
-}
-
-// partiesOfTx is partiesOf inside a unit of work the caller already holds. It
-// is what lets a submitting bank build its instruction in the SAME transaction
-// that posted the debtor leg — see SubmitAndInstruct, and the money bug that
-// shape exists to make unreachable.
-func (s *Network) partiesOfTx(ctx context.Context, tx Tx, p Payment) (debtor, creditor messageParty, err error) {
-	if debtor, err = s.partyTx(ctx, tx, p.Debtor); err != nil {
-		return messageParty{}, messageParty{}, err
-	}
-	if creditor, err = s.partyTx(ctx, tx, p.Creditor); err != nil {
-		return messageParty{}, messageParty{}, err
-	}
-	return debtor, creditor, nil
-}
-
-// partyTx resolves one side. The identifier is taken from the PAYMENT and not
-// from the account, because a payment records the address actually quoted to
-// reach a party on that occasion — see PartyRef — and an account may hold
-// several or have had one withdrawn since.
+// It reads NOTHING. Both are on the payment, put there at submission — the
+// bank's own side from its own register, the counterparty's name from the
+// instruction and its agent from the roster (see PartyDetails.Agent and
+// SubmitPaymentTx). That is the whole of this change and the whole of why it matters:
+// building an outbound message used to read the counterparty's deposit register
+// for the name on the account, which is a read of another bank's book on the
+// happy path of every submission.
 //
-// # Only a NOT-FOUND becomes a domain error
+// So the comment this replaces — "the ONLY part of building an outbound message
+// that touches the store" — is now false in the strongest way available: no part
+// of it does. The four builders below were already pure and this joins them,
+// which is why the two Network methods lose their context parameter.
 //
-// The obvious shape here — `if err != nil { return ErrAccountNotInParticipant }`
-// — is the one checkPartyTx uses, and it is wrong in this function in a way it
-// is not wrong there, because of what happens downstream. These errors are
-// destined for ReasonFor and then for a counterparty's pacs.002:
-// ErrParticipantNotFound becomes RC01 "bank identifier incorrect" and
-// ErrAccountNotInParticipant becomes AC01 "incorrect account number". A dropped
-// database connection, or a caller that cancelled the context this function now
-// takes, would be reported to another bank as a defect in ITS message. The
-// counterparty would then investigate an address that was never wrong.
-//
-// So a store failure is returned unchanged and falls to MS03 through ReasonFor's
-// default, which says "this agent could not carry it out" — true, unhelpful, and
-// vastly better than a confident false statement about someone else's data.
-//
-// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure pins it,
-// and how it does so is worth knowing before anyone "simplifies" it. There is no
-// way to provoke a real store failure here: both stores check ctx.Err() before
-// they open a transaction, so even a cancelled context is refused at the View
-// boundary and this function is never entered. The test therefore injects a
-// synthetic error through a decorating Store. The first version of that test did
-// use a cancelled context, and it passed with this bug reinstated — which is why
-// the mechanism is spelled out rather than left as an implementation detail of
-// a test file.
-func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messageParty, error) {
-	part, err := s.participantTx(ctx, tx, ref.Participant)
-	if err != nil {
-		return messageParty{}, err
-	}
-	acct, err := tx.GetDepositAccount(ctx, part.BookID, ref.Account)
-	if err != nil {
-		if errors.Is(err, deposit.ErrAccountNotFound) {
-			return messageParty{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ref.Account)
+// It is a PACKAGE function and not a method for the same reason, one step
+// further: it held a *Network receiver it never named, and "it reads nothing" is
+// worth having the compiler check rather than a reader. There is no store on the
+// other side of a value it does not have.
+func partiesOf(p Payment) (debtor, creditor messageParty) {
+	return messageParty{
+			BIC:        p.DebtorDetails.Agent,
+			Name:       p.DebtorDetails.Name,
+			Identifier: p.Debtor.Identifier,
+		}, messageParty{
+			BIC:        p.CreditorDetails.Agent,
+			Name:       p.CreditorDetails.Name,
+			Identifier: p.Creditor.Identifier,
 		}
-		return messageParty{}, err
-	}
-	return messageParty{BIC: part.BIC, Name: acct.Name, Identifier: ref.Identifier}, nil
 }
 
 // CreditTransferMessage renders a payment as the pacs.008 that carries it
@@ -582,41 +551,29 @@ func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messagePart
 // different questions with different answers, and conflating them would model a
 // topology this system does not have: banks here meet at a CSM, never directly.
 //
-// It takes a context because it reads the store: a payment records which
-// participant and which account each side is, and a message needs the BIC and
-// the account holder's NAME, neither of which a Payment carries. That is the
-// whole of the I/O, and it is why this is a method rather than a function.
-func (s *Network) CreditTransferMessage(ctx context.Context, p Payment, mc MessageContext) (iso20022.Envelope, error) {
-	var env iso20022.Envelope
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		env, err = s.CreditTransferMessageTx(ctx, tx, p, mc)
-		return err
-	})
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return env, nil
-}
-
-// CreditTransferMessageTx is CreditTransferMessage inside a unit of work the
-// caller already holds. See SubmitAndInstruct for the one caller that needs it
-// and why the transaction has to be shared.
-func (s *Network) CreditTransferMessageTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
+// It takes neither a context nor a Tx, and used not to: a payment recorded
+// which participant and which account each side was, and building a message
+// meant looking up the BIC and the account holder's NAME neither carried. Task
+// 14.2 put both on the payment itself, at submission; Task 14.3 is what let
+// partiesOf stop reading them off the store. So there is no I/O left here to
+// need a unit of work for, and CreditTransferMessageTx — the variant that
+// shared the caller's transaction — is gone with it: nothing downstream of
+// SubmitAndInstruct needs to share a transaction with a function that reads
+// nothing.
+func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
+	debtor, creditor := partiesOf(p)
 	return creditTransfer(p, debtor, creditor, asset, mc)
 }
 
-// creditTransfer builds the message from data already resolved out of the
-// store. Everything it does is a pure function of its arguments, which is what
-// FuzzTranslate needs and what makes the store reads above a separate concern.
+// creditTransfer builds the message from data its caller already holds.
+// Everything it does is a pure function of its arguments, which is what
+// FuzzTranslate needs: CreditTransferMessage reads no store either (see its
+// own doc), so there is no I/O anywhere on this path for a fuzz input to
+// depend on.
 func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.AssetCode, mc MessageContext) (iso20022.Envelope, error) {
 	amt, err := amountOf(p.Amount, asset)
 	if err != nil {
@@ -686,31 +643,18 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 // SENDER is the party being paid. A push scheme's message travels with the
 // money; a pull scheme's travels against it, which is why the creditor and its
 // agent come first in the transaction and why the mandate has to travel too.
-func (s *Network) DirectDebitMessage(ctx context.Context, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
-	var env iso20022.Envelope
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		env, err = s.DirectDebitMessageTx(ctx, tx, p, m, mc)
-		return err
-	})
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return env, nil
-}
-
-// DirectDebitMessageTx is DirectDebitMessage inside a unit of work the caller
-// already holds. It is CreditTransferMessageTx's counterpart and exists for the
-// same caller; see SubmitAndInstruct.
-func (s *Network) DirectDebitMessageTx(ctx context.Context, tx Tx, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
+//
+// It takes neither a context nor a Tx, for the same reason CreditTransferMessage
+// stopped taking them: partiesOf reads nothing, and the mandate — the one piece
+// of I/O this message ever needed — arrives already resolved as m, loaded by
+// InstructionTx's tx.GetMandate before this is called. DirectDebitMessageTx,
+// CreditTransferMessageTx's counterpart, is gone with it for the same reason.
+func (s *Network) DirectDebitMessage(p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
+	debtor, creditor := partiesOf(p)
 	return directDebit(p, m, debtor, creditor, asset, mc)
 }
 
@@ -978,14 +922,17 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // therefore NOT the source of it — see that field — and the caller supplies the
 // return's own reason.
 //
-// This is a Network method although it reads no store, and it takes no context
-// for exactly that reason — the asymmetry with CreditTransferMessage and
-// DirectDebitMessage is the point rather than an oversight. It is a method
-// because the amount's scale comes from the scheme's asset and only the Network
-// holds the scheme registry, which is an in-memory map; there is no I/O here to
-// cancel. A pacs.004 names no parties: it refers to the original payment by
-// identifier and carries amounts, so nothing in it needs a BIC or an account
-// holder's name looked up.
+// This is a Network method although it reads no store, and it takes no
+// context for exactly that reason. Task 14.3 removed the asymmetry this
+// comment used to name: CreditTransferMessage and DirectDebitMessage read no
+// store either, now, so all three outbound builders share this shape. What
+// still makes ReturnMessage a method rather than a function is narrower than
+// "no I/O": the amount's scale comes from the scheme's asset and only the
+// Network holds the scheme registry, which is an in-memory map, not a store —
+// there is nothing here to cancel. A pacs.004 names no parties: it refers to
+// the original payment by identifier and carries amounts, so nothing in it
+// needs a BIC or an account holder's name looked up, which is also why it is
+// the one outbound builder with no messageParty in its signature at all.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
@@ -1046,13 +993,24 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // CreditTransferRequest turns a received pacs.008 into a request this system
 // can act on.
 //
-// Both parties are resolved by ADDRESS — Network.ResolveIdentifierTx against the
-// IBAN the message carries — and never by an internal account id, because the
-// message has no element for one and inventing a place to smuggle it through
-// would make the whole sub-project a lie. That is also why an unresolvable IBAN
-// comes back as ErrAccountNotInParticipant and becomes AC01 on the wire: from
-// the receiver's side, an address it cannot resolve IS an incorrect account
-// number.
+// A pacs.008 travels FROM the debtor's bank, routed by CdtrAgt, so the bank
+// reading this message is the CREDITOR's — that is what routed the message
+// here in the first place, and it is the only party this bank has any standing
+// to resolve. It is resolved by ADDRESS, exactly as before —
+// Network.ResolveIdentifierTx against the IBAN the message carries — and never
+// by an internal account id, because the message has no element for one. That
+// is also why an unresolvable creditor IBAN comes back as
+// ErrAccountNotInParticipant and becomes AC01 on the wire: from the receiver's
+// side, an address it cannot resolve for ITS OWN customer IS an incorrect
+// account number.
+//
+// The DEBTOR is not resolved at all. It is the sending bank's customer, this
+// bank's directory has no standing authority over whether that account exists,
+// and sweeping the network for it produced a refusal — AC01 for a debtor IBAN
+// nobody in this network holds — that was never this bank's to make. What comes
+// back for the debtor is what the message itself says: the address it quoted,
+// on Debtor, and the agent and name it asserted, on DebtorDetails. See
+// localPartyIn.
 //
 // The scheme is the MESSAGE's, and it takes two elements to name it rather than
 // one. Being a pacs.008 says the payment is a PUSH; the currency says which
@@ -1078,29 +1036,49 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	// The creditor is this bank's own customer on a push; the debtor is the
+	// sending bank's and is recorded, not resolved.
+	creditor, err := s.localPartyIn(ctx, cdtrID)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	debtor := PartyRef{Identifier: dbtrID}
 	return InitiatePaymentRequest{
-		Scheme:      scheme,
-		Debtor:      debtor,
-		Creditor:    creditor,
-		Amount:      amount,
-		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
-		Description: remittanceIn(tx.RmtInf),
+		Scheme:          scheme,
+		Debtor:          debtor,
+		Creditor:        creditor,
+		Amount:          amount,
+		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+		Description:     remittanceIn(tx.RmtInf),
+		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
 	}, nil
 }
 
 // DirectDebitRequest turns a received pacs.003 into a request this system can
 // act on.
 //
-// It resolves by address exactly as CreditTransferRequest does, and differs in
-// the two ways the direction implies. The message travels FROM the creditor's
-// bank, so the account elements are read for what they are rather than by
-// position — a reader that took the first account element as the debtor's, as it
-// is in a pacs.008, would produce a collection pointing the wrong way and
-// resolve both parties successfully while doing it.
+// A pacs.003 travels FROM the creditor's bank, routed by DbtrAgt, so the bank
+// reading this message is the DEBTOR's — the mirror of CreditTransferRequest in
+// exactly the way the direction implies, and no further: the DEBTOR is resolved
+// by ADDRESS, exactly as before — Network.ResolveIdentifierTx against the IBAN
+// the message carries, which still lists every participant and reads every
+// register; narrowing WHICH party is put through that sweep did not narrow the
+// sweep itself. The CREDITOR is recorded from what the message says and not
+// resolved, for the identical reason CreditTransferRequest does not resolve a
+// pacs.008's debtor — the creditor is the SENDING bank's customer, not this
+// bank's to look up. The account elements are read for what they are rather
+// than by position — a reader that took the first account element as the
+// debtor's, as it is in a pacs.008, would produce a collection pointing the
+// wrong way and resolve successfully while doing it.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
@@ -1121,18 +1099,31 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	if mandate == "" {
 		return InitiatePaymentRequest{}, fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
 	}
-	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	// The debtor is this bank's own customer on a pull; the creditor is the
+	// sending bank's and is recorded, not resolved.
+	debtor, err := s.localPartyIn(ctx, dbtrID)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	creditor := PartyRef{Identifier: cdtrID}
 	return InitiatePaymentRequest{
-		Scheme:      scheme,
-		Debtor:      debtor,
-		Creditor:    creditor,
-		Amount:      amount,
-		MandateID:   MandateID(mandate),
-		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
-		Description: remittanceIn(tx.RmtInf),
+		Scheme:          scheme,
+		Debtor:          debtor,
+		Creditor:        creditor,
+		Amount:          amount,
+		MandateID:       MandateID(mandate),
+		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+		Description:     remittanceIn(tx.RmtInf),
+		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
 	}, nil
 }
 
@@ -1247,31 +1238,31 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 	return ledger.Amount(minor), asset, nil
 }
 
-// partiesIn resolves both sides of a received message from the addresses it
-// carries.
+// localPartyIn resolves the ONE side of a received message that belongs to
+// this bank, by the address the message quotes for it.
 //
-// One read transaction for the pair, so both are resolved against the same
-// snapshot of the directory: a bank added between the two lookups could
-// otherwise make one side ambiguous and the other not, and which one depended on
-// timing.
-func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.CashAccount) (debtor, creditor PartyRef, err error) {
-	dbtrID, err := identifierIn("DbtrAcct", dbtrAcct)
-	if err != nil {
-		return PartyRef{}, PartyRef{}, err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", cdtrAcct)
-	if err != nil {
-		return PartyRef{}, PartyRef{}, err
-	}
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+// Which side that is follows from the direction and from nothing else: the
+// clearing house routed a pacs.008 by CdtrAgt and a pacs.003 by DbtrAgt, so the
+// bank holding this message is the creditor's on a push and the debtor's on a
+// pull — see CreditTransferRequest and DirectDebitRequest, which are the only
+// two callers and each passes the one identifier that is theirs to resolve.
+//
+// It used to resolve BOTH sides — partiesIn swept every member's register for
+// both addresses — and that sweep is what let a receiving bank reach every
+// bank's book (mesh/books_test.go), and what turned a debtor IBAN nobody in
+// this network holds into an AC01 that was never this bank's refusal to make:
+// the debtor is the SENDING bank's customer, and this bank's directory has no
+// authority over whether that account exists. The counterparty is not resolved
+// at all now; it is recorded from what the message itself says — see
+// CreditTransferRequest's DebtorDetails/CreditorDetails and agentIn/nameIn.
+func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+	var ref PartyRef
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		if debtor, err = s.addressedPartyTx(ctx, tx, dbtrID); err != nil {
-			return err
-		}
-		creditor, err = s.addressedPartyTx(ctx, tx, cdtrID)
+		ref, err = s.addressedPartyTx(ctx, tx, ident)
 		return err
 	})
-	return debtor, creditor, err
+	return ref, err
 }
 
 // addressedPartyTx turns one quoted address into the party it names.
@@ -1283,10 +1274,11 @@ func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.Cas
 //
 // # Only a NOT-FOUND becomes a domain error
 //
-// The same discipline partyTx documents for the outbound direction, and a
-// sharper hazard here, because for a directory lookup a not-found IS the
-// expected failure and `if err != nil { return ErrAccountNotInParticipant }` is
-// the obvious shape. It is wrong: that error becomes AC01 "incorrect account
+// The outbound direction used to have the identical discipline, in partyTx —
+// see PartyDetails' doc comment on why that function is gone. It is a sharper
+// hazard here, because for a directory lookup a not-found IS the expected
+// failure and `if err != nil { return ErrAccountNotInParticipant }` is the
+// obvious shape. It is wrong: that error becomes AC01 "incorrect account
 // number" in the pacs.002 this system sends back, so a dropped connection or a
 // cancelled context would tell another bank its customer's IBAN was bad and send
 // it hunting a fault that does not exist.
@@ -1350,6 +1342,29 @@ func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier
 		return deposit.Identifier{}, fmt.Errorf("%w: %s: %w", ErrUnaddressableAccount, element, err)
 	}
 	return deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: string(iban)}, nil
+}
+
+// agentIn reads which bank a message names for one party. It is the inverse of
+// agentOf, and — unlike identifierIn — it never refuses: BranchAndFinancialInstitution.validate()
+// already required BICFI on the way in for any message that reached Unmarshal
+// (see CreditTransferTransaction.validate), so by the time a caller here holds
+// a *iso20022.Pacs008 or *iso20022.Pacs003 there is nothing left to check. What
+// this reads is recorded on the payment's DebtorDetails/CreditorDetails, never
+// resolved against this bank's own directory — that is the whole point of
+// localPartyIn's narrowing.
+func agentIn(fi iso20022.BranchAndFinancialInstitution) iso20022.BIC {
+	return fi.FinInstnId.BICFI
+}
+
+// nameIn reads the name a message gives for one party. It is the inverse of
+// namedPartyOf, and — like agentIn, for the identical reason — it never
+// refuses: validateNamedParty already requires a non-empty Nm on both Dbtr and
+// Cdtr for any message that reached Unmarshal (CreditTransferTransaction.validate
+// in pacs008.go, DirectDebitTransactionInformation.validate in pacs003.go), so
+// a *iso20022.Pacs008 or *iso20022.Pacs003 held here never carries an empty
+// one — there is nothing left to check.
+func nameIn(p iso20022.PartyIdentification) string {
+	return p.Nm
 }
 
 // endToEndIn is the inverse of endToEndOf: the value the guidelines reserve for

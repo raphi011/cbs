@@ -209,11 +209,22 @@ func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 // sender gets back.
 //
 // First: can this message be resolved to an instruction at all? That is
-// CreditTransferRequest, which resolves both parties BY ADDRESS — a sweep of the
-// network's directory for whoever holds the IBAN — and it is the check that
-// produces AC01 for an account number nobody holds. It is the question a real
-// receiving bank asks first, because until it is answered the bank does not know
-// the message is even for one of its customers.
+// CreditTransferRequest, which resolves the CREDITOR — this bank's own
+// customer, the only party a pacs.008 routed here by CdtrAgt gives this bank
+// any standing to look up — BY ADDRESS. The SWEEP that address is checked
+// against is not this bank's own register: ResolveIdentifierTx still lists
+// every participant and reads every register, exactly as it did before this
+// narrowing (see payment.localPartyIn), so AC01 fires only when nobody in the
+// WHOLE NETWORK holds the creditor's IBAN — a creditor address some other bank
+// happens to hold still resolves. What changed is which PARTY is put through
+// that sweep, not which registers the sweep reaches; narrowing the sweep
+// itself needs the bank's own identity, which is a later sub-project's, not
+// this one's. It is the question a real receiving bank asks first, because
+// until it is answered the bank does not know the message is even for one of
+// its customers. It no longer sweeps the directory for the DEBTOR too — see
+// payment.CreditTransferRequest and localPartyIn — so an unaddressable or
+// unknown debtor IBAN, which names a customer at the SENDING bank and nothing
+// this bank could ever confirm, is not refused here.
 //
 // Second: does this bank's own half check out? That is AcceptInbound: the payee's
 // account exists, is in the scheme's asset, is addressable, and can take a
@@ -225,7 +236,10 @@ func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 // Here both banks read one payment row out of one store, so the second half loads
 // it by the identifier the message carries (PmtId/TxId) and there is nothing for
 // the request to become. That gap is not a defect in this handler; it is the
-// shared store, and closing it is sub-project 8's whole subject.
+// shared store, and closing it is sub-project 8's whole subject. The narrowing
+// above sharpens the loss rather than closing it: what is discarded is now only
+// this bank's own resolved half plus the debtor's asserted details, never a
+// resolution of the debtor's account this bank had no business making.
 func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
 	orig := payment.OriginalMessage{
@@ -248,9 +262,16 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 // mirror of receiveCreditTransfer in every way except the one that matters.
 //
 // The two questions are the same two, in the same order. First, can this message
-// be resolved to an instruction at all — DirectDebitRequest, which resolves both
-// parties BY ADDRESS and produces AC01 for an IBAN nobody holds. Second, does
-// this bank's own half check out — AcceptInbound.
+// be resolved to an instruction at all — DirectDebitRequest, which resolves the
+// DEBTOR — this bank's own customer, the party a pacs.003 routed here by
+// DbtrAgt gives this bank standing over — BY ADDRESS. As on the push side, the
+// sweep that address is checked against is network-wide and not narrowed to
+// this bank's own register — see receiveCreditTransfer's doc for the whole of
+// that point — so AC01 fires only when nobody in the WHOLE NETWORK holds the
+// debtor's IBAN. The CREDITOR is the sending bank's customer and is not
+// resolved, for the same reason receiveCreditTransfer's debtor is not — see
+// that handler and payment.DirectDebitRequest. Second, does this bank's own
+// half check out — AcceptInbound.
 //
 // What differs is what the second question DOES. On a push it is a check and
 // nothing more; here it is the posting. The payer's money leaves their account

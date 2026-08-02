@@ -148,6 +148,9 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 		Creditor:    h.creditorRef(creditorIBAN),
 		Amount:      harnessAmount,
 		Description: "invoice 44",
+		// Push: the creditor is the counterparty, so the request must name it. No
+		// Agent, as everywhere else: the BIC is the roster's to supply.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 	}
 
 	// In the roster, not in the mesh.
