@@ -7,10 +7,12 @@
 // claim is that these are the STANDARD's types, and an import of ledger.Amount
 // would quietly make that false, because the next reader could no longer tell
 // which fields came from ISO 20022 and which came from here. The cost is one
-// conversion boundary, and sub-project 7b is what pays it: nothing imports this
-// package yet, so the translator does not exist. It belongs on the payment
-// side rather than here — a translator that lived in this package would be the
-// same import, only pointing the other way.
+// conversion boundary, and sub-project 7b paid it: payment/translate.go
+// imports this package, and nothing here imports payment. The boundary belongs
+// on the payment side rather than here — a translator that lived in this
+// package would be the same import, only pointing the other way. The rule is a
+// test rather than a convention: imports_test.go fails on a repository import
+// in any non-test file.
 //
 // # The standard and the scheme's profile of it
 //
@@ -68,7 +70,7 @@
 //
 // # Messages
 //
-// Four, each the interbank counterpart of an operation the payment package
+// Five, each the interbank counterpart of an operation the payment package
 // already performs:
 //
 //   - pacs.008.001.08 FIToFICstmrCdtTrf — a SEPA Credit Transfer.
@@ -77,6 +79,11 @@
 //     that makes clearing asynchronous: a bank sends an instruction and learns
 //     its fate later, in a separate document.
 //   - pacs.004.001.09 PmtRtr — a return, the R-transaction.
+//   - pacs.009.001.08 FICdtTrf — a financial institution credit transfer, in
+//     which both parties are banks: the settlement instruction a clearing
+//     house sends its settlement agent when a cycle closes. The other four are
+//     sub-project 7a's; this one is 7b's, which is the sub-project that made
+//     the central bank an actor with something to receive.
 //
 // Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer), the
 // camt reporting family, camt.056 recalls and pacs.007 reversals, message

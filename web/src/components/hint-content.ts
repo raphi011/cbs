@@ -364,7 +364,7 @@ Direction of flow:
   Debited by:    Bank A            (on receipt)
 \`\`\`
 
-Money still flows **debtor → creditor** — "direction" only means who triggers the instruction. Because the creditor initiates, [[requires-mandate|a mandate is required]] and [[allows-return|returns are allowed]] so the debtor can dispute a collection.`,
+Money still flows **debtor → creditor** — "direction" only means who triggers the instruction. Because the creditor initiates, [[requires-mandate|a mandate is required]], and the debtor — who never asked for the debit — can dispute the collection and have it [[allows-return|returned]]. Returns are not a pull-only thing, though: both SEPA schemes allow them here, and direction decides only *which* bank sends one.`,
   },
   "settlement-model-net": {
     title: "Net settlement",
@@ -436,7 +436,9 @@ Return flow (mirrors the original in reverse):
   Debtor account credited       ← funds back to payer
 \`\`\`
 
-SEPA Credit Transfer does **not** allow returns in this model — once a push payment has settled, recall is a separate (out-of-band) process. In this codebase, returns settle immediately rather than being batched into a later R-cycle (a deliberate simplification).`,
+**Both** SEPA schemes allow returns here: \`SCT.AllowsReturn()\` and \`SDD.AllowsReturn()\` each report \`true\`, and \`ReturnPaymentTx\` refuses only a scheme that reports \`false\`. That is not a shortcut — a credit transfer return is a real R-transaction too, sent by the *beneficiary's* bank when it cannot apply the funds (a closed account, a name that does not match). Which bank sends it is what direction decides: always the bank that **received** the original instruction, so the payee's bank on a push and the payer's on a pull.
+
+What a credit transfer has no equivalent of is the debtor's **refund** — the 8-week, no-questions-asked claim on a settled collection. A payer who simply changes their mind about a credit transfer must ask for a *recall*, which the beneficiary can refuse; that is a \`camt.056\`, and this system does not implement it. Two simplifications inside the return itself: it settles immediately rather than being batched into a later R-cycle, and no return window is enforced — \`ReturnPaymentTx\` asks only whether the scheme allows returns and whether the payment is \`Settled\`.`,
   },
   "settlement-delay": {
     title: "Settlement delay",

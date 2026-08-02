@@ -180,13 +180,13 @@ export const chapter: Chapter = {
       options: [
         "The payee's bank originates the payment instruction",
         "The payer must have signed a mandate before funds can be collected",
-        "The payer may demand a return after the payment has settled",
+        "The scheme permits a settled payment to be sent back by an R-transaction",
         "Money flows from the creditor's account to the debtor's account",
         "Each payment settles individually without netting",
       ],
-      answers: [0, 1, 2],
+      answers: [0, 1],
       explanation:
-        "SDD is [[scheme-direction-pull]] — the payee's bank initiates. It [[requires-mandate]] (a signed authorization). And it [[allows-return]] — the debtor can dispute and reclaim funds after settlement via a SEPA R-transaction. SCT is push, requires no mandate, and does not define a return right. Both schemes use net settlement — not individual (gross) settlement.",
+        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `ReturnPaymentTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
@@ -265,7 +265,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2, 3, 4],
       explanation:
-        "The scheme interface captures exactly five axes: [[scheme-direction-push]]/[[scheme-direction-pull]] direction, [[settlement-model-net]]/[[settlement-model-gross]] model, [[requires-mandate]], [[allows-return]], and [[settlement-delay]]. ISO 20022 message names (pacs.008, pacs.003) are implementation labels, not scheme-differentiating axes.",
+        "Every option but the last names a method on the `Scheme` interface: [[scheme-direction-push]]/[[scheme-direction-pull]] direction, [[settlement-model-net]]/[[settlement-model-gross]] model, [[requires-mandate]], [[allows-return]] and [[settlement-delay]]. Those five are a selection rather than the whole set — the interface carries other axes too, [[scheme-asset|the asset the scheme settles in]] and the kind of address it routes on (`AddressedBy`). ISO 20022 message names (pacs.008, pacs.003) are implementation labels, not scheme-differentiating axes: no method on the interface reports one.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
