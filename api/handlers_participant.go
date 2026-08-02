@@ -1,12 +1,14 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -41,6 +43,16 @@ import (
 // bank was unroutable could watch the old one route perfectly well. What is true
 // in every branch that can reach here — a clashing BIC, or a mesh on its way
 // down — is that the bank now in the roster has no actor of its own.
+//
+// # The REMEDY is branch-specific, so it is attached to the branch
+//
+// Two failures reach here and only one of them has an answer. A clashing address
+// is fixed by admitting the bank on one of its own, which is the real-world fix
+// as much as this system's. A mesh that is stopping is not: the same request
+// retried on any BIC fails the same way and leaves a second orphaned row behind
+// it, so telling that operator to pick another address would be sending them to
+// do harm. mesh.ErrAddressTaken is what tells the two apart — the reason it is a
+// sentinel rather than a message.
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -67,7 +79,11 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	if err := s.mesh.AddBank(p); err != nil {
 		s.log.Error("a bank was admitted that the mesh cannot route to",
 			"participant", p.ID, "bic", p.BIC, "error", err)
-		writeUnprocessable(w, "this bank is in the roster and the mesh gave it no actor of its own, so it can neither pay nor be paid; admit it on a BIC no other bank answers to: "+err.Error())
+		msg := "this bank is in the roster and the mesh gave it no actor of its own, so it can neither pay nor be paid"
+		if errors.Is(err, mesh.ErrAddressTaken) {
+			msg += "; admit it on a BIC no other bank answers to"
+		}
+		writeUnprocessable(w, msg+": "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, toParticipantDTO(p))

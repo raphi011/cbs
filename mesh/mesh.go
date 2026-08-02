@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,16 @@ import (
 // ErrUnknownBIC is a send to a BIC no actor answers to. It becomes RC01 on the
 // wire — BankIdentifierIncorrect — which is exactly what it is.
 var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
+
+// ErrAddressTaken is a registration for a BIC some other actor already answers
+// to. See addActors for why it is refused rather than absorbed.
+//
+// It is a sentinel and not just a message because the layer above has a REMEDY
+// for it and none for the mesh's other refusals: a clashing address is fixed by
+// admitting the bank on one of its own, and an operator told that during a
+// shutdown — the other way AddBank can fail — would follow it into a second
+// orphaned row. See api's handleAddParticipant.
+var ErrAddressTaken = errors.New("mesh: another actor already answers to this BIC")
 
 // Config names the two institutions. Member banks are discovered from the
 // participant roster; the central bank and the clearing house have no store
@@ -175,9 +186,17 @@ type Mesh struct {
 	started  bool
 	stopping bool
 	stopped  bool
-	// busy names the actors currently inside a handler, so a Drain that times
-	// out can say which one is stuck instead of reporting a bare deadline.
-	busy map[iso20022.BIC]bool
+	// busy names the actors currently working on a message and WHAT they are
+	// doing with it, so a Drain that times out can say which one is stuck
+	// instead of reporting a bare deadline.
+	//
+	// The phase matters because there are two of them and only one is the
+	// actor's own code. An actor parked in Config.Observe has not entered its
+	// handler at all — it is being held by whoever installed the hook — and
+	// reporting that as "in a handler" would send a reader looking for a bug in
+	// the wrong half of the system, at the exact moment they are debugging the
+	// hook. See dispatch.
+	busy map[iso20022.BIC]string
 }
 
 // New builds a mesh over a payment network, with an actor for each of the two
@@ -212,7 +231,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 		tap:    cfg.Observe,
 		actors: make(map[iso20022.BIC]*actor),
 		banks:  make(map[payment.ParticipantID]*bank),
-		busy:   make(map[iso20022.BIC]bool),
+		busy:   make(map[iso20022.BIC]string),
 		quiet:  quiet,
 	}
 	// Both institutions get their behaviour here, because neither has a store
@@ -320,7 +339,7 @@ func (m *Mesh) addActors(specs ...actorSpec) error {
 	batch := make(map[iso20022.BIC]bool, len(specs))
 	for _, s := range specs {
 		if _, dup := m.actors[s.bic]; dup || batch[s.bic] {
-			return fmt.Errorf("mesh: two actors for %s (%s)", s.bic, s.name)
+			return fmt.Errorf("%w: two actors for %s (%s)", ErrAddressTaken, s.bic, s.name)
 		}
 		batch[s.bic] = true
 	}
@@ -380,10 +399,23 @@ func (m *Mesh) Start(ctx context.Context) error {
 // it — see addActors on why all-or-none is the roster's shape and not a
 // convenience.
 //
-// It assigns the bank index rather than merging into it, and both of its callers
-// want that: Start runs on a mesh with no banks, and JoinRoster runs on one
-// ForgetBanks has just emptied. A merge would be the wrong answer for the second
-// — it would keep an entry for a bank the roster no longer has.
+// It MERGES into the bank index rather than assigning it, which matters for one
+// interleaving and not for the ordinary case. Both callers run against an empty
+// index — Start on a new mesh, JoinRoster on one ForgetBanks has just emptied —
+// so on any sequential path the two are the same. What they are not the same
+// about is a bank admitted CONCURRENTLY: AddBank commits its actor and its index
+// entry between the roster read above and this write, and an assignment would
+// silently drop that entry while leaving its actor running. The result was an
+// actor no index named, which nothing could then reach and — before ForgetBanks
+// stopped forgetting by index — nothing could remove either.
+//
+// Nothing else is protected by that, and it is worth being exact: a reset racing
+// an admission is still a mess, and can still refuse the admission (its BIC is
+// taken by the roster read) or fail this call (the roster now holds a BIC the
+// admission already registered). What the merge removes is the SILENT outcome —
+// a bank that answers every read and carries no payment, with nothing anywhere
+// saying so. api.Server.resetMu does not cover POST /members, and making it do
+// so would serialise admission behind every reset for a race this closes.
 func (m *Mesh) joinRoster(ctx context.Context) error {
 	if m.net == nil {
 		return nil
@@ -407,7 +439,7 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 	// After addActors, so that a roster the mesh refused to route leaves the
 	// bank index as it found it too.
 	m.mu.Lock()
-	m.banks = banks
+	maps.Copy(m.banks, banks)
 	m.mu.Unlock()
 	return nil
 }
@@ -423,8 +455,9 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 //
 // It is NOT an incremental sync: it registers the whole roster and expects to
 // find no member banks already registered, which is exactly the state
-// ForgetBanks leaves. Calling it on a mesh that still holds banks fails on the
-// first BIC, all-or-none, leaving the mesh as it found it.
+// ForgetBanks leaves. Calling it on a mesh that still holds one of the roster's
+// addresses is refused, all-or-none, and leaves the mesh as it found it — see
+// TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken.
 func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) }
 
 // ForgetBanks removes every member bank's actor: closes its inbox, waits for its
@@ -454,22 +487,55 @@ func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) 
 // would still be HANDLED, against a store that is about to be truncated. Its
 // caller drains first, which is the same ordering Stop's doc demands and for the
 // same reason. The wait for each goroutine is what makes "forgotten" mean "no
-// handler is still running" rather than "no more messages will be picked up",
-// and a handler that will not return times the context out and is named.
+// handler is still running" rather than "no more messages will be picked up".
+//
+// It is not itself a Drain and does not take the dead letters. Anything a
+// handler could not deal with on the way out stays on the mesh for the next
+// Drain, which is where a dead letter belongs and how it stops being attributed
+// to whatever happened to collect it.
+//
+// # Which actors it forgets, and why not the bank index
+//
+// Every actor that is not one of the two INSTITUTIONS. The obvious reading —
+// walk the bank index — is wrong in a way that took a reset to show: an actor
+// whose index entry is missing would be unforgettable, so its address would be
+// taken for the life of the process and every later reset would fail on it. That
+// state is reachable, because AddBank writes the actor and the index entry under
+// separate locks from a different goroutine than joinRoster. Reading the actor
+// table instead makes "forgotten" total: after this, m.actors holds exactly the
+// central bank and the clearing house, whatever the index said.
+//
+// The two institutions are excluded by identity rather than by kind, because
+// that is the only durable distinction here: they are the configuration, they
+// have no participant row, and a reset does not touch them.
+//
+// # A timeout leaves the actors joinable
+//
+// The deletions happen AFTER every goroutine has returned, never before, and
+// that ordering is the whole of what a timeout costs. Stop takes its snapshot
+// from m.actors, so an actor deleted before it was joined would be a goroutine
+// nothing could ever wait for — a permanent leak in a process that is otherwise
+// still running, and, if the caller retried its reset, a store truncated
+// underneath a live handler.
+//
+// So a ForgetBanks that times out leaves the mesh exactly as Stop leaves one
+// that times out: the inboxes are closed, the actors are still in the table, and
+// the mesh is not half torn down. Its caller may retry — closing a closed queue
+// is a no-op and a retry only re-joins — or give up and Stop, which will find
+// them. See TestForgetBanksThatTimesOutLeavesTheActorsForStopToJoin.
 func (m *Mesh) ForgetBanks(ctx context.Context) error {
 	m.mu.Lock()
 	if m.stopping || m.stopped {
 		m.mu.Unlock()
 		return errors.New("mesh: stopping; its member banks are being joined by Stop, not forgotten")
 	}
-	gone := make([]*actor, 0, len(m.banks))
-	for pid, b := range m.banks {
-		if a, ok := m.actors[b.bic]; ok {
-			gone = append(gone, a)
-			delete(m.actors, a.bic)
-			a.q.close()
+	gone := make([]*actor, 0, len(m.actors))
+	for bic, a := range m.actors {
+		if bic == m.cfg.CentralBankBIC || bic == m.cfg.ClearingHouseBIC {
+			continue
 		}
-		delete(m.banks, pid)
+		gone = append(gone, a)
+		a.q.close()
 	}
 	m.mu.Unlock()
 
@@ -477,9 +543,24 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 		select {
 		case <-a.done:
 		case <-ctx.Done():
-			return fmt.Errorf("mesh: forgetting %s (%s): %w", a.bic, a.name, ctx.Err())
+			return fmt.Errorf("mesh: forgetting member banks (%s): %w", m.stuck(), ctx.Err())
 		}
 	}
+
+	// Only now, with every one of them returned. The bank index is cleared of
+	// whatever pointed at a forgotten actor, including entries whose actor was
+	// already gone — the index is derived from the actor table, not the other way
+	// round.
+	m.mu.Lock()
+	for _, a := range gone {
+		delete(m.actors, a.bic)
+	}
+	for pid, b := range m.banks {
+		if _, still := m.actors[b.bic]; !still {
+			delete(m.banks, pid)
+		}
+	}
+	m.mu.Unlock()
 	return nil
 }
 
@@ -689,10 +770,14 @@ func actorOf(ctx context.Context) (iso20022.BIC, bool) {
 func (m *Mesh) dispatch(ctx context.Context, a *actor, it item) {
 	var err error
 	defer func() { m.finish(a, err) }()
-	m.setBusy(a.bic)
+	// The observation phase is recorded separately, and only when there is
+	// something to observe: an Observe that blocks holds this actor, and stuck()
+	// must be able to say that is what is holding it. See Mesh.busy.
 	if m.tap != nil {
+		m.setBusy(a.bic, "in Observe")
 		m.tap(a.bic, it.from, it.raw)
 	}
+	m.setBusy(a.bic, "in a handler")
 	err = a.handle(withActor(ctx, a.bic), it.from, it.raw)
 }
 
@@ -778,9 +863,9 @@ func (m *Mesh) leave() {
 	m.mu.Unlock()
 }
 
-func (m *Mesh) setBusy(bic iso20022.BIC) {
+func (m *Mesh) setBusy(bic iso20022.BIC, phase string) {
 	m.mu.Lock()
-	m.busy[bic] = true
+	m.busy[bic] = phase
 	m.mu.Unlock()
 }
 
@@ -804,8 +889,8 @@ func (m *Mesh) stuck() string {
 	defer m.mu.Unlock()
 
 	names := make([]string, 0, len(m.busy)+len(m.actors))
-	for bic := range m.busy {
-		names = append(names, string(bic)+" in a handler")
+	for bic, phase := range m.busy {
+		names = append(names, string(bic)+" "+phase)
 	}
 	for bic, a := range m.actors {
 		if n := a.q.depth(); n > 0 {

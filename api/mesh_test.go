@@ -373,6 +373,37 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 }
 
+// Admission during a shutdown is refused WITHOUT the remedy, and that is the
+// point of telling the two refusals apart.
+//
+// Both branches leave the same thing behind — a participant row whose bank has
+// no actor — so the invariant half of the message is true in both. The advice is
+// not. "Admit it on a BIC no other bank answers to" is the fix for a clash and
+// is actively harmful here: the operator who follows it gets the same 422 and a
+// second orphaned row, because what refused them was the mesh going down and not
+// the address they chose.
+func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
+	h := newServer(t, nil)
+
+	// The mesh's cleanup will Stop it again; a second Stop only re-joins, and on
+	// a mesh that is already stopped it does nothing at all.
+	if err := h.mesh.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("admitting a bank into a stopped mesh = %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	}
+	msg := rec.Body.String()
+	if !strings.Contains(msg, "no actor of its own") {
+		t.Errorf("the refusal reads %q; the half that is true in every branch is missing", msg)
+	}
+	if strings.Contains(msg, "admit it on a BIC") {
+		t.Errorf("the refusal reads %q; that advice is for a clashing address and there is none here", msg)
+	}
+}
+
 // The reseeded banks are rejoined, not just recreated.
 //
 // The sample dataset is rebuilt by seed.Populate, which drives payment.Network
