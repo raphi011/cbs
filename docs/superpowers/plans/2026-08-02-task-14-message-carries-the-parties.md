@@ -637,31 +637,17 @@ docs that argued the crossing was permanent are rewritten rather than deleted."
 - Produces: `partiesIn` narrowed. Task 18 relies on the receiving bank never
   resolving a party at another bank.
 
-- [ ] **Step 1: Move the measurement first**
+**Do NOT move the receiver's book-set assertion in this sub-task.** It cannot go
+green here and the spec says so: resolution runs through `ResolveIdentifierTx`,
+which lists every participant and reads each register, so resolving ONE address
+instead of two still sweeps every book. Narrowing the sweep needs the bank to know
+which register is its own — an identity `payment.Network` does not have and that
+Task 18 supplies. `TestWhichBooksEachBankActuallyReaches` and its pull mirror keep
+`h.bankBooks()` for the receiver until then.
 
-In `TestWhichBooksEachBankActuallyReaches`:
+What this sub-task changes is **behaviour**, and that is independently testable.
 
-```go
-	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC),
-		[]ledger.BookID{h.creditorBook})
-```
-
-In `TestWhichBooksEachBankReachesInAPull`:
-
-```go
-	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC),
-		[]ledger.BookID{h.debtorBook})
-```
-
-- [ ] **Step 2: Run and watch them fail**
-
-```bash
-cd ~/Git/cbs-db-per-entity && go test ./mesh/ -run 'TestWhichBooksEachBank' -v
-```
-
-Expected: FAIL — the receiver's set is still every bank book.
-
-- [ ] **Step 3: Write the behaviour test for what changes**
+- [ ] **Step 1: Write the behaviour test for what changes**
 
 Add to `payment/translate_test.go`:
 
@@ -695,7 +681,7 @@ Use the file's existing helpers for building a pacs.008 rather than the invented
 `pacs008Quoting`/`creditorIBANOf` names if equivalents exist — read
 `translate_test.go` first.
 
-- [ ] **Step 4: Narrow `partiesIn`**
+- [ ] **Step 2: Narrow `partiesIn`**
 
 Replace it with two callers-side resolutions. The rule is the direction rule: on a
 push the receiver is the creditor's bank, on a pull it is the debtor's.
@@ -762,40 +748,27 @@ add them next to `identifierIn`, which is the closest neighbour.
 `DirectDebitRequest` is the mirror: resolve the **debtor** locally, record the
 creditor.
 
-- [ ] **Step 5: `addressedPartyTx` no longer needs the sweep for the local case**
+- [ ] **Step 3: Leave `ResolveIdentifierTx` alone, and confirm the book set is unchanged**
 
 `addressedPartyTx` drives `ResolveIdentifierTx`, which lists every participant and
-asks each for the identifier. That is still the only implementation available
-while one store holds every register, and narrowing it to "this bank" needs the
-bank's own identity, which `Network` does not have.
+asks each for the identifier. **Leave it exactly as it is.** Narrowing it to "this
+bank's register" needs the bank's own identity, which `payment.Network` does not
+have and which Task 18 supplies. Giving it one here would be a guess of exactly
+the kind `ops.go`'s own doc warns against — an interface written ahead of its
+callers that then looks authoritative.
 
-**Leave `ResolveIdentifierTx` as it is.** The measurement moves anyway, because
-resolving ONE address instead of two halves nothing — it still sweeps. Verify this
-before proceeding:
+So the receiver's measured book set does **not** change in this sub-task.
+Confirm that it has not:
 
 ```bash
 cd ~/Git/cbs-db-per-entity && go test ./mesh/ -run 'TestWhichBooksEachBank' -v
 ```
 
-If the receiver's set is still every bank book — which it will be — then this
-sub-task cannot land as written, and the honest conclusion is that **the
-receiver's measurement belongs to Task 18, not Task 14**, because narrowing it
-requires the bank to know which register is its own, which requires per-entity
-stores. In that case:
+Expected: PASS, with the receiver assertions still reading `h.bankBooks()`. If
+they now fail, something in Steps 1–2 narrowed more than intended — investigate
+rather than editing the expectation to match.
 
-1. Revert the two receiver assertions from Step 1.
-2. Record the finding in the spec at
-   `docs/superpowers/specs/2026-08-02-db-per-entity-design.md`, in the Task 14 row:
-   the receiver's set moves in Task 18.
-3. Keep Steps 3–4 — the behaviour change (not resolving the sender's customer) is
-   still right and still testable, it just does not move the book set on its own.
-4. Commit that finding as its own change with the reasoning.
-
-Do not force the measurement by giving `Network` a bank identity; that is Task
-18's design and pre-empting it here would be a guess of exactly the kind
-`ops.go`'s own doc warns about.
-
-- [ ] **Step 6: Rewrite the two handler docs**
+- [ ] **Step 4: Rewrite the two handler docs**
 
 `mesh/bank.go:212-216` and `:251-253` both describe resolution as "a sweep of the
 network's directory" and "resolves both parties BY ADDRESS". Both are now wrong in
@@ -803,7 +776,7 @@ the first half. `:222-228` — "the request the first question produces is
 deliberately discarded" — stays true and gains force; leave it and reference the
 narrowing above it.
 
-- [ ] **Step 7: Full verification and commit**
+- [ ] **Step 5: Full verification and commit**
 
 ```bash
 cd ~/Git/cbs-db-per-entity
