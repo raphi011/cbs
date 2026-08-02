@@ -213,6 +213,31 @@ is measured by the existing recorder before the safety net is removed.
 Task 18 is the largest single item. If it runs long it splits into **18a**
 (shapes and storetest) and **18b** (wiring and per-entity rows).
 
+### The name crossing has a second door, and Task 14 does not close it
+
+Found during Task 14.5's review, and recorded here rather than left to be
+rediscovered.
+
+Task 14 closes the counterparty name read on the **message-building** path:
+`partyTx` is gone and `partiesOf` reads nothing. But `GET /directory` still
+resolves an IBAN and returns the account holder's **name**, by calling
+`p.Deposit.GetAccount(...)` on the resolved participant and reading `acct.Name`
+(`api/handlers_directory.go:56-64`). That is the payer's bank reading the payee's
+bank's register for the payee's name, over HTTP instead of through a message. The
+web send form calls it and displays the result.
+
+It is consistent with deferring the sweep to Task 18 — the endpoint is
+`ResolveIdentifier` with a name join on top, and both die together — but the claim
+"a payer's bank can no longer learn the payee's name" is true of the mesh and
+false of the HTTP surface until then. Removing `Name` and `Asset` from
+`directoryEntryDTO` belongs with the sweep's removal in Task 18.
+
+The consequence for the teaching layers is immediate and is Task 14.6's: the send
+form renders the resolved payee name one line above the fields that ask the payer
+to type it, so the UI currently demonstrates the negation of the fact the branch
+exists to establish. Routing needs the bank, not the name, so the minimal honest
+fix is to render the bank alone.
+
 ### The receiving bank's measurement belongs to Task 18, not Task 14
 
 Found while writing Task 14's plan, and corrected here rather than left for the
