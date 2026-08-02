@@ -785,9 +785,14 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //
 // Every bank book, and neither NetworkBook nor the central bank's — again the
 // same as the push's receiver, and this one is the more informative half. Its
-// directory sweep is the same sweep: DirectDebitRequest resolves both parties by
-// address and ResolveIdentifierTx asks every member in turn, so answering "whose
-// IBAN is this" reads every member's register.
+// directory sweep is the same sweep: DirectDebitRequest resolves the DEBTOR —
+// this bank's own customer, the only party a pacs.003 routed here gives it
+// standing over — by address, and ResolveIdentifierTx asks every member in turn
+// even for that one lookup, so answering "whose IBAN is this" still reads every
+// member's register. Narrowing which party is resolved did not narrow the
+// sweep itself; see payment.DirectDebitRequest and localPartyIn for why not,
+// and mesh/bank.go's own doc on the receive handlers for the same point made
+// about the code that calls this.
 //
 // What is new is that this half MOVES MONEY and NetworkBook still does not
 // appear. The debtor leg is posted here, and every id and audit event that

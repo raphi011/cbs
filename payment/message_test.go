@@ -768,21 +768,13 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	if got.Description != p.Description {
 		t.Errorf("description = %q, want %q", got.Description, p.Description)
 	}
-	// Resolution is by ADDRESS, not by an id the message never carried. This is
-	// the assertion that would catch a translator quietly threading internal
-	// account ids through a message that has no element for them.
+	// The CREDITOR is this bank's own customer on a push, so it is resolved by
+	// ADDRESS against its own directory — not by an id the message never
+	// carried. This is the assertion that would catch a translator quietly
+	// threading internal account ids through a message that has no element for
+	// them.
 	if !got.Creditor.SameParty(p.Creditor) {
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
-	}
-	if !got.Debtor.SameParty(p.Debtor) {
-		t.Errorf("debtor resolved to %+v, want %+v", got.Debtor, p.Debtor)
-	}
-	// The two sides must not be the same side. A translator that read one
-	// account element twice satisfies both SameParty checks above only if it
-	// happened to read the right one twice; this is what makes the pair of them
-	// an assertion about direction rather than about membership.
-	if got.Debtor.SameParty(got.Creditor) {
-		t.Errorf("debtor and creditor resolved to the same account %+v", got.Debtor)
 	}
 	// The address comes back too, and it is the one the message quoted. It is
 	// what submission checks against the account it resolves to, so losing
@@ -791,6 +783,25 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	// hold".
 	if got.Creditor.Identifier != p.Creditor.Identifier {
 		t.Errorf("creditor address = %+v, want the quoted %+v", got.Creditor.Identifier, p.Creditor.Identifier)
+	}
+	// The DEBTOR is the SENDING bank's customer. Task 14.4 narrowed
+	// CreditTransferRequest to this bank's own side only, so the debtor comes
+	// back with the address the message quoted and nothing this bank resolved
+	// against its own directory — no participant, no account.
+	if got.Debtor.Participant != "" || got.Debtor.Account != "" {
+		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
+	}
+	if got.Debtor.Identifier != p.Debtor.Identifier {
+		t.Errorf("debtor address = %+v, want the quoted %+v", got.Debtor.Identifier, p.Debtor.Identifier)
+	}
+	// What the message says about EACH party — its bank and the name on the
+	// account — comes back too, read off Dbtr/DbtrAgt and Cdtr/CdtrAgt directly
+	// rather than resolved from either directory.
+	if got.DebtorDetails != p.DebtorDetails {
+		t.Errorf("debtor details = %+v, want %+v", got.DebtorDetails, p.DebtorDetails)
+	}
+	if got.CreditorDetails != p.CreditorDetails {
+		t.Errorf("creditor details = %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
 	}
 }
 
@@ -829,15 +840,89 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("mandate = %q, want %q", got.MandateID, m.ID)
 	}
 	// A pull message travels against the money, so the party that SENT it is the
-	// one being paid. A translator that read the two account elements in
-	// pacs.008 order would produce a collection pointing the wrong way — and
-	// still resolve both parties successfully, which is why the direction is
-	// asserted rather than assumed.
+	// one being paid, and it is routed here by DbtrAgt: this bank is the
+	// DEBTOR's, and the DEBTOR is the side it has standing to resolve. A
+	// translator that read the two account elements in pacs.008 order would
+	// produce a collection pointing the wrong way — and still resolve
+	// successfully, which is why the direction is asserted rather than assumed.
 	if !got.Debtor.SameParty(p.Debtor) {
 		t.Errorf("debtor resolved to %+v, want %+v", got.Debtor, p.Debtor)
 	}
-	if !got.Creditor.SameParty(p.Creditor) {
-		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
+	if got.Debtor.Identifier != p.Debtor.Identifier {
+		t.Errorf("debtor address = %+v, want the quoted %+v", got.Debtor.Identifier, p.Debtor.Identifier)
+	}
+	// The CREDITOR is the SENDING bank's customer here — the mirror of
+	// receiveCreditTransfer's debtor — and comes back recorded rather than
+	// resolved: no participant, no account, only the address the message
+	// quoted.
+	if got.Creditor.Participant != "" || got.Creditor.Account != "" {
+		t.Errorf("creditor resolved to %+v, want it recorded rather than resolved", got.Creditor)
+	}
+	if got.Creditor.Identifier != p.Creditor.Identifier {
+		t.Errorf("creditor address = %+v, want the quoted %+v", got.Creditor.Identifier, p.Creditor.Identifier)
+	}
+	if got.DebtorDetails != p.DebtorDetails {
+		t.Errorf("debtor details = %+v, want %+v", got.DebtorDetails, p.DebtorDetails)
+	}
+	if got.CreditorDetails != p.CreditorDetails {
+		t.Errorf("creditor details = %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
+	}
+}
+
+// TestAReceivingBankDoesNotResolveTheSendersCustomer pins the behaviour change
+// this narrowing IS, rather than only the book set it produces.
+//
+// A pacs.008 quoting a debtor IBAN that nobody in this network holds used to be
+// refused AC01, because resolution swept every member's register and found
+// nothing. That refusal was never this bank's to make: the debtor is the SENDING
+// bank's customer, and a receiving bank has no way to know whether that account
+// exists. It now resolves its own side only, and a message whose creditor it can
+// find is accepted whatever the debtor's address says.
+func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	ctx := context.Background()
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err != nil {
+		t.Fatalf("CreditTransferMessage: %v", err)
+	}
+	doc := env.Document.(*iso20022.Pacs008)
+	// An IBAN in a well-formed country/checksum shape, held by nobody in this
+	// network — no participant here has ever opened an account with it.
+	unknown := iso20022.IBAN("SE00000000000000000000")
+	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].DbtrAcct.Id.IBAN = &unknown
+
+	req, err := n.CreditTransferRequest(ctx, doc)
+	if err != nil {
+		t.Fatalf("CreditTransferRequest: %v — a receiving bank does not check the sender's customer", err)
+	}
+	if req.Creditor.Participant == "" {
+		t.Error("the receiving bank did not resolve its own customer")
+	}
+}
+
+// TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull is the direct-debit
+// mirror of TestAReceivingBankDoesNotResolveTheSendersCustomer: on a pacs.003
+// this bank is the DEBTOR's, and the party it must not check is the CREDITOR —
+// the sending bank's customer. Getting the direction backwards would resolve
+// successfully and be wrong, which is exactly why both directions are pinned
+// rather than just one.
+func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
+	n, p, m := networkWithOneCollection(t)
+	ctx := context.Background()
+	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	if err != nil {
+		t.Fatalf("DirectDebitMessage: %v", err)
+	}
+	doc := env.Document.(*iso20022.Pacs003)
+	unknown := iso20022.IBAN("IT00000000000000000000")
+	doc.FIToFICstmrDrctDbt.DrctDbtTxInf[0].CdtrAcct.Id.IBAN = &unknown
+
+	req, err := n.DirectDebitRequest(ctx, doc)
+	if err != nil {
+		t.Fatalf("DirectDebitRequest: %v — a receiving bank does not check the sender's customer", err)
+	}
+	if req.Debtor.Participant == "" {
+		t.Error("the receiving bank did not resolve its own customer")
 	}
 }
 
@@ -1119,11 +1204,22 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	if req.EndToEndID != "" {
 		t.Errorf("end-to-end id = %q, want it empty: NOTPROVIDED means the sender had none", req.EndToEndID)
 	}
-	// CreditTransferRequest does not yet carry the counterparty's details off
-	// the wire message — that translation is Task 14.4's, not this test's
-	// subject — so the fixture supplies what a real inbound translator will,
-	// reusing what the original payment already recorded for the same creditor.
-	req.CreditorDetails = p.CreditorDetails
+	// CreditorDetails now comes off the message itself — agentIn/nameIn reading
+	// Cdtr/CdtrAgt — rather than being carried forward from the payment this
+	// fixture already knows about. Asserted, not assigned: this is the real
+	// translator's own output.
+	if req.CreditorDetails != p.CreditorDetails {
+		t.Errorf("creditor details = %+v, want %+v", req.CreditorDetails, p.CreditorDetails)
+	}
+	// The debtor's participant and account are filled in directly rather than
+	// left as CreditTransferRequest returned them. That is not the workaround
+	// this test used to carry: Task 14.4 deliberately stopped resolving the
+	// debtor at all — Aurora's customer is not Verde's to look up — so
+	// req.Debtor now holds only the address the message quoted. What is under
+	// test here is EndToEndID deduplication, which needs a resolvable debtor to
+	// reach; p.Debtor names the very account this message was built from.
+	req.Debtor.Participant = p.Debtor.Participant
+	req.Debtor.Account = p.Debtor.Account
 	if _, err := initiate(ctx, n, req); err != nil {
 		t.Fatalf("initiating a reference-less payment: %v", err)
 	}
@@ -1271,11 +1367,17 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	if err != nil {
 		t.Fatalf("CreditTransferRequest on seed-shaped addresses: %v", err)
 	}
-	if !got.Debtor.SameParty(p.Debtor) {
-		t.Errorf("debtor resolved to %+v, want %+v", got.Debtor, p.Debtor)
-	}
+	// The CREDITOR is Verde's own customer on this push, so it is what this call
+	// resolves — against the SPACE-separated stored form, which is the half of
+	// "hyphens on one side and spaces on the other" that CreditTransferRequest
+	// still exercises after Task 14.4 narrowed it to one side.
 	if !got.Creditor.SameParty(p.Creditor) {
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
+	}
+	// The DEBTOR is Aurora's customer, not Verde's, so it comes back recorded —
+	// the address the message quoted — and not resolved.
+	if got.Debtor.Participant != "" || got.Debtor.Account != "" {
+		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
 	// The request records the address the MESSAGE quoted, which is the compact
 	// form — not the stored one. Both name the same account, and it is the
@@ -1283,25 +1385,44 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	if got.Debtor.Identifier.Value != "SE89AURORA1001" {
 		t.Errorf("debtor address = %q, want the compact form the message carried", got.Debtor.Identifier.Value)
 	}
-	// CreditTransferRequest does not yet carry the counterparty's details off
-	// the wire message — that translation is Task 14.4's, not this test's
-	// subject — so the fixture supplies what a real inbound translator will,
-	// reusing what the original payment already recorded for the same creditor.
-	got.CreditorDetails = p.CreditorDetails
-	// And it is accepted: initiation checks the quoted address against the
-	// account it resolved to, through the same comparison, so a fix that stopped
-	// at resolution would fail here with ErrIdentifierMismatch — the directory
-	// and addressFor disagreeing about what an address is.
-	accepted, err := initiate(ctx, n, got)
+	// CreditorDetails now comes off the message itself — the real translator,
+	// not a value carried forward from the payment this fixture already knows
+	// about.
+	if got.CreditorDetails != p.CreditorDetails {
+		t.Errorf("creditor details = %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
+	}
+	// The debtor's own bank — the only one with standing to submit on Aurora's
+	// customer's behalf — is what would resubmit with the wire's compact
+	// address. Aurora is not resolved by CreditTransferRequest (Verde has no
+	// business doing that), so the participant and account it already knows for
+	// its own customer are supplied directly here; what is under test is
+	// addressFor's own normalization, for BOTH separator styles, given a
+	// correctly-identified account on each side. A fix that stopped at
+	// resolution would fail here with ErrIdentifierMismatch — the directory and
+	// addressFor disagreeing about what an address is.
+	accepted, err := initiate(ctx, n, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT,
+		Debtor: PartyRef{
+			Participant: aurora.ID, Account: alice.ID,
+			Identifier: got.Debtor.Identifier,
+		},
+		Creditor:        got.Creditor,
+		Amount:          got.Amount,
+		CreditorDetails: got.CreditorDetails,
+	})
 	if err != nil {
 		t.Fatalf("initiating the translated payment: %v", err)
 	}
-	// What the accepted payment RECORDS is the account's stored form, which is
+	// What the accepted payment RECORDS is each account's stored form, which is
 	// addressFor's choice: a payment's recorded address is one the account
-	// actually holds, written the way this bank writes it. See addressFor.
+	// actually holds, written the way its own bank writes it. See addressFor.
 	if accepted.Debtor.Identifier.Value != "SE89-AURORA-1001" {
 		t.Errorf("the accepted payment records the debtor address %q, want the account's stored form",
 			accepted.Debtor.Identifier.Value)
+	}
+	if accepted.Creditor.Identifier.Value != "IT60 X054 2811 1010 0000 0123 456" {
+		t.Errorf("the accepted payment records the creditor address %q, want the account's stored form",
+			accepted.Creditor.Identifier.Value)
 	}
 }
 

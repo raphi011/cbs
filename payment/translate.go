@@ -987,13 +987,24 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // CreditTransferRequest turns a received pacs.008 into a request this system
 // can act on.
 //
-// Both parties are resolved by ADDRESS — Network.ResolveIdentifierTx against the
-// IBAN the message carries — and never by an internal account id, because the
-// message has no element for one and inventing a place to smuggle it through
-// would make the whole sub-project a lie. That is also why an unresolvable IBAN
-// comes back as ErrAccountNotInParticipant and becomes AC01 on the wire: from
-// the receiver's side, an address it cannot resolve IS an incorrect account
-// number.
+// A pacs.008 travels FROM the debtor's bank, routed by CdtrAgt, so the bank
+// reading this message is the CREDITOR's — that is what routed the message
+// here in the first place, and it is the only party this bank has any standing
+// to resolve. It is resolved by ADDRESS, exactly as before —
+// Network.ResolveIdentifierTx against the IBAN the message carries — and never
+// by an internal account id, because the message has no element for one. That
+// is also why an unresolvable creditor IBAN comes back as
+// ErrAccountNotInParticipant and becomes AC01 on the wire: from the receiver's
+// side, an address it cannot resolve for ITS OWN customer IS an incorrect
+// account number.
+//
+// The DEBTOR is not resolved at all. It is the sending bank's customer, this
+// bank's directory has no standing authority over whether that account exists,
+// and sweeping the network for it produced a refusal — AC01 for a debtor IBAN
+// nobody in this network holds — that was never this bank's to make. What comes
+// back for the debtor is what the message itself says: the address it quoted,
+// on Debtor, and the agent and name it asserted, on DebtorDetails. See
+// localPartyIn.
 //
 // The scheme is the MESSAGE's, and it takes two elements to name it rather than
 // one. Being a pacs.008 says the payment is a PUSH; the currency says which
@@ -1019,29 +1030,46 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	// The creditor is this bank's own customer on a push; the debtor is the
+	// sending bank's and is recorded, not resolved.
+	creditor, err := s.localPartyIn(ctx, cdtrID)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	debtor := PartyRef{Identifier: dbtrID}
 	return InitiatePaymentRequest{
-		Scheme:      scheme,
-		Debtor:      debtor,
-		Creditor:    creditor,
-		Amount:      amount,
-		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
-		Description: remittanceIn(tx.RmtInf),
+		Scheme:          scheme,
+		Debtor:          debtor,
+		Creditor:        creditor,
+		Amount:          amount,
+		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+		Description:     remittanceIn(tx.RmtInf),
+		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
 	}, nil
 }
 
 // DirectDebitRequest turns a received pacs.003 into a request this system can
 // act on.
 //
-// It resolves by address exactly as CreditTransferRequest does, and differs in
-// the two ways the direction implies. The message travels FROM the creditor's
-// bank, so the account elements are read for what they are rather than by
-// position — a reader that took the first account element as the debtor's, as it
-// is in a pacs.008, would produce a collection pointing the wrong way and
-// resolve both parties successfully while doing it.
+// A pacs.003 travels FROM the creditor's bank, routed by DbtrAgt, so the bank
+// reading this message is the DEBTOR's — the mirror of CreditTransferRequest in
+// exactly the way the direction implies, and no further: the DEBTOR is resolved
+// by address against this bank's own register, and the CREDITOR is recorded
+// from what the message says and not resolved, for the identical reason
+// CreditTransferRequest does not resolve a pacs.008's debtor — the creditor is
+// the SENDING bank's customer, not this bank's to look up. The account elements
+// are read for what they are rather than by position — a reader that took the
+// first account element as the debtor's, as it is in a pacs.008, would produce
+// a collection pointing the wrong way and resolve successfully while doing it.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
@@ -1062,18 +1090,31 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	if mandate == "" {
 		return InitiatePaymentRequest{}, fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
 	}
-	debtor, creditor, err := s.partiesIn(ctx, tx.DbtrAcct, tx.CdtrAcct)
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	// The debtor is this bank's own customer on a pull; the creditor is the
+	// sending bank's and is recorded, not resolved.
+	debtor, err := s.localPartyIn(ctx, dbtrID)
+	if err != nil {
+		return InitiatePaymentRequest{}, err
+	}
+	creditor := PartyRef{Identifier: cdtrID}
 	return InitiatePaymentRequest{
-		Scheme:      scheme,
-		Debtor:      debtor,
-		Creditor:    creditor,
-		Amount:      amount,
-		MandateID:   MandateID(mandate),
-		EndToEndID:  endToEndIn(tx.PmtId.EndToEndId),
-		Description: remittanceIn(tx.RmtInf),
+		Scheme:          scheme,
+		Debtor:          debtor,
+		Creditor:        creditor,
+		Amount:          amount,
+		MandateID:       MandateID(mandate),
+		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
+		Description:     remittanceIn(tx.RmtInf),
+		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
+		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
 	}, nil
 }
 
@@ -1188,31 +1229,31 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 	return ledger.Amount(minor), asset, nil
 }
 
-// partiesIn resolves both sides of a received message from the addresses it
-// carries.
+// localPartyIn resolves the ONE side of a received message that belongs to
+// this bank, by the address the message quotes for it.
 //
-// One read transaction for the pair, so both are resolved against the same
-// snapshot of the directory: a bank added between the two lookups could
-// otherwise make one side ambiguous and the other not, and which one depended on
-// timing.
-func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.CashAccount) (debtor, creditor PartyRef, err error) {
-	dbtrID, err := identifierIn("DbtrAcct", dbtrAcct)
-	if err != nil {
-		return PartyRef{}, PartyRef{}, err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", cdtrAcct)
-	if err != nil {
-		return PartyRef{}, PartyRef{}, err
-	}
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+// Which side that is follows from the direction and from nothing else: the
+// clearing house routed a pacs.008 by CdtrAgt and a pacs.003 by DbtrAgt, so the
+// bank holding this message is the creditor's on a push and the debtor's on a
+// pull — see CreditTransferRequest and DirectDebitRequest, which are the only
+// two callers and each passes the one identifier that is theirs to resolve.
+//
+// It used to resolve BOTH sides — partiesIn swept every member's register for
+// both addresses — and that sweep is what let a receiving bank reach every
+// bank's book (mesh/books_test.go), and what turned a debtor IBAN nobody in
+// this network holds into an AC01 that was never this bank's refusal to make:
+// the debtor is the SENDING bank's customer, and this bank's directory has no
+// authority over whether that account exists. The counterparty is not resolved
+// at all now; it is recorded from what the message itself says — see
+// CreditTransferRequest's DebtorDetails/CreditorDetails and agentIn/nameIn.
+func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+	var ref PartyRef
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		if debtor, err = s.addressedPartyTx(ctx, tx, dbtrID); err != nil {
-			return err
-		}
-		creditor, err = s.addressedPartyTx(ctx, tx, cdtrID)
+		ref, err = s.addressedPartyTx(ctx, tx, ident)
 		return err
 	})
-	return debtor, creditor, err
+	return ref, err
 }
 
 // addressedPartyTx turns one quoted address into the party it names.
@@ -1292,6 +1333,29 @@ func identifierIn(element string, acct iso20022.CashAccount) (deposit.Identifier
 		return deposit.Identifier{}, fmt.Errorf("%w: %s: %w", ErrUnaddressableAccount, element, err)
 	}
 	return deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: string(iban)}, nil
+}
+
+// agentIn reads which bank a message names for one party. It is the inverse of
+// agentOf, and — unlike identifierIn — it never refuses: BranchAndFinancialInstitution.validate()
+// already required BICFI on the way in for any message that reached Unmarshal
+// (see CreditTransferTransaction.validate), so by the time a caller here holds
+// a *iso20022.Pacs008 or *iso20022.Pacs003 there is nothing left to check. What
+// this reads is recorded on the payment's DebtorDetails/CreditorDetails, never
+// resolved against this bank's own directory — that is the whole point of
+// localPartyIn's narrowing.
+func agentIn(fi iso20022.BranchAndFinancialInstitution) iso20022.BIC {
+	return fi.FinInstnId.BICFI
+}
+
+// nameIn reads the name a message gives for one party. It is the inverse of
+// namedPartyOf, and it does not enforce namedPartyOf's own rule that the name
+// be non-empty (EPC AT-P001/AT-E001): that rule binds what THIS bank sends, not
+// what a counterparty sent, and a counterparty's message that fell short of its
+// own guidelines is not this bank's defect to raise as one — the same
+// discipline addressedPartyTx's doc explains for a NOT-FOUND versus a store
+// failure.
+func nameIn(p iso20022.PartyIdentification) string {
+	return p.Nm
 }
 
 // endToEndIn is the inverse of endToEndOf: the value the guidelines reserve for
