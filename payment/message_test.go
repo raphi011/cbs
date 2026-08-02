@@ -1468,3 +1468,101 @@ func TestStatusMessageWithNoTransactionsCharacterisesNoGroup(t *testing.T) {
 		t.Errorf("got %d transaction statuses, want none", len(rpt.TxInfAndSts))
 	}
 }
+
+// TestStatementMessageRoundTripsThroughTheWire pins that what the central bank
+// captured inside its unit of work is what the member bank can act on: the
+// movement, the closing balance, the asset and the cycle.
+//
+// Both directions in one test, because a builder and a reader that agree with
+// each other and not with the wire is the failure this catches — the same reason
+// the codec's own golden tests run both ways.
+func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
+	st := SettlementStatement{
+		Member:         "bank_2",
+		Agent:          "BRVODEFFXXX",
+		Account:        "acc_cb_reserve_bank_2",
+		Asset:          "EUR",
+		CycleID:        "cyc_1",
+		SettlementID:   "set_1",
+		Movement:       250000,
+		ClosingBalance: 300000,
+		ValueDate:      messageNow,
+	}
+	env, err := StatementMessage(st, MessageContext{
+		From: "CBSEDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: messageNow,
+	})
+	if err != nil {
+		t.Fatalf("StatementMessage: %v", err)
+	}
+
+	raw, err := iso20022.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	back, err := iso20022.Unmarshal(raw)
+	if err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	moves, err := ReadStatement(back.Document.(*iso20022.Camt053))
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if len(moves) != 1 {
+		t.Fatalf("movements = %d, want 1", len(moves))
+	}
+	want := AdvisedMovement{
+		Account:        st.Account,
+		Asset:          st.Asset,
+		Movement:       st.Movement,
+		ClosingBalance: st.ClosingBalance,
+		CycleID:        st.CycleID,
+		ValueDate:      ledger.DayStart(messageNow),
+	}
+	if moves[0] != want {
+		t.Errorf("movement round-tripped as %+v, want %+v", moves[0], want)
+	}
+}
+
+// TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude pins
+// the one place a sign could be lost.
+//
+// ActiveCurrencyAndAmount cannot be negative — NewAmount refuses one — so a net
+// PAYER's movement travels as a positive amount with CdtDbtInd = DBIT, and the
+// sign is reconstructed on the way in. A builder that emitted the magnitude and
+// dropped the indicator would produce a statement that reads as a credit, which
+// would make a bank post its mirror leg BACKWARDS: reserve up when it went down.
+func TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude(t *testing.T) {
+	st := SettlementStatement{
+		Member: "bank_2", Agent: "BRVODEFFXXX", Account: "acc_1", Asset: "EUR",
+		CycleID: "cyc_1", SettlementID: "set_1",
+		Movement: -250000, ClosingBalance: -1, ValueDate: messageNow,
+	}
+	env, err := StatementMessage(st, MessageContext{
+		From: "CBSEDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: messageNow,
+	})
+	if err != nil {
+		t.Fatalf("StatementMessage: %v", err)
+	}
+	doc := env.Document.(*iso20022.Camt053)
+	entry := doc.BkToCstmrStmt.Stmt[0].Ntry[0]
+	if got, want := entry.CdtDbtInd, iso20022.CreditDebitDebit; got != want {
+		t.Errorf("entry indicator = %q, want %q", got, want)
+	}
+	if got := entry.Amt.Value; got != "2500.00" {
+		t.Errorf("entry amount = %q, want the magnitude 2500.00", got)
+	}
+	if got, want := doc.BkToCstmrStmt.Stmt[0].Bal[0].CdtDbtInd, iso20022.CreditDebitDebit; got != want {
+		t.Errorf("balance indicator = %q, want %q — a negative reserve is a DEBIT balance", got, want)
+	}
+
+	moves, err := ReadStatement(doc)
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if moves[0].Movement != -250000 {
+		t.Errorf("movement read back as %d, want -250000", moves[0].Movement)
+	}
+	if moves[0].ClosingBalance != -1 {
+		t.Errorf("closing balance read back as %d, want -1", moves[0].ClosingBalance)
+	}
+}

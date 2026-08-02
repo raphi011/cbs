@@ -1568,3 +1568,218 @@ func SettlementMessage(legs []SettlementLeg, mc MessageContext) (iso20022.Envelo
 		Document: doc,
 	}, nil
 }
+
+// ---------------------------------------------------------------------------
+// The statement
+// ---------------------------------------------------------------------------
+
+// StatementMessage renders one member's share of a settlement as the camt.053
+// that tells it.
+//
+// One member per message, because each goes to a different bank and a statement
+// is addressed to the holder of the account it is about. The standard permits
+// several Stmt elements in one document and this system never builds one: a
+// second statement in this message would be about an account the recipient does
+// not hold.
+//
+// # The sign leaves the amount and becomes a word
+//
+// ActiveCurrencyAndAmount cannot be negative — NewAmount refuses it — so the
+// magnitude goes in Amt and the direction in CdtDbtInd, on BOTH the entry and
+// the balance. That is the standard's shape everywhere and it is the same
+// separation ledger.Entry makes with Direction. Reconstructing the sign is
+// ReadStatement's job, and losing it there would make a member post its mirror
+// leg backwards.
+//
+// # The cycle rides on AcctSvcrRef
+//
+// A member bank has no cycles — it never sees a batch — so the only way it can
+// tell which cut-off a reserve movement discharged is for the central bank to
+// say. AcctSvcrRef is the servicer's own reference for the entry, which is
+// exactly what a cycle id is from the central bank's side.
+func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envelope, error) {
+	if st.Account == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Stmt/Acct/Id/Othr/Id", iso20022.ErrMissingElement)
+	}
+	if st.CycleID == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Ntry/AcctSvcrRef", iso20022.ErrMissingElement)
+	}
+	entryAmt, entryInd, err := signedAmountOf(st.Movement, st.Asset)
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	balAmt, balInd, err := signedAmountOf(st.ClosingBalance, st.Asset)
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	day := iso20022.ISODate{Time: ledger.DayStart(st.ValueDate)}
+
+	doc := &iso20022.Camt053{BkToCstmrStmt: iso20022.BankToCustomerStatement{
+		GrpHdr: iso20022.StatementGroupHeader{
+			MsgId:   mc.MsgID,
+			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
+		},
+		Stmt: []iso20022.AccountStatement{{
+			Id:      string(st.SettlementID),
+			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
+			Acct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{
+				Othr: &iso20022.GenericAccountIdentification{Id: string(st.Account)},
+			}},
+			Bal: []iso20022.CashBalance{{
+				Tp:        iso20022.BalanceTypeChoice{CdOrPrtry: iso20022.BalanceTypeCode{Cd: iso20022.BalanceTypeClosingBooked}},
+				Amt:       balAmt,
+				CdtDbtInd: balInd,
+				Dt:        iso20022.DateAndDateTime{Dt: &day},
+			}},
+			Ntry: []iso20022.StatementEntry{{
+				Amt:          entryAmt,
+				CdtDbtInd:    entryInd,
+				Sts:          iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
+				BookgDt:      iso20022.DateAndDateTime{Dt: &day},
+				ValDt:        iso20022.DateAndDateTime{Dt: &day},
+				AcctSvcrRef:  string(st.CycleID),
+				AddtlNtryInf: "Settlement of clearing cycle " + string(st.CycleID),
+			}},
+		}},
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// signedAmountOf splits a signed ledger amount into the magnitude the standard
+// carries and the word that says which way it runs.
+//
+// Zero is a CREDIT of nothing. It is reachable on a BALANCE — a member whose
+// reserve is exactly empty — and never on an entry, because a position of zero
+// produces no leg and therefore no statement. Choosing CRDT for it is arbitrary
+// and stated rather than left to be inferred; DBIT would read the same on the
+// wire and neither means anything.
+func signedAmountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveCurrencyAndAmount, iso20022.CreditDebitCode, error) {
+	ind := iso20022.CreditDebitCredit
+	magnitude := amt
+	if amt < 0 {
+		ind, magnitude = iso20022.CreditDebitDebit, -amt
+	}
+	out, err := amountOf(magnitude, asset)
+	if err != nil {
+		return iso20022.ActiveCurrencyAndAmount{}, "", err
+	}
+	return out, ind, nil
+}
+
+// AdvisedMovement is what a member bank can see in a statement about its own
+// reserve account: the movement, the balance it was left at, and the cut-off
+// that caused it.
+//
+// It is a DIFFERENT type from SettlementStatement, deliberately. That one is
+// what the sender knew; this is what the receiver can learn, and they are not the
+// same set of facts — a member sees no ParticipantID and no SettlementID,
+// because those are the central bank's identifiers for its own rows and nothing
+// in the message carries them. Collapsing the two types would put fields on the
+// receiving side that are always empty and invite a caller to trust them.
+type AdvisedMovement struct {
+	Account        ledger.AccountID
+	Asset          ledger.AssetCode
+	Movement       ledger.Amount
+	ClosingBalance ledger.Amount
+	CycleID        CycleID
+	ValueDate      time.Time
+}
+
+// ReadStatement reads a received camt.053 as the movements it advises.
+//
+// One entry per statement is REQUIRED and more is refused whole. This system's
+// central bank posts exactly one netting movement per member per cycle, so a
+// statement carrying two is one this reader has no rule for — and posting the
+// first while dropping the second would move a bank's reserve mirror by the wrong
+// amount with nothing anywhere recording it. It is onlyTransaction's argument,
+// made about a different message.
+//
+// A statement with no CLBD balance is refused for the reason camt.053 was chosen
+// over camt.054: without it there is nothing to check a posting against, and a
+// message that cannot be checked is a notification wearing a statement's name.
+//
+// The scale comes from ledger.LookupAsset on the entry's OWN currency, never
+// from a constant — the same rule ReadSettlement follows one message over.
+func ReadStatement(doc *iso20022.Camt053) ([]AdvisedMovement, error) {
+	stmts := doc.BkToCstmrStmt.Stmt
+	out := make([]AdvisedMovement, 0, len(stmts))
+	for i, s := range stmts {
+		if len(s.Ntry) != 1 {
+			return nil, fmt.Errorf("payment: Stmt[%d] carries %d entries; a settlement statement advises one movement", i, len(s.Ntry))
+		}
+		entry := s.Ntry[0]
+		movement, asset, err := signedAmountIn(entry.Amt, entry.CdtDbtInd)
+		if err != nil {
+			return nil, fmt.Errorf("Stmt[%d]/Ntry/Amt: %w", i, err)
+		}
+		closing, ok, err := closingBalanceIn(s.Bal)
+		if err != nil {
+			return nil, fmt.Errorf("Stmt[%d]/Bal: %w", i, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("payment: Stmt[%d] carries no CLBD balance; a statement with nothing to check against is a notification", i)
+		}
+		acct := s.Acct.Id
+		if acct.Othr == nil {
+			return nil, fmt.Errorf("payment: Stmt[%d]/Acct is not identified by Othr; a reserve account has no IBAN", i)
+		}
+		day := time.Time{}
+		if entry.ValDt.Dt != nil {
+			day = entry.ValDt.Dt.Time
+		}
+		out = append(out, AdvisedMovement{
+			Account:        ledger.AccountID(acct.Othr.Id),
+			Asset:          asset,
+			Movement:       movement,
+			ClosingBalance: closing,
+			CycleID:        CycleID(entry.AcctSvcrRef),
+			ValueDate:      day,
+		})
+	}
+	return out, nil
+}
+
+// signedAmountIn puts the sign back on: the magnitude the standard carried and
+// the word beside it become one signed ledger amount.
+//
+// An indicator that is neither CRDT nor DBIT is REFUSED rather than defaulted.
+// Defaulting to credit would turn an unreadable direction into a reserve
+// increase, which is the most expensive way to be wrong about a settlement.
+func signedAmountIn(amt iso20022.ActiveCurrencyAndAmount, ind iso20022.CreditDebitCode) (ledger.Amount, ledger.AssetCode, error) {
+	value, asset, err := amountIn(amt)
+	if err != nil {
+		return 0, "", err
+	}
+	switch ind {
+	case iso20022.CreditDebitCredit:
+		return value, asset, nil
+	case iso20022.CreditDebitDebit:
+		return -value, asset, nil
+	default:
+		return 0, "", fmt.Errorf("payment: CdtDbtInd is %q, which says neither credit nor debit", ind)
+	}
+}
+
+// closingBalanceIn finds the CLBD balance among however many a statement
+// carries, and reports whether there was one.
+//
+// It searches rather than taking Bal[0] because the standard permits several and
+// their order is not fixed; a reader that took the first would eventually read
+// an opening balance as a closing one, and the two differ by exactly the entries
+// this message exists to advise.
+func closingBalanceIn(bals []iso20022.CashBalance) (ledger.Amount, bool, error) {
+	for _, b := range bals {
+		if b.Tp.CdOrPrtry.Cd != iso20022.BalanceTypeClosingBooked {
+			continue
+		}
+		value, _, err := signedAmountIn(b.Amt, b.CdtDbtInd)
+		if err != nil {
+			return 0, false, err
+		}
+		return value, true, nil
+	}
+	return 0, false, nil
+}

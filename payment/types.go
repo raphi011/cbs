@@ -350,3 +350,30 @@ type Settlement struct {
 	ValueDate    time.Time
 	SettledAt    time.Time
 }
+
+// SettlementStatement is one member's share of a settlement, as the CENTRAL BANK
+// saw it at the moment it posted: the movement on that member's reserve account
+// and the balance the account was left at.
+//
+// It is captured INSIDE SettleCycleTx's unit of work and returned, rather than
+// re-read afterwards, because the closing balance is a claim about a moment. A
+// balance read after the commit is a different number the instant anything else
+// settles, and a statement asserting the wrong one is worse than no statement:
+// the whole point of carrying Bal/CLBD is that a member can check its own
+// posting against it.
+//
+// Movement is SIGNED — positive means the member's reserve went up — and the
+// message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the
+// direction travels as CdtDbtInd. See StatementMessage.
+type SettlementStatement struct {
+	Member       ParticipantID
+	Agent        iso20022.BIC
+	Account      ledger.AccountID
+	Asset        ledger.AssetCode
+	CycleID      CycleID
+	SettlementID SettlementID
+
+	Movement       ledger.Amount
+	ClosingBalance ledger.Amount
+	ValueDate      time.Time
+}
