@@ -122,7 +122,7 @@ export default function CentralBankPage() {
   );
 }
 
-// shortfallOf is the net payer this cycle could not settle for, or null.
+// shortfallOf is a net payer this cycle cannot settle for, or null.
 //
 // It is COMPUTED from two things the console already holds — the cycle's net
 // positions and the reserves table — and not read from anywhere, because there
@@ -132,11 +132,22 @@ export default function CentralBankPage() {
 // against it. So the console reconstructs the reason the way an operator would:
 // which bank owes more than it holds.
 //
-// It answers the FIRST such bank rather than all of them, and that is faithful
-// to what happened. Settlement is one unit of work over the whole batch, so the
-// first net payer that cannot cover aborts it and the rest are never reached — a
+// It answers ONE such bank and not all of them, and the alert says "a net payer"
+// rather than "the net payer" for a reason worth being exact about. Settlement
+// is one unit of work over the whole batch, so the first payer the settlement
+// agent reaches that cannot cover aborts it and the rest are never posted — a
 // second underfunded member is not a second failure, it is the same one waiting
-// behind it.
+// behind it. But WHICH one that was is not something this console can know:
+// SettleCycleTx visits members in REGISTRATION order (payment/system.go's
+// settlementLegsTx, which says so and says why), and nothing here is in
+// registration order — netPositions arrives as a JSON object, whose keys Go's
+// encoder sorts lexically, and `bank_80` sorts before `bank_9`.
+//
+// Naming a bank that genuinely cannot cover is true, and it is what the operator
+// has to act on. Naming it as the one that aborted the batch would be a claim
+// about an order this side cannot see, so nothing here makes it. The sort below
+// is for STABILITY alone — the same cycle must name the same bank between two
+// renders — and not an attempt to reproduce the agent's order.
 //
 // A cycle whose payers can all cover shows nothing here, and that is NOT a claim
 // that it will settle. It may simply not have been answered yet; the two are

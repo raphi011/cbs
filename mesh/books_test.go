@@ -965,8 +965,14 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 //     route every network-scoped write takes here, and never through a posting.
 //     See the note above the tests.
 //
-// So the whole set is allBooks(), derived from the fixture rather than typed
-// out, and a third bank would be in it too.
+// So the whole set is allBooks() — which is the fixture's two banks plus the
+// central bank's book and the network's, and which is a HELPER over this
+// fixture rather than a derivation from the network. It names h.debtorBook and
+// h.creditorBook explicitly, so a third bank in the fixture would be reached by
+// settlement and absent from this expectation, and this test would fail rather
+// than track it. That is the right failure — a set that grew silently would be
+// no measurement at all — but it is a thing to fix in the helper and not a
+// property this test already has.
 //
 // # What that measurement is evidence FOR
 //

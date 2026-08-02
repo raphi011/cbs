@@ -152,8 +152,35 @@ func (s *Network) now() time.Time { return s.Now() }
 func (s *Network) Store() Store { return s.store }
 
 // RegisterScheme adds (or replaces) a scheme. Adding support for instant or
-// card payments is just a matter of registering a type that implements
-// Scheme — the orchestration below is scheme-agnostic.
+// card payments is a matter of registering a type that implements Scheme — the
+// orchestration below is scheme-agnostic.
+//
+// # The one thing that is not scheme-agnostic: INBOUND translation
+//
+// An interbank message names no scheme. Its message definition says which
+// DIRECTION the payment runs in and its currency says which asset it settles
+// in, and schemeSettling turns that pair into one registered scheme or refuses
+// the message. So two schemes with the SAME direction and the SAME asset are
+// ambiguous, and every inbound message that could be either is refused with
+// ErrAssetMismatch — including the ones that were arriving perfectly well
+// before the second scheme was registered.
+//
+// SEPA Instant is exactly that case, and it is the example this comment used to
+// offer, so it is worth naming rather than leaving to be discovered: it is a
+// push scheme settling in euro, as SEPA Credit Transfer is, so registering one
+// alongside SCT stops this network being able to receive a euro pacs.008 at
+// all. What decides it is direction and asset and nothing else — a card scheme
+// in euro that pushed would collide the same way, and one in another asset, or
+// pulling, would not.
+//
+// See schemeSettling for why that is a refusal rather than a rule: nothing in a
+// pacs.008 could break the tie, and what a real network has here is the clearing
+// arrangement the message arrived over, which this system does not model.
+//
+// Nothing else is affected. Submitting under either scheme, clearing it and
+// settling it are all driven by the payment's own SchemeID and do not care how
+// many schemes share an asset; it is only the translation of a message BACK
+// into a request that has a question to answer.
 func (s *Network) RegisterScheme(sc Scheme) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

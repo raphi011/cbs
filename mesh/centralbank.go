@@ -40,10 +40,19 @@ import (
 // # It holds a settlementOps, which is one method wide
 //
 // SettleCycle is on that interface and on no other, so a bank handler or a
-// clearing-house handler that tried to settle would not compile. That is the
-// one boundary in this package the compiler genuinely enforces — and it is
-// still a boundary on METHODS. Settlement posts in every participant's book as
-// well as the central bank's, which is what SettleCycleTx is; see
+// clearing-house handler cannot NAME it. That is what these interfaces narrow,
+// and the whole of what they narrow — it is not a ban on those handlers moving
+// money. GetParticipant is on both of the other two and returns a value carrying
+// live ledger and deposit handles bound to whichever bank it names
+// (Network.bind), and a member bank's ledger is exactly where the mirror and
+// creditor legs below go, so posting them is reachable from either of those
+// handlers through a method each legitimately holds. The recorder in
+// books_test.go is what watches for that, here as everywhere else in this
+// package; see the note on bankOps in ops.go for the whole of the hole.
+//
+// The method behind this interface also reaches much further than one method
+// suggests. Settlement posts in every participant's book as well as the central
+// bank's, which is what SettleCycleTx is; see
 // TestWhichBooksTheCentralBankReachesWhenItSettles for the measurement.
 type centralBank struct {
 	m   *Mesh

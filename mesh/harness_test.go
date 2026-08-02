@@ -641,8 +641,15 @@ func (h *meshHarness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
 // It exists so that "only its own book" can be stated as a claim about the ones
 // an actor did NOT reach, rather than only about the ones it did — and so that
 // an expectation which really is "every bank's book" (the directory sweep; see
-// TestWhichBooksEachBankActuallyReaches) is derived from the network rather than
-// typed out.
+// TestWhichBooksEachBankActuallyReaches) is written once.
+//
+// The two bank books are the fixture's OWN fields and not a read of the roster,
+// which is the limit worth stating: the values come from the network (each is
+// the BookID AddParticipant assigned) but the LIST does not, so a third
+// participant would be reached by a directory sweep and by settlement and would
+// be missing from every expectation built on this. The tests would fail rather
+// than quietly track it — the right direction, but it is this helper that would
+// need fixing, not them.
 func (h *meshHarness) allBooks() []ledger.BookID {
 	out := []ledger.BookID{h.debtorBook, h.creditorBook, payment.CentralBankBook, ledger.NetworkBook}
 	slices.Sort(out)

@@ -1506,15 +1506,24 @@ Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` c
 Example — a SEPA credit transfer end to end, across three listeners:
 
 ```bash
-CB=http://localhost:8081; CSM=http://localhost:8082; H='-H Content-Type:application/json'
-A=$(curl -s $H -X POST $CB/members -d '{"name":"Bank A","bic":"AURODEFFXXX"}' | jq -r .id)
-B=$(curl -s $H -X POST $CB/members -d '{"name":"Bank B","bic":"VERDITMMXXX"}' | jq -r .id)
+CSM=http://localhost:8082; H='-H Content-Type:application/json'
 
-# A bank's own listener. Its port is its identity, so no path names the bank.
+# A bank's own listener. Its port is its identity, so no path names the bank —
+# and a bank admitted through POST /members has no listener until the process
+# restarts, which is why this walks the two the sample dataset started with.
 BANK_A=http://localhost:8083; BANK_B=http://localhost:8084
-ALICE=$(curl -s $H -X POST $BANK_A/deposit-accounts -d '{"name":"Alice","asset":"EUR"}' | jq -r .id)
-BOB=$(curl -s $H -X POST $BANK_B/deposit-accounts -d '{"name":"Bob","asset":"EUR"}' | jq -r .id)
-curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000}"
+A=$(curl -s $BANK_A/me | jq -r .id); B=$(curl -s $BANK_B/me | jq -r .id)
+
+# A deposit account is sold FROM a product and SEPA routes on IBANs, so neither
+# the product nor the address is optional: an account with no identifier cannot
+# be a party to a credit transfer at all.
+PRD_A=$(curl -s $BANK_A/products | jq -r '.[0].id')
+PRD_B=$(curl -s $BANK_B/products | jq -r '.[0].id')
+ALICE=$(curl -s $H -X POST $BANK_A/deposit-accounts -d "{\"name\":\"Alice\",\"asset\":\"EUR\",
+  \"productId\":\"$PRD_A\",\"identifiers\":[{\"scheme\":\"IBAN\",\"value\":\"SE89-AURORA-9001\"}]}" | jq -r .id)
+BOB=$(curl -s $H -X POST $BANK_B/deposit-accounts -d "{\"name\":\"Bob\",\"asset\":\"EUR\",
+  \"productId\":\"$PRD_B\",\"identifiers\":[{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}]}" | jq -r .id)
+curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000,\"description\":\"opening\"}"
 
 # A payment joins its scheme's open clearing cycle by itself, and the response
 # says which. (`POST /cycles` opens one, but a scheme may only have one open at
@@ -1523,10 +1532,11 @@ CYC=$(curl -s $H -X POST $CSM/payments -d "{\"scheme\":\"sepa.ct\",
   \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
   \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}" | jq -r .cycleId)
 curl -s $H -X POST $CSM/cycles/$CYC/close
-curl -s $H -X POST $CB/settlements -d "{\"cycleId\":\"$CYC\"}"   # the central bank's act
 
-curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000
-curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000
+curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000 — the debtor leg
+curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 0     — not settled yet
 ```
+
+**The walkthrough stops one step short of Bob being paid, and the missing step is the point.** Alice's money has left her account and is sitting in Bank A's clearing suspense; the creditor leg that puts it in Bob's account is posted at *settlement*, and there is no HTTP call left that performs one. Reaching the cut-off is what instructs it — the clearing house sends a `pacs.009` and the central bank answers — and the message layer is not yet wired behind these handlers, so against this server the cycle stays `Closed` and Bob's balance stays `0`. Watch it on the central bank's console: the closed cycle appears under *Settlement instructions* with its net positions and no settlement against it.
 
 > Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.
