@@ -359,9 +359,16 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("admitting a third bank on Bank A's BIC = %d, want 422", rec.Code)
 	}
-	if msg := rec.Body.String(); !strings.Contains(msg, "no actor of its own") ||
-		!strings.Contains(msg, "two actors for BNKADEFFXXX") {
+	msg := rec.Body.String()
+	if !strings.Contains(msg, "no actor of its own") || !strings.Contains(msg, "two actors for BNKADEFFXXX") {
 		t.Errorf("the refusal reads %q; it must say the row exists and name the clash", msg)
+	}
+	// And on THIS branch the remedy applies, which is the other half of the
+	// split: a clashing address is fixed by choosing another one.
+	// TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy is the branch where
+	// that advice would send the operator to make a second orphan.
+	if !strings.Contains(msg, "admit it on a BIC no other bank answers to") {
+		t.Errorf("the refusal reads %q; a clashing address has a remedy and it is missing", msg)
 	}
 	// The bank that owns the address is untouched by the refusal, which is the
 	// half the old message got wrong: it called the ADMITTED bank unroutable
