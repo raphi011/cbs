@@ -33,6 +33,14 @@ import (
 // nothing in this process keeps. The operator's fix is to admit the bank on an
 // address of its own — which is the real-world fix too, since a BIC identifies
 // an institution and two banks cannot share one.
+//
+// The message says the ROW exists, and it says the mesh has no actor for THIS
+// bank rather than that the address is unused. Both matter, and the second one
+// was wrong until Server.Reset started reconciling the mesh: an actor for
+// another bank was still running under that BIC, so an operator told their new
+// bank was unroutable could watch the old one route perfectly well. What is true
+// in every branch that can reach here — a clashing BIC, or a mesh on its way
+// down — is that the bank now in the roster has no actor of its own.
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -59,7 +67,7 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	if err := s.mesh.AddBank(p); err != nil {
 		s.log.Error("a bank was admitted that the mesh cannot route to",
 			"participant", p.ID, "bic", p.BIC, "error", err)
-		writeUnprocessable(w, "this bank was admitted and has no actor, so it can neither pay nor be paid: "+err.Error())
+		writeUnprocessable(w, "this bank is in the roster and the mesh gave it no actor of its own, so it can neither pay nor be paid; admit it on a BIC no other bank answers to: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, toParticipantDTO(p))

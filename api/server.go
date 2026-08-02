@@ -148,6 +148,29 @@ func (s *Server) network() *payment.Network { return s.net }
 // that same drain — so a Reset that swallowed them would report success over
 // exactly the damage this ordering exists to prevent, and no test could see it.
 // TestResetDrainsBeforeTruncating fails on the swap because of this.
+//
+// # The mesh is rebuilt too, and forgetting comes before the truncate
+//
+// A reset replaces the network. Every participant is deleted and the reseed
+// creates new ones, and the mesh is NOT restarted — Start ran once, at boot, and
+// its roster read is long past. So the actor table has to be reconciled here or
+// it never is, and what it describes otherwise is a network that no longer
+// exists: a BIC no operator can ever admit again, because an actor still answers
+// to it, and an entry in the bank index pointing at a goroutine whose bank has
+// been deleted. It was reachable in four HTTP calls — admit a bank, reset,
+// admit the same BIC — and the 422 it produced said the new bank had no actor
+// while the old one was still running and still routable.
+//
+// ForgetBanks runs BEFORE the truncate and JoinRoster AFTER the reseed, which
+// leaves a window in which the mesh routes to no member bank at all. That is the
+// right window to leave: a submission during it is refused for a reason that is
+// true — there is no bank actor, because the network is being replaced — where
+// the alternative is a message delivered to an actor whose bank is being deleted
+// underneath it.
+//
+// Neither institution is forgotten. The clearing house and the central bank have
+// no participant row, so a reset does not touch them; they are the configuration
+// rather than the data.
 func (s *Server) Reset(ctx context.Context) error {
 	s.resetMu.Lock()
 	defer s.resetMu.Unlock()
@@ -156,10 +179,18 @@ func (s *Server) Reset(ctx context.Context) error {
 		s.log.Error("mesh: dead letters collected by a reset", "error", err)
 		return fmt.Errorf("api: the mesh had unanswered work when the reset ran; it has been cleared, so try again: %w", err)
 	}
+	if err := s.mesh.ForgetBanks(ctx); err != nil {
+		return fmt.Errorf("api: the mesh still holds banks the reset is about to delete: %w", err)
+	}
 	if err := s.net.Store().Reset(ctx); err != nil {
 		return err
 	}
-	return s.populate(ctx, s.net)
+	if err := s.populate(ctx, s.net); err != nil {
+		return err
+	}
+	// Last, and not skippable: until this runs the reseeded banks are rows with
+	// no actor, so the system would answer every read and carry no payment.
+	return s.mesh.JoinRoster(ctx)
 }
 
 // forBank returns a view of this Server bound to one participant. The copy is

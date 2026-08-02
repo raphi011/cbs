@@ -29,6 +29,32 @@ var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 type Config struct {
 	CentralBankBIC   iso20022.BIC
 	ClearingHouseBIC iso20022.BIC
+
+	// Observe, if non-nil, is called on the receiving actor's goroutine with
+	// every message it is about to handle: who it is for, who sent it, and the
+	// bytes. It is the transport's one observation point, and it is here rather
+	// than unexported because a layer ABOVE the mesh needs it for the same reason
+	// this package's own tests do.
+	//
+	// What it buys is the only honest way to observe a mesh MID-CONVERSATION.
+	// Everything a message does leaves a trace afterwards, and Drain is how a
+	// test waits for that; nothing else can say "the payment has not been carried
+	// further YET", because reading the store races the actors. api's
+	// TestSubmitAnswers202AndThePaymentIsNotYetAccepted is that assertion, and it
+	// held it by scheduling luck until this existed — under contention it failed
+	// roughly once in a hundred runs, with a message byte-identical to the one a
+	// real regression produces.
+	//
+	// It may BLOCK, and blocking is the point. An Observe that waits holds the
+	// receiving actor before its handler runs, so the conversation provably
+	// cannot advance while the caller looks. What it must not do is wait for
+	// anything that itself waits for the mesh: an Observe blocking one actor
+	// while the goroutine that would release it is inside Drain deadlocks, and no
+	// deadline here would make that correct.
+	//
+	// It is read only by actor goroutines and written only by New, before any of
+	// them exists, which is what makes it safe without a lock.
+	Observe func(to, from iso20022.BIC, raw []byte)
 }
 
 // validate refuses a configuration the mesh could not route by.
@@ -94,14 +120,16 @@ type Mesh struct {
 	cancel context.CancelFunc
 
 	// tap, if non-nil, sees every message an actor is about to handle: who it
-	// is for, who sent it, and the bytes.
+	// is for, who sent it, and the bytes. It is Config.Observe once New has taken
+	// it, and this package's own tests set it directly.
 	//
-	// It is a seam for THIS package's tests and for nothing else, and it earns
-	// its place because some of what this mesh does leaves no other trace. An
-	// FF01 names no payment — it cannot, the file that provoked it did not parse
-	// — so a test that could not see the message could not tell an answered
-	// malformed envelope from a swallowed one. Nor could one tell a submission
-	// that sent nothing from a submission whose message went somewhere else.
+	// It earns its place because some of what this mesh does leaves no other
+	// trace. An FF01 names no payment — it cannot, the file that provoked it did
+	// not parse — so a test that could not see the message could not tell an
+	// answered malformed envelope from a swallowed one. Nor could one tell a
+	// submission that sent nothing from a submission whose message went somewhere
+	// else. Nor, from outside this package, could one hold a conversation still
+	// long enough to read what a caller was told at the moment it was told.
 	//
 	// It is written before Start and read only by actor goroutines, which is what
 	// makes it safe without a lock: until Start runs, no goroutine exists that
@@ -181,6 +209,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 		net:    net,
 		cfg:    cfg,
 		log:    log,
+		tap:    cfg.Observe,
 		actors: make(map[iso20022.BIC]*actor),
 		banks:  make(map[payment.ParticipantID]*bank),
 		busy:   make(map[iso20022.BIC]bool),
@@ -328,32 +357,8 @@ func (m *Mesh) Start(ctx context.Context) error {
 	}
 	m.mu.Unlock()
 
-	// The roster read happens outside the lock, because it is store I/O and
-	// nothing else may be blocked on the mesh while it runs. The whole roster
-	// is then registered in one batch, so a bank the mesh cannot route to
-	// leaves the mesh as it found it.
-	if m.net != nil {
-		ps, err := m.net.ListParticipants(ctx)
-		if err != nil {
-			return fmt.Errorf("mesh: reading the participant roster: %w", err)
-		}
-		specs := make([]actorSpec, 0, len(ps))
-		banks := make(map[payment.ParticipantID]*bank, len(ps))
-		for _, p := range ps {
-			b := &bank{m: m, ops: m.net, bic: p.BIC}
-			banks[p.ID] = b
-			specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
-		}
-		if len(specs) > 0 {
-			if err := m.addActors(specs...); err != nil {
-				return err
-			}
-		}
-		// After addActors, so that a roster the mesh refused to route leaves the
-		// bank index as it found it too.
-		m.mu.Lock()
-		m.banks = banks
-		m.mu.Unlock()
+	if err := m.joinRoster(ctx); err != nil {
+		return err
 	}
 
 	m.mu.Lock()
@@ -362,6 +367,118 @@ func (m *Mesh) Start(ctx context.Context) error {
 	m.started = true
 	for _, a := range m.actors {
 		go m.run(m.ctx, a)
+	}
+	return nil
+}
+
+// joinRoster gives every member bank in the participant roster an actor, in one
+// batch.
+//
+// The roster read happens OUTSIDE m.mu, because it is store I/O and nothing else
+// may be blocked on the mesh while it runs. The whole roster is then registered
+// in one batch, so a bank the mesh cannot route to leaves the mesh as it found
+// it — see addActors on why all-or-none is the roster's shape and not a
+// convenience.
+//
+// It assigns the bank index rather than merging into it, and both of its callers
+// want that: Start runs on a mesh with no banks, and JoinRoster runs on one
+// ForgetBanks has just emptied. A merge would be the wrong answer for the second
+// — it would keep an entry for a bank the roster no longer has.
+func (m *Mesh) joinRoster(ctx context.Context) error {
+	if m.net == nil {
+		return nil
+	}
+	ps, err := m.net.ListParticipants(ctx)
+	if err != nil {
+		return fmt.Errorf("mesh: reading the participant roster: %w", err)
+	}
+	specs := make([]actorSpec, 0, len(ps))
+	banks := make(map[payment.ParticipantID]*bank, len(ps))
+	for _, p := range ps {
+		b := &bank{m: m, ops: m.net, bic: p.BIC}
+		banks[p.ID] = b
+		specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
+	}
+	if len(specs) > 0 {
+		if err := m.addActors(specs...); err != nil {
+			return err
+		}
+	}
+	// After addActors, so that a roster the mesh refused to route leaves the
+	// bank index as it found it too.
+	m.mu.Lock()
+	m.banks = banks
+	m.mu.Unlock()
+	return nil
+}
+
+// JoinRoster re-reads the participant roster and gives every bank in it an
+// actor. It is what Start does, on a mesh that is already running.
+//
+// It exists for ONE caller and one situation: a store that has been emptied and
+// rebuilt underneath a live mesh — api.Server.Reset. The roster the mesh read at
+// Start is gone, and the banks that replaced it have never been registered, so
+// without this the actor table describes a network that no longer exists. See
+// ForgetBanks, which is the half that runs first.
+//
+// It is NOT an incremental sync: it registers the whole roster and expects to
+// find no member banks already registered, which is exactly the state
+// ForgetBanks leaves. Calling it on a mesh that still holds banks fails on the
+// first BIC, all-or-none, leaving the mesh as it found it.
+func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) }
+
+// ForgetBanks removes every member bank's actor: closes its inbox, waits for its
+// goroutine to return, and drops it from the routing table and the bank index.
+// The two institutions are untouched.
+//
+// # Why a mesh needs this at all
+//
+// Because the store can be replaced underneath it. api.Server.Reset truncates
+// every table and rebuilds the sample dataset, and the mesh survives that — it
+// is not restarted, and Start is never run again. Without this the actor table
+// keeps describing the roster that was there before: a BIC the operator can
+// never admit again, because an actor already answers to it, and an entry in the
+// bank index pointing at a goroutine whose bank has been deleted. That is not
+// hypothetical — it was reachable over HTTP by admitting a bank, resetting, and
+// admitting the same BIC again.
+//
+// It is the counterpart of JoinRoster and is called immediately before the
+// truncate, so that between the two the mesh routes to no member bank at all
+// rather than to the wrong one. A submission during that window is refused —
+// "no bank actor" — which is the truth: the network is being replaced.
+//
+// # It expects a quiet mesh, and says so rather than assuming it
+//
+// Closing an inbox does not discard what is in it: pop hands over everything
+// already queued before it reports the queue closed, so a message in flight here
+// would still be HANDLED, against a store that is about to be truncated. Its
+// caller drains first, which is the same ordering Stop's doc demands and for the
+// same reason. The wait for each goroutine is what makes "forgotten" mean "no
+// handler is still running" rather than "no more messages will be picked up",
+// and a handler that will not return times the context out and is named.
+func (m *Mesh) ForgetBanks(ctx context.Context) error {
+	m.mu.Lock()
+	if m.stopping || m.stopped {
+		m.mu.Unlock()
+		return errors.New("mesh: stopping; its member banks are being joined by Stop, not forgotten")
+	}
+	gone := make([]*actor, 0, len(m.banks))
+	for pid, b := range m.banks {
+		if a, ok := m.actors[b.bic]; ok {
+			gone = append(gone, a)
+			delete(m.actors, a.bic)
+			a.q.close()
+		}
+		delete(m.banks, pid)
+	}
+	m.mu.Unlock()
+
+	for _, a := range gone {
+		select {
+		case <-a.done:
+		case <-ctx.Done():
+			return fmt.Errorf("mesh: forgetting %s (%s): %w", a.bic, a.name, ctx.Err())
+		}
 	}
 	return nil
 }
