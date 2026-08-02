@@ -567,9 +567,12 @@ func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
 // so a bank that answered "no" would be refusing something that has happened.
 //
 // What a failure produces instead is an ERROR, which this transport turns into a
-// dead letter, and an advice row left at Advised. Those two together are the
-// unreconciled position: told and not booked. Task 19 is the reconciliation that
-// makes it visible from inside the system rather than only in Drain.
+// dead letter, and NO advice row at all: payment.PostSettlementAdvice is one unit
+// of work, so a mirror leg that fails takes the row with it. The dead letter is
+// the only trace in this PROCESS; in the STORE the unreconciled position is a
+// clearing suspense that has not returned to zero with no advice row against the
+// cycle. Task 19 is the reconciliation that makes that visible from inside the
+// system rather than only in Drain.
 //
 // # One statement, one member
 //

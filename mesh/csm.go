@@ -737,8 +737,9 @@ func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, 
 // each net payer's reserve before it posts anything of its own, and it advises no
 // member unless it settles, so no bank was told and no bank booked. That leaves
 // every payment in the cycle exactly where the cut-off left it: Cleared, with the
-// payer's money still in its own bank's clearing suspense. A bank told "rejected" would try to reverse a debtor leg that must
-// not be reversed, and bank.receiveStatus refuses to: it checks this network's
+// payer's money still in its own bank's clearing suspense. A bank told "rejected"
+// would try to reverse a debtor leg that must not be reversed, and
+// bank.receiveStatus refuses to: it checks this network's
 // own record of the payment and finds it Cleared rather than Rejected, so the
 // message would become a dead letter at every recipient. There is nothing
 // truthful to tell a bank here, because nothing about its payments changed.

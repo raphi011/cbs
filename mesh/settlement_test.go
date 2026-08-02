@@ -239,10 +239,11 @@ func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 // the move. Three things per member, and each rules out a different way of
 // getting this wrong:
 //
-//   - Status is Posted and MirrorTx names a transaction. An advice left at
-//     Advised is a bank that was TOLD and did not book — the unreconciled
-//     position — and it is the state a failure leaves behind, so it has to be
-//     distinguished from success rather than assumed away.
+//   - Status is Posted and MirrorTx names a transaction. Advised is the other
+//     value the type carries, and asserting the row is NOT at it is what stops a
+//     row recording nothing from passing for a booking. It is not the state a
+//     failure leaves behind: the row and the leg are one unit of work, so a
+//     failure leaves no row at all — see payment.AdviceAdvised.
 //   - Movement is SIGNED and opposite at the two banks. It travels as a magnitude
 //     plus CdtDbtInd and is reassembled by payment.ReadStatement, so a member that
 //     lost the sign in transit would post its mirror leg backwards — and the two

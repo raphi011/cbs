@@ -142,9 +142,13 @@
 //
 // A statement is not an instruction, so it is ANSWERED BY NOTHING: the central
 // bank has already settled, and there is nothing left to accept or refuse. A
-// member that cannot book what it was told produces a dead letter and an advice
-// row stuck at Advised, which is the unreconciled position in its most visible
-// form.
+// member that cannot book what it was told produces a dead letter and NO advice
+// row: payment.PostSettlementAdviceTx writes the row and posts the mirror leg in
+// one unit of work, so a failure takes both. The unreconciled position is
+// therefore a clearing suspense that has not returned to zero with no advice row
+// against the cycle — which looks the same in the store as never having been
+// told, and telling those two apart is Task 19's problem rather than a
+// distinction this schema makes.
 //
 // It goes out BEFORE the answer, and since 15b.3 that ordering is load-bearing
 // rather than merely tidy. The CREDITOR leg is posted from the clearing house's
@@ -169,8 +173,9 @@
 // centralBank.advise returns on the FIRST send it cannot make, and the cost is
 // wider than the bank it could not reach:
 //
-//   - that member is never advised, and has no advice row at all — not even one
-//     stuck at Advised, because nothing at that bank ever ran;
+//   - that member is never advised, and has no advice row at all — which is
+//     exactly what the store shows for a member that WAS told and could not
+//     book, since the row commits with the leg;
 //   - every member AFTER it in the statement order is never advised either;
 //   - the ACSC is never sent, so the clearing house never fans the per-payment
 //     statuses out, and EVERY bank in the cycle — including the ones that were
@@ -184,8 +189,10 @@
 // the cycle is Settled — so nothing may be unsaid, and there is deliberately no
 // retry here rather than untested machinery for an unreachable failure. What is
 // missing is the ability to NOTICE, and that is what Task 19's reconciliation is
-// for: an advice row that is absent or stuck at Advised, and a cycle Settled
-// whose banks were never told, are the two shapes it has to find.
+// for: an absent advice row against a clearing suspense that has not returned to
+// zero, and a cycle Settled whose banks were never told, are the two shapes it
+// has to find. They are the same shape in the store, which is why noticing needs
+// the CLOSING BALANCE the statement carried rather than the row's status alone.
 //
 // The refusal moved with the leg. A net payer whose reserve cannot cover its
 // position used to be refused by the LEDGER, when the mirror leg took an Asset

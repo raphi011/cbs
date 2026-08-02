@@ -754,18 +754,31 @@ CREATE TABLE settlement_positions (
 -- and it is the first payment-layer table keyed by book.
 --
 -- Every other table in this section — participants, payments, mandates, cycles,
--- settlements — is network-scoped: those rows belong to no single bank, which is
--- why they carry no book_id. This one does, and the difference is the whole of
--- sub-project 8. A cycle is the clearing house's; a settlement is the central
--- bank's; this is the member's, and when the stores split it moves into that
--- member's own database and the other two do not follow it.
+-- settlements — is network-scoped: those rows belong to no single bank, so they
+-- are keyed by their id alone. Note the exact claim, because a looser one is
+-- false: participants DOES carry a book_id column (:539), but as DATA — which
+-- book that bank owns — and not as part of its key. This is the first
+-- payment-layer table where the book is part of the identity, and that
+-- difference is the whole of sub-project 8. A cycle is the clearing house's; a
+-- settlement is the central bank's; this is the member's, and when the stores
+-- split it moves into that member's own database and the other two do not
+-- follow it.
 --
--- Two banks advised of one cut-off hold two rows with independent statuses. That
--- is not redundancy: settlement is final at the central bank and participants
--- catch up afterwards, so "this bank has booked it and that one has not" is a
--- state the system must be able to be in. A row still at status 0
--- (payment.AdviceAdvised) IS the unreconciled position, and it is the only
--- in-system trace of a local posting that failed.
+-- Two banks advised of one cut-off write two rows independently. That is not
+-- redundancy: settlement is final at the central bank and participants catch up
+-- afterwards, so "this bank has booked it and that one has not" is a state the
+-- system must be able to be in — and it shows as one row present and the other
+-- ABSENT.
+--
+-- What a row MEANS is that this bank booked this cut-off. No committed row says
+-- status 0 (payment.AdviceAdvised) today: payment.PostSettlementAdviceTx writes
+-- the row and posts the mirror leg in ONE unit of work, so a failed posting rolls
+-- the row back with it and a successful one leaves status 1. That is deliberate —
+-- the leg and the record of it must be atomic — and this comment used to claim
+-- the opposite, that a row stuck at status 0 was the unreconciled position and
+-- the only trace of a posting that failed. It never was. The unreconciled
+-- position is the ABSENCE of a row against a clearing suspense that has not
+-- returned to zero, and detecting it is Task 19's.
 --
 -- closing_balance is what the central bank said the reserve stands at. Nothing
 -- reads it yet; Task 19 is the reconciliation that does. It is stored because it

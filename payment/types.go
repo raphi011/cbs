@@ -356,10 +356,26 @@ type Settlement struct {
 type AdviceStatus int
 
 const (
-	// AdviceAdvised is told and not yet booked. It is the UNRECONCILED
-	// POSITION: settlement is final at the central bank and this bank has not
-	// caught up. A row stuck here is the one detector this system has for a
-	// local posting that failed, and it is why the row exists at all.
+	// AdviceAdvised is told and not yet booked — and NO COMMITTED ROW SAYS IT
+	// today, which has to be known before it is read as a detector.
+	//
+	// PostSettlementAdviceTx writes the row and posts the mirror leg in one unit
+	// of work: a failed posting rolls the row back with it, and a successful one
+	// supersedes it with AdvicePosted before the commit. The only arm that
+	// commits this status is the zero-movement guard, and the settlement path
+	// never reaches it — the central bank sends no statement for a position of
+	// zero, because settlementLegsTx skips one.
+	//
+	// It is kept rather than deleted because it is the honest name for a state
+	// this type has to be able to express, and because it becomes reachable the
+	// moment the write and the posting stop sharing a unit of work. They must not
+	// while a bank's mirror leg and its record of having made it have to be
+	// atomic: a row asserting a booking that did not happen is worse than no row.
+	//
+	// So the detector for a bank that was told and did not book is the ABSENCE of
+	// a row against a clearing suspense that has not returned to zero. This doc
+	// used to claim the opposite, and so did four other layers; see
+	// SettlementAdvice and PostSettlementAdviceTx.
 	AdviceAdvised AdviceStatus = iota
 	// AdvicePosted is booked: the mirror leg is in this bank's own ledger.
 	AdvicePosted
@@ -374,8 +390,10 @@ const (
 // Book is part of its identity, which is the whole point. A cycle is the
 // clearing house's and a settlement is the central bank's; this is the member's,
 // and under sub-project 8 it lives in that member's own store. Two banks advised
-// of the same cut-off hold two independent rows with independent statuses, which
-// is what makes "one bank fell behind" expressible at all.
+// of the same cut-off write two rows independently, so "one bank has booked this
+// cut-off and the other has not" is expressible — as one row present and the
+// other ABSENT, rather than as two rows at different statuses. See AdviceAdvised
+// for why the difference matters and what it cost to get wrong.
 //
 // # ClosingBalance is stored and nothing checks it yet
 //

@@ -468,8 +468,12 @@ split rather than with them: the central bank posts only its own netting
 transaction, each member books its mirror leg from a statement, and each payee's
 bank posts its own creditor leg on a per-payment advice. What this section said
 the model got wrong is now what the model teaches — a member that fails to book
-has a reconciliation break and not a rollback, recorded as a `SettlementAdvice`
-row still at `Advised`. Two details landed differently. The message is a
+has a reconciliation break and not a rollback, visible as a clearing suspense
+that has not returned to zero with no `SettlementAdvice` row against the cycle.
+(That row commits in the same unit of work as the mirror leg it records, so a
+failed booking leaves none; an `Advised` row is not what a break looks like, and
+several layers said it was until the review of Task 15b.4.) Two details landed
+differently. The message is a
 **`camt.053`**, not a `camt.054`, because a notification carries no balance and
 therefore cannot detect a wrong posting; and "the settlement agent holds every
 reserve account there" is exact only about the central bank's own book, which is

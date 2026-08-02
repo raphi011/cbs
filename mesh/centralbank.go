@@ -225,9 +225,11 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // all three parts belong in one place because a reader who finds only the first
 // will under-estimate the second and third:
 //
-//  1. The unreachable member is never advised, so its advice row is ABSENT — not
-//     even at Advised, since nothing at that bank ever ran. That is the
-//     unreconciled position in its most visible form.
+//  1. The unreachable member is never advised, so its advice row is ABSENT —
+//     which is indistinguishable in the store from a member that was told and
+//     could not book, because that row commits with the mirror leg. Either way
+//     it is the unreconciled position: a clearing suspense that has not returned
+//     to zero, with nothing recording why.
 //  2. This returns on the FIRST failing send, so every member AFTER it in the
 //     statement order is never advised either, for a reason that has nothing to
 //     do with that member.

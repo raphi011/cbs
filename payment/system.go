@@ -813,8 +813,11 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //
 // The interval between is therefore not merely observable — it is the thing
 // being modelled. It is the UNRECONCILED POSITION: the reserves have moved and a
-// member has been told and has not yet booked. SettlementAdvice's Advised state
-// is where it is visible. In the EU that gap is not a modelling convenience but
+// member has been told and has not yet booked. Where it is visible is that
+// member's CLEARING SUSPENSE, which has not returned to zero, with no
+// SettlementAdvice row against the cycle — the row is written only by a member
+// that books, and it commits with the mirror leg. In the EU that gap is not a
+// modelling convenience but
 // a directive: the Settlement Finality Directive is about exactly this moment,
 // when a transfer order becomes irrevocable regardless of what any participant
 // does next.
@@ -1132,10 +1135,26 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		Status:         AdviceAdvised,
 		AdvisedAt:      now,
 	}
-	// Written BEFORE the posting, so a posting that fails leaves the row at
-	// Advised rather than leaving no trace. That row is the unreconciled
-	// position, and it is the only thing in this system that can say a bank was
-	// told and did not book.
+	// Written before the posting and committed WITH it. This is one unit of work,
+	// so the row and the mirror leg stand or fall together: a posting that fails
+	// takes this write back with it and leaves nothing at all.
+	//
+	// That is the right shape and not a limitation. Booking the leg and recording
+	// that you booked it must be atomic, or a bank can post and fail to record —
+	// and a bank whose own store claims a booking it did not make is worse off
+	// than one with no row. The ordering therefore buys nothing observable: the
+	// second Put below is the only version any reader outside this transaction
+	// ever sees.
+	//
+	// This comment used to say the opposite — that a failed posting left the row
+	// at Advised, and that such a row was the unreconciled position. It was never
+	// true of this code. store/mem restores its pre-fn snapshot on error and
+	// store/pg issues a ROLLBACK, so there is no half of this that can survive.
+	// What the row actually is: this bank's own durable record that it BOOKED
+	// this cut-off, which is what makes a redelivered statement a no-op (the
+	// GetSettlementAdvice check above) and what Task 19's reconciliation reads.
+	// The unreconciled position is the ABSENCE of a row against a clearing
+	// suspense that has not returned to zero.
 	if err := tx.PutSettlementAdvice(ctx, p.BookID, advice); err != nil {
 		return SettlementAdvice{}, err
 	}

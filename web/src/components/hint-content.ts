@@ -677,15 +677,19 @@ The interval between the commit and a member's booking is the [[unreconciled-pos
 
 In the books it shows as a non-zero [[clearing-suspense|clearing suspense]]: the money has settled between banks and this bank has not yet cleared the account that held it in transit.
 
-The system records it explicitly. A member's settlement-advice row is written **before** the mirror leg is posted, so a posting that fails leaves the row at *Advised* rather than leaving no trace. A row still at Advised is a bank that was told and did not book — the only thing in this system that can say so.
+What a bank leaves behind when it *does* book is a **settlement-advice row** of its own. The row and the mirror leg are written in the **same unit of work**, so they commit together or neither does — which means the row says "this bank booked this cut-off", and never "this bank was told and did not". A posting that fails takes the row with it.
 
 \`\`\`
 settlement_advices (book_id, cycle_id, asset)
-  status = Advised  ← told; mirror leg not posted   ← unreconciled
-  status = Posted   ← mirror leg posted
+  row present, status = Posted    this bank booked this cut-off
+  no row, suspense not zero       the unreconciled position
 \`\`\`
 
-It is the one payment-layer table keyed by **book** rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read; reading it is what a reconciliation would do.`,
+So the position is the **absence** of a row against a suspense that has not cleared — and a bank that was told and could not book looks exactly like one that was never told. That is the right trade rather than a gap: booking the leg and recording that you booked it must be atomic, or a bank can post and fail to record.
+
+(An earlier version of this note said a failed posting left the row at *Advised*. It cannot. That status exists in the type, but nothing on the settlement path commits it.)
+
+It is the first payment-layer table **keyed by** book rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read — reading it is how a reconciliation would tell those two absences apart.`,
   },
   "nostro-reconciliation": {
     title: "Two advices, one balance",
@@ -696,9 +700,9 @@ It is the one payment-layer table keyed by **book** rather than network-wide, be
 
 \`\`\`
 Bank B, a net receiver, over one cut-off:
-  camt.053  (central bank)   Debit  Reserve at CB      ← Credit suspense
-  pacs.002  (clearing house)  Credit payee's deposit   ← Debit  suspense
-  ─────────────────────────────────────────────────────
+  camt.053  (central bank)     Debit  Reserve at CB    → Credit Clearing Suspense
+  pacs.002  (clearing house)   Credit payee's deposit  → Debit  Clearing Suspense
+  ─────────────────────────────────────────────────────────────
   Clearing suspense back to zero   ✓  only if the two agree
 \`\`\`
 
