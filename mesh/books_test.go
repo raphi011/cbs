@@ -215,14 +215,18 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // the audit log is not per-book — see structCarriedBooks, which is where a
 // method of that shape is now decided rather than overlooked.
 //
-// payment.Tx's OWN methods are network-scoped: participants, payments, mandates,
-// cycles and settlements belong to no single bank and live under
-// ledger.NetworkBook. They are correctly absent from the overrides below, and
-// they still leave a trace — not through the row, but through the ID the row
+// Almost all of payment.Tx's OWN methods are network-scoped: participants,
+// payments, mandates, cycles and settlements belong to no single bank and live
+// under ledger.NetworkBook. They are correctly absent from the overrides below,
+// and they still leave a trace — not through the row, but through the ID the row
 // needed and the audit event it wrote, both of which are taken under
 // NetworkBook. See the block above the tests, which spells that out for Task 10
 // and pins it with a test, because an earlier version of this comment claimed
 // the exact opposite.
+//
+// The settlement advice is the exception, and it is the first one: it is a
+// member bank's own record of a cut-off it was told about, so it carries that
+// bank's book and IS recorded, exactly like a ledger or deposit row.
 //
 // It EMBEDS payment.Tx, so everything else is promoted untouched.
 // TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
@@ -508,6 +512,26 @@ func (r *recordingTx) ListFacilityTerms(ctx context.Context, book ledger.BookID,
 func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.BookID, id lending.FacilityID, day time.Time) (lending.FacilityTerms, error) {
 	r.rec.note(book)
 	return r.Tx.GetFacilityTermsAsOf(ctx, book, id, day)
+}
+
+// --- payment.Tx ---
+//
+// Only the settlement advice. Every other method payment.Tx declares is
+// network-scoped — see the comment above recordingTx — and takes no book at all.
+
+func (r *recordingTx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
+	r.rec.note(book)
+	return r.Tx.PutSettlementAdvice(ctx, book, a)
+}
+
+func (r *recordingTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+	r.rec.note(book)
+	return r.Tx.GetSettlementAdvice(ctx, book, cycle, asset)
+}
+
+func (r *recordingTx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
+	r.rec.note(book)
+	return r.Tx.ListSettlementAdvices(ctx, book)
 }
 
 // ---------------------------------------------------------------------------
@@ -2298,6 +2322,19 @@ func (w *chainWalk) walk(dir string) {
 
 // classify decides how one interface method carries its book, refusing a book
 // carried anywhere but straight after ctx.
+//
+// The one exception is the rule PutSettlementAdvice asked for. A method that
+// already takes `book ledger.BookID` at argument 1 and is then handed a ROW that
+// names its own book is not carrying two scopes: the argument is the scope, and
+// the field is the row's record of which book it ended up in. Both stores write
+// that field from the argument and read it back off the book_id column, so it
+// cannot name a book the argument did not — see store/mem's PutSettlementAdvice,
+// which overwrites it for exactly this reason, and store/pg's, which never reads
+// it at all. The override notes the argument, which is the only scope there is.
+//
+// The exception is deliberately narrow: it needs argument 1 to BE a
+// ledger.BookID. A struct-carried book in a method with no book argument is
+// still refused here and still has to be decided in structCarriedBooks.
 func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
 	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
 	for i, p := range flatParams(fn) {
@@ -2307,6 +2344,9 @@ func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMet
 			continue
 		}
 		if i != 1 {
+			if found.Carry == bookIsTheArg && carry == bookInsideTheArg {
+				continue // the row records the book the argument already scoped
+			}
 			w.refusef("%s.Tx.%s carries its book at argument %d, not straight after ctx. "+
 				"Every override relies on that position; move it back, or teach this parser the new rule.",
 				filepath.Base(pkg.dir), name, i)

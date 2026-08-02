@@ -289,6 +289,10 @@ export interface ParticipantAccounts {
   asset: string;
   suspense: string;
   reserve: string;
+  // Where a credit goes when the payee's account will not take it — closed, and
+  // therefore terminal. The bank still owes the money, to whoever eventually
+  // claims it, so it is a liability like a deposit.
+  unclaimed: string;
   settlement: string;
 }
 

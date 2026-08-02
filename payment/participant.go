@@ -21,11 +21,28 @@ import (
 //   - Reserve (Asset): the bank's claim on the central bank. It mirrors the
 //     bank's reserve account in the central-bank ledger and moves only at
 //     settlement.
+//   - Unclaimed (Liability): where a credit goes when the payee's account will
+//     not take it. Money the bank owes somebody it has not yet identified.
 //   - Settlement: this participant's reserve account in the central-bank
 //     ledger — the central bank's "vostro" view of the bank.
+//
+// The first three are the bank's own; the fourth is the central bank's row for
+// it, and is named here because settlement needs both ends.
 type ParticipantAccounts struct {
-	Suspense   ledger.AccountID
-	Reserve    ledger.AccountID
+	Suspense ledger.AccountID
+	Reserve  ledger.AccountID
+
+	// Unclaimed is where a credit goes when the payee's account will not take
+	// it — closed, and therefore terminal.
+	//
+	// A real bank has one. Money that arrives for an account that cannot receive
+	// it does not vanish and does not sit in the payee's closed account: it is
+	// held as a liability to whoever eventually claims it, and the bank has a
+	// process for finding them. This system had nowhere for it to go, which is
+	// why the gap at ReturnPaymentTx and SettleCycleTx was a ruling rather than a
+	// line of code.
+	Unclaimed ledger.AccountID
+
 	Settlement ledger.AccountID
 }
 
@@ -54,8 +71,12 @@ type ParticipantAccounts struct {
 //   - Reserve at Central Bank (Asset): the bank's claim on the central bank.
 //     It mirrors the bank's reserve account in the central-bank ledger and
 //     moves only at settlement.
+//   - Unclaimed Balances (Liability): where a credit goes when the payee's
+//     account cannot receive it. The bank still owes the money — to whoever
+//     eventually claims it — so it is a liability like a deposit, and holding
+//     it here is what lets one payment fail without stranding it.
 //
-// The last two, plus the bank's reserve account in the central-bank ledger,
+// The last three, plus the bank's reserve account in the central-bank ledger,
 // exist once per asset the bank operates in — see Assets.
 type Participant struct {
 	ID   ParticipantID

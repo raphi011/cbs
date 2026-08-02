@@ -19,9 +19,11 @@ import (
 // post across every participant's book and the central bank's and record the
 // settlement itself in one BEGIN … COMMIT.
 //
-// Every entity here is network-scoped: a payment belongs to no single bank, so
-// unlike the ledger and deposit tables these are keyed by id alone and take no
-// BookID.
+// Almost every entity here is network-scoped: a payment belongs to no single
+// bank, so unlike the ledger and deposit tables these are keyed by id alone and
+// take no BookID. The exception is the settlement advice at the bottom — a
+// member bank's own record of a cut-off it was told about — which carries a
+// book_id like a ledger or deposit row, because it belongs to that bank.
 
 // compile-time check that tx satisfies the payment interface too.
 var _ payment.Tx = (*tx)(nil)
@@ -73,10 +75,10 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	for _, asset := range slices.Sorted(maps.Keys(p.Assets)) {
 		accts := p.Assets[asset]
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, settlement)
-			VALUES ($1, $2, $3, $4, $5)`,
+			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, settlement)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
 			string(p.ID), string(asset),
-			string(accts.Suspense), string(accts.Reserve), string(accts.Settlement)); err != nil {
+			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.Settlement)); err != nil {
 			return fmt.Errorf("pg: put participant %s asset %s: %w", p.ID, asset, err)
 		}
 	}
@@ -107,7 +109,7 @@ func scanParticipant(row pgx.Row) (payment.Participant, error) {
 // have to be de-duplicated on the way back — the same shape the cycle and
 // settlement readers use, and not worth it for a child table this small.
 func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts, error) {
-	query := "SELECT participant_id, asset, suspense, reserve, settlement FROM participant_assets"
+	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, settlement FROM participant_assets"
 	args := []any{}
 	if id != "" {
 		query += " WHERE participant_id = $1"
@@ -128,7 +130,7 @@ func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (m
 			asset ledger.AssetCode
 			accts payment.ParticipantAccounts
 		)
-		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Settlement); err != nil {
+		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.Settlement); err != nil {
 			return nil, fmt.Errorf("pg: participant assets: %w", err)
 		}
 		if out[pid] == nil {
@@ -626,6 +628,92 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 		if participantID != nil {
 			out[pos].NetPositions[payment.ParticipantID(*participantID)] = ledger.Amount(*amount)
 		}
+	}
+	return out, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Settlement advices
+// ---------------------------------------------------------------------------
+//
+// The one payment-layer table that IS book-scoped, so these three are the only
+// methods in this file that take a BookID — and the only ones that have to
+// ensureBook, because settlement_advices.book_id is a real foreign key.
+
+const settlementAdviceColumns = `book_id, cycle_id, asset, movement, closing_balance,
+	status, mirror_tx, advised_at, posted_at`
+
+func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	if err := t.ensureBook(ctx, book); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO settlement_advices (`+settlementAdviceColumns+`)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		ON CONFLICT (book_id, cycle_id, asset) DO UPDATE SET
+			movement        = EXCLUDED.movement,
+			closing_balance = EXCLUDED.closing_balance,
+			status          = EXCLUDED.status,
+			mirror_tx       = EXCLUDED.mirror_tx,
+			advised_at      = EXCLUDED.advised_at,
+			posted_at       = EXCLUDED.posted_at`,
+		string(book), string(a.CycleID), string(a.Asset), a.Movement, a.ClosingBalance,
+		int16(a.Status), string(a.MirrorTx), nullTime(a.AdvisedAt), nullTime(a.PostedAt))
+	if err != nil {
+		return fmt.Errorf("pg: put settlement advice %s/%s/%s: %w", book, a.CycleID, a.Asset, err)
+	}
+	return nil
+}
+
+func scanSettlementAdvice(row pgx.Row) (payment.SettlementAdvice, error) {
+	var (
+		a               payment.SettlementAdvice
+		status          int16
+		advised, posted *time.Time
+	)
+	err := row.Scan(&a.Book, &a.CycleID, &a.Asset, &a.Movement, &a.ClosingBalance,
+		&status, &a.MirrorTx, &advised, &posted)
+	if err != nil {
+		return payment.SettlementAdvice{}, err
+	}
+	a.Status = payment.AdviceStatus(status)
+	a.AdvisedAt = readTime(advised)
+	a.PostedAt = readTime(posted)
+	return a, nil
+}
+
+func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+	a, err := scanSettlementAdvice(t.tx.QueryRow(ctx,
+		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 AND cycle_id = $2 AND asset = $3",
+		string(book), string(cycle), string(asset)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment.SettlementAdvice{}, payment.ErrSettlementAdviceNotFound
+	}
+	if err != nil {
+		return payment.SettlementAdvice{}, fmt.Errorf("pg: get settlement advice %s/%s/%s: %w", book, cycle, asset, err)
+	}
+	return a, nil
+}
+
+func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
+	rows, err := t.tx.Query(ctx,
+		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 "+
+			"ORDER BY advised_at ASC NULLS FIRST, seq", string(book))
+	if err != nil {
+		return nil, fmt.Errorf("pg: list settlement advices: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.SettlementAdvice, 0)
+	for rows.Next() {
+		a, err := scanSettlementAdvice(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list settlement advices: %w", err)
+		}
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

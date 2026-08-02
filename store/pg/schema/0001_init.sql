@@ -571,6 +571,10 @@ CREATE TABLE participant_assets (
     asset          TEXT NOT NULL,
     suspense       TEXT NOT NULL,
     reserve        TEXT NOT NULL,
+    -- Where a credit goes when the payee's account will not take it. A
+    -- liability, because the bank still owes the money — to whoever eventually
+    -- claims it — exactly as it owes a deposit.
+    unclaimed      TEXT NOT NULL,
     settlement     TEXT NOT NULL,
     seq            BIGSERIAL NOT NULL,
     PRIMARY KEY (participant_id, asset)
@@ -745,6 +749,54 @@ CREATE TABLE settlement_positions (
     amount         BIGINT NOT NULL,
     PRIMARY KEY (settlement_id, participant_id)
 );
+
+-- settlement_advices is a MEMBER BANK's record of a cut-off it was told about,
+-- and it is the first payment-layer table keyed by book.
+--
+-- Every other table in this section — participants, payments, mandates, cycles,
+-- settlements — is network-scoped: those rows belong to no single bank, which is
+-- why they carry no book_id. This one does, and the difference is the whole of
+-- sub-project 8. A cycle is the clearing house's; a settlement is the central
+-- bank's; this is the member's, and when the stores split it moves into that
+-- member's own database and the other two do not follow it.
+--
+-- Two banks advised of one cut-off hold two rows with independent statuses. That
+-- is not redundancy: settlement is final at the central bank and participants
+-- catch up afterwards, so "this bank has booked it and that one has not" is a
+-- state the system must be able to be in. A row still in 'advised' IS the
+-- unreconciled position, and it is the only in-system trace of a local posting
+-- that failed.
+--
+-- closing_balance is what the central bank said the reserve stands at. Nothing
+-- reads it yet; Task 19 is the reconciliation that does. It is stored because it
+-- arrives, and a balance discarded on receipt is one nobody can go back for.
+--
+-- No foreign key to cycles. A member bank HAS no cycles — after the split the
+-- cycles table is not in its database at all — so a constraint here would encode
+-- exactly the sharing this sub-project removes.
+CREATE TABLE settlement_advices (
+    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    cycle_id        TEXT NOT NULL,
+    asset           TEXT NOT NULL,
+    movement        BIGINT NOT NULL,
+    closing_balance BIGINT NOT NULL,
+    -- SMALLINT, like every other status column in this schema, because
+    -- payment.AdviceStatus is an int enum and store/pg stores those as their
+    -- ordinal. status 0 is payment.AdviceAdvised, 1 is payment.AdvicePosted.
+    status          SMALLINT NOT NULL,
+    mirror_tx       TEXT NOT NULL DEFAULT '',
+    advised_at      TIMESTAMPTZ,
+    posted_at       TIMESTAMPTZ,
+    seq             BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, cycle_id, asset)
+);
+
+COMMENT ON COLUMN settlement_advices.movement IS
+    'SIGNED: positive means this bank''s reserve went up. The statement it came '
+    'from carries a magnitude and a CdtDbtInd, because the ISO 20022 money type '
+    'cannot be negative; the sign is reconstructed on the way in and stored, '
+    'because a mirror leg posted in the wrong direction is the most expensive '
+    'way to be wrong about a settlement.';
 
 -- ---------------------------------------------------------------------------
 -- The audit log

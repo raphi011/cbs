@@ -14,9 +14,14 @@ import (
 
 // participantAccountsDTO is one asset's worth of a bank's internal accounts.
 type participantAccountsDTO struct {
-	Asset      string `json:"asset"`
-	Suspense   string `json:"suspense"`
-	Reserve    string `json:"reserve"`
+	Asset    string `json:"asset"`
+	Suspense string `json:"suspense"`
+	Reserve  string `json:"reserve"`
+	// Unclaimed is where a credit goes when the payee's account will not take
+	// it. It is exposed beside the other three because a balance sitting on it
+	// is a real operational queue — money the bank owes somebody it has not yet
+	// identified — and an account nothing renders is one nobody goes looking at.
+	Unclaimed  string `json:"unclaimed"`
 	Settlement string `json:"settlement"`
 }
 
@@ -48,6 +53,7 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 			Asset:      string(code),
 			Suspense:   string(accts.Suspense),
 			Reserve:    string(accts.Reserve),
+			Unclaimed:  string(accts.Unclaimed),
 			Settlement: string(accts.Settlement),
 		})
 	}

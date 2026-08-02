@@ -943,14 +943,14 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], settlement — exist **once per [[asset]] it operates in**.
+    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], unclaimed balances, settlement — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
 \`\`\`
 Bank A
-├── EUR: suspense, reserve, settlement
-└── USD: suspense, reserve, settlement
+├── EUR: suspense, reserve, unclaimed, settlement
+└── USD: suspense, reserve, unclaimed, settlement
 \`\`\`
 
 [[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.

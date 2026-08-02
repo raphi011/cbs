@@ -67,6 +67,30 @@ var (
 	// any settlement.
 	ErrSettlementNotFound = errors.New("settlement not found")
 
+	// ErrSettlementAdviceNotFound is a cut-off this bank was never told about.
+	ErrSettlementAdviceNotFound = errors.New("settlement advice not found")
+
+	// ErrNotThisBanksPayment is a bank asked to post a leg for a payment whose
+	// party is somebody else's customer.
+	//
+	// It is the direction rule said about a settlement advice. On a push the
+	// clearing house tells BOTH banks a payment settled — the payer's bank
+	// because it has been waiting for the answer to its instruction, the payee's
+	// bank because it has a leg to post — and only one of them may post. A
+	// system that let either post would credit the payee twice or credit them in
+	// the wrong bank's book.
+	ErrNotThisBanksPayment = errors.New("payment: this bank is not the party whose leg this is")
+
+	// ErrStatementNotForThisBank is a statement about an account this bank does
+	// not hold.
+	//
+	// A member checks the account the statement names against its OWN reserve
+	// account before booking anything from it. A bank that booked whatever
+	// arrived would move its reserve mirror on another member's position — and
+	// under isolation a misrouted statement is exactly the failure that has no
+	// second reader to catch it.
+	ErrStatementNotForThisBank = errors.New("payment: this statement is about an account this bank does not hold")
+
 	// ErrSchemeUnsupportedReturn is returned when a return is attempted on a
 	// payment whose scheme does not support returns.
 	ErrSchemeUnsupportedReturn = errors.New("scheme does not support returns")

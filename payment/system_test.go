@@ -289,6 +289,57 @@ func TestSCT_HappyPath(t *testing.T) {
 	assertEqual(t, "status settled", got.Status, Settled)
 }
 
+// TestASettlementIntoAClosedAccountGoesToUnclaimedBalances is the fix for the
+// ruling SettleCycleTx and ReturnPaymentTx both recorded and neither could make.
+//
+// A payee who empties and closes their account between their bank's acceptance
+// and the cut-off used to be credited INTO the closed account: Close requires a
+// zero balance, no withdrawal reaches a closed account, and Closed is terminal,
+// so the money stranded for ever. The check that would have caught it was
+// unaffordable while settlement was one unit of work over the batch — refusing
+// took the whole cut-off down for one retail customer, with no route out.
+//
+// It is affordable now because one payment at one bank fails on its own, and the
+// money has somewhere to go.
+func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 30000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+	})
+	assertNoError(t, err)
+
+	// Bob closes after his bank has already accepted the payment and the
+	// clearing house has already taken it into the cut-off. His balance is zero,
+	// which is what Close requires, and the money on its way to him is in his
+	// bank's suspense rather than in his account.
+	closeCreditorAccount(t, sys, pay)
+
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+
+	// 1. The batch is not taken down by one closed account.
+	_, err = sys.SettleCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+
+	// 2. The payment settled, because it did: the reserves moved and Bob's bank
+	//    has been paid. Which of that bank's accounts holds the money afterwards
+	//    is between the bank and Bob.
+	got, err := sys.GetPayment(ctx, pay.ID)
+	assertNoError(t, err)
+	assertEqual(t, "status", got.Status, Settled)
+
+	// 3. And that account is the unclaimed-balances one, not Bob's.
+	assertEqual(t, "bank B unclaimed balances", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 30000)
+	assertEqual(t, "bob's closed account", customerBalance(t, b, bob), 0)
+}
+
 // PSD2 Art. 87(2): the payer's debit value date may be no earlier than the
 // moment the amount leaves the account, so the customer's leg must not share
 // the suspense leg's settlement-date value date.

@@ -351,6 +351,55 @@ type Settlement struct {
 	SettledAt    time.Time
 }
 
+// AdviceStatus is how far a member bank has got with a settlement it was told
+// about.
+type AdviceStatus int
+
+const (
+	// AdviceAdvised is told and not yet booked. It is the UNRECONCILED
+	// POSITION: settlement is final at the central bank and this bank has not
+	// caught up. A row stuck here is the one detector this system has for a
+	// local posting that failed, and it is why the row exists at all.
+	AdviceAdvised AdviceStatus = iota
+	// AdvicePosted is booked: the mirror leg is in this bank's own ledger.
+	AdvicePosted
+)
+
+// SettlementAdvice is a member bank's own record of a cut-off it was told about:
+// what its reserve moved by, what the central bank says it was left at, and
+// whether this bank has booked it yet.
+//
+// # It belongs to the BANK and not to the network
+//
+// Book is part of its identity, which is the whole point. A cycle is the
+// clearing house's and a settlement is the central bank's; this is the member's,
+// and under sub-project 8 it lives in that member's own store. Two banks advised
+// of the same cut-off hold two independent rows with independent statuses, which
+// is what makes "one bank fell behind" expressible at all.
+//
+// # ClosingBalance is stored and nothing checks it yet
+//
+// It is what the central bank says this bank's reserve stands at, and it is the
+// only figure in this system that a bank can check its own books against without
+// reading another institution's store. Task 19 is where that check happens. It is
+// stored now because it arrives now, and a statement's balance discarded on
+// receipt is a balance nobody can ever go back for.
+type SettlementAdvice struct {
+	Book    ledger.BookID
+	CycleID CycleID
+	Asset   ledger.AssetCode
+
+	// Movement is SIGNED: positive means this bank's reserve went up.
+	Movement       ledger.Amount
+	ClosingBalance ledger.Amount
+
+	Status   AdviceStatus
+	MirrorTx ledger.TransactionID
+
+	AdvisedAt time.Time
+	PostedAt  time.Time
+}
+
 // SettlementStatement is one member's share of a settlement, as the CENTRAL BANK
 // saw it at the moment it posted: the movement on that member's reserve account
 // and the balance the account was left at.

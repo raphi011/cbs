@@ -97,8 +97,8 @@ var reasonTable = []reasonMapping{
 	// table has never heard of at all — both come back MS03 through the same
 	// fallback path, and TestReasonForEmptyCodeEntriesFallToMS03 pins that. So
 	// the discrimination is the CALLER's, made by name: mesh's handlers test
-	// for ErrInvalidStateTransition — the one of the six an ordinary
-	// redelivery reaches — before they ask for a code at all. The other five
+	// for ErrInvalidStateTransition — the one of the nine an ordinary
+	// redelivery reaches — before they ask for a code at all. The other eight
 	// are not produced by the halves those handlers call, except through a
 	// message quoting an identifier this network has never issued, which
 	// answers MS03. That residue is stated rather than hidden; closing it
@@ -110,6 +110,21 @@ var reasonTable = []reasonMapping{
 	{ErrPaymentNotFound, "ErrPaymentNotFound", ""},
 	{ErrCycleNotFound, "ErrCycleNotFound", ""},
 	{ErrSettlementNotFound, "ErrSettlementNotFound", ""},
+
+	// A settlement advice is a bank's OWN row about its OWN cut-off, so a
+	// missing one is a question this bank asked itself and got no answer to.
+	// There is no counterparty in the conversation to tell.
+	{ErrSettlementAdviceNotFound, "ErrSettlementAdviceNotFound", ""},
+
+	// Both of these mean a message arrived at the wrong bank — a settled-payment
+	// advice for somebody else's customer, a reserve statement about somebody
+	// else's account. That is a defect in the ROUTING, and the sender is the
+	// clearing house or the settlement agent rather than a counterparty with an
+	// instruction outstanding. There is no code for "you sent me your own
+	// mistake", and MS03 would report the receiving bank's correct refusal as a
+	// judgement about a payment.
+	{ErrNotThisBanksPayment, "ErrNotThisBanksPayment", ""},
+	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
 
 	// Cycle lifecycle errors reach only the operator who drove the cycle into
 	// the wrong state; no counterparty ever sees one.

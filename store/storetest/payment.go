@@ -716,6 +716,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("SettlementAdviceIsScopedToTheBankThatWasAdvised", func(t *testing.T) {
+		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore))
+	})
+
 	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
 		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
 	})
@@ -945,6 +949,75 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 	}
 	if got.CreditorDetails != p.CreditorDetails {
 		t.Errorf("creditor details round-tripped as %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
+	}
+}
+
+// settlementAdviceIsScopedToTheBankThatWasAdvised pins that an advice belongs to
+// ONE bank's book and that two banks advised of the same cycle do not collide.
+//
+// The book is part of the key, not a column on it. A member bank's record of
+// what it was told about a cut-off is its own — under sub-project 8 it lives in
+// that bank's store and nowhere else — and a key that omitted the book would
+// make the second bank's advice overwrite the first's here and be unmigratable
+// there.
+func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+	one := payment.SettlementAdvice{
+		Book: "bank_2", CycleID: "cyc_1", Asset: "EUR",
+		Movement: -250000, ClosingBalance: 750000,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	two := payment.SettlementAdvice{
+		Book: "bank_3", CycleID: "cyc_1", Asset: "EUR",
+		Movement: 250000, ClosingBalance: 250000,
+		Status: payment.AdvicePosted, MirrorTx: "txn_9",
+		AdvisedAt: early, PostedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := tx.PutSettlementAdvice(ctx, one.Book, one); err != nil {
+			return err
+		}
+		return tx.PutSettlementAdvice(ctx, two.Book, two)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice: %v", err)
+	}
+
+	var gotOne, gotTwo payment.SettlementAdvice
+	var listed []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		if gotOne, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		if gotTwo, err = tx.GetSettlementAdvice(ctx, "bank_3", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("reading advices: %v", err)
+	}
+	if gotOne != one {
+		t.Errorf("bank_2's advice round-tripped as %+v, want %+v", gotOne, one)
+	}
+	if gotTwo != two {
+		t.Errorf("bank_3's advice round-tripped as %+v, want %+v", gotTwo, two)
+	}
+	if len(listed) != 1 {
+		t.Errorf("bank_2 lists %d advices, want 1 — the list is scoped to one book", len(listed))
+	}
+
+	// A cycle this bank was never advised of is a sentinel, not a zero value: a
+	// bank that read a zero advice would post a mirror leg of nothing and mark
+	// a cut-off it never heard about as settled.
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_nope", "EUR")
+		if !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
+			t.Errorf("got %v, want ErrSettlementAdviceNotFound", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
 	}
 }
 

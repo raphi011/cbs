@@ -34,11 +34,12 @@ export type Statement = { rows: StatementRow[]; finalBalance: number };
 // settlement") rather than clobbering to whichever role is listed last.
 export function buildKnownAccounts(participant?: Participant): Record<string, string> {
   if (!participant) return {};
-  // One set of these per asset the bank operates in, so a euro bank has three
-  // and a bank clearing two schemes has six.
+  // One set of these per asset the bank operates in, so a euro bank has four
+  // and a bank clearing two schemes has eight.
   const roles: [string, string][] = (participant.assets ?? []).flatMap((a) => [
     [a.suspense, "suspense"] as [string, string],
     [a.reserve, "reserve"] as [string, string],
+    [a.unclaimed, "unclaimed"] as [string, string],
     [a.settlement, "settlement"] as [string, string],
   ]);
   const byAccount: Record<string, string[]> = {};

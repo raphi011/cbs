@@ -215,6 +215,14 @@ type state struct {
 	cycles       map[payment.CycleID]payment.ClearingCycle
 	settlements  map[payment.SettlementID]payment.Settlement
 
+	// settlementAdvices is the ONE payment-layer table that is not
+	// network-scoped: an advice is a member bank's own record of a cut-off it
+	// was told about, so its book is part of its identity. It is keyed by
+	// (book, cycle, asset) in a flat map rather than nested per book, so an
+	// upsert is a single map assignment — the same identity store/pg gets from
+	// a primary key on (book_id, cycle_id, asset).
+	settlementAdvices map[adviceKey]payment.SettlementAdvice
+
 	// endToEnd maps end-to-end ids to payment IDs, the payment layer's
 	// equivalent of the ledger's idempotency index. It is what lets the store
 	// reject a duplicate client reference.
@@ -290,6 +298,16 @@ type facilityTermsKey struct {
 	dayKey   string
 }
 
+// adviceKey is a settlement advice's composite identity: the bank that was
+// advised, the cut-off it was advised of, and the asset it settles in. All
+// three, because two banks advised of one cut-off hold two rows and a bank
+// operating in two assets settles each separately.
+type adviceKey struct {
+	book  ledger.BookID
+	cycle payment.CycleID
+	asset ledger.AssetCode
+}
+
 // rowKind names the table a row belongs to, so sequences are per table.
 type rowKind string
 
@@ -309,6 +327,7 @@ const (
 	kindMandate        rowKind = "mandate"
 	kindCycle          rowKind = "cycle"
 	kindSettlement     rowKind = "settlement"
+	kindAdvice         rowKind = "settlement_advice"
 	kindFacility       rowKind = "facility"
 	kindInstallment    rowKind = "installment"
 	kindFacilityTerms  rowKind = "facility_terms"
@@ -329,31 +348,32 @@ type rowCounterKey struct {
 
 func newState() *state {
 	return &state{
-		ledgers:         make(map[ledger.BookID]map[ledger.LedgerID]ledger.Ledger),
-		subledgers:      make(map[ledger.BookID]map[ledger.SubledgerID]ledger.Subledger),
-		accounts:        make(map[ledger.BookID]map[ledger.AccountID]ledger.Account),
-		transactions:    make(map[ledger.BookID]map[ledger.TransactionID]ledger.Transaction),
-		idempotency:     make(map[ledger.BookID]map[string]ledger.TransactionID),
-		idCounter:       make(map[ledger.BookID]int64),
-		subledgerSeq:    make(map[ledger.BookID]int),
-		accountSeq:      make(map[ledger.BookID]map[string]int),
-		depositAccounts: make(map[ledger.BookID]map[deposit.AccountID]deposit.Account),
-		holds:           make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
-		snapshots:       make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
-		overdraftTerms:  make(map[ledger.BookID]map[termsKey]deposit.OverdraftTerms),
-		products:        make(map[ledger.BookID]map[product.ID]product.Product),
-		productVersions: make(map[ledger.BookID]map[versionKey]product.Version),
-		participants:    make(map[payment.ParticipantID]payment.Participant),
-		payments:        make(map[payment.PaymentID]payment.Payment),
-		mandates:        make(map[payment.MandateID]payment.Mandate),
-		cycles:          make(map[payment.CycleID]payment.ClearingCycle),
-		settlements:     make(map[payment.SettlementID]payment.Settlement),
-		endToEnd:        make(map[string]payment.PaymentID),
-		facilities:      make(map[ledger.BookID]map[lending.FacilityID]lending.Facility),
-		installments:    make(map[ledger.BookID]map[installmentKey]lending.Installment),
-		facilityTerms:   make(map[ledger.BookID]map[facilityTermsKey]lending.FacilityTerms),
-		rowSeq:          make(map[rowKey]int64),
-		rowSeqCounter:   make(map[rowCounterKey]int64),
+		ledgers:           make(map[ledger.BookID]map[ledger.LedgerID]ledger.Ledger),
+		subledgers:        make(map[ledger.BookID]map[ledger.SubledgerID]ledger.Subledger),
+		accounts:          make(map[ledger.BookID]map[ledger.AccountID]ledger.Account),
+		transactions:      make(map[ledger.BookID]map[ledger.TransactionID]ledger.Transaction),
+		idempotency:       make(map[ledger.BookID]map[string]ledger.TransactionID),
+		idCounter:         make(map[ledger.BookID]int64),
+		subledgerSeq:      make(map[ledger.BookID]int),
+		accountSeq:        make(map[ledger.BookID]map[string]int),
+		depositAccounts:   make(map[ledger.BookID]map[deposit.AccountID]deposit.Account),
+		holds:             make(map[ledger.BookID]map[deposit.HoldID]deposit.Hold),
+		snapshots:         make(map[ledger.BookID]map[snapshotKey]deposit.Snapshot),
+		overdraftTerms:    make(map[ledger.BookID]map[termsKey]deposit.OverdraftTerms),
+		products:          make(map[ledger.BookID]map[product.ID]product.Product),
+		productVersions:   make(map[ledger.BookID]map[versionKey]product.Version),
+		participants:      make(map[payment.ParticipantID]payment.Participant),
+		payments:          make(map[payment.PaymentID]payment.Payment),
+		mandates:          make(map[payment.MandateID]payment.Mandate),
+		cycles:            make(map[payment.CycleID]payment.ClearingCycle),
+		settlements:       make(map[payment.SettlementID]payment.Settlement),
+		settlementAdvices: make(map[adviceKey]payment.SettlementAdvice),
+		endToEnd:          make(map[string]payment.PaymentID),
+		facilities:        make(map[ledger.BookID]map[lending.FacilityID]lending.Facility),
+		installments:      make(map[ledger.BookID]map[installmentKey]lending.Installment),
+		facilityTerms:     make(map[ledger.BookID]map[facilityTermsKey]lending.FacilityTerms),
+		rowSeq:            make(map[rowKey]int64),
+		rowSeqCounter:     make(map[rowCounterKey]int64),
 	}
 }
 
@@ -367,33 +387,34 @@ func newState() *state {
 // past that length is invisible to the snapshot.
 func (s *state) clone() *state {
 	return &state{
-		ledgers:         cloneNested(s.ledgers),
-		subledgers:      cloneNested(s.subledgers),
-		accounts:        cloneNested(s.accounts),
-		transactions:    cloneNested(s.transactions),
-		idempotency:     cloneNested(s.idempotency),
-		audit:           s.audit,
-		auditSeq:        s.auditSeq,
-		idCounter:       maps.Clone(s.idCounter),
-		subledgerSeq:    maps.Clone(s.subledgerSeq),
-		accountSeq:      cloneNested(s.accountSeq),
-		depositAccounts: cloneNested(s.depositAccounts),
-		holds:           cloneNested(s.holds),
-		snapshots:       cloneNested(s.snapshots),
-		overdraftTerms:  cloneNested(s.overdraftTerms),
-		products:        cloneNested(s.products),
-		productVersions: cloneNested(s.productVersions),
-		participants:    maps.Clone(s.participants),
-		payments:        maps.Clone(s.payments),
-		mandates:        maps.Clone(s.mandates),
-		cycles:          maps.Clone(s.cycles),
-		settlements:     maps.Clone(s.settlements),
-		endToEnd:        maps.Clone(s.endToEnd),
-		facilities:      cloneNested(s.facilities),
-		installments:    cloneNested(s.installments),
-		facilityTerms:   cloneNested(s.facilityTerms),
-		rowSeq:          maps.Clone(s.rowSeq),
-		rowSeqCounter:   maps.Clone(s.rowSeqCounter),
+		ledgers:           cloneNested(s.ledgers),
+		subledgers:        cloneNested(s.subledgers),
+		accounts:          cloneNested(s.accounts),
+		transactions:      cloneNested(s.transactions),
+		idempotency:       cloneNested(s.idempotency),
+		audit:             s.audit,
+		auditSeq:          s.auditSeq,
+		idCounter:         maps.Clone(s.idCounter),
+		subledgerSeq:      maps.Clone(s.subledgerSeq),
+		accountSeq:        cloneNested(s.accountSeq),
+		depositAccounts:   cloneNested(s.depositAccounts),
+		holds:             cloneNested(s.holds),
+		snapshots:         cloneNested(s.snapshots),
+		overdraftTerms:    cloneNested(s.overdraftTerms),
+		products:          cloneNested(s.products),
+		productVersions:   cloneNested(s.productVersions),
+		participants:      maps.Clone(s.participants),
+		payments:          maps.Clone(s.payments),
+		mandates:          maps.Clone(s.mandates),
+		cycles:            maps.Clone(s.cycles),
+		settlements:       maps.Clone(s.settlements),
+		settlementAdvices: maps.Clone(s.settlementAdvices),
+		endToEnd:          maps.Clone(s.endToEnd),
+		facilities:        cloneNested(s.facilities),
+		installments:      cloneNested(s.installments),
+		facilityTerms:     cloneNested(s.facilityTerms),
+		rowSeq:            maps.Clone(s.rowSeq),
+		rowSeqCounter:     maps.Clone(s.rowSeqCounter),
 	}
 }
 
