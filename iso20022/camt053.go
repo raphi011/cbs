@@ -1,0 +1,242 @@
+package iso20022
+
+import (
+	"encoding/xml"
+	"fmt"
+)
+
+const camt053Namespace = "urn:iso:std:iso:20022:tech:xsd:camt.053.001.08"
+
+func init() {
+	registerDocument("camt.053.001.08", camt053Namespace, func() Document { return &Camt053{} })
+}
+
+// Camt053 is BankToCustomerStatement: an account servicer telling an account
+// holder what happened on an account the holder does not keep.
+//
+// # Why the camt family stopped being deliberately absent
+//
+// The package doc recorded the whole family as out of scope, and the reason it
+// gave was true when it was written: no institution in this system needed to be
+// TOLD about a movement on an account it does not hold. Every actor could read
+// every book. Sub-project 8 creates the first institution that cannot — a member
+// bank whose reserve at the central bank moves in the CENTRAL BANK's book, which
+// after the split it may not read — so the movement has to arrive as a message
+// or not at all. The reversal is recorded in doc.go and in the sub-project's
+// design; it is a change of circumstance, not a change of mind.
+//
+// # Why a statement and not a notification
+//
+// A camt.054 carries entries and no balance. It can drive a posting and it can
+// never detect a wrong one. A camt.053 carries Ntry — what to book — and
+// Bal/CLBD — whether you booked it right, which is the check a member's reserve
+// mirror needs and the only in-system detector of a mis-booked position. Nostro
+// reconciliation in the field is balance-anchored for exactly this reason. One
+// message family covers both jobs, so this package carries one.
+//
+// # "Customer" here is a bank
+//
+// The message definition's Cstmr is the account HOLDER, whoever that is. On this
+// wire the servicer is the central bank and the holder is a member bank, which
+// is the same relationship a retail bank has with a depositor one layer down.
+// Nothing in the message says the holder is a person, and the type does not
+// pretend otherwise.
+//
+// Deliberately omitted, and legal in the standard: MsgPgntn (this system sends
+// one page), Stmt/ElctrncSeqNb and LglSeqNb (there is no statement series yet —
+// see Task 19), Stmt/FrToDt (a settlement statement covers one cycle, named on
+// the entry, not a date range), TxsSummry, Ntry/NtryDtls and every charge,
+// interest and related-party element. Each is absent rather than empty.
+type Camt053 struct {
+	XMLName       xml.Name                `xml:"urn:iso:std:iso:20022:tech:xsd:camt.053.001.08 Document"`
+	BkToCstmrStmt BankToCustomerStatement `xml:"BkToCstmrStmt"`
+}
+
+func (Camt053) MessageDefinitionIdentifier() string { return "camt.053.001.08" }
+func (Camt053) namespace() string                   { return camt053Namespace }
+
+func (d Camt053) validate() error { return d.BkToCstmrStmt.validate() }
+
+// BankToCustomerStatement is a group header and one or more statements.
+type BankToCustomerStatement struct {
+	GrpHdr StatementGroupHeader `xml:"GrpHdr"`
+	Stmt   []AccountStatement   `xml:"Stmt"`
+}
+
+func (m BankToCustomerStatement) validate() error {
+	if err := m.GrpHdr.validate(); err != nil {
+		return err
+	}
+	if len(m.Stmt) == 0 {
+		return fmt.Errorf("%w: Stmt", ErrMissingElement)
+	}
+	for i := range m.Stmt {
+		if err := m.Stmt[i].validate(); err != nil {
+			return fmt.Errorf("Stmt[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// StatementGroupHeader is a message identifier and a creation instant.
+//
+// It is NOT CreditTransferGroupHeader, which pacs.008 and pacs.009 share: that
+// type carries NbOfTxs, SttlmInf and IntrBkSttlmDt, none of which a statement
+// has. A shared struct here would emit three elements the schema does not allow
+// in a camt.053.
+type StatementGroupHeader struct {
+	MsgId   string      `xml:"MsgId"`
+	CreDtTm ISODateTime `xml:"CreDtTm"`
+}
+
+func (h StatementGroupHeader) validate() error {
+	if h.MsgId == "" {
+		return fmt.Errorf("%w: GrpHdr/MsgId", ErrMissingElement)
+	}
+	if h.CreDtTm.IsZero() {
+		return fmt.Errorf("%w: GrpHdr/CreDtTm", ErrMissingElement)
+	}
+	return nil
+}
+
+// AccountStatement is one account's statement: which account, what its balance
+// is, and what moved.
+//
+// The field order is the schema's sequence order and must not be changed.
+//
+// Bal is validated as NON-EMPTY, which the schema also requires (1..n) and which
+// is the element this message is chosen for. See the type doc on Camt053.
+type AccountStatement struct {
+	Id      string           `xml:"Id"`
+	CreDtTm ISODateTime      `xml:"CreDtTm"`
+	Acct    CashAccount      `xml:"Acct"`
+	Bal     []CashBalance    `xml:"Bal"`
+	Ntry    []StatementEntry `xml:"Ntry"`
+}
+
+func (s AccountStatement) validate() error {
+	if s.Id == "" {
+		return fmt.Errorf("%w: Stmt/Id", ErrMissingElement)
+	}
+	if s.CreDtTm.IsZero() {
+		return fmt.Errorf("%w: Stmt/CreDtTm", ErrMissingElement)
+	}
+	if err := s.Acct.validate(); err != nil {
+		return fmt.Errorf("Acct: %w", err)
+	}
+	if len(s.Bal) == 0 {
+		return fmt.Errorf("%w: Stmt/Bal", ErrMissingElement)
+	}
+	for i := range s.Bal {
+		if err := s.Bal[i].validate(); err != nil {
+			return fmt.Errorf("Bal[%d]: %w", i, err)
+		}
+	}
+	for i := range s.Ntry {
+		if err := s.Ntry[i].validate(); err != nil {
+			return fmt.Errorf("Ntry[%d]: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// CashBalance is one balance on the account, and which balance it is.
+type CashBalance struct {
+	Tp        BalanceTypeChoice       `xml:"Tp"`
+	Amt       ActiveCurrencyAndAmount `xml:"Amt"`
+	CdtDbtInd CreditDebitCode         `xml:"CdtDbtInd"`
+	Dt        DateAndDateTime         `xml:"Dt"`
+}
+
+func (b CashBalance) validate() error {
+	if b.Tp.CdOrPrtry.Cd == "" {
+		return fmt.Errorf("%w: Bal/Tp/CdOrPrtry/Cd", ErrMissingElement)
+	}
+	if err := b.Amt.Validate(); err != nil {
+		return fmt.Errorf("Bal/Amt: %w", err)
+	}
+	if b.CdtDbtInd == "" {
+		return fmt.Errorf("%w: Bal/CdtDbtInd", ErrMissingElement)
+	}
+	return b.Dt.validate()
+}
+
+// BalanceTypeChoice names which balance this is. The standard offers a code or a
+// proprietary identifier; only the code arm is carried, as ServiceLevelChoice
+// does, because every balance this system reports is in the external code set.
+type BalanceTypeChoice struct {
+	CdOrPrtry BalanceTypeCode `xml:"CdOrPrtry"`
+}
+
+// BalanceTypeCode is the extra element of nesting the standard puts between Tp
+// and the code. It exists so the XML comes out right and for no other reason.
+type BalanceTypeCode struct {
+	Cd BalanceType `xml:"Cd"`
+}
+
+// StatementEntry is one movement on the account.
+//
+// AcctSvcrRef is the SERVICER's reference for the entry, and here it is the
+// CLEARING CYCLE the movement discharged. That is what makes the statement
+// actionable: a member bank has no cycles of its own — it never sees a batch —
+// so the only way it can tell which cut-off a reserve movement belongs to is for
+// the central bank to say. See payment.ReadStatement.
+//
+// The field order is the schema's sequence order and must not be changed.
+type StatementEntry struct {
+	Amt          ActiveCurrencyAndAmount `xml:"Amt"`
+	CdtDbtInd    CreditDebitCode         `xml:"CdtDbtInd"`
+	Sts          EntryStatusChoice       `xml:"Sts"`
+	BookgDt      DateAndDateTime         `xml:"BookgDt"`
+	ValDt        DateAndDateTime         `xml:"ValDt"`
+	AcctSvcrRef  string                  `xml:"AcctSvcrRef,omitempty"`
+	AddtlNtryInf string                  `xml:"AddtlNtryInf,omitempty"`
+}
+
+func (e StatementEntry) validate() error {
+	if err := e.Amt.Validate(); err != nil {
+		return fmt.Errorf("Ntry/Amt: %w", err)
+	}
+	if e.CdtDbtInd == "" {
+		return fmt.Errorf("%w: Ntry/CdtDbtInd", ErrMissingElement)
+	}
+	if e.Sts.Cd == "" {
+		return fmt.Errorf("%w: Ntry/Sts/Cd", ErrMissingElement)
+	}
+	if err := e.BookgDt.validate(); err != nil {
+		return fmt.Errorf("Ntry/BookgDt: %w", err)
+	}
+	if err := e.ValDt.validate(); err != nil {
+		return fmt.Errorf("Ntry/ValDt: %w", err)
+	}
+	return nil
+}
+
+// EntryStatusChoice is booked or pending. Only the code arm is carried, for
+// BalanceTypeChoice's reason.
+type EntryStatusChoice struct {
+	Cd EntryStatus `xml:"Cd"`
+}
+
+// DateAndDateTime is a date OR a date-time, never both and never neither.
+//
+// This is an xsd:choice, which encoding/xml cannot express, so both arms are
+// pointers and validate enforces exactly-one — the same shape
+// AccountIdentification4Choice has and for the same reason. Only the date arm is
+// produced here: a settlement's booking and value dates are days, and a
+// date-time would assert a precision the cut-off does not have.
+type DateAndDateTime struct {
+	Dt   *ISODate     `xml:"Dt,omitempty"`
+	DtTm *ISODateTime `xml:"DtTm,omitempty"`
+}
+
+func (d DateAndDateTime) validate() error {
+	switch {
+	case d.Dt != nil && d.DtTm != nil:
+		return fmt.Errorf("%w: DateAndDateTime has both Dt and DtTm", ErrInvalidChoice)
+	case d.Dt != nil, d.DtTm != nil:
+		return nil
+	default:
+		return fmt.Errorf("%w: DateAndDateTime has neither Dt nor DtTm", ErrInvalidChoice)
+	}
+}

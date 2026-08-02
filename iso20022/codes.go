@@ -196,3 +196,50 @@ const (
 	// agent.
 	ReturnReasonBankIdentifierIncorrect ReturnReason = "RC01"
 )
+
+// CreditDebitCode says which way an amount runs, from the point of view of the
+// account the statement is about.
+//
+// It is a separate element rather than a sign on the amount because
+// ActiveCurrencyAndAmount cannot be negative — NewAmount refuses one — and that
+// is the standard's shape throughout: money is a magnitude and the direction is
+// said in words. It is the same separation ledger.Entry makes with Direction,
+// arrived at independently.
+type CreditDebitCode string
+
+const (
+	// CreditDebitCredit is money INTO the account the statement is about.
+	CreditDebitCredit CreditDebitCode = "CRDT"
+	// CreditDebitDebit is money OUT of it.
+	CreditDebitDebit CreditDebitCode = "DBIT"
+)
+
+// BalanceType names which balance a Bal element carries.
+//
+// Only the closing booked balance is produced here, and that is the one this
+// system needs: it is the figure a member reconciles its own reserve mirror
+// against. OPBD (opening booked) is the obvious companion and is deliberately
+// absent — it is derivable from CLBD and the entries, so asserting it would be a
+// second source of truth for one fact, which is the shape of error a statement
+// exists to detect rather than to introduce.
+type BalanceType string
+
+const (
+	// BalanceTypeClosingBooked is CLBD: the balance after every entry in this
+	// statement has been booked.
+	BalanceTypeClosingBooked BalanceType = "CLBD"
+)
+
+// EntryStatus is whether an entry is booked or merely expected.
+//
+// Only BOOK is produced. A settlement statement is sent AFTER the netting
+// transaction has committed at the central bank — settlement is final at that
+// moment, which is the whole premise of this conversation — so there is no
+// pending entry for this system to report. PDNG would be a claim about a
+// movement that might not happen, and none of those exists here.
+type EntryStatus string
+
+const (
+	// EntryStatusBooked is BOOK: the entry is on the account.
+	EntryStatusBooked EntryStatus = "BOOK"
+)

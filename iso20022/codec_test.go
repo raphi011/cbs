@@ -111,7 +111,7 @@ func TestUnmarshalRejects(t *testing.T) {
 			in: `<Envelope><AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">` +
 				`<Fr><FIId><FinInstnId><BICFI>AURTSESSXXX</BICFI></FinInstnId></FIId></Fr>` +
 				`<To><FIId><FinInstnId><BICFI>CSMBFRPPXXX</BICFI></FinInstnId></FIId></To>` +
-				`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>camt.053.001.08</MsgDefIdr>` +
+				`<BizMsgIdr>x</BizMsgIdr><MsgDefIdr>camt.054.001.08</MsgDefIdr>` +
 				`<CreDt>2026-07-31T09:30:00Z</CreDt></AppHdr>` +
 				`<Document xmlns="urn:example:test.001.001.01"><Body>hello</Body></Document></Envelope>`,
 			want: ErrUnknownMessageDefinition,
