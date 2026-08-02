@@ -279,8 +279,8 @@ function RefusedAlert({ cycle, shortfall }: { cycle: ClearingCycle; shortfall: S
         <p>
           <IdText id={shortfall.participant} /> owes {amount(shortfall.owed)} and
           holds {amount(shortfall.held)} on reserve, so the central bank answers
-          this instruction <strong>RJCT/AM04</strong> and posts nothing at all.
-          Settlement is one unit of work over the whole batch: every other
+          this instruction <strong>RJCT/AM04</strong>{" "}
+          and posts nothing at all. Settlement is one unit of work over the whole batch: every other
           member&rsquo;s position is undischarged too, and every payment in the
           cycle is still Cleared with the payer&rsquo;s money sitting in its own
           bank&rsquo;s clearing suspense. Fund the member, and the clearing house
