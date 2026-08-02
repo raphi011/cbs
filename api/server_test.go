@@ -1589,7 +1589,7 @@ func TestAuditDefaultLimitApplies(t *testing.T) {
 	h := newServer(t, nil)
 
 	// Each open/close pair is two payment-scope events; 51 pairs clears 100.
-	// No drain between closes, and the exact count at :1599 depends on that
+	// No drain between closes, and the exact count at :1605 depends on that
 	// being safe: every cycle here nets to nothing (no payment was ever put in
 	// it), and instructSettlement declines to send a pacs.009 for an empty net
 	// (mesh/csm.go:550-552) — so no settlement chain starts and no third event
@@ -2836,12 +2836,15 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// left untouched when the pacs.008 reaches the payee's bank —
 	// creditorSideTx (payment/system.go:1359) re-derives the same address and
 	// AcceptInboundTx (payment/system.go:1203) skips the write when nothing
-	// changed. The case just above (:2814) proves a push that quotes no
-	// creditor address at all is refused before submission ever reaches the
-	// mesh, so an async creditor back-fill is unreachable through this route —
-	// there is no api-level test for it, and this is not one either. No drain
-	// is needed before the GET below: nothing on this path is still in flight,
-	// and the value read back is the one already in the request.
+	// changed. The case just above (:2822) proves a push that quotes no
+	// creditor address at all is refused synchronously inside the mesh —
+	// mesh.Submit -> bank.submit -> SubmitPayment (mesh/bank.go:124-147) —
+	// before any message is built or sent, so there is no path through this
+	// route on which a creditor back-fill is ever attempted, let alone
+	// reachable. There is no api-level test for that back-fill, and this is
+	// not one either. No drain is needed before the GET below: nothing on
+	// this path is still in flight, and the value read back is the one
+	// already in the request.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
