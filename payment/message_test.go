@@ -78,8 +78,11 @@ func networkWithOnePayment(t *testing.T) (*Network, Payment) {
 		Amount:      250000,
 		EndToEndID:  "e2e-1",
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it.
-		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
+		// Push: the creditor is the counterparty, so the request must name it —
+		// the NAME only. The BIC on the payment this returns comes from the roster,
+		// derived by SubmitPaymentTx, so the message built from it still carries
+		// Verde's CdtrAgt without the fixture asserting one.
+		CreditorDetails: PartyDetails{Name: bruno.Name},
 	})
 	assertNoError(t, err)
 	return sys, p
@@ -107,8 +110,9 @@ func networkWithOneCollection(t *testing.T) (*Network, Payment, Mandate) {
 		MandateID:   m.ID,
 		EndToEndID:  "e2e-dd-1",
 		Description: "electricity, August",
-		// Pull: the debtor is the counterparty, so the request must name it.
-		DebtorDetails: PartyDetails{Agent: aurora.BIC, Name: alice.Name},
+		// Pull: the debtor is the counterparty, so the request must name it. See
+		// networkWithOnePayment on why no Agent is set.
+		DebtorDetails: PartyDetails{Name: alice.Name},
 	})
 	assertNoError(t, err)
 	return sys, p, m

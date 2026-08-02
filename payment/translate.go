@@ -525,7 +525,12 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // that touches the store" — is now false in the strongest way available: no part
 // of it does. The four builders below were already pure and this joins them,
 // which is why the two Network methods lose their context parameter.
-func (s *Network) partiesOf(p Payment) (debtor, creditor messageParty) {
+//
+// It is a PACKAGE function and not a method for the same reason, one step
+// further: it held a *Network receiver it never named, and "it reads nothing" is
+// worth having the compiler check rather than a reader. There is no store on the
+// other side of a value it does not have.
+func partiesOf(p Payment) (debtor, creditor messageParty) {
 	return messageParty{
 			BIC:        p.DebtorDetails.Agent,
 			Name:       p.DebtorDetails.Name,
@@ -559,7 +564,7 @@ func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor := s.partiesOf(p)
+	debtor, creditor := partiesOf(p)
 	return creditTransfer(p, debtor, creditor, asset, mc)
 }
 
@@ -648,7 +653,7 @@ func (s *Network) DirectDebitMessage(p Payment, m Mandate, mc MessageContext) (i
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor := s.partiesOf(p)
+	debtor, creditor := partiesOf(p)
 	return directDebit(p, m, debtor, creditor, asset, mc)
 }
 

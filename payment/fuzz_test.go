@@ -29,10 +29,13 @@ type fuzzInput struct {
 
 // buildCreditTransfer drives the SAME conversion CreditTransferMessage drives.
 //
-// It stops one step short of it and no further: CreditTransferMessage resolves
-// two participants and two deposit accounts out of the store and then calls
-// creditTransfer, and this calls creditTransfer with the resolution's result
-// supplied directly. Everything the translator decides — ibanOf, namedParty,
+// It stops one step short of it and no further: CreditTransferMessage takes the
+// two sides off the payment — partiesOf, which reads nothing at all since Task
+// 14.3 — and then calls creditTransfer, and this calls creditTransfer with two
+// messageParty values supplied directly. That is a smaller step than it once
+// was, and the smaller it gets the more of the translator this target covers:
+// what is skipped here is now a struct copy, not a pair of store reads.
+// Everything the translator decides — ibanOf, namedParty,
 // amountOf, the header, the whole message tree — is on this path. A wrapper
 // that assembled a CashAccount itself, rather than going through ibanOf, would
 // be a second translator and would test nothing about the first.

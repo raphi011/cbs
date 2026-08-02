@@ -353,10 +353,14 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 }
 
 // initSCT submits a credit transfer. It is the SUBMITTING (debtor's) bank, so
-// the request must name the counterparty: the creditor's bank and the name on
-// the creditor's account, both taken from the participant and account the seed
-// itself already built — this is the seed playing the payer who typed the
-// payee's name in, not a lookup.
+// the request must name the counterparty: the NAME on the creditor's account,
+// taken from the account the seed itself already built — this is the seed
+// playing the payer who typed the payee's name in, not a lookup.
+//
+// No Agent. The creditor's BIC is derived from the roster by SubmitPaymentTx
+// and anything set here would be discarded, so setting it would be the seed
+// demonstrating an input this system does not accept — see
+// payment.PartyDetails.Agent.
 func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
@@ -365,13 +369,13 @@ func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *paymen
 		Amount:          amount,
 		EndToEndID:      e2e,
 		Description:     desc,
-		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
+		CreditorDetails: payment.PartyDetails{Name: c.Name},
 	})
 }
 
 // initSDD submits a direct debit. It is the SUBMITTING (creditor's) bank, so
-// the request must name the counterparty: the debtor's bank and the name on
-// the debtor's account. See initSCT.
+// the request must name the counterparty: the name on the debtor's account,
+// and not the debtor's bank. See initSCT.
 func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:        payment.SchemeSEPADD,
@@ -381,7 +385,7 @@ func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *paymen
 		MandateID:     mandate,
 		EndToEndID:    e2e,
 		Description:   desc,
-		DebtorDetails: payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
+		DebtorDetails: payment.PartyDetails{Name: d.Name},
 	})
 }
 

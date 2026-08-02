@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
-	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -350,18 +349,29 @@ type initiatePaymentRequest struct {
 	Description string            `json:"description"`
 	Metadata    map[string]string `json:"metadata"`
 
-	// DebtorAgent and DebtorName are what the payer says about the payer's own
-	// side, and CreditorAgent/CreditorName are what it says about the payee:
-	// the BIC of a party's bank and the name on the account. Only the
-	// COUNTERPARTY's pair is required — the creditor's on a push, the debtor's
-	// on a pull — because submission looks neither up: the account is at another
+	// DebtorName and CreditorName are the names on the two accounts. Only the
+	// COUNTERPARTY's is required — the creditor's on a push, the debtor's on a
+	// pull — because submission looks it up nowhere: the account is at another
 	// bank, and nothing on the path that builds a payment reads another bank's
 	// register. See payment.ErrCounterpartyNotNamed, which says what the
 	// separate GET /directory lookup does and does not feed.
-	DebtorAgent   string `json:"debtorAgent,omitempty"`
-	DebtorName    string `json:"debtorName,omitempty"`
-	CreditorAgent string `json:"creditorAgent,omitempty"`
-	CreditorName  string `json:"creditorName,omitempty"`
+	//
+	// There is deliberately NO debtorAgent or creditorAgent. There used to be,
+	// and it was a routing hole: the agent goes on the wire as CdtrAgt/DbtrAgt
+	// and the clearing house routes on it, so a payer who typed the wrong BIC
+	// chose which bank received the payment. Both agents are now derived from
+	// the roster row for the participant the request already names — see
+	// payment.SubmitPaymentTx — which is what a SEPA originating bank does, and
+	// is why this request carries an account holder's name and no bank
+	// identifier at all.
+	//
+	// Removed rather than accepted-and-ignored, and this decoder is what makes
+	// that the sharper of the two: respond.go's DisallowUnknownFields turns a
+	// client that still sends creditorAgent into a 400 naming the field. A
+	// silently ignored routing element would be the worse failure by far — the
+	// caller would have every reason to believe it chose the destination bank.
+	DebtorName   string `json:"debtorName,omitempty"`
+	CreditorName string `json:"creditorName,omitempty"`
 }
 
 func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
@@ -374,14 +384,10 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,
 		Metadata:    req.Metadata,
-		DebtorDetails: payment.PartyDetails{
-			Agent: iso20022.BIC(req.DebtorAgent),
-			Name:  req.DebtorName,
-		},
-		CreditorDetails: payment.PartyDetails{
-			Agent: iso20022.BIC(req.CreditorAgent),
-			Name:  req.CreditorName,
-		},
+		// No Agent on either side: SubmitPaymentTx derives both from the roster
+		// and would ignore anything set here.
+		DebtorDetails:   payment.PartyDetails{Name: req.DebtorName},
+		CreditorDetails: payment.PartyDetails{Name: req.CreditorName},
 	}
 }
 

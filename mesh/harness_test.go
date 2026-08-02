@@ -391,8 +391,12 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
+		// Push: the creditor is the counterparty, so the request must name it —
+		// the NAME, and only the name. No Agent: the counterparty's BIC is derived
+		// from the roster by SubmitPaymentTx and anything set here is discarded.
+		// TestAWrongCounterpartyAgentDoesNotMisroute sets one on purpose, which is
+		// the only place in this package that should.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
 	}
 }
 
@@ -433,8 +437,9 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
-		// Pull: the debtor is the counterparty, so the request must name it.
-		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
+		// Pull: the debtor is the counterparty, so the request must name it. See
+		// creditTransferRequest on why there is no Agent beside the name.
+		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
 	}
 }
 
@@ -492,8 +497,9 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		},
 		Amount:      harnessAmount,
 		Description: "invoice 43",
-		// Push: the creditor is the counterparty, so the request must name it.
-		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
+		// Push: the creditor is the counterparty, so the request must name it. See
+		// creditTransferRequest on why there is no Agent beside the name.
+		CreditorDetails: payment.PartyDetails{Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)

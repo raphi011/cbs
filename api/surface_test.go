@@ -369,7 +369,6 @@ func settledCycle(t *testing.T, h *Server) string {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e",
-		"creditorAgent":"BNKBDEFFXXX",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
@@ -461,7 +460,6 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
 		"endToEndId":"`+e2e+`",
-		"creditorAgent":"`+to.bic+`",
 		"creditorName":"`+to.accountName+`"
 	}`, http.StatusAccepted)["id"].(string)
 	// The payment is Initiated when the 202 is written and the counterparty has
@@ -485,7 +483,6 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
 		"endToEndId":"retail-1",
-		"creditorAgent":"` + b.bic + `",
 		"creditorName":"` + b.accountName + `"
 	}`
 
@@ -531,7 +528,6 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 		"amount":10000,
 		"mandateId":"` + mandate + `",
 		"endToEndId":"collection-1",
-		"debtorAgent":"` + payerBank.bic + `",
 		"debtorName":"` + payerBank.accountName + `"
 	}`
 

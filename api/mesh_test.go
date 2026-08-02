@@ -201,7 +201,6 @@ func validSubmission() string {
 		"creditor":{"participant":"bank_3","account":"dep_23","identifier":{"scheme":"IBAN","value":"IT60-VERDE-2002"}},
 		"amount":1000,
 		"description":"mesh handoff",
-		"creditorAgent":"VERDITMMXXX",
 		"creditorName":"Bella Bruno"
 	}`
 }
@@ -349,7 +348,6 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
 		"amount":25000,
-		"creditorAgent":"BNKBDEFFXXX",
 		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
 	drainServer(t, h)

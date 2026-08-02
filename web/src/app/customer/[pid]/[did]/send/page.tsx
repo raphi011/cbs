@@ -50,16 +50,24 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee. GET /directory
-  // (api/handlers_directory.go's handleResolveIdentifier) resolves the typed
-  // IBAN across the network and reads the resolved account — bank, asset and
-  // name — off the payee's own bank's deposit register, but PayeeLine below
-  // shows only the bank: rendering the resolved name would teach that the
-  // payer's bank confirms who it is paying, and it does not — the name that
-  // goes on the instruction is the one the payer typed. Neither field below is
-  // populated from that answer: the payer types both independently, and the
-  // request carries only what was typed.
-  const [creditorAgent, setCreditorAgent] = useState("");
+  // What the payer says about the payee, and it is exactly one thing: the NAME.
+  //
+  // GET /directory (api/handlers_directory.go's handleResolveIdentifier)
+  // resolves the typed IBAN across the network and reads the resolved account —
+  // bank, asset and name — off the payee's own bank's deposit register, but
+  // PayeeLine below shows only the bank: rendering the resolved name would teach
+  // that the payer's bank confirms who it is paying, and it does not — the name
+  // that goes on the instruction is the one the payer typed. This field is not
+  // populated from that answer either: the payer types it, and the request
+  // carries what was typed.
+  //
+  // There is no BIC field, and its absence is the teaching point rather than a
+  // simplification. This form used to ask for the payee's bank, and that made a
+  // routing element into something a customer typed — the clearing house relays
+  // a pacs.008 on CdtrAgt, so a wrong BIC here sent the payment to the wrong
+  // bank. The bank derives it from its own roster now, which is what a real
+  // SEPA originating bank does: IBAN-only since 2016, an address and a name from
+  // the payer and the routing from the network.
   const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
   // shape 7b needs: the answer to "did it work?" is a second request, not a
@@ -96,7 +104,6 @@ export default function CustomerSend() {
     !payingSelf &&
     amount != null &&
     amount > 0 &&
-    creditorAgent.trim() !== "" &&
     creditorName.trim() !== "";
 
   async function onSubmit(e: React.FormEvent) {
@@ -117,15 +124,14 @@ export default function CustomerSend() {
         amount: amount!,
         description: reference.trim() || undefined,
         // The payer's own account of who they're paying — see the state
-        // declarations above for why this bank cannot supply it instead.
-        creditorAgent: creditorAgent.trim().toUpperCase(),
+        // declaration above for why this bank cannot supply it instead, and
+        // for why the payee's BIC is not here beside it.
         creditorName: creditorName.trim(),
       });
       setAcceptedId(accepted.paymentId);
       setIban("");
       setAmount(null);
       setReference("");
-      setCreditorAgent("");
       setCreditorName("");
     } catch (err) {
       toast.error(describeError(err));
@@ -191,20 +197,6 @@ export default function CustomerSend() {
             </div>
 
             <div className="space-y-1.5">
-              <FieldLabel htmlFor="send-creditor-agent" required>
-                Payee&apos;s bank (BIC)
-              </FieldLabel>
-              <Input
-                id="send-creditor-agent"
-                value={creditorAgent}
-                placeholder="BNKADEFFXXX"
-                className="font-mono uppercase"
-                disabled={frozen || closed}
-                onChange={(e) => setCreditorAgent(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-1.5">
               <FieldLabel htmlFor="send-creditor-name" hint="counterparty-details" required>
                 Payee&apos;s name
               </FieldLabel>
@@ -262,8 +254,10 @@ export default function CustomerSend() {
 
 // What the directory said about the address typed so far — the BANK it
 // routes to, and nothing about who holds it: naming the payee is the payer's
-// job, done in the two fields below this line, not something the directory
-// answers for them. A miss is an answer and is stated plainly; an ambiguous
+// job, done in the field below this line, not something the directory
+// answers for them. The bank shown here is informational; it is not what the
+// instruction carries and not what routes the payment — the payer's own bank
+// derives that from its roster when it submits. A miss is an answer and is stated plainly; an ambiguous
 // address — two banks claiming it — is a 409 and describeError names it.
 function PayeeLine({
   query,

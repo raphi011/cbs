@@ -224,6 +224,22 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 // Storing it is therefore not a cache. There is nothing to fall back to.
 type PartyDetails struct {
 	// Agent is the BIC of the bank holding this party's account.
+	//
+	// On a SUBMISSION it is never taken from the instruction, on either side.
+	// Both come from the roster — the participant row for the party the payment
+	// already names — because this element ROUTES: it goes out as
+	// CdtrAgt/DbtrAgt and the clearing house relays on it without a store read
+	// of its own. A payer allowed to assert it is a payer allowed to choose
+	// which bank receives their payment, which was measured doing exactly that
+	// before it was closed; see SubmitPaymentTx and
+	// mesh/books_test.go's TestAWrongCounterpartyAgentDoesNotMisroute. It is
+	// also what a real SEPA originating bank does: IBAN-only since 2016, the
+	// payer gives an address and a name and the bank derives the rest.
+	//
+	// On a RECEIVED message it is what the message said, read off the wire by
+	// CreditTransferRequest/DirectDebitRequest, which is a different question
+	// with a different answer — there the agent is the sender's assertion and
+	// this system records rather than verifies it.
 	Agent iso20022.BIC
 	// Name is the account holder's name. For the SUBMITTING bank's own side
 	// this is taken from its own deposit register, not from whatever the
@@ -233,6 +249,11 @@ type PartyDetails struct {
 	// side there is no register to be the authority: the instruction asserts
 	// it, because that is the only place it can come from. The asymmetry is
 	// the point — see SubmitPaymentTx.
+	//
+	// It is the ONLY thing about the counterparty a payer asserts. The name is
+	// carried because no bank can look it up without reading another bank's
+	// register; the agent is derived because routing is not the payer's to
+	// decide.
 	Name string
 }
 

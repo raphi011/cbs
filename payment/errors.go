@@ -148,11 +148,19 @@ var (
 	ErrAmbiguousAddress = errors.New("account holds several identifiers in the scheme's addressing scheme; the payment must quote one")
 
 	// ErrCounterpartyNotNamed is a submission that did not say who the other side
-	// is. The instruction must carry the counterparty's agent and name because the
-	// message it becomes must, and because submission looks neither up: the
-	// account is at another bank, and nothing on the path that builds a payment
-	// reads another bank's register. (GET /directory can resolve a name before
-	// any instruction exists — see PartyDetails — but its answer is never wired
-	// into the payment.)
+	// is. The instruction must carry the counterparty's NAME because the message
+	// it becomes must, and because submission looks it up nowhere: the account is
+	// at another bank, and nothing on the path that builds a payment reads
+	// another bank's register. (GET /directory can resolve a name before any
+	// instruction exists — see PartyDetails — but its answer is never wired into
+	// the payment.)
+	//
+	// The counterparty's AGENT is not part of this refusal, and used to be. It is
+	// derived from the roster rather than asserted — see PartyDetails.Agent — so
+	// there is nothing for a caller to omit, and a name-only guard is the whole
+	// of what "the instruction does not name the counterparty" can now mean. A
+	// counterparty at a participant that does not exist is ErrParticipantNotFound
+	// instead, which is the accurate statement: the instruction named a bank,
+	// and no such bank is a member.
 	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
 )
