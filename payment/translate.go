@@ -510,76 +510,27 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // partiesOf resolves a payment's two sides to what a message says about them:
 // each bank's BIC and each account holder's name.
 //
-// It is the ONLY part of building an outbound message that touches the store,
-// and the reason the two Network methods above take a context while the four
-// pure builders below do not. That division is deliberate: a caller draining a
-// queue of messages can abandon the read, and everything after it is arithmetic
-// on values it already holds.
-func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor messageParty, err error) {
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		debtor, creditor, err = s.partiesOfTx(ctx, tx, p)
-		return err
-	})
-	return debtor, creditor, err
-}
-
-// partiesOfTx is partiesOf inside a unit of work the caller already holds. It
-// is what lets a submitting bank build its instruction in the SAME transaction
-// that posted the debtor leg — see SubmitAndInstruct, and the money bug that
-// shape exists to make unreachable.
-func (s *Network) partiesOfTx(ctx context.Context, tx Tx, p Payment) (debtor, creditor messageParty, err error) {
-	if debtor, err = s.partyTx(ctx, tx, p.Debtor); err != nil {
-		return messageParty{}, messageParty{}, err
-	}
-	if creditor, err = s.partyTx(ctx, tx, p.Creditor); err != nil {
-		return messageParty{}, messageParty{}, err
-	}
-	return debtor, creditor, nil
-}
-
-// partyTx resolves one side. The identifier is taken from the PAYMENT and not
-// from the account, because a payment records the address actually quoted to
-// reach a party on that occasion — see PartyRef — and an account may hold
-// several or have had one withdrawn since.
+// It reads NOTHING. Both are on the payment, put there at submission — the
+// bank's own side from its own register, the counterparty's from the
+// instruction. That is the whole of this change and the whole of why it matters:
+// building an outbound message used to read the counterparty's deposit register
+// for the name on the account, which is a read of another bank's book on the
+// happy path of every submission.
 //
-// # Only a NOT-FOUND becomes a domain error
-//
-// The obvious shape here — `if err != nil { return ErrAccountNotInParticipant }`
-// — is the one checkPartyTx uses, and it is wrong in this function in a way it
-// is not wrong there, because of what happens downstream. These errors are
-// destined for ReasonFor and then for a counterparty's pacs.002:
-// ErrParticipantNotFound becomes RC01 "bank identifier incorrect" and
-// ErrAccountNotInParticipant becomes AC01 "incorrect account number". A dropped
-// database connection, or a caller that cancelled the context this function now
-// takes, would be reported to another bank as a defect in ITS message. The
-// counterparty would then investigate an address that was never wrong.
-//
-// So a store failure is returned unchanged and falls to MS03 through ReasonFor's
-// default, which says "this agent could not carry it out" — true, unhelpful, and
-// vastly better than a confident false statement about someone else's data.
-//
-// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure pins it,
-// and how it does so is worth knowing before anyone "simplifies" it. There is no
-// way to provoke a real store failure here: both stores check ctx.Err() before
-// they open a transaction, so even a cancelled context is refused at the View
-// boundary and this function is never entered. The test therefore injects a
-// synthetic error through a decorating Store. The first version of that test did
-// use a cancelled context, and it passed with this bug reinstated — which is why
-// the mechanism is spelled out rather than left as an implementation detail of
-// a test file.
-func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messageParty, error) {
-	part, err := s.participantTx(ctx, tx, ref.Participant)
-	if err != nil {
-		return messageParty{}, err
-	}
-	acct, err := tx.GetDepositAccount(ctx, part.BookID, ref.Account)
-	if err != nil {
-		if errors.Is(err, deposit.ErrAccountNotFound) {
-			return messageParty{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ref.Account)
+// So the comment this replaces — "the ONLY part of building an outbound message
+// that touches the store" — is now false in the strongest way available: no part
+// of it does. The four builders below were already pure and this joins them,
+// which is why the two Network methods lose their context parameter.
+func (s *Network) partiesOf(p Payment) (debtor, creditor messageParty) {
+	return messageParty{
+			BIC:        p.DebtorDetails.Agent,
+			Name:       p.DebtorDetails.Name,
+			Identifier: p.Debtor.Identifier,
+		}, messageParty{
+			BIC:        p.CreditorDetails.Agent,
+			Name:       p.CreditorDetails.Name,
+			Identifier: p.Creditor.Identifier,
 		}
-		return messageParty{}, err
-	}
-	return messageParty{BIC: part.BIC, Name: acct.Name, Identifier: ref.Identifier}, nil
 }
 
 // CreditTransferMessage renders a payment as the pacs.008 that carries it
@@ -590,35 +541,20 @@ func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messagePart
 // different questions with different answers, and conflating them would model a
 // topology this system does not have: banks here meet at a CSM, never directly.
 //
-// It takes a context because it reads the store: a payment records which
-// participant and which account each side is, and a message needs the BIC and
-// the account holder's NAME, neither of which a Payment carries. That is the
-// whole of the I/O, and it is why this is a method rather than a function.
-func (s *Network) CreditTransferMessage(ctx context.Context, p Payment, mc MessageContext) (iso20022.Envelope, error) {
-	var env iso20022.Envelope
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		env, err = s.CreditTransferMessageTx(ctx, tx, p, mc)
-		return err
-	})
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return env, nil
-}
-
-// CreditTransferMessageTx is CreditTransferMessage inside a unit of work the
-// caller already holds. See SubmitAndInstruct for the one caller that needs it
-// and why the transaction has to be shared.
-func (s *Network) CreditTransferMessageTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
+// It takes neither a context nor a Tx, and used not to: a payment recorded
+// which participant and which account each side was, and building a message
+// meant looking up the BIC and the account holder's NAME neither carried. Task
+// 14.3 put both on the payment at submission (partiesOf), so there is no I/O
+// left here to need a unit of work for, and CreditTransferMessageTx — the
+// variant that shared the caller's transaction — is gone with it: nothing
+// downstream of SubmitAndInstruct needs to share a transaction with a function
+// that reads nothing.
+func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
+	debtor, creditor := s.partiesOf(p)
 	return creditTransfer(p, debtor, creditor, asset, mc)
 }
 
@@ -694,31 +630,18 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 // SENDER is the party being paid. A push scheme's message travels with the
 // money; a pull scheme's travels against it, which is why the creditor and its
 // agent come first in the transaction and why the mandate has to travel too.
-func (s *Network) DirectDebitMessage(ctx context.Context, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
-	var env iso20022.Envelope
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		env, err = s.DirectDebitMessageTx(ctx, tx, p, m, mc)
-		return err
-	})
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return env, nil
-}
-
-// DirectDebitMessageTx is DirectDebitMessage inside a unit of work the caller
-// already holds. It is CreditTransferMessageTx's counterpart and exists for the
-// same caller; see SubmitAndInstruct.
-func (s *Network) DirectDebitMessageTx(ctx context.Context, tx Tx, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
+//
+// It takes neither a context nor a Tx, for the same reason CreditTransferMessage
+// stopped taking them: partiesOf reads nothing, and the mandate — the one piece
+// of I/O this message ever needed — arrives already resolved as m, loaded by
+// InstructionTx's tx.GetMandate before this is called. DirectDebitMessageTx,
+// CreditTransferMessageTx's counterpart, is gone with it for the same reason.
+func (s *Network) DirectDebitMessage(p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
+	debtor, creditor := s.partiesOf(p)
 	return directDebit(p, m, debtor, creditor, asset, mc)
 }
 
@@ -1291,10 +1214,11 @@ func (s *Network) partiesIn(ctx context.Context, dbtrAcct, cdtrAcct iso20022.Cas
 //
 // # Only a NOT-FOUND becomes a domain error
 //
-// The same discipline partyTx documents for the outbound direction, and a
-// sharper hazard here, because for a directory lookup a not-found IS the
-// expected failure and `if err != nil { return ErrAccountNotInParticipant }` is
-// the obvious shape. It is wrong: that error becomes AC01 "incorrect account
+// The outbound direction used to have the identical discipline, in partyTx —
+// see PartyDetails' doc comment on why that function is gone. It is a sharper
+// hazard here, because for a directory lookup a not-found IS the expected
+// failure and `if err != nil { return ErrAccountNotInParticipant }` is the
+// obvious shape. It is wrong: that error becomes AC01 "incorrect account
 // number" in the pacs.002 this system sends back, so a dropped connection or a
 // cancelled context would tell another bank its customer's IBAN was bad and send
 // it hunting a fault that does not exist.

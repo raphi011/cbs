@@ -319,7 +319,7 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	p := h.submitCreditTransfer(t)
 	h.drain(t)
 
-	env, err := h.net.CreditTransferMessage(context.Background(), p,
+	env, err := h.net.CreditTransferMessage(p,
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-x", Now: testTime})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
@@ -407,7 +407,7 @@ func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
 	p := h.submitCreditTransfer(t)
 	h.drain(t)
 
-	env, err := h.net.CreditTransferMessage(context.Background(), p,
+	env, err := h.net.CreditTransferMessage(p,
 		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-bulk", Now: testTime})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
@@ -463,7 +463,7 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMandate: %v", err)
 	}
-	env, err := h.net.DirectDebitMessage(context.Background(), p, mandate,
+	env, err := h.net.DirectDebitMessage(p, mandate,
 		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "dd-bulk", Now: testTime})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)

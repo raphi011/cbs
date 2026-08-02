@@ -1108,13 +1108,13 @@ func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc Messag
 		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
 	}
 	if scheme.Direction() != Pull {
-		return s.CreditTransferMessageTx(ctx, tx, p, mc)
+		return s.CreditTransferMessage(p, mc)
 	}
 	mandate, err := tx.GetMandate(ctx, p.MandateID)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	return s.DirectDebitMessageTx(ctx, tx, p, mandate, mc)
+	return s.DirectDebitMessage(p, mandate, mc)
 }
 
 // SubmitPaymentTx is the SUBMITTING bank's half of what used to be

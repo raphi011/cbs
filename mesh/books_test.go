@@ -672,12 +672,13 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // become the definition of the split rather than a check on it.
 //
 // It was drafted as TestABankHandlerTouchesOnlyItsOwnBook, and the rename is
-// part of the finding rather than tidying. A bank does NOT touch only its own
-// book — both of them below reach a book that is not theirs, for the two
-// separate reasons set out further down — so the old name asserted the opposite
-// of what the test measures, in the string a failure prints and a reader greps
-// for. The invariant it was named after is the one sub-project 8 has to
-// establish; it is not one this system has.
+// part of the finding rather than tidying — or was. As first measured, a bank
+// did NOT touch only its own book: both of them below reached a book that was
+// not theirs, for two separate reasons set out further down. Task 14.3 closed
+// one of those two (see "# The creditor's book USED to be in it too" below);
+// the other — the receiving bank's directory sweep — is still live, so the old
+// name is still wrong, just for half the reason it used to be, and this stays
+// TestWhichBooksEachBankActuallyReaches rather than reverting.
 //
 // # The submitting bank, and why NetworkBook is in its set
 //
@@ -689,23 +690,30 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // is the label for rows that belong to no single bank, and a bank that creates a
 // payment necessarily touches it.
 //
-// # The creditor's book is in it too, and that is a genuine crossing
+// # The creditor's book USED to be in it too, and Task 14.3 is why it no longer is
 //
-// This is the finding the recorder was built for, and it was NOT predicted. The
-// payer's bank builds the pacs.008 it sends, and a pacs.008 names the payee:
-// payment.partyTx reads the payee's deposit account out of the PAYEE'S BANK'S
-// register to get the name on it (payment/translate.go, partiesOf — "the ONLY
-// part of building an outbound message that touches the store"). So the
-// submitting bank reads a book that is not its own, on the happy path, every
-// time.
+// This was the finding the recorder was built for, and it was NOT predicted.
+// The payer's bank builds the pacs.008 it sends, and a pacs.008 names the
+// payee: payment.partyTx used to read the payee's deposit account out of the
+// PAYEE'S BANK'S register to get the name on it (payment/translate.go,
+// partiesOf — which called itself "the ONLY part of building an outbound
+// message that touches the store"). So the submitting bank read a book that
+// was not its own, on the happy path, every time.
 //
-// It is asserted rather than papered over because it is true, and because what
-// closes it is a domain change and not a mesh one: a real payer's bank knows the
-// payee's name because the payer typed it in, so InitiatePaymentRequest would
-// have to carry the two counterparty NAMES and CreditTransferMessage take them
-// from the payment instead of from the directory. That is sub-project 8's to do;
-// what this task owes it is the measurement, in a form that fails the day
-// somebody changes it in either direction.
+// It was asserted rather than papered over because it was true, and because
+// what would close it was named here as a domain change and not a mesh one: a
+// real payer's bank knows the payee's name because the payer typed it in, so
+// InitiatePaymentRequest would have to carry the two counterparty NAMES and
+// CreditTransferMessage take them from the payment instead of from the
+// directory. Task 14.2 did the carrying: Payment gained DebtorDetails and
+// CreditorDetails, filled at submission — the bank's own side from its own
+// register, the counterparty's from the instruction, with SubmitPaymentTx
+// refusing an unnamed counterparty outright. Task 14.3 did the taking:
+// partiesOf now reads nothing at all, partyTx is deleted, and
+// CreditTransferMessage/DirectDebitMessage take neither a context nor a Tx —
+// there is no I/O left in either to need one for. The submitting bank's set
+// below lost the creditor's book the same day. What this section predicted
+// would eventually close its own prediction now records that it did.
 //
 // # The receiving bank reaches every bank's book, by design of the directory
 //
@@ -729,7 +737,7 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
-		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
+		[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
 	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC), h.bankBooks())
 
 	// Neither of them went near the central bank's book. Only settlement moves
@@ -753,8 +761,8 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //
 // # The SUBMITTING bank, which here is the payee's
 //
-// [debtorBook, creditorBook, NetworkBook] — the same three the payer's bank
-// reaches when it submits a credit transfer, arrived at from the other side:
+// [creditorBook, NetworkBook] — the same two the payer's bank reaches when it
+// submits a credit transfer, arrived at from the other side:
 //
 //   - NetworkBook, because submitting allocates the payment's id under it
 //     (payment/system.go's NextID(ctx, ledger.NetworkBook, "pay")) and appends
@@ -763,12 +771,15 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //   - Its OWN book, because SubmitPaymentTx runs the creditor half for a pull:
 //     the payee's account, its asset, its address, and whether it can take a
 //     credit at all.
-//   - The DEBTOR's book, which is not its own, and this is the genuine crossing
-//     TestWhichBooksEachBankActuallyReaches found pointing the other way. Building
-//     the pacs.003 names the payer, and payment.partyTx reads the payer's deposit
-//     account out of the PAYER'S BANK'S register to get the name on it. Same
-//     cause, opposite direction, and it closes for the same reason: the request
-//     would have to carry the counterparty's name.
+//
+// A third entry used to belong here: the DEBTOR's book, which is not its own,
+// mirroring the genuine crossing TestWhichBooksEachBankActuallyReaches found
+// pointing the other way. Building the pacs.003 named the payer, and
+// payment.partyTx read the payer's deposit account out of the PAYER'S BANK'S
+// register to get the name on it. Same cause, opposite direction, and it closed
+// for the same reason its push-side twin did: Task 14.2 put both counterparty
+// names on the payment at submission and Task 14.3 made partiesOf read nothing,
+// so DirectDebitMessage has had no store call to make this crossing with since.
 //
 // # The RECEIVING bank, which here is the payer's, and which POSTS
 //
@@ -856,7 +867,7 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	h.drain(t)
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
-		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
+		[]ledger.BookID{h.creditorBook, ledger.NetworkBook})
 	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
 
 	// Clearing a collection costs the clearing house exactly what clearing a

@@ -116,9 +116,8 @@ func networkWithOneCollection(t *testing.T) (*Network, Payment, Mandate) {
 
 func TestCreditTransferMessageCarriesBothAgentsAndBothIBANs(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{
+	env, err := n.CreditTransferMessage(p, MessageContext{
 		From:  "AURODEFFXXX",
 		To:    "CSMXFRPPXXX",
 		MsgID: "AURO-1",
@@ -162,9 +161,8 @@ func TestCreditTransferMessageCarriesBothAgentsAndBothIBANs(t *testing.T) {
 
 func TestCreditTransferMessageRefusesAPaymentWithNoAddress(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 	p.Creditor.Identifier = deposit.Identifier{}
-	if _, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()}); err == nil {
+	if _, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()}); err == nil {
 		t.Fatal("built a pacs.008 for a payment with no creditor address")
 	}
 }
@@ -176,9 +174,8 @@ func TestCreditTransferMessageRefusesAPaymentWithNoAddress(t *testing.T) {
 // document. FuzzTranslate found this one.
 func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 	p.Creditor.Identifier = deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "not an iban"}
-	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()})
+	_, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: time.Now()})
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("CreditTransferMessage on a malformed IBAN = %v, want ErrUnaddressableAccount", err)
 	}
@@ -190,9 +187,8 @@ func TestCreditTransferMessageRefusesAMalformedIBAN(t *testing.T) {
 // as "the sender had none" rather than one it mistakes for a reference.
 func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 	p.EndToEndID = ""
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -211,8 +207,7 @@ func TestCreditTransferMessageWithNoEndToEndIDSaysNOTPROVIDED(t *testing.T) {
 // and a translator that used Now would fail here rather than in production.
 func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -228,9 +223,8 @@ func TestCreditTransferMessageSettlesOnTheValueDate(t *testing.T) {
 // AppHdr.CreDt's validation exists to stop, arriving by a different door.
 func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 	p.ValueDate = time.Time{}
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -250,9 +244,8 @@ func TestCreditTransferMessageNeverAssertsTheZeroSettlementDate(t *testing.T) {
 // plausible — fails here.
 func TestDirectDebitMessageDatesTheSignatureFromTheMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
-	ctx := context.Background()
 
-	env, err := n.DirectDebitMessage(ctx, p, m, MessageContext{
+	env, err := n.DirectDebitMessage(p, m, MessageContext{
 		From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: messageNow,
 	})
 	if err != nil {
@@ -290,8 +283,7 @@ func TestDirectDebitMessageDatesTheSignatureFromTheMandate(t *testing.T) {
 // IBAN, said out loud rather than invented. See creditorSchemeIdentification.
 func TestDirectDebitMessageStandsTheCreditorsIBANInForTheCreditorIdentifier(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
-	ctx := context.Background()
-	env, err := n.DirectDebitMessage(ctx, p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
@@ -589,11 +581,18 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 // embedding — so a participant still resolves, and the failure lands on exactly
 // the calls the tests are about.
 //
-// Two methods, because the two directions reach the deposit layer by different
-// doors: the outbound translator looks an account up by id (partyTx), and the
-// inbound one looks it up by ADDRESS, through the directory sweep in
-// ResolveIdentifierTx. One decorator serving both is what keeps "the database
-// went away" a single fixture rather than two.
+// It used to have two live exercisers, one per direction: partyTx read an
+// account by id building an OUTBOUND message, and addressedPartyTx reads one by
+// ADDRESS resolving an INBOUND one. Task 14.3 deleted partyTx — partiesOf now
+// reads nothing building an outbound message, see payment/translate.go — so
+// GetDepositAccount below is not reached by anything running today.
+// ListDepositAccountsByIdentifier still is: it is what the inbound directory
+// sweep in ResolveIdentifierTx calls, and
+// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure still
+// depends on it. GetDepositAccount is left rather than deleted: checkPartyTx
+// (payment/system.go) still calls the real tx.GetDepositAccount on the
+// SUBMISSION path, so the override stays correct for whichever test needs it
+// next, even though none does today.
 type failingTx struct {
 	Tx
 	err error
@@ -609,12 +608,14 @@ func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book led
 
 // failingStore wraps a real Store and hands every view a failingTx.
 //
-// This exists because there is no other way to reach partyTx's error path. Both
-// stores check ctx.Err() before opening a transaction — store/mem at mem.go:109
-// and store/pg at pg.go:188 — so a cancelled context never gets as far as the
-// closure, and a real database failure cannot be provoked on demand from a test.
-// A synthetic error injected at the seam reaches the code under test on BOTH
-// stores and depends on no driver behaviour at all.
+// This exists because there is no other way to reach an inbound resolution
+// failure on demand — see failingTx on what used to also be true of the
+// outbound side. Both stores check ctx.Err() before opening a transaction —
+// store/mem at mem.go:109 and store/pg at pg.go:188 — so a cancelled context
+// never gets as far as the closure, and a real database failure cannot be
+// provoked on demand from a test. A synthetic error injected at the seam
+// reaches the code under test on BOTH stores and depends on no driver
+// behaviour at all.
 type failingStore struct {
 	Store
 	err error
@@ -626,103 +627,44 @@ func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) err
 	})
 }
 
-// A store failure is not a defect in the counterparty's message, and must not be
-// reported as one.
+// TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure,
+// TestCreditTransferMessageReturnsACancellationUnchanged,
+// TestCreditTransferMessageRefusesAnUnknownParticipant and
+// TestCreditTransferMessageRefusesAnAccountTheBankDoesNotHold lived here and
+// pinned partyTx: a store failure building an outbound message must not become
+// RC01/AC01 on the wire, a cancelled context must come back as
+// context.Canceled and not a reason code, and an unknown participant or
+// account must refuse the message with ErrParticipantNotFound /
+// ErrAccountNotInParticipant.
 //
-// partyTx's two lookups fail with ErrParticipantNotFound and
-// ErrAccountNotInParticipant, which ReasonFor turns into RC01 "bank identifier
-// incorrect" and AC01 "incorrect account number". If it translated EVERY error
-// that way — the shape checkPartyTx uses, and the shape partyTx had until the
-// first review — a dropped connection would tell another bank its address was
-// wrong and send it looking for a fault it does not have.
+// Task 14.3 deleted partyTx along with everything these four pinned. partiesOf
+// no longer reads a participant or an account building an outbound message —
+// both sides are already on the Payment (DebtorDetails/CreditorDetails,
+// resolved once at submission, see payment/system.go's SubmitPaymentTx) — so
+// there is no store call left here to fail, no context left to cancel, and no
+// directory lookup left that could come back not-found. p.Creditor.Participant
+// = "no-such-bank" and p.Creditor.Account = "no-such-account", the two setups
+// the last pair of tests used, no longer reach anything that reads them:
+// CreditTransferMessage's ONLY remaining way to refuse before the wire is
+// assetOf's, which TestCreditTransferMessageRefusesAnUnregisteredScheme below
+// still pins, unchanged, because assetOf never went through partyTx.
 //
-// This is the test that pins it, and it is the second attempt. The first was a
-// cancelled context, which cannot reach partyTx on either store (see
-// failingStore) and therefore passed with the bug reinstated — a test asserting
-// coverage it did not have, which is the exact failure this repository keeps
-// hitting. Reinstating the pre-fix body now fails this test on both stores.
-func TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
-	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
-
-	// "connection reset by peer" is the case that matters: not a not-found, not
-	// anything the payment did, just the database going away mid-message.
-	dropped := errors.New("connection reset by peer")
-	broken := NewNetwork(failingStore{Store: n.Store(), err: dropped}, func() time.Time { return fixedTime })
-
-	_, err := broken.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
-	if err == nil {
-		t.Fatal("built a message while the store was failing")
-	}
-	if !errors.Is(err, dropped) {
-		t.Errorf("error = %v, want it to carry the store's own failure", err)
-	}
-	// The assertion the fix exists for. Either sentinel here becomes a reason
-	// code on the wire, blaming the counterparty for this system's outage.
-	if errors.Is(err, ErrAccountNotInParticipant) {
-		t.Errorf("a store failure surfaced as ErrAccountNotInParticipant, which reaches a counterparty as AC01 \"incorrect account number\"")
-	}
-	if errors.Is(err, ErrParticipantNotFound) {
-		t.Errorf("a store failure surfaced as ErrParticipantNotFound, which reaches a counterparty as RC01 \"bank identifier incorrect\"")
-	}
-}
-
-// A cancelled caller gets a cancellation back, not a reason code.
-//
-// This does NOT exercise partyTx, and saying so is the point of the comment:
-// both stores check ctx.Err() before opening a transaction, so the error is
-// raised at the View boundary and the closure never runs. What it pins is the
-// weaker end-to-end property that nothing between View and the caller swallows
-// or relabels the cancellation. The partyTx path itself is covered by the test
-// above, which injects a synthetic failure instead.
-func TestCreditTransferMessageReturnsACancellationUnchanged(t *testing.T) {
-	n, p := networkWithOnePayment(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
-	if err == nil {
-		t.Fatal("built a message on a cancelled context")
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("error = %v, want it to carry context.Canceled", err)
-	}
-	if errors.Is(err, ErrParticipantNotFound) || errors.Is(err, ErrAccountNotInParticipant) {
-		t.Errorf("a cancelled context surfaced as %v, which reaches a counterparty as RC01 or AC01", err)
-	}
-}
-
-func TestCreditTransferMessageRefusesAnUnknownParticipant(t *testing.T) {
-	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
-	p.Creditor.Participant = "no-such-bank"
-
-	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
-	if !errors.Is(err, ErrParticipantNotFound) {
-		t.Fatalf("CreditTransferMessage = %v, want ErrParticipantNotFound", err)
-	}
-}
-
-func TestCreditTransferMessageRefusesAnAccountTheBankDoesNotHold(t *testing.T) {
-	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
-	p.Creditor.Account = "no-such-account"
-
-	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
-	if !errors.Is(err, ErrAccountNotInParticipant) {
-		t.Fatalf("CreditTransferMessage = %v, want ErrAccountNotInParticipant", err)
-	}
-}
+// The property the first two guarded — a store failure or a cancellation must
+// not be misreported as a fact about the counterparty's message — is not gone
+// from the system, only from this function. It still holds on the INBOUND
+// side, where addressedPartyTx and ResolveIdentifierTx still read the store,
+// and TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure
+// further down still pins it there, with the same failingStore this comment
+// used to sit above.
 
 // A payment whose scheme is not registered has no asset, and therefore no scale
 // to render its amount at. Guessing euro is the multi-asset mistake amountOf
 // exists to prevent, so it is refused instead.
 func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
 	n, p := networkWithOnePayment(t)
-	ctx := context.Background()
 	p.Scheme = "sepa.invented"
 
-	_, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	_, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if !errors.Is(err, ErrSchemeNotFound) {
 		t.Fatalf("CreditTransferMessage = %v, want ErrSchemeNotFound", err)
 	}
@@ -734,9 +676,8 @@ func TestCreditTransferMessageRefusesAnUnregisteredScheme(t *testing.T) {
 // badly-formed message, it is an unauthorised claim on someone's account.
 func TestDirectDebitMessageRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, _ := networkWithOneCollection(t)
-	ctx := context.Background()
 
-	_, err := n.DirectDebitMessage(ctx, p, Mandate{}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	_, err := n.DirectDebitMessage(p, Mandate{}, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if !errors.Is(err, ErrMandateRequired) {
 		t.Fatalf("DirectDebitMessage = %v, want ErrMandateRequired", err)
 	}
@@ -777,7 +718,7 @@ func TestSettlementMessageRefusesAnEmptyInstruction(t *testing.T) {
 func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{
+	env, err := n.CreditTransferMessage(p, MessageContext{
 		From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "AURO-1", Now: messageNow,
 	})
 	if err != nil {
@@ -840,7 +781,7 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
-	env, err := n.DirectDebitMessage(ctx, p, m, MessageContext{
+	env, err := n.DirectDebitMessage(p, m, MessageContext{
 		From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-1", Now: messageNow,
 	})
 	if err != nil {
@@ -884,7 +825,7 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -921,7 +862,7 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -948,7 +889,7 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -985,7 +926,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
 func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1020,7 +961,7 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 func TestCreditTransferRequestRefusesAMessageInAnotherAsset(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1061,7 +1002,7 @@ func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
 	n.RegisterScheme(dollarPush{})
 	ctx := context.Background()
 
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	assertNoError(t, err)
 	doc := env.Document.(*iso20022.Pacs008)
 
@@ -1095,7 +1036,7 @@ func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 	n.RegisterScheme(secondEuroPush{})
 	ctx := context.Background()
 
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	assertNoError(t, err)
 
 	_, err = n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
@@ -1113,7 +1054,7 @@ func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1144,7 +1085,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	ctx := context.Background()
 	p.EndToEndID = ""
 	p.Amount = 1000
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1182,7 +1123,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1209,7 +1150,7 @@ func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 func TestCreditTransferRequestRefusesABulkMessage(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
@@ -1233,7 +1174,7 @@ func TestCreditTransferRequestRefusesABulkMessage(t *testing.T) {
 func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	n, p, m := networkWithOneCollection(t)
 	ctx := context.Background()
-	env, err := n.DirectDebitMessage(ctx, p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.DirectDebitMessage(p, m, MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("DirectDebitMessage: %v", err)
 	}
@@ -1285,7 +1226,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	})
 	assertNoError(t, err)
 
-	env, err := n.CreditTransferMessage(ctx, p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
+	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	if err != nil {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
