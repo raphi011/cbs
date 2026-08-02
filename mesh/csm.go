@@ -335,33 +335,60 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 
 // tell sends the decision to every bank that has to have it. See the note on
 // receiveStatus for which banks those are and why a rejected collection has two.
+//
+// # The MONEY message goes first, and neither is skipped because the other
+// failed
+//
+// The two messages are not the same kind of news. The submitter's is the answer
+// to a question it asked. The payer's bank's — sent only when a rejection
+// leaves it holding a posted debtor leg it did not submit, which is a rejected
+// collection and nothing else — is what makes it give a customer their money
+// back. Sending the informational one first and returning on its error left the
+// refund unattempted, and that is reachable: the send is answered with
+// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window, and GetParticipant
+// fails on a store error. A payer whose money is in a suspense against a
+// payment this network records as Rejected has nobody left to notice.
+//
+// So the refund message is attempted first and both are attempted regardless,
+// with the failures joined. Two banks that cannot be addressed produce two
+// errors and one dead letter carrying both, which is more than the caller could
+// have learnt before.
 func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
 	scheme, ok := c.ops.Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("mesh: %s decided %s and holds no %q scheme to say who submitted it: %w",
 			c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 	}
-	submitter, err := c.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
-	if err != nil {
-		return fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err)
-	}
-	if err := c.forward(submitter.BIC, orig, r); err != nil {
-		return err
-	}
+	submitterID := submitterOf(scheme, p.Debtor, p.Creditor).Participant
+
+	var errs []error
 	// The payer's bank, when it is holding money against a payment that has just
 	// been rejected and is not the bank waiting for the answer. Only a pull
-	// reaches this.
-	if r.Status != iso20022.TransactionStatusRejected || p.DebtorLegTx == "" {
-		return nil
+	// reaches this — on a push the two are one participant and one message.
+	var refunded iso20022.BIC
+	if r.Status == iso20022.TransactionStatusRejected && p.DebtorLegTx != "" && p.Debtor.Participant != submitterID {
+		if debtor, err := c.ops.GetParticipant(ctx, p.Debtor.Participant); err != nil {
+			errs = append(errs, fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, p.ID, err))
+		} else {
+			refunded = debtor.BIC
+			if err := c.forward(debtor.BIC, orig, r); err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
-	debtor, err := c.ops.GetParticipant(ctx, p.Debtor.Participant)
-	if err != nil {
-		return fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, p.ID, err)
+
+	// The bank that submitted, which is always told. The BIC comparison is a
+	// second guard behind the participant one above: two participants on one
+	// address cannot be admitted (Mesh.AddBank refuses it), and a duplicate
+	// pacs.002 would be a second acceptance at a bank that already has one.
+	if submitter, err := c.ops.GetParticipant(ctx, submitterID); err != nil {
+		errs = append(errs, fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err))
+	} else if submitter.BIC != refunded {
+		if err := c.forward(submitter.BIC, orig, r); err != nil {
+			errs = append(errs, err)
+		}
 	}
-	if debtor.BIC == submitter.BIC {
-		return nil
-	}
-	return c.forward(debtor.BIC, orig, r)
+	return errors.Join(errs...)
 }
 
 // clear takes an accepted payment into the open cycle for its scheme, and turns
@@ -408,12 +435,31 @@ func (c *csm) clear(ctx context.Context, id payment.PaymentID, r payment.Transac
 // The ORIGINAL message it refers back to is unchanged: that is the submitting
 // bank's pacs.008 or pacs.003, which is what every hop is about and the only
 // thing that bank can match on.
+//
+// decidedBy is the one hop where the claim above is not true, and it is passed
+// in rather than inferred. See forwardDecision.
 func (c *csm) forward(to iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+	return c.forwardDecision(to, "", orig, r)
+}
+
+// forwardDecision is forward for a status this actor is CARRYING rather than
+// making: it names the institution that decided, so the pacs.002's Orgtr does
+// not say the clearing house.
+//
+// There is exactly one such hop — the settlement agent's answer about a return,
+// passed back to the bank that asked for one — and it is worth a second entry
+// point rather than a bool. csm.receiveReturnStatus's own doc says this actor
+// decides nothing there, and iso20022.StatusReasonInformation says Orgtr exists
+// so that a receiver does not blame the relay for the refusal. Stamping this
+// actor would have a returning bank investigating a clearing house that never
+// looked at its request.
+func (c *csm) forwardDecision(to, decidedBy iso20022.BIC, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
 	env, err := payment.StatusMessage(orig, []payment.TransactionStatusReport{r}, payment.MessageContext{
-		From:  c.bic,
-		To:    to,
-		MsgID: c.m.nextMsgID(c.bic),
-		Now:   c.m.now(),
+		From:      c.bic,
+		To:        to,
+		MsgID:     c.m.nextMsgID(c.bic),
+		Now:       c.m.now(),
+		DecidedBy: decidedBy,
 	})
 	if err != nil {
 		return fmt.Errorf("mesh: %s could not build its pacs.002 for %s: %w", c.bic, to, err)
@@ -827,7 +873,10 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot address the bank that returned %s: %w", c.bic, p.ID, err)
 		}
-		if err := c.forward(returner.BIC, orig, r); err != nil {
+		// The SETTLEMENT AGENT decided this, not the clearing house, and the
+		// message says so. It is the one hop in this system where the sender and
+		// the originator are different institutions; see forwardDecision.
+		if err := c.forwardDecision(returner.BIC, from, orig, r); err != nil {
 			return err
 		}
 	}

@@ -14,7 +14,7 @@ import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import { NetPositionsTable } from "@/components/net-positions-table";
 import { ConfirmAction } from "@/components/forms/confirm-action";
-import { useCloseCycle, useCycle } from "@/lib/api/hooks";
+import { useCloseCycle, useCycle, useSettleCycle } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import { formatDateTime } from "@/lib/dates";
 
@@ -23,6 +23,7 @@ export default function CycleDetailPage() {
   const cid = typeof params.cid === "string" ? params.cid : "";
   const { data: c, isLoading, error, refetch } = useCycle(cid);
   const closeCycle = useCloseCycle();
+  const settleCycle = useSettleCycle();
 
   return (
     <div className="space-y-5">
@@ -66,10 +67,35 @@ export default function CycleDetailPage() {
                 />
               )}
               {c.status === "Closed" && !c.settlementId && (
-                <p className="text-xs text-muted-foreground">
-                  Netted and awaiting settlement. Moving reserves is the central
-                  bank&apos;s act, not the clearing house&apos;s.
-                </p>
+                <>
+                  <p className="max-w-md text-xs text-muted-foreground">
+                    Netted and awaiting settlement. Moving reserves is the
+                    central bank&apos;s act, not the clearing house&apos;s — so
+                    if this stays here, the instruction was refused. A net payer
+                    short of reserves is the usual reason. Fund them, then ask
+                    again.
+                  </p>
+                  <ConfirmAction
+                    trigger={
+                      <Button size="sm" variant="outline">
+                        Instruct again
+                      </Button>
+                    }
+                    title="Re-send the settlement instruction"
+                    description="Rebuilds this cycle's pacs.009 and sends it to the central bank. It settles nothing here: the settlement agent decides, with the reserves as they are now."
+                    confirmLabel="Send"
+                    pending={settleCycle.isPending}
+                    onConfirm={async () => {
+                      await settleCycle.mutateAsync(c.id, {
+                        onSuccess: () =>
+                          toast.success(
+                            "Instruction sent — read the cycle again for the answer",
+                          ),
+                        onError: (err) => toast.error(describeError(err)),
+                      });
+                    }}
+                  />
+                </>
               )}
             </div>
           </div>

@@ -201,8 +201,10 @@ func (SDD) ValidateMandate(ctx context.Context, p *Payment, sc SchemeContext) er
 // bank holds.
 //
 // It is identical to SCT.Validate, which is correct and not a smell: both say
-// "the receiving side checks funds", and they differ in WHO the receiving side
-// is — the payee's bank for a push, the payer's for a pull.
+// "the PAYER's bank checks the payer's funds", and only the moment differs —
+// at submission for a push, on receipt of the collection for a pull. It runs in
+// debtorSideTx either way (system.go), which is the one function both paths
+// reach and the reason the two bodies are the same line.
 func (SDD) Validate(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return validateFunds(ctx, p, sc)
 }

@@ -150,12 +150,19 @@ func main() {
 	// Both hand back what handlers had nobody to report to. A shutdown that
 	// swallowed those would be the silent failure the whole dead-letter design
 	// exists to prevent, reintroduced at the last line of the process.
-	meshCtx, meshCancel := context.WithTimeout(context.Background(), meshShutdown)
-	defer meshCancel()
-	if err := msh.Drain(meshCtx); err != nil {
+	// A deadline each, and not one shared between them. A Drain that used the
+	// whole budget would hand Stop an already-expired context, so the step that
+	// JOINS the goroutines would fail instantly — turning a slow drain into a
+	// process that exits with actors still running, which is the outcome the
+	// ordering above exists to prevent.
+	drainCtx, drainCancel := context.WithTimeout(context.Background(), meshShutdown)
+	defer drainCancel()
+	if err := msh.Drain(drainCtx); err != nil {
 		log.Error("mesh: dead letters at shutdown", "error", err)
 	}
-	if err := msh.Stop(meshCtx); err != nil {
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), meshShutdown)
+	defer stopCancel()
+	if err := msh.Stop(stopCtx); err != nil {
 		log.Error("mesh: stopping", "error", err)
 	}
 }

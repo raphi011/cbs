@@ -101,8 +101,9 @@ Two things the implementation sharpened, both worth carrying forward:
   so it runs for every scheme rather than only those that check funds.
   *Superseded in part by 7b:* the second half of that reasoning — "at the one
   moment both ends are in view and neither is written" — described a moment the
-  message layer removed. `InitiatePaymentTx` split into a debtor bank's half and
-  a creditor bank's half, so no actor reads both accounts and each bank compares
+  message layer removed. `InitiatePaymentTx` split three ways — a submitting
+  bank's half, a receiving bank's half and the clearing house's — so no actor
+  reads both accounts and each bank compares
   its own leg against the scheme's asset. That is strictly weaker (two banks
   could each hold a conforming account in a scheme neither is entitled to) and
   strictly what a real bank can do. Where the check runs and why it is not in
@@ -315,11 +316,15 @@ scheme-operator persona is no longer among them — 6a gave it a backend, so it
 ships.
 
 Loose ends the whole-branch review parked, recorded rather than dropped. One
-crosses into 7b and is called out there too: **7b deletes the central bank's
-`POST /settlements`**, which `/central-bank`'s settle console calls through
-`useSettleCycle` → `api.settleCycle` → `cb("/settlements")` — a string, so
-neither `tsc` nor `next build` will notice, and the screen 404s at runtime.
-Whoever executes 7b Task 12 decides where that action goes. The rest are the
+crossed into 7b and is now **decided and executed**: 7b deleted the central
+bank's `POST /settlements`, which `/central-bank`'s settle console called
+through `useSettleCycle` → `api.settleCycle` → `cb("/settlements")` — a string,
+so neither `tsc` nor `next build` noticed and the screen 404'd at runtime. The
+action did not move to the central bank. Settling is performed on instruction
+(`mesh.centralBank`), and what an operator has instead is
+`POST /cycles/{cid}/settle` on the **clearing house**, which re-sends the
+`pacs.009` for a cycle the settlement agent refused; it moves nothing itself.
+`useSettleCycle` is re-pointed at it. The rest are the
 web's own: **the two provisioning predicates are still untested** — `probeSettled`
 and `useIsProvisioned` are pure functions of query state, both shipped wrong once
 and were fixed mid-plan, and neither is reachable by the node-only vitest until
@@ -366,12 +371,16 @@ Three sub-projects, each with its own spec, plan and branch:
   repository.
 - **7b, the mesh and the actors** — `done`. One goroutine per entity over
   unbounded in-process queues carrying marshalled bytes, `Participant.BIC` and
-  routing by `BICFI`, `InitiatePaymentTx` split into a debtor bank's half and a
-  creditor bank's half with the other half coming back as a `pacs.002`, and
+  routing by `BICFI`, `InitiatePaymentTx` split **three ways** — the submitting
+  bank's half, the receiving bank's half (which comes back as a `pacs.002`) and
+  the clearing house's, the only one that makes a payment `Accepted` — and
   `api/` genuinely asynchronous behind the `202 Accepted` plus status query 6a
   already shaped the client around. Settlement stays one atomic `Store.Update`
   at the central bank, now **instructed** by a `pacs.009` the clearing house
   sends when it closes a cycle — the fifth message, and the one 7a did not ship.
+  A refused settlement is re-instructed by `POST /cycles/{cid}/settle` on the
+  clearing house, which rebuilds the same `pacs.009`; without it an `AM04` was
+  terminal, with every payer debited and every payee unpaid.
   `-entity` is gone, as this section's transport argument below concluded it
   should be.
 - **7c, the message log** — `todo`. Envelopes persisted in both stores so a

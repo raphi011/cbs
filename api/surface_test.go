@@ -552,6 +552,59 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 	}`, http.StatusNotFound)
 }
 
+// A missing participant is answered as a missing field, not as the wrong bank.
+//
+// An omitted participant decodes to "", which never equals a non-empty bound
+// id, so it falls through the direction rule and is answered "this bank does not
+// submit this payment: a credit transfer is submitted by the payer's bank and a
+// direct debit by the payee's" — a diagnosis of a direction violation about a
+// request that names no direction to violate. Same shape as the unregistered
+// scheme above, and the same fix: ask the question that has an answer first.
+//
+// Both directions, because the field that is missing is not the same one: a
+// push names no DEBTOR participant and a pull names no CREDITOR participant,
+// and a message that said "debtor" for both would be wrong for every
+// collection.
+func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
+	h := newServer(t, nil)
+	a, b, _ := threeBanks(t, h)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
+
+	push := do(t, bank(h, a.pid), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"account":"`+a.account+`"},
+		"creditor":{"participant":"`+b.pid+`","account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
+		"amount":10000
+	}`)
+	if push.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a push naming no debtor participant = %d, want 422 (%s)", push.Code, push.Body.String())
+	}
+	if !strings.Contains(push.Body.String(), "names no debtor participant") {
+		t.Fatalf("a push naming no debtor participant was refused as %q", push.Body.String())
+	}
+
+	mandate := doJSON(t, csm(h), "POST", "/mandates", `{
+		"debtor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
+		"creditor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
+		"maxAmount":0
+	}`, http.StatusCreated)["id"].(string)
+
+	pull := do(t, bank(h, b.pid), "POST", "/payments", `{
+		"scheme":"sepa.dd",
+		"debtor":{"participant":"`+a.pid+`","account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
+		"creditor":{"account":"`+b.account+`"},
+		"amount":10000,
+		"mandateId":"`+mandate+`"
+	}`)
+	if pull.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a collection naming no creditor participant = %d, want 422 (%s)", pull.Code, pull.Body.String())
+	}
+	if !strings.Contains(pull.Body.String(), "names no creditor participant") {
+		t.Fatalf("a collection naming no creditor participant was refused as %q", pull.Body.String())
+	}
+}
+
 // A bank may not submit a payment drawn on somebody else's customer.
 func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	h := newServer(t, nil)

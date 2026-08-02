@@ -699,9 +699,11 @@ export function useBankPayments(pid: string) {
   });
 }
 
-// The second half of a 202: ask about the identifier you were given. Today the
-// answer is already final; 7b makes the wait real, and a client shaped this way
-// will not need rewriting when it does.
+// The second half of a 202: ask about the identifier you were given. The wait is
+// real since 7b — the bank answers with an identifier and the counterparty's
+// answer arrives at another actor, as a pacs.002 — so this is where the outcome
+// comes from and not a formality. 6a shaped the client this way a sub-project
+// early, and it needed no rewriting when the behaviour caught up.
 export function useBankPayment(pid: string, payid: string) {
   return useQuery({
     queryKey: qk.bankPayment(pid, payid),
@@ -777,6 +779,18 @@ export function useCloseCycle() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (cid: string) => api.closeCycle(cid),
+    onSuccess: () => invalidateNetwork(qc),
+  });
+}
+
+// Ask the clearing house to instruct settlement again, for a cycle the central
+// bank refused. It is not a second way to settle — see api.settleCycle — and
+// the 202 it answers says only that the pacs.009 went out. The network refetch
+// is what surfaces the answer, which arrives at another actor.
+export function useSettleCycle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (cid: string) => api.settleCycle(cid),
     onSuccess: () => invalidateNetwork(qc),
   });
 }

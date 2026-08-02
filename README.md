@@ -1545,14 +1545,20 @@ BOB=$(curl -s $H -X POST $BANK_B/deposit-accounts -d "{\"name\":\"Bob\",\"asset\
   \"productId\":\"$PRD_B\",\"identifiers\":[{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}]}" | jq -r .id)
 curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000,\"description\":\"opening\"}"
 
-# The answer is `202` and an INITIATED payment: the payer's bank has run its own
-# half and sent a `pacs.008`, and nobody else has looked at it yet. Bob's IBAN is
-# quoted because the message has to carry one — an address in another bank's
-# register is exactly what Alice's bank cannot look up.
-PAY=$(curl -s $H -X POST $CSM/payments -d "{\"scheme\":\"sepa.ct\",
+# Alice instructs HER OWN BANK, on its own listener. A retail client has no CSM
+# connection in the real thing and none here; the clearing house serves the same
+# path for an operator's console, and pointing a customer's instruction at it
+# would teach the wrong route.
+#
+# The answer is `202` and a `paymentId` — nothing else, because there is nothing
+# else true yet: the payer's bank has run its own half and sent a `pacs.008`, and
+# nobody has looked at it. Bob's IBAN is quoted because the message has to carry
+# one — an address in another bank's register is exactly what Alice's bank cannot
+# look up.
+PAY=$(curl -s $H -X POST $BANK_A/payments -d "{\"scheme\":\"sepa.ct\",
   \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
   \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\",
-    \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}},\"amount\":25000}" | jq -r .id)
+    \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}},\"amount\":25000}" | jq -r .paymentId)
 
 # Ask again for the outcome. By now Bob's bank has answered and the clearing
 # house has taken the payment into its scheme's open cycle, so this reads
@@ -1570,12 +1576,18 @@ curl -s $H -X POST $CSM/cycles/$CYC/close | jq -r .status   # Closed
 curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000 — the debtor leg
 curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000 — settled
 curl -s $CB/cycles/$CYC | jq -r '.status, .settlementId'    # Settled, set_…
+
+# If that had said `Closed` with no settlement, the central bank refused the
+# instruction — a net payer short of reserves, answered `AM04`. Fund the member
+# and ask the clearing house to instruct it again. It settles nothing itself: it
+# rebuilds the same `pacs.009`, and the settlement agent decides again.
+# curl -s $H -X POST $CSM/cycles/$CYC/settle | jq -r .status  # Closed, and asked again
 ```
 
 **The walkthrough now runs all the way to Bob being paid, and what carries it there is the message layer rather than any of these calls.** Four institutions ran four units of work between the `POST` and the balance: Alice's bank debited her and sent a `pacs.008`, Bob's bank checked his address and answered `pacs.002`/`ACCP`, the clearing house took the payment into a cycle and told Alice's bank, and — at the cut-off — the central bank discharged the net positions on a `pacs.009` and posted the creditor leg into Bob's account. None of that is a function call: every hop is bytes in an inbox, handled by one goroutine per institution.
 
 **And the reads can be early too.** `# Accepted`, `# book 25000` and `Settled` are each issued straight after the request that provoked them, so each is racing four goroutines against a `curl` process starting up — in practice the mesh wins by a wide margin, but nothing here guarantees it. If a status still says `Initiated`, or a cycle still says `Closed` with no settlement, nothing has gone wrong and nothing is lost: ask again. That is what "read it back" means in a system where the answer arrives at another institution.
 
-**Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written. `POST /cycles/{cid}/close` answers `200` and a `Closed` cycle with net positions and no settlement on it, because the settlement agent has not been asked yet. Only the reads afterwards say what became of either, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops away cannot, and lands on the payment's own row instead. Watch either on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused.
+**Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written. `POST /cycles/{cid}/close` answers `200` and a `Closed` cycle with net positions and no settlement on it, because the settlement agent has not been asked yet. Only the reads afterwards say what became of either, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops away cannot, and lands on the payment's own row instead. Watch either on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused, and `POST /cycles/{cid}/settle` on the clearing house is what an operator does about it once the short member is funded.
 
 > Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.

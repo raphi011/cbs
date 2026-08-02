@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -178,6 +179,99 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 	}
 	// And the bank that asked was told, with the clearing house's own reason.
 	h.assertLastStatusTo(t, h.creditorBIC, iso20022.StatusReasonInvalidCutOffTime)
+}
+
+// TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed is about which
+// of a rejected collection's two messages the clearing house tries first.
+//
+// One of them is news and one of them is money. The payee's bank asked and is
+// owed an answer; the payer's bank is holding a posted debtor leg and its
+// message is what makes it hand a customer their money back. Sending the news
+// first and returning on its failure — which is what this did — left the refund
+// unattempted, and the payer's money in a suspense against a payment the network
+// records as Rejected, with nobody left to notice. The failure is reachable: the
+// send is refused with ErrUnknownBIC through Reset's ForgetBanks/JoinRoster
+// window, and the lookup fails on a store error.
+//
+// The submitter is made unaddressable rather than the payer's bank, because
+// that is the direction the ordering has to survive. Both are attempted and both
+// errors come back joined, so the dead letter still names what went wrong.
+func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitDirectDebit(t)
+	h.drain(t)
+
+	got := h.payment(t, p.ID)
+	if got.DebtorLegTx == "" {
+		t.Fatal("no debtor leg, so there is no refund for this test to be about")
+	}
+	if h.suspense(t, h.debtorPID) != harnessAmount {
+		t.Fatalf("the payer's bank is not holding the money, so this test asserts nothing")
+	}
+
+	// The clearing house's own half of a rejection, run directly: the payment
+	// leaves its cycle and becomes Rejected, and NOBODY is told. That is what
+	// csm.reject does before it calls tell, and doing it here is what leaves
+	// tell as the only thing under test.
+	rejected, err := h.net.RejectAtCSM(context.Background(), got.ID,
+		iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator")
+	if err != nil {
+		t.Fatalf("RejectAtCSM: %v", err)
+	}
+
+	// A clearing house that cannot look up the bank that submitted. Everything
+	// else about it is the real one.
+	broken := &csm{
+		m:   h.mesh,
+		ops: unaddressable{csmOps: h.net, who: h.creditorPID},
+		bic: h.cfg.ClearingHouseBIC,
+	}
+	before := h.statusesSentTo(h.debtorBIC)
+	err = broken.tell(context.Background(), rejected,
+		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
+		payment.TransactionStatusReport{
+			EndToEndID: endToEndOf(rejected),
+			TxID:       string(rejected.ID),
+			Status:     iso20022.TransactionStatusRejected,
+			Code:       iso20022.StatusReasonNotSpecifiedAgentGenerated,
+			Text:       "operator",
+		})
+
+	// The failure is reported — it is not swallowed to make the refund look
+	// clean.
+	if err == nil || !strings.Contains(err.Error(), "cannot address the bank that submitted") {
+		t.Fatalf("tell = %v, want the submitter's lookup reported", err)
+	}
+
+	// And the refund went out anyway. Counted after the drain, because the tap
+	// records a message when its recipient picks it up rather than when it is
+	// sent.
+	h.drain(t)
+	if after := h.statusesSentTo(h.debtorBIC); after != before+1 {
+		t.Fatalf("the payer's bank was sent %d statuses, want 1 — the refund was skipped because the other message failed",
+			after-before)
+	}
+	// The money is what says it worked. A status the payer's bank read as an
+	// acceptance would leave the suspense exactly where it is.
+	if bal := h.suspense(t, h.debtorPID); bal != 0 {
+		t.Fatalf("payer's clearing suspense = %d after the refund message, want 0", bal)
+	}
+}
+
+// unaddressable is a clearing house's view of the network in which one
+// participant cannot be looked up. It stands in for the two ways that really
+// happens — a store failure, and Reset's window in which the roster is empty —
+// neither of which a test can provoke on one participant at a time.
+type unaddressable struct {
+	csmOps
+	who payment.ParticipantID
+}
+
+func (u unaddressable) GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error) {
+	if id == u.who {
+		return nil, errors.New("mesh: the roster is unavailable")
+	}
+	return u.csmOps.GetParticipant(ctx, id)
 }
 
 // A second copy of a collection the debtor's bank has already answered is

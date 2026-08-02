@@ -131,6 +131,22 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	if sc.Direction() == payment.Pull {
 		submitter = dom.Creditor.Participant
 	}
+	// An OMITTED participant is a missing required field, and it is refused as
+	// one — for the reason the unregistered scheme above is refused as one. It
+	// decodes to "", which never equals a non-empty boundPID, so it would fall
+	// through to the direction rule and be answered "this bank does not submit
+	// this payment: a credit transfer is submitted by the payer's bank…" — a
+	// diagnosis of a direction violation about a request that names no direction
+	// to violate. The caller then goes looking for the wrong bug.
+	if submitter == "" {
+		side := "debtor"
+		if sc.Direction() == payment.Pull {
+			side = "creditor"
+		}
+		writeUnprocessable(w, "this instruction names no "+side+" participant, and the "+side+
+			"'s bank is the one that submits a "+string(dom.Scheme))
+		return
+	}
 	if submitter != s.boundPID {
 		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
 		return

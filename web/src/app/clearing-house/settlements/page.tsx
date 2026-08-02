@@ -46,7 +46,7 @@ export default function SettlementsPage() {
           rowKey={(s) => s.id}
           isLoading={isLoading}
           onRowClick={(s) => router.push(`/clearing-house/settlements/${s.id}`)}
-          empty="No settlements yet. Close and settle a clearing cycle to create one."
+          empty="No settlements yet. Closing a clearing cycle is what creates one: the cut-off instructs the central bank, which discharges the net positions."
         />
       )}
     </div>

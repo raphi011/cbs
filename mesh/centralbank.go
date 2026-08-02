@@ -136,20 +136,20 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 		// instruction is the one thing a settlement agent must never do. It is
 		// answered against no cycle, because the instruction cannot be trusted
 		// to name one.
-		return cb.answer(from, orig, notProvided, iso20022.TransactionStatusRejected, err)
+		return cb.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 	id, err := cycleOf(legs)
 	if err != nil {
-		return cb.answer(from, orig, notProvided, iso20022.TransactionStatusRejected, err)
+		return cb.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 
 	if _, err := cb.ops.SettleCycle(ctx, id); err != nil {
 		if errors.Is(err, payment.ErrCycleNotClosed) || errors.Is(err, payment.ErrInvalidStateTransition) {
 			return fmt.Errorf("mesh: %s was told to settle %s again: %w", cb.bic, id, err)
 		}
-		return cb.answer(from, orig, string(id), iso20022.TransactionStatusRejected, err)
+		return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
 	}
-	return cb.answer(from, orig, string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+	return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }
 
 // receiveReturn is the central bank executing a return: the R-transaction, and
@@ -229,11 +229,11 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 	// PaymentReturn.validate), so there is always a first one to answer about.
 	first := body.TxInf[0]
 	if n := len(body.TxInf); n != 1 {
-		return cb.answer(from, orig, first.OrgnlTxId, iso20022.TransactionStatusRejected,
+		return cb.answer(from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
 			fmt.Errorf("this settlement agent returns one payment per message; TxInf carries %d", n))
 	}
 	if said := body.GrpHdr.NbOfTxs; said != "1" {
-		return cb.answer(from, orig, first.OrgnlTxId, iso20022.TransactionStatusRejected,
+		return cb.answer(from, orig, returnedEndToEnd(first), first.OrgnlTxId, iso20022.TransactionStatusRejected,
 			fmt.Errorf("GrpHdr/NbOfTxs says %q and one transaction arrived; a return lost in transit is a payer who is not repaid", said))
 	}
 
@@ -242,9 +242,23 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 		if errors.Is(err, payment.ErrInvalidStateTransition) {
 			return fmt.Errorf("mesh: %s was told to return %s again: %w", cb.bic, id, err)
 		}
-		return cb.answer(from, orig, string(id), iso20022.TransactionStatusRejected, err)
+		return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
 	}
-	return cb.answer(from, orig, string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+	return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// returnedEndToEnd is the payer's own reference for a returned payment, as the
+// RETURNING BANK quoted it, or the EPC's convention where there is none.
+//
+// Quoted back rather than derived, because that is what a bank matches its
+// outstanding instruction against — csm.endToEndOf makes the same convention on
+// the other side of the mesh, and a status quoting the payment's id in this
+// element would match nothing the returning bank ever sent.
+func returnedEndToEnd(tx iso20022.ReturnTransaction) string {
+	if tx.OrgnlEndToEndId == "" {
+		return notProvided
+	}
+	return tx.OrgnlEndToEndId
 }
 
 // returnReason is what a return is described as where a CUSTOMER's money moves:
@@ -321,15 +335,36 @@ func cycleOf(legs []payment.SettlementLeg) (payment.CycleID, error) {
 // Back to the SENDER, for bank.answer's reason: the banks whose reserves just
 // moved are not parties to this conversation and were never given this actor's
 // address to expect a message from.
-func (cb *centralBank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref string,
+//
+// # Two references, not one
+//
+// e2e and txid are separate parameters because on the return path they are
+// different values, and quoting the payment id as both broke the convention
+// every other per-payment status in this mesh follows (csm.endToEndOf): a bank
+// matches an answer to its instruction by comparing what it SENT with what came
+// back, and a payment with no client reference travels as NOTPROVIDED, not as
+// its own id. On the settlement path they are one value, because a CYCLE has no
+// end-to-end reference at all and the clearing house matches on the transaction
+// id.
+//
+// # A cause forces RJCT
+//
+// bank.answer does the same, and the drift was a trap rather than a live
+// defect: a cause passed beside SettlementCompleted set a code and a text that
+// statusReasonOf then dropped, because a pacs.002 carries StsRsnInf only for a
+// rejection. The message would have gone out saying everything was fine with
+// the reason silently deleted. There is no caller that does it; there is now no
+// way to.
+func (cb *centralBank) answer(to iso20022.BIC, orig payment.OriginalMessage, e2e, txid string,
 	status iso20022.TransactionStatus, cause error) error {
 
 	report := payment.TransactionStatusReport{
-		EndToEndID: ref,
-		TxID:       ref,
+		EndToEndID: e2e,
+		TxID:       txid,
 		Status:     status,
 	}
 	if cause != nil {
+		report.Status = iso20022.TransactionStatusRejected
 		report.Code = payment.ReasonFor(cause)
 		report.Text = cause.Error()
 	}

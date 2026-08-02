@@ -588,18 +588,34 @@ export function closeCycle(cid: string): Promise<ClearingCycle> {
 
 // --- Payment: settlements -------------------------------------------------
 //
-// There is no settleCycle, and that is a decision rather than a gap. Settling is
-// performed on INSTRUCTION now: the clearing house reaches a cut-off, sends a
+// Nothing here SETTLES, and that is a decision rather than a gap. Settling is
+// performed on INSTRUCTION: the clearing house reaches a cut-off, sends a
 // pacs.009 carrying the closed cycle's net positions, and the central bank
 // answers ACSC — or RJCT/AM04 when a net payer's reserve cannot cover. A
-// function here that POSTed a settlement would be a second way to settle the
-// same cycle, racing the first, and the backend no longer serves the route.
+// function that POSTed a settlement to the central bank would be a second way
+// to settle the same cycle, racing the first, and the backend does not serve
+// that route.
+//
+// What settleCycle below does is ASK AGAIN, on the clearing house's own port.
+// It exists because a refusal was otherwise terminal: the cycle sits Closed with
+// no settlement, every payer debited into their own bank's clearing suspense
+// and every payee unpaid, with no transition out through any other route. The
+// operator funds the short member and calls this; the clearing house rebuilds
+// the same pacs.009 and the settlement agent decides again.
 //
 // The one that used to exist is worth remembering for HOW it broke rather than
 // why it went. Its path was cb("/settlements") — a string — so when the route
 // was deleted, tsc, eslint and next build all stayed green and the console
 // 404'd at runtime. Nothing on this side of the wire can catch that; only
-// loading the page can.
+// loading the page can, which is why csm() is used here rather than a
+// hand-written path.
+
+// Re-instruct settlement of a closed cycle. Takes no body; answers 202 and the
+// cycle as the clearing house left it — still Closed, because whether the
+// settlement agent discharged it this time arrives later. Read the cycle again.
+export function settleCycle(cid: string): Promise<ClearingCycle> {
+  return request("POST", csm(`/cycles/${cid}/settle`));
+}
 
 export function listSettlements(): Promise<Settlement[]> {
   return request("GET", csm("/settlements"));

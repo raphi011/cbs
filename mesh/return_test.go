@@ -459,15 +459,27 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 // A pacs.004 may refer back by OrgnlEndToEndId alone: OrgnlTxId is optional in
 // the schema and iso20022's ReturnTransaction.validate accepts either. This
 // system identifies payments by OrgnlTxId, so such a message names no payment
-// this network holds — and the pacs.002 refusing it would have nothing to refer
-// back BY, which the codec refuses to build. The refusal therefore becomes a
-// dead letter: the sender is told nothing, and the payment is untouched.
+// this network holds. The sender is told nothing and the payment is untouched;
+// what is dead-lettered is the answer.
 //
-// It is a limit of the answering path and not of the guard. What would close it
-// is quoting the end-to-end reference the message DID carry, which is a change
-// to how this actor addresses every answer it sends, and to what the clearing
-// house then looks the answer up by. Named here, with the behaviour asserted,
-// rather than left as a sentence in a doc comment.
+// # WHERE it dies has moved, and half the limit is closed
+//
+// This test used to record the settlement agent failing to BUILD the refusal:
+// it quoted the payment id as the end-to-end reference as well as the
+// transaction id, so a message with neither left the report with nothing to
+// refer back by and the codec refused it. That double-quoting was itself the
+// defect — it broke the convention every other per-payment status follows, so a
+// bank could not match an ordinary answer against what it sent — and
+// centralBank.answer now quotes the reference the RETURNING BANK gave
+// (returnedEndToEnd).
+//
+// So the refusal is built and sent, and dies one hop later instead: the
+// clearing house is what turns an answer back into a payment, and it looks up
+// by OrgnlTxId, which is the element this message does not have. The outcome
+// for the returning bank is exactly what it was — told nothing — and the second
+// half of the limit is the one the old comment named: the clearing house would
+// have to resolve a payment by its end-to-end reference, which is a lookup this
+// system does not have.
 //
 // No actor in this mesh emits one — payment.ReturnMessage always writes
 // OrgnlTxId — so it is injected.
@@ -491,13 +503,169 @@ func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
 	if err == nil {
 		t.Fatal("Drain was clean; a return the settlement agent could neither execute nor answer went unreported")
 	}
-	if !strings.Contains(err.Error(), "refer back by") {
-		t.Errorf("the dead letter %q is not the answer failing to name what it is about", err)
+	if !strings.Contains(err.Error(), "naming no payment") || !strings.Contains(err.Error(), string(h.cfg.ClearingHouseBIC)) {
+		t.Errorf("the dead letter %q is not the clearing house unable to say which payment the answer is about", err)
 	}
 	if got := h.statusesSentTo(h.creditorBIC); got != answered {
 		t.Errorf("the bank was sent %d statuses about a return that names no payment; the answer cannot be built", got-answered)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Settled {
 		t.Errorf("the payment is %v; nothing was returned", got.Status)
+	}
+}
+
+// TestARefusedReturnNamesTheSettlementAgentAsTheOriginator is the one hop in
+// this system where the sender of a status and the institution that decided it
+// are different, and the message has to say so.
+//
+// The clearing house passes the settlement agent's answer about a return
+// straight back to the bank that asked for one. Its own doc says it decides
+// nothing there — it addresses the answer and adds nothing — and until
+// MessageContext could express that, the pacs.002 it built stamped ITSELF as
+// the originator of somebody else's refusal. Orgtr exists precisely to stop
+// that (iso20022.StatusReasonInformation, EPC AT-R002): a returning bank
+// reading it would open an investigation with a clearing house that never
+// looked at its request.
+//
+// The refusal is provoked with a count the sender's own header contradicts,
+// which is one of the two things centralBank.receiveReturn refuses outright.
+// Any of its refusals would do; what this test is about is the ELEMENT, not the
+// reason.
+func TestARefusedReturnNamesTheSettlementAgentAsTheOriginator(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	// The returning bank on a push is the PAYEE's bank: the one that received
+	// the original instruction. See returnerOf.
+	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
+		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-x", Now: testTime})
+	if err != nil {
+		t.Fatalf("ReturnMessage: %v", err)
+	}
+	// A header that claims two transactions over one. The settlement agent
+	// refuses the whole message rather than acting on the survivor.
+	env.Document.(*iso20022.Pacs004).PmtRtr.GrpHdr.NbOfTxs = "2"
+	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	h.drain(t)
+
+	status := h.lastStatusTo(t, h.creditorBIC)
+	if n := len(status.FIToFIPmtStsRpt.TxInfAndSts); n != 1 {
+		t.Fatalf("the answer carries %d transactions, want 1", n)
+	}
+	tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
+	if tx.TxSts != iso20022.TransactionStatusRejected {
+		t.Fatalf("the return was answered %v, want RJCT — this test is about a refusal's originator", tx.TxSts)
+	}
+	if tx.StsRsnInf == nil || tx.StsRsnInf.Orgtr == nil || tx.StsRsnInf.Orgtr.Id == nil || tx.StsRsnInf.Orgtr.Id.OrgId == nil {
+		t.Fatalf("the refusal names no originator: %#v", tx.StsRsnInf)
+	}
+	if got := tx.StsRsnInf.Orgtr.Id.OrgId.AnyBIC; got != h.cfg.CentralBankBIC {
+		t.Fatalf("Orgtr = %q, want the settlement agent %q — the clearing house relayed this refusal and did not make it",
+			got, h.cfg.CentralBankBIC)
+	}
+	// The header still says the clearing house SENT it, which is the other half
+	// of the distinction: collapsing the two is the bug, not either value.
+	env2, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, h.creditorBIC, "pacs.002.001.10"))
+	if err != nil {
+		t.Fatalf("re-parsing the answer: %v", err)
+	}
+	if got := env2.AppHdr.Fr.FIId.FinInstnId.BICFI; got != h.cfg.ClearingHouseBIC {
+		t.Fatalf("the answer was sent by %q, want the clearing house %q", got, h.cfg.ClearingHouseBIC)
+	}
+}
+
+// TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent is the convention
+// every per-payment status in this mesh follows, asserted at the one actor that
+// had drifted off it.
+//
+// A bank matches an answer to its instruction by comparing what it SENT with
+// what came back. centralBank.answer quoted the payment id as the end-to-end
+// reference as well as the transaction id, which matches nothing any bank ever
+// sent — csm.endToEndOf is the same convention on the other side of the mesh,
+// and payment's own helper is where it comes from.
+//
+// Both cases, because the convention has two halves and only one of them is
+// visible in a fixture with no client reference: a payment that quotes one gets
+// it back verbatim, and a payment that quotes none gets NOTPROVIDED. The second
+// is the EPC's convention for "the payer gave no reference" and is what the
+// pacs.008 carried on the way out.
+func TestTheSettlementAgentsAnswerQuotesTheReferenceTheBankSent(t *testing.T) {
+	for _, tc := range []struct{ name, e2e, want string }{
+		{"a payment with a client reference", "INV-42", "INV-42"},
+		{"a payment with none", "", notProvided},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMeshHarness(t)
+			req := h.creditTransferRequest(t)
+			req.EndToEndID = tc.e2e
+			submitted, err := h.mesh.Submit(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Submit: %v", err)
+			}
+			p := h.settle(t, submitted)
+
+			// A refusal rather than a success, because a pacs.002 that is not a
+			// rejection is the same shape in this element and the refusal is the
+			// case a bank actually has to match against an exception queue.
+			env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
+				payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-ref", Now: testTime})
+			if err != nil {
+				t.Fatalf("ReturnMessage: %v", err)
+			}
+			env.Document.(*iso20022.Pacs004).PmtRtr.GrpHdr.NbOfTxs = "2"
+			if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			h.drain(t)
+
+			status := h.lastStatusTo(t, h.creditorBIC)
+			tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
+			if tx.OrgnlTxId != string(p.ID) {
+				t.Fatalf("OrgnlTxId = %q, want the payment id %q", tx.OrgnlTxId, p.ID)
+			}
+			if tx.OrgnlEndToEndId != tc.want {
+				t.Fatalf("OrgnlEndToEndId = %q, want %q — the payment id in this element matches nothing the bank sent",
+					tx.OrgnlEndToEndId, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheSettlementAgentCannotAnswerYesWithAReason is the guard bank.answer has
+// and centralBank.answer had drifted away from.
+//
+// A pacs.002 carries StsRsnInf only for a rejection (payment.statusReasonOf), so
+// a cause passed beside SettlementCompleted would set a code and a text that the
+// builder then silently drops — a message saying everything is fine, with the
+// reason it was not deleted on the way out. No handler does it today; this is
+// what stops the next one, and it is asserted directly because there is no
+// message that provokes it.
+func TestTheSettlementAgentCannotAnswerYesWithAReason(t *testing.T) {
+	h := newMeshHarness(t)
+	cb := &centralBank{m: h.mesh, ops: h.net, bic: h.cfg.CentralBankBIC}
+
+	err := cb.answer(h.cfg.ClearingHouseBIC,
+		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
+		notProvided, "cyc_x",
+		iso20022.TransactionStatusSettlementCompleted,
+		payment.ErrCycleNotFound)
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	// The cycle id is invented, so whatever the clearing house makes of this
+	// message it will have nothing to look up. The dead letter is taken rather
+	// than asserted on: what is under test is the BYTES this actor put on the
+	// wire, and the recipient's opinion of them is another test's business.
+	_ = h.drainErr(t)
+
+	status := h.lastStatusTo(t, h.cfg.ClearingHouseBIC)
+	tx := status.FIToFIPmtStsRpt.TxInfAndSts[0]
+	if tx.TxSts != iso20022.TransactionStatusRejected {
+		t.Fatalf("an answer built with a cause reports %v, want RJCT — the reason is dropped on any other status", tx.TxSts)
+	}
+	if tx.StsRsnInf == nil || tx.StsRsnInf.Rsn.Cd == nil {
+		t.Fatalf("the rejection carries no reason code: %#v", tx.StsRsnInf)
 	}
 }

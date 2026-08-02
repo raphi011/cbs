@@ -2,9 +2,15 @@
 // institutions of this system.
 //
 // It exists to make the message the interface. Before it, a bank learned the
-// fate of a payment by calling a function that returned it; after it, a bank
-// cannot learn that a payment was accepted except by receiving a pacs.002
-// saying so. Everything else here follows from taking that seriously.
+// fate of a payment by calling a function that returned it; after it, no actor
+// in this package is TOLD that a payment was accepted except by receiving a
+// pacs.002 saying so. Everything else here follows from taking that seriously.
+//
+// The qualification is load-bearing and is made again where it bites (see "One
+// store, likewise" below): the actors share one store, bankOps carries
+// GetPayment, and bank.receiveStatus deliberately reads the payment row and
+// trusts it over the message it just received. A bank here CAN look the answer
+// up. What it cannot do is be told by anything other than a message.
 //
 // # Actors
 //

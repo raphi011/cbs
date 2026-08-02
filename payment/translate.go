@@ -210,6 +210,24 @@ type MessageContext struct {
 	To    iso20022.BIC
 	MsgID string
 	Now   time.Time
+
+	// DecidedBy is who MADE the decision this message reports, when that is not
+	// the sender. Empty means the sender decided it, which is the ordinary case
+	// and every message but one.
+	//
+	// It exists because a relay cannot otherwise be honest. The clearing house
+	// passes the settlement agent's refusal of a RETURN straight through to the
+	// bank that asked for one (mesh.csm.receiveReturnStatus): it decides
+	// nothing, adds nothing, and — with only From to go on — was stamping
+	// itself as the originator of somebody else's refusal. That is precisely
+	// what Orgtr exists to prevent, per iso20022.StatusReasonInformation: a
+	// receiver reading it blames the wrong institution and investigates a
+	// clearing house that had no view of the matter.
+	//
+	// It is separate from From rather than replacing it because the two are
+	// different questions with different answers on exactly this hop, and
+	// collapsing them is the bug. See orgtr.
+	DecidedBy iso20022.BIC
 }
 
 func (mc MessageContext) header(msgDefIdr string) iso20022.AppHdr {
@@ -226,15 +244,25 @@ func (mc MessageContext) header(msgDefIdr string) iso20022.AppHdr {
 //
 // The two differ the moment a message passes through an intermediary: a status
 // report travelling back from the creditor's bank through the clearing house is
-// sent by the clearing house and originated by the bank. Every message this
-// system emits is one it decided itself, so the originator is mc.From — but it
-// is written out rather than left to the header, because a receiver reading the
-// header's Fr as the decider blames the wrong institution for every rejection
-// that was relayed. See iso20022.StatusReasonInformation.
+// sent by the clearing house and originated by the bank.
+//
+// Almost every message this system emits is one it decided itself, so the
+// originator defaults to mc.From — but it is written out rather than left to
+// the header, because a receiver reading the header's Fr as the decider blames
+// the wrong institution for every rejection that was relayed. See
+// iso20022.StatusReasonInformation.
+//
+// The exception is the hop that DecidedBy exists for, and there is one: the
+// clearing house passing the settlement agent's answer about a return back to
+// the bank that asked. It decided nothing and says so.
 func (mc MessageContext) orgtr() *iso20022.PartyIdentification {
+	decider := mc.DecidedBy
+	if decider == "" {
+		decider = mc.From
+	}
 	return &iso20022.PartyIdentification{
 		Id: &iso20022.PartyChoice{
-			OrgId: &iso20022.OrganisationIdentification{AnyBIC: mc.From},
+			OrgId: &iso20022.OrganisationIdentification{AnyBIC: decider},
 		},
 	}
 }

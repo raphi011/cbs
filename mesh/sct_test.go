@@ -385,3 +385,111 @@ func TestARedeliveredCreditTransferIsDeadLetteredAtThePayeesBank(t *testing.T) {
 		t.Errorf("the redelivery moved the payment to %v; it was already Accepted", got.Status)
 	}
 }
+
+// TestABulkCreditTransferIsRefusedByTheClearingHouse and its collection twin are
+// the tests refuseBulk did not have.
+//
+// It had none from either side: its whole body could be replaced with `return
+// nil` and the package stayed green. As a no-op it silently DROPS a bulk
+// pacs.008 — nothing relayed, nothing answered, and a submitting bank waiting
+// for ever on an instruction nobody ever refused.
+//
+// The message is a doctored copy of a real one, with its single transaction
+// duplicated and GrpHdr/NbOfTxs raised to match, because that is the only way to
+// have one: nothing in this system builds a bulk file, so the limit is a rule
+// about messages the mesh could RECEIVE rather than about ones it sends.
+//
+// What is asserted is that the sender was told, and told WHICH element carried
+// how many. The count is what a sender has to see to fix its file, and the
+// element is what says whether it was a push or a pull that was refused.
+func TestABulkCreditTransferIsRefusedByTheClearingHouse(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitCreditTransfer(t)
+	h.drain(t)
+
+	env, err := h.net.CreditTransferMessage(context.Background(), p,
+		payment.MessageContext{From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "ct-bulk", Now: testTime})
+	if err != nil {
+		t.Fatalf("CreditTransferMessage: %v", err)
+	}
+	body := &env.Document.(*iso20022.Pacs008).FIToFICstmrCdtTrf
+	body.CdtTrfTxInf = append(body.CdtTrfTxInf, body.CdtTrfTxInf[0])
+	body.GrpHdr.NbOfTxs = "2"
+
+	relayedBefore := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08")
+	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	// The doctored file names a payment that is already Accepted, so the RJCT
+	// travelling back reaches the payer's bank and is refused there — the same
+	// dead letter TestACreditTransferForABankTheMeshCannotRouteToIsRC01 gets,
+	// and for the same reason. It is asserted rather than discarded so that a
+	// failure anywhere else in the chain cannot hide underneath it.
+	err = h.drainErr(t)
+	if err == nil || !strings.Contains(err.Error(), "records as Accepted") {
+		t.Fatalf("Drain = %v, want the payer's bank refusing to reverse an accepted payment", err)
+	}
+
+	// Answered, not dropped, and the answer says why.
+	status := h.lastStatusTo(t, h.debtorBIC)
+	_, reports := payment.ReadStatus(status)
+	if len(reports) != 1 {
+		t.Fatalf("the answer carries %d reports, want 1", len(reports))
+	}
+	if reports[0].Status != iso20022.TransactionStatusRejected {
+		t.Fatalf("the bulk file was answered %v, want RJCT", reports[0].Status)
+	}
+	if !strings.Contains(reports[0].Text, "CdtTrfTxInf carries 2") {
+		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
+	}
+	// And nothing was relayed. Refusing the file but forwarding the first
+	// transaction would drop the rest silently, which is the outcome refuseBulk
+	// exists to prevent.
+	if got := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); got != relayedBefore {
+		t.Fatalf("the payee's bank was sent %d pacs.008s, want the original %d", got, relayedBefore)
+	}
+}
+
+// The pull's half of the same rule. It is a separate test rather than a table
+// because the ELEMENT differs and the element is the assertion: a clearing
+// house that named CdtTrfTxInf in a collection's refusal would be telling the
+// sender to look at a field its message does not have.
+func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitDirectDebit(t)
+	h.drain(t)
+
+	mandate, err := h.net.GetMandate(context.Background(), p.MandateID)
+	if err != nil {
+		t.Fatalf("GetMandate: %v", err)
+	}
+	env, err := h.net.DirectDebitMessage(context.Background(), p, mandate,
+		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "dd-bulk", Now: testTime})
+	if err != nil {
+		t.Fatalf("DirectDebitMessage: %v", err)
+	}
+	body := &env.Document.(*iso20022.Pacs003).FIToFICstmrDrctDbt
+	body.DrctDbtTxInf = append(body.DrctDbtTxInf, body.DrctDbtTxInf[0])
+	body.GrpHdr.NbOfTxs = "2"
+
+	relayedBefore := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08")
+	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	h.drain(t)
+
+	status := h.lastStatusTo(t, h.creditorBIC)
+	_, reports := payment.ReadStatus(status)
+	if len(reports) != 1 {
+		t.Fatalf("the answer carries %d reports, want 1", len(reports))
+	}
+	if reports[0].Status != iso20022.TransactionStatusRejected {
+		t.Fatalf("the bulk collection was answered %v, want RJCT", reports[0].Status)
+	}
+	if !strings.Contains(reports[0].Text, "DrctDbtTxInf carries 2") {
+		t.Fatalf("the refusal reads %q, and does not name the element and the count", reports[0].Text)
+	}
+	if got := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); got != relayedBefore {
+		t.Fatalf("the payer's bank was sent %d pacs.003s, want the original %d", got, relayedBefore)
+	}
+}

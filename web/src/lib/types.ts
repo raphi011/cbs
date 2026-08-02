@@ -351,8 +351,10 @@ export interface Payment {
 }
 
 // What a bank answers a customer's instruction with: an identifier to ask about,
-// not an outcome. See api/handlers_bank_payment.go's acceptedPaymentDTO — and the
-// reason it is 202 and not 201, which is that 7b makes the wait real.
+// not an outcome. See api/handlers_bank_payment.go's submittedPaymentDTO — named
+// for submission rather than acceptance since 7b, because the payment this names
+// is Initiated, in no cycle and unseen by the counterparty. That is also the
+// reason it is 202 and not 201.
 export interface AcceptedPayment {
   paymentId: string;
 }

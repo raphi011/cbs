@@ -871,6 +871,14 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 
 	// 3. Post the creditor leg of every payment: the payee's bank releases
 	//    the funds from its suspense to the payee's account.
+	//
+	//    Without a CheckCreditTx, unlike creditorSideTx and DepositTx. A payee
+	//    who closes their account between their bank's acceptance and this
+	//    cut-off is credited into a Closed account and the money strands. It is
+	//    the same gap ReturnPaymentTx's doc sets out at length, including why
+	//    adding the check here is a ruling rather than a line: this is one unit
+	//    of work, so the check would fail the whole batch, and a Cleared payment
+	//    has no route out of the cycle it is in.
 	for _, pid := range c.PaymentIDs {
 		p, err := tx.GetPayment(ctx, pid)
 		if err != nil {
@@ -1675,6 +1683,42 @@ func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string
 // ReturnPaymentTx is ReturnPayment within a caller-supplied unit of work. All
 // three compensating postings — debtor's bank, creditor's bank, central bank —
 // commit together or not at all.
+//
+// # A KNOWN GAP: the refund is not checked against a creditable account
+//
+// creditorSideTx and DepositTx both call Deposit.CheckCreditTx before money
+// lands in a customer's account, and both give the same reason: Close requires
+// a zero balance, no withdrawal can reach a closed account afterwards, and
+// Closed is terminal, so a credit into one strands for ever. This function
+// credits debtorGL below with no such check, and SettleCycleTx credits
+// creditorGL with none either.
+//
+// It is reachable and it was measured rather than reasoned about. A payer whose
+// account is emptied and closed after a payment settles, whose payment is then
+// returned, ends with 250,000 in an account whose status is Closed: the
+// withdrawal check answers "account is closed", the credit check answers
+// "account is closed", and closing again is an invalid status transition. The
+// settlement half is shorter still — a payee who closes their account between
+// their bank's acceptance and the cut-off is credited by SettleCycleTx into the
+// closed account.
+//
+// It is NOT fixed here, because both fixes are rulings rather than code:
+//
+//   - Refusing the RETURN answers RJCT to the returning bank and leaves the
+//     disputed money with the payee permanently, since Settled is the only
+//     status ReturnPaymentTx accepts and there is no second attempt that would
+//     ever differ. One stranding is traded for another.
+//   - Refusing at SETTLEMENT fails the whole batch, because SettleCycleTx is
+//     one unit of work — one retail customer closing an account stops the
+//     cut-off for every payment in the cycle — and there is no route out of the
+//     resulting state: RejectAtCSMTx takes only an Initiated or Accepted
+//     payment and these are Cleared. That is the terminal shape
+//     POST /cycles/{cid}/settle was added to remove, reintroduced by a
+//     different door.
+//
+// What both really want is somewhere for unreachable money to go — an
+// unclaimed-balances account at the receiving bank — which this system does not
+// have and which is a design decision, not a missing call.
 func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err

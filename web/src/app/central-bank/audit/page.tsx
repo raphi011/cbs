@@ -26,7 +26,7 @@ export default function CentralBankAuditPage() {
         error={audit.error}
         onRetry={() => audit.refetch()}
         pager={pager}
-        empty="No central-bank activity yet. Fund a participant or settle a cycle to see reserve movements."
+        empty="No central-bank activity yet. Fund a participant, or close a clearing cycle so this bank is instructed to discharge it, to see reserve movements."
       />
     </div>
   );

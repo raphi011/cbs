@@ -254,9 +254,10 @@ function PayeeLine({
 // The second half of a 202. The bank answered with an identifier and no outcome,
 // so the outcome is a second request — which is what this is.
 //
-// Today it resolves immediately. 7b makes the wait real: the CSM answers with a
-// pacs.002 later, and this panel will show Initiated until it does, with nothing
-// here needing to change.
+// The wait is real since 7b: the payee's bank and then the clearing house answer
+// with a pacs.002, at other actors, after this request finished — so this panel
+// can show Initiated for a moment before it shows Accepted. Nothing here had to
+// change when the behaviour caught up with the shape.
 function Outcome({
   pid,
   did,
