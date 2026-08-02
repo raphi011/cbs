@@ -232,9 +232,12 @@ func TestARedeliveredReturnIsDeadLetteredAndNotAnswered(t *testing.T) {
 	answered := h.statusesSentTo(h.creditorBIC)
 	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, relayed)
 
-	err := h.drainErr(t)
-	if !errors.Is(err, payment.ErrInvalidStateTransition) {
-		t.Fatalf("Drain = %v, want the illegal transition as a dead letter", err)
+	// Errorf and not Fatalf: "dead-lettered" and "not answered" are two claims,
+	// and a settlement agent that answered this instead would break both at
+	// once. Stopping at the first would leave the second unobserved in exactly
+	// the case it exists for.
+	if err := h.drainErr(t); !errors.Is(err, payment.ErrInvalidStateTransition) {
+		t.Errorf("Drain = %v, want the illegal transition as a dead letter", err)
 	}
 	if got := h.statusesSentTo(h.creditorBIC); got != answered {
 		t.Errorf("the redelivery produced %d further statuses to the bank that asked, want none", got-answered)
