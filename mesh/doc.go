@@ -135,6 +135,6 @@
 // ledger.BookID and nothing enforces that a handler stays in its own book, so
 // the boundary is asserted rather than given: ops.go narrows what each actor may
 // CALL, and the recorder in books_test.go watches which books each one actually
-// reaches. The measurements are in TestABankHandlerTouchesOnlyItsOwnBook, and
+// reaches. The measurements are in TestWhichBooksEachBankActuallyReaches, and
 // one of them is a genuine crossing that this arrangement is what found.
 package mesh

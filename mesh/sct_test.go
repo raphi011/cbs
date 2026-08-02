@@ -327,7 +327,18 @@ func TestACreditTransferForABankTheMeshCannotRouteToIsRC01(t *testing.T) {
 	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	_ = h.drainErr(t)
+	// The dead letter this leaves is asserted rather than discarded, and it has
+	// to be exactly this one: the payer's bank refusing to reverse a payment its
+	// own network records as Accepted. Throwing the drain away would let any
+	// other failure in the chain — the clearing house unable to build its answer,
+	// a send refused — pass unnoticed underneath the assertion below.
+	err = h.drainErr(t)
+	if err == nil {
+		t.Fatal("Drain was clean; the payer's bank acted on a rejection of a payment that is still Accepted")
+	}
+	if !strings.Contains(err.Error(), "records as Accepted") || !strings.Contains(err.Error(), string(h.debtorBIC)) {
+		t.Errorf("dead letter %q is not the payer's bank refusing to reverse an accepted payment", err)
+	}
 
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonBankIdentifierIncorrect)
 	if bal := h.suspense(t, h.debtorPID); bal != harnessAmount {

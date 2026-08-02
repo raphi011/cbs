@@ -17,10 +17,13 @@ import (
 // answer — taking the payment into a cycle, or rejecting it — and passes that
 // answer back to the bank that started it.
 //
-// It holds a csmOps, so it cannot post. Nothing about clearing moves money: that
-// is what makes clearing and settlement different jobs, and it is why the
-// interface has three methods and none of them reaches a ledger. The dynamic
-// half of the same claim is TestTheCSMTouchesOnlyTheNetworkBook.
+// It holds a csmOps, which is three methods wide: nothing about clearing moves
+// money, and that is what makes clearing and settlement different jobs. What
+// that does NOT amount to is a compile-time ban on posting — GetParticipant
+// hands back live ledger and deposit handles bound to the bank it names, so a
+// clearing house that wanted another bank's book has one. See the note on
+// bankOps in ops.go for the whole of that hole. TestTheCSMTouchesOnlyTheNetworkBook
+// is what actually holds this actor to it.
 type csm struct {
 	m   *Mesh
 	ops csmOps

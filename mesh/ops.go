@@ -83,9 +83,11 @@ type bankOps interface {
 //
 // Three methods for the whole of clearing, and the shortness is the point: a
 // clearing house accepts a payment into a cycle, rejects one, and looks up where
-// to send the answer. It cannot post, because posting is a bank's act and
-// nothing here can reach a ledger. TestTheCSMTouchesOnlyTheNetworkBook is the
-// dynamic half of the same claim.
+// to send the answer. Posting is a bank's act and no method here is one — with
+// the same exception the note above records, since GetParticipant is on this
+// interface too and hands over the same live handles. So the ban on posting is
+// the recorder's and not the compiler's; TestTheCSMTouchesOnlyTheNetworkBook is
+// what enforces it.
 type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)

@@ -320,7 +320,7 @@ func (h *meshHarness) booksTouchedBy(who iso20022.BIC) []ledger.BookID {
 // It exists so that "only its own book" can be stated as a claim about the ones
 // an actor did NOT reach, rather than only about the ones it did — and so that
 // an expectation which really is "every bank's book" (the directory sweep; see
-// TestABankHandlerTouchesOnlyItsOwnBook) is derived from the network rather than
+// TestWhichBooksEachBankActuallyReaches) is derived from the network rather than
 // typed out.
 func (h *meshHarness) allBooks() []ledger.BookID {
 	out := []ledger.BookID{h.debtorBook, h.creditorBook, payment.CentralBankBook, ledger.NetworkBook}

@@ -605,8 +605,9 @@ var structCarriedBooks = map[string]structCarriedBook{
 //
 // # A BANK's expected set is [NetworkBook, its own book], not [its own book]
 //
-// The brief's draft for TestABankHandlerTouchesOnlyItsOwnBook wants
-// []ledger.BookID{h.debtorBook} for the submitting bank. That is not
+// The brief's draft — TestABankHandlerTouchesOnlyItsOwnBook, now
+// TestWhichBooksEachBankActuallyReaches, and see there for why it was renamed —
+// wants []ledger.BookID{h.debtorBook} for the submitting bank. That is not
 // satisfiable and never was: every payment id is allocated network-scoped —
 // payment/system.go's NextID(ctx, ledger.NetworkBook, "pay") — and submission
 // appends payment.initiated under NetworkBook. No version of creating a
@@ -663,12 +664,20 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 	}
 }
 
-// TestABankHandlerTouchesOnlyItsOwnBook is sub-project 8's specification,
+// TestWhichBooksEachBankActuallyReaches is sub-project 8's specification,
 // measured against the code that now exists.
 //
 // Under a shared store, nothing stops a handler reading another entity's books;
 // this is what notices. When each entity gets its own store, these assertions
 // become the definition of the split rather than a check on it.
+//
+// It was drafted as TestABankHandlerTouchesOnlyItsOwnBook, and the rename is
+// part of the finding rather than tidying. A bank does NOT touch only its own
+// book — both of them below reach a book that is not theirs, for the two
+// separate reasons set out further down — so the old name asserted the opposite
+// of what the test measures, in the string a failure prints and a reader greps
+// for. The invariant it was named after is the one sub-project 8 has to
+// establish; it is not one this system has.
 //
 // # The submitting bank, and why NetworkBook is in its set
 //
@@ -712,7 +721,7 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // central bank's: its half writes the payment row (network-scoped, and it
 // appends no audit event — see AcceptInboundTx on why the payment's lifecycle
 // has two facts and not three), so nothing in it allocates a network id.
-func TestABankHandlerTouchesOnlyItsOwnBook(t *testing.T) {
+func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h := newMeshHarness(t) // builds a seeded network + mesh over a recordingStore
 
 	h.rec.reset()
@@ -817,11 +826,19 @@ func TestClosingACycleSendsNoMessageAndTouchesNoBankBook(t *testing.T) {
 	if got := h.messagesSeen(); got != before {
 		t.Errorf("closing a cycle put %d messages on the wire; at Task 10 clearing is not a conversation", got-before)
 	}
-	// Nobody's ledger moved — not the central bank's, and not either member's.
+	// Nobody's ledger moved — not the central bank's, not either member's — and
+	// the WHOLE-STORE set is what says so. Every book-scoped call any layer made
+	// while the cut-off ran is in it, so CentralBankBook or a member's book
+	// appearing there is the failure, whoever made the call.
+	//
+	// Not booksTouchedBy, deliberately. The cut-off is an operator's act driven
+	// on a bare context, so it is attributed to no actor at all and every
+	// per-actor set is empty by construction — an assertion that they are empty
+	// would be one that cannot fail, and it would go on not-failing after Task 12
+	// gave settlement a real actor. That is exactly the class of dud assertion
+	// this file exists to keep out; a per-actor claim needs an actor doing the
+	// work, which is what Task 12 supplies.
 	assertBooksTouched(t, "the cut-off", h.rec.touched(), []ledger.BookID{ledger.NetworkBook})
-	for _, who := range []iso20022.BIC{h.cfg.CentralBankBIC, h.debtorBIC, h.creditorBIC} {
-		assertBooksTouched(t, string(who)+" at the cut-off", h.booksTouchedBy(who), nil)
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1134,7 +1151,7 @@ func bookArgument(t *testing.T, typ reflect.Type, m bookMethod, book ledger.Book
 // read that bank's entire audit trail, Payload included — an auditable history
 // of every account opened, every hold taken, every posting made. Before the
 // override existed this recorded NOTHING, so Task 10's
-// TestABankHandlerTouchesOnlyItsOwnBook would have passed over it.
+// TestWhichBooksEachBankActuallyReaches would have passed over it.
 //
 // The second half is the wider crossing still: an AuditFilter with no BookID
 // reads every book at once. That must not look like a clean unit of work either,
