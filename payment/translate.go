@@ -1675,10 +1675,16 @@ func signedAmountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveC
 //
 // It is a DIFFERENT type from SettlementStatement, deliberately. That one is
 // what the sender knew; this is what the receiver can learn, and they are not the
-// same set of facts — a member sees no ParticipantID and no SettlementID,
-// because those are the central bank's identifiers for its own rows and nothing
-// in the message carries them. Collapsing the two types would put fields on the
-// receiving side that are always empty and invite a caller to trust them.
+// same set of facts. ParticipantID never reaches the wire at all — nothing in the
+// message carries it, because a member bank has no use for the central bank's
+// internal name for itself. SettlementID is on the wire, in Stmt/Id, but
+// ReadStatement does not surface it here: it identifies the central bank's OWN
+// settlement row, a member has nothing to do with it and no way to check it
+// against anything it holds, and carrying it through would let a caller mistake
+// the sender's bookkeeping key for something the receiver can act on.
+// Collapsing the two types would put fields on the receiving side that are
+// either always empty or copied from the wire with nothing to verify them
+// against, and invite a caller to trust them either way.
 type AdvisedMovement struct {
 	Account        ledger.AccountID
 	Asset          ledger.AssetCode

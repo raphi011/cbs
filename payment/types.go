@@ -355,12 +355,15 @@ type Settlement struct {
 // saw it at the moment it posted: the movement on that member's reserve account
 // and the balance the account was left at.
 //
-// It is captured INSIDE SettleCycleTx's unit of work and returned, rather than
-// re-read afterwards, because the closing balance is a claim about a moment. A
-// balance read after the commit is a different number the instant anything else
-// settles, and a statement asserting the wrong one is worse than no statement:
-// the whole point of carrying Bal/CLBD is that a member can check its own
-// posting against it.
+// It exists to be captured INSIDE the settling transaction's unit of work and
+// returned from it, rather than re-read afterwards, because the closing balance
+// is a claim about a moment. A balance read after the commit is a different
+// number the instant anything else settles, and a statement asserting the wrong
+// one is worse than no statement: the whole point of carrying Bal/CLBD is that a
+// member can check its own posting against it. SettleCycleTx does not build one
+// of these yet — that wiring is a later task — but the shape is fixed now
+// because the constraint it exists to satisfy has nothing to do with when the
+// caller arrives.
 //
 // Movement is SIGNED — positive means the member's reserve went up — and the
 // message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the
