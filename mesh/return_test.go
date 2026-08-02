@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -326,5 +327,116 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 				t.Errorf("the payee holds %d; a refused return claws nothing back", got)
 			}
 		})
+	}
+}
+
+// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers is the datum a
+// pacs.004 exists to carry, followed the whole way.
+//
+// Every other assertion in this file would pass on a system that returned the
+// money for the wrong reason, or for none: two returns of the same payment
+// under opposite codes move exactly the same amounts between exactly the same
+// accounts. The reason is what tells a payer whose account was closed from a
+// payer who disputed a mandate, and it is the only part of a return that is
+// pure information.
+//
+// So it is asserted at both ends and in both directions of travel:
+//
+//   - ON THE WIRE, in the message the settlement agent acted on. That is the
+//     copy the clearing house carried, so it also says the relay left the
+//     document alone (csm.relay replaces the header and nothing else).
+//   - IN THE BOOKS, in the descriptions of the two postings that move a
+//     customer's money. payment.ReturnPaymentTx writes the reason into both,
+//     which is what makes the return legible on a statement months later.
+//
+// The CENTRAL BANK's own leg is asserted NOT to carry it, and that is not
+// pedantry: it is the sentence in returnReason's doc that would otherwise be
+// wrong. ReturnPaymentTx describes the reserve reversal as the settlement it
+// is, so the reason reaches two of the three postings and not three.
+func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	const text = "the beneficiary account was closed"
+	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, text)
+	h.drain(t)
+
+	tx := h.returnSentTo(t, h.cfg.CentralBankBIC).PmtRtr.TxInf[0]
+	if tx.OrgnlTxId != string(p.ID) {
+		t.Errorf("the return names %q, want the payment it is about (%s)", tx.OrgnlTxId, p.ID)
+	}
+	switch {
+	case tx.RtrRsnInf == nil:
+		t.Fatal("the return carries no reason at all; RtrRsnInf is what a pacs.004 is for")
+	case tx.RtrRsnInf.Rsn.Cd == nil:
+		t.Fatalf("the return carries no reason CODE: %+v", tx.RtrRsnInf.Rsn)
+	case *tx.RtrRsnInf.Rsn.Cd != iso20022.ReturnReasonClosedAccountNumber:
+		t.Errorf("the return says %s, want AC04 — the code the bank asked for", *tx.RtrRsnInf.Rsn.Cd)
+	}
+	if tx.RtrRsnInf.AddtlInf != text {
+		t.Errorf("the return's free text is %q, want %q — the part no code can say", tx.RtrRsnInf.AddtlInf, text)
+	}
+
+	want := string(iso20022.ReturnReasonClosedAccountNumber) + ": " + text
+	for _, leg := range []struct {
+		what string
+		who  payment.ParticipantID
+		key  string
+	}{
+		{"the payer's refund", h.debtorPID, ":return-debit"},
+		{"the payee's clawback", h.creditorPID, ":return-credit"},
+	} {
+		if got := h.postingByKey(t, leg.who, string(p.ID)+leg.key).Description; !strings.Contains(got, want) {
+			t.Errorf("%s is described as %q, want it to carry %q", leg.what, got, want)
+		}
+	}
+
+	// The reserve reversal is described as what it is, and carries no reason.
+	cb, err := h.net.CentralBank().GetTransactionByIdempotencyKey(context.Background(), string(p.ID)+":return-settle")
+	if err != nil {
+		t.Fatalf("no reserve reversal for %s: %v", p.ID, err)
+	}
+	if strings.Contains(cb.Description, string(iso20022.ReturnReasonClosedAccountNumber)) {
+		t.Errorf("the reserve reversal is described as %q; the reason reaches the two customer legs, not this one", cb.Description)
+	}
+}
+
+// TestAProprietaryReturnReasonReachesTheLedgersToo is the other arm of the
+// choice, and it is why returnReason reads both.
+//
+// ReturnReasonChoice is an xsd:choice with a code and a PROPRIETARY text, and
+// iso20022 refuses a return carrying neither. A code is what this system's own
+// banks send, so the proprietary arm is only reachable from a counterparty that
+// uses one — which is exactly what a real network is full of, since the arm
+// exists for reasons the external code set has no member for. A settlement
+// agent that read only the code would describe such a return as "returned" and
+// throw away the only thing the sender said about it.
+//
+// Injected, because no actor in this mesh emits one: payment.ReturnMessage
+// takes an iso20022.ReturnReason and puts it in Cd. The free text is left empty
+// as well, so this covers the join's other arm at the same time — a reason with
+// a code and no text.
+func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "",
+		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-prtry", Now: testTime})
+	if err != nil {
+		t.Fatalf("ReturnMessage: %v", err)
+	}
+	prtry := "SCHEME-LOCAL-DISPUTE"
+	rsn := &env.Document.(*iso20022.Pacs004).PmtRtr.TxInf[0].RtrRsnInf.Rsn
+	rsn.Cd, rsn.Prtry = nil, &prtry
+	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	h.drain(t)
+
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Fatalf("status = %v, want Returned", got.Status)
+	}
+	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-debit").Description; !strings.Contains(got, prtry) {
+		t.Errorf("the payer's refund is described as %q, want it to carry the proprietary reason %q", got, prtry)
 	}
 }

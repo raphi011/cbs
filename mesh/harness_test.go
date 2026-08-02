@@ -638,6 +638,42 @@ func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct depos
 	return bal.Book
 }
 
+// postingByKey is one transaction out of one bank's book, found by the
+// idempotency key the domain gave it.
+//
+// By key and not by scanning descriptions, because the key is what identifies
+// the leg — payment.ReturnPaymentTx posts "<payment>:return-debit" in the
+// payer's bank's book and "<payment>:return-credit" in the payee's — and a test
+// that searched the text for what it is about to assert about the text would be
+// asserting nothing.
+func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetParticipant(ctx, id)
+	if err != nil {
+		t.Fatalf("GetParticipant %s: %v", id, err)
+	}
+	txn, err := p.Ledger.GetTransactionByIdempotencyKey(ctx, key)
+	if err != nil {
+		t.Fatalf("no posting under %q in %s's book: %v", key, id, err)
+	}
+	return txn
+}
+
+// returnSentTo is the last pacs.004 an actor was handed, parsed.
+//
+// It is how a test reads what a return actually SAID, which is the one thing a
+// pacs.004 exists to carry and the one thing no balance can show: two returns
+// of the same payment for opposite reasons move exactly the same money.
+func (h *meshHarness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs004 {
+	t.Helper()
+	env, err := iso20022.Unmarshal(h.lastMessageOfTypeTo(t, to, "pacs.004.001.09"))
+	if err != nil {
+		t.Fatalf("the last pacs.004 to %s does not parse: %v", to, err)
+	}
+	return env.Document.(*iso20022.Pacs004)
+}
+
 // payment reads a payment back out of the store, which is the only way to learn
 // what became of it: Submit answers with the payment as its own bank left it,
 // and everything after that happened at another actor.

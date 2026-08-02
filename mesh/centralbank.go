@@ -238,8 +238,15 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 	return cb.answer(from, orig, string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }
 
-// returnReason is what a return is described as in the three ledgers it posts
-// in: the reason the returning bank gave, code and text.
+// returnReason is what a return is described as where a CUSTOMER's money moves:
+// the reason the returning bank gave, code and text.
+//
+// Two of the three postings, not three. payment.ReturnPaymentTx writes this
+// into the payer's refund and the payee's clawback, and describes the reserve
+// reversal between the two banks as the settlement it is — a bank's own
+// position moving carries no customer's reason.
+// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers asserts both halves
+// of that, including the one the reason does not reach.
 //
 // Both arms of the choice are read, because both are legal — iso20022's
 // ReturnReasonChoice requires exactly one of a code and a proprietary text, and
