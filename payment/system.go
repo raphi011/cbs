@@ -1013,6 +1013,11 @@ type InitiatePaymentRequest struct {
 }
 
 // SubmitPayment is SubmitPaymentTx in its own unit of work.
+//
+// It runs the bank's half and nothing else, which is why it is NOT what a bank
+// actor calls: a submission that commits and then cannot be turned into a
+// message leaves the payer debited against an instruction nobody will ever
+// answer. SubmitAndInstruct is the pair that cannot do that.
 func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1021,6 +1026,78 @@ func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest)
 		return err
 	})
 	return out, err
+}
+
+// SubmitAndInstruct is the submitting bank's half AND the interbank message it
+// travels on, in ONE unit of work.
+//
+// # Why they cannot be two
+//
+// They were, and it was a money bug. SubmitPayment committed the debtor leg,
+// the caller then built the pacs.008, and building one can FAIL — a payee whose
+// address the instruction never quoted is ErrUnaddressableAccount, which api
+// answers 422. The payer was debited by a request the API reported as refused,
+// and no message existed, so not even a dead letter recorded it; a client that
+// retried drained the account. Two of the refusals
+// TestPaymentAddressingRefusalsAre422 drives were of exactly that shape.
+//
+// The fix is the ordering, not a new check: everything the instruction needs is
+// resolved while the transaction is still open, so a counterparty this bank
+// cannot address rolls the debit back with it. Nothing is DUPLICATED — there is
+// still one address check and it is the message builder's, which is the only
+// place that knows what a pacs.008 must carry.
+//
+// # The send is still outside
+//
+// This returns the envelope rather than sending it, because sending inside a
+// unit of work is the other half of the same mistake: a message the clearing
+// house could act on against a submission the store then rolled back. The
+// caller sends after this returns. TestARolledBackSubmitSendsNothing is the pin
+// on that half, and mesh.bank.submit is the caller.
+func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequest, mc MessageContext) (Payment, iso20022.Envelope, error) {
+	var p Payment
+	var env iso20022.Envelope
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		if p, err = s.SubmitPaymentTx(ctx, tx, req); err != nil {
+			return err
+		}
+		env, err = s.InstructionTx(ctx, tx, p, mc)
+		return err
+	})
+	if err != nil {
+		return Payment{}, iso20022.Envelope{}, err
+	}
+	return p, env, nil
+}
+
+// InstructionTx builds the interbank message a submission travels on: a pacs.008
+// for a push, a pacs.003 for a pull.
+//
+// They are two message definitions and not one with a flag because they say
+// different things. A pacs.008 accompanies money that has already left the
+// payer; a pacs.003 asks for money that has not moved, which is why it must
+// carry the MANDATE — the debtor's standing authority for this creditor to
+// collect, and the only element that distinguishes a collection from a demand.
+//
+// The mandate is loaded here rather than carried on the payment because a
+// payment holds its MandateID and nothing else of it; the message needs the
+// document's own terms. It is a network-scoped row, like the payment itself: in
+// this system mandates live once, in the network's store, which is the
+// simplification SDD.ValidateMandate names.
+func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
+	scheme, ok := s.scheme(p.Scheme)
+	if !ok {
+		return iso20022.Envelope{}, fmt.Errorf("%w: %s", ErrSchemeNotFound, p.Scheme)
+	}
+	if scheme.Direction() != Pull {
+		return s.CreditTransferMessageTx(ctx, tx, p, mc)
+	}
+	mandate, err := tx.GetMandate(ctx, p.MandateID)
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return s.DirectDebitMessageTx(ctx, tx, p, mandate, mc)
 }
 
 // SubmitPaymentTx is the SUBMITTING bank's half of what used to be
@@ -1075,6 +1152,28 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	if err := ledger.ValidateText("mandateId", string(req.MandateID)); err != nil {
 		return Payment{}, err
 	}
+	// The id comes BEFORE the duplicate check, and the order is the whole of
+	// what makes that check atomic.
+	//
+	// NextID is an INSERT … ON CONFLICT DO UPDATE on one row of id_sequences
+	// (store/pg/tx_ledger.go), so it takes a row lock that is held until this
+	// transaction ends. A second submission blocks there, and by the time it
+	// gets past, the first has either committed — so the read below sees its
+	// payment, under READ COMMITTED, and refuses the reference — or rolled back,
+	// taking the id with it. The gap-free counter serializes the whole operation
+	// and not merely the number it hands out, which is the argument
+	// store/pg/pg_test.go already makes for AddParticipantTx.
+	//
+	// With the two the other way round, eight concurrent submissions of one
+	// EndToEndID were accepted eight times on store/pg and once on store/mem —
+	// which serializes every Update on one process-wide mutex and so could never
+	// show it. The payer was debited eight times for one client reference. See
+	// storetest's TestConcurrentReadThenWriteOnOneKeyAgrees, which holds the two
+	// stores to the same answer.
+	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
+	if err != nil {
+		return Payment{}, err
+	}
 	if req.EndToEndID != "" {
 		switch _, err := tx.GetPaymentByEndToEndID(ctx, req.EndToEndID); {
 		case err == nil:
@@ -1084,10 +1183,6 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		}
 	}
 
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
-	if err != nil {
-		return Payment{}, err
-	}
 	now := s.now()
 	p := Payment{
 		ID:          PaymentID(id),

@@ -129,6 +129,7 @@ func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("GET /cycles", s.handleListCycles)
 	mux.HandleFunc("GET /cycles/{cid}", s.handleGetCycle)
 	mux.HandleFunc("POST /cycles/{cid}/close", s.handleCloseCycle)
+	mux.HandleFunc("POST /cycles/{cid}/settle", s.handleSettleCycle)
 
 	mux.HandleFunc("GET /settlements", s.handleListSettlements)
 	mux.HandleFunc("GET /settlements/{sid}", s.handleGetSettlement)
@@ -254,6 +255,15 @@ func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := s.mesh.Submit(r.Context(), req.toDomain())
 	if err != nil {
+		// A submission that committed and could not be SENT hands the payment
+		// back beside the error: Initiated, its debtor leg posted on a push, and
+		// no counterparty aware it exists. Refusals reach here with no payment
+		// at all and log nothing, which is the distinction worth keeping — a
+		// refused instruction moved nothing.
+		if p.ID != "" {
+			s.log.Error("api: a submission committed and its instruction did not go out",
+				"payment", p.ID, "status", p.Status, "error", err)
+		}
 		writeError(w, err)
 		return
 	}
@@ -312,6 +322,16 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	// there is no more honest choice than the one that says exactly that.
 	p, err := s.mesh.Reject(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
 	if err != nil {
+		// Mesh.Reject hands the payment back beside the error when its own half
+		// committed and the pacs.002 did not go out — the payment is Rejected
+		// and out of its cycle, and the payer's money is still in their bank's
+		// suspense with nothing on its way to release it. The 5xx below carries
+		// only the error, so this is the one place that half-happened state can
+		// be recorded at all.
+		if p.ID != "" {
+			s.log.Error("api: a rejection committed and the bank that has to refund was not told",
+				"payment", p.ID, "status", p.Status, "error", err)
+		}
 		writeError(w, err)
 		return
 	}
@@ -410,15 +430,70 @@ func (s *Server) handleGetCycle(w http.ResponseWriter, r *http.Request) {
 // this is written: Closed, with net positions on it. What is NOT in the response
 // is the settlement — the central bank answers later, at another actor, and a
 // caller that wants to know reads the cycle again. A cycle that is Closed with no
-// settlement against it is an instruction the central bank refused, and the
-// console is where that shows.
+// settlement against it is an instruction the central bank refused, and
+// POST /cycles/{cid}/settle below is what the operator does about it.
 func (s *Server) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
 	c, err := s.mesh.CloseCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {
+		// The cycle comes back beside the error when the cut-off committed and
+		// the instruction could not be sent, and that half-happened state is
+		// exactly what nobody would otherwise be told: the payments are Cleared,
+		// no settlement agent has been asked, and the response is a 5xx that
+		// names an error rather than a cycle. Logged here because this is the
+		// last frame that holds both.
+		if c.ID != "" {
+			s.log.Error("api: a cut-off committed and its settlement instruction did not go out",
+				"cycle", c.ID, "status", c.Status, "error", err)
+		}
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toClearingCycleDTO(c, s.network().ListSchemes()))
+}
+
+// handleSettleCycle asks the clearing house to instruct settlement of a closed
+// cycle again, and is the way out of a refused settlement.
+//
+// # Why it has to exist
+//
+// The central bank refuses a batch whose net payer cannot cover it — AM04, one
+// unit of work, nothing posted — and there is nobody to tell: every payment is
+// exactly where the cut-off left it, so a bank told "rejected" would try to
+// reverse a debit that must not be reversed (see mesh.csm.receiveSettlementStatus).
+// What is left is a cycle that is Closed with no settlement, its payments
+// Cleared, every payer debited into their own bank's clearing suspense and every
+// payee unpaid — and no state transition out of that, for any object, through
+// any other route: closing wants an open cycle, rejecting wants an Initiated or
+// Accepted payment, returning wants a settled one. The remedy is to fund the
+// short member and ask again, and until this route existed there was nothing to
+// ask.
+//
+// # It is not the deleted POST /settlements
+//
+// That route was the central bank's, and it SETTLED: a human pressed a button
+// and reserves moved, beside a mesh that was instructing the same thing — two
+// ways to settle one cycle, racing. This is on the CLEARING HOUSE and it moves
+// nothing. It rebuilds the pacs.009 from the cycle's own stored net positions
+// and sends it, and the settlement agent decides, exactly as it does at a
+// cut-off. There is still one institution that settles and one message that
+// asks it to.
+//
+// 202 and the cycle, for handleCloseCycle's reason: what this response reports
+// is that the instruction went out. Whether it was discharged this time arrives
+// later, at another actor, and a caller that wants to know reads the cycle
+// again. A cycle that is not Closed — still open, or already settled — is 422
+// and no message is sent at all.
+func (s *Server) handleSettleCycle(w http.ResponseWriter, r *http.Request) {
+	c, err := s.mesh.Settle(r.Context(), payment.CycleID(r.PathValue("cid")))
+	if err != nil {
+		if c.ID != "" {
+			s.log.Error("api: a settlement instruction could not be re-sent",
+				"cycle", c.ID, "status", c.Status, "error", err)
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
 func (s *Server) handleListSettlements(w http.ResponseWriter, r *http.Request) {

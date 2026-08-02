@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -1687,7 +1688,107 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
 	})
+
+	t.Run("ConcurrentReadThenWriteOnOneKeyAgrees", func(t *testing.T) {
+		s := open(t, newStore)
+
+		// This suite's first case with two units of work running AT ONCE, and
+		// the gap it closes is the reason it exists.
+		//
+		// Everything else here is single-threaded, so the suite could not
+		// enforce the one property it is for — that store/pg never accepts or
+		// refuses a write differently from store/mem — for any rule the
+		// APPLICATION makes by reading and then writing. store/mem serializes
+		// every Update on one process-wide mutex, so a read-then-write is
+		// atomic there whatever the caller does; store/pg runs READ COMMITTED,
+		// where two transactions both read "not there" and both write. A
+		// pg-only concurrency test can show pg is self-consistent and can never
+		// show the two AGREE, which is why this case is here and not in
+		// store/pg's own tests.
+		//
+		// What it encodes is the shape payment.SubmitPaymentTx uses to refuse a
+		// duplicate client reference: allocate an id, THEN read the key, THEN
+		// write. NextID is what makes it atomic — its row on the identity
+		// counter is locked until the transaction ends, so the second caller
+		// blocks there and, when it gets through, either sees the first
+		// caller's committed row or finds the first rolled back and the id with
+		// it. The same serialization payment.AddParticipantTx relies on.
+		//
+		// The claim is exactly that and no wider. It does NOT say a store makes
+		// read-then-write atomic on its own; it says this ORDERING admits one
+		// writer, on both stores, and that a caller which reads before it
+		// allocates gets a different answer from each — which is what happened,
+		// with eight concurrent submissions of one reference accepted eight
+		// times on pg and once on mem, and the payer debited eight times.
+		//
+		// The read is on a NON-key attribute (the account's name) because that
+		// is the shape of the rule: a store cannot enforce it with a primary
+		// key, and a unique index would refuse where mem accepts. See index 6
+		// in store/pg/schema/0001_init.sql.
+		const claimants = 8
+		const wanted = "the-one-and-only"
+
+		errs := make([]error, claimants)
+		var start, done sync.WaitGroup
+		start.Add(1)
+		for i := range claimants {
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				start.Wait()
+				errs[i] = s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+					id, err := tx.NextID(ctx, bookA, "race")
+					if err != nil {
+						return err
+					}
+					accounts, err := tx.ListAccounts(ctx, bookA)
+					if err != nil {
+						return err
+					}
+					for _, a := range accounts {
+						if a.Name == wanted {
+							return errTaken
+						}
+					}
+					return tx.PutAccount(ctx, bookA, ledger.Account{
+						ID: ledger.AccountID(id), Name: wanted, Type: ledger.Liability,
+					})
+				})
+			}()
+		}
+		start.Done()
+		done.Wait()
+
+		won := 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, errTaken):
+			default:
+				t.Fatalf("claimant %d failed for the wrong reason: %v", i, err)
+			}
+		}
+		assertEqual(t, "claimants that got the name", won, 1)
+
+		// And the store holds one row, not one row per winner. The count above
+		// would still be 1 if every loser had written and then been rolled back
+		// by something else.
+		var held []ledger.Account
+		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
+			held, err = tx.ListAccounts(ctx, bookA)
+			return err
+		})
+		assertEqual(t, "accounts named "+wanted, len(held), 1)
+	})
 }
+
+// errTaken is the losers' answer in ConcurrentReadThenWriteOnOneKeyAgrees: the
+// name was already claimed. It stands in for payment.ErrDuplicateEndToEndID,
+// which this package cannot name — storetest talks only to the store
+// interfaces, never to the domains over them.
+var errTaken = errors.New("storetest: the name is already claimed")
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -676,15 +676,23 @@ func settlementOfCycle(t *testing.T, h *Server, cid string) string {
 	return c.SettlementID
 }
 
-// TestSettlementIsNoLongerAnHTTPAction is the pin on the deleted route.
+// TestNoRouteSettlesACycle is the pin on the deleted route, and on the
+// difference between the one that replaced it and the one that was deleted.
 //
 // It is worth a test of its own because nothing else would notice: the console
 // that called it addressed a path built from a STRING, so deleting the route
 // left every compiler and linter on both sides of the wire perfectly happy and
-// the screen 404ing at runtime. A 404 asserted here is what makes the deletion a
-// decision rather than an accident, on the surface that used to serve it and on
-// the two that never did.
-func TestSettlementIsNoLongerAnHTTPAction(t *testing.T) {
+// the screen 404ing at runtime. A status code asserted here is what makes the
+// deletion a decision rather than an accident, on the surface that used to serve
+// it and on the two that never did.
+//
+// It was TestSettlementIsNoLongerAnHTTPAction, and the rename is the finding.
+// There IS a POST that leads to a settlement again — POST /cycles/{cid}/settle
+// on the clearing house, which re-sends the pacs.009 for a cycle the central
+// bank refused, because without it a refusal was terminal. What is still true,
+// and is the whole claim, is that no HTTP handler SETTLES: that route moves
+// nothing and instructs the one institution that may.
+func TestNoRouteSettlesACycle(t *testing.T) {
 	h := newServer(t, nil)
 	cid := settledCycle(t, h)
 
@@ -694,9 +702,20 @@ func TestSettlementIsNoLongerAnHTTPAction(t *testing.T) {
 	// what "keep the reads, drop the action" means, said in a status code.
 	assertStatus(t, cb(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
 	assertStatus(t, csm(h), "POST", "/settlements", `{"cycleId":"`+cid+`"}`, http.StatusMethodNotAllowed)
-	// The shape this route had before the operator split is a plain 404: no
-	// path, no method, nowhere.
-	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
+	// The central bank has no settle route at all: instructing is the clearing
+	// house's act, and settling is this operator's but is not an HTTP one.
+	assertStatus(t, cb(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusNotFound)
+	// And on the clearing house it exists and refuses THIS cycle, which is the
+	// assertion that separates it from the route it shares a path with. The
+	// pre-split POST /cycles/{cid}/settle settled whatever it was pointed at;
+	// this one only re-instructs a cycle that is still Closed, so a cycle that
+	// has already settled is 422 and no second pacs.009 is built.
+	assertStatus(t, csm(h), "POST", "/cycles/"+cid+"/settle", "", http.StatusUnprocessableEntity)
+	var settlementsAfter []settlementDTO
+	getJSON(t, csm(h), "/settlements", &settlementsAfter)
+	if len(settlementsAfter) != 1 {
+		t.Fatalf("asking a settled cycle to settle again produced %d settlements, want the original 1", len(settlementsAfter))
+	}
 
 	// The reads it left behind still answer, on both operators. They are what
 	// the console watches settlement with now.
@@ -712,6 +731,79 @@ func TestSettlementIsNoLongerAnHTTPAction(t *testing.T) {
 	getJSON(t, cb(h), "/settlements", &settlements)
 	if len(settlements) != 1 {
 		t.Fatalf("the central bank sees %d settlements, want the one the cut-off instructed", len(settlements))
+	}
+}
+
+// TestARefusedSettlementIsRecoverableOverHTTP walks the whole way out of a
+// refused settlement through the console, which is where an operator is.
+//
+// The mesh-level walk is TestARefusedSettlementCanBeInstructedAgain; this is the
+// half that says the operator can actually reach it. Before this route the
+// state below was terminal: a cycle Closed with no settlement, its payments
+// Cleared, Alice's money in her own bank's clearing suspense and Bob unpaid,
+// with no transition out for any object through any route on any surface.
+//
+// Bank A is short of RESERVES rather than Alice being short of money, and the
+// overdraft is how the two are prised apart: cash paid in raises a customer's
+// balance and their bank's reserve together, so a funded Alice would mean a
+// funded Aurora. Lending her the money instead leaves the bank a net payer of
+// 25,000 against a reserve of nothing — a real bank in a real morning.
+func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
+	h := newServer(t, nil)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SHORT-ALICE-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}]}`,
+		http.StatusCreated)["id"].(string)
+	doJSON(t, bank(h, a), "POST", "/deposit-accounts/"+alice+"/overdraft-limit", `{"limit":100000}`, http.StatusOK)
+
+	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
+	pay := doJSON(t, csm(h), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}},
+		"amount":25000,
+		"endToEndId":"short-reserve"
+	}`, http.StatusAccepted)["id"].(string)
+	drainServer(t, h)
+	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	drainServer(t, h)
+
+	// The stuck state, as the console sees it. The AM04 is nowhere here — it
+	// travelled between two actors in a pacs.002 and is stored nowhere — so what
+	// an operator reads is a closed cycle with no settlement against it.
+	stuck := doJSON(t, csm(h), "GET", "/cycles/"+cyc, "", http.StatusOK)
+	if stuck["status"] != "Closed" || stuck["settlementId"] != nil {
+		t.Fatalf("cycle = %v, want Closed with no settlement", stuck)
+	}
+	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK)["status"]; got != "Cleared" {
+		t.Fatalf("payment status = %v, want Cleared", got)
+	}
+	bobBal := doJSON(t, bank(h, b), "GET", "/deposit-accounts/"+bob+"/balance", "", http.StatusOK)
+	if got := int64(bobBal["book"].(float64)); got != 0 {
+		t.Fatalf("Bob holds %d before settlement, want 0", got)
+	}
+
+	// The remedy: fund the short member, then ask the clearing house to instruct
+	// settlement again.
+	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":25000,"description":"reserve top-up"}`, http.StatusOK)
+	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusAccepted)
+	drainServer(t, h)
+
+	settled := doJSON(t, csm(h), "GET", "/cycles/"+cyc, "", http.StatusOK)
+	if settled["status"] != "Settled" || settled["settlementId"] == nil {
+		t.Fatalf("cycle = %v, want Settled with a settlement", settled)
+	}
+	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK)["status"]; got != "Settled" {
+		t.Fatalf("payment status = %v, want Settled", got)
+	}
+	// The assertion that says money arrived rather than that a status changed.
+	bobBal = doJSON(t, bank(h, b), "GET", "/deposit-accounts/"+bob+"/balance", "", http.StatusOK)
+	if got := int64(bobBal["book"].(float64)); got != 25000 {
+		t.Fatalf("Bob holds %d after settlement, want 25000", got)
 	}
 }
 
@@ -2773,11 +2865,28 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=SHARED-0001", "", http.StatusConflict)
 }
 
-// TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
-// initiation can refuse a leg on addressing grounds. All three are well-formed
-// requests refused by state, the same category as a frozen account — and until
-// now nothing in this file held any of them, so the whole arm could have
-// drifted to 400 or 500 with every test still green.
+// TestPaymentAddressingRefusalsAre422 pins the status codes of the four ways
+// initiation can refuse a leg on addressing grounds, AND that a refusal takes
+// no money. All four are well-formed requests refused by state, the same
+// category as a frozen account — and until now nothing in this file held any of
+// them, so the whole arm could have drifted to 400 or 500 with every test still
+// green.
+//
+// # The balance assertions are the half that caught a live money bug
+//
+// Two of these four were answered 422 with the payer ALREADY DEBITED. The
+// submitting bank committed the debtor leg in one unit of work and built its
+// pacs.008 in a second, and an unaddressable payee fails the second — so a
+// request the API reported as refused moved 1000 out of Alice's account, into a
+// clearing suspense, against a payment nobody would ever answer. No message had
+// been sent, so there was not even a dead letter; a client that retried the
+// refusal drained the account. payment.SubmitAndInstruct is the fix, and these
+// assertions are what would have seen it: the status codes alone were all green
+// throughout.
+//
+// So every refusal below is followed by the balance, and the count of payment
+// rows at the end is zero for the four refusals plus one for the case that went
+// through.
 //
 // It also pins the DEBTOR back-fill over HTTP, which is where it matters: the
 // DTO's identifier field is optional and this is the shape every other payment
@@ -2797,6 +2906,19 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
+	// assertAliceUntouched is the money half. It reads the BOOK balance rather
+	// than the available one, because the debit this test exists to catch is a
+	// posted transaction and not a hold: an available balance narrowed by a hold
+	// would recover on its own, and a booked debit into a clearing suspense
+	// never does.
+	assertAliceUntouched := func(what string) {
+		t.Helper()
+		bal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
+		if got := int64(bal["book"].(float64)); got != 100000 {
+			t.Fatalf("%s: Alice's book balance is %d, want 100000 — a refused request took her money", what, got)
+		}
+	}
+
 	// ErrUnaddressableAccount.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
@@ -2804,6 +2926,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+nobody+`"},
 		"amount":1000
 	}`, http.StatusUnprocessableEntity)
+	assertAliceUntouched("after a payee with no address at all")
 
 	// ErrIdentifierMismatch — the creditor's own address, on the debtor leg.
 	assertStatus(t, csm(h), "POST", "/payments", `{
@@ -2812,6 +2935,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000
 	}`, http.StatusUnprocessableEntity)
+	assertAliceUntouched("after the payee's address quoted on the payer's leg")
 
 	// A push that quotes no payee address is refused, and the mesh is what made
 	// that so. The payer's bank has to put an IBAN in the pacs.008 it is about to
@@ -2825,6 +2949,18 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000
 	}`, http.StatusUnprocessableEntity)
+	assertAliceUntouched("after a push that quoted no payee address")
+
+	// The same instruction on the PAYER's own bank, which is the door a retail
+	// client uses and the one that matters most: this is the request a phone app
+	// sends, and the one a retrying app would send again.
+	assertStatus(t, bank(h, a), "POST", "/payments", `{
+		"scheme":"sepa.ct",
+		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"amount":1000
+	}`, http.StatusUnprocessableEntity)
+	assertAliceUntouched("after the same refusal on the payer's own bank surface")
 
 	// The happy case: the payee's address quoted, the payer's left to the
 	// back-fill. The debtor's identifier is stamped by the payer's own bank at
@@ -2865,6 +3001,20 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"amount":1000
 	}`, http.StatusUnprocessableEntity)
+
+	// The one that went through is the one that moved money, and it is the only
+	// payment row in the network. Five refusals leaving five Initiated payments
+	// that nothing will ever answer is the other shape of the same bug: the row
+	// outlives the request that was told no.
+	drainServer(t, h)
+	bal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
+	if got := int64(bal["book"].(float64)); got != 99000 {
+		t.Fatalf("Alice's book balance is %d, want 99000 — exactly one of these six requests may take her money", got)
+	}
+	all := doJSONArray(t, csm(h), "GET", "/payments", "", http.StatusOK)
+	if len(all) != 1 {
+		t.Fatalf("the network holds %d payments, want 1: a refused instruction leaves no row", len(all))
+	}
 }
 
 // TestDepositAccountDTOCarriesIdentifiers pins that depositAccountDTO renders

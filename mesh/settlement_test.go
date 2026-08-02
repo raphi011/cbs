@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -48,6 +49,184 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 
 	h.assertLastTxStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.TransactionStatusRejected)
 	h.assertLastStatusTo(t, h.cfg.ClearingHouseBIC, iso20022.StatusReasonInsufficientFunds)
+}
+
+// TestARefusedSettlementCanBeInstructedAgain walks the whole way out of the one
+// state this system had no exit from.
+//
+// The refusal above is where the previous test stops, and where the system used
+// to stop too. What it leaves is a cycle Closed with no settlement, its payments
+// Cleared, the payer debited into their own bank's clearing suspense and the
+// payee unpaid — and no transition out of that for ANY object: CloseCycleTx
+// wants an open cycle, RejectAtCSMTx an Initiated or Accepted payment,
+// ReturnPaymentTx a settled one. SettleCycle's only non-seed caller is the
+// pacs.009 handler, and the only sender of a pacs.009 was a cut-off, which
+// needs an open cycle. Terminal, with every payer's money stranded.
+//
+// So this asserts the stuck state first — as state, not as a status code, since
+// the AM04 is on the wire and in no store — then funds the short member and
+// asks the clearing house to instruct settlement again. The payee is paid at the
+// end, which is the only assertion that says the money actually arrived rather
+// than that a status changed.
+func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
+	h := newMeshHarnessWithAnUnfundedReserve(t)
+	p := h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	// The stuck state, in the four places it shows.
+	stuck := h.creditTransferCycle(t)
+	if stuck.Status != payment.CycleClosed || stuck.SettlementID != "" {
+		t.Fatalf("cycle %s is %v with settlement %q, want Closed with none", stuck.ID, stuck.Status, stuck.SettlementID)
+	}
+	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
+		t.Fatalf("payment status = %v, want Cleared", got.Status)
+	}
+	if got := h.suspense(t, h.debtorPID); got != harnessAmount {
+		t.Fatalf("the payer's bank holds %d in suspense, want %d — the money left the payer and settled nowhere", got, harnessAmount)
+	}
+	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != 0 {
+		t.Fatalf("the payee holds %d, want 0 — nothing has settled", got)
+	}
+
+	// The operator's remedy: fund the short member. A deposit raises the
+	// customer's balance and the bank's reserve together, which is what makes it
+	// the fixture's way of putting reserves behind a bank that lent without any.
+	if err := h.net.Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
+		t.Fatalf("Deposit: %v", err)
+	}
+
+	// And ask again. This is the route POST /cycles/{cid}/settle reaches.
+	if _, err := h.mesh.Settle(context.Background(), stuck.ID); err != nil {
+		t.Fatalf("Settle %s: %v", stuck.ID, err)
+	}
+	h.drain(t)
+
+	settled := h.creditTransferCycle(t)
+	if settled.Status != payment.CycleSettled || settled.SettlementID == "" {
+		t.Fatalf("cycle %s is %v with settlement %q, want Settled with one", settled.ID, settled.Status, settled.SettlementID)
+	}
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Fatalf("payment status = %v, want Settled", got.Status)
+	}
+	if got := h.suspense(t, h.debtorPID); got != 0 {
+		t.Fatalf("the payer's bank still holds %d in suspense after settlement, want 0", got)
+	}
+	// The one that matters: the payee has the money.
+	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != harnessAmount {
+		t.Fatalf("the payee holds %d, want %d", got, harnessAmount)
+	}
+	// And the bank that submitted was told, by the same fan-out a first-time
+	// settlement uses. A recovery that paid the payee and told nobody would
+	// leave the submitting bank waiting for ever on an instruction that had in
+	// fact completed.
+	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusSettlementCompleted)
+}
+
+// TestReSettlingASettledCycleIsRefused is the first of the two guards that make
+// asking twice safe, and the one that stops a second message ever being built.
+//
+// Verified rather than assumed: the count of settlement instructions the central
+// bank has been handed is what says no second pacs.009 went out, and the
+// settlement count is what says no second discharge happened. A guard that only
+// changed the error text would pass an assertion on the error alone.
+func TestReSettlingASettledCycleIsRefused(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	cyc := h.creditTransferCycle(t)
+	if cyc.Status != payment.CycleSettled {
+		t.Fatalf("cycle is %v, want Settled before the second ask means anything", cyc.Status)
+	}
+	instructionsBefore := h.instructionsSentTo(h.cfg.CentralBankBIC)
+
+	_, err := h.mesh.Settle(context.Background(), cyc.ID)
+	if !errors.Is(err, payment.ErrCycleNotClosed) {
+		t.Fatalf("Settle on a settled cycle = %v, want ErrCycleNotClosed", err)
+	}
+	if got := h.instructionsSentTo(h.cfg.CentralBankBIC); got != instructionsBefore {
+		t.Fatalf("a refused re-settle sent %d instructions, want the original %d", got, instructionsBefore)
+	}
+
+	settlements, err := h.net.ListSettlements(context.Background())
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+	if len(settlements) != 1 {
+		t.Fatalf("%d settlements, want the one the cut-off instructed", len(settlements))
+	}
+}
+
+// TestASecondSettlementInstructionPostsNothing is the guard BEHIND that one: the
+// settlement agent's, on a message csm.settle would not have built.
+//
+// Two operators racing past the CycleClosed check above would each send a
+// pacs.009, and this is what happens to the second — the same thing that happens
+// to a redelivered one, since a queue can hand the same instruction over twice
+// and neither case is distinguishable at the receiver. SettleCycleTx refuses it
+// with ErrCycleNotClosed and receiveSettlement dead-letters it rather than
+// answering RJCT, because telling the clearing house a cycle was rejected when
+// it in fact settled would be a lie.
+//
+// The money assertion is the point: the reserves moved once. Behind the state
+// machine the central bank's posting carries the idempotency key
+// "<cycle>:settle", so even a defect that got past the guard could not post
+// twice.
+func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	cyc := h.creditTransferCycle(t)
+	payeeBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
+
+	// The instruction the cut-off sent, replayed verbatim into the settlement
+	// agent's inbox. Re-sent by the clearing house, because that is who the
+	// central bank accepts one from.
+	raw := h.lastMessageOfTypeTo(t, h.cfg.CentralBankBIC, "pacs.009.001.08")
+	h.injectRaw(t, h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, raw)
+
+	err := h.drainErr(t)
+	if err == nil || !strings.Contains(err.Error(), "was told to settle") {
+		t.Fatalf("draining after a replayed instruction = %v, want a dead letter naming the repeat", err)
+	}
+
+	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != payeeBefore {
+		t.Fatalf("the payee holds %d after a replayed instruction, want the unchanged %d", got, payeeBefore)
+	}
+	settlements, err := h.net.ListSettlements(context.Background())
+	if err != nil {
+		t.Fatalf("ListSettlements: %v", err)
+	}
+	if len(settlements) != 1 {
+		t.Fatalf("%d settlements after a replayed instruction, want 1", len(settlements))
+	}
+	after := h.creditTransferCycle(t)
+	if after.SettlementID != cyc.SettlementID {
+		t.Fatalf("the cycle now names settlement %q, want the original %q", after.SettlementID, cyc.SettlementID)
+	}
+}
+
+// creditTransferCycle is the fixture's SEPA credit-transfer cycle, read back.
+//
+// By scheme rather than by index: every fixture here opens a direct-debit cycle
+// beside it, and which one ListCycles puts first is not something these tests
+// should depend on.
+func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
+	t.Helper()
+	for _, c := range h.cycles(t) {
+		if c.Scheme == payment.SchemeSEPACT {
+			return c
+		}
+	}
+	t.Fatal("no sepa.ct cycle in this fixture")
+	return payment.ClearingCycle{}
 }
 
 // One instruction per asset. SettleCycleTx settles per asset, and a message

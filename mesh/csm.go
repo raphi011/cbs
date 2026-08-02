@@ -511,6 +511,64 @@ func (c *csm) closeCycle(ctx context.Context, id payment.CycleID) (payment.Clear
 	return closed, nil
 }
 
+// settle is the clearing house sending a settlement instruction AGAIN, for a
+// cycle the central bank refused.
+//
+// It is the way out of the only state in this system that had none. A cut-off
+// whose net payer is short of reserves comes back RJCT/AM04, and
+// receiveSettlementStatus tells nobody — correctly, because nothing about any
+// payment changed. What is left is a cycle that is Closed with no settlement, a
+// batch of payments that are Cleared, every payer debited into their own bank's
+// clearing suspense and every payee unpaid. Every other route is shut by a
+// guard that is right: CloseCycleTx wants an open cycle, RejectAtCSMTx takes
+// only an Initiated or Accepted payment, ReturnPaymentTx wants a settled one.
+// Until this method existed the operator's remedy — fund the short member and
+// ask again — had nothing to ask.
+//
+// # It re-sends the instruction rather than settling
+//
+// The clearing house does not discharge positions and this does not start to.
+// It rebuilds the same pacs.009 from the same stored net positions and hands it
+// to the settlement agent, which decides again with the reserves as they are
+// now. That is why the caller gets the CYCLE back rather than a settlement, and
+// why the answer is 202 at api: whether it worked this time arrives later, at
+// another actor, exactly as it does after a cut-off.
+//
+// # Double-settling is not reachable, and it is guarded in two places
+//
+// This refuses anything that is not Closed, so a cycle that has already settled
+// is ErrCycleNotClosed here and no second instruction is built. Two calls that
+// raced past that check would each send one, and the SECOND is refused at the
+// settlement agent by SettleCycleTx's own CycleClosed guard — the same refusal a
+// redelivered pacs.009 gets, dead-lettered rather than answered, because
+// telling the clearing house RJCT about a cycle that in fact settled would be a
+// lie. Behind both of those the central bank's posting carries the idempotency
+// key "<cycle>:settle", so even a third arrangement that got past the state
+// machine could not post the reserves twice.
+// TestReSettlingASettledCycleIsRefused walks the first guard and
+// TestASecondSettlementInstructionPostsNothing the other two.
+func (c *csm) settle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
+	// Everything below is the clearing house's work, and is recorded as the
+	// clearing house's. See withActor.
+	ctx = withActor(ctx, c.bic)
+
+	cycle, err := c.ops.GetCycle(ctx, id)
+	if err != nil {
+		return payment.ClearingCycle{}, err
+	}
+	if cycle.Status != payment.CycleClosed {
+		return payment.ClearingCycle{}, fmt.Errorf("mesh: %s is %v, and an instruction to settle is only re-sent for a closed one: %w",
+			id, cycle.Status, payment.ErrCycleNotClosed)
+	}
+	// The cycle is a fact and the send may still fail, so it comes back BESIDE
+	// the error rather than being swallowed — closeCycle's shape, for the same
+	// reason and with the same half-happened outcome.
+	if err := c.instructSettlement(ctx, cycle); err != nil {
+		return cycle, fmt.Errorf("mesh: %s could not re-instruct settlement of %s: %w", c.bic, cycle.ID, err)
+	}
+	return cycle, nil
+}
+
 // instructSettlement sends the closed cycle's net positions to the central bank
 // as a pacs.009.
 //
@@ -640,10 +698,16 @@ func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, 
 //
 // What DID change is the cycle, and the cycle is where the failure is visible:
 // it stays Closed with no settlement against it. That is the state the central
-// bank's console reads, and the one the operator acts on — the reason is
-// recoverable from the net positions and the reserves, which is what the console
-// puts side by side. The code is logged here as well, because the code is the
-// one thing that arrives on the wire and is nowhere in the store.
+// bank's console reads — the reason is recoverable from the net positions and
+// the reserves, which is what the console puts side by side. The code is logged
+// here as well, because the code is the one thing that arrives on the wire and
+// is nowhere in the store.
+//
+// What the operator does about it is fund the short member and ask the clearing
+// house to instruct settlement again: POST /cycles/{cid}/settle, which is
+// csm.settle. That route is the whole of the remedy, and this handler is
+// deliberately not part of it — a clearing house that retried by itself would
+// re-present a batch against reserves nobody had changed.
 func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs002) error {
 	orig, reports := payment.ReadStatus(doc)
 	for _, r := range reports {

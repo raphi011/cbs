@@ -557,7 +557,10 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	assertEqual(t, "central bank transaction count", len(cbTxAfter), len(cbTxBefore))
 
 	// No settlement was recorded, and the cycle is still Closed rather than
-	// Settled, so the operation can be retried once the member is funded.
+	// Settled — which is what leaves the operation retriable once the member is
+	// funded. Retrying it is not this layer's act: in the mesh the clearing
+	// house re-sends the pacs.009 (POST /cycles/{cid}/settle, mesh.csm.settle),
+	// and SettleCycleTx's CycleClosed guard is what makes asking twice safe.
 	settlements, err := net.ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlements recorded", len(settlements), 0)

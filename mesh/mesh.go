@@ -1149,6 +1149,26 @@ func (m *Mesh) CloseCycle(ctx context.Context, id payment.CycleID) (payment.Clea
 	return m.csm.closeCycle(ctx, id)
 }
 
+// Settle asks the clearing house to instruct settlement of a closed cycle
+// AGAIN, after the settlement agent refused the first instruction.
+//
+// It is CloseCycle's second half on its own, and it exists because a refusal is
+// otherwise terminal: a net payer short of reserves comes back AM04, nothing
+// moves, and the cycle sits Closed with every payer debited and every payee
+// unpaid, with no transition out for any object. The operator funds the short
+// member and calls this. See csm.settle, which has the whole of that state and
+// both of the guards that stop it settling twice.
+//
+// Like CloseCycle it is synchronous up to the send, answers with the cycle
+// rather than with a settlement, and refuses on a mesh with no network rather
+// than dereferencing.
+func (m *Mesh) Settle(ctx context.Context, id payment.CycleID) (payment.ClearingCycle, error) {
+	if m.csm == nil {
+		return payment.ClearingCycle{}, errors.New("mesh: no network, so there is no cycle to settle")
+	}
+	return m.csm.settle(ctx, id)
+}
+
 // Reject is the clearing house declining a payment it is holding, on an
 // operator's say-so rather than on a counterparty's.
 //

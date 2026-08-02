@@ -117,63 +117,33 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 // instruction to the right one of the two.
 //
 // Two steps and two failure modes, and they are not the same. A refused
-// instruction moved nothing and is the caller's answer. A message that could not
-// be built or sent leaves a payment Initiated that nobody will ever answer —
-// half-happened, the same seam RejectAtCSMTx documents — so it is returned as an
-// error with the payment beside it rather than swallowed.
+// instruction moved nothing and is the caller's answer — and "moved nothing" is
+// a property of the ONE unit of work SubmitAndInstruct runs, which builds the
+// message as well as posting the leg. It did not always: while the two were
+// separate transactions, a payee this bank cannot address was a 422 with the
+// payer already debited. A message that could not be SENT still leaves a
+// payment Initiated that nobody will ever answer — half-happened, the same seam
+// RejectAtCSMTx documents — so it is returned as an error with the payment
+// beside it rather than swallowed.
 func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.
 	ctx = withActor(ctx, b.bic)
 
-	p, err := b.ops.SubmitPayment(ctx, req)
-	if err != nil {
-		return payment.Payment{}, err
-	}
-
 	to := b.m.cfg.ClearingHouseBIC
-	env, err := b.instruct(ctx, p, payment.MessageContext{
+	p, env, err := b.ops.SubmitAndInstruct(ctx, req, payment.MessageContext{
 		From:  b.bic,
 		To:    to,
 		MsgID: b.m.nextMsgID(b.bic),
 		Now:   b.m.now(),
 	})
 	if err != nil {
-		return p, fmt.Errorf("mesh: %s submitted %s and could not build its instruction: %w", b.bic, p.ID, err)
+		return payment.Payment{}, err
 	}
 	if err := b.m.send(b.bic, to, env); err != nil {
 		return p, fmt.Errorf("mesh: %s submitted %s and could not send it: %w", b.bic, p.ID, err)
 	}
 	return p, nil
-}
-
-// instruct builds the interbank message a submission travels on: a pacs.008 for
-// a push, a pacs.003 for a pull.
-//
-// They are two message definitions and not one with a flag because they say
-// different things. A pacs.008 accompanies money that has already left the
-// payer; a pacs.003 asks for money that has not moved, which is why it must
-// carry the MANDATE — the debtor's standing authority for this creditor to
-// collect, and the only element that distinguishes a collection from a demand.
-//
-// The mandate is loaded here rather than carried on the payment because a
-// payment holds its MandateID and nothing else of it; the message needs the
-// document's own terms. It is a network-scoped row, like the payment itself: in
-// this system mandates live once, in the network's store, which is the
-// simplification SDD.ValidateMandate names.
-func (b *bank) instruct(ctx context.Context, p payment.Payment, mc payment.MessageContext) (iso20022.Envelope, error) {
-	scheme, ok := b.ops.Scheme(p.Scheme)
-	if !ok {
-		return iso20022.Envelope{}, fmt.Errorf("%w: %s", payment.ErrSchemeNotFound, p.Scheme)
-	}
-	if scheme.Direction() != payment.Pull {
-		return b.ops.CreditTransferMessage(ctx, p, mc)
-	}
-	mandate, err := b.ops.GetMandate(ctx, p.MandateID)
-	if err != nil {
-		return iso20022.Envelope{}, err
-	}
-	return b.ops.DirectDebitMessage(ctx, p, mandate, mc)
 }
 
 // returnPayment is a bank sending a settled payment back: the R-transaction's

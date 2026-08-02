@@ -641,6 +641,22 @@ COMMENT ON COLUMN payments.reject_code IS
 -- reject a duplicate client reference — payment.Network does, in
 -- SubmitPaymentTx — and a store that refused one where mem accepted it would
 -- be the two implementations disagreeing.
+--
+-- That argument is only sound because the application check is ATOMIC here, and
+-- it was not always. SubmitPaymentTx read this index and then allocated the
+-- payment id; under READ COMMITTED two concurrent submissions of one reference
+-- both read nothing and both wrote, and eight concurrent ones were accepted
+-- eight times against store/mem's one — the payer debited eight times for a
+-- single client reference. The order is now the other way round: NextID runs
+-- first, its INSERT … ON CONFLICT DO UPDATE takes a row lock on id_sequences,
+-- and the second submission blocks there until the first commits and its
+-- payment row is visible to the read. Same serialization AddParticipantTx
+-- relies on, for the same reason.
+--
+-- So this index stays non-unique, and the conformance argument above stands as
+-- written: PutPayment is a store operation and mem's does not look at any other
+-- row, so a UNIQUE index here would refuse a write mem accepts, and would
+-- refuse it as a constraint violation rather than as ErrDuplicateEndToEndID.
 CREATE INDEX payments_end_to_end_idx ON payments (end_to_end_id)
     WHERE end_to_end_id <> '';
 

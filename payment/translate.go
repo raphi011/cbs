@@ -481,14 +481,24 @@ func (s *Network) assetOf(p Payment) (ledger.AssetCode, error) {
 // on values it already holds.
 func (s *Network) partiesOf(ctx context.Context, p Payment) (debtor, creditor messageParty, err error) {
 	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		if debtor, err = s.partyTx(ctx, tx, p.Debtor); err != nil {
-			return err
-		}
-		creditor, err = s.partyTx(ctx, tx, p.Creditor)
+		debtor, creditor, err = s.partiesOfTx(ctx, tx, p)
 		return err
 	})
 	return debtor, creditor, err
+}
+
+// partiesOfTx is partiesOf inside a unit of work the caller already holds. It
+// is what lets a submitting bank build its instruction in the SAME transaction
+// that posted the debtor leg — see SubmitAndInstruct, and the money bug that
+// shape exists to make unreachable.
+func (s *Network) partiesOfTx(ctx context.Context, tx Tx, p Payment) (debtor, creditor messageParty, err error) {
+	if debtor, err = s.partyTx(ctx, tx, p.Debtor); err != nil {
+		return messageParty{}, messageParty{}, err
+	}
+	if creditor, err = s.partyTx(ctx, tx, p.Creditor); err != nil {
+		return messageParty{}, messageParty{}, err
+	}
+	return debtor, creditor, nil
 }
 
 // partyTx resolves one side. The identifier is taken from the PAYMENT and not
@@ -549,11 +559,27 @@ func (s *Network) partyTx(ctx context.Context, tx Tx, ref PartyRef) (messagePart
 // the account holder's NAME, neither of which a Payment carries. That is the
 // whole of the I/O, and it is why this is a method rather than a function.
 func (s *Network) CreditTransferMessage(ctx context.Context, p Payment, mc MessageContext) (iso20022.Envelope, error) {
+	var env iso20022.Envelope
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		env, err = s.CreditTransferMessageTx(ctx, tx, p, mc)
+		return err
+	})
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return env, nil
+}
+
+// CreditTransferMessageTx is CreditTransferMessage inside a unit of work the
+// caller already holds. See SubmitAndInstruct for the one caller that needs it
+// and why the transaction has to be shared.
+func (s *Network) CreditTransferMessageTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOf(ctx, p)
+	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
@@ -633,11 +659,27 @@ func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.Asset
 // money; a pull scheme's travels against it, which is why the creditor and its
 // agent come first in the transaction and why the mandate has to travel too.
 func (s *Network) DirectDebitMessage(ctx context.Context, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
+	var env iso20022.Envelope
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		env, err = s.DirectDebitMessageTx(ctx, tx, p, m, mc)
+		return err
+	})
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	return env, nil
+}
+
+// DirectDebitMessageTx is DirectDebitMessage inside a unit of work the caller
+// already holds. It is CreditTransferMessageTx's counterpart and exists for the
+// same caller; see SubmitAndInstruct.
+func (s *Network) DirectDebitMessageTx(ctx context.Context, tx Tx, p Payment, m Mandate, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}
-	debtor, creditor, err := s.partiesOf(ctx, p)
+	debtor, creditor, err := s.partiesOfTx(ctx, tx, p)
 	if err != nil {
 		return iso20022.Envelope{}, err
 	}

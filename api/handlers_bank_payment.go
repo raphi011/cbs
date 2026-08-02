@@ -141,6 +141,13 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	// pacs.003 goes out after the unit of work has committed, never inside it.
 	p, err := s.mesh.Submit(r.Context(), dom)
 	if err != nil {
+		// See handleInitiatePayment: the payment comes back beside the error
+		// when the submission committed and the message did not go out, and a
+		// 5xx carries no room for it.
+		if p.ID != "" {
+			s.log.Error("api: a submission committed and its instruction did not go out",
+				"payment", p.ID, "status", p.Status, "error", err)
+		}
 		writeError(w, err)
 		return
 	}

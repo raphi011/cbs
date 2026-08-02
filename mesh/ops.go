@@ -63,12 +63,17 @@ import (
 //
 // # What Task 11 added, and why none of it widens the hole
 //
-// The pull flow needs four more methods and one of them deserves a note.
-// Scheme answers "who submits this, and who receives it" — the question the
-// direction decides and the one a handler cannot ask any other way. It reads a
-// map in memory, takes no unit of work and names no book, so unlike
-// GetParticipant it hands nothing over. GetMandate reads a network-scoped row:
-// mandates belong to no single bank, exactly as payments and cycles do.
+// The pull flow needs more methods and one of them deserves a note. Scheme
+// answers "who submits this, and who receives it" — the question the direction
+// decides and the one a handler cannot ask any other way. It reads a map in
+// memory, takes no unit of work and names no book, so unlike GetParticipant it
+// hands nothing over.
+//
+// Task 11 also gave a bank a way to load a MANDATE, because a pacs.003 carries
+// one. That method is gone again, and its absence is the C1 fix rather than a
+// narrowing for its own sake: the mandate is now read inside the submitting
+// bank's own unit of work, by payment.InstructionTx, because the message has to
+// be built there or not at all.
 //
 // # What Task 13 added, and what it deliberately did not
 //
@@ -88,14 +93,19 @@ type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
 	//
-	// Two messages, because which one a submission produces is the scheme's
-	// direction: a pacs.008 pushes money at the payee's bank, a pacs.003 asks
-	// the payer's bank for it. The mandate travels with the second because it is
-	// the only thing that makes the ask authorised.
-	SubmitPayment(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error)
-	CreditTransferMessage(ctx context.Context, p payment.Payment, mc payment.MessageContext) (iso20022.Envelope, error)
-	DirectDebitMessage(ctx context.Context, p payment.Payment, m payment.Mandate, mc payment.MessageContext) (iso20022.Envelope, error)
-	GetMandate(ctx context.Context, id payment.MandateID) (payment.Mandate, error)
+	// ONE method and not two, and that is the fix for a money bug rather than
+	// tidying. This was SubmitPayment plus a message built afterwards, and
+	// building one can fail — a payee the instruction quoted no address for —
+	// so a refusal the API answered 422 left the payer debited by a request it
+	// had reported as refused. Posting the leg and rendering the instruction
+	// now commit or roll back together; the send still happens after, which is
+	// the property TestARolledBackSubmitSendsNothing pins.
+	//
+	// Which message it produces is the scheme's direction, and payment is what
+	// decides: a pacs.008 pushes money at the payee's bank, a pacs.003 asks the
+	// payer's bank for it and carries the mandate that makes the ask
+	// authorised. See payment.InstructionTx.
+	SubmitAndInstruct(ctx context.Context, req payment.InitiatePaymentRequest, mc payment.MessageContext) (payment.Payment, iso20022.Envelope, error)
 
 	// The receiving bank's half. CreditTransferRequest and DirectDebitRequest
 	// resolve the message by ADDRESS, which is the check that answers AC01;

@@ -428,6 +428,75 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 	}
 }
 
+// The fifth race, and it was live: a client reference deduplicated by a read
+// that was not atomic.
+//
+// SubmitPaymentTx refuses an EndToEndID it has already seen, and store/pg
+// declines to enforce that with a UNIQUE index on conformance grounds — mem's
+// PutPayment does not look at any other row, so an index that refused would be
+// the two stores disagreeing (see index 6 in schema/0001_init.sql). That leaves
+// the application check, and under READ COMMITTED two submissions both read
+// "not there" and both wrote. Eight concurrent submissions of one reference
+// were accepted EIGHT times here and once on store/mem, and the payer was
+// debited eight times for one instruction — the exact disagreement the index
+// comment set out to prevent.
+//
+// It cannot happen now, because SubmitPaymentTx's first store statement is
+// NextID(NetworkBook, "pay"), whose INSERT … ON CONFLICT DO UPDATE takes a row
+// lock on id_sequences. Every other caller blocks there and then sees what the
+// winner committed. It is AddParticipantTx's argument, one operation over, and
+// this test is what makes it checkable rather than a claim in a comment: it
+// fails loudly if the two statements are ever swapped back.
+//
+// storetest's ConcurrentReadThenWriteOnOneKeyAgrees is the generic half — it
+// holds BOTH stores to one answer for this shape, which a pg-only test cannot.
+// This one is about SubmitPaymentTx's own ordering, which storetest cannot see.
+func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	net := payment.NewNetwork(s.Payment(), frozen)
+
+	debtorBank, err := net.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
+	assertNoError(t, err)
+	creditorBank, err := net.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
+	assertNoError(t, err)
+
+	alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-ALICE-0001"})
+	assertNoError(t, err)
+	bruno, err := creditorBank.Deposit.OpenAccount(ctx, creditorBank.CustomerSubledger, "Bruno", "EUR", creditorBank.ProductID, 0,
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-BRUNO-0001"})
+	assertNoError(t, err)
+
+	const opening ledger.Amount = 1_000_000
+	const amount ledger.Amount = 1_000
+	assertNoError(t, net.Deposit(ctx, debtorBank.ID, alice.ID, opening, "opening"))
+
+	req := payment.InitiatePaymentRequest{
+		Scheme:     payment.SchemeSEPACT,
+		Debtor:     payment.PartyRef{Participant: debtorBank.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
+		Creditor:   payment.PartyRef{Participant: creditorBank.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
+		Amount:     amount,
+		EndToEndID: "one-and-only",
+	}
+
+	errs := runConcurrently(8, func(int) error {
+		_, err := net.SubmitPayment(ctx, req)
+		return err
+	})
+	assertOneWinner(t, "SubmitPayment", errs, payment.ErrDuplicateEndToEndID)
+
+	// The count of winners is not the assertion that matters. This is: the
+	// payer was debited once, which is what a duplicate reference is for.
+	balance, err := debtorBank.Deposit.GetBalance(ctx, alice.ID)
+	assertNoError(t, err)
+	assertEqual(t, "Alice's balance after eight submissions of one reference", balance.Book, opening-amount)
+
+	payments, err := net.ListPayments(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "payment rows", len(payments), 1)
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

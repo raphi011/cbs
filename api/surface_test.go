@@ -111,17 +111,15 @@ func movedTo(old string) (operator, pattern string) {
 		return "central-bank", old
 
 	case path == "/cycles/{cid}/settle":
-		// GONE, and not moved. Settling is no longer an operator's act on any
-		// surface: the clearing house reaches a cut-off, sends a pacs.009, and
-		// the central bank's actor answers it (mesh.centralBank). This route
-		// moved once already, to POST /settlements on the central bank, and that
-		// one is deleted too — see TestSettlementIsNoLongerAnHTTPAction, which is
-		// the pin on its absence rather than on its whereabouts.
-		//
-		// The empty operator is the same "not here" this switch uses for a route
-		// a later task moves, and the difference is worth stating: those come
-		// back, and this one does not.
-		return "", ""
+		// Back on the clearing house, with the path unchanged and the act
+		// changed, which is why this arm is spelt out rather than falling to the
+		// default. The pre-split route SETTLED: it called SettleCycle and moved
+		// reserves. This one instructs — it re-sends the pacs.009 for a cycle
+		// the central bank refused, because otherwise a refusal is terminal
+		// (mesh.csm.settle). Settling itself is still no operator's act on any
+		// surface, and the intermediate POST /settlements on the central bank
+		// stays deleted; TestNoRouteSettlesACycle is the pin on both halves.
+		return "clearing-house", old
 
 	case path == "/assets":
 		// On every operator; the disjointness allowlist is what records that.
@@ -261,10 +259,9 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 //
 // It was TestSettlingIsTheCentralBanksAct, and it pinned that by driving POST
 // /settlements on one operator and getting a 404 on the other. Neither half is
-// available now: the route is gone from every surface, so there is no HTTP act
-// left to attribute to anybody, and a test still called that would be naming an
-// assertion it no longer makes. TestSettlementIsNoLongerAnHTTPAction is where
-// the absence is pinned.
+// available now: no route settles, so there is no HTTP act left to attribute to
+// anybody, and a test still called that would be naming an assertion it no
+// longer makes. TestNoRouteSettlesACycle is where that is pinned.
 //
 // What survives is the READ, and it is the half that keeps mattering: the
 // clearing house closed the cycle and sent the instruction, so it has to be able
