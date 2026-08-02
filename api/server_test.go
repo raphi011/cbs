@@ -535,7 +535,10 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 // 500. A bank joined with USD only has no EUR account to collide with
 // sepa.ct's EUR, so the mismatch is reached without needing to fund anything
 // or open a cycle — checkPartyTx and the asset check both run before either
-// would matter.
+// would matter, PROVIDED the request clears the counterparty guard first: that
+// guard runs before either, so the request must name a valid creditor or the
+// 422 it gets is ErrCounterpartyNotNamed's and never reaches this test's
+// subject at all.
 func TestCrossAssetPaymentReturns422(t *testing.T) {
 	h := newServer(t, nil)
 	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
@@ -547,7 +550,9 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 }
 
@@ -2915,7 +2920,7 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 // holds exactly one payment row.
 //
 // Weaker per-case, and it is the case that needs it least. addressFor raises
-// ErrAmbiguousAddress inside debtorSideTx (payment/system.go:2036), which
+// ErrAmbiguousAddress inside debtorSideTx (payment/system.go:2114), which
 // SubmitPaymentTx runs BEFORE postDebtorLegTx, so this one never posted a leg
 // even under the defect. The three per-case checks above cover the refusals
 // that did.
@@ -2951,12 +2956,17 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		}
 	}
 
-	// ErrUnaddressableAccount.
+	// ErrUnaddressableAccount. creditorAgent/creditorName are supplied and
+	// valid — Nobody is the account's real name — so the counterparty guard
+	// clears and the refusal reached is the one this case is about, not
+	// ErrCounterpartyNotNamed's.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+nobody+`"},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Nobody"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a payee with no address at all")
 
@@ -2965,7 +2975,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the payee's address quoted on the payer's leg")
 
@@ -2979,7 +2991,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a push that quoted no payee address")
 
@@ -2990,7 +3004,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the same refusal on the payer's own bank surface")
 
@@ -3002,8 +3018,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// The creditor identifier is NOT a back-fill: it is simply what this
 	// request already quoted, persisted by the payer's bank at submission and
 	// left untouched when the pacs.008 reaches the payee's bank —
-	// creditorSideTx (payment/system.go:1462) re-derives the same address and
-	// AcceptInboundTx (payment/system.go:1306) skips the write when nothing
+	// creditorSideTx (payment/system.go:1544) re-derives the same address and
+	// AcceptInboundTx (payment/system.go:1400) skips the write when nothing
 	// changed. The two cases above that quote no creditor address prove a push
 	// of that shape is refused synchronously inside the mesh — mesh.Submit ->
 	// bank.submit (mesh/bank.go:128) -> payment.SubmitAndInstruct, where the
@@ -3033,7 +3049,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 
 	// The aggregate, and the only thing covering the ErrAmbiguousAddress case

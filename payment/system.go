@@ -588,11 +588,11 @@ func (s *Network) CreateMandate(ctx context.Context, debtor, creditor PartyRef, 
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
 func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	debtorAcct, err := s.checkPartyTx(ctx, tx, "debtor", debtor)
+	debtorAcct, _, err := s.checkPartyTx(ctx, tx, "debtor", debtor)
 	if err != nil {
 		return Mandate{}, err
 	}
-	creditorAcct, err := s.checkPartyTx(ctx, tx, "creditor", creditor)
+	creditorAcct, _, err := s.checkPartyTx(ctx, tx, "creditor", creditor)
 	if err != nil {
 		return Mandate{}, err
 	}
@@ -1240,13 +1240,29 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		return Payment{}, err
 	}
 
+	// The submitting bank's own side comes from its own register, overwriting
+	// anything the request supplied: a payer does not rename themselves on an
+	// instruction, and this bank is the authority on its own customer. This
+	// runs HERE, on the account and participant debtorSideTx/creditorSideTx
+	// just checked, and not inside those two functions — they also run from
+	// AcceptInboundTx, where the bank executing them is the RECEIVING bank for
+	// that direction, not the submitting one. Filling the details there would
+	// overwrite the counterparty's asserted name with the receiving bank's own
+	// record, after that name has already gone out on the wire in the message
+	// SubmitAndInstruct built from it. Only SubmitPaymentTx knows unambiguously
+	// which side is its own.
 	if push {
-		err = s.debtorSideTx(ctx, tx, scheme, &p, sc)
+		account, part, err := s.debtorSideTx(ctx, tx, scheme, &p, sc)
+		if err != nil {
+			return Payment{}, err
+		}
+		p.DebtorDetails = PartyDetails{Agent: part.BIC, Name: account.Name}
 	} else {
-		err = s.creditorSideTx(ctx, tx, scheme, &p, sc)
-	}
-	if err != nil {
-		return Payment{}, err
+		account, part, err := s.creditorSideTx(ctx, tx, scheme, &p, sc)
+		if err != nil {
+			return Payment{}, err
+		}
+		p.CreditorDetails = PartyDetails{Agent: part.BIC, Name: account.Name}
 	}
 
 	// Two events, because initiation and acceptance are two different facts: the
@@ -1351,7 +1367,14 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 	before := p
 	sc := SchemeContext{Network: s, Tx: tx, Now: s.now()}
 	if scheme.Direction() == Push {
-		if err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+		// The account and participant returned here are the RECEIVING bank's
+		// own — the creditor's, for a push — and are deliberately discarded:
+		// unlike SubmitPaymentTx, this half must not use them to overwrite
+		// CreditorDetails. That field already holds what the payer asserted,
+		// and the pacs.008 already sent carries exactly that name; rewriting it
+		// here would desynchronise the stored payment from the message that
+		// already went out.
+		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
 			return err
 		}
 	} else {
@@ -1363,7 +1386,11 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 		if p.DebtorLegTx != "" {
 			return nil
 		}
-		if err := s.debtorSideTx(ctx, tx, scheme, &p, sc); err != nil {
+		// See the push arm above: the account and participant here are the
+		// RECEIVING (debtor's) bank's own, and are discarded for the same
+		// reason — DebtorDetails already holds what the submitting creditor
+		// bank asserted.
+		if _, _, err := s.debtorSideTx(ctx, tx, scheme, &p, sc); err != nil {
 			return err
 		}
 		if err := s.postDebtorLegTx(ctx, tx, scheme, &p); err != nil {
@@ -1456,31 +1483,34 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 // The address comes BACK and is written onto the payment's own ref: a caller
 // that quoted nothing gets the account's address filled in rather than a
 // stored payment with an empty one.
-func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) error {
-	account, err := s.checkPartyTx(ctx, tx, "debtor", p.Debtor)
+//
+// It also returns the account and the bound participant it checked, not for
+// this function's own use but for the caller's: debtorSideTx runs from BOTH
+// SubmitPaymentTx (a push, where the debtor is the SUBMITTING bank) and
+// AcceptInboundTx (a pull, where the debtor is the RECEIVING bank), and only
+// the submitting call may use what it returns to fill DebtorDetails from the
+// register — see the comment at the call site in SubmitPaymentTx for why that
+// must not happen here.
+func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Participant, error) {
+	account, part, err := s.checkPartyTx(ctx, tx, "debtor", p.Debtor)
 	if err != nil {
-		return err
+		return deposit.Account{}, nil, err
 	}
 	if account.Asset != scheme.Asset() {
-		return ErrAssetMismatch
+		return deposit.Account{}, nil, ErrAssetMismatch
 	}
 	address, err := addressFor(scheme, p.Debtor, account)
 	if err != nil {
-		return err
+		return deposit.Account{}, nil, err
 	}
 	p.Debtor.Identifier = address
-	// The submitting bank's own side comes from its own register, overwriting
-	// anything the request supplied: a payer does not rename themselves on an
-	// instruction, and this bank is the authority on its own customer.
-	part, err := s.participantTx(ctx, tx, p.Debtor.Participant)
-	if err != nil {
-		return err
-	}
-	p.DebtorDetails = PartyDetails{Agent: part.BIC, Name: account.Name}
 	// The funds check. It is the debtor bank's alone, which is why Scheme.Validate
 	// is now only ever this: the receiving side of a pull and the submitting
 	// side of a push are the same bank looking at the same account.
-	return scheme.Validate(ctx, p, sc)
+	if err := scheme.Validate(ctx, p, sc); err != nil {
+		return deposit.Account{}, nil, err
+	}
+	return account, part, nil
 }
 
 // creditorSideTx is everything a payment's own creditor bank checks about it:
@@ -1497,33 +1527,34 @@ func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Pay
 // can reach the credit afterwards, and Closed is terminal. Network.DepositTx
 // has refused a closed account for the same reason since cash first landed in
 // one.
-func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) error {
-	account, err := s.checkPartyTx(ctx, tx, "creditor", p.Creditor)
+//
+// It also returns the account and the bound participant it checked. See
+// debtorSideTx's mirror note: creditorSideTx runs from both SubmitPaymentTx (a
+// pull, where the creditor is the SUBMITTING bank) and AcceptInboundTx (a
+// push, where the creditor is the RECEIVING bank), and only the submitting
+// call may use what it returns to fill CreditorDetails from the register.
+func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Participant, error) {
+	account, part, err := s.checkPartyTx(ctx, tx, "creditor", p.Creditor)
 	if err != nil {
-		return err
+		return deposit.Account{}, nil, err
 	}
 	if account.Asset != scheme.Asset() {
-		return ErrAssetMismatch
+		return deposit.Account{}, nil, ErrAssetMismatch
 	}
 	address, err := addressFor(scheme, p.Creditor, account)
 	if err != nil {
-		return err
+		return deposit.Account{}, nil, err
 	}
 	p.Creditor.Identifier = address
-	creditor, err := s.participantTx(ctx, tx, p.Creditor.Participant)
-	if err != nil {
-		return err
+	if err := part.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
+		return deposit.Account{}, nil, err
 	}
-	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
-		return err
-	}
-	// The submitting bank's own side comes from its own register, overwriting
-	// anything the request supplied: a payer does not rename themselves on an
-	// instruction, and this bank is the authority on its own customer.
-	p.CreditorDetails = PartyDetails{Agent: creditor.BIC, Name: account.Name}
 	// The mandate, which in SEPA the CREDITOR holds — so it is checked by the
 	// creditor's bank, and for a pull that means synchronously, at submission.
-	return scheme.ValidateMandate(ctx, p, sc)
+	if err := scheme.ValidateMandate(ctx, p, sc); err != nil {
+		return deposit.Account{}, nil, err
+	}
+	return account, part, nil
 }
 
 // postDebtorLegTx moves the payer's money out of their account and into their
@@ -2012,22 +2043,27 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 }
 
 // checkPartyTx verifies that a party's participant exists and its deposit
-// account exists within that participant, returning the account so callers
-// that need more than existence (its Asset, its GLAccount, ...) don't have to
-// fetch it again.
-func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, error) {
+// account exists within that participant, returning both the account and the
+// bound participant so callers that need more than existence (the account's
+// Asset, GLAccount, ... or the participant's live Deposit/Ledger handles)
+// don't have to fetch either again. Binding costs nothing beyond the fetch
+// this function already makes — s.bind wraps the row it just read with live
+// handles built from the Network's own stores, not a second round trip — so
+// returning a bound participant here is free, and a caller re-fetching the
+// same row with participantTx (as debtorSideTx used to) is not.
+func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, *Participant, error) {
 	if err := validateParty(field, ref); err != nil {
-		return deposit.Account{}, err
+		return deposit.Account{}, nil, err
 	}
-	p, err := tx.GetParticipant(ctx, ref.Participant)
+	rec, err := tx.GetParticipant(ctx, ref.Participant)
 	if err != nil {
-		return deposit.Account{}, ErrParticipantNotFound
+		return deposit.Account{}, nil, ErrParticipantNotFound
 	}
-	acct, err := tx.GetDepositAccount(ctx, p.BookID, ref.Account)
+	acct, err := tx.GetDepositAccount(ctx, rec.BookID, ref.Account)
 	if err != nil {
-		return deposit.Account{}, ErrAccountNotInParticipant
+		return deposit.Account{}, nil, ErrAccountNotInParticipant
 	}
-	return acct, nil
+	return acct, s.bind(rec), nil
 }
 
 // addressFor settles which external address one leg of a payment records, and

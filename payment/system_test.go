@@ -1921,6 +1921,10 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
 	assertNoError(t, err)
 	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
+	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
+	// onto the payment unchanged would pass this test's name check; only an
+	// overwrite from the register catches it.
+	req.DebtorDetails = PartyDetails{Agent: "WRONGDEFFXXX", Name: "Not Alice At All"}
 
 	p, err := n.SubmitPayment(ctx, req)
 	if err != nil {
@@ -1931,9 +1935,10 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	}
 	// The debtor is this bank's own customer, so its name comes from its own
 	// register and NOT from the request — a payer does not get to rename
-	// themselves on an instruction.
-	if p.DebtorDetails.Name == "" {
-		t.Error("the submitting bank did not fill in its own customer's name")
+	// themselves on an instruction. setupTwoBanks names the debtor's customer
+	// "Alice", so this is not merely non-empty but exactly the register value.
+	if p.DebtorDetails.Name != "Alice" {
+		t.Errorf("debtor name is %q, want the submitting bank's own register value %q, not what the request carried", p.DebtorDetails.Name, "Alice")
 	}
 	debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
 	assertNoError(t, err)
@@ -1963,6 +1968,75 @@ func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestAcceptInboundDoesNotRewriteEitherPartysDetails pins a fix, not merely a
+// property: debtorSideTx and creditorSideTx run from AcceptInboundTx as well as
+// from SubmitPaymentTx, and in AcceptInboundTx the bank executing them is the
+// RECEIVING bank for that direction — the creditor's on a push, the debtor's on
+// a pull — not the submitting one. Filling PartyDetails from the register
+// there would silently overwrite what the submitting bank already stored (and
+// already sent, in the message SubmitAndInstruct built in the same unit of
+// work) with the receiving bank's own record of the same account, which need
+// not agree with what the payer typed. Checked on both directions, because the
+// two arms fail differently if this regresses: a pull always posts its debtor
+// leg in AcceptInboundTx, so its overwrite would be unconditional, while a
+// push's is gated behind AcceptInboundTx's dirty check and only shows up when
+// something else (an address back-fill) also changed.
+func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
+	t.Run("push", func(t *testing.T) {
+		ctx := context.Background()
+		n, req := networkWithTwoBanks(t)
+		creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
+		assertNoError(t, err)
+		// Deliberately NOT "Bob" — the real name on the creditor's own
+		// register (setupTwoBanks). If AcceptInboundTx's creditorSideTx (the
+		// creditor's bank, here the RECEIVING bank) overwrote CreditorDetails
+		// from its register, this would come back as "Bob".
+		req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		assertNoError(t, n.AcceptInbound(ctx, p.ID))
+
+		after, err := n.GetPayment(ctx, p.ID)
+		assertNoError(t, err)
+		if after.CreditorDetails != p.CreditorDetails {
+			t.Errorf("creditor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.CreditorDetails, p.CreditorDetails)
+		}
+		if after.DebtorDetails != p.DebtorDetails {
+			t.Errorf("debtor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.DebtorDetails, p.DebtorDetails)
+		}
+	})
+
+	t.Run("pull", func(t *testing.T) {
+		ctx := context.Background()
+		n, req, _ := networkWithACollection(t, 100000)
+		debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+		assertNoError(t, err)
+		// Deliberately NOT "Alice" — the real name on the debtor's own
+		// register (networkWithACollection). If AcceptInboundTx's
+		// debtorSideTx (the debtor's bank, here the RECEIVING bank) overwrote
+		// DebtorDetails from its register, this would come back as "Alice".
+		req.DebtorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payee Typed"}
+
+		p, err := n.SubmitPayment(ctx, req)
+		assertNoError(t, err)
+		assertNoError(t, n.AcceptInbound(ctx, p.ID))
+
+		after, err := n.GetPayment(ctx, p.ID)
+		assertNoError(t, err)
+		if after.DebtorDetails != p.DebtorDetails {
+			t.Errorf("debtor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.DebtorDetails, p.DebtorDetails)
+		}
+		if after.CreditorDetails != p.CreditorDetails {
+			t.Errorf("creditor details after AcceptInbound = %+v, want unchanged from submission %+v",
+				after.CreditorDetails, p.CreditorDetails)
+		}
+	})
 }
 
 // A payment that is no longer Initiated must not be revived by an answer that

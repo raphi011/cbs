@@ -217,10 +217,14 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 type PartyDetails struct {
 	// Agent is the BIC of the bank holding this party's account.
 	Agent iso20022.BIC
-	// Name is the account holder's name as quoted on the instruction. It is not
-	// checked against the register even for a local party, because the name on a
-	// message is what the payer asserted and a bank's own record of its customer
-	// may legitimately differ.
+	// Name is the account holder's name. For the SUBMITTING bank's own side
+	// this is taken from its own deposit register, not from whatever the
+	// request supplied — a bank is the authority on its own customer's name,
+	// exactly as the Dbtr element on a real pacs.008 is what the originating
+	// bank holds on file, not a claim it takes on faith. For the COUNTERPARTY's
+	// side there is no register to be the authority: the instruction asserts
+	// it, because that is the only place it can come from. The asymmetry is
+	// the point — see SubmitPaymentTx.
 	Name string
 }
 
