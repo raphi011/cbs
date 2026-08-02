@@ -195,6 +195,35 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 	return r.Participant == o.Participant && r.Account == o.Account
 }
 
+// PartyDetails is what a MESSAGE says about one side of a payment: which bank
+// holds the account, and the name on it. It is the whole of what a counterparty
+// bank is told, and the whole of what building an outbound message needs.
+//
+// It is SEPARATE from PartyRef because the two answer different questions and
+// only one of them is answerable locally. A PartyRef names an account this
+// system can look up; PartyDetails is a statement made in a message, which the
+// receiving bank has no way to verify and no business verifying.
+//
+// # Why it is stored on the payment rather than resolved
+//
+// It used to be resolved: payment.partyTx read the account out of the party's
+// own bank's deposit register to get the name on it. That is a read of ANOTHER
+// BANK'S BOOK on the happy path of every submission, measured by the recorder in
+// mesh/books_test.go and recorded there at length. A real payer's bank knows the
+// payee's name because the payer typed it in — it has no access to the payee's
+// bank's records at all — so the name travels on the instruction.
+//
+// Storing it is therefore not a cache. There is nothing to fall back to.
+type PartyDetails struct {
+	// Agent is the BIC of the bank holding this party's account.
+	Agent iso20022.BIC
+	// Name is the account holder's name as quoted on the instruction. It is not
+	// checked against the register even for a local party, because the name on a
+	// message is what the payer asserted and a bank's own record of its customer
+	// may legitimately differ.
+	Name string
+}
+
 // Payment is a scheme-agnostic instruction to move funds from a debtor to a
 // creditor. The concrete behaviour (push/pull, mandate, settlement timing)
 // comes from its Scheme.
@@ -206,6 +235,12 @@ type Payment struct {
 	Amount     ledger.Amount
 	MandateID  MandateID // set for direct debits
 	EndToEndID string    // client reference (the ISO 20022 "end-to-end id")
+
+	// DebtorDetails and CreditorDetails are what a message says about each side.
+	// The submitting bank fills its OWN side from its own register and is TOLD
+	// the counterparty's; see SubmitPaymentTx.
+	DebtorDetails   PartyDetails
+	CreditorDetails PartyDetails
 
 	Status PaymentStatus
 

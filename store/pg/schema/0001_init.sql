@@ -612,6 +612,10 @@ CREATE TABLE payments (
     creditor_account           TEXT NOT NULL,
     creditor_identifier_scheme TEXT NOT NULL,
     creditor_identifier_value  TEXT NOT NULL,
+    debtor_agent               TEXT NOT NULL DEFAULT '',
+    debtor_name                TEXT NOT NULL DEFAULT '',
+    creditor_agent             TEXT NOT NULL DEFAULT '',
+    creditor_name              TEXT NOT NULL DEFAULT '',
     amount                     BIGINT NOT NULL,
     mandate_id                 TEXT NOT NULL,
     end_to_end_id              TEXT NOT NULL,
@@ -636,6 +640,14 @@ COMMENT ON COLUMN payments.reject_code IS
     'the text is what says the part no code can. DEFAULT '''' rather than NULL '
     'because a payment that was never rejected has no code, and an absent code '
     'and an empty one are the same fact here.';
+
+COMMENT ON COLUMN payments.debtor_name IS
+    'The account holder name as QUOTED ON THE INSTRUCTION, not as held in the '
+    'register. It is stored rather than looked up because looking it up means '
+    'reading the counterparty bank''s deposit register, which no bank may do. '
+    'A real payer''s bank knows the payee''s name because the payer typed it. '
+    'The four agent/name columns are therefore not a cache: there is nothing '
+    'to fall back to, and a NULL here would be an unsendable payment.';
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
