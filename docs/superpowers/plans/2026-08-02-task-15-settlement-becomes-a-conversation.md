@@ -153,6 +153,7 @@ this task adds a table.
 | `mesh/bank.go` | a camt.053 arm; the ACSC arm posts the creditor leg; the actor learns its own participant id |
 | `mesh/csm.go` | the ACSC fan-out reaches the creditor's bank too |
 | `mesh/mesh.go` | `bank` carries its `ParticipantID` |
+| `seed/seed.go` | `builder.settle`, the third composite: the seed plays all three institutions because none exists yet |
 | `mesh/books_test.go` | **two** measurements move |
 | `README.md`, `hint-content.ts`, quiz chapters 9/11/15/16, schema comments | the domain facts |
 
@@ -2184,7 +2185,67 @@ how every other inbound handler is attributed. `csm.closeCycle` adds one only
 because a cut-off arrives from outside the mesh and never passes through
 `dispatch`.
 
-- [ ] **Step 6: Run the measurements**
+- [ ] **Step 6: Give the seed a settlement composite**
+
+`seed/seed.go:481` and `:490` call `b.net.SettleCycle` **directly**, and they must
+not simply keep doing so. The seed runs BEFORE any actor exists — `cmd/server`
+seeds and then starts the mesh, and `main.go` says the order is load-bearing
+because `Start` reads the roster once — so there is nothing to send a statement
+to and nobody to answer one. A direct `SettleCycle` after this sub-task settles at
+the central bank and advises nobody, leaving every seeded bank's suspense
+non-zero and its reserve mirror unmoved. `seed/seed_test.go` asserts the dataset's
+shape and will say so.
+
+This is the case `builder.initiate` and `builder.reject` already exist for, and
+`initiate`'s doc has the argument in full: *"The seed is one process building a
+scenario, so it plays every actor; the mesh is what makes them separate."* Add the
+third composite beside them:
+
+```go
+// settle runs all three institutions' halves of a cut-off — the settlement
+// agent's netting transaction and each member's booking of the advice it would
+// have been sent — in one unit of work, leaving the cycle Settled and every
+// bank's clearing suspense back at zero.
+//
+// It is initiate's argument applied to settlement, and it became necessary the
+// moment settlement stopped being one institution's act. There is no method that
+// plays all three, deliberately: the whole of Task 15 is that the central bank
+// cannot post in a member's book. The seed can, because the seed is not an
+// institution — it is one process building a fixed scenario before any actor
+// exists, and a conversation carried out at startup could not promise a fixed
+// outcome.
+//
+// The creditor legs are NOT composed here in this sub-task, because
+// SettleCycleTx still posts them. They move in with the same argument when it
+// stops.
+func (b *builder) settle(id payment.CycleID) {
+	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, statements, err := b.net.SettleCycleTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, st := range statements {
+			if _, err := b.net.PostSettlementAdviceTx(ctx, tx, st.Member, payment.AdvisedMovement{
+				Account:        st.Account,
+				Asset:          st.Asset,
+				Movement:       st.Movement,
+				ClosingBalance: st.ClosingBalance,
+				CycleID:        st.CycleID,
+				ValueDate:      st.ValueDate,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+}
+```
+
+Replace both `must(b.net.SettleCycle(b.ctx, …))` calls with `b.settle(…)`. Run
+`go test ./seed/ ./cmd/... ./api/` — `seed_test.go` asserts the seeded dataset's
+shape, and if a reserve or suspense figure moves, read it before changing it.
+
+- [ ] **Step 7: Run the measurements**
 
 ```bash
 cd ~/Git/cbs-db-per-entity && go test ./mesh/ -run 'TestWhichBooksTheCentralBank|TestEachBankBooksItsOwn' -v
@@ -2192,7 +2253,7 @@ cd ~/Git/cbs-db-per-entity && go test ./mesh/ -run 'TestWhichBooksTheCentralBank
 
 Expected: PASS, both.
 
-- [ ] **Step 7: Watch the reserve check fail — the most important mutation in this plan**
+- [ ] **Step 8: Watch the reserve check fail — the most important mutation in this plan**
 
 Delete the net-payer reserve loop added in Step 3. Run:
 
@@ -2205,7 +2266,7 @@ Restore, re-run, confirm RJCT/AM04. **If it still passes with the check deleted,
 stop:** something else is refusing and the check has not been located correctly.
 Find what, and say so, before continuing.
 
-- [ ] **Step 8: Full verification and commit**
+- [ ] **Step 9: Full verification and commit**
 
 ```bash
 cd ~/Git/cbs-db-per-entity
@@ -2392,6 +2453,45 @@ Rewrite the doc paragraph at `mesh/bank.go:369-374` that begins *"An ACCEPTANCE
 needs nothing from it"*: an ACCP still needs nothing and an ACSC now needs a
 posting, and those are different statuses. Getting that wrong makes the payment's
 clearing acceptance post its settlement leg.
+
+- [ ] **Step 5b: Finish the seed's settlement composite**
+
+`builder.settle`, added in 15b.2 Step 6, composes the settlement agent's netting
+transaction and each member's advice. The creditor legs were left out because
+`SettleCycleTx` still posted them; it no longer does, so the seed's payments would
+stay `Cleared`, every payee would be unpaid, and **Phase C's
+`ReturnPayment` on `SDD-002` would fail with `ErrInvalidStateTransition` and
+`must` would panic the seed** — which `cmd/server` runs at startup, so the app
+would not boot. `cmd/server/main_test.go` and `api/mesh_test.go` both build the
+seeded dataset and will catch it.
+
+Add the third loop to `builder.settle`, inside the same unit of work, after the
+advices:
+
+```go
+		cycle, err := b.net.GetCycleTx(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		for _, pid := range cycle.PaymentIDs {
+			p, err := tx.GetPayment(ctx, pid)
+			if err != nil {
+				return err
+			}
+			if _, err := b.net.PostCreditorLegTx(ctx, tx, p.Creditor.Participant, pid); err != nil {
+				return err
+			}
+		}
+```
+
+If `GetCycleTx` does not exist under that name, read the cycle with
+`tx.GetCycle(ctx, id)` — the seed holds a `payment.Tx` and does not need a
+Network wrapper for a plain row read.
+
+Update `settle`'s doc: the sentence saying the creditor legs are not composed
+here "because SettleCycleTx still posts them" is now false, and it is the kind of
+prose that outran the code. Say instead that all three institutions' halves are
+here, and why the seed is allowed to play all three when no institution is.
 
 - [ ] **Step 6: Run the measurements and the flow tests**
 
@@ -2661,6 +2761,16 @@ called from `receiveStatus` (15b.3). `bank.pid` is added in 15b.2 and used by bo
 handlers. `iso20022.AccountStatement` (15a.1, the XML struct) and
 `payment.AdvisedMovement` are different types in different packages and never
 alias.
+
+**The seed is not an actor, and this task is where that starts to cost.**
+`seed/seed.go` calls `SettleCycle` directly and runs BEFORE any mesh actor
+exists — `cmd/server` seeds first and starts the mesh second, which `main.go`
+records as load-bearing. So the seed grows a third composite beside `initiate`
+and `reject` (15b.2 Step 6, completed in 15b.3 Step 5b), on `initiate`'s own
+stated argument: the seed is one process building a fixed scenario and plays every
+actor, and a conversation carried out at startup could not promise a fixed
+outcome. Missing this breaks the app at boot rather than in a test — Phase C
+returns a payment that would never have reached Settled.
 
 **Ordering risk, flagged rather than hidden.** 15b.1 extracts both postings while
 `SettleCycleTx` still calls them, so every measurement is unchanged and the
