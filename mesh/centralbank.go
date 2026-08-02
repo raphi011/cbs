@@ -16,8 +16,15 @@ import (
 // distinction between clearing and settlement. The clearing house decides WHICH
 // payments are in a batch and what each bank's net position is; this actor
 // decides only whether those positions can be discharged, and discharges them.
-// It never sees an individual payment, and nothing in settlementOps would let it
-// look one up.
+// Across a CUT-OFF it never sees an individual payment: it is instructed about a
+// cycle, and nothing in settlementOps turns one into the payments inside it.
+//
+// A RETURN is the exception, and it is not a leak in that rule. It names one
+// settled payment because that is what a return is, and the bank that asked for
+// it put the identifier in the message; this actor still cannot enumerate
+// anything or find a payment it was not told about. What makes a return this
+// institution's work is the same thing that makes a cut-off its work — reserves
+// move — and no member bank may move those. See receiveReturn.
 //
 // # What it does NOT do, and why that is not a shortcut
 //
@@ -37,23 +44,24 @@ import (
 // gap rather than hiding it, and the message is a real instruction over a real
 // wire in every other respect.
 //
-// # It holds a settlementOps, which is one method wide
+// # It holds a settlementOps, which is two methods wide
 //
-// SettleCycle is on that interface and on no other, so a bank handler or a
-// clearing-house handler cannot NAME it. That is what these interfaces narrow,
-// and the whole of what they narrow — it is not a ban on those handlers moving
-// money. GetParticipant is on both of the other two and returns a value carrying
-// live ledger and deposit handles bound to whichever bank it names
-// (Network.bind), and a member bank's ledger is exactly where the mirror and
-// creditor legs below go, so posting them is reachable from either of those
-// handlers through a method each legitimately holds. The recorder in
+// SettleCycle and ReturnPayment are on that interface and on no other, so a
+// bank handler or a clearing-house handler cannot NAME either. That is what
+// these interfaces narrow, and the whole of what they narrow — it is not a ban
+// on those handlers moving money. GetParticipant is on both of the other two and
+// returns a value carrying live ledger and deposit handles bound to whichever
+// bank it names (Network.bind), and a member bank's ledger is exactly where the
+// mirror and creditor legs below go, so posting them is reachable from either of
+// those handlers through a method each legitimately holds. The recorder in
 // books_test.go is what watches for that, here as everywhere else in this
 // package; see the note on bankOps in ops.go for the whole of the hole.
 //
-// The method behind this interface also reaches much further than one method
-// suggests. Settlement posts in every participant's book as well as the central
-// bank's, which is what SettleCycleTx is; see
-// TestWhichBooksTheCentralBankReachesWhenItSettles for the measurement.
+// Both methods behind this interface also reach much further than two methods
+// suggest. Settlement posts in every participant's book as well as the central
+// bank's, which is what SettleCycleTx is, and a return posts in three books of
+// which two are member banks'. See TestWhichBooksTheCentralBankReachesWhenItSettles
+// and TestWhichBooksAReturnReaches for the measurements.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -63,11 +71,12 @@ type centralBank struct {
 // handle dispatches on the message that arrived. See bank.handle, which has the
 // same shape and the same reason for taking the sender as an argument.
 //
-// One arm, because one message definition is addressed to this institution. A
-// pacs.008 or a pacs.003 arriving here would be a customer payment sent to the
-// settlement agent, which no actor in this mesh does and which this actor could
-// not act on; it becomes a dead letter rather than a shrug, for the reason
-// bank.handle's default gives.
+// Two arms, and they are the two ways reserves move: a cut-off's positions
+// being discharged, and one settled payment being sent back. A pacs.008 or a
+// pacs.003 arriving here would be a customer payment sent to the settlement
+// agent, which no actor in this mesh does and which this actor could not act
+// on; it becomes a dead letter rather than a shrug, for the reason bank.handle's
+// default gives.
 func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -76,6 +85,8 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs009:
 		return cb.receiveSettlement(ctx, from, env.AppHdr, doc)
+	case *iso20022.Pacs004:
+		return cb.receiveReturn(ctx, from, env.AppHdr, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", cb.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -139,6 +150,113 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 		return cb.answer(from, orig, string(id), iso20022.TransactionStatusRejected, err)
 	}
 	return cb.answer(from, orig, string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// receiveReturn is the central bank executing a return: the R-transaction, and
+// the second of the two things that move reserves here.
+//
+// # Why this actor and not a bank
+//
+// ReturnPaymentTx posts THREE compensating transactions in one unit of work —
+// the payer refunded at their own bank, the payee clawed back at theirs, and
+// the reserve movement reversed between the two settlement accounts here — and
+// they commit together or not at all. The middle one is central-bank money, so
+// no member bank could make it; and splitting the three across three actors
+// would mean a payer refunded against a payee who was not debited, which is the
+// atomicity a settlement window exists to provide. payment/doc.go already
+// records the consequence: returns settle immediately in this system rather
+// than being cleared and netted in a later R-cycle. A return therefore IS a
+// settlement act, and it belongs where settlement does.
+//
+// The price is the same one receiveSettlement pays and it is worth naming
+// again: two of those three postings land in member banks' books, made by this
+// handler. In a real network the pacs.004 would travel bank to bank and each
+// would post its own leg. Under one store this actor does all three, and
+// TestWhichBooksAReturnReaches measures exactly that rather than assuming it.
+//
+// # One return per message, and the sender's own count must agree
+//
+// A pacs.004 can carry many, and this system's returning banks send one. Both
+// halves of that are checked here, and a message failing either is refused
+// WHOLE rather than half-executed, for cycleOf's reason one message definition
+// over: returning the first and dropping the rest would leave payments somebody
+// was told had been sent back and never were, with nothing anywhere recording
+// it. More than one transaction is the first half. The second is GrpHdr/NbOfTxs
+// disagreeing with what arrived — the same check payment.ReadSettlement makes
+// on an instruction, and it is here for the same reason: a transaction lost in
+// transit is a payer who does not get their money back, and a receiver that
+// acted on the survivors would answer for a message it did not have.
+//
+// # What is answered, and what is dead-lettered
+//
+// A redelivered return names a payment this network has already returned, and
+// ReturnPaymentTx refuses it with ErrInvalidStateTransition — a statement about
+// THIS system's state and not about the sender's message. payment's reasonTable
+// gives it the empty code for exactly that reason, and ReasonFor would turn it
+// into MS03 and tell the returning bank that a return which in fact happened
+// was rejected. Dead letter, and no pacs.002; it is the same discrimination
+// receiveSettlement makes.
+//
+// Everything else the domain refuses IS answered, with the code ReasonFor maps
+// it to, because a refusal a counterparty can act on is completed work rather
+// than a defect. ErrSchemeUnsupportedReturn is the one that belongs to this
+// operation alone — a scheme whose rule book has no return — and payment's
+// reasonTable maps it to MS03, "unspecified", which is what the external code
+// set has for a condition the scheme does not contemplate. No scheme in this
+// repository forbids returns (payment.SCT.AllowsReturn and SDD.AllowsReturn
+// both report true), so nothing here provokes it.
+func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs004) error {
+	body := doc.PmtRtr
+	orig := payment.OriginalMessage{
+		MsgID:     body.GrpHdr.MsgId,
+		MsgDefIdr: hdr.MsgDefIdr,
+		CreDtTm:   body.GrpHdr.CreDtTm.Time,
+	}
+	// Unmarshal refuses a pacs.004 with no transactions (iso20022's
+	// PaymentReturn.validate), so there is always a first one to answer about.
+	first := body.TxInf[0]
+	if n, said := len(body.TxInf), body.GrpHdr.NbOfTxs; n != 1 || said != "1" {
+		return cb.answer(from, orig, first.OrgnlTxId, iso20022.TransactionStatusRejected,
+			fmt.Errorf("this settlement agent returns one payment per message; TxInf carries %d and GrpHdr/NbOfTxs says %q",
+				n, said))
+	}
+
+	id := payment.PaymentID(first.OrgnlTxId)
+	if _, err := cb.ops.ReturnPayment(ctx, id, returnReason(first.RtrRsnInf)); err != nil {
+		if errors.Is(err, payment.ErrInvalidStateTransition) {
+			return fmt.Errorf("mesh: %s was told to return %s again: %w", cb.bic, id, err)
+		}
+		return cb.answer(from, orig, string(id), iso20022.TransactionStatusRejected, err)
+	}
+	return cb.answer(from, orig, string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// returnReason is what a return is described as in the three ledgers it posts
+// in: the reason the returning bank gave, code and text.
+//
+// Both arms of the choice are read, because both are legal — iso20022's
+// ReturnReasonChoice requires exactly one of a code and a proprietary text, and
+// refuses a return that has neither, so what arrives is one or the other. The
+// nil case is a caller's guard rather than a message: RtrRsnInf is mandatory in
+// a pacs.004 that has been through Unmarshal.
+//
+// It is a separate function from rejectionText, over a shared join, because the
+// two read different external code sets — iso20022.ReturnReason and
+// iso20022.StatusReason — which pacs004.go keeps as separate types precisely so
+// that a rejection reason cannot be used as a return reason with nothing to
+// notice.
+func returnReason(info *iso20022.ReturnReasonInformation) string {
+	if info == nil {
+		return "returned"
+	}
+	var code string
+	switch {
+	case info.Rsn.Cd != nil:
+		code = string(*info.Rsn.Cd)
+	case info.Rsn.Prtry != nil:
+		code = *info.Rsn.Prtry
+	}
+	return codeAndText(code, info.AddtlInf, "returned")
 }
 
 // cycleOf is which closed cycle an instruction discharges, taken from the legs

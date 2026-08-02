@@ -36,6 +36,15 @@ import (
 // cannot, because it is the one that knows which payments are in the batch. See
 // closeCycle and receiveSettlementStatus.
 //
+// # And it carries returns, without being party to them
+//
+// Task 13 gave it a fourth job, and it is the one where this actor does least.
+// A pacs.004 from a member bank is handed straight to the central bank, because
+// a return moves reserves; the answer comes back here and is passed to the bank
+// that asked. Nothing is cleared, nothing is netted, no cycle is touched — a
+// return in this system is final the moment the settlement agent posts it. See
+// relayReturn and receiveReturnStatus.
+//
 // It holds a csmOps: nothing about clearing moves money, and that is what makes
 // clearing and settlement different jobs. What that does NOT amount to is a
 // compile-time ban on posting — GetParticipant hands back live ledger and deposit
@@ -62,23 +71,35 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return c.relayCreditTransfer(from, env, doc)
 	case *iso20022.Pacs003:
 		return c.relayDirectDebit(from, env, doc)
+	case *iso20022.Pacs004:
+		return c.relayReturn(from, env, doc)
 	case *iso20022.Pacs002:
-		// Two kinds of status arrive here, and the SENDER is what tells them
-		// apart. A member bank's pacs.002 answers an instruction about one
-		// customer payment; the central bank's answers a settlement
-		// instruction about a whole cycle, and its OrgnlTxId is a cycle id
-		// rather than a payment id. Reading the second as the first would look
-		// up a payment that does not exist.
+		// Three kinds of status arrive here, and it takes two questions to tell
+		// them apart.
 		//
-		// By BIC rather than by trying the lookup and seeing what happens,
-		// because the central bank is not a member of this network: it holds no
-		// participant row, it never submits and it is never a payment's agent,
-		// so the only message it ever sends this actor is the answer to what
-		// this actor asked it.
-		if from == c.m.cfg.CentralBankBIC {
+		// The SENDER separates a member bank's from the settlement agent's. A
+		// bank's pacs.002 answers an instruction about one customer payment;
+		// the central bank's answers something this actor asked IT for. By BIC
+		// rather than by trying a lookup and seeing what happens, because the
+		// central bank is not a member of this network: it holds no participant
+		// row, it never submits and it is never a payment's agent, so the only
+		// messages it ever sends this actor are answers to what this actor
+		// asked it.
+		//
+		// What it was asked separates the settlement agent's two. A settlement
+		// answer is about a whole CYCLE and its OrgnlTxId is a cycle id; a
+		// return answer is about one PAYMENT. Reading either as the other would
+		// look an identifier up in the wrong table. The message says which —
+		// OrgnlMsgNmId, the definition it is answering — so this is read off the
+		// wire rather than guessed at by trying both. See returnMsgDef.
+		switch {
+		case from != c.m.cfg.CentralBankBIC:
+			return c.receiveStatus(ctx, from, doc)
+		case isAbout(doc, returnMsgDef):
+			return c.receiveReturnStatus(ctx, from, doc)
+		default:
 			return c.receiveSettlementStatus(ctx, from, doc)
 		}
-		return c.receiveStatus(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", c.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -123,6 +144,49 @@ func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *is
 	return c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI)
 }
 
+// relayReturn hands a return on to the SETTLEMENT AGENT.
+//
+// Not to a bank, and that is the whole routing decision of this flow. A return
+// moves central-bank reserves back — payment.ReturnPaymentTx posts the payer's
+// refund, the payee's clawback and the reserve reversal in one unit of work —
+// and moving reserves is the settlement agent's act, as it is at a cut-off. So
+// the destination is a fact about the MESSAGE DEFINITION rather than about
+// anything inside the message, which is why this hop reads no element to route
+// by and no store either. A pacs.008 or a pacs.003 names the agent it is for; a
+// pacs.004 names no parties at all (see payment.ReturnMessage), and it does not
+// need to.
+//
+// It still goes THROUGH the clearing house rather than from the bank to the
+// central bank directly. A member bank in this mesh addresses the clearing
+// house and nothing else — that is the shape every other flow has, and the
+// routing table lives in one actor for the same reason RC01 can only be said
+// here. What the clearing house does with a return is carry it: it takes it
+// into no cycle, nets nothing, and posts nothing.
+//
+// A bulk return is NOT refused here, unlike a bulk pacs.008 or pacs.003, and
+// the difference is what refuseBulk is actually about: several transactions in
+// an instruction mean several counterparty agents and therefore several
+// destinations, and this actor has one routing decision per message to make.
+// Every return in one message has the same destination, so routing has no
+// objection to make. The settlement agent has one, and makes it — see
+// centralBank.receiveReturn.
+func (c *csm) relayReturn(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs004) error {
+	body := doc.PmtRtr
+	orig := payment.OriginalMessage{
+		MsgID:     body.GrpHdr.MsgId,
+		MsgDefIdr: env.AppHdr.MsgDefIdr,
+		CreDtTm:   body.GrpHdr.CreDtTm.Time,
+	}
+	// Unmarshal refuses a pacs.004 with no transactions (iso20022's
+	// PaymentReturn.validate), so there is always a first one to refer back by.
+	first := body.TxInf[0]
+	ref := iso20022.PaymentIdentification{
+		EndToEndId: first.OrgnlEndToEndId,
+		TxId:       first.OrgnlTxId,
+	}
+	return c.relay(from, env, doc, orig, ref, c.m.cfg.CentralBankBIC)
+}
+
 // refuseBulk is this system's one-payment-per-message limit, stated to the
 // sender.
 //
@@ -143,6 +207,12 @@ func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, ref is
 // that looked the payment up to decide where to send it would be one that could
 // not route a message about a payment it does not hold. Which is every message,
 // in a real network.
+//
+// A RETURN is routed by neither element, because a pacs.004 carries no agent
+// and needs none: its destination is the settlement agent, which follows from
+// the message DEFINITION. Its caller passes that address in rather than reading
+// one out (see relayReturn), which keeps this function's property intact — the
+// store is untouched either way.
 //
 // The DOCUMENT travels unchanged and only the header is replaced. That is what
 // relaying is: the header says who is handing this to whom and is this hop's,
@@ -556,9 +626,11 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 // Per payment, because that is the unit a bank has an outstanding instruction
 // about: it sent a pacs.008 or a pacs.003 naming one payment and has heard ACCP
 // since, and ACSC is the answer that closes it. The central bank could not send
-// these — it is answering about a cycle and settlementOps holds no way to look a
-// payment up, which is the whole shape of "the central bank never sees an
-// individual payment".
+// these: it is answering about a CYCLE, and settlementOps holds nothing that
+// turns one into the payments inside it — SettleCycle answers with a Settlement,
+// and neither GetCycle nor GetPayment is on that interface. It can act on a
+// payment somebody else named to it, which is what a return is, and that is a
+// different thing from being able to enumerate a batch.
 //
 // To the SUBMITTER, chosen by the scheme's direction exactly as tell does, and
 // for the same reason: the payer's bank pushed, or the payee's bank pulled, and
@@ -596,6 +668,56 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 			TxID:       string(p.ID),
 			Status:     r.Status,
 		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// receiveReturnStatus is the clearing house passing the settlement agent's
+// answer about a RETURN back to the bank that asked for one.
+//
+// It is the mirror of tellSettled and much the smaller half, because a return
+// is answered per PAYMENT all the way down. A settlement answer is about a
+// cycle and has to be turned into per-payment news by the only actor that knows
+// what is in the batch; a return answer already names the one payment it is
+// about, so this actor's whole job is to address it.
+//
+// Addressing it is the part that needs the store. The clearing house keeps no
+// record of who sent it which message — it relays and forgets, which is what
+// lets it route a message about a payment it does not hold — so "who asked for
+// this return" is recomputed from the payment the answer names, by the same
+// rule that chose the bank in the first place. See returnerOf.
+//
+// Both outcomes are forwarded, unchanged in substance. That is not the
+// asymmetry receiveSettlementStatus has: a refused SETTLEMENT is news no bank
+// can act on and some banks would act on wrongly, while a refused RETURN is the
+// answer to a question one bank asked and is owed. What the bank does with it
+// is nothing — see bank.receiveReturnStatus — but being told nothing and being
+// told no are different things.
+func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs002) error {
+	orig, reports := payment.ReadStatus(doc)
+	for _, r := range reports {
+		if r.TxID == "" {
+			// A return status naming no payment. The settlement agent quotes
+			// the payment it was asked about even when it refuses, so this is a
+			// message this actor cannot act on and has nobody to ask about.
+			return fmt.Errorf("mesh: %s got a return status from %s naming no payment", c.bic, from)
+		}
+		p, err := c.ops.GetPayment(ctx, payment.PaymentID(r.TxID))
+		if err != nil {
+			return fmt.Errorf("mesh: %s was told about the return of %s and cannot read it: %w", c.bic, r.TxID, err)
+		}
+		scheme, ok := c.ops.Scheme(p.Scheme)
+		if !ok {
+			return fmt.Errorf("mesh: %s was told about the return of %s and holds no %q scheme to say who asked: %w",
+				c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
+		}
+		returner, err := c.ops.GetParticipant(ctx, returnerOf(scheme, p.Debtor, p.Creditor).Participant)
+		if err != nil {
+			return fmt.Errorf("mesh: %s cannot address the bank that returned %s: %w", c.bic, p.ID, err)
+		}
+		if err := c.forward(returner.BIC, orig, r); err != nil {
 			return err
 		}
 	}

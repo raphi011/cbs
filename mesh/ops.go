@@ -28,16 +28,21 @@ import (
 // that lacks the method makes the crossing unwritable. Method and book, static
 // and dynamic — one of each, because each is blind exactly where the other sees.
 //
-// # Why they are empty
+// # Why they started empty, and what they are now
 //
-// They are declared empty ON PURPOSE and grow method by method as Tasks 8-13
-// discover what each handler needs. An interface written ahead of its callers is
-// a guess, and a guess here is a wrong boundary that then looks authoritative —
-// the worst of both, since every later reader takes it for a decision.
+// They were declared empty ON PURPOSE and grew method by method as Tasks 10-13
+// discovered what each handler needs. An interface written ahead of its callers
+// is a guess, and a guess here is a wrong boundary that then looks
+// authoritative — the worst of both, since every later reader takes it for a
+// decision. While they were empty they constrained nothing, and only the
+// recorder bit.
 //
-// The honest consequence, stated rather than glossed: while they are empty they
-// constrain nothing, and the compile-time boundary is not real until Task 13 has
-// filled them in. The recorder is the mechanism that bites in the meantime.
+// Task 13 was the last flow, so every method below is one some handler in this
+// package calls today and there are no others. What that is worth is stated
+// exactly, in each interface's own note and nowhere more widely: a handler
+// cannot NAME a method its interface does not carry. It is not a ban on the
+// operation — see the note on GetParticipant below, which two of these three
+// carry and which hands back another bank's live handles.
 //
 // # What Task 10 put in, and the hole it could not close
 //
@@ -64,6 +69,21 @@ import (
 // map in memory, takes no unit of work and names no book, so unlike
 // GetParticipant it hands nothing over. GetMandate reads a network-scoped row:
 // mandates belong to no single bank, exactly as payments and cycles do.
+//
+// # What Task 13 added, and what it deliberately did not
+//
+// One method, ReturnMessage, and it is the whole of a bank's half of a return.
+// A returning bank posts NOTHING — the three compensating transactions are the
+// settlement agent's, because the middle one moves reserves — so what it needs
+// is a way to say so and no way to do it. ReturnPayment is on settlementOps and
+// on no other interface, so no bank handler can name it.
+//
+// That is a statement about NAMING and not about capability, and the note above
+// on GetParticipant is why it has to be said twice: a bank handler already
+// holds a method that hands it another bank's live Ledger and Deposit, so
+// posting a return's legs by hand is reachable from here. What stops it is the
+// recorder in books_test.go, which measures that a returning bank touches no
+// book at all (TestWhichBooksAReturnReaches).
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
@@ -98,6 +118,14 @@ type bankOps interface {
 	GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error)
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 	ReverseDebtorLeg(ctx context.Context, p payment.Payment, reason string) error
+
+	// The returning bank's half, which is this message and nothing else. It
+	// takes no context because it reads no store — the amount's scale comes
+	// from the scheme registry, which is a map in memory, and a pacs.004 names
+	// no parties to look up. GetPayment above is what establishes there is a
+	// settled payment to return; see bank.returnPayment for why that judgement
+	// is made here rather than left to the settlement agent.
+	ReturnMessage(p payment.Payment, reason iso20022.ReturnReason, text string, mc payment.MessageContext) (iso20022.Envelope, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
@@ -114,6 +142,13 @@ type bankOps interface {
 // compiler's; TestTheCSMTouchesOnlyTheNetworkBook is what enforces it, and
 // TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends it over the
 // cut-off and the settlement conversation Task 12 added.
+//
+// Task 13 added NOTHING here, and that is worth a sentence because it is the
+// shape of the flow rather than a coincidence. Carrying a return needs no store
+// at all on the way out — the destination is decided by the message definition
+// — and the answer coming back needs exactly the three the ACSC fan-out already
+// needed: the payment the status names, its scheme, and the participant to
+// address. Same three questions, asked about one payment instead of a batch.
 type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
@@ -152,10 +187,19 @@ type csmOps interface {
 // The comment on bankOps applies to all three — empty on purpose, grown by the
 // task that first needs a method.
 //
-// One method, because settling a cycle is the only thing this institution does.
-// It is on this interface and on no other, so a bank handler or a clearing-house
-// handler cannot NAME it — which is what these interfaces narrow, and the whole
-// of what they narrow.
+// Two methods, and they are the two ways central-bank reserves move in this
+// system: a cut-off's net positions being discharged, and a settled payment
+// being sent back. Neither is on any other interface, so a bank handler or a
+// clearing-house handler cannot NAME either — which is what these interfaces
+// narrow, and the whole of what they narrow.
+//
+// The second is the one that qualifies "the central bank never sees an
+// individual payment". At a cut-off it does not: SettleCycle names a cycle, and
+// nothing here turns one into the payments inside it. A RETURN names exactly
+// one payment, because that is what a return is — one settled payment coming
+// back — and the returning bank named it in the message. What this institution
+// still cannot do is ENUMERATE the payments of a batch, which is why the
+// settlement fan-out is the clearing house's; see csm.tellSettled.
 //
 // It is emphatically not a ban on those handlers moving money, for the reason
 // the note on bankOps sets out at length: GetParticipant is on both of the other
@@ -164,23 +208,25 @@ type csmOps interface {
 // through a method each legitimately holds. The recorder in books_test.go is
 // what watches for that, here as everywhere else in this package.
 //
-// And the method behind this one reaches further than the interface suggests.
+// And both methods behind it reach further than two methods suggest.
 // SettleCycleTx posts in EVERY participant's book as well as the central bank's
 // — the mirror leg and the creditor leg are both postings in a member's ledger —
-// so the central bank is the widest-reaching actor in this system rather than
-// the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles measures
-// that rather than assuming it.
+// and ReturnPaymentTx posts in three books, two of which belong to member
+// banks. So the central bank is the widest-reaching actor in this system rather
+// than the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches measure that rather than assuming it.
 type settlementOps interface {
 	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error)
+	ReturnPayment(ctx context.Context, id payment.PaymentID, reason string) (payment.Payment, error)
 }
 
 // *payment.Network satisfies all three today, and these assertions are what keep
 // that true: a method added to one of the interfaces above that the Network does
 // not have fails the build here rather than at the handler that wanted it.
 //
-// They assert nothing while the interfaces are empty. That is not an argument
-// for leaving them out — they cost one line each and they are the check that
-// starts working the moment Task 10 adds the first method.
+// They asserted nothing while the interfaces were empty, which was not an
+// argument for leaving them out: they cost one line each and they started
+// working the moment Task 10 added the first method.
 var (
 	_ bankOps       = (*payment.Network)(nil)
 	_ csmOps        = (*payment.Network)(nil)

@@ -151,6 +151,58 @@
 // because nothing about its payments changed. What changed is the cycle, and the
 // cycle is where the failure shows: still Closed, with no settlement against it.
 //
+// # The return
+//
+// The R-transaction: a payment that has already settled, sent back. It is the
+// only flow here that starts at the bank which ANSWERED rather than the one
+// that submitted, and the only one addressed past the clearing house:
+//
+//	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  central bank
+//	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank
+//
+// The bank that RECEIVED the original instruction asks for it, which is the
+// SEPA rule book's own division: the beneficiary bank returns a credit transfer
+// it cannot apply, and the debtor bank returns a collection its customer
+// disputes. So it is the payee's bank on a push and the payer's on a pull —
+// exactly the opposite end from the one that submitted, in both directions. Its
+// half MOVES NOTHING; the message is the whole of it.
+//
+// The CENTRAL BANK executes it, and that is this flow's one real decision.
+// ReturnPaymentTx posts three compensating transactions in a single unit of
+// work — the payer refunded, the payee clawed back, and the reserve movement
+// between the two banks reversed — and the third is central-bank money, which
+// no member bank and no clearing house may move. Splitting them would mean a
+// payer refunded against a payee who was not debited. payment/doc.go records
+// the consequence: returns settle immediately in this system rather than being
+// netted in a later R-cycle, so a return IS a settlement act and belongs where
+// settlement does.
+//
+// The CLEARING HOUSE carries it, and takes it into no cycle. It is in the path
+// because a member bank in this mesh addresses the clearing house and nothing
+// else — the routing table lives in one actor — and the destination follows
+// from the message definition rather than from anything inside the message: a
+// pacs.004 names no parties at all. Carrying a return costs it no store read
+// going out, and the answer coming back costs it the three reads the settlement
+// fan-out already needed, to address the bank that asked.
+//
+// A bank in this system SENDS a return and never receives one, which is the
+// shared store showing through. In a real network the pacs.004 travels to the
+// debtor's bank, which credits its own customer; here the settlement agent
+// posts that leg too, inside the atomic three. So a pacs.004 arriving at a bank
+// is a dead letter, and TestAMessageAnActorHasNoHandlerForIsADeadLetter is what
+// says so.
+//
+// The two refusals are split by whether anyone could be TOLD. A payment that
+// has not settled cannot be returned, and the returning bank refuses that
+// before the message exists — because ErrInvalidStateTransition is classified
+// as never reaching a counterparty, so a pacs.004 sent for one would be
+// dead-lettered by the settlement agent and the operator who asked would hear
+// nothing at all. Everything the settlement agent can answer, it answers: a
+// message carrying more than one return, or a count that disagrees with what
+// arrived, comes back RJCT to the bank that sent it. A REDELIVERED return
+// reaches the settlement agent, where the payment is already Returned, and is
+// dead-lettered for the same reason the bank's own guard exists.
+//
 // # Unbounded queues, and what that costs
 //
 // An actor's inbox is an unbounded slice, not a buffered channel. A fixed

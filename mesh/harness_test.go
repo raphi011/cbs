@@ -557,6 +557,87 @@ func (h *meshHarness) closeCycle(t *testing.T) {
 	}
 }
 
+// settledPayment is a credit transfer carried the whole way: submitted,
+// accepted, cleared at the cut-off and discharged by the central bank.
+//
+// It is what a RETURN needs and what nothing before Task 13 needed, because a
+// return is the one flow whose precondition is finality — ReturnPaymentTx
+// refuses anything that is not Settled. Built by driving the mesh rather than
+// by writing a Settled payment into the store, so that what is returned is a
+// payment this system really carried: the payer's money is in the payee's
+// account and the reserves have moved, which is exactly what the return has to
+// undo.
+//
+// It asserts the status itself rather than leaving that to its callers. A
+// fixture that quietly handed back an unsettled payment would make every test
+// built on it fail somewhere else, saying something else.
+func (h *meshHarness) settledPayment(t *testing.T) payment.Payment {
+	t.Helper()
+	return h.settle(t, h.submitCreditTransfer(t))
+}
+
+// settledCollection is the same thing in the other direction, and it exists
+// because a return's direction is not the payment's. The bank that returns is
+// the one that RECEIVED the instruction — the payee's bank on a push, the
+// payer's on a pull — so a fixture with only credit transfers in it would leave
+// half of that rule unmeasured.
+func (h *meshHarness) settledCollection(t *testing.T) payment.Payment {
+	t.Helper()
+	return h.settle(t, h.submitDirectDebit(t))
+}
+
+// settle carries a submitted payment through to finality: the counterparty's
+// answer, the cut-off, and the central bank's discharge.
+func (h *meshHarness) settle(t *testing.T, p payment.Payment) payment.Payment {
+	t.Helper()
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	got := h.payment(t, p.ID)
+	if got.Status != payment.Settled {
+		t.Fatalf("the fixture payment is %v, want Settled — a return starts from finality", got.Status)
+	}
+	return got
+}
+
+// returnPayment sends a settled payment back, and fails the test if the bank
+// that would send it refuses.
+//
+// Like submitCreditTransfer it does NOT wait: the returning bank's half builds
+// a message and nothing else, and the money moves later, at the settlement
+// agent. returnErr is for the tests that are asserting on the refusal.
+func (h *meshHarness) returnPayment(t *testing.T, id payment.PaymentID, reason iso20022.ReturnReason, text string) {
+	t.Helper()
+	if err := h.returnErr(id, reason, text); err != nil {
+		t.Fatalf("Return: %v", err)
+	}
+}
+
+func (h *meshHarness) returnErr(id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
+	return h.mesh.Return(context.Background(), id, reason, text)
+}
+
+// balance is what one customer's account holds, read through their own bank's
+// deposit register.
+//
+// It is what says a return actually gave the money back. The suspense helper
+// answers a question about a bank's own clearing position; this one answers the
+// question the payer would ask, which is the only one a return is about.
+func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct deposit.AccountID) ledger.Amount {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetParticipant(ctx, id)
+	if err != nil {
+		t.Fatalf("GetParticipant %s: %v", id, err)
+	}
+	bal, err := p.Deposit.GetBalance(ctx, acct)
+	if err != nil {
+		t.Fatalf("GetBalance %s: %v", acct, err)
+	}
+	return bal.Book
+}
+
 // payment reads a payment back out of the store, which is the only way to learn
 // what became of it: Submit answers with the payment as its own bank left it,
 // and everything after that happened at another actor.
@@ -678,6 +759,51 @@ func (h *meshHarness) injectRaw(t *testing.T, from, to iso20022.BIC, raw []byte)
 	if err := h.mesh.sendRaw(from, to, raw); err != nil {
 		t.Fatalf("sendRaw to %s: %v", to, err)
 	}
+}
+
+// messagesFrom is every message handed over since a mark taken with
+// messagesSeen, in arrival order.
+//
+// It is how a test asserts on ONE conversation in a fixture that has already
+// carried others: a return starts from a settled payment, so by the time it
+// begins the wire is six messages deep and none of them is what the test is
+// about. Copied under the lock, because actor goroutines are still appending.
+func (h *meshHarness) messagesFrom(mark int) []tappedMessage {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]tappedMessage(nil), h.seen[mark:]...)
+}
+
+// lastMessageOfTypeTo is the raw bytes of the most recent message of one
+// definition handed to one actor.
+//
+// Raw, and not parsed: what it is for is REDELIVERY — putting the very bytes an
+// actor already handled back into its inbox, which is the only way to provoke
+// what a queue does on its own in a real network. lastStatusTo parses because
+// its callers are reading an answer; this one's caller is replaying a message.
+func (h *meshHarness) lastMessageOfTypeTo(t *testing.T, to iso20022.BIC, msgDef string) []byte {
+	t.Helper()
+	h.mu.Lock()
+	seen := append([]tappedMessage(nil), h.seen...)
+	h.mu.Unlock()
+
+	var last []byte
+	for _, m := range seen {
+		if m.to != to {
+			continue
+		}
+		env, err := iso20022.Unmarshal(m.raw)
+		if err != nil {
+			continue
+		}
+		if env.AppHdr.MsgDefIdr == msgDef {
+			last = m.raw
+		}
+	}
+	if last == nil {
+		t.Fatalf("%s was never sent a %s", to, msgDef)
+	}
+	return last
 }
 
 // messagesSeen is how many messages actors have been handed.

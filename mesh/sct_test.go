@@ -152,10 +152,13 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 
 // A message type an actor has no handler for is a dead letter and not a shrug.
 //
-// pacs.004 is a return, which is Task 13's: a bank that received one today would
-// have nothing to do with it, and swallowing it would make the missing half look
-// like a working one. The same argument covers pacs.009 (settlement, Task 12) —
-// this asserts the shape once rather than twice.
+// pacs.004 is a return, and after Task 13 a bank still has no arm for one — it
+// SENDS returns and is never sent one. The settlement agent executes a return,
+// including the refund into the payer's bank's own book, because the three
+// compensating postings are one unit of work and the middle one moves reserves.
+// In a real network the debtor's bank would receive this message and post its
+// own leg; here there is nothing for it to do with one, and swallowing it would
+// make a half this system does not have look like one it does.
 func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	h := newMeshHarness(t)
 	env, err := h.net.ReturnMessage(h.submitCreditTransfer(t), iso20022.ReturnReasonNotSpecifiedAgentGenerated, "no reason",

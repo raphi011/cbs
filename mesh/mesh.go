@@ -906,6 +906,64 @@ func (m *Mesh) CloseCycle(ctx context.Context, id payment.CycleID) (payment.Clea
 	return m.csm.closeCycle(ctx, id)
 }
 
+// Return sends a settled payment back: the R-transaction, and the last of this
+// system's four flows.
+//
+// It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
+// goroutine, sending only after the returning bank's half has run — because a
+// return arrives from outside the mesh in the same way both of those do. An
+// operator (or Task 14's HTTP handler) asks for it; no inbox is involved.
+//
+// # Which bank is handed the instruction
+//
+// The bank that RECEIVED the original instruction, which is never the one that
+// submitted it. On a push that is the payee's bank, which was credited and has
+// discovered it cannot apply the money — a closed account, an account that
+// cannot take a credit. On a pull it is the payer's bank, whose customer
+// disputes the collection. Both are the far side of the message that started
+// the payment, which is what makes a return the only flow here that begins at
+// the bank that answered. See returnerOf.
+//
+// # It answers with an error and nothing else
+//
+// Not with a payment, deliberately. The returning bank's half posts nothing and
+// decides nothing beyond whether there is a settled payment to return at all,
+// so the Payment it would hand back is the one the caller could already read —
+// unchanged, still Settled. What the caller actually wants to know happens
+// later, at the settlement agent, and arrives as a message. Submit returns an
+// Initiated payment because it CREATED one; there is no such value here, and
+// inventing one by re-reading the row after the send would be a race dressed up
+// as a result.
+//
+// Like Mesh.Submit and Mesh.CloseCycle it reads the network, so it exists only
+// on a mesh that has one.
+func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
+	// The routing question, and only that: which bank's instruction is this?
+	// It is asked here rather than inside the bank for the reason Submit asks
+	// the scheme here — the answer is what CHOOSES the actor, so no actor can
+	// have made it. The read costs no book: a payment is a network-scoped row,
+	// and reading one records nothing at all (see books_test.go).
+	p, err := m.net.GetPayment(ctx, id)
+	if err != nil {
+		return err
+	}
+	scheme, ok := m.net.Scheme(p.Scheme)
+	if !ok {
+		return fmt.Errorf("mesh: no scheme %q, so no bank returns %s: %w", p.Scheme, p.ID, payment.ErrSchemeNotFound)
+	}
+	returner := returnerOf(scheme, p.Debtor, p.Creditor).Participant
+
+	m.mu.Lock()
+	b, ok := m.banks[returner]
+	m.mu.Unlock()
+	if !ok {
+		// Same refusal Submit makes, for the same reason: a return this mesh
+		// has no actor to send would be one nobody could ever act on.
+		return fmt.Errorf("mesh: no bank actor for participant %s", returner)
+	}
+	return b.returnPayment(ctx, id, reason, text)
+}
+
 // submitterOf is the party whose bank hands a payment to the clearing house.
 //
 // One rule, two directions, and every actor in this package that has to name the
@@ -921,6 +979,77 @@ func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payme
 		return creditor
 	}
 	return debtor
+}
+
+// returnerOf is the party whose bank sends a settled payment back.
+//
+// It is submitterOf's counterpart in both senses: the other party, and the
+// other role. A return is sent by the bank that RECEIVED the instruction —
+// the payee's bank on a push, the payer's bank on a pull — which is the SEPA
+// rule book's own division. The beneficiary bank returns a credit transfer it
+// cannot apply; the debtor bank returns a collection its customer disputes.
+//
+// Written as its own rule rather than as "not the submitter", because the two
+// are answers to different questions and the reason each is what it is has
+// nothing to do with the other: a submitter is chosen by who is instructing,
+// and a returner by who is holding a payment they cannot keep. That they come
+// out opposite in both directions is a fact about these two flows, not a
+// derivation. And a party who is both — a payment from a bank to itself — would
+// make a negation ambiguous, while these two rules stay total.
+func returnerOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
+	if scheme.Direction() == payment.Pull {
+		return debtor
+	}
+	return creditor
+}
+
+// returnMsgDef is the pacs.004's message name, which two actors here dispatch a
+// pacs.002 by.
+//
+// A status report says which message definition it is ABOUT — OrgnlMsgNmId,
+// written by payment.StatusMessage and read back by payment.ReadStatus — and
+// that element is load-bearing in this mesh rather than decorative. The clearing
+// house is answered by the settlement agent about a CYCLE it instructed and
+// about a PAYMENT whose return it forwarded, and the two answers are the same
+// message definition arriving from the same BIC; reading one as the other would
+// look a cycle id up as a payment. A bank is answered about the instruction it
+// submitted and about the return it asked for, and only the first is ever a
+// reason to give a payer their money back.
+//
+// Taken from the codec rather than written out as a literal, so that it cannot
+// drift from the identifier iso20022 actually puts on the wire.
+var returnMsgDef = iso20022.Pacs004{}.MessageDefinitionIdentifier()
+
+// isAbout reports whether a status answers a message of the given definition.
+//
+// It parses the document a second time, which is cheap and deliberate:
+// payment.ReadStatus is pure, and the alternative is threading the parse
+// through a dispatch that exists precisely to decide WHICH handler should do
+// the reading.
+func isAbout(doc *iso20022.Pacs002, msgDef string) bool {
+	orig, _ := payment.ReadStatus(doc)
+	return orig.MsgDefIdr == msgDef
+}
+
+// codeAndText is a reason code and the free text beside it, joined for a ledger
+// description.
+//
+// Both, because they say different things — the code is what makes a reversal
+// or a return machine-actionable in a statement or an exception queue, and the
+// text is the part no code can say. The word for "neither was given" is the
+// caller's, because the two code sets it serves are answering different
+// questions: see rejectionText and returnReason.
+func codeAndText(code, text, none string) string {
+	switch {
+	case code == "" && text == "":
+		return none
+	case text == "":
+		return code
+	case code == "":
+		return text
+	default:
+		return code + ": " + text
+	}
 }
 
 // notProvided is what a message says where a reference is genuinely unavailable.

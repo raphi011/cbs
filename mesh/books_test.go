@@ -1058,6 +1058,86 @@ func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
 	}
 }
 
+// TestWhichBooksAReturnReaches is the last flow's measurement, and it is the
+// most lopsided set in this file: ONE actor reaches every book in the network
+// and the other three reach none.
+//
+// Measured, then written down. Every sentence below is about the run this test
+// makes and no wider.
+//
+// # The central bank reaches all four, and two of them are not its own
+//
+// The same shape settlement has, arrived at through a different domain call.
+// ReturnPaymentTx posts three compensating transactions in one unit of work:
+// the payer refunded out of the payer's bank's reserve (a posting in that
+// BANK's book), the payee clawed back into the payee's bank's reserve (a
+// posting in THAT bank's book), and the reserve movement reversed between the
+// two settlement accounts (CentralBankBook). NetworkBook is the fourth, and it
+// arrives the way it always does here — the payment row's audit event and the
+// id that event needed — never through a posting. See the note above the tests.
+//
+// So the widest-reaching actor in this system is the one with the narrowest
+// interface, for the second time and for the same reason: what makes an act
+// this institution's is that reserves move, and the compensating legs in the
+// members' books are part of the same atomic act. Sub-project 8 is where those
+// two legs stop being reachable from here and become a conversation.
+//
+// # The clearing house reaches nothing, and that is a real measurement
+//
+// It runs TWO handlers over this window — it carries the pacs.004 to the
+// settlement agent, and it addresses the answer back to the bank that asked —
+// and comes out empty. The first hop reads no store at all: a return's
+// destination follows from the message DEFINITION, so there is nothing to look
+// up. The second reads the payment, its scheme and a participant, and none of
+// those is a book access: payments are network-scoped rows, and a network row is
+// visible to this recorder only through the id ALLOCATED and the audit event
+// APPENDED when one is written, never through a read (see the note above the
+// tests). GetParticipant is the one that could have gone the other way — it
+// hands back the named bank's live Ledger and Deposit handles — and this
+// measures that this handler takes the BIC off it and nothing else.
+//
+// What an empty set here does NOT say is that the clearing house learned
+// nothing: it read the payment. The claim is about BOOKS.
+//
+// # The two banks reach nothing either, and for two different reasons
+//
+// The PAYEE's bank is the one that asked for the return, and its half really
+// does run: Mesh.Return marks the work as its own, it reads the payment to
+// establish there is a settled one to return, and it builds and sends the
+// pacs.004. It touches no book because that is all a returning bank does here —
+// the clawback in its OWN book is posted by the settlement agent, inside the
+// unit of work that moves the reserves. A returning bank that took its
+// customer's money back itself would come out [bank_3] and fail this.
+//
+// The PAYER's bank is handed no message at all over this window — the answer
+// goes to the bank that asked, and to nobody else — so its empty set is the
+// weaker of the two and is worth naming as such. It says the payer's bank did
+// not act on a return it was not told about, which is true and is not much.
+//
+// It measures over the RETURN only, resetting after the settlement it starts
+// from has drained, so no book reached while the payment was being carried can
+// satisfy or spoil it.
+func TestWhichBooksAReturnReaches(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	h.rec.reset()
+	h.returnPayment(t, p.ID, iso20022.ReturnReasonClosedAccountNumber, "account closed")
+	h.drain(t)
+
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Fatalf("the payment is %v, want Returned — this test measures a return that happened", got.Status)
+	}
+	assertBooksTouched(t, "the central bank, returning a settled payment",
+		h.booksTouchedBy(h.cfg.CentralBankBIC), h.allBooks())
+	assertBooksTouched(t, "the clearing house, carrying a return and its answer",
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), nil)
+	assertBooksTouched(t, "the payee's bank, asking for a return",
+		h.booksTouchedBy(h.creditorBIC), nil)
+	assertBooksTouched(t, "the payer's bank, which is told nothing",
+		h.booksTouchedBy(h.debtorBIC), nil)
+}
+
 // ---------------------------------------------------------------------------
 // The guard on the guard
 // ---------------------------------------------------------------------------
