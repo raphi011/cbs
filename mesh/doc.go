@@ -141,9 +141,37 @@
 // row stuck at Advised, which is the unreconciled position in its most visible
 // form.
 //
-// It goes out BEFORE the answer, and the order is load-bearing: the pacs.002
-// becomes the per-payment fan-out, on which a payee's bank posts its creditor
-// leg out of the same suspense the mirror leg pays into. See centralBank.advise.
+// It goes out BEFORE the answer. Today that buys determinism and nothing else —
+// an inbox is FIFO, so a member handles its statement before the ACSC fan-out
+// reaches it, on every run. It becomes load-bearing in 15b.3, when the creditor
+// leg moves out of SettleCycleTx and is posted from that fan-out: the mirror leg
+// has to have paid into the suspense the leg then draws on. Until then the
+// creditor leg is posted inside the settling transaction, before any statement
+// goes out, and a payee's suspense is transiently overdrawn either way. See
+// centralBank.advise.
+//
+// # What an undelivered statement suppresses, and why Task 19 is scoped from here
+//
+// centralBank.advise returns on the FIRST send it cannot make, and the cost is
+// wider than the bank it could not reach:
+//
+//   - that member is never advised, and has no advice row at all — not even one
+//     stuck at Advised, because nothing at that bank ever ran;
+//   - every member AFTER it in the statement order is never advised either;
+//   - the ACSC is never sent, so the clearing house never fans the per-payment
+//     statuses out, and EVERY bank in the cycle — including the ones that were
+//     advised — is left holding an instruction it believes outstanding on a
+//     payment the domain has already marked Settled.
+//
+// None of it is reachable here, for the reason "What this mesh is not" gives
+// below: delivery is exactly-once and in order, and a send to a live actor
+// always succeeds. It becomes reachable in any transport that can lose a
+// message. The settlement is FINAL in all three cases — the reserves moved and
+// the cycle is Settled — so nothing may be unsaid, and there is deliberately no
+// retry here rather than untested machinery for an unreachable failure. What is
+// missing is the ability to NOTICE, and that is what Task 19's reconciliation is
+// for: an advice row that is absent or stuck at Advised, and a cycle Settled
+// whose banks were never told, are the two shapes it has to find.
 //
 // The refusal moved with the leg. A net payer whose reserve cannot cover its
 // position used to be refused by the LEDGER, when the mirror leg took an Asset

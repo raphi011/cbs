@@ -655,8 +655,28 @@ func TestSDD_Return(t *testing.T) {
 // Settlement atomicity
 // ---------------------------------------------------------------------------
 
-// SettleCycle posts across every participant's book and the central bank's. One
-// store means one transaction: a failure partway must leave no postings at all.
+// TestSettleCycleIsAtomic is now a test of the REFUSAL, not of a rollback, and
+// the difference is worth being exact about because it used to be both.
+//
+// It was written when SettleCycleTx posted every member's mirror leg, so an
+// underfunded member was discovered PARTWAY: the central bank's netting
+// transaction had already posted and the ledger refused the mirror leg in the
+// short member's own book, and the reserve balances below were the evidence that
+// the committed central-bank posting had been rolled back with everything else.
+//
+// The mirror leg is the member's own act since Task 15b.2, so SettleCycleTx
+// checks each net payer's reserve ITSELF, before anything is posted (see the
+// net-payer loop in system.go). Against this fixture the refusal is therefore a
+// clean no-op — there is no partway to fail at, and nothing was written to roll
+// back. What this still asserts is real and worth keeping: the refusal writes
+// nothing, which is what makes asking again safe once the member is funded
+// (TestARefusedSettlementCanBeInstructedAgain in mesh is the other half).
+//
+// What it no longer carries is the MID-FLIGHT rollback claim. Two tests do:
+// TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances and
+// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle. Both fail inside
+// the creditor-leg loop, after the netting transaction has posted, so both are
+// genuinely a failure partway through a unit of work that had already written.
 func TestSettleCycleIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	net, cycleID := newClosedCycleWithUnderfundedMember(t) // one member lacks reserves
@@ -674,15 +694,25 @@ func TestSettleCycleIsAtomic(t *testing.T) {
 	}
 }
 
-// TestSettleCycleRollsBackEveryLayer is the assertion the reserve balances
-// above cannot make on their own.
+// TestSettleCycleRollsBackEveryLayer widens the test above from the central
+// bank's reserve balances to every layer a cut-off writes: each participant's
+// suspense and reserve, each bank's transaction count, the central bank's, the
+// settlement record, the cycle's status and every payment's.
 //
-// Reserve balances are read at the central bank, so they catch a committed
-// central-bank settlement transaction — which is exactly what the old
-// implementation left behind — but they say nothing about the participants'
-// own books, the payments' statuses or the settlement record. A two-transaction
-// implementation that happened to post the participant legs first would slip
-// past the test above; it cannot slip past this one.
+// Its NAME has outlived its mechanism, and the honest reading is in the note on
+// the test above. It was written when the underfunded member was discovered
+// partway — the netting transaction posted, the mirror leg in that member's own
+// book refused — so "rolls back every layer" was a claim about a real rollback,
+// and it was the assertion the reserve balances alone could not make: a
+// two-transaction implementation that happened to post the participant legs
+// first would slip past the test above and not past this one.
+//
+// Against this fixture there is now nothing to roll back. SettleCycleTx refuses
+// the short member before it posts anything, so what the sweep below measures is
+// that the refusal touched NO layer at all — which is a stronger statement than
+// "it was undone", and a different one. It is kept, and kept wide, because the
+// sweep is what would notice a future refusal that wrote something before
+// deciding; the mid-flight rollback claim lives in the two tests named above.
 func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	ctx := context.Background()
 	net, cycleID := newClosedCycleWithUnderfundedMember(t)
@@ -751,11 +781,18 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 // payer cannot cover its position at the central bank.
 //
 // The gap is opened with an overdraft: Carol's account at Bank C may go
-// negative, so her payment passes the deposit layer's funds check, but Bank C's
-// reserve at the central bank is a plain asset with no overdraft — so the
-// mirror posting that draws it down fails. That is the real shape of the
-// failure a settlement window exists to contain: the instruction is valid, the
-// member's liquidity is not.
+// negative, so her payment passes the deposit layer's funds check, while Bank C
+// holds no reserves at the central bank to settle with. That is the real shape
+// of the failure a settlement window exists to contain: the instruction is
+// valid, the member's liquidity is not.
+//
+// What REFUSES it moved with the mirror leg. It used to be the ledger, when that
+// leg drew Bank C's own "Reserve at Central Bank" — a plain Asset account with
+// no overdraft — below zero in Bank C's book. Since Task 15b.2 the leg is Bank
+// C's own act and the refusal is SettleCycleTx's explicit net-payer check, which
+// runs before anything is posted. Same fixture, same sentinel
+// (ledger.ErrInsufficientBalance) and therefore the same AM04 on the wire; a
+// different layer says it, and it now says it earlier.
 func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	t.Helper()
 	ctx := context.Background()

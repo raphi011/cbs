@@ -550,6 +550,27 @@ func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
 // — see payment.PostSettlementAdviceTx and ErrStatementNotForThisBank — because
 // it is a question about this bank's chart of accounts and the handler holds no
 // chart.
+//
+// # It does not check WHO sent it, and that is deliberate
+//
+// `from` is used in the error messages and in no decision. What is checked is
+// OWNERSHIP: the account the statement names must be this bank's own reserve
+// account at the central bank, and that is the domain's question because the
+// domain is what holds the chart of accounts. Repeating it here as a sender
+// check would be a second answer to a question already answered, by the layer
+// with less to answer it with.
+//
+// What ownership buys is NOT "only the settlement agent may advise me", and the
+// difference is worth stating rather than leaving to be inferred from an
+// absence. That is a strictly stronger guarantee and this system does not make
+// it: any actor that named this bank's own settlement account would be booked
+// here, because the row it produces is indistinguishable from a real one. What
+// it does buy is that nobody can move this bank's mirror by advising it about
+// somebody else's position, which is the failure that would actually cost money.
+// Nothing in this mesh sends a camt.053 but the settlement agent; and under one
+// shared store the two properties are not separable anyway, since every account
+// id is in one table. Sub-project 8 is where a sender becomes something a
+// receiver could meaningfully insist on.
 func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso20022.Camt053) error {
 	moves, err := payment.ReadStatement(doc)
 	if err != nil {

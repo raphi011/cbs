@@ -40,11 +40,11 @@ import (
 // Task 13 was the last new FLOW, and Task 15 is what has added to them since —
 // by moving a posting from one institution to another rather than by inventing
 // work. Either way every method below is one some handler in this package calls
-// today and there are no others. What that is worth is stated
-// exactly, in each interface's own note and nowhere more widely: a handler
-// cannot NAME a method its interface does not carry. It is not a ban on the
-// operation — see the note on GetParticipant below, which two of these three
-// carry and which hands back another bank's live handles.
+// today and there are no others. What that is worth is stated exactly, in each
+// interface's own note and nowhere more widely: a handler cannot NAME a method
+// its interface does not carry. It is not a ban on the operation — see the note
+// on GetParticipant below, which two of these three carry and which hands back
+// another bank's live handles.
 //
 // # What Task 10 put in, and the hole it could not close
 //

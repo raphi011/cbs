@@ -173,23 +173,57 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // After, for Mesh.Submit's reason: a statement enqueued from inside SettleCycleTx
 // would be one a bank could book against a settlement the store then rolled back.
 //
-// Before the answer, and the order is load-bearing rather than tidy. The
-// clearing house turns the ACSC into per-payment advices, and a payee's bank
-// posts its creditor leg out of its clearing suspense on those. The mirror leg
-// is what puts the money in that suspense. Both orders produce the same books at
-// rest — suspense is a Liability and the ledger does not guard those against
-// going negative — but only this one keeps the suspense from being transiently
-// overdrawn, and an actor's inbox is FIFO, so sending the statements first is
-// what makes the order deterministic rather than incidental.
+// Before the answer, and what that buys TODAY is determinism and nothing more.
+// An actor's inbox is FIFO, so a member handles the statement before it handles
+// the ACSC the clearing house fans out to it, on every run rather than by luck.
+// Nothing about the books depends on it yet: SettleCycleTx still posts every
+// creditor leg itself, synchronously, before this function is reached — so a
+// payee's suspense is ALREADY debited by that leg and is credited only when the
+// statement below is booked. The payee's suspense really is transiently
+// overdrawn at this commit, in either order, and it is legal because suspense is
+// a Liability and the ledger does not guard those against going negative.
 //
-// # A failed send is not a failed settlement
+// The order becomes load-bearing in 15b.3, when the creditor leg moves out to a
+// message of its own. Then the leg is posted from the per-payment advice the
+// clearing house derives FROM the ACSC, so the mirror leg has to have paid into
+// the suspense first — and this ordering plus a FIFO inbox is what makes that
+// true rather than likely. The reasoning is kept here rather than deferred with
+// the leg because it is why the order was chosen; it is simply not yet what the
+// order is doing.
+//
+// # A failed send is not a failed settlement, and it suppresses three things
 //
 // The reserves have moved and the cycle is Settled: that is final, and this
 // actor cannot unsay it. So a send that fails comes back as an error to the
-// caller — which in this transport reaches Drain as a dead letter — and the
-// advice row at the bank that was never told stays absent. That is the
-// unreconciled position in its most visible form, and Task 19 is what makes it
-// detectable from inside the system.
+// caller — which in this transport reaches Drain as a dead letter — rather than
+// being retried or swallowed. Deliberately no retry: see below on why the path
+// is unreachable, and untested machinery for an unreachable failure is worse
+// than a stated limitation.
+//
+// What the failure costs is wider than the bank that could not be reached, and
+// all three parts belong in one place because a reader who finds only the first
+// will under-estimate the second and third:
+//
+//  1. The unreachable member is never advised, so its advice row is ABSENT — not
+//     even at Advised, since nothing at that bank ever ran. That is the
+//     unreconciled position in its most visible form.
+//  2. This returns on the FIRST failing send, so every member AFTER it in the
+//     statement order is never advised either, for a reason that has nothing to
+//     do with that member.
+//  3. cb.answer never runs, so the clearing house is never told ACSC and
+//     csm.tellSettled's per-payment fan-out never happens. Every bank in the
+//     cycle — INCLUDING the ones successfully advised — is left holding an
+//     instruction it believes outstanding, on a payment the domain has already
+//     marked Settled. That is the largest of the three and the least visible.
+//
+// None of it is reachable in this transport. Mesh.send fails in exactly three
+// ways — a message that will not marshal, a BIC with no actor, and an actor that
+// has been stopped — and none of them occurs for a member of a live roster whose
+// statement the domain has just built. The mesh's own doc says why more
+// generally: delivery here is exactly-once and in order, because the transport
+// is a queue inside one process. It becomes reachable the moment the transport
+// can lose a message, which is every real one. Task 19's reconciliation is what
+// makes any of the three detectable from inside the system.
 func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 	for _, st := range statements {
 		env, err := payment.StatementMessage(st, payment.MessageContext{

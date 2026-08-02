@@ -785,9 +785,8 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 // these: it is answering about a CYCLE, and settlementOps holds nothing that
 // turns one into the payments inside it — SettleCycle answers with a Settlement
 // and one statement per MEMBER, and neither GetCycle nor GetPayment is on that
-// interface. It can act on a
-// payment somebody else named to it, which is what a return is, and that is a
-// different thing from being able to enumerate a batch.
+// interface. It can act on a payment somebody else named to it, which is what a
+// return is, and that is a different thing from being able to enumerate a batch.
 //
 // To the SUBMITTER, chosen by the scheme's direction exactly as tell does, and
 // for the same reason: the payer's bank pushed, or the payee's bank pulled, and

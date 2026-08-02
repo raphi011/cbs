@@ -143,10 +143,10 @@
 //     Store.Update, so a net payer that cannot cover its position aborts the
 //     whole batch. (The mirror leg in each bank's own books used to be in that
 //     unit of work too. It is the member's own posting now, made from the
-//     statement SettleCycle hands back — see PostSettlementAdviceTx.) That is the
-//     essence of a real
-//     RTGS settlement window: the settlement agent holds the participants'
-//     accounts, checks that every payer can cover, and posts all of it or none.
+//     statement SettleCycle hands back — see PostSettlementAdviceTx.) That is
+//     the essence of a real RTGS settlement window: the settlement agent holds
+//     the participants' accounts, checks that every payer can cover, and posts
+//     all of it or none.
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried

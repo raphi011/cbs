@@ -532,16 +532,27 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 //     submitted it. That fan-out could not be the central bank's: it is answering
 //     about a cycle, and it holds no method that could turn one into payments.
 //
-// # It is a SET and not a sequence, and the reason is the mesh
+// # It is a SET, plus the two orderings that are actually forced
 //
 // The three messages this used to assert formed a chain — each was sent by the
-// handler of the one before, so their order was forced. The statements are not
-// in that chain: they go to two other actors' inboxes, and those goroutines run
-// concurrently with the clearing house's. Any of the four messages that follow
-// the instruction can be handled first, so a positional assertion here would be
-// flaky rather than strict. What IS forced is that the instruction comes first,
-// because everything else is sent from the handler that receives it, and that is
-// asserted on its own.
+// handler of the one before, so their whole order was forced. The statements are
+// not in that chain: they go to two other actors' inboxes, and those goroutines
+// run concurrently with the clearing house's. The tap fires in Mesh.dispatch, on
+// the RECEIVING actor's goroutine, so what this test observes is handling order
+// and not send order, and a positional assertion over all five would be flaky
+// rather than strict.
+//
+// Two relations survive that, and both are asserted because "it is a set" would
+// give away more than the concurrency takes:
+//
+//   - the INSTRUCTION is handled first, because every other message here is sent
+//     from the handler that receives it;
+//   - the central bank's pacs.002 to the clearing house is handled BEFORE the
+//     clearing house's pacs.002 to the submitting bank, because the second is
+//     sent from the first's handler. Same argument, one hop further along.
+//
+// What is genuinely undetermined is where the two camt.053 fall among the rest,
+// and how they order against each other.
 func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
@@ -557,18 +568,21 @@ func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 		msgDef   string
 	}
 	instruction := hop{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"}
+	answer := hop{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"}
+	fanOut := hop{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"}
 	want := map[hop]int{
 		instruction: 1,
-		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}:            1,
-		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}:          1,
-		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"}: 1,
-		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"}:          1,
+		answer:      1,
+		fanOut:      1,
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}:   1,
+		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}: 1,
 	}
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen[before:]...)
 	h.mu.Unlock()
 
 	got := map[hop]int{}
+	order := map[hop]int{}
 	for i, m := range seen {
 		env, err := iso20022.Unmarshal(m.raw)
 		if err != nil {
@@ -576,13 +590,22 @@ func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 		}
 		h := hop{m.from, m.to, env.AppHdr.MsgDefIdr}
 		got[h]++
+		order[h] = i
 		if i == 0 && h != instruction {
 			t.Errorf("the cut-off's first message is %s -> %s (%s), want the instruction %s -> %s (%s)",
 				h.from, h.to, h.msgDef, instruction.from, instruction.to, instruction.msgDef)
 		}
 	}
 	if !maps.Equal(got, want) {
-		t.Errorf("the cut-off put %v on the wire, want %v", got, want)
+		t.Fatalf("the cut-off put %v on the wire, want %v", got, want)
+	}
+	// The one pair the concurrency leaves forced. The clearing house sends the
+	// per-payment status FROM the handler of the central bank's answer, so it
+	// cannot be handled before it.
+	if order[answer] > order[fanOut] {
+		t.Errorf("the clearing house's status to %s was handled at %d and the central bank's answer to it at %d; "+
+			"the first is sent from the second's handler and cannot precede it",
+			h.debtorBIC, order[fanOut], order[answer])
 	}
 }
 
