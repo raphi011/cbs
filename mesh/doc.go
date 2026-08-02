@@ -148,13 +148,20 @@
 //
 // It goes out BEFORE the answer, and since 15b.3 that ordering is load-bearing
 // rather than merely tidy. The CREDITOR leg is posted from the clearing house's
-// ACSC fan-out, which is derived from the answer, and it draws on the same
-// suspense the mirror leg pays into. An inbox is FIFO, so a member handles its
-// statement before the fan-out reaches it, on every run rather than by luck. Get
-// the two the wrong way round and a payee's bank pays its customer out of a
-// suspense the cut-off has not yet credited — legal, because suspense is a
-// Liability and the ledger does not guard those, and wrong, because for that
-// interval the bank's books say it lent its own customer the money. See
+// ACSC fan-out, which is derived from the answer, so sending the statement first
+// puts it in the member's inbox before the ACSC is even built — a happens-before
+// chain rather than a race, because a send pushes onto the target's queue
+// synchronously and one goroutine pops each queue in order.
+//
+// It bears on a NET RECEIVER: that bank's mirror leg credits the clearing
+// suspense its creditor legs then draw on. A net payer's mirror leg debits its
+// suspense instead, and a member whose position nets to zero is sent no
+// statement at all; in both of those the suspense was funded by its own
+// customers' debtor legs. Get the order wrong for a net receiver and it pays its
+// customer out of a suspense the cut-off has not yet credited — legal, because
+// suspense is a Liability and the ledger does not guard those, and wrong,
+// because for that interval the bank's books say it lent its own customer the
+// money. Asserted by mesh's TestTheMessagesACutOffPutsOnTheWire; see
 // centralBank.advise.
 //
 // # What an undelivered statement suppresses, and why Task 19 is scoped from here

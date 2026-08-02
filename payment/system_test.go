@@ -714,11 +714,33 @@ func TestSDD_Return(t *testing.T) {
 // nothing, which is what makes asking again safe once the member is funded
 // (TestARefusedSettlementCanBeInstructedAgain in mesh is the other half).
 //
-// What it no longer carries is the MID-FLIGHT rollback claim. Two tests do:
-// TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances and
-// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle. Both fail inside
-// the creditor-leg loop, after the netting transaction has posted, so both are
-// genuinely a failure partway through a unit of work that had already written.
+// # What it no longer carries, and what nothing carries in its place
+//
+// The MID-FLIGHT rollback claim: a unit of work that had already WRITTEN, then
+// failed, then left nothing behind. Until Task 15b.3 two tests carried it —
+// TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances and the
+// cross-asset test now called TestCrossAssetPaymentSurvivesInitiationAndFailsAt-
+// ThePayeesBank — because both failed inside the creditor-leg loop, after the
+// netting transaction had posted.
+//
+// That loop is gone. Both now fail inside PostCreditorLeg, which is the payee's
+// bank's OWN unit of work, and both fail before it writes anything: the store
+// failure at glAccountTx and the asset mismatch at the posting itself, with only
+// reads behind them. So both are clean no-ops too, and the claim is currently
+// UNWITNESSED at this seam. That is a finding rather than a gap to paper over,
+// and it is what splitting settlement per institution actually did: there is no
+// longer a unit of work at a cut-off that writes in one institution's book and
+// then discovers a problem in another's, because no unit of work reaches two
+// institutions.
+//
+// It is not unreachable, only unexercised. PostCreditorLegTx posts the leg and
+// THEN writes the payment row and the audit event, so a store that failed on
+// either would roll a committed posting back. Nothing here provokes that, and a
+// test that did would be a test of the store rather than of settlement.
+//
+// The claim still lives in this package, on the seam that still has a
+// multi-write unit of work: TestAFailedReversalRollsBackTheWholeRejection, where
+// the CSM's transition is written and the reversal that follows it fails.
 func TestSettleCycleIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	net, cycleID := newClosedCycleWithUnderfundedMember(t) // one member lacks reserves
@@ -754,7 +776,9 @@ func TestSettleCycleIsAtomic(t *testing.T) {
 // that the refusal touched NO layer at all — which is a stronger statement than
 // "it was undone", and a different one. It is kept, and kept wide, because the
 // sweep is what would notice a future refusal that wrote something before
-// deciding; the mid-flight rollback claim lives in the two tests named above.
+// deciding. Where the mid-flight rollback claim went is set out on the test
+// above: at a cut-off it is now unwitnessed, because no unit of work here
+// reaches two institutions any more.
 func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	ctx := context.Background()
 	net, cycleID := newClosedCycleWithUnderfundedMember(t)
@@ -1211,9 +1235,10 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 
 // The ledger cannot catch this at initiation: the debtor leg alone is a EUR
 // debit against a EUR credit, valid double-entry that says nothing about the
-// creditor's account. It surfaces only at settlement, and then as a failure of
-// the whole cycle — see
-// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle. The scheme
+// creditor's account. It surfaces only when the payee's bank comes to post the
+// creditor leg, by which time the cut-off has settled and the payer has been
+// debited for hours — and then as a failure of that ONE payment, see
+// TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank. The scheme
 // check is what makes the refusal immediate and attributable.
 func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()

@@ -107,7 +107,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation**, in the payer's own bank, when it submits the credit transfer. Note that the payment is *Initiated* at that point, not Accepted: acceptance is the clearing house's separate act, later. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; settlement posts the creditor leg. No debit to the customer's account occurs at clearing itself.",
+        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation**, in the payer's own bank, when it submits the credit transfer. Note that the payment is *Initiated* at that point, not Accepted: acceptance is the clearing house's separate act, later. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; the [[creditor-leg]] is posted at the receiving bank, once settlement has moved the reserves and it has been told so. No debit to the customer's account occurs at clearing itself.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {

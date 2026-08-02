@@ -15,9 +15,15 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// The payment half of tx — the same type again, which is what lets SettleCycle
-// post across every participant's book and the central bank's and record the
-// settlement itself in one BEGIN … COMMIT.
+// The payment half of tx — the same type again, which is what lets one
+// BEGIN … COMMIT post across every participant's book and the central bank's and
+// record the network's own rows beside them.
+//
+// SettleCycle used to be the example of that and is not any more: a cut-off is
+// three institutions' units of work now, and the settlement agent's touches only
+// its own book. The honest example is seed.builder.settle, which is the one
+// caller that legitimately plays all three at once — because the seed is not an
+// institution — and which needs exactly this to do it.
 //
 // Almost every entity here is network-scoped: a payment belongs to no single
 // bank, so unlike the ledger and deposit tables these are keyed by id alone and

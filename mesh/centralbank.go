@@ -182,15 +182,23 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 //
 // Before the answer, and since 15b.3 that is load-bearing rather than tidy. The
 // CREDITOR leg is now posted by the payee's bank, from the per-payment advice the
-// clearing house derives FROM the ACSC this answer produces — and that leg draws
-// on the same clearing suspense the MIRROR leg pays into. An actor's inbox is
-// FIFO, so a member handles the statement below before it handles the ACSC, on
-// every run rather than by luck, and the suspense is credited before it is drawn
-// on.
+// clearing house derives FROM the ACSC this answer produces. Sending the
+// statement first is what puts it in that bank's inbox before the ACSC is even
+// built — see TestTheMessagesACutOffPutsOnTheWire, which states the
+// happens-before chain and asserts the pair.
+//
+// It matters for a NET RECEIVER, and that is the case to state precisely rather
+// than generally. A net receiver's mirror leg CREDITS its clearing suspense, and
+// its creditor legs then draw on that suspense; so for that bank the order
+// decides whether the money is there when it pays. It does not arise for the
+// other two shapes: a net PAYER's mirror leg debits its suspense rather than
+// funding it, and a member whose position nets to zero is sent no statement at
+// all — either way that bank's suspense was funded by its own customers'
+// debtor legs, long before the cut-off.
 //
 // The other order is not a corruption, and saying why is the point of stating
 // this at all. Suspense is a Liability and the ledger does not guard those
-// against going negative, so a payee's bank that paid its customer first would
+// against going negative, so a net receiver that paid its customer first would
 // simply commit, with its suspense overdrawn until the statement arrived. For
 // that interval its own books would say it had lent its customer the money,
 // which is a claim about this bank's balance sheet that nothing in the cut-off

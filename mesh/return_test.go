@@ -31,7 +31,7 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 
 // TestTheReturnChainIsFourMessages names the conversation, the way
 // TestTheCreditTransferChainIsFourMessages names the push and
-// TestTheSettlementChainIsTwoMessages the cut-off. It is what PINS the routing
+// TestTheMessagesACutOffPutsOnTheWire the cut-off. It is what PINS the routing
 // decision this task made; the status assertion above cannot see who sent what
 // to whom.
 //

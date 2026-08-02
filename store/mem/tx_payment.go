@@ -9,9 +9,14 @@ import (
 )
 
 // The payment half of tx. Same type as the ledger and deposit halves, which is
-// the whole point: one transaction spans all three layers, so SettleCycle can
-// post across every participant's book and the central bank's and record the
-// settlement itself as a single unit of work.
+// the whole point: one transaction spans all three layers, so a caller can post
+// across every participant's book and the central bank's and record the
+// network's own rows beside them as a single unit of work.
+//
+// SettleCycle used to be that caller and is not any more: a cut-off is three
+// institutions' units of work now, and the settlement agent's reaches only its
+// own book. The honest example is seed.builder.settle, which composes all three
+// halves — legitimately, because the seed is not an institution.
 //
 // Almost every entity here is network-scoped — it belongs to no single bank —
 // so the methods take no BookID and the rows are sequenced under
