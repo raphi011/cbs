@@ -570,7 +570,7 @@ document differs.
 ```xml
 <Envelope>
   <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
-    <Fr><FIId><FinInstnId><BICFI>CBSXDEFFXXX</BICFI></FinInstnId></FIId></Fr>
+    <Fr><FIId><FinInstnId><BICFI>CBSEDEFFXXX</BICFI></FinInstnId></FIId></Fr>
     <To><FIId><FinInstnId><BICFI>BRVODEFFXXX</BICFI></FinInstnId></FIId></To>
     <BizMsgIdr>msg_7</BizMsgIdr>
     <MsgDefIdr>camt.053.001.08</MsgDefIdr>
@@ -764,7 +764,7 @@ func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 		ValueDate:      testNow,
 	}
 	env, err := payment.StatementMessage(st, payment.MessageContext{
-		From: "CBSXDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: testNow,
+		From: "CBSEDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: testNow,
 	})
 	if err != nil {
 		t.Fatalf("StatementMessage: %v", err)
@@ -813,7 +813,7 @@ func TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude(t *t
 		Movement: -250000, ClosingBalance: -1, ValueDate: testNow,
 	}
 	env, err := payment.StatementMessage(st, payment.MessageContext{
-		From: "CBSXDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: testNow,
+		From: "CBSEDEFFXXX", To: st.Agent, MsgID: "msg_7", Now: testNow,
 	})
 	if err != nil {
 		t.Fatalf("StatementMessage: %v", err)
