@@ -573,33 +573,41 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Refusals, and the one error that must NOT become a wire reason code
+// Refusals
 // ---------------------------------------------------------------------------
-
-// failingTx is a Tx whose deposit-account lookups fail with an error of the
-// caller's choosing. Everything else is the real transaction, promoted by
-// embedding — so a participant still resolves, and the failure lands on exactly
-// the calls the tests are about.
 //
-// It used to have two live exercisers, one per direction: partyTx read an
-// account by id building an OUTBOUND message, and addressedPartyTx reads one by
-// ADDRESS resolving an INBOUND one. Task 14.3 deleted partyTx — partiesOf now
-// reads nothing building an outbound message, see payment/translate.go — so
-// GetDepositAccount below is not reached by anything running today.
-// ListDepositAccountsByIdentifier still is: it is what the inbound directory
-// sweep in ResolveIdentifierTx calls, and
-// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure still
-// depends on it. GetDepositAccount is left rather than deleted: checkPartyTx
-// (payment/system.go) still calls the real tx.GetDepositAccount on the
-// SUBMISSION path, so the override stays correct for whichever test needs it
-// next, even though none does today.
+// The one error that must NOT become a wire reason code — a store failure or a
+// cancelled context being mistranslated into a fact about the counterparty's
+// message — no longer has an outbound test in this section; see the comment
+// below TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure
+// used to sit above for why. Its one remaining pin,
+// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure, is
+// inbound and lives under "Inbound: a received message becomes a request"
+// further down, where failingStore (below) is still used to reach it.
+
+// failingTx is a Tx whose directory lookups fail with an error of the caller's
+// choosing. Everything else is the real transaction, promoted by embedding —
+// so a participant still resolves, and the failure lands on exactly the call
+// the tests are about.
+//
+// It used to override two methods, one per direction: partyTx read a deposit
+// account by id building an OUTBOUND message, and addressedPartyTx reads one
+// by ADDRESS resolving an INBOUND one. Task 14.3 deleted partyTx — partiesOf
+// now reads nothing building an outbound message, see payment/translate.go —
+// so the GetDepositAccount override that used to exist here is gone with it:
+// failingStore is only ever applied to a View (see below), and every
+// production GetDepositAccount call site left in payment — scheme.go's
+// validateFunds, participant.go's glAccountTx, system.go's DepositTx and
+// checkPartyTx — runs inside an Update, which failingStore never wraps.
+// Keeping a method nothing can reach would be exactly the kind of claim this
+// file exists to distrust.
+// ListDepositAccountsByIdentifier is the one override still live: it is what
+// the inbound directory sweep in ResolveIdentifierTx calls, reached through a
+// View, and TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure
+// below still depends on it.
 type failingTx struct {
 	Tx
 	err error
-}
-
-func (t failingTx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
-	return deposit.Account{}, t.err
 }
 
 func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
@@ -644,10 +652,21 @@ func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) err
 // there is no store call left here to fail, no context left to cancel, and no
 // directory lookup left that could come back not-found. p.Creditor.Participant
 // = "no-such-bank" and p.Creditor.Account = "no-such-account", the two setups
-// the last pair of tests used, no longer reach anything that reads them:
-// CreditTransferMessage's ONLY remaining way to refuse before the wire is
-// assetOf's, which TestCreditTransferMessageRefusesAnUnregisteredScheme below
-// still pins, unchanged, because assetOf never went through partyTx.
+// the last pair of tests used, no longer reach anything that reads them.
+//
+// CreditTransferMessage can still refuse before the wire — it is not down to
+// zero ways, only down to the ones that were never partyTx's: assetOf's
+// ErrSchemeNotFound (TestCreditTransferMessageRefusesAnUnregisteredScheme,
+// below), ibanOf's ErrUnaddressableAccount for a missing or malformed address
+// (TestCreditTransferMessageRefusesAPaymentWithNoAddress,
+// TestCreditTransferMessageRefusesAMalformedIBAN, both further up), and
+// amountOf's ErrAmountScale / magnitude bound for a value the wire cannot
+// carry (not pinned per message type — TestSettlementMessageTakesItsScaleFromTheAsset
+// and its neighbours exercise the same amountOf that creditTransfer and
+// directDebit both call). namedPartyOf's iso20022.ErrMissingElement for an
+// empty account-holder name is live too, and, per namedPartyOf's own doc, has
+// no dedicated fixture here at all — FuzzTranslate is what found it. None of
+// these four goes anywhere near a participant, an account, or the store.
 //
 // The property the first two guarded — a store failure or a cancellation must
 // not be misreported as a fact about the counterparty's message — is not gone

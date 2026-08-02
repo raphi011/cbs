@@ -279,10 +279,14 @@ func (mc MessageContext) orgtr() *iso20022.PartyIdentification {
 // it: the bank that holds the account, the name on the account, and the address
 // the payment quoted to reach it.
 //
-// It exists so that the conversion itself is a pure function of resolved data,
-// with the store reads on one side of the line and the mapping on the other.
-// That is what lets FuzzTranslate drive the mapping over names and addresses no
-// fixture builder would have thought of — and the store would never hold.
+// It exists so that the conversion itself — creditTransfer, directDebit — is a
+// pure function of resolved data, decoupled from whatever produces that data.
+// partiesOf is the one production producer, and it reads no store to build one
+// (see partiesOf's own doc); fuzz_test.go is the other, deliberate producer:
+// buildCreditTransfer constructs messageParty values directly, skipping
+// partiesOf and CreditTransferMessage entirely, which is what lets
+// FuzzTranslate drive the mapping over names and addresses no fixture builder —
+// and now no submission path either — would have thought to try.
 type messageParty struct {
 	BIC        iso20022.BIC
 	Name       string
@@ -544,11 +548,12 @@ func (s *Network) partiesOf(p Payment) (debtor, creditor messageParty) {
 // It takes neither a context nor a Tx, and used not to: a payment recorded
 // which participant and which account each side was, and building a message
 // meant looking up the BIC and the account holder's NAME neither carried. Task
-// 14.3 put both on the payment at submission (partiesOf), so there is no I/O
-// left here to need a unit of work for, and CreditTransferMessageTx — the
-// variant that shared the caller's transaction — is gone with it: nothing
-// downstream of SubmitAndInstruct needs to share a transaction with a function
-// that reads nothing.
+// 14.2 put both on the payment itself, at submission; Task 14.3 is what let
+// partiesOf stop reading them off the store. So there is no I/O left here to
+// need a unit of work for, and CreditTransferMessageTx — the variant that
+// shared the caller's transaction — is gone with it: nothing downstream of
+// SubmitAndInstruct needs to share a transaction with a function that reads
+// nothing.
 func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
@@ -558,9 +563,11 @@ func (s *Network) CreditTransferMessage(p Payment, mc MessageContext) (iso20022.
 	return creditTransfer(p, debtor, creditor, asset, mc)
 }
 
-// creditTransfer builds the message from data already resolved out of the
-// store. Everything it does is a pure function of its arguments, which is what
-// FuzzTranslate needs and what makes the store reads above a separate concern.
+// creditTransfer builds the message from data its caller already holds.
+// Everything it does is a pure function of its arguments, which is what
+// FuzzTranslate needs: CreditTransferMessage reads no store either (see its
+// own doc), so there is no I/O anywhere on this path for a fuzz input to
+// depend on.
 func creditTransfer(p Payment, debtor, creditor messageParty, asset ledger.AssetCode, mc MessageContext) (iso20022.Envelope, error) {
 	amt, err := amountOf(p.Amount, asset)
 	if err != nil {
@@ -909,14 +916,17 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // therefore NOT the source of it — see that field — and the caller supplies the
 // return's own reason.
 //
-// This is a Network method although it reads no store, and it takes no context
-// for exactly that reason — the asymmetry with CreditTransferMessage and
-// DirectDebitMessage is the point rather than an oversight. It is a method
-// because the amount's scale comes from the scheme's asset and only the Network
-// holds the scheme registry, which is an in-memory map; there is no I/O here to
-// cancel. A pacs.004 names no parties: it refers to the original payment by
-// identifier and carries amounts, so nothing in it needs a BIC or an account
-// holder's name looked up.
+// This is a Network method although it reads no store, and it takes no
+// context for exactly that reason. Task 14.3 removed the asymmetry this
+// comment used to name: CreditTransferMessage and DirectDebitMessage read no
+// store either, now, so all three outbound builders share this shape. What
+// still makes ReturnMessage a method rather than a function is narrower than
+// "no I/O": the amount's scale comes from the scheme's asset and only the
+// Network holds the scheme registry, which is an in-memory map, not a store —
+// there is nothing here to cancel. A pacs.004 names no parties: it refers to
+// the original payment by identifier and carries amounts, so nothing in it
+// needs a BIC or an account holder's name looked up, which is also why it is
+// the one outbound builder with no messageParty in its signature at all.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
