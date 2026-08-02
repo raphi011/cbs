@@ -160,8 +160,18 @@ var borrowedReasons = []reasonMapping{
 // for a sentinel.
 //
 // It consults borrowedReasons after reasonTable, and the order is stated rather
-// than incidental: this package's own classification of its own sentinels wins,
-// so a borrowed entry can never quietly override one that was decided here.
+// than incidental: where both tables classify an error, this package's own
+// classification of its own sentinel wins.
+//
+// The order does NOT protect reasonTable's empty-code entries, and that is the
+// half worth being exact about. Those are decisions made here too — "this never
+// reaches a counterparty" — but the m.Code != "" filter skips them, so an error
+// wrapping one of them and also matching a borrowed row would come back with the
+// borrowed code rather than falling to MS03. Nothing produces such an error
+// today and TestReasonForEmptyCodeEntriesFallToMS03 pins the direct case; the
+// protection an empty code gives is the CALLER's, made by name before it asks
+// for a code at all, which is what mesh's handlers do with
+// ErrInvalidStateTransition. See the note on the empty-code block above.
 func ReasonFor(err error) iso20022.StatusReason {
 	for _, table := range [][]reasonMapping{reasonTable, borrowedReasons} {
 		for _, m := range table {

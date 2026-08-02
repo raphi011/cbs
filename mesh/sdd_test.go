@@ -22,18 +22,27 @@ import (
 // it, so the ledger looks the same either way, and under a shared store the only
 // thing that differs is which goroutine's unit of work did it.
 //
-// Three tests are what make the second half falsifiable, and they are named here
-// rather than left to be found:
+// TWO tests are what make the second half falsifiable, and they are named here
+// rather than left to be found. Both were watched failing under both of the
+// mutations that move the receiving half to the wrong bank — routing the
+// submission to the payer's bank, and relaying the pacs.003 by CdtrAgt:
 //
 //   - TestTheDirectDebitChainIsFourMessages pins that the pacs.003 goes from the
 //     payee's bank through the clearing house to the PAYER's bank, so the payer's
 //     bank is the only actor that ran the receiving half at all.
-//   - TestDirectDebitAgainstAnUnfundedDebtorIsAM04 provokes a refusal that only
-//     the payer's bank can make, and it arrives as a rejection code on a payment
-//     the submitting bank accepted — not as an error out of Submit.
-//   - TestWhichBooksEachBankReachesInAPull measures, per actor, that the payer's
-//     bank reached its own book during the chain. A flow in which the submitting
-//     bank posted would leave the payer's bank having touched nothing.
+//   - TestWhichBooksEachBankReachesInAPull measures the submitting half and the
+//     message chain as two separate phases, so it says not merely which books
+//     each bank reached but which HALF it reached them in. See the note on that
+//     test for why one combined measurement would not distinguish the two banks.
+//
+// TestDirectDebitAgainstAnUnfundedDebtorIsAM04 is NOT one of them, and the
+// reason is recorded here because it reads like one. AM04 is the payer's
+// BALANCE, and postDebtorLegTx's funds check reads it out of the payer's bank's
+// register whoever runs the receiving half — so under both mutations above the
+// payee's bank runs that half, the check still fails on the same account, and
+// AM04 still comes back. It was measured passing under each. What it does pin is
+// worth having and is a different claim: that the refusal travelled as a message
+// rather than as a return value out of Submit.
 func TestDirectDebitPostsTheDebtorLegAtTheDebtorsBank(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)

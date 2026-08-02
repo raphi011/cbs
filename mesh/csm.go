@@ -175,8 +175,15 @@ func (c *csm) relay(from iso20022.BIC, env iso20022.Envelope, doc iso20022.Docum
 // money: a posted debtor leg, at a bank that is not the submitter.
 //
 // On a push the two are the same bank and there is one message, unchanged from
-// Task 10. On a pull refused BEFORE the payer's bank answered — an unroutable
-// agent, a bulk file — there is no leg, so there is one message again.
+// Task 10. On a pull the payer's bank refused ITSELF — AM04, which its funds
+// check makes before the leg is posted — there is no leg to give back, so there
+// is one message again, and TestARejectedCollectionIsAnsweredToThePayeesBank
+// counts it.
+//
+// A refusal that never reached the payer's bank at all — an agent this mesh
+// cannot route to, a bulk file — does not arrive here in the first place: both
+// are answered by c.answer, from relay and refuseBulk, before any payment has
+// been looked up.
 //
 // # This handler does two writes, and the second may not happen
 //

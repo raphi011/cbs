@@ -787,16 +787,50 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // it. AcceptInboundTx deliberately appends no audit event of its own — the
 // payment's lifecycle has two facts and not three — which is why nothing in this
 // half allocates a network id either.
+// # It is measured in two PHASES, and that is what makes it a pin on who posted
+//
+// The recorder is reset between the submission and the drain, so each half of
+// the flow is attributed on its own. Measured as one set over the whole chain,
+// the two banks' sets are the union of what each did in both roles, and a flow
+// in which ONE bank played both roles produces the same union — which is exactly
+// the two ways the pull arm can be got wrong:
+//
+//   - route the instruction to the payer's bank to submit, and it submits and
+//     then answers itself;
+//   - relay the pacs.003 by CdtrAgt, and the payee's bank submits and then
+//     answers itself.
+//
+// Split, neither survives: phase one says the payee's bank submitted and the
+// payer's bank did NOTHING, and phase two says the payer's bank answered and the
+// payee's bank did nothing. Both were watched failing under both mutations. That
+// is as close as a shared store lets this package get to "which actor posted the
+// debtor leg" — postDebtorLegTx posts into the payment's own debtor bank's book
+// whoever calls it, so the ledger is identical either way and the only thing that
+// differs is whose unit of work opened it.
+//
+// The payee's bank's phase-two set being EMPTY is not vacuous, and it is worth
+// saying why: it receives a message in that phase — the clearing house's ACCP —
+// and reads no book because an acceptance needs nothing from it. Under the
+// second mutation above it receives the collection instead and its set is every
+// bank book.
 func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	h := newMeshHarness(t)
 
+	// Phase one: the submitting half, and nobody else has heard anything yet.
 	h.rec.reset()
 	h.submitDirectDebit(t)
-	h.drain(t)
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
+	assertBooksTouched(t, "the payer's bank, before the collection reaches it", h.booksTouchedBy(h.debtorBIC), nil)
+
+	// Phase two: everything the message chain does, and none of what came before
+	// it.
+	h.rec.reset()
+	h.drain(t)
+
 	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
+	assertBooksTouched(t, "the payee's bank, once it has only an answer to read", h.booksTouchedBy(h.creditorBIC), nil)
 
 	// Clearing a collection costs the clearing house exactly what clearing a
 	// credit transfer costs it, which is the point of relaying by an address the
