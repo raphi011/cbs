@@ -55,7 +55,7 @@ export const chapter: Chapter = {
       ],
       answer: 3,
       explanation:
-        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. The other two options are distractors; the model identifies only `pacs.008` (SCT) and `pacs.003` (SDD) as the SEPA interbank messages.",
+        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. Those two are the *instructions*; the system also implements `pacs.002` (the status a receiver answers with), `pacs.004` (a return) and `pacs.009` (the settlement instruction the clearing house sends the central bank). Neither distractor is one of them: `pain.001` is a customer instructing their own bank, not an interbank message, and the `camt` reporting family is not implemented at all.",
     },
     {
       kind: "mc",
@@ -101,13 +101,13 @@ export const chapter: Chapter = {
         "In a SEPA Credit Transfer, at which stage of the lifecycle does the debtor leg post — the entry that moves funds out of the payer's account?",
       options: [
         "At clearing, when net positions are computed",
-        "At initiation, when the payment is accepted by the scheme",
+        "At initiation, when the payer's bank takes the instruction in",
         "At settlement, when central-bank reserves move",
         "At mandate validation, before any other checks",
       ],
       answer: 1,
       explanation:
-        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation/acceptance**. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; settlement posts the creditor leg. No debit to the customer's account occurs at clearing itself.",
+        "The [[debtor-leg]] — the entry debiting the payer's deposit account and crediting the bank's clearing suspense — posts at **initiation**, in the payer's own bank, when it submits the credit transfer. Note that the payment is *Initiated* at that point, not Accepted: acceptance is the clearing house's separate act, later. Its two sides value-date differently: the customer's debit value-dates to itself (PSD2 Art. 87(2) forbids dating it any earlier), while the clearing-suspense side value-dates to the settlement date. Clearing later computes net positions; settlement posts the creditor leg. No debit to the customer's account occurs at clearing itself.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
@@ -278,7 +278,7 @@ export const chapter: Chapter = {
       ],
       answers: [1, 2, 4],
       explanation:
-        "[[clearing-vs-settlement]] — option A (net positions computed) happens at clearing; option D (debtor leg) happens at initiation. At settlement: **reserves move at the central bank** (B), the **creditor leg posts** at the receiving bank (C), and **clearing suspense balances zero out** across both banks (E), completing the flow.",
+        "[[clearing-vs-settlement]] — option A (net positions computed) happens at clearing; option D (the debtor leg) happens in the payer's own bank well before settlement — at initiation for a credit transfer, and when the collection arrives for a direct debit, which is submitted by the *creditor's* bank. At settlement: **reserves move at the central bank** (B), the **creditor leg posts** at the receiving bank (C), and **clearing suspense balances zero out** across both banks (E), completing the flow.",
     },
     {
       kind: "numeric",

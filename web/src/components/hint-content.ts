@@ -339,26 +339,29 @@ Status governs what the account may do; it says nothing about how a counterparty
     title: "Push scheme",
     body: `In a **push** scheme the **payer's bank initiates** and sends the funds to the payee's bank. No [[mandate]] is needed because the payer is voluntarily pushing money out.
 
-**SEPA Credit Transfer (SCT)** is the canonical push scheme: Alice instructs Bank A to credit Bob at Bank B. Bank A validates, posts the [[debtor-leg]], and submits the instruction to the clearing cycle.
+**SEPA Credit Transfer (SCT)** is the canonical push scheme: Alice instructs Bank A to credit Bob at Bank B. Bank A validates its own half, posts the [[debtor-leg]], and sends a \`pacs.008\` onward. Bank B checks Bob's account and answers; the clearing house is what then takes the payment into a cycle.
 
 \`\`\`
 Direction of flow:
   Alice (debtor) → Bank A → clearing → Bank B → Bob (creditor)
-  Initiated by:  Alice / Bank A   (the payer side)
+  Submitted by:  Alice / Bank A   (the payer side)
 \`\`\`
 
-Money always flows **debtor → creditor** regardless of who initiates. [[scheme-direction-pull|Pull schemes]] reverse who *triggers* the instruction, but the underlying posting choreography is identical. The scheme's \`Direction\` field only governs initiation and [[requires-mandate]] — not which way reserves move.`,
+Money always flows **debtor → creditor** regardless of who initiates. [[scheme-direction-pull|Pull schemes]] reverse who *triggers* the instruction, but the underlying posting choreography is identical — one posting function serves both, and whoever runs it is the debtor's bank.
+
+\`Direction\` decides three things, and none of them is which way money flows: **which bank submits** (the payer's on a push, the payee's on a pull), **which half of the checks runs at submission and which on receipt**, and **whether a [[requires-mandate|mandate]] is required** — which, because the creditor holds the mandate in SEPA, also decides which bank checks it.`,
   },
   "scheme-direction-pull": {
     title: "Pull scheme",
     body: `In a **pull** scheme the **payee's bank initiates** the collection by presenting a payment instruction to the payer's bank. The payer must have previously signed a [[mandate]] authorising this specific creditor to collect.
 
-**SEPA Direct Debit (SDD)** is the canonical pull scheme: a utility company's bank submits a collection request against Alice's account at Bank A. Bank A validates the mandate and posts the [[debtor-leg]] — funds leave Alice just as they would in a push.
+**SEPA Direct Debit (SDD)** is the canonical pull scheme: a utility company's bank submits a collection against Alice's account at Bank A. Bank B — the *creditor's* bank — validates the [[mandate]], because in SEPA the creditor is who holds it, and its submission posts **nothing**: Alice's account belongs to another bank and Bank B has never seen it. Bank A posts the [[debtor-leg]] when the collection reaches it, which is the first moment anyone in the system can look at the account being collected from.
 
 \`\`\`
 Direction of flow:
   Alice (debtor) → Bank A → clearing → Bank B → Utility (creditor)
-  Initiated by:  Utility / Bank B   (the payee side)
+  Submitted by:  Utility / Bank B   (the payee side)
+  Debited by:    Bank A            (on receipt)
 \`\`\`
 
 Money still flows **debtor → creditor** — "direction" only means who triggers the instruction. Because the creditor initiates, [[requires-mandate|a mandate is required]] and [[allows-return|returns are allowed]] so the debtor can dispute a collection.`,
@@ -403,18 +406,19 @@ This codebase has the \`Scheme\` interface wired for \`SettlementModel() == Gros
     title: "Requires a mandate",
     body: `**Requires a mandate** flags whether a payment scheme demands a pre-signed [[mandate]] before a collection can proceed.
 
-[[scheme-direction-pull|Pull schemes]] (e.g. SEPA Direct Debit) require a mandate because the **payee initiates** the debit — the payer's bank needs proof the payer consented. The backend checks: mandate exists, is active, the creditor matches, the debtor matches, and the amount is within the limit. Any failure → payment rejected.
+[[scheme-direction-pull|Pull schemes]] (e.g. SEPA Direct Debit) require a mandate because the **payee initiates** the debit — somebody has to hold proof the payer consented. In SEPA that somebody is the **creditor**, so it is the **creditor's bank** that checks the mandate, synchronously, when it submits the collection. The checks: mandate exists, is active, the creditor matches, the debtor matches, and the amount is within the limit. Any failure and the collection is refused there and then, as an error to the caller — it never becomes a message, and the payer's bank never hears about it.
 
 [[scheme-direction-push|Push schemes]] (e.g. SEPA Credit Transfer) do **not** require a mandate — the payer is voluntarily pushing money, so no standing authorisation is needed.
 
 \`\`\`
-SDD payment initiation check:
+SDD mandate check — run by the CREDITOR's bank, at submission:
   1. Mandate exists?          ✓
   2. Mandate active?          ✓
   3. Creditor matches?        ✓
   4. Debtor matches?          ✓
-  5. Amount ≤ mandate limit?  ✓  → proceed
+  5. Amount ≤ mandate limit?  ✓  → the pacs.003 goes out
   Any ✗ → ErrMandateRequired / ErrMandateRevoked / ErrMandateExceeded
+          refused to the caller; nothing is posted and nothing is sent
 \`\`\``,
   },
   "allows-return": {
@@ -461,18 +465,18 @@ During the settlement window the payment is in a **pending** state — the booki
     title: "Mandate",
     body: `A **mandate** is a debtor's signed authorisation letting one specific creditor collect funds from their account, up to a maximum amount. It is required by [[scheme-direction-pull|pull schemes]] like SEPA Direct Debit.
 
-The mandate records: **creditor ID**, **debtor account ID**, **maximum amount**, and **status** (active / revoked). At payment initiation the backend validates all four:
+The mandate records: **creditor ID**, **debtor account ID**, **maximum amount**, and **status** (active / revoked). The creditor's bank validates all four when it submits the collection, because in SEPA the creditor is the party that holds the mandate:
 
 \`\`\`
-Mandate checks on SDD initiation:
+Mandate checks, at the CREDITOR's bank, on submission:
   creditor_id   == payment.creditor?    ✓
   debtor_id     == payment.debtor?      ✓
   status        == active?              ✓
   amount        ≤ mandate.max_amount?   ✓
-  → payment accepted
+  → the collection is sent, and the payment is Initiated
 \`\`\`
 
-A revoked mandate causes immediate rejection (\`ErrMandateRevoked\`). An exceeded limit causes \`ErrMandateExceeded\`. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection. Mandates are a network-level resource in the API — they are created before any payment, independent of a specific cycle.`,
+A revoked mandate causes immediate rejection (\`ErrMandateRevoked\`). An exceeded limit causes \`ErrMandateExceeded\`. Passing all four does **not** make the payment [[payment-lifecycle|Accepted]] — it leaves it *Initiated*, in no cycle, with the collection on its way to the payer's bank; only the clearing house accepts. Once a payment is settled, the debtor can trigger a [[allows-return|return]] to dispute the collection. Mandates are a network-level resource in the API — they are created before any payment, independent of a specific cycle.`,
   },
   "payment-lifecycle": {
     title: "Payment lifecycle",
@@ -485,17 +489,22 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
               Rejected                Returned
 \`\`\`
 
-- **Initiated → Accepted:** scheme validates (funds, [[mandate]] if needed); [[debtor-leg]] posted — payer's money moves into [[clearing-suspense]], the customer's side value-dated to the debit, the suspense side to settlement.
-- **Accepted → Cleared:** clearing cycle closes; [[netting|net positions]] computed across all payments in the cycle. No money moves yet.
-- **Cleared → Settled:** reserves move at the [[central-bank-reserves|central bank]]; [[creditor-leg]] posted — payee receives funds.
-- **Rejected:** before clearing; [[reversal]] of the debtor leg restores the payer's balance.
-- **Returned:** after settlement; an R-transaction fully unwinds the flow (available on [[allows-return|return-enabled]] schemes only).
+Every arrow is drawn by a **named institution**, and no two adjacent ones by the same:
+
+- **Initiated** is a state a payment sits in, not a moment. The submitting bank has run its own half and sent the instruction; nobody else has looked at it yet. On a push that half already posted the [[debtor-leg]] — the payer's money is in [[clearing-suspense]], customer's side value-dated to the debit and suspense side to settlement — while the payment still reads *Initiated*. On a pull it posted nothing, and the **payer's** bank posts the debtor leg when the collection reaches it, still leaving the payment *Initiated*.
+- **Initiated → Accepted:** the **clearing house's** act and nobody else's — it takes the payment into the open cycle for its scheme. No open cycle means \`ErrCycleNotOpen\`, which travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
+- **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
+- **Cleared → Settled:** the **central bank's** act, and it happens because the clearing house asked — closing a cycle sends a \`pacs.009\`. Reserves move at the [[central-bank-reserves|central bank]] and the [[creditor-leg]] is posted. A net payer who cannot cover is refused, and then nothing posts at all: the cycle stays Closed with no settlement against it.
+- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* is told to two banks, because the bank waiting for the answer and the bank holding the money are different institutions.
+- **Returned:** after settlement; an R-transaction fully unwinds the flow (available on [[allows-return|return-enabled]] schemes only). It is sent by the bank that *received* the original instruction and executed by the central bank.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
   },
   "debtor-leg": {
     title: "Debtor leg",
-    body: `The **debtor leg** is the ledger entry that moves money out of the payer's account. It is posted at **acceptance** (when the scheme validates the payment), value-dated to the debit itself on the customer's side, and to the settlement date on the clearing-suspense side.
+    body: `The **debtor leg** is the ledger entry that moves money out of the payer's account. It is posted by the payer's **own bank** — the rule that covers both directions — value-dated to the debit itself on the customer's side, and to the settlement date on the clearing-suspense side.
+
+*When* that bank posts it is what the [[scheme-direction-push|direction]] decides. On a push it submits, so it posts at submission. On a [[scheme-direction-pull|pull]] it *answers*, so it posts when the collection reaches it — which is the first moment any actor in the system can see the account being collected from. Either way the payment is still **Initiated** afterwards: acceptance is the clearing house's act, and it comes later.
 
 \`\`\`
 Bank A — debtor leg (Alice pays €300 to Bob):
@@ -643,13 +652,13 @@ The suspense balance at any point equals the total value of in-flight payments t
 
 An account can hold several identifiers at once, and gain or lose one without its balance or history moving: \`Register.AddIdentifier\`/\`RemoveIdentifier\` are how a customer keeps an IBAN and later adds a card PAN, or reissues a card. ISO 20022 models the same shape directly — \`CashAccountIdentification\` is a *choice* between \`IBAN\` and a generic \`Othr\` triple — which is why \`Identifier\` is a pair rather than a field per kind.
 
-**The [[scheme-asset|scheme]] decides which kind addresses it**, \`Scheme.AddressedBy() deposit.IdentifierScheme\`, exactly as \`Scheme.Asset()\` decides what it settles in. \`InitiatePaymentTx\` refuses a leg with no identifier in that scheme (\`ErrUnaddressableAccount\`) and refuses a quoted identifier that isn't one of the account's *in that scheme* (\`ErrIdentifierMismatch\`) — an account with both an IBAN and a card PAN can't have a SEPA transfer accepted against its PAN.
+**The [[scheme-asset|scheme]] decides which kind addresses it**, \`Scheme.AddressedBy() deposit.IdentifierScheme\`, exactly as \`Scheme.Asset()\` decides what it settles in. A leg with no identifier in that scheme is refused (\`ErrUnaddressableAccount\`), and so is a quoted identifier that isn't one of the account's *in that scheme* (\`ErrIdentifierMismatch\`) — an account with both an IBAN and a card PAN can't have a SEPA transfer accepted against its PAN. Both checks run **per leg**, each by the bank that holds that account, in the same place and for the same reason as the [[scheme-asset|asset check]].
 
-A payment records the address it was reached by whether or not the caller quoted one: initiation fills in the account's single identifier in the scheme's scheme, and refuses to choose (\`ErrAmbiguousAddress\`) when there are several. The address is a record, not an identity — which is why a [[mandate]] compares its parties by bank and account only. Reissuing the debtor's IBAN would otherwise kill every mandate on the account, permanently.
+A payment records the address it was reached by whether or not the caller quoted one: the bank that owns a leg fills in that account's single identifier in the scheme's scheme, and refuses to choose (\`ErrAmbiguousAddress\`) when there are several. The submitting bank does this for its own side; the far side's address is back-filled by the *other* bank when the message reaches it, because until then nobody could look that account up. The address is a record, not an identity — which is why a [[mandate]] compares its parties by bank and account only. Reissuing the debtor's IBAN would otherwise kill every mandate on the account, permanently.
 
 **An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides — \`deposit.Identifier.MatchValue\`, used by both stores and pinned by \`storetest\` so they cannot drift. Without it a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
 
-**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every member bank at read time and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`InitiatePaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
+**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every member bank at read time and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
   },
   "audit-trail": {
     title: "Audit trail",
@@ -895,16 +904,18 @@ What is **not** in the ledger under this scheme is trading profit and loss. That
     title: "A scheme declares its asset",
     body: `Every [[payment-lifecycle|payment scheme]] names the one [[asset]] it carries. \`SCT\` and \`SDD\` both return **EUR** — SEPA is the *Single Euro Payments Area*, and a "SEPA dollar transfer" is not a thing. A scheme in another currency is another scheme, with its own rulebook and its own cycles. A scheme makes the same kind of declaration about *addressing*: see [[account-addressing]] for \`AddressedBy()\`, the sibling of \`Asset()\`.
 
-Both the debtor's and the creditor's accounts are checked against it at initiation; a mismatch is \`ErrAssetMismatch\`. The check sits in \`InitiatePaymentTx\` rather than inside a scheme's own \`Validate\`, so it runs for **every** scheme — a future card scheme whose \`Validate\` places a hold instead of checking funds would otherwise skip it silently.
+Each account is checked against it **by its own bank**; a mismatch is \`ErrAssetMismatch\`. The check sits in the debtor and creditor halves rather than inside a scheme's own \`Validate\`, so it runs for every scheme — a future card scheme whose \`Validate\` places a hold instead of checking funds would otherwise skip it silently.
 
-**The ledger cannot catch this at initiation**, which is the part worth understanding. A payment is never one posting: the [[debtor-leg]] is a transaction in the payer's bank's book, written now; the [[creditor-leg]] is a separate one in the payee's, written later at [[clearing-vs-settlement|settlement]]. Give Alice a euro account and Bob a bitcoin one, and initiation writes exactly this:
+It used to be one comparison and is now two, and that is worth stating rather than hiding. It went in when both accounts were read inside one function, at the one moment both ends were in view — and the message layer removed that moment. No actor sees both accounts now, so each bank compares its own. That is strictly *weaker*, and strictly what a real bank can do.
+
+**The ledger cannot catch this when the debtor leg posts**, which is the part worth understanding. A payment is never one posting: the [[debtor-leg]] is a transaction in the payer's bank's book; the [[creditor-leg]] is a separate one in the payee's, written later at [[clearing-vs-settlement|settlement]]. Give Alice a euro account and Bob a bitcoin one, and the payer's bank writes exactly this:
 
 \`\`\`
 Bank A:  Debit  Alice EUR     3000   ← balances in EUR ✓
          Credit Suspense EUR  3000
 \`\`\`
 
-Impeccable [[double-entry]]. Nothing in it contains the claim that a posting in another bank's book is its other half — and no ledger can see a claim that is not in front of it.
+Impeccable [[double-entry]]. Nothing in it contains the claim that a posting in another bank's book is its other half — and no ledger can see a claim that is not in front of it. No bank here holds both ends at once, which is what makes the ledger's catch late rather than absent.
 
 **It is caught at settlement, which is the argument *for* the check.** The creditor leg is built from the creditor's suspense account *in the scheme's asset*, so what actually gets posted is a EUR debit against a BTC credit:
 

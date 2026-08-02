@@ -238,7 +238,7 @@ CREATE TABLE deposit_accounts (
 -- Register.ResolveIdentifier and the network's sweep answer
 -- ErrIdentifierAmbiguous rather than picking one, so no address ever routes
 -- money to a bank or an account chosen by listing order. It is a claim about
--- resolution and nothing else — InitiatePaymentTx is handed an account id and
+-- resolution and nothing else — SubmitPaymentTx is handed an account id and
 -- never resolves, so two accounts colliding on one address both stay payable by
 -- id. That is correct: the accounts are distinct and real, and what is
 -- ambiguous is the address.
@@ -639,7 +639,7 @@ COMMENT ON COLUMN payments.reject_code IS
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in
--- InitiatePaymentTx — and a store that refused one where mem accepted it would
+-- SubmitPaymentTx — and a store that refused one where mem accepted it would
 -- be the two implementations disagreeing.
 CREATE INDEX payments_end_to_end_idx ON payments (end_to_end_id)
     WHERE end_to_end_id <> '';

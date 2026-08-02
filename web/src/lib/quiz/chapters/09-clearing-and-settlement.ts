@@ -182,10 +182,10 @@ export const chapter: Chapter = {
       difficulty: "intro",
       concept: "clearing-suspense",
       prompt:
-        "When a bank initiates a payment, the customer's account is debited and an equal amount is credited to a clearing suspense account to hold the funds in transit.",
+        "When a bank submits a credit transfer for its own customer, that customer's account is debited and an equal amount is credited to a clearing suspense account to hold the funds in transit.",
       answer: true,
       explanation:
-        "At initiation the posting is: Debit the customer's deposit account (liability falls) and Credit [[clearing-suspense]] (liability rises). The suspense account holds in-transit funds on the network's behalf. At settlement the suspense is cleared — its balance returns to zero as reserves move and the payee is credited.",
+        "The posting is: Debit the customer's deposit account (liability falls) and Credit [[clearing-suspense]] (liability rises). The suspense account holds in-transit funds on the network's behalf. At settlement the suspense is cleared — its balance returns to zero as reserves move and the payee is credited. The prompt says *credit transfer* deliberately: the payer's own bank always posts this leg, but on a direct debit that bank is the one **receiving** the collection, so it posts when the instruction reaches it rather than when the payment was submitted.",
     },
     {
       kind: "mc",

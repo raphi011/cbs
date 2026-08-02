@@ -27,8 +27,37 @@
 //
 //	Initiated -> Accepted -> Cleared -> Settled
 //
-// with branches to Rejected (before clearing) and Returned (a SEPA
+// with branches to Rejected (from Initiated or Accepted) and Returned (a SEPA
 // R-transaction after settlement).
+//
+// # One payment, three actors
+//
+// The package's central design fact is that no single function accepts a
+// payment any more. What used to be InitiatePaymentTx is three halves run by
+// three different institutions, and which half is which depends on the
+// scheme's direction:
+//
+//   - SubmitPaymentTx is the SUBMITTING bank's half. For a push that is the
+//     debtor half — the account, the asset, the address, the funds, and the
+//     debtor leg posted. For a pull the payee's bank submits, so the creditor
+//     half runs and NOTHING is posted.
+//   - AcceptInboundTx is the RECEIVING bank's half: the one the submitter
+//     could not run, because it could not see that side. For a pull it is the
+//     half that moves money, because the payer's bank is the only actor that
+//     can look at the account being collected from.
+//   - AcceptAtCSMTx is the CLEARING HOUSE's half, and only it makes a payment
+//     Accepted: it takes a payment both banks have now looked at into the open
+//     cycle for its scheme. ErrCycleNotOpen is its refusal — TM01 on the wire —
+//     because the cut-off is the clearing house's and no bank refuses its own
+//     customer on account of it.
+//
+// A rejection splits the same way, into RejectAtCSMTx and ReverseDebtorLegTx,
+// and is the first operation here that can HALF-HAPPEN: between the two the
+// payment is Rejected and the payer's money is still in clearing suspense.
+// RejectAtCSMTx documents that seam at length. Every rule above holds for
+// exactly one reason — the DEBTOR's bank posts the debtor leg — and the
+// direction only decides whether that bank is the one submitting or the one
+// answering.
 //
 // # Schemes
 //
@@ -37,6 +66,12 @@
 // pull payment requiring a mandate). Both are net-settled, so adding another
 // net-settled scheme means only implementing Scheme and registering it — the
 // orchestrator does not change.
+//
+// Validation is a PAIR on that interface, split by which bank can see the
+// answer: Validate is the debtor bank's (the funds) and ValidateMandate is the
+// creditor bank's (the mandate, which in SEPA the creditor holds). Both are on
+// the interface rather than reached by a type assertion, because a scheme that
+// implemented only one of them would be silently half-validated.
 //
 // # Next work
 //
@@ -58,9 +93,21 @@
 //
 // This is a learning model, not a production payment processor:
 //
-//   - No ISO 20022 (pain.001 / pacs.008 / pacs.003) message parsing; the
-//     Payment struct stands in for the instruction. Scheme docs name the
-//     messages they correspond to.
+//   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
+//     pacs.004 and pacs.009 are implemented — translate.go renders and reads
+//     them, and package mesh is what carries them between the institutions as
+//     marshalled bytes, so they are parsed on arrival rather than passed as
+//     structs. What is absent is pain.001/pain.008 customer initiation (an
+//     instruction arrives over this repository's REST API instead), the camt
+//     reporting family — including camt.054 and the admi.002 a real receiver
+//     answers an unreadable file with — camt.056/pacs.007 recalls and
+//     reversals, runtime XSD validation (the golden files are checked against
+//     the real schemas only by `make test-schemas`; a plain `go test` skips
+//     that check) and message signing. Nor is there any batching of customer
+//     payments: a pacs.008 or pacs.003 built here carries exactly one
+//     transaction and one arriving with several is refused, which is why
+//     pacs.002's PART group status is built and never produced.
+//
 //   - No identifier format validation: an IBAN's check digit, length and
 //     country code go unchecked, and a participant's BIC is checked for
 //     structure only — there is no directory to look it up in. Addresses
@@ -71,7 +118,15 @@
 //     that the SE89-AURORA-1001 this system stores and the SE89AURORA1001 a
 //     pacs.008 carries are the one address they are. No other scheme is
 //     normalised.
-//   - A single currency, using ledger.Amount (integer minor units).
+//
+//   - Many assets, but no exchange between them. Accounts and schemes are
+//     denominated in one of the known assets and transactions balance per
+//     asset, so the multi-asset accounting is real — what is missing is
+//     conversion. There are no rates, no FX trade and no position accounts,
+//     so a payment whose two ends differ in asset is refused with
+//     ErrAssetMismatch rather than converted. Amounts are ledger.Amount,
+//     integer minor units.
+//
 //   - One database transaction stands in for a settlement window. Every book —
 //     each participant's and the central bank's — lives in the same Store, told
 //     apart by its ledger.BookID, and payment.Tx embeds deposit.Tx embeds
@@ -85,6 +140,16 @@
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried
 //     once the member is funded. See Network for details.
+//
+//     What is no longer standing in for anything is who ASKS. The window is
+//     instructed: closing a cycle emits a pacs.009 carrying the net positions,
+//     and the central bank decides. Its refusal is a pacs.002 — RJCT/AM04 when
+//     a net payer's reserve cannot cover its position — rather than a Go error
+//     handed back to whoever pressed settle, which is not something a clearing
+//     house could act on. A refusal is told to NOBODY else: nothing was posted,
+//     so every payment is exactly where the cut-off left it, and the failure
+//     shows on the cycle, which stays Closed with no settlement against it.
+//
 //   - Returns settle immediately rather than through a later R-cycle.
 //
 // See README.md for worked examples of the SCT and SDD posting choreography.

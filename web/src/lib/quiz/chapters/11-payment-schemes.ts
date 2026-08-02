@@ -153,11 +153,11 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "payment-lifecycle",
       prompt:
-        "Which lifecycle state does a payment enter immediately after the debtor leg is posted?",
+        "Which lifecycle state is a payment in immediately after the debtor leg is posted?",
       options: ["Initiated", "Accepted", "Cleared", "Settled"],
-      answer: 1,
+      answer: 0,
       explanation:
-        "The [[payment-lifecycle]] state machine is Initiated → **Accepted** → Cleared → Settled. The [[debtor-leg]] is posted on the Initiated → Accepted transition, once the scheme validates the payment (sufficient funds, mandate active if required). The payment reaches Cleared only later, at the cut-off when net positions are computed.",
+        "**Initiated.** The [[debtor-leg]] is posted by the payer's own bank, and that bank does not get to say the payment was accepted — only the clearing house does, by taking it into the open cycle for its scheme. So the payer's money can be sitting in [[clearing-suspense]] while the [[payment-lifecycle]] still reads *Initiated*. On a push the bank posts it when it submits; on a pull it posts it when the collection reaches it. Either way, **Accepted** comes later and from somebody else.",
     },
     {
       kind: "truefalse",
@@ -235,7 +235,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "The [[payment-lifecycle]] state for a failed payment before clearing is **Rejected**. At rejection, the debtor-leg posting is reversed — a compensating entry credits the payer's account back and clears Clearing Suspense to zero. The **Returned** state is distinct: it applies *after* a payment has already settled.",
+        "The [[payment-lifecycle]] state for a failed payment before clearing is **Rejected**. The debtor-leg posting is reversed — a compensating entry credits the payer's account back and clears Clearing Suspense to zero. Note that this is **two acts by two institutions**: the clearing house marks the payment Rejected, and the payer's own bank reverses the leg when the rejection reaches it, because nobody else may post in that bank's suspense. The **Returned** state is distinct: it applies *after* a payment has already settled.",
     },
     {
       kind: "truefalse",
@@ -283,7 +283,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "[[requires-mandate]] schemes validate the mandate at the Initiated → Accepted step. If no valid mandate exists, the scheme rejects the payment with an error (such as `ErrMandateRequired`) and **no debtor leg is ever posted**. This protects payers from unauthorized debits before any money moves.",
+        "[[requires-mandate]] schemes validate the mandate at **submission, at the creditor's own bank** — in SEPA the creditor is the party that holds the mandate. If no valid mandate exists the collection is refused there and then, with an error such as `ErrMandateRequired`, and **no debtor leg is ever posted**: a collection posts nothing when it is submitted, and the payer's bank never even receives it. This protects payers from unauthorized debits before any money moves.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
@@ -297,12 +297,12 @@ export const chapter: Chapter = {
         "It is posted when the payment transitions from Cleared to Settled",
         "It debits the payer's deposit account",
         "It credits the payee's deposit account at the receiving bank",
-        "It is posted at the same moment as the debtor leg, when the payment is initiated",
+        "It is posted at the same moment, and in the same transaction, as the debtor leg",
         "It releases funds from the receiving bank's Clearing Suspense into the payee's account",
       ],
       answers: [0, 2, 4],
       explanation:
-        "The [[creditor-leg]] is posted at **settlement** (Cleared → Settled), not at initiation. It consists of: Debit Clearing Suspense (releasing the in-flight funds) → Credit payee's deposit. This is distinct from the [[debtor-leg]], which debits the payer's deposit and credits the *sending* bank's Clearing Suspense at initiation.",
+        "The [[creditor-leg]] is posted at **settlement** (Cleared → Settled). It consists of: Debit Clearing Suspense (releasing the in-flight funds) → Credit payee's deposit. This is distinct from the [[debtor-leg]], which debits the payer's deposit and credits the *payer's own bank's* Clearing Suspense — a separate transaction, in a different bank's book, posted much earlier.",
     },
     {
       kind: "numeric",

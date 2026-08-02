@@ -82,9 +82,12 @@
 // its own half — the payee's account — plus the MANDATE, because in SEPA the
 // creditor holds the mandate. A revoked one is refused there and then, at the
 // payee's own bank, as an error to the caller and not as a message; MD01 is
-// therefore a code this system never puts on the wire, and a real payer's bank
-// keeps mandate records of its own and can. payment.SDD.ValidateMandate says so
-// at the layer that owns the limit.
+// therefore a code this system never REJECTS with, and a real payer's bank
+// keeps mandate records of its own and can. It does reach the wire the other
+// way — iso20022.ReturnReasonNoMandate is the same MD01 in the return code set,
+// sent by a debtor's bank about a settled collection its customer disputes, and
+// the two are separate Go types for exactly this reason.
+// payment.SDD.ValidateMandate says so at the layer that owns the limit.
 //
 // The CLEARING HOUSE routes it to the DEBTOR's agent, the element that names the
 // bank holding the payer, because a pull travels towards the money's source
