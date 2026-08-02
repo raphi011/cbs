@@ -203,7 +203,7 @@ is measured by the existing recorder before the safety net is removed.
 
 | # | task | the measurement it moves |
 |---|---|---|
-| 14 | **The message carries the parties.** Counterparty BIC/name/address on `InitiatePaymentRequest`; the receiving bank resolves in its own register only | `TestWhichBooksEachBankActuallyReaches`: payer's bank `[debtor, creditor, Network]` → `[debtor, Network]`; payee's bank `bankBooks()` → `[creditor]`. And `TestWhichBooksEachBankReachesInAPull`: the submitting payee's bank `[debtor, creditor, Network]` → `[creditor, Network]`; the answering payer's bank `bankBooks()` → `[debtor]` |
+| 14 | **The message carries the parties.** Counterparty BIC/name/address on `InitiatePaymentRequest`; the receiving bank resolves in its own register only | `TestWhichBooksEachBankActuallyReaches`: the **submitting** bank only. `TestWhichBooksEachBankActuallyReaches`: payer's bank `[debtor, creditor, Network]` → `[debtor, Network]`; `TestWhichBooksEachBankReachesInAPull`: submitting payee's bank → `[creditor, Network]`. The **receiver's** set does not move here — see below |
 | 15 | **Settlement becomes a conversation.** Central bank posts only its own netting transaction; banks post mirror and creditor legs locally on advice; settlement-position row; unclaimed balances; `CheckCreditTx` at settlement | `TestWhichBooksTheCentralBankReachesWhenItSettles`: `allBooks()` → `[CentralBankBook, Network]`. **The loud failure the handoff predicted** |
 | 16 | **Return becomes a conversation.** `OrgnlTxRef` on pacs.004; central bank reverses reserves from the message; banks post their own compensating legs; the direction-dependent clawback rule and `Returns Receivable` | `TestWhichBooksAReturnReaches`: `allBooks()` → `[CentralBankBook, Network]` |
 | 17 | **Admission becomes a conversation.** Central bank opens the settlement account, clearing house adds the routing entry, the bank's chart is created locally | `TestWritingAParticipantTouchesNoBankBook` gains a counterpart; the orphan-participant defect carried into `main` must be confronted rather than carried again |
@@ -212,6 +212,27 @@ is measured by the existing recorder before the safety net is removed.
 
 Task 18 is the largest single item. If it runs long it splits into **18a**
 (shapes and storetest) and **18b** (wiring and per-entity rows).
+
+### The receiving bank's measurement belongs to Task 18, not Task 14
+
+Found while writing Task 14's plan, and corrected here rather than left for the
+implementer to hit.
+
+Task 14 changes the receiving bank's *behaviour* — it resolves its own customer
+and records the counterparty from what the message says, retiring an AC01 that was
+never this bank's to make, since a debtor IBAN nobody holds is a statement about
+the **sending** bank's customer. That change is real and testable.
+
+But it does not move the receiver's book set. Resolution runs through
+`ResolveIdentifierTx`, which sweeps every member's register, and narrowing it to
+"this bank's register" requires the bank to know which register is its own.
+`payment.Network` has no identity to answer that with, and supplying one is Task
+18's design. Pre-empting it in Task 14 would be a guess of exactly the kind
+`ops.go`'s own doc warns against — an interface written ahead of its callers that
+then looks authoritative.
+
+So `TestWhichBooksEachBankActuallyReaches`'s receiver assertion moves from
+`bankBooks()` to `[creditor]` in **Task 18**, with its pull mirror.
 
 ## What Task 18 changes that is not a store
 
