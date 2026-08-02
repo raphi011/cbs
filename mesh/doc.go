@@ -155,7 +155,11 @@
 //
 // The R-transaction: a payment that has already settled, sent back. It is the
 // only flow here that starts at the bank which ANSWERED rather than the one
-// that submitted, and the only one addressed past the clearing house:
+// that submitted, and the only one in which a message a BANK composed is
+// carried past the clearing house — the document travels unchanged to the
+// settlement agent with only the header replaced, as csm.relay always does.
+// Task 12's settlement instruction reaches the central bank too, but that one
+// is the clearing house's own message about its own cut-off.
 //
 //	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  central bank
 //	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank

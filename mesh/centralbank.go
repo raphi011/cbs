@@ -201,7 +201,7 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // was rejected. Dead letter, and no pacs.002; it is the same discrimination
 // receiveSettlement makes.
 //
-// Everything else the domain refuses IS answered, with the code ReasonFor maps
+// Everything else the domain refuses is answered, with the code ReasonFor maps
 // it to, because a refusal a counterparty can act on is completed work rather
 // than a defect. ErrSchemeUnsupportedReturn is the one that belongs to this
 // operation alone — a scheme whose rule book has no return — and payment's
@@ -209,6 +209,15 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // set has for a condition the scheme does not contemplate. No scheme in this
 // repository forbids returns (payment.SCT.AllowsReturn and SDD.AllowsReturn
 // both report true), so nothing here provokes it.
+//
+// With one exception, which is a limit of this handler rather than a decision:
+// a return that names no payment cannot be answered at all. OrgnlTxId is
+// optional in the schema — iso20022's ReturnTransaction.validate accepts a
+// transaction that refers back by OrgnlEndToEndId alone — and the pacs.002 this
+// actor would send quotes only what it was given, so a report with neither
+// reference fails to marshal and the refusal becomes a dead letter. No actor in
+// this mesh sends such a message; TestAReturnThatNamesNoPaymentCannotBeAnswered
+// injects one and pins what happens rather than leaving it to be discovered.
 func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs004) error {
 	body := doc.PmtRtr
 	orig := payment.OriginalMessage{

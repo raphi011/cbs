@@ -935,8 +935,12 @@ func (m *Mesh) CloseCycle(ctx context.Context, id payment.CycleID) (payment.Clea
 // inventing one by re-reading the row after the send would be a race dressed up
 // as a result.
 //
-// Like Mesh.Submit and Mesh.CloseCycle it reads the network, so it exists only
-// on a mesh that has one.
+// Like Mesh.Submit it reads the network, so it exists only on a mesh that has
+// one — and like Submit it DEREFERENCES rather than checking: a mesh with no
+// network has no participant roster and therefore no bank actors, so every
+// return to it was already an error. Mesh.CloseCycle refuses explicitly
+// instead, and the difference is not inconsistency: it has no map lookup on the
+// way in that would have caught the case, and this does.
 func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022.ReturnReason, text string) error {
 	// The routing question, and only that: which bank's instruction is this?
 	// It is asked here rather than inside the bank for the reason Submit asks

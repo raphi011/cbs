@@ -56,9 +56,16 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 // It goes THROUGH the clearing house rather than bank-to-central-bank directly.
 // A member bank in this mesh addresses the clearing house and nothing else, and
 // the routing table lives in one actor — which is why RC01 is a thing only that
-// actor can say. The clearing house carries the return and takes it into no
-// cycle: TestAReturnIsExecutedByTheCentralBank measures that it posts nothing at
-// all while doing so.
+// actor can say.
+//
+// Those are two claims and they are measured by two different tests, which is
+// worth stating because neither covers the other. THIS test, with
+// TestAReturnedCollectionIsSentByThePayersBank beside it, is what says the
+// clearing house is in the path at all: point the returning bank straight at
+// the central bank and the return still happens, in two messages instead of
+// four. What the book assertions say is the narrower thing — that the clearing
+// house posts nothing while carrying it — and they stay green under exactly
+// that mutation, because an actor that is skipped touches no book either.
 //
 // The PAYER's bank is in none of the four. Its customer is refunded by the
 // settlement agent, in the same unit of work that moves the reserves, so there
@@ -158,7 +165,11 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Fatalf("status = %v, want Returned", got.Status)
 	}
-	first := h.messagesFrom(before)[0]
+	sent := h.messagesFrom(before)
+	if len(sent) == 0 {
+		t.Fatal("returning the collection put nothing on the wire at all")
+	}
+	first := sent[0]
 	if first.from != h.debtorBIC || first.to != h.cfg.ClearingHouseBIC {
 		t.Errorf("the return starts at %s -> %s, want the payer's bank %s -> the clearing house",
 			first.from, first.to, h.debtorBIC)
@@ -438,5 +449,55 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	}
 	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-debit").Description; !strings.Contains(got, prtry) {
 		t.Errorf("the payer's refund is described as %q, want it to carry the proprietary reason %q", got, prtry)
+	}
+}
+
+// TestAReturnThatNamesNoPaymentCannotBeAnswered pins the one refusal in this
+// flow that reaches nobody, so that its cost is recorded rather than
+// rediscovered.
+//
+// A pacs.004 may refer back by OrgnlEndToEndId alone: OrgnlTxId is optional in
+// the schema and iso20022's ReturnTransaction.validate accepts either. This
+// system identifies payments by OrgnlTxId, so such a message names no payment
+// this network holds — and the pacs.002 refusing it would have nothing to refer
+// back BY, which the codec refuses to build. The refusal therefore becomes a
+// dead letter: the sender is told nothing, and the payment is untouched.
+//
+// It is a limit of the answering path and not of the guard. What would close it
+// is quoting the end-to-end reference the message DID carry, which is a change
+// to how this actor addresses every answer it sends, and to what the clearing
+// house then looks the answer up by. Named here, with the behaviour asserted,
+// rather than left as a sentence in a doc comment.
+//
+// No actor in this mesh emits one — payment.ReturnMessage always writes
+// OrgnlTxId — so it is injected.
+func TestAReturnThatNamesNoPaymentCannotBeAnswered(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "no transaction id",
+		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-noid", Now: testTime})
+	if err != nil {
+		t.Fatalf("ReturnMessage: %v", err)
+	}
+	tx := &env.Document.(*iso20022.Pacs004).PmtRtr.TxInf[0]
+	tx.OrgnlTxId, tx.OrgnlEndToEndId = "", "E2E-ONLY"
+	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	answered := h.statusesSentTo(h.creditorBIC)
+	err = h.drainErr(t)
+	if err == nil {
+		t.Fatal("Drain was clean; a return the settlement agent could neither execute nor answer went unreported")
+	}
+	if !strings.Contains(err.Error(), "refer back by") {
+		t.Errorf("the dead letter %q is not the answer failing to name what it is about", err)
+	}
+	if got := h.statusesSentTo(h.creditorBIC); got != answered {
+		t.Errorf("the bank was sent %d statuses about a return that names no payment; the answer cannot be built", got-answered)
+	}
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Errorf("the payment is %v; nothing was returned", got.Status)
 	}
 }
