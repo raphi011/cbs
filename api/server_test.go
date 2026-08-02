@@ -2865,28 +2865,42 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=SHARED-0001", "", http.StatusConflict)
 }
 
-// TestPaymentAddressingRefusalsAre422 pins the status codes of the four ways
+// TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
 // initiation can refuse a leg on addressing grounds, AND that a refusal takes
-// no money. All four are well-formed requests refused by state, the same
-// category as a frozen account — and until now nothing in this file held any of
-// them, so the whole arm could have drifted to 400 or 500 with every test still
-// green.
+// no money. It drives FIVE refusals over those three sentinels —
+// ErrUnaddressableAccount twice for two different shapes of missing address,
+// plus once more on the payer's own bank surface, then ErrIdentifierMismatch
+// and ErrAmbiguousAddress — and one request that goes through, six in all. Each
+// is a well-formed request refused by state, the same category as a frozen
+// account, and until now nothing in this file held any of them, so the whole
+// arm could have drifted to 400 or 500 with every test still green.
 //
 // # The balance assertions are the half that caught a live money bug
 //
-// Two of these four were answered 422 with the payer ALREADY DEBITED. The
-// submitting bank committed the debtor leg in one unit of work and built its
-// pacs.008 in a second, and an unaddressable payee fails the second — so a
-// request the API reported as refused moved 1000 out of Alice's account, into a
-// clearing suspense, against a payment nobody would ever answer. No message had
-// been sent, so there was not even a dead letter; a client that retried the
-// refusal drained the account. payment.SubmitAndInstruct is the fix, and these
-// assertions are what would have seen it: the status codes alone were all green
-// throughout.
+// THREE of the five refusals below were answered 422 with the payer ALREADY
+// DEBITED. The submitting bank committed the debtor leg in one unit of work and
+// built its pacs.008 in a second, and an unaddressable payee fails the second —
+// so a request the API reported as refused moved 1000 out of Alice's account,
+// into a clearing suspense, against a payment nobody would ever answer. No
+// message had been sent, so there was not even a dead letter; a client that
+// retried the refusal drained the account. payment.SubmitAndInstruct is the fix,
+// and these assertions are what would have seen it: the status codes alone were
+// all green throughout.
 //
-// So every refusal below is followed by the balance, and the count of payment
-// rows at the end is zero for the four refusals plus one for the case that went
-// through.
+// # Which cases carry a balance check, and which does not
+//
+// Four of the five refusals are followed by assertAliceUntouched. The
+// ErrAmbiguousAddress case at the end is NOT, and that is stated rather than
+// left to be counted: it runs after the happy case, so the opening balance the
+// helper asserts is no longer the right number. It is covered by the aggregate
+// below instead — exactly one of the six requests moved money, and the network
+// holds exactly one payment row.
+//
+// Weaker per-case, and it is the case that needs it least. addressFor raises
+// ErrAmbiguousAddress inside debtorSideTx (payment/system.go:2036), which
+// SubmitPaymentTx runs BEFORE postDebtorLegTx, so this one never posted a leg
+// even under the defect. The three per-case checks above cover the refusals
+// that did.
 //
 // It also pins the DEBTOR back-fill over HTTP, which is where it matters: the
 // DTO's identifier field is optional and this is the shape every other payment
@@ -2970,16 +2984,16 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// The creditor identifier is NOT a back-fill: it is simply what this
 	// request already quoted, persisted by the payer's bank at submission and
 	// left untouched when the pacs.008 reaches the payee's bank —
-	// creditorSideTx (payment/system.go:1359) re-derives the same address and
-	// AcceptInboundTx (payment/system.go:1203) skips the write when nothing
-	// changed. The case just above (:2822) proves a push that quotes no
-	// creditor address at all is refused synchronously inside the mesh —
-	// mesh.Submit -> bank.submit -> SubmitPayment (mesh/bank.go:124-147) —
-	// before any message is built or sent, so there is no path through this
-	// route on which a creditor back-fill is ever attempted, let alone
-	// reachable. There is no api-level test for that back-fill, and this is
-	// not one either. No drain is needed before the GET below: nothing on
-	// this path is still in flight, and the value read back is the one
+	// creditorSideTx (payment/system.go:1462) re-derives the same address and
+	// AcceptInboundTx (payment/system.go:1306) skips the write when nothing
+	// changed. The two cases above that quote no creditor address prove a push
+	// of that shape is refused synchronously inside the mesh — mesh.Submit ->
+	// bank.submit (mesh/bank.go:128) -> payment.SubmitAndInstruct, where the
+	// message is now built in the same unit of work as the leg — so there is no
+	// path through this route on which a creditor back-fill is ever attempted,
+	// let alone reachable. There is no api-level test for that back-fill, and
+	// this is not one either. No drain is needed before the GET below: nothing
+	// on this path is still in flight, and the value read back is the one
 	// already in the request.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
@@ -3002,10 +3016,12 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"amount":1000
 	}`, http.StatusUnprocessableEntity)
 
-	// The one that went through is the one that moved money, and it is the only
-	// payment row in the network. Five refusals leaving five Initiated payments
-	// that nothing will ever answer is the other shape of the same bug: the row
-	// outlives the request that was told no.
+	// The aggregate, and the only thing covering the ErrAmbiguousAddress case
+	// just above. Six requests have gone out; the one that went through is the
+	// one that moved money, and it is the only payment row in the network. Five
+	// refusals leaving five Initiated payments that nothing will ever answer is
+	// the other shape of the same bug: the row outlives the request that was
+	// told no.
 	drainServer(t, h)
 	bal := doJSON(t, bank(h, a), "GET", "/deposit-accounts/"+alice+"/balance", "", http.StatusOK)
 	if got := int64(bal["book"].(float64)); got != 99000 {

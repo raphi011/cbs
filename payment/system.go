@@ -1176,8 +1176,9 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// EndToEndID were accepted eight times on store/pg and once on store/mem —
 	// which serializes every Update on one process-wide mutex and so could never
 	// show it. The payer was debited eight times for one client reference. See
-	// storetest's TestConcurrentReadThenWriteOnOneKeyAgrees, which holds the two
-	// stores to the same answer.
+	// storetest's ConcurrentReadThenWriteOnOneKeyAgrees — a subtest of
+	// TestConformance, not a test function of its own — which holds the two
+	// stores to the same answer for this shape.
 	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
 	if err != nil {
 		return Payment{}, err

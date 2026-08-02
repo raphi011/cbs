@@ -7,7 +7,11 @@
 // the member roster a deployment manifest, and where a bank happens to be bound
 // is not domain data.
 
-/** The settlement layer: reserves, its own audit, admission, settling a cycle. */
+/**
+ * The settlement layer: reserves, its own audit, admission, and the reads that
+ * watch settlement. It does not SETTLE on request — a cut-off instructs it, and
+ * asking again is the clearing house's route. See endpoints.settleCycle.
+ */
 export const cb = (path: string) => `/central-bank${path}`;
 
 /** The CSM: every payment, the cycles, the schemes, the mandates, the directory. */

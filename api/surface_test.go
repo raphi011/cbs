@@ -76,9 +76,6 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 
 	for _, old := range preSplitRoutes {
 		op, want := movedTo(old)
-		if op == "" {
-			continue // deliberately not moved yet; see the switch below
-		}
 		if !slices.Contains(got[op], want) {
 			t.Errorf("%q should have become %q on the %s, which does not serve it",
 				old, want, op)
@@ -87,8 +84,19 @@ func TestEveryRouteLandsSomewhere(t *testing.T) {
 }
 
 // movedTo maps a pre-split pattern to the operator that serves it now and the
-// pattern it became. It returns an empty operator for the routes a later task
-// moves, and for the one route that has been deleted outright.
+// pattern it became.
+//
+// EVERY pattern lands somewhere, which was not true while the split was in
+// progress and is not a coincidence now. This used to answer with an empty
+// operator for two kinds of route — one a later task had not moved yet, and one
+// that was deleted outright — and the caller skipped those. Both kinds are
+// gone: the last unmoved route landed with the operator split, and
+// POST /cycles/{cid}/settle is back on the clearing house with a different act
+// behind the same path. So the skip is gone too, rather than left as a branch
+// nothing can reach. A route that is deliberately deleted in future needs it
+// back, and needs the arm that says so — with the skip, an arm returning "" is
+// silent, and without it the route fails against an operator named "" that
+// serves nothing. Loud is the right way round for a case nobody has decided on.
 //
 // Returning the operator as well as the pattern matters: a bank's audit log and
 // the central bank's both become "GET /audit", so a flat set of landed patterns

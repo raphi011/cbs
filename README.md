@@ -1471,6 +1471,8 @@ The settlement layer. Reserves move in its book and nowhere else.
 
 So the reads are what is left, and they are what the console watches settlement *with*: a cycle that is still `Closed` with no settlement against it is an instruction the central bank refused, and the net positions beside `GET /reserves` are why. The refusal's code travels in a message between two actors and is stored nowhere, which is exactly what an operator's console has to be able to reconstruct.
 
+What an operator then *does* about it is on the clearing house — `POST /cycles/{id}/settle`, which re-sends the instruction and settles nothing itself. Fund the short member here, then ask there.
+
 ### The clearing house — `:8082`
 
 The CSM. It sees every payment in the network, which is its job rather than a leak.
@@ -1480,12 +1482,15 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 | `GET /members` | the routing roster |
 | `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
 | `POST` / `GET /cycles`, `POST /cycles/{id}/close` | clearing cycles |
+| `POST /cycles/{id}/settle` | re-send the `pacs.009` for a cycle the central bank refused |
 | `GET /settlements`, `GET /settlements/{sid}` | settlements (reading is not doing) |
 | `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
 | `GET /schemes`, `GET /directory`, `GET /assets` | schemes, address resolution, known assets |
 | `GET /payments/audit` | the payment layer's log |
 
 Admission is the central bank's and the roster is the clearing house's: two different questions that a single `POST`/`GET /participants` used to make look like one.
+
+**`POST /cycles/{id}/settle` does not settle**, and it is on this operator rather than the central bank for that reason. It rebuilds the closed cycle's `pacs.009` from its stored net positions and sends it again; the settlement agent decides, with the reserves as they are now. It exists because a refusal was otherwise terminal — a cycle stays `Closed` with no settlement, its payments `Cleared`, every payer debited into their own bank's clearing suspense and every payee unpaid, and no other route moves any of it: closing wants an open cycle, rejecting wants an `Initiated` or `Accepted` payment, returning wants a settled one. The operator funds the short member and asks again. Asking twice is safe: a cycle that is not `Closed` is refused here before a message is built, and a second instruction that got past that is refused by the settlement agent's own guard.
 
 ### A member bank — `:8083`, `:8084`, …
 

@@ -606,9 +606,16 @@ export function closeCycle(cid: string): Promise<ClearingCycle> {
 // The one that used to exist is worth remembering for HOW it broke rather than
 // why it went. Its path was cb("/settlements") — a string — so when the route
 // was deleted, tsc, eslint and next build all stayed green and the console
-// 404'd at runtime. Nothing on this side of the wire can catch that; only
-// loading the page can, which is why csm() is used here rather than a
-// hand-written path.
+// 404'd at runtime.
+//
+// csm() below buys nothing against that, and saying otherwise would be the same
+// kind of claim this file is warning about. cb and csm are one-line template
+// helpers (see operator.ts) that pick the OPERATOR PREFIX; the route that broke
+// used cb() and broke anyway, because the part that went stale was the path
+// after it. What they buy is that a request cannot be sent to the wrong
+// listener by forgetting a prefix — a real class of mistake, and not this one.
+// Nothing on this side of the wire can catch a deleted route. Only loading the
+// page can.
 
 // Re-instruct settlement of a closed cycle. Takes no body; answers 202 and the
 // cycle as the clearing house left it — still Closed, because whether the
