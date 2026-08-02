@@ -213,6 +213,21 @@ is measured by the existing recorder before the safety net is removed.
 Task 18 is the largest single item. If it runs long it splits into **18a**
 (shapes and storetest) and **18b** (wiring and per-entity rows).
 
+### camt.053 moved from Task 19 to Task 15, and why (2026-08-02)
+
+Task 15's mirror leg needs an advice from the CENTRAL BANK, and the spec's own
+settlement flow says so: the bank posts "its mirror leg from the statement and its
+creditor legs from the payment advices". That split is load-bearing rather than
+incidental — "suspense returns to zero only if the central bank's reserve movement
+and the clearing house's payment list agree" is a check between two SENDERS, and
+if both legs came from the clearing house there would be nothing to reconcile.
+
+So the message family landed as Task 15a and the conversation as 15b. Task 19
+keeps the reconciliation it is named for: the closing-balance check against
+Bal/CLBD, break detection, and the surface that makes a break visible to an
+operator rather than only to the test suite. `SettlementAdvice.ClosingBalance` is
+already stored and already unread; Task 19 is what reads it.
+
 ### The name crossing has a second door, and Task 14 does not close it
 
 Found during Task 14.5's review, and recorded here rather than left to be

@@ -331,7 +331,7 @@ Transitions: Active ↔ Dormant (inactivity timer / incoming credit), any state 
 
 A **Frozen** account blocks card authorizations ([[holds]]) and every debit, but still accepts credits — the freeze implemented here is a **debit block**, which is the garnishment and fraud-investigation case: the customer cannot take money out while money owed to them keeps arriving. A *full* freeze, the sanctions case, blocks credits too; one status cannot express both, and this system implements the debit block. The freeze preserves the previous state so that unfreeze returns to Active or Dormant correctly.
 
-The two directions are not mirror images. A debit can fail for want of money, so it is checked with an amount; a credit cannot, so the only question it answers is whether the account is still somewhere money may land — which makes **Closed** the one state that refuses one. Crediting a closed account would leave it holding money no withdrawal could reach and no second close could clear.
+The two directions are not mirror images. A debit can fail for want of money, so it is checked with an amount; a credit cannot, so the only question it answers is whether the account is still somewhere money may land — which makes **Closed** the one state that refuses one. Crediting a closed account would leave it holding money no withdrawal could reach and no second close could clear. A settled payment for a closed account is therefore credited to the bank's [[unclaimed-balances|unclaimed balances]] instead.
 
 Status governs what the account may do; it says nothing about how a counterparty finds it in the first place — that is a separate concern, see [[account-addressing]].`,
   },
@@ -497,7 +497,7 @@ Every arrow is drawn by a **named institution**, and no two adjacent ones by the
 - **Initiated** is a state a payment sits in, not a moment. The submitting bank has run its own half and sent the instruction; nobody else has looked at it yet. On a push that half already posted the [[debtor-leg]] — the payer's money is in [[clearing-suspense]], customer's side value-dated to the debit and suspense side to settlement — while the payment still reads *Initiated*. On a pull it posted nothing, and the **payer's** bank posts the debtor leg when the collection reaches it, still leaving the payment *Initiated*.
 - **Initiated → Accepted:** the **clearing house's** act and nobody else's — it takes the payment into the open cycle for its scheme. No open cycle means \`ErrCycleNotOpen\`, which travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
 - **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
-- **Cleared → Settled:** the **central bank's** act, and it happens because the clearing house asked — closing a cycle sends a \`pacs.009\`. Reserves move at the [[central-bank-reserves|central bank]] and the [[creditor-leg]] is posted. A net payer who cannot cover is refused, and then nothing posts at all: the cycle stays Closed with no settlement against it.
+- **Cleared → Settled:** three institutions, and the arrow is the *third* one's. The clearing house asks — closing a cycle sends a \`pacs.009\` — and the **central bank** discharges the net positions in its own book, which is where the money becomes [[settlement-finality|final]]. The payment row moves to Settled later still, when the **payee's own bank** posts the [[creditor-leg]] on being told, per payment, that the cycle settled. The gap between those two moments is the [[unreconciled-position|unreconciled position]]. A net payer who cannot cover is refused before anything posts at all: the cycle stays Closed with no settlement against it, and every payment in it stays Cleared.
 - **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
 - **Returned:** after settlement; an R-transaction fully unwinds the flow (available on [[allows-return|return-enabled]] schemes only). It is sent by the bank that *received* the original instruction and executed by the central bank.
 
@@ -552,7 +552,9 @@ Settlement phase:
   Banks clear their clearing suspense accounts
 \`\`\`
 
-The gap between the two phases is the **settlement window** — during it, counterparty risk exists, and the money sits in each bank's [[clearing-suspense]] account. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.`,
+The gap between the two phases is the **settlement window** — during it, counterparty risk exists, and the money sits in each bank's [[clearing-suspense]] account. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.
+
+There is a second gap on the far side of it. Settlement is [[settlement-finality|final]] when the central bank commits, and each member books its own legs afterwards on being told — see [[unreconciled-position]].`,
   },
   netting: {
     title: "Netting",
@@ -647,7 +649,78 @@ Timeline for a SEPA Credit Transfer:
    Credit Reserve at CB (Asset)         300  ← reserve asset falls
 \`\`\`
 
-The suspense balance at any point equals the total value of in-flight payments that have been accepted but not yet settled. If a cycle fails to settle, the suspense remains non-zero — a signal that requires investigation. The [[audit-trail]] records every posting in/out of suspense for reconciliation.`,
+The suspense balance at any point equals the total value of in-flight payments that have been accepted but not yet settled. If a cycle fails to settle, the suspense remains non-zero — a signal that requires investigation. The [[audit-trail]] records every posting in/out of suspense for reconciliation.
+
+It is also where the [[unreconciled-position|unreconciled position]] shows: settlement is [[settlement-finality|final]] at the central bank, and this account stays non-zero until this bank has booked its own half of the cut-off.`,
+  },
+  "settlement-finality": {
+    title: "Settlement finality",
+    body: `**Settlement is final at the central bank**, and the participants catch up afterwards. Once the central bank commits its netting transaction the money has moved between the banks; nothing a member does next unwinds it, including failing to book its own half.
+
+That is not a modelling convenience. In the EU it is the **Settlement Finality Directive** (98/26/EC), whose subject is precisely the moment a transfer order becomes irrevocable — so that one participant's insolvency cannot reach back into a batch that has already settled.
+
+\`\`\`
+Clearing house  --pacs.009-->  central bank
+Central bank commits its netting transaction   ← FINAL here
+  --camt.053-->  each member whose position moved
+  --pacs.002/ACSC (via the clearing house)-->  per payment
+Each bank posts its own legs, locally, afterwards  ← catching up
+\`\`\`
+
+The answer is final either way. A net payer that cannot cover its position is refused **before anything is posted** — \`RJCT\`/\`AM04\`, the same code a debtor's bank sends about a customer's empty account — and the cycle stays Closed with no settlement against it and every payment exactly where the cut-off left it.
+
+The interval between the commit and a member's booking is the [[unreconciled-position|unreconciled position]].`,
+  },
+  "unreconciled-position": {
+    title: "Unreconciled position",
+    body: `The **unreconciled position** is the interval between the central bank committing a settlement and a member bank booking its own half of it. Settlement is [[settlement-finality|final]] at the commit; the member is only *told* then, and books afterwards in a [[unit-of-work|unit of work]] of its own.
+
+In the books it shows as a non-zero [[clearing-suspense|clearing suspense]]: the money has settled between banks and this bank has not yet cleared the account that held it in transit.
+
+The system records it explicitly. A member's settlement-advice row is written **before** the mirror leg is posted, so a posting that fails leaves the row at *Advised* rather than leaving no trace. A row still at Advised is a bank that was told and did not book — the only thing in this system that can say so.
+
+\`\`\`
+settlement_advices (book_id, cycle_id, asset)
+  status = Advised  ← told; mirror leg not posted   ← unreconciled
+  status = Posted   ← mirror leg posted
+\`\`\`
+
+It is the one payment-layer table keyed by **book** rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read; reading it is what a reconciliation would do.`,
+  },
+  "nostro-reconciliation": {
+    title: "Two advices, one balance",
+    body: `A bank reconciles **two advices from two institutions against one balance**.
+
+- The **central bank** says what its reserve moved by, in a \`camt.053\` statement of that bank's reserve account. That is the mirror leg against the [[reserve-account|reserve asset]].
+- The **clearing house** says which payments settled, one \`pacs.002\`/\`ACSC\` per payment. Those are the [[creditor-leg|creditor legs]].
+
+\`\`\`
+Bank B, a net receiver, over one cut-off:
+  camt.053  (central bank)   Debit  Reserve at CB      ← Credit suspense
+  pacs.002  (clearing house)  Credit payee's deposit   ← Debit  suspense
+  ─────────────────────────────────────────────────────
+  Clearing suspense back to zero   ✓  only if the two agree
+\`\`\`
+
+Its [[clearing-suspense|clearing suspense]] returns to zero only if the two agree, which is the whole point of the split: two **senders** make a check possible. If both advices came from the same institution the bank would be checking a sender against itself and there would be nothing to reconcile.
+
+This is the classic **nostro/vostro** check — the bank's reserve asset against the central bank's reserve liability — with the payment list as a second, independent witness.`,
+  },
+  "unclaimed-balances": {
+    title: "Unclaimed balances",
+    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every participant gets one per [[asset]] it operates in, created when it joins the network.
+
+The case it exists for: a payee closes their account between their bank's acceptance of the payment and the cut-off. [[account-status|Closed]] is the one status that refuses a credit, and crediting it anyway leaves money no withdrawal can reach and no second close can clear.
+
+\`\`\`
+Bank B posts its creditor leg; the payee's account is Closed:
+  Debit  Clearing Suspense (Liability)    3000
+  Credit Unclaimed Balances (Liability)   3000   ← not the closed account
+\`\`\`
+
+The payment still reaches **Settled**, because it did: the reserves moved and the payee's bank has been paid. Which of that bank's own accounts holds the money afterwards is between the bank and its customer, and is not a fact about the payment.
+
+**Having somewhere for it to go is what made the check affordable.** While the creditor leg was posted inside the settlement agent's one unit of work, refusing a credit would have taken the whole cut-off down for one retail customer — so nothing checked, and the money stranded. One payment at one bank fails on its own now.`,
   },
   "account-addressing": {
     title: "Account addressing",

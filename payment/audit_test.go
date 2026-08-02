@@ -129,13 +129,35 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	}
 }
 
-// TestAuditEventsRollBackWithTheOperation is why the events are written on the
+// TestARefusedSettlementLeavesNoAuditTrail is why the events are written on the
 // operation's own transaction rather than through a wrapper that opens its own.
 //
 // A settlement that fails on an underfunded member must leave nothing behind —
-// including its audit trail. An event that survived would be worse than no
-// event at all: an immutable log asserting that money moved when it did not.
-func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
+// including its audit trail. An event that survived would be worse than no event
+// at all: an immutable log asserting that money moved when it did not.
+//
+// # It was called TestAuditEventsRollBackWithTheOperation, and that name stopped
+// being true
+//
+// The claim was a ROLLBACK, and it was the right description of the code that
+// carried it: SettleCycleTx posted the central bank's netting transaction and
+// then every member's mirror leg, so an underfunded member was discovered after
+// the unit of work had already written, and the store had to undo it.
+//
+// The mirror leg is the member's own act since Task 15b.2, so SettleCycleTx
+// checks each net payer's reserve ITSELF, above the netting transaction and with
+// only reads behind it. Against this fixture the refusal is therefore a clean
+// no-op: nothing was written, so nothing was rolled back, and the assertions
+// below pass for a different reason than the one they were written for. They are
+// kept because what they measure — a refused cut-off leaves no trace, which is
+// what makes asking again safe once the member is funded — is still worth
+// pinning, and because a settlement that started appending before it checked
+// would fail them again.
+//
+// TestSettleCycleIsAtomic in system_test.go is the same correction on the
+// balances rather than the trail, and it names the test that still carries the
+// mid-flight rollback claim: TestAFailedReversalRollsBackTheWholeRejection.
+func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 	ctx := context.Background()
 	sys, cycleID := newClosedCycleWithUnderfundedMember(t)
 
@@ -152,12 +174,12 @@ func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
 	assertEqual(t, "audit events after a failed settlement", len(after), len(before))
 	for _, e := range after {
 		if e.Type == ledger.EventCycleSettled || e.Type == ledger.EventPaymentSettled {
-			t.Fatalf("%s for %s survived a rolled-back settlement", e.Type, e.EntityID)
+			t.Fatalf("%s for %s survived a refused settlement", e.Type, e.EntityID)
 		}
 	}
 
-	// The successful part of the fixture is still on record, so the rollback
-	// removed the failed unit of work and nothing else.
+	// The successful part of the fixture is still on record, so the refusal cost
+	// the failed unit of work and nothing else.
 	assertEqual(t, "cycle trail", eventTypes(paymentAudit(t, sys, string(cycleID))),
 		strings.Join([]string{ledger.EventCycleOpened, ledger.EventCycleClosed}, " "))
 }

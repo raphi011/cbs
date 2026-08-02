@@ -210,12 +210,21 @@
 // every bank's single claim on, or obligation to, the central bank.
 //
 // The CENTRAL BANK discharges them, whole or not at all. SettleCycleTx is one
-// unit of work holding every member's reserve account at once, which is what a
-// settlement window is, and a net payer whose reserve cannot cover its position
-// aborts the batch — answered AM04, the same code a debtor's bank sends about a
-// customer's empty account, said about a bank instead of about a customer.
-// Before the mesh that refusal was a Go error returned to whoever pressed
-// settle, which is not something a clearing house can act on.
+// unit of work holding every member's reserve position at once — the settlement
+// accounts in the central bank's OWN book, which is where that position is
+// recorded on this side — and that is what a settlement window is. A net payer
+// whose reserve cannot cover its position aborts the batch, answered AM04, the
+// same code a debtor's bank sends about a customer's empty account, said about a
+// bank instead of about a customer. Before the mesh that refusal was a Go error
+// returned to whoever pressed settle, which is not something a clearing house
+// can act on.
+//
+// What that window does NOT hold is any member's own book, and it used to. Each
+// member's mirror leg and creditor legs are that member's own units of work now,
+// made on advice and afterwards. That is what makes settlement FINAL rather than
+// simultaneous: when this unit of work commits the reserves have moved, and a
+// member that has not yet booked its half has an unreconciled position rather
+// than a claim on anyone. See payment.SettleCycle.
 //
 // The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
 // submitted it AND to the payee's bank. The central bank could not: it answers

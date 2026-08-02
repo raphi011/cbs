@@ -318,5 +318,22 @@ export const chapter: Chapter = {
         "Under [[settlement-model-gross]] every payment settles individually: $300 moves one way and $100 moves the other — **$400** of reserves in total. Netting collapses this to just $200, which is exactly why clearing exists as a step before settlement: it converts a large gross flow into a small net one.",
       explore: { label: "See settlement cycles", href: "/clearing-house/cycles" },
     },
+    {
+      kind: "mc",
+      id: "ch11-q21",
+      difficulty: "core",
+      concept: "unclaimed-balances",
+      prompt:
+        "A payee closes their account after their bank has accepted an inbound payment but before the cut-off settles. The cycle settles anyway. Where does the money go?",
+      options: [
+        "Into the closed account, which reopens to receive it",
+        "Back to the payer, as an automatic return",
+        "To the receiving bank's Unclaimed Balances account, a liability it still owes",
+        "It stays in the receiving bank's clearing suspense indefinitely",
+      ],
+      answer: 2,
+      explanation:
+        "[[account-status|Closed]] is the one status that refuses a credit, so the payee's bank posts its [[creditor-leg]] to its **[[unclaimed-balances|Unclaimed Balances]]** account instead — a liability, because the bank still owes the money to whoever eventually claims it. The payment still reaches Settled, because it did: the reserves moved and the payee's bank has been paid. It is *not* clearing suspense (option D): that account means \"a leg in flight\", and pooling unapplicable credits there would make one balance answer two questions. What made the check affordable was having somewhere for the money to go, plus the fact that a creditor leg is now the payee's bank's own unit of work — so one payment at one bank fails without taking the cut-off down with it.",
+    },
   ],
 };

@@ -74,6 +74,10 @@ The sections below are organized around these layers: general-ledger concepts fi
     - [Cross-Currency Payments Are Two Operations](#cross-currency-payments-are-two-operations)
   - [The Payment Lifecycle](#the-payment-lifecycle)
   - [Posting Choreography: SEPA Credit Transfer](#posting-choreography-sepa-credit-transfer)
+  - [Settlement Is Final at the Central Bank, and the Banks Catch Up](#settlement-is-final-at-the-central-bank-and-the-banks-catch-up)
+    - [Each Institution Knows Only What Its Own Job Needs](#each-institution-knows-only-what-its-own-job-needs)
+    - [A Bank Reconciles Two Advices from Two Institutions Against One Balance](#a-bank-reconciles-two-advices-from-two-institutions-against-one-balance)
+    - [Unclaimed Balances](#unclaimed-balances)
   - [Netting: A Worked Example](#netting-a-worked-example)
   - [SEPA Direct Debit and Returns](#sepa-direct-debit-and-returns)
   - [Deliberate Simplifications](#deliberate-simplifications)
@@ -937,7 +941,7 @@ Bank A (debtor leg):
 
 That is impeccable double-entry. It balances within its asset and passes `validateBalance` without complaint — and nothing in it contains the claim that some posting in another bank's book is its other half. No bank in this system holds both ends at once; that is what makes the ledger's catch late rather than absent.
 
-**It is caught eventually, and that is the argument for `ErrAssetMismatch`, not against it.** At settlement the creditor leg is built from the creditor's suspense account *in the scheme's asset* — `creditor.AccountsFor(scheme.Asset())` — so what actually gets posted is:
+**It is caught eventually, and that is the argument for `ErrAssetMismatch`, not against it.** After the cut-off has settled, the **payee's own bank** comes to post the creditor leg and builds it from *its own* suspense account in the scheme's asset — `creditor.AccountsFor(scheme.Asset())`, in `PostCreditorLegTx`, which is that bank's act and not the settlement agent's — so what actually gets posted is:
 
 ```
 Bank B (creditor leg, on the settlement advice):
@@ -1018,6 +1022,57 @@ Bank B:        Debit  Clearing Suspense 3000             // creditor leg: releas
 (For this single inbound payment Bank B's two Clearing Suspense legs net to zero — B never posted a debtor leg here. They are shown because across a full netted cycle Bank B's *own* outgoing payments would have credited its suspense, so clearing it at settlement is what actually happens; in isolation it is just bookkeeping symmetry.)
 
 Afterwards both banks' suspense accounts are back to zero, and each bank's **Reserve at Central Bank** asset equals the central bank's **Reserve: \<Bank\>** liability — the books reconcile.
+
+### Settlement Is Final at the Central Bank, and the Banks Catch Up
+
+The postings above are three institutions' and they do not happen at the same moment. The central bank's is one unit of work and it is **final**: once it commits, the money has moved between the banks, and nothing a member does next unwinds it — including failing to book its own half. The members are *told*, and book afterwards.
+
+That is not a modelling convenience. In the EU it is the **Settlement Finality Directive** (98/26/EC), whose subject is exactly this moment — when a transfer order becomes irrevocable, so that one participant's insolvency cannot reach back into a batch that has already settled. A system that unwound a settled cycle because one member's local posting failed would be modelling something no RTGS is permitted to do.
+
+The central bank's answer is final either way. A net payer that cannot cover its position is refused **before anything is posted** — `RJCT`/`AM04` — and the cycle stays `Closed` with no settlement against it and every payment exactly where the cut-off left it.
+
+**The interval between the central bank's commit and a member's booking is the unreconciled position**, and it is modelled rather than hidden. `PostSettlementAdviceTx` writes that member's `SettlementAdvice` row *before* it posts the mirror leg, so a posting that fails leaves the row at `Advised` rather than leaving no trace — that row is the only thing in this system that can say a bank was told and did not book. Where the position shows in the books is the bank's **clearing suspense**: settlement has happened and the suspense has not yet been cleared. (Nothing reads the closing balance the statement carried yet; storing it is what makes a later reconciliation possible at all.)
+
+#### Each Institution Knows Only What Its Own Job Needs
+
+The **clearing house has no ledger**. `CloseCycleTx` posts nowhere: it marks each payment `Cleared`, writes the net positions onto the cycle, and then *instructs*, because discharging those positions moves central-bank money and no clearing house may do that. There is no clearing-house book of accounts in this system — the cycle and payment rows it writes are network-scoped rows, not postings.
+
+The **central bank has no customers**. Its book holds one `Reserve: <Bank> (<asset>)` liability per member per asset and the balancing `Settlement Assets (<asset>)` — no deposit accounts and no payees. It answers about a *cycle* and has no way to look an individual payment up, which is why the per-payment `ACSC` fan-out is the clearing house's job and not its.
+
+A **bank has no cycles**. A member never reads the cycle row — `bankOps`, the narrowed interface a bank's handler holds, has no method that can name one. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record of that cut-off is the `settlement_advices` row keyed by `(book_id, cycle_id, asset)` — the one payment-layer table that carries a book id at all. There is deliberately no foreign key from it to `cycles`: the constraint would encode exactly the sharing that splitting the stores removes.
+
+#### A Bank Reconciles Two Advices from Two Institutions Against One Balance
+
+Two senders tell a bank about the same cut-off, and they tell it different things:
+
+- the **central bank** says what its reserve moved by — a `camt.053` statement of that bank's reserve account, which is what the mirror leg is booked from;
+- the **clearing house** says which payments settled — one `pacs.002`/`ACSC` per payment, which is what each creditor leg is booked from.
+
+```
+Bank B, a net receiver, over one cut-off:
+  camt.053  (central bank)     Debit  Reserve at CB    → Credit Clearing Suspense
+  pacs.002  (clearing house)   Credit Bob's deposit    → Debit  Clearing Suspense
+  ─────────────────────────────────────────────────────────────
+  Clearing suspense back to zero  ✓  only if the two agree
+```
+
+Its clearing suspense returns to zero **only if the two agree**, and that is what makes the split load-bearing rather than incidental. Two senders make a check possible; if both advices came from one institution the bank would be checking a sender against itself and there would be nothing to reconcile. It is the classic nostro/vostro check — the bank's reserve asset against the central bank's reserve liability — with the payment list as a second, independent witness.
+
+#### Unclaimed Balances
+
+Money that arrives for an account that cannot receive it goes to the receiving bank's **Unclaimed Balances (\<asset\>)** account. It is a *liability*, because the bank still owes the money — to whoever eventually claims it — exactly as it owes a deposit. Every participant gets one per asset it operates in, created when it joins the network.
+
+The case it exists for is a payee who closes their account between their bank's acceptance of the payment and the cut-off. `Closed` is the one status that refuses a credit, for the reason given under [account states](#what-this-implementation-actually-enforces): a credit landing on a closed account leaves it holding money no withdrawal can reach and no second close can clear.
+
+```
+Bank B posts its creditor leg; Bob's account is Closed:
+  Debit  Clearing Suspense (Liability)   3000
+  Credit Unclaimed Balances (Liability)  3000    ← not Bob's closed account
+```
+
+The payment still reaches `Settled`, because it did: the reserves moved and Bob's bank has been paid. Which of that bank's own accounts holds the money afterwards is between the bank and Bob, and is not a fact about the payment.
+
+**Having somewhere for it to go is what made the check affordable.** `CheckCreditTx` existed all along and settlement did not call it: while the creditor leg was posted inside the settlement agent's one unit of work, refusing a credit took the whole cut-off down for one retail customer, and a `Cleared` payment has no route out of the cycle it is in. Refusing was worse than stranding, so it stranded and the ruling was recorded rather than fixed. Two things changed it — the account, and the split that lets one payment at one bank fail on its own.
 
 ### Netting: A Worked Example
 

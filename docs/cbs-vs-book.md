@@ -44,6 +44,18 @@ Two things the comparison got incomplete, worth recording next to it:
   `Clearing Suspense (<asset>)`: that account means "a payment leg in flight",
   and pooling unapplicable credits into it would make one balance answer two
   questions. See README *Next Work*.
+  *Closed by sub-project 8's Task 15 (2026-08-02), and the first sentence of the
+  reasoning is what stopped being true.* Settlement is no longer all-or-nothing
+  across every book: the central bank posts only its own netting transaction,
+  and the creditor leg is the payee's bank's own unit of work, made on a
+  per-payment advice after the cut-off has settled. So one closed account fails
+  one payment at one bank instead of the cycle, and refusing became affordable.
+  The destination is `Unclaimed Balances (<asset>)` — a liability per bank per
+  asset, distinct from clearing suspense for exactly the reason above — and
+  `PostCreditorLegTx` calls `CheckCreditTx` and diverts to it. What resolves the
+  balance later is still not built: the money sits there until someone claims
+  it. The mirror case on the RETURN path is also still open, and the README's
+  *Next Work* records it.
 - **A gap this comparison never found, and item 11 closed on its way past.**
   `DisburseTx` used to clamp `LastAccrualDate` forward to the wall clock before
   reopening the accrual window on a re-drawn facility. The clamp stopped a span
@@ -80,7 +92,7 @@ These are not vague alignments — in several cases the book reaches the same co
 | **Boring replicated Postgres.** | §22.2.7 works the arithmetic for an 800k-customer bank and concludes a single PostgreSQL-class primary clears it with headroom: "Most banks that believe they need a planet-scale database need an index review and a fan-out audit." It names purpose-built ledgers as an optimisation, not a default. |
 | **One asset per account; a "multi-currency account" is several accounts.** | §3.5.3: "A multi-currency account in the product sense is, in the ledger, a family of single-currency positions presented together." §4.1.3 advises against multi-currency accounts "at the ledger layer." |
 | **Clearing ≠ settlement; banks meet only at the central bank; netting; suspense returns to zero; the bank's reserve asset mirrors the CB's reserve liability.** | §13.2.1 and §13.2.4 model exactly this, including the rule the repo follows: *the mirror account must move only in statement-shaped amounts*, with clearing accounts absorbing the difference. §13.2.2: "each of these central bank accounts gets exactly one mirror account." |
-| **Settlement is one all-or-nothing unit of work spanning every book.** | §13.2.4/§3.1.4. §3.1.4 adds the framing the repo would enjoy: money in flight between consistency domains "must sit, visibly, in a named account… An unexplained gap between two systems is a finding; a balance on a clearly named clearing account with an ageing report is business as usual." |
+| **Settlement is one all-or-nothing unit of work in the central bank's own book** — over every member's settlement account *there*, and over no member's own ledger. *(This row read "spanning every book" and was true when written. Sub-project 8's Task 15 moved each member's mirror leg and creditor legs into that member's own unit of work, made on advice after the central bank has already committed; the batch is still whole or nothing at the settlement agent.)* | §13.2.4/§3.1.4. §3.1.4 adds the framing the repo used to only be able to admire and now implements: money in flight between consistency domains "must sit, visibly, in a named account… An unexplained gap between two systems is a finding; a balance on a clearly named clearing account with an ageing report is business as usual." That named account is `Clearing Suspense (<asset>)`, and the interval it is non-zero over is the unreconciled position — recorded as a `settlement_advices` row still at `Advised`. What is still missing is the ageing report: Task 19. |
 | **`Scheme` interface carrying `SettlementModel` (Net\|Gross).** | §13.1.2's STEP2-vs-TIPS distinction is precisely this axis, and the repo's *Next Work* note that gross settlement needs a different posting path matches §13.2.4 (TIPS skips the clearing account on the settled path). |
 | **Overdraft: no facility record, no reclassification posting; the Asset-side figure is `Σ max(0, −balance)`.** | §7.1.2, and this is the strongest single corroboration in the book: "The account itself does not move in the subledger; the general ledger mapping does… **Do not try to solve this with paired shadow accounts in the subledger; banks that do spend the rest of their lives reconciling the pair.**" |
 | **Arranged rate + higher unarranged surcharge on the excess.** | §7.1.2's *eingeräumte* (§504 BGB) vs *geduldete* (§505 BGB) Überziehung — the repo has the right two-rate shape, and the book confirms the excess is priced higher. §7.1.2 also notes capitalised interest may itself breach the limit, which the repo permits. |

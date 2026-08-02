@@ -48,7 +48,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "A [[unit-of-work]] is `BEGIN … COMMIT`, or `ROLLBACK` and it is as if nothing happened. It is not one statement — the interesting operations here span many statements across all three layers. (A clearing cycle is a business-level batch; it is a different idea that happens to settle *inside* one unit of work.)",
+        "A [[unit-of-work]] is `BEGIN … COMMIT`, or `ROLLBACK` and it is as if nothing happened. It is not one statement — the interesting operations here span many statements across all three layers. (A clearing cycle is a business-level batch; it is a different idea, and only the central bank's half of it settles *inside* one unit of work.)",
     },
     {
       kind: "truefalse",
@@ -301,6 +301,23 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "Three entries for the original and three for the [[reversal]], so **6**. The reversal is a separate parent row in `transactions` with its own children; nothing is edited or deleted. The original's status becomes `Reversed` for reporting, but its entries stay exactly as posted — which is what lets the [[audit-trail|history]] be replayed to recompute any past balance.",
+    },
+    {
+      kind: "mc",
+      id: "ch15-q21",
+      difficulty: "challenge",
+      concept: "unreconciled-position",
+      prompt:
+        "`settlement_advices` is a member bank's record of a cut-off it was told about. Its `cycle_id` column has no foreign key to `cycles`. Why is that deliberate?",
+      options: [
+        "Because a foreign key would be too slow on a table this large",
+        "Because the cycle may not have been created yet when the advice arrives",
+        "Because a member bank has no cycles — the cycle row is the clearing house's, and after the split it is not in the bank's database at all",
+        "Because `cycle_id` is nullable, and a foreign key cannot reference a nullable column",
+      ],
+      answer: 2,
+      explanation:
+        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, cycle_id, asset)` — the one payment-layer table that carries a book id at all. A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same cut-off hold two rows with independent statuses, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — see [[unreconciled-position]].",
     },
   ],
 };

@@ -102,11 +102,19 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 // # AM04 is the answer this task exists to make expressible
 //
 // A net payer whose reserve cannot cover its position is refused inside
-// SettleCycleTx's single unit of work, so nothing is posted anywhere and the
-// whole batch fails — which is what a settlement window is. Before the mesh that
-// refusal was a Go error returned to whoever clicked settle. It is now AM04 on
-// the wire, addressed to the clearing house, which is the party that can act on
-// it: it holds the cycle, and it is the one that would re-present or unwind.
+// SettleCycleTx, and the whole batch fails with it — which is what a settlement
+// window is. Before the mesh that refusal was a Go error returned to whoever
+// clicked settle. It is now AM04 on the wire, addressed to the clearing house,
+// which is the party that can act on it: it holds the cycle, and it is the one
+// that would re-present or unwind.
+//
+// "Nothing is posted anywhere" is still true and no longer true for the reason it
+// used to be. It once held because one unit of work spanned every book and a
+// failure rolled all of them back. It holds now because the check runs ABOVE the
+// netting transaction, so the central bank has written nothing of its own; and
+// because advise runs only on the success path, so no member is sent a statement
+// and the clearing house fans no ACSC out. There is nothing for a member to undo
+// because no member was ever told.
 //
 // The code comes from payment.ReasonFor, which maps ledger.ErrInsufficientBalance
 // to AM04 through borrowedReasons — the same route deposit.ErrInsufficientAvailable
