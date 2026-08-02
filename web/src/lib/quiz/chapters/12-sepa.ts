@@ -319,5 +319,17 @@ export const chapter: Chapter = {
       explanation:
         "[[allows-return]] — a return fully unwinds the original settlement. The creditor received $200 when the [[creditor-leg]] posted at settlement; the return posts new compensating entries that exactly reverse that credit, reducing the creditor's balance by **$200**. The original entries remain in the ledger — only new offsetting entries are added.",
     },
+    {
+      kind: "truefalse",
+      id: "ch12-q21",
+      difficulty: "core",
+      concept: "counterparty-details",
+      prompt:
+        "When a bank submits a pacs.008, it looks up the payee's name in the payee's bank's deposit register before building the message.",
+      answer: false,
+      explanation:
+        "No bank holds a register of another bank's customers, so there is nothing to look up. The [[counterparty-details|payee's name]] is asserted on the instruction — the payer types it — and the submitting bank stores it in `Payment.CreditorDetails` (`payment.PartyDetails{Agent, Name}`) exactly as received, refusing to submit at all if it is missing (`ErrCounterpartyNotNamed`). The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's.",
+      explore: { label: "View payments", href: "/clearing-house/payments" },
+    },
   ],
 };

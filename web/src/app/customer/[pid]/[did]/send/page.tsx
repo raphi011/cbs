@@ -50,13 +50,15 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee. PayeeLine below is backed by
-  // GET /directory (api/handlers_directory.go's handleResolveIdentifier),
-  // which resolves the typed IBAN across the network and then reads the
-  // resolved account directly — bank, asset, and its name — off the payee's
-  // own bank's deposit register. Neither of these two fields is populated
-  // from that answer: the payer types both independently, and the request
-  // carries only what was typed.
+  // What the payer says about the payee. GET /directory
+  // (api/handlers_directory.go's handleResolveIdentifier) resolves the typed
+  // IBAN across the network and reads the resolved account — bank, asset and
+  // name — off the payee's own bank's deposit register, but PayeeLine below
+  // shows only the bank: a real payer's bank has no way to look up a name at
+  // another bank, so this form does not display one either, even though the
+  // directory happens to hand one back. Neither field below is populated from
+  // that answer: the payer types both independently, and the request carries
+  // only what was typed.
   const [creditorAgent, setCreditorAgent] = useState("");
   const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
@@ -183,7 +185,6 @@ export default function CustomerSend() {
                 query={settledIban}
                 isLoading={payee.isLoading}
                 error={payee.error}
-                name={payee.data?.name}
                 bank={payee.data?.participant}
                 payingSelf={payingSelf}
               />
@@ -204,7 +205,7 @@ export default function CustomerSend() {
             </div>
 
             <div className="space-y-1.5">
-              <FieldLabel htmlFor="send-creditor-name" required>
+              <FieldLabel htmlFor="send-creditor-name" hint="counterparty-details" required>
                 Payee&apos;s name
               </FieldLabel>
               <Input
@@ -259,21 +260,21 @@ export default function CustomerSend() {
   );
 }
 
-// What the directory said about the address typed so far. A miss is an answer and
-// is stated plainly; an ambiguous address — two banks claiming it — is a 409 and
-// describeError names it.
+// What the directory said about the address typed so far — the BANK it
+// routes to, and nothing about who holds it: naming the payee is the payer's
+// job, done in the two fields below this line, not something the directory
+// answers for them. A miss is an answer and is stated plainly; an ambiguous
+// address — two banks claiming it — is a 409 and describeError names it.
 function PayeeLine({
   query,
   isLoading,
   error,
-  name,
   bank,
   payingSelf,
 }: {
   query: string;
   isLoading: boolean;
   error: unknown;
-  name?: string;
   bank?: string;
   payingSelf: boolean;
 }) {
@@ -285,11 +286,11 @@ function PayeeLine({
   if (payingSelf) {
     return <p className="text-xs text-destructive">That is this account&apos;s own IBAN.</p>;
   }
-  if (!name) return null;
+  if (!bank) return null;
   const bankName = participants?.find((p) => p.id === bank)?.name ?? bank;
   return (
     <p className="text-xs text-muted-foreground">
-      <span className="font-medium text-foreground">{name}</span> at {bankName}
+      Routes to <span className="font-medium text-foreground">{bankName}</span>
     </p>
   );
 }
