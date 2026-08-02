@@ -78,6 +78,8 @@ func networkWithOnePayment(t *testing.T) (*Network, Payment) {
 		Amount:      250000,
 		EndToEndID:  "e2e-1",
 		Description: "invoice 42",
+		// Push: the creditor is the counterparty, so the request must name it.
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	assertNoError(t, err)
 	return sys, p
@@ -105,6 +107,8 @@ func networkWithOneCollection(t *testing.T) (*Network, Payment, Mandate) {
 		MandateID:   m.ID,
 		EndToEndID:  "e2e-dd-1",
 		Description: "electricity, August",
+		// Pull: the debtor is the counterparty, so the request must name it.
+		DebtorDetails: PartyDetails{Agent: aurora.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 	return sys, p, m
@@ -1155,6 +1159,11 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	if req.EndToEndID != "" {
 		t.Errorf("end-to-end id = %q, want it empty: NOTPROVIDED means the sender had none", req.EndToEndID)
 	}
+	// CreditTransferRequest does not yet carry the counterparty's details off
+	// the wire message — that translation is Task 14.4's, not this test's
+	// subject — so the fixture supplies what a real inbound translator will,
+	// reusing what the original payment already recorded for the same creditor.
+	req.CreditorDetails = p.CreditorDetails
 	if _, err := initiate(ctx, n, req); err != nil {
 		t.Fatalf("initiating a reference-less payment: %v", err)
 	}
@@ -1271,7 +1280,8 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 		// against this same network below without colliding with the payment
 		// it was built from — the dedup ErrDuplicateEndToEndID is real and is
 		// pinned elsewhere.
-		Amount: 250000,
+		Amount:          250000,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	assertNoError(t, err)
 
@@ -1313,6 +1323,11 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	if got.Debtor.Identifier.Value != "SE89AURORA1001" {
 		t.Errorf("debtor address = %q, want the compact form the message carried", got.Debtor.Identifier.Value)
 	}
+	// CreditTransferRequest does not yet carry the counterparty's details off
+	// the wire message — that translation is Task 14.4's, not this test's
+	// subject — so the fixture supplies what a real inbound translator will,
+	// reusing what the original payment already recorded for the same creditor.
+	got.CreditorDetails = p.CreditorDetails
 	// And it is accepted: initiation checks the quoted address against the
 	// account it resolved to, through the same comparison, so a fix that stopped
 	// at resolution would fail here with ErrIdentifierMismatch — the directory

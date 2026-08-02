@@ -133,6 +133,10 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrUnaddressableAccount),
 		errors.Is(err, payment.ErrIdentifierMismatch),
 		errors.Is(err, payment.ErrAmbiguousAddress),
+		// The request is well-formed JSON that named no counterparty (or an
+		// invalid one) — the same category as an unaddressable account: this
+		// bank cannot look the other side up, so the instruction must carry it.
+		errors.Is(err, payment.ErrCounterpartyNotNamed),
 		// A malformed BIC is well-formed JSON naming a field that is not a
 		// structurally valid ISO 9362 code — the same category as an
 		// unaddressable account, not a decoding failure.

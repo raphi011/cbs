@@ -146,4 +146,10 @@ var (
 	// slice order, and a customer reading their statement would see an IBAN
 	// nobody quoted.
 	ErrAmbiguousAddress = errors.New("account holds several identifiers in the scheme's addressing scheme; the payment must quote one")
+
+	// ErrCounterpartyNotNamed is a submission that did not say who the other side
+	// is. The instruction must carry the counterparty's agent and name because the
+	// message it becomes must, and because this bank cannot look either up — the
+	// account is at another bank, in a register it may not read.
+	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
 )

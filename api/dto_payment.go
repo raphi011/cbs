@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -348,6 +349,18 @@ type initiatePaymentRequest struct {
 	EndToEndID  string            `json:"endToEndId"`
 	Description string            `json:"description"`
 	Metadata    map[string]string `json:"metadata"`
+
+	// DebtorAgent and DebtorName are what the payer says about the payer's own
+	// side, and CreditorAgent/CreditorName are what it says about the payee:
+	// the BIC of a party's bank and the name on the account. Only the
+	// COUNTERPARTY's pair is required — the creditor's on a push, the debtor's
+	// on a pull — because this bank cannot look either up: the account is at
+	// another bank, in a register it may not read. See
+	// payment.ErrCounterpartyNotNamed.
+	DebtorAgent   string `json:"debtorAgent,omitempty"`
+	DebtorName    string `json:"debtorName,omitempty"`
+	CreditorAgent string `json:"creditorAgent,omitempty"`
+	CreditorName  string `json:"creditorName,omitempty"`
 }
 
 func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
@@ -360,6 +373,14 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,
 		Metadata:    req.Metadata,
+		DebtorDetails: payment.PartyDetails{
+			Agent: iso20022.BIC(req.DebtorAgent),
+			Name:  req.DebtorName,
+		},
+		CreditorDetails: payment.PartyDetails{
+			Agent: iso20022.BIC(req.CreditorAgent),
+			Name:  req.CreditorName,
+		},
 	}
 }
 

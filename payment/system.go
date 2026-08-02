@@ -1018,6 +1018,15 @@ type InitiatePaymentRequest struct {
 	EndToEndID  string    // optional client reference; deduplicated if set
 	Description string
 	Metadata    map[string]string
+
+	// DebtorDetails and CreditorDetails are what the instruction says about each
+	// side. Only the COUNTERPARTY's is required — and which side that is depends
+	// on the scheme's direction, exactly as everything else here does. The
+	// submitting bank's own side is filled from its own register and anything
+	// supplied for it is ignored, because a payer does not get to rename
+	// themselves on an instruction.
+	DebtorDetails   PartyDetails
+	CreditorDetails PartyDetails
 }
 
 // SubmitPayment is SubmitPaymentTx in its own unit of work.
@@ -1194,23 +1203,43 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 
 	now := s.now()
 	p := Payment{
-		ID:          PaymentID(id),
-		Scheme:      req.Scheme,
-		Debtor:      req.Debtor,
-		Creditor:    req.Creditor,
-		Amount:      req.Amount,
-		MandateID:   req.MandateID,
-		EndToEndID:  req.EndToEndID,
-		Status:      Initiated,
-		BookingDate: now,
-		ValueDate:   now.Add(scheme.SettlementDelay()),
-		Description: req.Description,
-		Metadata:    req.Metadata,
-		CreatedAt:   now,
+		ID:              PaymentID(id),
+		Scheme:          req.Scheme,
+		Debtor:          req.Debtor,
+		Creditor:        req.Creditor,
+		Amount:          req.Amount,
+		MandateID:       req.MandateID,
+		EndToEndID:      req.EndToEndID,
+		Status:          Initiated,
+		BookingDate:     now,
+		ValueDate:       now.Add(scheme.SettlementDelay()),
+		Description:     req.Description,
+		Metadata:        req.Metadata,
+		CreatedAt:       now,
+		DebtorDetails:   req.DebtorDetails,
+		CreditorDetails: req.CreditorDetails,
 	}
 
 	sc := SchemeContext{Network: s, Tx: tx, Now: now}
 	push := scheme.Direction() == Push
+
+	// The counterparty is whichever side this bank is not. Checked BEFORE the
+	// side call, so an instruction that names nobody is refused before the
+	// debtor leg is posted rather than after.
+	counterparty := &p.CreditorDetails
+	if !push {
+		counterparty = &p.DebtorDetails
+	}
+	if counterparty.Agent == "" || counterparty.Name == "" {
+		return Payment{}, ErrCounterpartyNotNamed
+	}
+	if err := counterparty.Agent.Validate(); err != nil {
+		return Payment{}, fmt.Errorf("counterparty agent: %w", err)
+	}
+	if err := ledger.ValidateText("counterparty name", counterparty.Name); err != nil {
+		return Payment{}, err
+	}
+
 	if push {
 		err = s.debtorSideTx(ctx, tx, scheme, &p, sc)
 	} else {
@@ -1440,6 +1469,14 @@ func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Pay
 		return err
 	}
 	p.Debtor.Identifier = address
+	// The submitting bank's own side comes from its own register, overwriting
+	// anything the request supplied: a payer does not rename themselves on an
+	// instruction, and this bank is the authority on its own customer.
+	part, err := s.participantTx(ctx, tx, p.Debtor.Participant)
+	if err != nil {
+		return err
+	}
+	p.DebtorDetails = PartyDetails{Agent: part.BIC, Name: account.Name}
 	// The funds check. It is the debtor bank's alone, which is why Scheme.Validate
 	// is now only ever this: the receiving side of a pull and the submitting
 	// side of a push are the same bank looking at the same account.
@@ -1480,6 +1517,10 @@ func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *P
 	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
 		return err
 	}
+	// The submitting bank's own side comes from its own register, overwriting
+	// anything the request supplied: a payer does not rename themselves on an
+	// instruction, and this bank is the authority on its own customer.
+	p.CreditorDetails = PartyDetails{Agent: creditor.BIC, Name: account.Name}
 	// The mandate, which in SEPA the CREDITOR holds — so it is checked by the
 	// creditor's bank, and for a pull that means synchronously, at submission.
 	return scheme.ValidateMandate(ctx, p, sc)

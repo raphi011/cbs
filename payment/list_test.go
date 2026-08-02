@@ -35,10 +35,11 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 
 	st := runCycle(t, sys, SchemeSEPACT, func() {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
-			Scheme:   SchemeSEPACT,
-			Debtor:   PartyRef{Participant: a.ID, Account: alice},
-			Creditor: PartyRef{Participant: b.ID, Account: bob},
-			Amount:   30000,
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Amount:          30000,
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 	})

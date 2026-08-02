@@ -368,7 +368,9 @@ func settledCycle(t *testing.T, h *Server) string {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
 		"amount":25000,
-		"endToEndId":"settle-e2e"
+		"endToEndId":"settle-e2e",
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -422,9 +424,11 @@ func TestABankSeesOnlyItsOwnPayments(t *testing.T) {
 // seededBank is a bank plus one funded, IBAN-addressed customer account — the
 // least a bank needs to be either end of an SCT.
 type seededBank struct {
-	pid     string
-	account string
-	iban    string
+	pid         string
+	account     string
+	iban        string
+	bic         string
+	accountName string
 }
 
 func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
@@ -434,13 +438,14 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	// at all — let alone tell each other apart on the wire.
 	mk := func(name, bic, iban string) seededBank {
 		pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusCreated)["id"].(string)
+		accountName := name + " customer"
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
-			`{"name":"`+name+` customer","asset":"EUR","productId":"`+prdOf(t, h, pid)+
+			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+
 				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,
 			http.StatusCreated)["id"].(string)
 		doJSON(t, bank(h, pid), "POST", "/deposits",
 			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
-		return seededBank{pid: pid, account: did, iban: iban}
+		return seededBank{pid: pid, account: did, iban: iban, bic: bic, accountName: accountName}
 	}
 	return mk("Bank A", "BNKADEFFXXX", "SE89-NARROW-A-0001"),
 		mk("Bank B", "BNKBDEFFXXX", "IT60-NARROW-B-0001"),
@@ -455,7 +460,9 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 		"debtor":{"participant":"`+from.pid+`","account":"`+from.account+`"},
 		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
-		"endToEndId":"`+e2e+`"
+		"endToEndId":"`+e2e+`",
+		"creditorAgent":"`+to.bic+`",
+		"creditorName":"`+to.accountName+`"
 	}`, http.StatusAccepted)["id"].(string)
 	// The payment is Initiated when the 202 is written and the counterparty has
 	// not seen it. Callers of this helper assert on what became of it, so the
@@ -477,7 +484,9 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 		"debtor":{"participant":"` + a.pid + `","account":"` + a.account + `"},
 		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
-		"endToEndId":"retail-1"
+		"endToEndId":"retail-1",
+		"creditorAgent":"` + b.bic + `",
+		"creditorName":"` + b.accountName + `"
 	}`
 
 	got := doJSON(t, bank(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
@@ -521,7 +530,9 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 		"creditor":{"participant":"` + payeeBank.pid + `","account":"` + payeeBank.account + `"},
 		"amount":10000,
 		"mandateId":"` + mandate + `",
-		"endToEndId":"collection-1"
+		"endToEndId":"collection-1",
+		"debtorAgent":"` + payerBank.bic + `",
+		"debtorName":"` + payerBank.accountName + `"
 	}`
 
 	// The payee's bank submits it, and is the right bank to.

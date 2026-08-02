@@ -243,11 +243,12 @@ func TestSCT_HappyPath(t *testing.T) {
 	runCycle(t, sys, SchemeSEPACT, func() {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
-			Scheme:      SchemeSEPACT,
-			Debtor:      PartyRef{Participant: a.ID, Account: alice},
-			Creditor:    PartyRef{Participant: b.ID, Account: bob},
-			Amount:      30000,
-			Description: "Invoice 42",
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Amount:          30000,
+			Description:     "Invoice 42",
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "status after initiation", pay.Status, Accepted)
@@ -284,11 +285,12 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	_, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme:      SchemeSEPACT,
-		Debtor:      PartyRef{Participant: a.ID, Account: alice},
-		Creditor:    PartyRef{Participant: b.ID, Account: bob},
-		Amount:      10000,
-		Description: "Rent",
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: a.ID, Account: alice},
+		Creditor:        PartyRef{Participant: b.ID, Account: bob},
+		Amount:          10000,
+		Description:     "Rent",
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 
@@ -338,11 +340,13 @@ func TestSCT_Netting(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
+			CreditorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -371,6 +375,7 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertError(t, err, deposit.ErrInsufficientAvailable)
 }
@@ -394,6 +399,7 @@ func TestSDD_HappyPath(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "value date T+2", pay.ValueDate, fixedTime.Add(48*time.Hour))
@@ -436,6 +442,7 @@ func TestSDD_MandateValidation(t *testing.T) {
 			_, err = initiate(ctx, sys, InitiatePaymentRequest{
 				Scheme: SchemeSEPADD, Amount: tc.amount, MandateID: tc.mandateID,
 				Debtor: debtor, Creditor: creditor,
+				DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 			})
 			assertError(t, err, tc.want)
 			// Tidy up the open cycle for the next sub-test.
@@ -459,7 +466,9 @@ func TestSDD_Return(t *testing.T) {
 	runCycle(t, sys, SchemeSEPADD, func() {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
-			Debtor: debtor, Creditor: creditor,
+			Debtor:        debtor,
+			Creditor:      creditor,
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -615,12 +624,14 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 20000,
 		Debtor: PartyRef{Participant: b.ID, Account: bob.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 	// Bank C pays 60000 its customer can afford on overdraft and it cannot.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 60000,
 		Debtor: PartyRef{Participant: c.ID, Account: carol.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 
@@ -671,8 +682,9 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 				j := (i + 1) % len(banks)
 				_, err := initiate(ctx, sys, InitiatePaymentRequest{
 					Scheme: SchemeSEPACT, Amount: ledger.Amount(1000 * (i + 1)),
-					Debtor:   PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
-					Creditor: PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+					Debtor:          PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
+					Creditor:        PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+					CreditorDetails: PartyDetails{Agent: banks[j].BIC, Name: accounts[j].Name},
 				})
 				assertNoError(t, err)
 			}
@@ -711,6 +723,7 @@ func TestStateMachineGuards(t *testing.T) {
 		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertNoError(t, err)
 		return p, cyc.ID
@@ -763,6 +776,7 @@ func TestRejectionReversesTheDebtorLeg(t *testing.T) {
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 40000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
@@ -783,6 +797,7 @@ func TestDuplicateEndToEndID(t *testing.T) {
 	req := InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000, EndToEndID: "e2e-1",
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	}
 	_, err = initiate(ctx, sys, req)
 	assertNoError(t, err)
@@ -815,6 +830,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
 			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 		})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
@@ -832,6 +848,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID, // no SDD cycle open
 			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertError(t, err, ErrCycleNotOpen)
 	})
@@ -911,6 +928,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
@@ -971,9 +989,11 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPACT, Amount: 1000,
-		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+		Scheme:          SchemeSEPACT,
+		Amount:          1000,
+		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1005,9 +1025,11 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPACT, Amount: 1000,
-		Debtor:   PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor: PartyRef{Participant: beta.ID, Account: to.ID},
+		Scheme:          SchemeSEPACT,
+		Amount:          1000,
+		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
+		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1046,8 +1068,12 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID,
-		Debtor: debtor, Creditor: creditor,
+		Scheme:        SchemeSEPADD,
+		Amount:        1000,
+		MandateID:     m.ID,
+		Debtor:        debtor,
+		Creditor:      creditor,
+		DebtorDetails: PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
 	})
 	assertError(t, err, ErrAssetMismatch)
 }
@@ -1116,6 +1142,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) 
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 
@@ -1387,10 +1414,11 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 	bruno := openCustomerWithoutIdentifier(t, ctx, verde, "Bruno")
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("initiation = %v, want ErrUnaddressableAccount", err)
@@ -1416,7 +1444,8 @@ func TestInitiateRefusesAQuotedIdentifierTheAccountDoesNotHold(t *testing.T) {
 			// Somebody else's address, pointing at Bruno's account.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"},
 		},
-		Amount: 10_00,
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
@@ -1444,8 +1473,9 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 			// Bruno's address, pointing at Alice's account.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"},
 		},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("initiation = %v, want ErrIdentifierMismatch", err)
@@ -1483,10 +1513,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 
 	// Creditor leg.
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("creditor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
@@ -1494,10 +1525,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 
 	// Debtor leg.
 	_, err = initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("debtor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
@@ -1508,10 +1540,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	var pay Payment
 	runCycle(t, net, SchemeSEPACT, func() {
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
-			Scheme:   SchemeSEPACT,
-			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 	})
@@ -1540,10 +1573,11 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 	runCycle(t, net, SchemeSEPACT, func() {
 		var err error
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
-			Scheme:   SchemeSEPACT,
-			Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Scheme:          SchemeSEPACT,
+			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 	})
@@ -1580,10 +1614,11 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"}))
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
-		Scheme:   SchemeSEPACT,
-		Debtor:   PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-		Amount:   10_00,
+		Scheme:          SchemeSEPACT,
+		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Amount:          10_00,
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	if !errors.Is(err, ErrAmbiguousAddress) {
 		t.Fatalf("initiation = %v, want ErrAmbiguousAddress", err)
@@ -1598,8 +1633,9 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 				Participant: aurora.ID, Account: alice.ID,
 				Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"},
 			},
-			Creditor: PartyRef{Participant: verde.ID, Account: bruno.ID},
-			Amount:   10_00,
+			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Amount:          10_00,
+			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
 		assertNoError(t, err)
 		assertEqual(t, "chosen debtor address", pay.Debtor.Identifier,
@@ -1635,6 +1671,7 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
+			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 		})
 		assertNoError(t, err)
 	})
@@ -1678,6 +1715,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: PartyRef{Participant: a.ID, Account: carla.ID}, Creditor: creditor,
+		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Carla"},
 	})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted debtor = %v, want ErrMandateMismatch", err)
@@ -1687,6 +1725,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: debtor, Creditor: PartyRef{Participant: b.ID, Account: other.ID},
+		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
 	})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted creditor = %v, want ErrMandateMismatch", err)
@@ -1728,6 +1767,8 @@ func networkWithTwoBanks(t *testing.T) (*Network, InitiatePaymentRequest) {
 		Debtor:      PartyRef{Participant: a.ID, Account: alice},
 		Creditor:    PartyRef{Participant: b.ID, Account: bob},
 		Description: "Invoice 42",
+		// Push: the creditor is the counterparty, so the request must name it.
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	}
 }
 
@@ -1757,6 +1798,8 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, Initiat
 		Debtor:      debtor,
 		Creditor:    creditor,
 		Description: "Electricity bill",
+		// Pull: the debtor is the counterparty, so the request must name it.
+		DebtorDetails: PartyDetails{Agent: a.BIC, Name: payer.Name},
 	}, m.ID
 }
 
@@ -1866,6 +1909,59 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	// existed.
 	if err := n.AcceptInbound(context.Background(), p.ID); !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Fatalf("AcceptInbound on an account the creditor's bank does not hold = %v, want ErrAccountNotInParticipant", err)
+	}
+}
+
+// TestSubmitTakesTheCounterpartyNameFromTheRequest pins the direction rule: the
+// submitting bank fills in its OWN side from its own register and is TOLD the
+// counterparty's. It never reads the counterparty's register for either.
+func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
+	ctx := context.Background()
+	n, req := networkWithTwoBanks(t)
+	creditorBank, err := n.GetParticipant(ctx, req.Creditor.Participant)
+	assertNoError(t, err)
+	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
+
+	p, err := n.SubmitPayment(ctx, req)
+	if err != nil {
+		t.Fatalf("SubmitPayment: %v", err)
+	}
+	if got := p.CreditorDetails.Name; got != "Whoever The Payer Typed" {
+		t.Errorf("creditor name is %q, want the name the request carried", got)
+	}
+	// The debtor is this bank's own customer, so its name comes from its own
+	// register and NOT from the request — a payer does not get to rename
+	// themselves on an instruction.
+	if p.DebtorDetails.Name == "" {
+		t.Error("the submitting bank did not fill in its own customer's name")
+	}
+	debtorBank, err := n.GetParticipant(ctx, req.Debtor.Participant)
+	assertNoError(t, err)
+	if p.DebtorDetails.Agent != debtorBank.BIC {
+		t.Errorf("debtor agent is %q, want the submitting bank's own BIC %q", p.DebtorDetails.Agent, debtorBank.BIC)
+	}
+}
+
+// TestSubmitRefusesAnUnnamedCounterparty pins that the instruction must carry
+// what the message will need. Before this, a request that named no counterparty
+// was accepted and the failure surfaced later, when the message was built, out of
+// a bank's own register — which is exactly the read being removed.
+func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		details PartyDetails
+	}{
+		{"no agent", PartyDetails{Name: "Grace Hopper"}},
+		{"no name", PartyDetails{Agent: testBIC}},
+		{"neither", PartyDetails{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n, req := networkWithTwoBanks(t)
+			req.CreditorDetails = tc.details
+			if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrCounterpartyNotNamed) {
+				t.Errorf("got %v, want ErrCounterpartyNotNamed", err)
+			}
+		})
 	}
 }
 
@@ -1981,6 +2077,7 @@ func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	})
 	assertNoError(t, err)
 	before, err := sys.GetCycle(ctx, cyc.ID)

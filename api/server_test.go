@@ -224,7 +224,9 @@ func TestSCTEndToEnd(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SCT-BOB-0001"}},
 		"amount":25000,
-		"endToEndId":"e2e-1"
+		"endToEndId":"e2e-1",
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	// Initiated, not Accepted: the payee's bank has not seen it yet. Draining is
 	// what carries the conversation to its end.
@@ -625,7 +627,9 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+aliceEUR+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-DTO-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -766,7 +770,9 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}},
 		"amount":25000,
-		"endToEndId":"short-reserve"
+		"endToEndId":"short-reserve",
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1231,7 +1237,9 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
-		"amount":25000
+		"amount":25000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1356,7 +1364,9 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	doJSON(t, csm(h), "POST", "/payments/"+second+"/reject", `{"reason":"AM05"}`, http.StatusAccepted)
@@ -1391,7 +1401,9 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -1435,7 +1447,9 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertEqual(t, "payer's book balance after submission", bookOf(), before-1000)
@@ -1476,7 +1490,9 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -2383,7 +2399,9 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice["id"].(string)+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-VD-BOB-0001"}},
 		"amount":25000,
-		"endToEndId":"e2e-1"
+		"endToEndId":"e2e-1",
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -2999,7 +3017,9 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
-		"amount":1000
+		"amount":1000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")

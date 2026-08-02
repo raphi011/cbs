@@ -200,7 +200,9 @@ func validSubmission() string {
 		"debtor":{"participant":"bank_1","account":"dep_20","identifier":{"scheme":"IBAN","value":"SE89-AURORA-1001"}},
 		"creditor":{"participant":"bank_3","account":"dep_23","identifier":{"scheme":"IBAN","value":"IT60-VERDE-2002"}},
 		"amount":1000,
-		"description":"mesh handoff"
+		"description":"mesh handoff",
+		"creditorAgent":"VERDITMMXXX",
+		"creditorName":"Bella Bruno"
 	}`
 }
 
@@ -346,7 +348,9 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
-		"amount":25000
+		"amount":25000,
+		"creditorAgent":"BNKBDEFFXXX",
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
 	drainServer(t, h)
 	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {

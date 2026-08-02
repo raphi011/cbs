@@ -390,6 +390,8 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
+		// Push: the creditor is the counterparty, so the request must name it.
+		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
 
@@ -430,6 +432,8 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		Amount:      harnessAmount,
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
+		// Pull: the debtor is the counterparty, so the request must name it.
+		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
 
@@ -487,6 +491,8 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		},
 		Amount:      harnessAmount,
 		Description: "invoice 43",
+		// Push: the creditor is the counterparty, so the request must name it.
+		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)

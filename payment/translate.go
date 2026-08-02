@@ -77,6 +77,14 @@ var reasonTable = []reasonMapping{
 	{ErrParticipantAssetNotFound, "ErrParticipantAssetNotFound", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 	{ErrSchemeUnsupportedReturn, "ErrSchemeUnsupportedReturn", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
+	// An instruction naming no counterparty is refused at submission, before
+	// any leg posts and before any message could exist to carry a reason back
+	// — but it is classified here rather than below, alongside the other
+	// malformed-instruction refusals, because nothing distinguishes it from
+	// them: a bad amount and a missing counterparty are the same category of
+	// defect, said about a different field.
+	{ErrCounterpartyNotNamed, "ErrCounterpartyNotNamed", iso20022.StatusReasonNotSpecifiedAgentGenerated},
+
 	// --- Classified as never reaching a counterparty ---
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a

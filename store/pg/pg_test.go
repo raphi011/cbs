@@ -473,11 +473,12 @@ func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
 	assertNoError(t, net.Deposit(ctx, debtorBank.ID, alice.ID, opening, "opening"))
 
 	req := payment.InitiatePaymentRequest{
-		Scheme:     payment.SchemeSEPACT,
-		Debtor:     payment.PartyRef{Participant: debtorBank.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
-		Creditor:   payment.PartyRef{Participant: creditorBank.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
-		Amount:     amount,
-		EndToEndID: "one-and-only",
+		Scheme:          payment.SchemeSEPACT,
+		Debtor:          payment.PartyRef{Participant: debtorBank.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
+		Creditor:        payment.PartyRef{Participant: creditorBank.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
+		Amount:          amount,
+		EndToEndID:      "one-and-only",
+		CreditorDetails: payment.PartyDetails{Agent: creditorBank.BIC, Name: bruno.Name},
 	}
 
 	errs := runConcurrently(8, func(int) error {
