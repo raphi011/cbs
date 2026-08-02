@@ -182,8 +182,9 @@
 // else — the routing table lives in one actor — and the destination follows
 // from the message definition rather than from anything inside the message: a
 // pacs.004 names no parties at all. Carrying a return costs it no store read
-// going out, and the answer coming back costs it the three reads the settlement
-// fan-out already needed, to address the bank that asked.
+// going out, and the answer coming back costs it three of the reads the
+// settlement fan-out already made — the payment, its scheme, the participant —
+// to address the bank that asked.
 //
 // A bank in this system SENDS a return and never receives one, which is the
 // shared store showing through. In a real network the pacs.004 travels to the

@@ -1106,8 +1106,14 @@ func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
 // establish there is a settled one to return, and it builds and sends the
 // pacs.004. It touches no book because that is all a returning bank does here —
 // the clawback in its OWN book is posted by the settlement agent, inside the
-// unit of work that moves the reserves. A returning bank that took its
-// customer's money back itself would come out [bank_3] and fail this.
+// unit of work that moves the reserves, which is why that book appears in the
+// central bank's set above and in nobody else's.
+//
+// An actor that DID reach into a bank's ledger over this window is not
+// invisible to these assertions, and that is measured rather than assumed: a
+// clearing-house half that listed the returning bank's ledgers before
+// forwarding the answer comes out [bank_3] and fails the third assertion
+// below.
 //
 // The PAYER's bank is handed no message at all over this window — the answer
 // goes to the bank that asked, and to nobody else — so its empty set is the
