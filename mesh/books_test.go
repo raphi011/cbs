@@ -794,20 +794,28 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // returns.
 //
 // The obvious worry about a single set is that it is a UNION over both roles, so
-// a flow in which one bank played both roles might produce the same union and go
-// unnoticed. Measured, it does not, for the two ways the pull arm can be got
-// wrong — and the sets differ because the two roles reach DIFFERENT books, not
-// merely because a different actor reached them:
+// a bank that played both might produce a union that collides with a legitimate
+// one. Measured, neither of the two ways the pull arm can be got wrong survives —
+// but they are caught by DIFFERENT assertions, for different reasons, and the
+// difference matters more than the result:
 //
 //   - Route the submission to the payer's bank and it submits and then answers
-//     itself. Its union gains NetworkBook, which only the submitting half ever
-//     reaches (the payment's id and its initiated event), so it comes out
-//     [debtor, creditor, network] against a want of [debtor, creditor] — and the
-//     payee's bank comes out empty.
-//   - Relay the pacs.003 by CdtrAgt and the payee's bank answers itself. The
-//     payer's bank never runs and its set is empty.
+//     itself. Both banks' sets give it away. The payer's union gains NetworkBook,
+//     which only the submitting half ever reaches (the payment's id and its
+//     initiated event), so it comes out [debtor, creditor, network] against a
+//     want of [debtor, creditor]; and the payee's bank comes out empty.
+//   - Relay the pacs.003 by CdtrAgt and the payee's bank answers itself. Here the
+//     union really does collide: the payee's set is [debtor, creditor, network],
+//     IDENTICAL to the correct flow, and that assertion passes. What catches it is
+//     the other bank — the payer's never runs, and its set is empty.
 //
-// Both were watched failing here, at these lines, in both rounds of this task.
+// So there is no single mechanism behind the two. One is caught by a set that no
+// single role produces, the other only by a bank that did nothing at all, and a
+// third way of getting this wrong is not covered merely because these two are.
+//
+// Each was watched failing against the file as it stands: the first at both of
+// the assertions below, the second at the payer's alone. Round 1 watched the same
+// two mutations against an earlier shape of this test and of this file.
 //
 // # The two-phase version that was tried, and why it is not here
 //
@@ -819,13 +827,21 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // quietly dropped, because a false rationale sitting in the test that is supposed
 // to BE the pin is worse than a weak assertion.
 //
-// The split also could not be made safe. Mesh.Submit sends to the clearing house
+// The split was also unsafe as written. Mesh.Submit sends to the clearing house
 // BEFORE it returns, so the moment submitDirectDebit hands back, the clearing
 // house may already be relaying and the payer's bank may already be running its
-// half — concurrently with the reset and with any assertion beside it. There is
-// no barrier for it: Drain means "nothing is in flight", and what a phase
-// boundary would need is "nothing has started", which this mesh does not offer
-// and could not, since the chain starting immediately is the whole point of it.
+// half — concurrently with the reset and with any assertion beside it. The mesh
+// offers no barrier for that: Drain means "nothing is in flight", and what a
+// phase boundary needs is "nothing has started".
+//
+// A test COULD build one, and it is worth naming rather than claiming
+// impossibility. Mesh.dispatch calls m.tap before it calls the handler, and the
+// harness installs the tap per test, so a tap that blocked the clearing house on
+// the first pacs.003 would hold the chain at exactly that boundary. It was not
+// worth doing, for the reason in the next paragraph — the only thing it would
+// gate is an assertion this system is entitled to violate — and it would buy
+// nothing against the first mutation either, since there the submitting half runs
+// synchronously inside Submit and the payer's own set below already catches it.
 //
 // And the invariant the split wanted is not one this system has. "The payer's
 // bank had touched nothing at the instant Submit returned" is a claim about
