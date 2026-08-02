@@ -199,10 +199,14 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 // holds the account, and the name on it. It is the whole of what a counterparty
 // bank is told, and the whole of what building an outbound message needs.
 //
-// It is SEPARATE from PartyRef because the two answer different questions and
-// only one of them is answerable locally. A PartyRef names an account this
-// system can look up; PartyDetails is a statement made in a message, which the
-// receiving bank has no way to verify and no business verifying.
+// It is SEPARATE from PartyRef because the two answer different questions. A
+// PartyRef names an account this system can resolve and act on; PartyDetails is
+// a statement made in a message, which the receiving bank does not verify and
+// has no business verifying. That is a restraint, not an inability — on its own
+// side it has the account in hand (creditorSideTx/debtorSideTx) and could
+// compare the name it finds there — and overwriting what the other bank
+// asserted would desynchronise the stored payment from the message already on
+// the wire.
 //
 // # Why it is stored on the payment rather than resolved
 //

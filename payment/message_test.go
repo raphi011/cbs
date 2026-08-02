@@ -876,9 +876,11 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 // A pacs.008 quoting a debtor IBAN that nobody in this network holds used to be
 // refused AC01, because resolution swept every member's register and found
 // nothing. That refusal was never this bank's to make: the debtor is the SENDING
-// bank's customer, and a receiving bank has no way to know whether that account
-// exists. It now resolves its own side only, and a message whose creditor it can
-// find is accepted whatever the debtor's address says.
+// bank's customer, and a receiving bank is not the party that answers for it.
+// It now resolves only its own side of the message, the creditor, and a message
+// whose creditor it can find is accepted whatever the debtor's address says.
+// That is WHICH PARTY is resolved, not which registers are searched:
+// ResolveIdentifierTx still sweeps every member, and narrowing it is later work.
 func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()

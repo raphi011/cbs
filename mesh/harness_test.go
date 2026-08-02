@@ -380,8 +380,9 @@ func (h *meshHarness) creditTransferRequest(t *testing.T) payment.InitiatePaymen
 // The creditor's participant and account are the real ones and only the ADDRESS
 // varies, which is what makes an unresolvable address a message the debtor's
 // bank can build and send. That is the honest shape: a payer quotes an IBAN,
-// their bank has no way to check whose it is, and the bank at the other end is
-// the first party that can say. See TestCreditTransferToAnUnknownAccountComesBackAsAC01.
+// submission does not resolve it — the instruction carries what was quoted —
+// and the bank at the other end is the party whose answer decides whether it is
+// payable. See TestCreditTransferToAnUnknownAccountComesBackAsAC01.
 func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment.InitiatePaymentRequest {
 	t.Helper()
 	return payment.InitiatePaymentRequest{
