@@ -30,10 +30,13 @@ import (
 //   - TestTheDirectDebitChainIsFourMessages pins that the pacs.003 goes from the
 //     payee's bank through the clearing house to the PAYER's bank, so the payer's
 //     bank is the only actor that ran the receiving half at all.
-//   - TestWhichBooksEachBankReachesInAPull measures the submitting half and the
-//     message chain as two separate phases, so it says not merely which books
-//     each bank reached but which HALF it reached them in. See the note on that
-//     test for why one combined measurement would not distinguish the two banks.
+//   - TestWhichBooksEachBankReachesInAPull measures, per actor, which books each
+//     bank reached across the whole chain. That is enough to tell the two banks
+//     apart because the two roles reach different books: only the submitting half
+//     reaches NetworkBook, so a bank that both submitted and answered comes out
+//     with a set neither role has. See the note on that test, which also records
+//     a two-phase variant that was tried, was justified by a false claim, and
+//     could not be made safe.
 //
 // TestDirectDebitAgainstAnUnfundedDebtorIsAM04 is NOT one of them, and the
 // reason is recorded here because it reads like one. AM04 is the payer's

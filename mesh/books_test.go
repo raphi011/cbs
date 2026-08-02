@@ -787,50 +787,61 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // it. AcceptInboundTx deliberately appends no audit event of its own — the
 // payment's lifecycle has two facts and not three — which is why nothing in this
 // half allocates a network id either.
-// # It is measured in two PHASES, and that is what makes it a pin on who posted
+// # ONE measurement, after the drain, and it distinguishes both wrong flows
 //
-// The recorder is reset between the submission and the drain, so each half of
-// the flow is attributed on its own. Measured as one set over the whole chain,
-// the two banks' sets are the union of what each did in both roles, and a flow
-// in which ONE bank played both roles produces the same union — which is exactly
-// the two ways the pull arm can be got wrong:
+// It is a single set per actor over the whole chain, taken after Drain, which is
+// the only barrier this package has and a real one: nothing is in flight when it
+// returns.
 //
-//   - route the instruction to the payer's bank to submit, and it submits and
-//     then answers itself;
-//   - relay the pacs.003 by CdtrAgt, and the payee's bank submits and then
-//     answers itself.
+// The obvious worry about a single set is that it is a UNION over both roles, so
+// a flow in which one bank played both roles might produce the same union and go
+// unnoticed. Measured, it does not, for the two ways the pull arm can be got
+// wrong — and the sets differ because the two roles reach DIFFERENT books, not
+// merely because a different actor reached them:
 //
-// Split, neither survives: phase one says the payee's bank submitted and the
-// payer's bank did NOTHING, and phase two says the payer's bank answered and the
-// payee's bank did nothing. Both were watched failing under both mutations. That
-// is as close as a shared store lets this package get to "which actor posted the
-// debtor leg" — postDebtorLegTx posts into the payment's own debtor bank's book
-// whoever calls it, so the ledger is identical either way and the only thing that
-// differs is whose unit of work opened it.
+//   - Route the submission to the payer's bank and it submits and then answers
+//     itself. Its union gains NetworkBook, which only the submitting half ever
+//     reaches (the payment's id and its initiated event), so it comes out
+//     [debtor, creditor, network] against a want of [debtor, creditor] — and the
+//     payee's bank comes out empty.
+//   - Relay the pacs.003 by CdtrAgt and the payee's bank answers itself. The
+//     payer's bank never runs and its set is empty.
 //
-// The payee's bank's phase-two set being EMPTY is not vacuous, and it is worth
-// saying why: it receives a message in that phase — the clearing house's ACCP —
-// and reads no book because an acceptance needs nothing from it. Under the
-// second mutation above it receives the collection instead and its set is every
-// bank book.
+// Both were watched failing here, at these lines, in both rounds of this task.
+//
+// # The two-phase version that was tried, and why it is not here
+//
+// An earlier version reset the recorder BETWEEN the submission and the drain to
+// attribute each half separately, on the stated grounds that one combined
+// measurement could not tell the two banks apart. That justification was FALSE —
+// the single-phase measurement had already been watched failing under both
+// mutations, in this task's own first round — and it is recorded rather than
+// quietly dropped, because a false rationale sitting in the test that is supposed
+// to BE the pin is worse than a weak assertion.
+//
+// The split also could not be made safe. Mesh.Submit sends to the clearing house
+// BEFORE it returns, so the moment submitDirectDebit hands back, the clearing
+// house may already be relaying and the payer's bank may already be running its
+// half — concurrently with the reset and with any assertion beside it. There is
+// no barrier for it: Drain means "nothing is in flight", and what a phase
+// boundary would need is "nothing has started", which this mesh does not offer
+// and could not, since the chain starting immediately is the whole point of it.
+//
+// And the invariant the split wanted is not one this system has. "The payer's
+// bank had touched nothing at the instant Submit returned" is a claim about
+// TIME in a concurrent mesh, and it is not true in general — the payer's bank is
+// entitled to have answered already. The claim that IS true is about
+// ATTRIBUTION, which is what the union above measures.
 func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	h := newMeshHarness(t)
 
-	// Phase one: the submitting half, and nobody else has heard anything yet.
 	h.rec.reset()
 	h.submitDirectDebit(t)
+	h.drain(t)
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.debtorBook, h.creditorBook, ledger.NetworkBook})
-	assertBooksTouched(t, "the payer's bank, before the collection reaches it", h.booksTouchedBy(h.debtorBIC), nil)
-
-	// Phase two: everything the message chain does, and none of what came before
-	// it.
-	h.rec.reset()
-	h.drain(t)
-
 	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
-	assertBooksTouched(t, "the payee's bank, once it has only an answer to read", h.booksTouchedBy(h.creditorBIC), nil)
 
 	// Clearing a collection costs the clearing house exactly what clearing a
 	// credit transfer costs it, which is the point of relaying by an address the
