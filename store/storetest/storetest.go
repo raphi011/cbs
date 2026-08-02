@@ -1750,6 +1750,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 							return errTaken
 						}
 					}
+					// TWO writes, as the operation this stands for has: a
+					// payment row and the ledger postings behind it. The
+					// window a wrong ordering leaves open is the interval
+					// between the read and the commit, so a case whose write
+					// was a single row would be measuring a narrower race than
+					// the one that shipped.
+					if err := tx.PutTransaction(ctx, bookA, transaction(ledger.TransactionID("txn_"+id), "")); err != nil {
+						return err
+					}
 					return tx.PutAccount(ctx, bookA, ledger.Account{
 						ID: ledger.AccountID(id), Name: wanted, Type: ledger.Liability,
 					})
