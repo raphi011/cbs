@@ -149,7 +149,10 @@ var (
 
 	// ErrCounterpartyNotNamed is a submission that did not say who the other side
 	// is. The instruction must carry the counterparty's agent and name because the
-	// message it becomes must, and because this bank cannot look either up — the
-	// account is at another bank, in a register it may not read.
+	// message it becomes must, and because submission looks neither up: the
+	// account is at another bank, and nothing on the path that builds a payment
+	// reads another bank's register. (GET /directory can resolve a name before
+	// any instruction exists — see PartyDetails — but its answer is never wired
+	// into the payment.)
 	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
 )

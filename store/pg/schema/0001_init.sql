@@ -643,11 +643,16 @@ COMMENT ON COLUMN payments.reject_code IS
 
 COMMENT ON COLUMN payments.debtor_name IS
     'The account holder name as QUOTED ON THE INSTRUCTION, not as held in the '
-    'register. It is stored rather than looked up because looking it up means '
-    'reading the counterparty bank''s deposit register, which no bank may do. '
-    'A real payer''s bank knows the payee''s name because the payer typed it. '
-    'The four agent/name columns are therefore not a cache: there is nothing '
-    'to fall back to, and a NULL here would be an unsendable payment.';
+    'register. It is stored rather than looked up because BUILDING A PAYMENT '
+    'looks it up nowhere: no bank reads the counterparty bank''s deposit '
+    'register to fill this column in. A real payer''s bank knows the payee''s '
+    'name because the payer typed it onto the instruction. (A lookup does '
+    'exist — GET /directory resolves an address across the network and does '
+    'read the resolved account''s name off its own bank''s register — but its '
+    'answer never reaches the payment: what lands here is what was typed, not '
+    'what was resolved.) The four agent/name columns are therefore not a '
+    'cache: there is nothing to fall back to, and a NULL here would be an '
+    'unsendable payment.';
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in

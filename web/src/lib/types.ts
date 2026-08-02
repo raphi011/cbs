@@ -662,9 +662,10 @@ export interface InitiatePaymentRequest {
   // debtorAgent/debtorName and creditorAgent/creditorName are what the payer
   // says about each side: the BIC of a party's bank and the name on the
   // account. Only the COUNTERPARTY's pair is required — the creditor's on a
-  // push, the debtor's on a pull — because this bank cannot look either up:
-  // the account is at another bank, in a register it may not read. See
-  // api/dto_payment.go's initiatePaymentRequest.
+  // push, the debtor's on a pull — because submission looks neither up: the
+  // account is at another bank, and nothing on the path that builds a payment
+  // reads another bank's register. See api/dto_payment.go's
+  // initiatePaymentRequest.
   debtorAgent?: string;
   debtorName?: string;
   creditorAgent?: string;

@@ -354,9 +354,10 @@ type initiatePaymentRequest struct {
 	// side, and CreditorAgent/CreditorName are what it says about the payee:
 	// the BIC of a party's bank and the name on the account. Only the
 	// COUNTERPARTY's pair is required — the creditor's on a push, the debtor's
-	// on a pull — because this bank cannot look either up: the account is at
-	// another bank, in a register it may not read. See
-	// payment.ErrCounterpartyNotNamed.
+	// on a pull — because submission looks neither up: the account is at another
+	// bank, and nothing on the path that builds a payment reads another bank's
+	// register. See payment.ErrCounterpartyNotNamed, which says what the
+	// separate GET /directory lookup does and does not feed.
 	DebtorAgent   string `json:"debtorAgent,omitempty"`
 	DebtorName    string `json:"debtorName,omitempty"`
 	CreditorAgent string `json:"creditorAgent,omitempty"`

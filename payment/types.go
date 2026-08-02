@@ -210,8 +210,12 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 // own bank's deposit register to get the name on it. That is a read of ANOTHER
 // BANK'S BOOK on the happy path of every submission, measured by the recorder in
 // mesh/books_test.go and recorded there at length. A real payer's bank knows the
-// payee's name because the payer typed it in — it has no access to the payee's
-// bank's records at all — so the name travels on the instruction.
+// payee's name because the payer typed it in, not because building the
+// instruction went and found it, so the name travels on the instruction. That
+// is a claim about the payment and not about the whole system: GET /directory
+// still resolves an address across the network and does read the resolved
+// account's name off its own bank's register. What no longer happens is that
+// answer reaching a payment — what is stored is what was typed.
 //
 // Storing it is therefore not a cache. There is nothing to fall back to.
 type PartyDetails struct {

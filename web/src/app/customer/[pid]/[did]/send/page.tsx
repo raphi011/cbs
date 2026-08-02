@@ -54,11 +54,11 @@ export default function CustomerSend() {
   // (api/handlers_directory.go's handleResolveIdentifier) resolves the typed
   // IBAN across the network and reads the resolved account — bank, asset and
   // name — off the payee's own bank's deposit register, but PayeeLine below
-  // shows only the bank: a real payer's bank has no way to look up a name at
-  // another bank, so this form does not display one either, even though the
-  // directory happens to hand one back. Neither field below is populated from
-  // that answer: the payer types both independently, and the request carries
-  // only what was typed.
+  // shows only the bank: rendering the resolved name would teach that the
+  // payer's bank confirms who it is paying, and it does not — the name that
+  // goes on the instruction is the one the payer typed. Neither field below is
+  // populated from that answer: the payer types both independently, and the
+  // request carries only what was typed.
   const [creditorAgent, setCreditorAgent] = useState("");
   const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
