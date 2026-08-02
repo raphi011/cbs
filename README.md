@@ -126,7 +126,7 @@ Three properties do most of the work.
 
 The system already draws this line elsewhere. A [payment scheme](#a-scheme-declares-its-asset) is a Go type with an `Asset()` method, registered in code; its *settlements* are rows. Assets work the same way: the definition is code, and everything denominated in one — accounts, deposit accounts, a bank's [per-asset plumbing accounts](#accounts-are-per-asset) — is a row that names it.
 
-An earlier design here had a writable per-book registry, and it is worth saying why it was removed rather than quietly dropped. It promised something the rest of the system could not deliver. A bank's suspense, reserve and settlement accounts are provisioned once, when it joins the network; an asset registered afterwards produced a real customer account that could never settle, and the failure surfaced as a `404` on funding. Adding an asset is a code change, which is the honest shape of it: the reserve plumbing, the schemes that quote it and the chart of accounts all have to move together.
+An earlier design here had a writable per-book registry, and it is worth saying why it was removed rather than quietly dropped. It promised something the rest of the system could not deliver. A bank's suspense, reserve, unclaimed-balances and settlement accounts are provisioned once, when it joins the network; an asset registered afterwards produced a real customer account that could never settle, and the failure surfaced as a `404` on funding. Adding an asset is a code change, which is the honest shape of it: the reserve plumbing, the schemes that quote it and the chart of accounts all have to move together.
 
 What *is* per bank is which assets it operates in — that is `participant_assets`, decided when the bank joins.
 

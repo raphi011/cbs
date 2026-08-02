@@ -590,6 +590,17 @@ var structCarriedBooks = map[string]structCarriedBook{
 			"Participant.BookID names the book the bank owns; it does not scope this write. " +
 			"TestWritingAParticipantTouchesNoBankBook is the evidence.",
 	},
+	// A PASSENGER, and the only one: the book argument scopes this write and
+	// SettlementAdvice.Book is the row's record of where it landed.
+	"PutSettlementAdvice": {
+		Scoping: false,
+		Why: "payment/store.go: the book ARGUMENT scopes this write. store/pg writes book_id from that " +
+			"argument and never reads a.Book at all; store/mem overwrites a.Book from it, so neither " +
+			"store can answer with a book the caller did not name. storetest's " +
+			"SettlementAdviceIsScopedToTheBankThatWasAdvised is the evidence: it puts an advice whose " +
+			"Book field disagrees with the argument and pins that both stores file it under the " +
+			"argument's book and read the field back as that book.",
+	},
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,10 +1351,16 @@ func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
 // the parser finds both shapes, and a method whose book travels inside its
 // argument must be DECIDED — recorded as scoping, or excluded with evidence.
 // Neither silence nor an unbacked assertion is available.
+//
+// PASSENGERS count too: a struct-carried book in a method that already takes its
+// book positionally (PutSettlementAdvice) is decided here like any other. It
+// looks harmless — the override notes argument 1 and that is the scope — but
+// "and that is the scope" is precisely the claim being made, and a claim nobody
+// has to write down is a claim nobody has to back.
 func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 	candidates := map[string]bookMethod{}
 	for _, m := range txBookCandidates(t) {
-		if m.Carry == bookInsideTheArg {
+		if m.Carry == bookInsideTheArg || m.PassengerField != "" {
 			candidates[m.Name] = m
 		}
 	}
@@ -1352,17 +1369,30 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 	}
 
 	for name, m := range candidates {
+		arg, field := m.Arg, m.Field
+		if m.PassengerField != "" {
+			arg, field = m.PassengerArg, m.PassengerField
+		}
 		decision, ok := structCarriedBooks[name]
 		if !ok {
 			t.Errorf("%s (%s.Tx) carries a book in %s.%s and structCarriedBooks does not decide it.\n"+
 				"Say whether that field scopes the operation — whether the store reads or writes\n"+
 				"another book because of it — and if it does not, say why and back it with a test.",
-				name, m.Pkg, m.Arg, m.Field)
+				name, m.Pkg, arg, field)
 			continue
 		}
 		if !decision.Scoping && strings.TrimSpace(decision.Why) == "" {
 			t.Errorf("structCarriedBooks[%q] excludes the method without saying why.\n"+
 				"An exclusion nobody can disprove is how ListAudit stayed unrecorded.", name)
+		}
+		// A passenger that SCOPES would mean the method has two scopes and the
+		// override records one of them. There is no correct decorator for that
+		// shape, so it is not a decision this table may express.
+		if m.PassengerField != "" && decision.Scoping {
+			t.Errorf("structCarriedBooks[%q] says %s.%s scopes the operation, but %s already takes its\n"+
+				"book at argument 1 and the override records only that one. If the field really chooses\n"+
+				"a book, this method has two scopes and no two-statement override can be right.",
+				name, arg, field, name)
 		}
 	}
 	for name := range structCarriedBooks {
@@ -2136,6 +2166,16 @@ type bookMethod struct {
 	Carry bookArg
 	Arg   string // the second parameter's name in the interface declaration
 	Field string // bookInsideTheArg only: the BookID field's name
+
+	// PassengerArg and PassengerField are a SECOND book, riding inside a later
+	// argument of a method that already takes `book ledger.BookID` at argument 1
+	// — PutSettlementAdvice(ctx, book, a) where a.Book exists.
+	//
+	// It is recorded rather than ignored because "the row merely records the
+	// book the argument already chose" is a claim about the STORE, which no
+	// signature makes. It goes to structCarriedBooks like every other
+	// struct-carried book; see TestEveryStructCarriedBookIsDecided.
+	PassengerArg, PassengerField string
 }
 
 // chainWalk is one traversal of a Tx embedding chain: what it found, what it
@@ -2323,18 +2363,19 @@ func (w *chainWalk) walk(dir string) {
 // classify decides how one interface method carries its book, refusing a book
 // carried anywhere but straight after ctx.
 //
-// The one exception is the rule PutSettlementAdvice asked for. A method that
+// The one exception is the shape PutSettlementAdvice introduced: a method that
 // already takes `book ledger.BookID` at argument 1 and is then handed a ROW that
-// names its own book is not carrying two scopes: the argument is the scope, and
-// the field is the row's record of which book it ended up in. Both stores write
-// that field from the argument and read it back off the book_id column, so it
-// cannot name a book the argument did not — see store/mem's PutSettlementAdvice,
-// which overwrites it for exactly this reason, and store/pg's, which never reads
-// it at all. The override notes the argument, which is the only scope there is.
+// names its own book. That is not a second position for the scope to hide in —
+// the override still notes argument 1 — so it is not refused.
 //
-// The exception is deliberately narrow: it needs argument 1 to BE a
-// ledger.BookID. A struct-carried book in a method with no book argument is
-// still refused here and still has to be decided in structCarriedBooks.
+// It is not waved through either. Whether the row's field is merely a record of
+// the book the argument chose, or a second book the store actually reads, is a
+// claim about the STORE that no signature makes; it is the same question
+// AppendAudit and PutParticipant pose, and it gets the same answer: it is
+// recorded as a PASSENGER and must be decided in structCarriedBooks with
+// evidence. Waving it through here is what would turn that registry into a rule
+// nobody consults, and the next PutX(ctx, book, x) of this shape would be
+// accepted silently.
 func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
 	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
 	for i, p := range flatParams(fn) {
@@ -2345,7 +2386,8 @@ func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMet
 		}
 		if i != 1 {
 			if found.Carry == bookIsTheArg && carry == bookInsideTheArg {
-				continue // the row records the book the argument already scoped
+				found.PassengerArg, found.PassengerField = p.name, field
+				continue
 			}
 			w.refusef("%s.Tx.%s carries its book at argument %d, not straight after ctx. "+
 				"Every override relies on that position; move it back, or teach this parser the new rule.",

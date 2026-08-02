@@ -25,8 +25,8 @@ type participantAccountsDTO struct {
 	Settlement string `json:"settlement"`
 }
 
-// participantDTO renders the internal accounts as a list rather than three
-// flat fields, because a bank holds one set per asset it operates in.
+// participantDTO renders the internal accounts as a list rather than four flat
+// fields, because a bank holds one set per asset it operates in.
 //
 // A list rather than an object keyed by code so the order is the API's to
 // choose: Go randomises map iteration, and a wire format that reorders itself

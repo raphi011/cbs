@@ -1019,6 +1019,44 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	}); err != nil {
 		t.Fatalf("View: %v", err)
 	}
+
+	// The book ARGUMENT is the scope; the Book FIELD is the row's record of it.
+	//
+	// This is the only method in payment.Tx that carries a book twice, and
+	// mesh/books_test.go's recorder relies on the two being the same thing: its
+	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
+	// cites this subtest as the evidence that nothing else could be recorded.
+	// store/pg holds it by construction — its INSERT writes book_id from the
+	// argument and never reads a.Book — so store/mem has to be made to agree, and
+	// an advice whose field disagrees with the argument is the only thing that can
+	// tell whether it still does.
+	misfiled := payment.SettlementAdvice{
+		Book: "bank_9", CycleID: "cyc_2", Asset: "EUR",
+		Movement: 100, ClosingBalance: 100,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutSettlementAdvice(ctx, "bank_2", misfiled)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice with a mismatched Book: %v", err)
+	}
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		got, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_2", "EUR")
+		if err != nil {
+			return err
+		}
+		if got.Book != "bank_2" {
+			t.Errorf("an advice put under bank_2 carrying Book %q read back as %q; "+
+				"the argument chooses the book and the field records it", misfiled.Book, got.Book)
+		}
+		// And the field did not file it anywhere: bank_9 was never written to.
+		if _, err := tx.GetSettlementAdvice(ctx, "bank_9", "cyc_2", "EUR"); !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
+			t.Errorf("bank_9 holds the advice its Book field named: got %v, want ErrSettlementAdviceNotFound", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reading the misfiled advice: %v", err)
+	}
 }
 
 func mandate(id payment.MandateID, createdAt time.Time) payment.Mandate {

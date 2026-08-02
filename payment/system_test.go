@@ -340,6 +340,70 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	assertEqual(t, "bob's closed account", customerBalance(t, b, bob), 0)
 }
 
+// TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances is the guard
+// on the guard above: it pins that only a CLOSED account diverts a credit, and
+// that a store that could not answer diverts nothing.
+//
+// The hazard is specific and it is not visible from PostCreditorLegTx alone.
+// glAccountTx collapses every error from its read into ErrAccountNotInParticipant
+// — a dropped connection, a scan error, a cancelled context all arrive as that
+// one sentinel — so a guard written as "return unless it is
+// ErrAccountNotInParticipant" cannot fire, and a settlement that failed to READ
+// the payee's account would credit the bank's unclaimed balances, mark the
+// payment Settled and commit. The money would be in the wrong account of the
+// right bank, and the only record of why would be a description string.
+//
+// The payee's account was already resolved once, when that bank accepted the
+// payment. A failure to resolve it now is not a statement about the account, so
+// it fails the cut-off — which is retriable — rather than routing money.
+//
+// It is the settlement-time twin of the defect Task 14 fixed in checkPartyTx,
+// and TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is its sibling.
+//
+// # What this does NOT assert, and why
+//
+// Not the error's IDENTITY. Its sibling can insist on errors.Is(err, dropped),
+// because checkPartyTx was fixed to stop collapsing; glAccountTx still does, and
+// unwinding that is a change to a function creditorSideTx and debtorSideTx also
+// call. So what comes back here is ErrAccountNotInParticipant over a store that
+// never said any such thing. That is a real residue and it is named rather than
+// papered over — but it is a residue in what the operator is TOLD, and this test
+// is about where the money went, which is the part that cannot be retried.
+func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 30000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+	})
+	assertNoError(t, err)
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+
+	// The same store, decorated only from here on: the payment had to clear
+	// before there was a cut-off to settle.
+	dropped := errors.New("connection reset by peer")
+	broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+		func() time.Time { return fixedTime })
+
+	if _, err := broken.SettleCycle(ctx, cyc.ID); err == nil {
+		t.Error("SettleCycle over a store that could not read the payee's account succeeded; " +
+			"a read that cannot answer is not permission to put the money somewhere else")
+	}
+	// The money is the part that cannot be retried, so it is the part asserted:
+	// none of it reached the unclaimed-balances account.
+	assertEqual(t, "bank B unclaimed balances after a failed read", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 0)
+	// And the cut-off is where it was, so it can simply be run again.
+	after, err := sys.GetCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	assertEqual(t, "cycle status after a failed settlement", after.Status, CycleClosed)
+}
+
 // PSD2 Art. 87(2): the payer's debit value date may be no earlier than the
 // moment the amount leaves the account, so the customer's leg must not share
 // the suspense leg's settlement-date value date.
@@ -944,23 +1008,34 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		accts, err := p.AccountsFor(asset)
 		assertNoError(t, err)
 		for name, id := range map[string]ledger.AccountID{
-			"suspense": accts.Suspense, "reserve": accts.Reserve, "settlement": accts.Settlement,
+			"suspense": accts.Suspense, "reserve": accts.Reserve,
+			"unclaimed": accts.Unclaimed, "settlement": accts.Settlement,
 		} {
 			if id == "" {
 				t.Errorf("%s account for %s is empty", name, asset)
 			}
 		}
-		// Each of the three accounts must itself be denominated in that asset,
-		// two of them in the bank's book and one in the central bank's.
+		// Each of the four accounts must itself be denominated in that asset,
+		// three of them in the bank's book and one in the central bank's.
 		suspense, err := p.Ledger.GetAccount(ctx, accts.Suspense)
 		assertNoError(t, err)
 		assertEqual(t, "suspense asset", suspense.Asset, asset)
 		reserve, err := p.Ledger.GetAccount(ctx, accts.Reserve)
 		assertNoError(t, err)
 		assertEqual(t, "reserve asset", reserve.Asset, asset)
+		unclaimed, err := p.Ledger.GetAccount(ctx, accts.Unclaimed)
+		assertNoError(t, err)
+		assertEqual(t, "unclaimed asset", unclaimed.Asset, asset)
 		settlement, err := sys.CentralBank().GetAccount(ctx, accts.Settlement)
 		assertNoError(t, err)
 		assertEqual(t, "settlement asset", settlement.Asset, asset)
+
+		// And unclaimed balances is a LIABILITY. Money that arrives for an
+		// account which cannot receive it is still owed — to whoever eventually
+		// claims it — so it is the same class as a customer's deposit. Booking it
+		// as an asset of the bank's would say the bank had earned it, and would
+		// put the credit leg of every diverted settlement on the wrong side.
+		assertEqual(t, "unclaimed account type", unclaimed.Type, ledger.Liability)
 	}
 
 	// And they survive the store, rather than only the value AddParticipant

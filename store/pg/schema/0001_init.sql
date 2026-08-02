@@ -763,9 +763,9 @@ CREATE TABLE settlement_positions (
 -- Two banks advised of one cut-off hold two rows with independent statuses. That
 -- is not redundancy: settlement is final at the central bank and participants
 -- catch up afterwards, so "this bank has booked it and that one has not" is a
--- state the system must be able to be in. A row still in 'advised' IS the
--- unreconciled position, and it is the only in-system trace of a local posting
--- that failed.
+-- state the system must be able to be in. A row still at status 0
+-- (payment.AdviceAdvised) IS the unreconciled position, and it is the only
+-- in-system trace of a local posting that failed.
 --
 -- closing_balance is what the central bank said the reserve stands at. Nothing
 -- reads it yet; Task 19 is the reconciliation that does. It is stored because it

@@ -428,7 +428,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if _, seen := accounts[asset]; seen {
 			// A repeated code would otherwise create a second set of accounts
 			// and then overwrite the map entry pointing at the first, orphaning
-			// three accounts in the chart.
+			// four accounts in the chart.
 			continue
 		}
 		// The other side of every reserve credit in this asset.
@@ -1142,14 +1142,27 @@ func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID
 		return Payment{}, err
 	}
 
+	// Resolving the payee's account is not allowed to fail SOFTLY here, and the
+	// reason is one line of glAccountTx: it collapses every error from its read
+	// into ErrAccountNotInParticipant, so a dropped connection, a scan error and
+	// a genuinely absent account are one value by the time they arrive. There is
+	// no shape of failure this caller could tell apart, which means there is no
+	// failure it may route money on.
+	//
+	// So it fails the cut-off, which is retriable, rather than diverting. That
+	// costs nothing real: this bank RESOLVED the payee's account once already,
+	// when it accepted the payment, so a read that cannot answer now is a fault
+	// in the reading and not news about the account.
+	glAccount, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
+	if err != nil {
+		return Payment{}, err
+	}
+
 	// Where the money goes: the payee's account if it can take it, and the
 	// unclaimed-balances account if it cannot. Both are this bank's own.
-	target := accts.Unclaimed
-	description := "Unclaimed: " + p.Description
-	if glAccount, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account); err == nil {
-		if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err == nil {
-			target, description = glAccount, p.Description
-		} else if !errors.Is(err, deposit.ErrAccountClosed) {
+	target, description := glAccount, p.Description
+	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
+		if !errors.Is(err, deposit.ErrAccountClosed) {
 			// ErrAccountClosed is the ONLY refusal CheckCreditTx makes —
 			// deposit.requireCreditable checks Closed and nothing else — so
 			// anything else from here is a STORE FAILURE and not a statement
@@ -1159,8 +1172,7 @@ func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID
 			// connection reported AC01 to another bank.
 			return Payment{}, err
 		}
-	} else if !errors.Is(err, ErrAccountNotInParticipant) {
-		return Payment{}, err
+		target, description = accts.Unclaimed, "Unclaimed: "+p.Description
 	}
 
 	posted, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
