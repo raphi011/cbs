@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -128,22 +129,32 @@ func (s *Server) network() *payment.Network { return s.net }
 // in flight and needs no deadline of its own, because handleReset already gives
 // the whole operation one.
 //
-// # The dead letters are logged, not returned, and that is deliberate
+// # The dead letters are REPORTED, and the reset does not happen
 //
-// Drain hands back what handlers had nobody to report to, and this is the one
-// caller in the system that must not turn them into its own failure. A dead
-// letter describes work against state that is about to be deleted; refusing the
-// reset because of one would leave the operator with the failed scenario they
-// asked to be rid of, and the retry would report the same letter again. Taking
-// them off the mesh is what matters — a swallowed dead letter would otherwise
-// surface in whichever Drain collected it next, attributed to the wrong thing —
-// and logging them at Error is how a failure with no caller gets said out loud.
+// Drain hands back what handlers had nobody to report to, and this is the last
+// moment anybody can be told: the store is about to be emptied, so a dead letter
+// swallowed here is a failure whose evidence is deleted in the next statement.
+// It is logged and returned, and the truncate does not run.
+//
+// Which makes the failure loud and still leaves the operator a way out, because
+// the mesh TAKES its dead letters rather than accumulating them: the refused
+// reset has already cleared them off the mesh, so calling it again drains a
+// quiet mesh and goes through. One 5xx that names what went wrong, then a reset
+// that works — rather than a reset that quietly succeeded over a payment that
+// had failed halfway.
+//
+// It is also what makes the ordering testable. With the drain moved after the
+// truncate, handlers write into an emptied store, fail, and are collected by
+// that same drain — so a Reset that swallowed them would report success over
+// exactly the damage this ordering exists to prevent, and no test could see it.
+// TestResetDrainsBeforeTruncating fails on the swap because of this.
 func (s *Server) Reset(ctx context.Context) error {
 	s.resetMu.Lock()
 	defer s.resetMu.Unlock()
 
 	if err := s.mesh.Drain(ctx); err != nil {
 		s.log.Error("mesh: dead letters collected by a reset", "error", err)
+		return fmt.Errorf("api: the mesh had unanswered work when the reset ran; it has been cleared, so try again: %w", err)
 	}
 	if err := s.net.Store().Reset(ctx); err != nil {
 		return err

@@ -330,6 +330,78 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 	}
 }
 
+// A return goes round the mesh, and the reason code it carries is how that is
+// visible from here.
+//
+// The distinction this pins is not "did the money come back" — the network's own
+// ReturnPayment would do that too, synchronously, which is what this handler used
+// to call. It is WHO did it and WITH WHAT. Mesh.Return hands the instruction to
+// the bank that RECEIVED the original — the payee's bank on a push — which posts
+// nothing and sends a pacs.004; the three compensating postings happen four hops
+// later at the settlement agent, and the reason travels on the wire as a code and
+// a text. The refund's own description in the payer's ledger is where both
+// surface, and it is the one thing a synchronous call could not produce.
+//
+// The payment is a SETTLED one out of the seeded dataset, because finality is a
+// return's precondition: ReturnPaymentTx refuses anything else.
+func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
+	srv, msh := newAPIHarness(t)
+
+	var payments []paymentDTO
+	getJSON(t, csm(srv), "/payments", &payments)
+	var settled paymentDTO
+	for _, p := range payments {
+		if p.Status == "Settled" && p.Scheme == "sepa.ct" {
+			settled = p
+			break
+		}
+	}
+	if settled.ID == "" {
+		t.Fatal("the seeded dataset holds no settled credit transfer to return")
+	}
+
+	rec := postJSON(t, csm(srv), "/payments/"+settled.ID+"/return", `{"reason":"account closed"}`)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("return = %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	// An identifier and nothing else. There is no intermediate resource to
+	// describe: the returning bank posted nothing and decided nothing beyond
+	// whether there was a settled payment to send back.
+	if id := decodePaymentID(t, rec); id != settled.ID {
+		t.Errorf("the return answered with %q, want %q", id, settled.ID)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding the return response: %v", err)
+	}
+	if _, leaked := body["status"]; leaked {
+		t.Errorf("the return carries a status: %v — its outcome is decided four hops away", body)
+	}
+
+	drain(t, msh)
+
+	if got := getPayment(t, srv, settled.ID); got.Status != "Returned" {
+		t.Fatalf("payment is %q after draining, want Returned", got.Status)
+	}
+	// The refund in the payer's own ledger, found by the key the domain gives it,
+	// carries the code the pacs.004 travelled under beside the operator's text.
+	// A handler that called the network's ReturnPayment directly would describe
+	// it with the text alone: there would have been no message to put a code on.
+	var txns []transactionDTO
+	getJSON(t, bank(srv, string(settled.Debtor.Participant)), "/transactions", &txns)
+	want := settled.ID + ":return-debit"
+	for _, tx := range txns {
+		if tx.IdempotencyKey != want {
+			continue
+		}
+		if !strings.Contains(tx.Description, "MS03: account closed") {
+			t.Errorf("the payer's refund is described %q, want it to carry MS03 and the operator's text", tx.Description)
+		}
+		return
+	}
+	t.Fatalf("no posting under %q in the payer's bank's book; the money never came back", want)
+}
+
 // aliceBalance is the seeded payer's book balance, read through her own bank.
 func aliceBalance(t *testing.T, s *Server) int64 {
 	t.Helper()

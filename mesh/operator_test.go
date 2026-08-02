@@ -69,6 +69,16 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	}
 	// The refund was posted by the payer's BANK and by nobody else. The clearing
 	// house reached the network book, where a payment row lives, and no bank's.
+	//
+	// What that catches, exactly: a clearing house that WROTE in a member's book,
+	// which is reachable through GetParticipant's live handles and is the hole
+	// ops.go says no interface can close. Adding a write to the payer's bank in
+	// csm.reject fails this line with [bank_1 network].
+	//
+	// What it does not catch is a reject that forgot withActor. The clearing
+	// house's own goroutine has already written the network book carrying this
+	// payment, so the set contains it either way — worth saying, because the
+	// natural reading of this line is that it holds the attribution too.
 	assertBooksTouched(t, "the clearing house", h.booksTouchedBy(h.cfg.ClearingHouseBIC),
 		[]ledger.BookID{ledger.NetworkBook})
 	// The code the operator named travels, rather than being replaced by
