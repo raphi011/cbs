@@ -391,11 +391,26 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 
 // receiveStatus is a bank learning what became of a payment it is party to.
 //
-// An ACCEPTANCE needs nothing from it. That is not an omission: the payment's
-// acceptance is the clearing house's act and the clearing house records it, so
-// there is no second write for this bank to make. What the message buys is that
-// the bank KNOWS — which, before the mesh, it could only learn by reading the
-// return value of the call that did the accepting.
+// An ACCEPTANCE needs nothing from it, and that is not an omission: an ACCP is
+// the clearing house saying it has taken the payment into a cycle, which is the
+// clearing house's own act and which the clearing house records. No money has
+// moved yet, so there is no second write for this bank to make. What the message
+// buys is that the bank KNOWS — which, before the mesh, it could only learn by
+// reading the return value of the call that did the accepting.
+//
+// A SETTLEMENT COMPLETION is a different status about a different moment, and it
+// is where the payee is finally paid. The reserves have moved at the central
+// bank; the creditor's bank now releases the money out of its own clearing
+// suspense into its own customer's account, which is a posting only that bank
+// can make in only that bank's book. See payment.PostCreditorLegTx.
+//
+// Both banks are told, and only one of them has that leg. On a push the
+// clearing house sends the same ACSC to the payer's bank, which is waiting for
+// the answer to the instruction it sent and has nothing to post; the domain is
+// what tells the two apart, and payment.ErrNotThisBanksPayment coming back is
+// the ORDINARY case for one of the two recipients rather than a failure. On a
+// pull there is one recipient, because the bank that submitted the collection
+// is the creditor's bank. See csm.tellSettled.
 //
 // A REJECTION is where there may be work, and whether there is depends on which
 // bank this is:
@@ -442,7 +457,25 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	}
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
-		if r.Status != iso20022.TransactionStatusRejected || r.TxID == "" {
+		if r.TxID == "" {
+			continue
+		}
+		if r.Status == iso20022.TransactionStatusSettlementCompleted {
+			// ACSC. This bank posts its creditor leg if the payee is its
+			// customer, and does nothing at all if it is not — which on a push
+			// is the payer's bank, hearing the answer to the instruction it
+			// sent. The domain decides which this bank is;
+			// ErrNotThisBanksPayment is the ordinary case for one of the two
+			// recipients and is not a failure.
+			if _, err := b.ops.PostCreditorLeg(ctx, b.pid, payment.PaymentID(r.TxID)); err != nil {
+				if errors.Is(err, payment.ErrNotThisBanksPayment) {
+					continue
+				}
+				return fmt.Errorf("mesh: %s could not pay its customer for %s: %w", b.bic, r.TxID, err)
+			}
+			continue
+		}
+		if r.Status != iso20022.TransactionStatusRejected {
 			continue
 		}
 		p, err := b.ops.GetPayment(ctx, payment.PaymentID(r.TxID))

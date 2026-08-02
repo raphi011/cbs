@@ -92,19 +92,22 @@ import (
 // recorder in books_test.go, which measures that a returning bank touches no
 // book at all (TestWhichBooksAReturnReaches).
 //
-// # What Task 15 added, and why it is a bank's method at all
+// # What Task 15 added, and why they are a bank's methods at all
 //
-// One method, PostSettlementAdvice, and it is the first thing on this interface
-// that the settlement agent used to do TO a bank rather than something a bank
-// does. The mirror leg is a posting in the member's own ledger, so it belongs to
-// the member; what arrives from the settlement agent is a camt.053 saying what
-// the reserve account did.
+// Two methods, PostSettlementAdvice and PostCreditorLeg, and they are the first
+// things on this interface that the settlement agent used to do TO a bank rather
+// than things a bank does. Both are postings in the member's own ledger, so both
+// belong to the member; what arrives from the settlement agent is a camt.053
+// saying what the reserve account did, and what arrives from the clearing house
+// is a pacs.002 saying one payment settled.
 //
-// It takes the acting participant as an argument, as the two halves of a payment
-// do, and the domain refuses a statement about anybody else's reserve account
-// (payment.ErrStatementNotForThisBank). The actor passes its own id — see
-// bank.pid — so the interface cannot be used to book another member's cut-off
-// even though nothing in the SIGNATURE stops a caller naming one.
+// Each takes the acting participant as an argument, as the two halves of a
+// payment do, and the domain refuses the one that is not this bank's business:
+// a statement about anybody else's reserve account
+// (payment.ErrStatementNotForThisBank), a payment whose creditor banks somewhere
+// else (payment.ErrNotThisBanksPayment). The actor passes its own id — see
+// bank.pid — so neither can be used to post another member's half even though
+// nothing in the SIGNATURES stops a caller naming one.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
@@ -158,6 +161,16 @@ type bankOps interface {
 	// agent sent; nothing else in this mesh may post in that book, and nothing
 	// on this interface lets this bank post in anybody else's.
 	PostSettlementAdvice(ctx context.Context, by payment.ParticipantID, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
+
+	// The payee's bank's half of settlement: release one payment out of its own
+	// clearing suspense into its own customer's account.
+	//
+	// It takes the ACTING participant because both banks are told a payment
+	// settled and only one may post it — see payment.ErrNotThisBanksPayment. The
+	// domain refuses the other, rather than this package deciding: which bank a
+	// payment's creditor banks at is a fact about the payment, and a handler that
+	// decided it would be asserting something it cannot check.
+	PostCreditorLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) (payment.Payment, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
@@ -240,14 +253,15 @@ type csmOps interface {
 // through a method each legitimately holds. The recorder in books_test.go is
 // what watches for that, here as everywhere else in this package.
 //
-// And both methods behind it still reach further than two methods suggest.
-// SettleCycleTx no longer posts the mirror leg — that is the member's own, made
-// from the statement this call hands back — but it does still post every
-// CREDITOR leg, which is a posting in the payee's bank's ledger, and
-// ReturnPaymentTx posts in three books, two of which belong to member banks. So
-// the central bank remains the widest-reaching actor in this system rather than
-// the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles and
-// TestWhichBooksAReturnReaches measure that rather than assuming it.
+// The two methods behind it no longer reach the same distance as each other,
+// and the difference is the whole of Task 15. SettleCycleTx posts in the central
+// bank's own book and in no member's: the mirror leg is the member's own, made
+// from the statement this call hands back, and the creditor leg is the payee's
+// bank's, made from the clearing house's advice. ReturnPaymentTx still posts in
+// three books, two of which belong to member banks, so this institution is still
+// the widest-reaching actor in this system — but at a cut-off it is now one of
+// the narrowest. TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches measure both rather than assuming either.
 type settlementOps interface {
 	// SettleCycle hands back the STATEMENTS beside the settlement, because the
 	// closing balance each carries is a claim about a moment inside the unit of

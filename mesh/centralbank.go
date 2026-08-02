@@ -51,19 +51,21 @@ import (
 // these interfaces narrow, and the whole of what they narrow — it is not a ban
 // on those handlers moving money. GetParticipant is on both of the other two and
 // returns a value carrying live ledger and deposit handles bound to whichever
-// bank it names (Network.bind), and a member bank's ledger is exactly where the
-// creditor legs below go, so posting them is reachable from either of those
-// handlers through a method each legitimately holds. The recorder in
+// bank it names (Network.bind), and a member bank's ledger is exactly where a
+// return's compensating legs go, so posting in one is reachable from either of
+// those handlers through a method each legitimately holds. The recorder in
 // books_test.go is what watches for that, here as everywhere else in this
 // package; see the note on bankOps in ops.go for the whole of the hole.
 //
-// Both methods behind this interface also reach further than two methods
-// suggest. Settlement posts every CREDITOR leg in the payee's bank's book as
-// well as its own netting transaction in the central bank's, and a return posts
-// in three books of which two are member banks'. The mirror leg used to be on
-// that list and has left: it is the member's own posting now, made from the
-// statement advise sends. See TestWhichBooksTheCentralBankReachesWhenItSettles
-// and TestWhichBooksAReturnReaches for the measurements.
+// The two methods behind this interface no longer reach the same distance.
+// SETTLEMENT posts its netting transaction in the central bank's own book and in
+// no member's: the mirror leg is the member's, booked from the statement advise
+// sends, and the creditor leg is the payee's bank's, booked from the clearing
+// house's per-payment advice. A RETURN still posts in three books of which two
+// are member banks'. So this institution is the widest-reaching actor in this
+// system on one flow and one of the narrowest on the other. See
+// TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches for the measurements.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -99,29 +101,34 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 //
 // # AM04 is the answer this task exists to make expressible
 //
-// A net payer whose reserve cannot cover its position is refused by the ledger,
-// inside SettleCycleTx's single unit of work, so nothing is posted anywhere and
-// the whole batch fails — which is what a settlement window is. Before the mesh
-// that refusal was a Go error returned to whoever clicked settle. It is now
-// AM04 on the wire, addressed to the clearing house, which is the party that
-// can act on it: it holds the cycle, and it is the one that would re-present or
-// unwind.
+// A net payer whose reserve cannot cover its position is refused inside
+// SettleCycleTx's single unit of work, so nothing is posted anywhere and the
+// whole batch fails — which is what a settlement window is. Before the mesh that
+// refusal was a Go error returned to whoever clicked settle. It is now AM04 on
+// the wire, addressed to the clearing house, which is the party that can act on
+// it: it holds the cycle, and it is the one that would re-present or unwind.
 //
 // The code comes from payment.ReasonFor, which maps ledger.ErrInsufficientBalance
 // to AM04 through borrowedReasons — the same route deposit.ErrInsufficientAvailable
 // takes for a customer's empty account. Two layers, one code, and it is the
 // right one both times: "the account cannot cover this".
 //
-// # Two errors are dead-lettered instead, and never answered
+// # One error is dead-lettered instead, and never answered
 //
 // A queue redelivers, so a settlement instruction can arrive twice. The second
 // copy names a cycle this network has already settled, and SettleCycleTx refuses
 // it with ErrCycleNotClosed — a statement about THIS system's state and not
 // about the sender's message. payment's reasonTable gives it the EMPTY code for
 // exactly that reason, and ReasonFor would turn it into MS03 and tell the
-// clearing house that a cycle which in fact settled was rejected. The same goes
-// for ErrInvalidStateTransition, which SettleCycleTx produces when a payment in
-// the batch is not Cleared. Both become dead letters and neither is answered.
+// clearing house that a cycle which in fact settled was rejected. So it becomes
+// a dead letter and is not answered.
+//
+// ErrInvalidStateTransition used to be caught here beside it, because
+// SettleCycleTx transitioned every payment in the batch to Settled and refused a
+// batch holding one that was not Cleared. It no longer touches a payment at all
+// — that leg is the payee's bank's, on the clearing house's advice — so the
+// sentinel is no longer reachable from this call and the arm that caught it is
+// gone with the claim.
 func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs009) error {
 	body := doc.FICdtTrf
 	orig := payment.OriginalMessage{
@@ -147,7 +154,7 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 
 	_, statements, err := cb.ops.SettleCycle(ctx, id)
 	if err != nil {
-		if errors.Is(err, payment.ErrCycleNotClosed) || errors.Is(err, payment.ErrInvalidStateTransition) {
+		if errors.Is(err, payment.ErrCycleNotClosed) {
 			return fmt.Errorf("mesh: %s was told to settle %s again: %w", cb.bic, id, err)
 		}
 		return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
@@ -173,23 +180,21 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // After, for Mesh.Submit's reason: a statement enqueued from inside SettleCycleTx
 // would be one a bank could book against a settlement the store then rolled back.
 //
-// Before the answer, and what that buys TODAY is determinism and nothing more.
-// An actor's inbox is FIFO, so a member handles the statement before it handles
-// the ACSC the clearing house fans out to it, on every run rather than by luck.
-// Nothing about the books depends on it yet: SettleCycleTx still posts every
-// creditor leg itself, synchronously, before this function is reached — so a
-// payee's suspense is ALREADY debited by that leg and is credited only when the
-// statement below is booked. The payee's suspense really is transiently
-// overdrawn at this commit, in either order, and it is legal because suspense is
-// a Liability and the ledger does not guard those against going negative.
+// Before the answer, and since 15b.3 that is load-bearing rather than tidy. The
+// CREDITOR leg is now posted by the payee's bank, from the per-payment advice the
+// clearing house derives FROM the ACSC this answer produces — and that leg draws
+// on the same clearing suspense the MIRROR leg pays into. An actor's inbox is
+// FIFO, so a member handles the statement below before it handles the ACSC, on
+// every run rather than by luck, and the suspense is credited before it is drawn
+// on.
 //
-// The order becomes load-bearing in 15b.3, when the creditor leg moves out to a
-// message of its own. Then the leg is posted from the per-payment advice the
-// clearing house derives FROM the ACSC, so the mirror leg has to have paid into
-// the suspense first — and this ordering plus a FIFO inbox is what makes that
-// true rather than likely. The reasoning is kept here rather than deferred with
-// the leg because it is why the order was chosen; it is simply not yet what the
-// order is doing.
+// The other order is not a corruption, and saying why is the point of stating
+// this at all. Suspense is a Liability and the ledger does not guard those
+// against going negative, so a payee's bank that paid its customer first would
+// simply commit, with its suspense overdrawn until the statement arrived. For
+// that interval its own books would say it had lent its customer the money,
+// which is a claim about this bank's balance sheet that nothing in the cut-off
+// justifies. The ordering is what stops it being said.
 //
 // # A failed send is not a failed settlement, and it suppresses three things
 //

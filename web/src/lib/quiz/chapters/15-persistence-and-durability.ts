@@ -126,7 +126,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "unit-of-work",
       prompt:
-        "Settling a clearing cycle posts creditor legs in several member banks, moves reserves at the central bank, and marks the cycle and its payments as settled. Why must all of that be one unit of work?",
+        "The central bank's settlement of a clearing cycle debits every net payer's reserve account, credits every net receiver's, and marks the cycle settled. Why must all of that be one unit of work?",
       options: [
         "Because a partial success would leave money that had left one bank without arriving at another",
         "Because the database can only hold one connection open at a time",
@@ -135,7 +135,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "Settlement is atomic or it is broken. If the reserve movement committed and a [[creditor-leg]] did not, money would have left the payer's bank without reaching the payee's, and no later retry could tell which half had happened. One [[unit-of-work]] spanning all three layers makes 'all of it or none of it' a property of the code rather than a hope.",
+        "A settlement window is atomic or it is broken. If a net payer's reserve were debited and a net receiver's never credited, central-bank money would have left one bank without reaching another, and no later retry could tell which half had happened. One [[unit-of-work]] makes 'all of it or none of it' a property of the code rather than a hope. Note what it does **not** span: each member's own [[creditor-leg|creditor leg]] and reserve mirror are that bank's own units of work, posted when it is told, because no institution's transaction may reach into another's books.",
     },
     {
       kind: "multi",

@@ -138,15 +138,20 @@
 //   - One database transaction stands in for a settlement window. Every book —
 //     each participant's and the central bank's — lives in the same Store, told
 //     apart by its ledger.BookID, and payment.Tx embeds deposit.Tx embeds
-//     ledger.Tx, so a single transaction reaches all three layers. SettleCycle
-//     moves the netted reserves and pays out every creditor inside one
-//     Store.Update, so a net payer that cannot cover its position aborts the
-//     whole batch. (The mirror leg in each bank's own books used to be in that
-//     unit of work too. It is the member's own posting now, made from the
-//     statement SettleCycle hands back — see PostSettlementAdviceTx.) That is
-//     the essence of a real RTGS settlement window: the settlement agent holds
-//     the participants' accounts, checks that every payer can cover, and posts
-//     all of it or none.
+//     ledger.Tx, so a single transaction can reach all three layers. SettleCycle
+//     moves the netted reserves inside one Store.Update, so a net payer that
+//     cannot cover its position aborts the whole batch. That is the essence of a
+//     real RTGS settlement window: the settlement agent holds the participants'
+//     reserve accounts, checks that every payer can cover, and posts all of it
+//     or none.
+//     What that window no longer spans is the MEMBERS. Both legs in a member's
+//     own book used to be in this unit of work: the mirror leg is the member's
+//     own posting now, made from the statement SettleCycle hands back (see
+//     PostSettlementAdviceTx), and the creditor leg is the payee's bank's, made
+//     from the clearing house's per-payment advice (see PostCreditorLegTx). The
+//     interval between the central bank's commit and a member's is the
+//     unreconciled position, and it is modelled rather than hidden — see
+//     SettleCycle.
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried

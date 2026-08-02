@@ -125,7 +125,12 @@
 //	clearing house  --pacs.009-->  central bank
 //	central bank    --camt.053-->  each member whose net position moved
 //	clearing house  <--pacs.002--  central bank
-//	clearing house  --pacs.002-->  the bank that submitted each payment
+//	clearing house  --pacs.002-->  the submitter and the payee's bank, per payment
+//
+// Those two fan-outs are what a member's half of a cut-off is made of, and
+// between them nothing of it is left in the settlement agent's unit of work: the
+// camt.053 carries the MIRROR leg and the per-payment ACSC carries the CREDITOR
+// leg (bank.receiveStatus, payment.PostCreditorLegTx).
 //
 // The camt.053 is what makes the MIRROR LEG the member's own act. A bank's
 // clearing suspense holds money that has left a customer and not yet settled
@@ -141,13 +146,15 @@
 // row stuck at Advised, which is the unreconciled position in its most visible
 // form.
 //
-// It goes out BEFORE the answer. Today that buys determinism and nothing else —
-// an inbox is FIFO, so a member handles its statement before the ACSC fan-out
-// reaches it, on every run. It becomes load-bearing in 15b.3, when the creditor
-// leg moves out of SettleCycleTx and is posted from that fan-out: the mirror leg
-// has to have paid into the suspense the leg then draws on. Until then the
-// creditor leg is posted inside the settling transaction, before any statement
-// goes out, and a payee's suspense is transiently overdrawn either way. See
+// It goes out BEFORE the answer, and since 15b.3 that ordering is load-bearing
+// rather than merely tidy. The CREDITOR leg is posted from the clearing house's
+// ACSC fan-out, which is derived from the answer, and it draws on the same
+// suspense the mirror leg pays into. An inbox is FIFO, so a member handles its
+// statement before the fan-out reaches it, on every run rather than by luck. Get
+// the two the wrong way round and a payee's bank pays its customer out of a
+// suspense the cut-off has not yet credited — legal, because suspense is a
+// Liability and the ledger does not guard those, and wrong, because for that
+// interval the bank's books say it lent its own customer the money. See
 // centralBank.advise.
 //
 // # What an undelivered statement suppresses, and why Task 19 is scoped from here
@@ -204,9 +211,16 @@
 // settle, which is not something a clearing house can act on.
 //
 // The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
-// submitted it. The central bank could not: it answers about a CYCLE and holds
-// no way to look a payment up, which is the shape of "a central bank never sees
-// an individual payment".
+// submitted it AND to the payee's bank. The central bank could not: it answers
+// about a CYCLE and holds no way to look a payment up, which is the shape of
+// "a central bank never sees an individual payment".
+//
+// Two recipients because they are told it for two reasons. The submitter has an
+// instruction outstanding and this closes it; the CREDITOR's bank has a leg to
+// post, and posting it is what pays the payee. On a pull they are the same
+// institution and there is one message. Only the creditor's bank may act —
+// payment.ErrNotThisBanksPayment refuses the other, and on a push that refusal
+// is the ordinary case rather than a fault.
 //
 // A REFUSAL is fanned out to nobody, and that asymmetry is the one thing here
 // worth stating twice. Nothing was posted, so every payment is exactly where the

@@ -124,18 +124,21 @@ var (
 	// posting contains the claim that some posting in another bank's book is
 	// its other half. Only the payment layer holds both ends at once.
 	//
-	// It does catch it at SETTLEMENT. SettleCycleTx resolves the creditor's
-	// suspense account with creditor.AccountsFor(scheme.Asset()), so the
-	// creditor leg comes out as a EUR suspense debit against a BTC credit and
+	// It does catch it at the CREDITOR LEG. PostCreditorLegTx resolves the
+	// creditor's suspense account with creditor.AccountsFor(scheme.Asset()), so
+	// the leg comes out as a EUR suspense debit against a BTC credit and
 	// validateBalance refuses it with ledger.ErrUnbalancedAsset.
 	//
-	// That is a bad place to find out. Settlement is all-or-nothing, so one
-	// mismatched payment fails the entire clearing cycle, and the error names
-	// an unbalanced asset rather than the payment that caused it. This
-	// sentinel is what turns a late, batch-wide, misattributed failure into an
-	// immediate, correctly attributed one.
+	// That is still a bad place to find out, though less bad than it was. Until
+	// Task 15b.3 the leg was posted inside the settlement agent's unit of work,
+	// so one mismatched payment failed the entire clearing cycle; it is the
+	// payee's bank's own act now, so the cut-off settles and this one payment
+	// stays Cleared. What has not improved is the error: it names an unbalanced
+	// asset rather than the payment that caused it, and it arrives long after
+	// the payer was debited. This sentinel is what turns a late, misattributed
+	// failure into an immediate, correctly attributed one.
 	//
-	// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle in
+	// TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank in
 	// system_test.go pins both halves of that.
 	ErrAssetMismatch = errors.New("payment accounts are not denominated in the scheme's asset")
 

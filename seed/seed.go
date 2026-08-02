@@ -352,22 +352,28 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	}))
 }
 
-// settle runs all three institutions' halves of a cut-off — the settlement
-// agent's netting transaction and each member's booking of the advice it would
-// have been sent — in one unit of work, leaving the cycle Settled and every
-// bank's clearing suspense back at zero.
+// settle runs all three institutions' halves of a cut-off in one unit of work,
+// leaving the cycle Settled, every payment Settled and every bank's clearing
+// suspense back at zero:
+//
+//   - the settlement agent's netting transaction, in the central bank's book;
+//   - each member's booking of the camt.053 it would have been sent, which is
+//     the mirror leg in that member's own book;
+//   - each payee's bank releasing its own customer's money out of its own
+//     suspense, which is what that bank does when the clearing house advises it
+//     that a payment settled.
 //
 // It is initiate's argument applied to settlement, and it became necessary the
 // moment settlement stopped being one institution's act. There is no method that
-// plays all three, deliberately: the whole of Task 15 is that the central bank
-// cannot post in a member's book. The seed can, because the seed is not an
-// institution — it is one process building a fixed scenario before any actor
-// exists, and a conversation carried out at startup could not promise a fixed
-// outcome.
+// plays all three, deliberately: the whole of Task 15 is that no institution can
+// post in another's book. The seed can, because the seed is not an institution —
+// it is one process building a fixed scenario before any actor exists, and a
+// conversation carried out at startup could not promise a fixed outcome.
 //
-// The creditor legs are NOT composed here in this sub-task, because
-// SettleCycleTx still posts them. They move in with the same argument when it
-// stops.
+// What the seed gives up by doing so is exactly what the mesh exists to model:
+// here the three halves commit or roll back together, and in the mesh they are
+// three units of work with an unreconciled interval between them. The fixture is
+// the outcome, not the process.
 func (b *builder) settle(id payment.CycleID) {
 	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
 		_, statements, err := b.net.SettleCycleTx(ctx, tx, id)
@@ -383,6 +389,24 @@ func (b *builder) settle(id payment.CycleID) {
 				CycleID:        st.CycleID,
 				ValueDate:      st.ValueDate,
 			}); err != nil {
+				return err
+			}
+		}
+		// The cycle is re-read for its payment list, which the settlement does
+		// not carry: a settlement agent answers about net positions per MEMBER
+		// and holds no way to enumerate the batch. That is why the fan-out is
+		// the clearing house's in the mesh, and why the seed has to ask the
+		// cycle row here rather than the statements above.
+		cycle, err := tx.GetCycle(ctx, id)
+		if err != nil {
+			return err
+		}
+		for _, pid := range cycle.PaymentIDs {
+			p, err := tx.GetPayment(ctx, pid)
+			if err != nil {
+				return err
+			}
+			if _, err := b.net.PostCreditorLegTx(ctx, tx, p.Creditor.Participant, pid); err != nil {
 				return err
 			}
 		}

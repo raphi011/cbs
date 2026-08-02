@@ -337,18 +337,32 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 // payer would look right. On a PULL they are opposite: the payee's bank sent the
 // collection and has been waiting since, and the payer's bank answered it long
 // ago and has nothing outstanding. Settlement is the moment the payee's bank is
-// actually paid — the creditor leg posts here and nowhere else — so it is the
-// message that closes the thing it started.
+// actually paid, and this message is what tells it to pay its own customer, so
+// it closes the thing it started and starts the last posting the payment needs.
 //
 // The payer's bank is told NOTHING, and that is the assertion beside it. The
 // last thing it heard was the clearing house's ACCP, and a system that announced
 // settlement to every party to a payment would be one where "who is waiting for
 // this" had stopped meaning anything.
+//
+// # ONE message, not two, and that is the pull half of the direction rule
+//
+// The fan-out addresses two roles — the bank that submitted, and the CREDITOR's
+// bank, which has the leg to post. On a push those are two institutions and the
+// clearing house sends twice. Here they are one, so it sends once: the payee's
+// bank submitted the collection and is also the creditor. The count is asserted
+// because nothing else would catch a fan-out that sent the same advice twice —
+// PostCreditorLegTx's Settled guard makes the second one a no-op, so the money
+// would still be right and only the conversation would be wrong. See
+// csm.tellSettled.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)
 	h.drain(t)
 
+	// Counted from here, so the ACCP this bank was already sent when it
+	// submitted is not in the total.
+	before := h.statusesSentTo(h.creditorBIC)
 	h.closeCycle(t)
 	h.drain(t)
 
@@ -356,6 +370,9 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 		t.Fatalf("status = %v, want Settled", got.Status)
 	}
 	h.assertLastTxStatusTo(t, h.creditorBIC, iso20022.TransactionStatusSettlementCompleted)
+	if got := h.statusesSentTo(h.creditorBIC) - before; got != 1 {
+		t.Errorf("the payee's bank was sent %d statuses over the cut-off; it is the submitter AND the creditor's bank, which is one message", got)
+	}
 	if got := h.statusesSentTo(h.debtorBIC); got != 0 {
 		t.Errorf("the payer's bank was sent %d statuses; on a pull it answered the collection and is waiting for nothing", got)
 	}
@@ -528,9 +545,15 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 //     a statement of that member's own reserve account, and it is what the member
 //     books its mirror leg from (bank.receiveStatement). Both banks get one here,
 //     because both had a non-zero net position.
-//   - one pacs.002 per PAYMENT, from the CLEARING HOUSE, out to the bank that
-//     submitted it. That fan-out could not be the central bank's: it is answering
-//     about a cycle, and it holds no method that could turn one into payments.
+//   - one pacs.002 per PAYMENT per BANK THAT HAS SOMETHING TO DO ABOUT IT, from
+//     the CLEARING HOUSE. That is the bank that submitted, which is waiting for
+//     the answer to its instruction, and the CREDITOR's bank, which has a leg to
+//     post: settlement moved the reserves, and the payee is paid when its own
+//     bank releases the money out of its own suspense. On this push those are two
+//     institutions and there are two messages for the one payment; on a pull they
+//     are one and there is one. That fan-out could not be the central bank's: it
+//     is answering about a cycle, and it holds no method that could turn one into
+//     payments.
 //
 // # It is a SET, plus the two orderings that are actually forced
 //
@@ -574,8 +597,12 @@ func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 		instruction: 1,
 		answer:      1,
 		fanOut:      1,
-		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}:   1,
-		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}: 1,
+		// The creditor's bank's copy of the same advice, which on a push is a
+		// second institution and a second message. It is the one that causes a
+		// POSTING: see bank.receiveStatus.
+		{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.002.001.10"}: 1,
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}:     1,
+		{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}:   1,
 	}
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen[before:]...)
@@ -651,6 +678,33 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	}
 	if len(settlements) != 0 {
 		t.Errorf("%d settlements recorded for an instruction this actor refused", len(settlements))
+	}
+}
+
+// TestOnlyThePayeesBankPaysThePayee pins which of the two banks told about a
+// settled payment may act on it.
+//
+// On a push the clearing house tells both: the payer's bank because it has been
+// waiting for the answer to its instruction, the payee's bank because it has a
+// leg to post. If the payer's bank posted it, the payee would be credited in the
+// wrong institution's book — the exact crossing this sub-project removes, arrived
+// at from the other direction.
+//
+// It is asserted at the DOMAIN layer, where the refusal lives, because that is
+// where it can be made to fail: the mesh never hands the payer's bank's id to a
+// payment it does not own, so a mesh-level test would pass with the guard gone.
+func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	// The payer's bank asking to post the payee's leg is refused, whatever else
+	// is true of the payment.
+	_, err := h.net.PostCreditorLeg(context.Background(), h.debtor.ID, p.ID)
+	if !errors.Is(err, payment.ErrNotThisBanksPayment) {
+		t.Errorf("the payer's bank got %v, want ErrNotThisBanksPayment", err)
 	}
 }
 

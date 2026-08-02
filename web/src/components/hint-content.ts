@@ -521,7 +521,7 @@ The debtor leg is reversed if the payment is [[payment-lifecycle|rejected]] befo
   },
   "creditor-leg": {
     title: "Creditor leg",
-    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted at **settlement**, once reserves have actually moved between banks at the [[central-bank-reserves|central bank]].
+    body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, once reserves have actually moved between banks at the [[central-bank-reserves|central bank]] and the clearing house has told that bank so.
 
 \`\`\`
 Bank B — creditor leg (Bob receives €300 from Alice):
@@ -766,18 +766,19 @@ Note also that a reversal is a *new, opposite* posting ([[reversal]]), so the su
     title: "Unit of work",
     body: `A **unit of work** is one atomic scope — \`BEGIN\`, do everything, \`COMMIT\`, or \`ROLLBACK\` and it is as if nothing happened. Every mutation in this system runs inside one, and the [[audit-trail|audit event]] is written inside the *same* one, so a rolled-back operation leaves no record claiming it happened.
 
-It has to span all three layers, because the operations do. Settling a [[clearing-vs-settlement|clearing cycle]] posts a [[creditor-leg]] in each member's book, moves [[central-bank-reserves|reserves]] in the central bank's book, and updates the payment and cycle rows — a partial success there would leave money that had left one bank without arriving at another.
+It has to span all three layers, because the operations do. A payee's bank paying its own customer posts a [[creditor-leg]] in the ledger, moves a deposit balance, and marks the payment settled — a partial success there would credit the customer against a payment the system still calls unpaid.
 
 \`\`\`
-SettleCycle:
+PostCreditorLeg:
   BEGIN
-    creditor legs in Bank A, Bank B, Bank C   (ledger layer)
-    deposit balances updated                  (deposit layer)
-    reserves moved at the central bank        (ledger layer)
-    cycle + payments marked Settled           (payment layer)
-    audit events appended
+    creditor leg in this bank's book          (ledger layer)
+    deposit balance follows                   (deposit layer)
+    payment marked Settled                    (payment layer)
+    audit event appended
   COMMIT   ← all of it, or none of it
 \`\`\`
+
+What a unit of work may **not** span is more than one institution. Settling a [[clearing-vs-settlement|clearing cycle]] used to be one scope holding the central bank's reserves and every member's creditor leg at once; it is three institutions' scopes now, joined by messages, and the interval between them is a real unreconciled position rather than something a transaction can hide.
 
 Nesting one unit of work inside another is refused rather than allowed: the inner scope would be a *separate* transaction that commits even when the outer one rolls back. Methods come in pairs for this reason — the plain one opens a unit of work, the \`…Tx\` one joins the caller's.`,
   },
@@ -930,14 +931,14 @@ Bank A:  Debit  Alice EUR     3000   ← balances in EUR ✓
 
 Impeccable [[double-entry]]. Nothing in it contains the claim that a posting in another bank's book is its other half — and no ledger can see a claim that is not in front of it. No bank here holds both ends at once, which is what makes the ledger's catch late rather than absent.
 
-**It is caught at settlement, which is the argument *for* the check.** The creditor leg is built from the creditor's suspense account *in the scheme's asset*, so what actually gets posted is a EUR debit against a BTC credit:
+**It is caught at the [[creditor-leg|creditor leg]], which is the argument *for* the check.** That leg is built from the creditor's suspense account *in the scheme's asset*, so what actually gets posted is a EUR debit against a BTC credit:
 
 \`\`\`
 Bank B:  Debit  Suspense EUR  3000   ← EUR
          Credit Bob BTC       3000   ← BTC — does not balance
 \`\`\`
 
-That is \`ErrUnbalancedAsset\`. But settlement is all-or-nothing: one bad payment fails the **whole [[net-positions|clearing cycle]]**, and the error names an imbalance rather than the payment behind it. \`ErrAssetMismatch\` turns a late, batch-wide, misattributed failure into an immediate, correctly attributed one.
+That is \`ErrUnbalancedAsset\`. But it arrives **hours after the payer was debited**, with the [[net-positions|cycle]] already settled and the reserves already moved, and it names an imbalance rather than the payment behind it. \`ErrAssetMismatch\` turns a late, misattributed failure into an immediate, correctly attributed one.
 
 The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.`,
   },

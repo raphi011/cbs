@@ -23,18 +23,22 @@ import (
 // Every book — each participant's and the central bank's — lives in the same
 // Store, distinguished by its ledger.BookID, and the network's own entities
 // (participants, payments, mandates, cycles, settlements) live there too under
-// ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx,
-// one transaction reaches all of them, so an operation that touches several
-// banks is a single unit of work: SettleCycle moves reserves at the central bank
-// and pays out every creditor inside one Update, and a failure anywhere leaves
-// none of it behind. The mirror leg used to be in that list and is not any more
-// — it is the member's own posting now, made from the statement SettleCycle
-// hands back for each of them.
+// ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx, one
+// transaction can reach all of them, which is what makes an operation spanning
+// several books a single unit of work.
 //
-// This is what a real RTGS calls a settlement window: an interval during which
-// the settlement agent holds the participants' accounts, checks that every net
-// payer can cover its position, and posts the whole batch or none of it. The
-// database transaction is what supplies the window here. See SettleCycle.
+// SettleCycle used to be that operation at its widest: it moved reserves at the
+// central bank, posted every member's mirror leg and paid out every creditor
+// inside one Update. It no longer does either of the last two. What is one unit
+// of work is what ONE institution does — the central bank's netting transaction,
+// whole or not at all — and each member books its own halves afterwards, on
+// advice, in units of work of its own. See SettleCycle on why the interval
+// between them is now the thing being modelled rather than something to hide.
+//
+// A settlement window is still what the central bank's half is: an interval
+// during which the settlement agent holds the participants' reserve accounts,
+// checks that every net payer can cover its position, and posts the whole batch
+// or none of it. The database transaction is what supplies that window here.
 //
 // # Where the state lives
 //
@@ -773,24 +777,56 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 	return c, nil
 }
 
-// SettleCycle settles a closed cycle. It moves each participant's net position
-// across reserve accounts at the central bank, and posts the creditor leg of
-// every payment so the payees receive their funds.
+// SettleCycle settles a closed cycle: it moves each participant's net position
+// across the members' reserve accounts at the central bank, in ONE transaction,
+// in the central bank's own book.
 //
-// The MIRROR leg — a member's own suspense moving against its own reserve — is
-// no longer posted here. It is the member's act, and what this returns beside the
-// settlement is the STATEMENTS that tell each member what to post: see
-// SettleCycleTx and PostSettlementAdviceTx.
+// That is the whole of what it posts. Neither of the two legs in a member's own
+// book is here any more:
 //
-// # The settlement window
+//   - the MIRROR leg — a member's suspense moving against its own reserve — left
+//     in Task 15b.2, and what this returns beside the settlement is the
+//     STATEMENTS that tell each member what to post. See PostSettlementAdviceTx.
+//   - the CREDITOR leg — a payee's funds released out of that payee's bank's
+//     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
+//     See PostCreditorLegTx.
 //
-// All of it is one unit of work. That is the whole point: a net payer that
-// cannot cover its position must abort the batch, not leave the other members
-// paid and the central bank's books moved. Under store/mem the Update holds the
-// write lock for the duration; under store/pg it is one BEGIN … COMMIT, with
-// every touched account row locked. Either way the interval in which the books
-// are inconsistent is not observable, which is what a real RTGS buys with a
-// locked settlement window.
+// So this reads a cycle, the roster and its own book, and no payment at all,
+// which is the whole of what a settlement agent has.
+//
+// # The settlement window, and what stopped being true about it
+//
+// This doc used to argue that ALL of settlement was one unit of work and that
+// "the interval in which the books are inconsistent is not observable". That was
+// a true description of the code that carried it and the right thing to want: a
+// net payer that cannot cover its position must abort the batch, not leave the
+// other members paid and the central bank's books moved. The batch is still
+// atomic in exactly that sense, and that much is unchanged — see the reserve
+// check above the postings, and TestSettleCycleIsAtomic.
+//
+// What was wrong was the SCOPE. One process cannot hold every institution's
+// books inside a window, because they are not one process's to hold, and this
+// system has stopped pretending otherwise. What is atomic is what this
+// institution does: the central bank posts one transaction, in its own book, and
+// is FINAL either way. What each member does afterwards is that member's own, on
+// advice, in its own unit of work, and it can fail on its own.
+//
+// The interval between is therefore not merely observable — it is the thing
+// being modelled. It is the UNRECONCILED POSITION: the reserves have moved and a
+// member has been told and has not yet booked. SettlementAdvice's Advised state
+// is where it is visible. In the EU that gap is not a modelling convenience but
+// a directive: the Settlement Finality Directive is about exactly this moment,
+// when a transfer order becomes irrevocable regardless of what any participant
+// does next.
+//
+// # A redelivered instruction posts nothing
+//
+// Which is what makes finality safe to publish over a lossy transport. This
+// refuses a cycle that is not CycleClosed with ErrCycleNotClosed, so a second
+// settlement instruction for a cycle already Settled is a refusal rather than a
+// second batch; and the central bank's posting carries the idempotency key
+// "<cycle>:settle", so even a caller that reached the posting would move
+// nothing twice.
 //
 // # Ordering
 //
@@ -923,24 +959,6 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		}
 	}
 
-	// 3. Post the creditor leg of every payment: the payee's bank releases
-	//    the funds from its suspense to the payee's account.
-	//
-	//    The leg is the PAYEE's BANK's act, and PostCreditorLegTx is where it
-	//    lives — including the CheckCreditTx this loop could not afford while it
-	//    was the whole batch's unit of work. Driving it from here is temporary in
-	//    the way the mirror leg above was until this task: 15b.3 moves it to a
-	//    message too.
-	for _, pid := range c.PaymentIDs {
-		p, err := tx.GetPayment(ctx, pid)
-		if err != nil {
-			return Settlement{}, nil, err
-		}
-		if _, err := s.PostCreditorLegTx(ctx, tx, p.Creditor.Participant, pid); err != nil {
-			return Settlement{}, nil, err
-		}
-	}
-
 	settlementID, err := tx.NextID(ctx, ledger.NetworkBook, "set")
 	if err != nil {
 		return Settlement{}, nil, err
@@ -968,8 +986,9 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	if err := tx.PutCycle(ctx, c); err != nil {
 		return Settlement{}, nil, err
 	}
-	// One payment.settled per payment (above) plus one cycle.settled, all on
-	// this transaction — the batch is atomic, so its audit trail is too.
+	// One cycle.settled, and that is the whole of this unit of work's audit
+	// trail. It used to be one payment.settled per payment as well; those are
+	// appended by each payee's bank now, when it posts its own creditor leg.
 	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleSettled, string(c.ID), st); err != nil {
 		return Settlement{}, nil, err
 	}
@@ -1152,6 +1171,23 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		return SettlementAdvice{}, err
 	}
 	return advice, nil
+}
+
+// PostCreditorLeg is PostCreditorLegTx in its own unit of work, which is what a
+// bank acting on an advice it has just been handed needs: the message names one
+// payment and there is nothing else to commit with it.
+//
+// One payment at a time is the point rather than a convenience. While this ran
+// inside the cut-off's unit of work a single payee's closed account could fail
+// the whole batch; now each bank's each payment succeeds or fails alone.
+func (s *Network) PostCreditorLeg(ctx context.Context, by ParticipantID, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostCreditorLegTx(ctx, tx, by, id)
+		return err
+	})
+	return out, err
 }
 
 // PostCreditorLegTx is the payee's bank releasing one settled payment out of its

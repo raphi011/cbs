@@ -195,13 +195,15 @@ func fundAccount(t *testing.T, ctx context.Context, sys *Network, p *Participant
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
 // the settled settlement.
 //
-// It plays every institution, and has to. Settlement is no longer one of them:
-// the settlement agent posts its netting transaction and hands back one
-// statement per member, and each member books its own mirror leg from the
-// statement it is sent. A test that only called SettleCycle would leave every
-// bank's suspense holding the batch and its reserve mirror unmoved, which is not
-// a settled cut-off at all. See bookTheAdvices, and seed's builder.settle, which
-// is the same composite made for the same reason.
+// It plays every institution, and has to. Settlement is no longer one of them,
+// and it is now the smallest of the three: the settlement agent posts its
+// netting transaction and hands back one statement per member; each member books
+// its own mirror leg from the statement it is sent; and each PAYEE's bank
+// releases its own customer's money out of its own suspense. A test that only
+// called SettleCycle would leave every bank's suspense holding the batch, every
+// reserve mirror unmoved and every payee unpaid, which is not a settled cut-off
+// at all. See bookTheAdvices and payTheCreditors, and seed's builder.settle,
+// which is the same composite made for the same reason.
 func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settlement {
 	t.Helper()
 	ctx := context.Background()
@@ -213,6 +215,7 @@ func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settle
 	st, statements, err := sys.SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
+	payTheCreditors(t, sys, cyc.ID)
 	return st
 }
 
@@ -234,6 +237,32 @@ func bookTheAdvices(t *testing.T, sys *Network, statements []SettlementStatement
 			CycleID:        st.CycleID,
 			ValueDate:      st.ValueDate,
 		})
+		assertNoError(t, err)
+	}
+}
+
+// payTheCreditors is each PAYEE's bank's half of a cut-off: it releases that
+// payment out of its own clearing suspense into its own customer's account, and
+// that is what takes the payment to Settled.
+//
+// It is the test's stand-in for the clearing house's ACSC fan-out — one pacs.002
+// per payment, addressed to the creditor's bank, and that bank calling
+// PostCreditorLeg for itself. The cycle is re-read for its payment list because
+// the settlement does not carry one: a settlement agent answers per MEMBER and
+// cannot enumerate the batch, which is why the fan-out is the clearing house's.
+//
+// Each leg is its OWN unit of work, and that is the substance rather than the
+// shape of the loop: one payee's closed account, or one payment the ledger
+// refuses, now fails alone instead of taking the cut-off down.
+func payTheCreditors(t *testing.T, sys *Network, id CycleID) {
+	t.Helper()
+	ctx := context.Background()
+	cyc, err := sys.GetCycle(ctx, id)
+	assertNoError(t, err)
+	for _, pid := range cyc.PaymentIDs {
+		p, err := sys.GetPayment(ctx, pid)
+		assertNoError(t, err)
+		_, err = sys.PostCreditorLeg(ctx, p.Creditor.Participant, pid)
 		assertNoError(t, err)
 	}
 }
@@ -355,8 +384,13 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	// 1. The batch is not taken down by one closed account.
+	// 1. The batch is not taken down by one closed account: the cut-off is the
+	//    settlement agent's netting transaction, and the closed account is not
+	//    in it. Bob's bank meets it afterwards, on its own, when it comes to
+	//    pay its own customer.
 	_, _, err = sys.SettleCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	_, err = sys.PostCreditorLeg(ctx, b.ID, pay.ID)
 	assertNoError(t, err)
 
 	// 2. The payment settled, because it did: the reserves moved and Bob's bank
@@ -379,14 +413,16 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 // glAccountTx collapses every error from its read into ErrAccountNotInParticipant
 // — a dropped connection, a scan error, a cancelled context all arrive as that
 // one sentinel — so a guard written as "return unless it is
-// ErrAccountNotInParticipant" cannot fire, and a settlement that failed to READ
-// the payee's account would credit the bank's unclaimed balances, mark the
-// payment Settled and commit. The money would be in the wrong account of the
-// right bank, and the only record of why would be a description string.
+// ErrAccountNotInParticipant" cannot fire, and a bank that failed to READ its
+// own customer's account would credit its unclaimed balances, mark the payment
+// Settled and commit. The money would be in the wrong account of the right bank,
+// and the only record of why would be a description string.
 //
 // The payee's account was already resolved once, when that bank accepted the
 // payment. A failure to resolve it now is not a statement about the account, so
-// it fails the cut-off — which is retriable — rather than routing money.
+// the leg fails — which is retriable, and is now retriable on its own, because
+// the cut-off it used to take down is a different institution's unit of work —
+// rather than routing money.
 //
 // It is the settlement-time twin of the defect Task 14 fixed in checkPartyTx,
 // and TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is its sibling.
@@ -407,7 +443,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 
 	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
 	assertNoError(t, err)
-	_, err = initiate(ctx, sys, InitiatePaymentRequest{
+	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
 		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
@@ -415,24 +451,30 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
+	_, _, err = sys.SettleCycle(ctx, cyc.ID)
+	assertNoError(t, err)
 
-	// The same store, decorated only from here on: the payment had to clear
-	// before there was a cut-off to settle.
+	// The same store, decorated only from here on: the payment had to clear and
+	// the reserves had to move before Bob's bank had a leg to post. The failure
+	// under test is that bank's own, in its own unit of work, and the settlement
+	// agent is not in it at all.
 	dropped := errors.New("connection reset by peer")
 	broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
 		func() time.Time { return fixedTime })
 
-	if _, _, err := broken.SettleCycle(ctx, cyc.ID); err == nil {
-		t.Error("SettleCycle over a store that could not read the payee's account succeeded; " +
+	if _, err := broken.PostCreditorLeg(ctx, b.ID, pay.ID); err == nil {
+		t.Error("a creditor leg over a store that could not read the payee's account succeeded; " +
 			"a read that cannot answer is not permission to put the money somewhere else")
 	}
 	// The money is the part that cannot be retried, so it is the part asserted:
 	// none of it reached the unclaimed-balances account.
 	assertEqual(t, "bank B unclaimed balances after a failed read", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 0)
-	// And the cut-off is where it was, so it can simply be run again.
-	after, err := sys.GetCycle(ctx, cyc.ID)
+	// And the payment is where it was, so this one leg can simply be posted
+	// again. That is the unit that is now retriable: the cut-off is settled and
+	// final, and one bank's failure to pay one customer does not unwind it.
+	after, err := sys.GetPayment(ctx, pay.ID)
 	assertNoError(t, err)
-	assertEqual(t, "cycle status after a failed settlement", after.Status, CycleClosed)
+	assertEqual(t, "payment status after a failed creditor leg", after.Status, Cleared)
 }
 
 // PSD2 Art. 87(2): the payer's debit value date may be no earlier than the
@@ -1319,23 +1361,30 @@ func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
 // What the ledger does and does not catch about a euro-to-bitcoin payment.
 //
 // The claim this test exists to keep honest is a narrow one, and it was stated
-// too broadly once already. The ledger DOES catch a cross-asset payment — at
-// settlement. SettleCycleTx resolves the creditor's suspense account with
-// creditor.AccountsFor(scheme.Asset()), so the creditor leg comes out as a EUR
-// suspense debit against a BTC credit, and validateBalance refuses it with
+// too broadly once already. The ledger DOES catch a cross-asset payment — at the
+// creditor leg. PostCreditorLegTx resolves the creditor's suspense account with
+// creditor.AccountsFor(scheme.Asset()), so the leg comes out as a EUR suspense
+// debit against a BTC credit, and validateBalance refuses it with
 // ErrUnbalancedAsset.
 //
 // What the ledger cannot catch is the payment at INITIATION. The debtor leg on
 // its own is impeccable double-entry within one asset, and nothing in that
 // posting says a second posting elsewhere is its other half.
 //
-// The cost of finding out late is what ErrAssetMismatch buys: settlement is
-// all-or-nothing, so one bad payment takes down the whole clearing cycle, and
-// the error names an imbalance rather than the payment that caused it.
+// # What it costs has changed, and this is where that shows
+//
+// It used to take down the whole clearing cycle, because the creditor leg was
+// posted inside the settlement agent's unit of work: one bad payment and no
+// member settled. Task 15b.3 made the leg the payee's bank's own act, in its own
+// unit of work, so the cut-off now settles and this ONE payment stays Cleared
+// while the ledger refuses it. That is a strictly better failure — it is the
+// same argument that made the closed-account check affordable — and what
+// ErrAssetMismatch still buys is finding out at initiation, where the error can
+// name the payment rather than an imbalance.
 //
 // Constructing the state needs the store directly, because ErrAssetMismatch
 // now refuses such a payment at initiation — which is the point.
-func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) {
+func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
@@ -1373,16 +1422,26 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle(t *testing.T) 
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	_, _, err = sys.SettleCycle(ctx, cyc.ID)
+	// The cut-off itself is untouched by this: the settlement agent nets reserves
+	// and never reads a payee's account.
+	_, statements, err := sys.SettleCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	bookTheAdvices(t, sys, statements)
+
+	// The refusal arrives at the payee's bank, when it comes to pay.
+	_, err = sys.PostCreditorLeg(ctx, b.ID, pay.ID)
 	assertError(t, err, ledger.ErrUnbalancedAsset)
 
-	// The whole batch fails, not the one payment: nothing settled, and Alice's
-	// money is still where the debtor leg left it.
+	// The one payment fails, not the batch: the cycle settled, and this payment
+	// is still Cleared with nobody credited in either asset.
 	settlements, err := sys.ListSettlements(ctx)
 	assertNoError(t, err)
-	assertEqual(t, "settlements recorded", len(settlements), 0)
-	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 30000)
-	assertEqual(t, "bob was not credited", customerBalance(t, b, bob), 0)
+	assertEqual(t, "settlements recorded", len(settlements), 1)
+	after, err := sys.GetPayment(ctx, pay.ID)
+	assertNoError(t, err)
+	assertEqual(t, "payment status", after.Status, Cleared)
+	assertEqual(t, "bob's euro account was not credited", customerBalance(t, b, bob), 0)
+	assertEqual(t, "bob's bitcoin account was not credited", customerBalance(t, b, bobBTC.ID), 0)
 }
 
 // SEPA is a euro scheme, not a scheme that happens to be tested with EUR

@@ -1117,26 +1117,25 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 //     route every network-scoped write takes here, and never through a posting.
 //     See the note above the tests.
 //
-// # The MIRROR leg has left, and that is what this set now measures
+// # BOTH member legs have left, and that is what this set now measures
 //
 // Task 15b.2 turned the mirror leg into a camt.053: the central bank sends each
 // member a statement of its own reserve account, and the member posts its own
-// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement). So
-// the payer's bank's book is no longer in this set — the settlement agent has
-// nothing left to do in it.
+// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement).
 //
-// The PAYEE's bank's book is still here, and it is here for the creditor leg
-// alone: SettleCycleTx still releases every payee's funds out of that bank's
-// suspense. That leg moves in 15b.3, and THAT is when this assertion reaches
-// [CentralBankBook, NetworkBook]. The set below is an intermediate state and not
-// the destination; do not read it as one.
+// Task 15b.3 took the CREDITOR leg the same way. The clearing house's ACSC
+// fan-out now reaches the creditor's bank as well as the submitter, and that
+// bank releases its own customer's funds out of its own suspense
+// (payment.PostCreditorLegTx, bank.receiveStatus). So no member's book is in
+// this set at all: SettleCycleTx reads the cycle, the roster and its own book,
+// and no payment.
 //
 // # What that measurement is evidence FOR
 //
-// The three books that remain are: the central bank's own, the network's, and
-// one member's — and the member's is there because of the ONE leg that has not
-// moved yet. What has already gone is the claim that a settlement agent posts in
-// every member's ledger.
+// The two books that remain are the central bank's own and the network's. The
+// claim that a settlement agent posts in a member's ledger is gone entirely,
+// and it is gone by measurement rather than by assertion — this expectation was
+// written at Task 10 to fail the day it stopped being true, and it did.
 //
 // What it cost is stated at the domain call rather than hidden here: the ledger's
 // refusal of an overdrawn net payer came from the mirror leg, in the member's own
@@ -1160,7 +1159,7 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 	}
 	assertBooksTouched(t, "the central bank, settling a cycle",
 		h.booksTouchedBy(h.cfg.CentralBankBIC),
-		[]ledger.BookID{h.creditorBook, payment.CentralBankBook, ledger.NetworkBook})
+		[]ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
 }
 
 // TestEachBankBooksItsOwnSettlementAndNoOtherBooks is the counterpart of the
@@ -1189,17 +1188,33 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 //
 // # What each bank reaches, and what is ABSENT
 //
-// Its own book, once, for the mirror leg — suspense against reserve, so the
-// suspense returns to zero. NetworkBook is NOT in either set, and that absence is
-// a measurement too: PostSettlementAdviceTx writes a book-scoped advice row and
-// posts in the bank's own ledger, and appends no audit event, so nothing in a
-// member's half of settlement allocates a network id. An unexpected NetworkBook
-// here would mean something did; read what touched it before changing this
-// expectation.
+// Its own book, and only its own. The payer's bank posts once, for the mirror
+// leg — suspense against reserve, so the suspense returns to zero. The payee's
+// bank posts that leg too and then a second one: Task 15b.3 made the CREDITOR
+// leg the payee's bank's act, so it also releases its own customer's funds out
+// of that same suspense.
 //
 // The central bank's book is absent from both, which is the claim the old test
 // made most sharply and this one still makes: a member books its own mirror leg
 // from a statement, and never reads the account the statement is about.
+//
+// # The asymmetry in NetworkBook is a measurement, not noise
+//
+// NetworkBook is in the payee's bank's set and not the payer's, and the reason
+// is which of them writes a PAYMENT row. PostSettlementAdviceTx writes a
+// book-scoped advice row and appends no audit event, so a member's mirror leg
+// allocates no network id — that is why the payer's bank's set is its own book
+// alone. PostCreditorLegTx transitions the payment to Settled and appends
+// payment.settled, and a payment is a network-scoped row, so the payee's bank
+// reaches NetworkBook through the id that event needed (see the note above the
+// tests).
+//
+// So the asymmetry says the payment row is still ONE row shared by the whole
+// network rather than each institution's own record. Task 18 is where it
+// becomes per-entity, and then both banks will touch their own and neither this
+// one. Until then, a NetworkBook that appeared in the PAYER's set would mean a
+// bank had written a network row it has no business writing; read what touched
+// it before changing this expectation.
 //
 // # What these sets do NOT rule out, measured rather than assumed
 //
@@ -1224,8 +1239,8 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 
 	assertBooksTouched(t, "the payer's bank, booking its own settlement",
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
-	assertBooksTouched(t, "the payee's bank, booking its own settlement",
-		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook})
+	assertBooksTouched(t, "the payee's bank, booking its own settlement and paying its customer",
+		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, ledger.NetworkBook})
 }
 
 // TestWhichBooksAReturnReaches is the last flow's measurement, and it is the

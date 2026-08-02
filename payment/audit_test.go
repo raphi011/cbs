@@ -31,11 +31,24 @@ func eventTypes(events []ledger.AuditEvent) string {
 	return strings.Join(out, " ")
 }
 
-// TestPaymentAuditCoversTheNetting flow pins the two fan-out events: closing a
-// cycle records one payment.cleared per payment plus one cycle.closed, and
-// settling it records one payment.settled per payment plus one cycle.settled.
-// A cycle with two payments is the smallest fixture that can tell "once" from
-// "once per payment" apart.
+// TestPaymentAuditCoversTheNettingFlow pins the fan-out events: closing a cycle
+// records one payment.cleared per payment plus one cycle.closed, and settling it
+// records one cycle.settled plus one payment.settled per payment. A cycle with
+// two payments is the smallest fixture that can tell "once" from "once per
+// payment" apart.
+//
+// # The ORDER across the cut-off is the measurement Task 15 moved
+//
+// payment.settled used to come BEFORE cycle.settled, because both were appended
+// inside the settlement agent's one unit of work and the payments were done
+// first. They are two institutions' acts now: cycle.settled is the settlement
+// agent's, and each payment.settled is a payee's bank's, appended when that bank
+// posts its own creditor leg on the clearing house's advice. So the settlement
+// closes first and the payments follow it.
+//
+// A trail in which they ran the other way round would mean a payee had been paid
+// before the reserves moved, which is what finality forbids and which no bank
+// could have known to do.
 func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -70,9 +83,9 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		ledger.EventPaymentCleared, // one per payment in the cycle
 		ledger.EventPaymentCleared,
 		ledger.EventCycleClosed,
-		ledger.EventPaymentSettled, // one per payment in the cycle
+		ledger.EventCycleSettled,   // the settlement agent's, and it comes first
+		ledger.EventPaymentSettled, // one per payment, each its own bank's
 		ledger.EventPaymentSettled,
-		ledger.EventCycleSettled,
 	}, " ")
 	assertEqual(t, "network audit trail", eventTypes(paymentAudit(t, sys, "")), want)
 
