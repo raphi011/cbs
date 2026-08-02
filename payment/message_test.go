@@ -769,10 +769,10 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("description = %q, want %q", got.Description, p.Description)
 	}
 	// The CREDITOR is this bank's own customer on a push, so it is resolved by
-	// ADDRESS against its own directory — not by an id the message never
-	// carried. This is the assertion that would catch a translator quietly
-	// threading internal account ids through a message that has no element for
-	// them.
+	// ADDRESS — a network-wide sweep, unchanged from before this narrowing, see
+	// ResolveIdentifierTx — not by an id the message never carried. This is the
+	// assertion that would catch a translator quietly threading internal
+	// account ids through a message that has no element for them.
 	if !got.Creditor.SameParty(p.Creditor) {
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
 	}
@@ -785,9 +785,10 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Errorf("creditor address = %+v, want the quoted %+v", got.Creditor.Identifier, p.Creditor.Identifier)
 	}
 	// The DEBTOR is the SENDING bank's customer. Task 14.4 narrowed
-	// CreditTransferRequest to this bank's own side only, so the debtor comes
-	// back with the address the message quoted and nothing this bank resolved
-	// against its own directory — no participant, no account.
+	// CreditTransferRequest to resolve its own side only — not the sweep itself,
+	// which is still network-wide, but WHICH party is put through it — so the
+	// debtor comes back with the address the message quoted and nothing
+	// resolved at all: no participant, no account.
 	if got.Debtor.Participant != "" || got.Debtor.Account != "" {
 		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
@@ -1307,14 +1308,23 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 // Every other test here uses accounts stored with canonical compact IBANs, and
 // they all passed while the system was emitting an address it could not then
 // resolve: seed.go stores the readable SE89-AURORA-1001, ibanOf compacts it to
-// SE89AURORA1001 for the wire, and compaction does not run backwards. The
-// directory now compares both sides in their canonical form — see
-// deposit.Identifier.MatchValue — so the address survives the round trip, and
-// this test is what says so.
+// SE89AURORA1001 for the wire, and compaction does not run backwards. Matching
+// the two forms is now split across two different comparisons, and this test
+// drives both of them.
 //
-// Both banks' accounts are stored separated, and differently: hyphens on one
-// side and spaces on the other, because those are two separators and a fix that
-// learned only one would resolve the debtor and lose the creditor.
+// Both banks' accounts are stored separated, and differently: hyphens on
+// Aurora's side, spaces on Verde's. Task 14.4 means only ONE of the two now
+// goes through the DIRECTORY here: CreditTransferRequest resolves the
+// CREDITOR, so Verde's space-separated form is what
+// deposit.Identifier.MatchValue proves survives the round trip through
+// ResolveIdentifierTx. Aurora's hyphen-separated form is no longer resolved by
+// this call at all — the debtor is recorded, not looked up — so its coverage
+// moves to the second comparison this test drives: addressFor's own
+// deposit.Identifier.Matches, exercised below when the debtor's own bank
+// resubmits with the wire's compact form and the result is checked against the
+// account's stored, hyphenated one. A fix that learned only one comparison
+// would still resolve the creditor and still normalize the debtor — this test
+// is what tells the two apart.
 func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
@@ -1401,7 +1411,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	// resolution would fail here with ErrIdentifierMismatch — the directory and
 	// addressFor disagreeing about what an address is.
 	accepted, err := initiate(ctx, n, InitiatePaymentRequest{
-		Scheme: SchemeSEPACT,
+		Scheme: got.Scheme,
 		Debtor: PartyRef{
 			Participant: aurora.ID, Account: alice.ID,
 			Identifier: got.Debtor.Identifier,

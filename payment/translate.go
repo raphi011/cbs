@@ -1063,13 +1063,16 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 // A pacs.003 travels FROM the creditor's bank, routed by DbtrAgt, so the bank
 // reading this message is the DEBTOR's — the mirror of CreditTransferRequest in
 // exactly the way the direction implies, and no further: the DEBTOR is resolved
-// by address against this bank's own register, and the CREDITOR is recorded
-// from what the message says and not resolved, for the identical reason
-// CreditTransferRequest does not resolve a pacs.008's debtor — the creditor is
-// the SENDING bank's customer, not this bank's to look up. The account elements
-// are read for what they are rather than by position — a reader that took the
-// first account element as the debtor's, as it is in a pacs.008, would produce
-// a collection pointing the wrong way and resolve successfully while doing it.
+// by ADDRESS, exactly as before — Network.ResolveIdentifierTx against the IBAN
+// the message carries, which still lists every participant and reads every
+// register; narrowing WHICH party is put through that sweep did not narrow the
+// sweep itself. The CREDITOR is recorded from what the message says and not
+// resolved, for the identical reason CreditTransferRequest does not resolve a
+// pacs.008's debtor — the creditor is the SENDING bank's customer, not this
+// bank's to look up. The account elements are read for what they are rather
+// than by position — a reader that took the first account element as the
+// debtor's, as it is in a pacs.008, would produce a collection pointing the
+// wrong way and resolve successfully while doing it.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
@@ -1348,12 +1351,12 @@ func agentIn(fi iso20022.BranchAndFinancialInstitution) iso20022.BIC {
 }
 
 // nameIn reads the name a message gives for one party. It is the inverse of
-// namedPartyOf, and it does not enforce namedPartyOf's own rule that the name
-// be non-empty (EPC AT-P001/AT-E001): that rule binds what THIS bank sends, not
-// what a counterparty sent, and a counterparty's message that fell short of its
-// own guidelines is not this bank's defect to raise as one — the same
-// discipline addressedPartyTx's doc explains for a NOT-FOUND versus a store
-// failure.
+// namedPartyOf, and — like agentIn, for the identical reason — it never
+// refuses: validateNamedParty already requires a non-empty Nm on both Dbtr and
+// Cdtr for any message that reached Unmarshal (CreditTransferTransaction.validate
+// in pacs008.go, DirectDebitTransactionInformation.validate in pacs003.go), so
+// a *iso20022.Pacs008 or *iso20022.Pacs003 held here never carries an empty
+// one — there is nothing left to check.
 func nameIn(p iso20022.PartyIdentification) string {
 	return p.Nm
 }

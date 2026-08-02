@@ -211,9 +211,15 @@ func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 // First: can this message be resolved to an instruction at all? That is
 // CreditTransferRequest, which resolves the CREDITOR — this bank's own
 // customer, the only party a pacs.008 routed here by CdtrAgt gives this bank
-// any standing to look up — BY ADDRESS, against its own directory. It is the
-// check that produces AC01 for an account number nobody in this bank's own
-// register holds. It is the question a real receiving bank asks first, because
+// any standing to look up — BY ADDRESS. The SWEEP that address is checked
+// against is not this bank's own register: ResolveIdentifierTx still lists
+// every participant and reads every register, exactly as it did before this
+// narrowing (see payment.localPartyIn), so AC01 fires only when nobody in the
+// WHOLE NETWORK holds the creditor's IBAN — a creditor address some other bank
+// happens to hold still resolves. What changed is which PARTY is put through
+// that sweep, not which registers the sweep reaches; narrowing the sweep
+// itself needs the bank's own identity, which is a later sub-project's, not
+// this one's. It is the question a real receiving bank asks first, because
 // until it is answered the bank does not know the message is even for one of
 // its customers. It no longer sweeps the directory for the DEBTOR too — see
 // payment.CreditTransferRequest and localPartyIn — so an unaddressable or
@@ -258,12 +264,14 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 // The two questions are the same two, in the same order. First, can this message
 // be resolved to an instruction at all — DirectDebitRequest, which resolves the
 // DEBTOR — this bank's own customer, the party a pacs.003 routed here by
-// DbtrAgt gives this bank standing over — BY ADDRESS against its own directory,
-// and produces AC01 for an IBAN nobody in this bank's own register holds. The
-// CREDITOR is the sending bank's customer and is not resolved, for the same
-// reason receiveCreditTransfer's debtor is not — see that handler and
-// payment.DirectDebitRequest. Second, does this bank's own half check out —
-// AcceptInbound.
+// DbtrAgt gives this bank standing over — BY ADDRESS. As on the push side, the
+// sweep that address is checked against is network-wide and not narrowed to
+// this bank's own register — see receiveCreditTransfer's doc for the whole of
+// that point — so AC01 fires only when nobody in the WHOLE NETWORK holds the
+// debtor's IBAN. The CREDITOR is the sending bank's customer and is not
+// resolved, for the same reason receiveCreditTransfer's debtor is not — see
+// that handler and payment.DirectDebitRequest. Second, does this bank's own
+// half check out — AcceptInbound.
 //
 // What differs is what the second question DOES. On a push it is a check and
 // nothing more; here it is the posting. The payer's money leaves their account
