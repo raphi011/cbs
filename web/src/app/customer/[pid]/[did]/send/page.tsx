@@ -50,11 +50,13 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee: this bank's own instruction cannot
-  // fill these in on the payer's behalf, because the account named above is
-  // at another bank, in a register this one may not read. PayeeLine below
-  // answers a different question — which bank an IBAN routes to — and does
-  // not populate them.
+  // What the payer says about the payee. PayeeLine below is backed by
+  // GET /directory (api/handlers_directory.go's handleResolveIdentifier),
+  // which resolves the typed IBAN across the network and then reads the
+  // resolved account directly — bank, asset, and its name — off the payee's
+  // own bank's deposit register. Neither of these two fields is populated
+  // from that answer: the payer types both independently, and the request
+  // carries only what was typed.
   const [creditorAgent, setCreditorAgent] = useState("");
   const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the

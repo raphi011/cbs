@@ -3076,49 +3076,98 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 // well-formed JSON this system will not act on, the same class as the
 // addressing refusals TestPaymentAddressingRefusalsAre422 covers.
 //
-// Every other payment test in this file that could reach the counterparty
-// guard — TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 —
-// supplies creditorAgent/creditorName on every request precisely so it does
-// not hit this guard instead of its own subject; their comments say so. This
-// is the test that hits it on purpose, on all three ways a request can fail
-// to name the counterparty: naming neither field, an agent with no name, and
-// a name with no agent.
+// Two other tests in this file also expect a 422 from a payment submission —
+// TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 —
+// and both supply creditorAgent/creditorName specifically so the request
+// reaches their own subject instead of this guard; their comments say so.
+// This is the test that hits the guard on purpose, on the two ways a request
+// can fail to name the counterparty (missing agent, missing name), plus the
+// "neither" combination of both, and a fourth, control case that supplies
+// both and must be ACCEPTED.
 //
-// It carries no balance assertion, unlike TestPaymentAddressingRefusalsAre422:
-// the counterparty check (payment/system.go, ahead of debtorSideTx/
-// creditorSideTx) runs before either side's leg is ever touched, so there is
-// no live-money regression a missing name could have caused here.
+// Both accounts carry an IBAN and the creditor's is quoted on every request,
+// same as TestPaymentAddressingRefusalsAre422's shape: a request that instead
+// left addressing to chance could be refused by ErrUnaddressableAccount
+// (api/errors.go's other 422) with the counterparty guard deleted entirely,
+// and every refusal subtest would stay green having pinned nothing.
+//
+// That was checked by mutation, not assumed, and the result is more precise
+// than "delete the guard and everything flips to 202" — worth stating exactly
+// rather than rounding off. Deleting the `if counterparty.Agent == "" ||
+// counterparty.Name == ""` block in payment/system.go and rerunning this test:
+//
+//   - "agent without a name" (a valid creditorAgent, no creditorName) flips
+//     422 -> 500. Nothing else in SubmitPaymentTx rejects an empty
+//     counterparty name — ledger.ValidateText permits "" — so the request
+//     proceeds into building the outbound pacs.008, which panics-turned-error
+//     on the message's own mandatory-element check ("Cdtr/Nm"). This is the
+//     one case in this table with no second guard standing behind
+//     ErrCounterpartyNotNamed, and it is the case that actually falsifies the
+//     CRITICAL from fix round 1: the test fails, loudly, when the guard is
+//     gone.
+//   - "neither field" and "name without an agent" (both leave creditorAgent
+//     empty) stay at 422 even with the guard deleted, because an empty Agent
+//     independently fails iso20022.BIC.Validate() a few lines below where the
+//     deleted guard was — a different, legitimate check with its own 422
+//     mapping (iso20022.ErrBICFormat, api/errors.go's other 422 case). That
+//     is defense in depth, not this test failing to isolate its subject: an
+//     empty agent was always going to be refused by SOMETHING, guard or no
+//     guard. What these two subtests pin is that the request is refused, not
+//     specifically that ErrCounterpartyNotNamed is what refused it — and
+//     that is a real and worth-pinning property (the API never lets a
+//     nameless-agent instruction through), stated accurately here rather
+//     than claimed to be something it is not.
+//   - "both fields — the control" is unaffected either way, as a control
+//     should be.
+//
+// The full transcript — before deleting the guard, after, and after
+// restoring it — is in this task's fix report,
+// .superpowers/sdd/2026-08-02-task-14-message-carries-the-parties/task-14.5-report.md.
 func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	h := newServer(t, nil)
 	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
 	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
-	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
-	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
+	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
+	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
+	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
-	for _, tc := range []struct{ name, body string }{
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
 		{"neither field", `{
 			"scheme":"sepa.ct",
 			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
 			"amount":1000
-		}`},
+		}`, http.StatusUnprocessableEntity},
 		{"agent without a name", `{
 			"scheme":"sepa.ct",
 			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
 			"amount":1000,
 			"creditorAgent":"BNKBDEFFXXX"
-		}`},
+		}`, http.StatusUnprocessableEntity},
 		{"name without an agent", `{
 			"scheme":"sepa.ct",
 			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
 			"amount":1000,
 			"creditorName":"Bob"
-		}`},
+		}`, http.StatusUnprocessableEntity},
+		{"both fields — the control", `{
+			"scheme":"sepa.ct",
+			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
+			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
+			"amount":1000,
+			"creditorAgent":"BNKBDEFFXXX",
+			"creditorName":"Bob"
+		}`, http.StatusAccepted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			assertStatus(t, csm(h), "POST", "/payments", tc.body, http.StatusUnprocessableEntity)
+			assertStatus(t, csm(h), "POST", "/payments", tc.body, tc.wantStatus)
 		})
 	}
 }
