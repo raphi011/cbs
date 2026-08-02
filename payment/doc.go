@@ -94,16 +94,24 @@
 // This is a learning model, not a production payment processor:
 //
 //   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
-//     pacs.004 and pacs.009 are implemented — translate.go renders and reads
-//     them, and package mesh is what carries them between the institutions as
-//     marshalled bytes, so they are parsed on arrival rather than passed as
-//     structs. What is absent is pain.001/pain.008 customer initiation (an
-//     instruction arrives over this repository's REST API instead), the camt
-//     reporting family — including camt.054 and the admi.002 a real receiver
-//     answers an unreadable file with — camt.056/pacs.007 recalls and
-//     reversals, runtime XSD validation (the golden files are checked against
-//     the real schemas only by `make test-schemas`; a plain `go test` skips
-//     that check) and message signing. Nor is there any batching of customer
+//     pacs.004 and pacs.009 are implemented — translate.go renders all five
+//     and reads all but pacs.004: ReturnMessage has no reading counterpart
+//     here, because mesh/centralbank.go reads an arriving return's fields
+//     itself and calls ReturnPayment with them. Package mesh is what carries
+//     them between the institutions as marshalled bytes, so they are parsed on
+//     arrival rather than passed as structs. What is absent is
+//     pain.001/pain.008 customer initiation (an instruction arrives over this
+//     repository's REST API instead), the camt reporting family — including
+//     camt.054 and the admi.002 a real receiver answers an unreadable file
+//     with — camt.056/pacs.007 recalls and reversals, runtime XSD validation
+//     (a golden-file check against the real schemas exists — `make
+//     test-schemas` — but it cannot be run as the tree stands:
+//     iso20022/testdata holds no xsd directory, because the schemas are ISO's
+//     to redistribute rather than this repository's to vendor. So a plain `go
+//     test` skips every one of its subtests, and `make test-schemas`, which
+//     sets ISO20022_REQUIRE_SCHEMAS=1 to turn each skip into a failure, fails.
+//     Until someone fetches the schemas, nothing here is checked against a
+//     real one) and message signing. Nor is there any batching of customer
 //     payments: a pacs.008 or pacs.003 built here carries exactly one
 //     transaction and one arriving with several is refused, which is why
 //     pacs.002's PART group status is built and never produced.

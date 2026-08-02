@@ -259,7 +259,7 @@ export const chapter: Chapter = {
         "Direction: which party's bank initiates (push vs pull)",
         "Settlement model: net (batched and netted) vs gross (per-payment, immediate)",
         "Whether a mandate is required before funds may be collected",
-        "Whether settled payments may be returned within a window",
+        "Whether settled payments may be returned",
         "How long after booking the payment takes economic effect (the value date / settlement delay)",
         "Which ISO 20022 message format the scheme uses internally",
       ],

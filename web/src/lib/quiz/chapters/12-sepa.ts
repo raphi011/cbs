@@ -125,7 +125,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "The [[creditor-leg]] posts at **settlement**: only after central-bank reserves have moved from the debtor's bank to the creditor's bank does the creditor's bank credit the payee's deposit account (and debit its own reserve asset). The debtor leg posts earlier, at initiation, into the initiating bank's clearing suspense.",
+        "The [[creditor-leg]] posts at **settlement**: only after central-bank reserves have moved from the debtor's bank to the creditor's bank does the creditor's bank credit the payee's deposit account (and debit its own reserve asset). The [[debtor-leg]] posts earlier, and always into the *payer's own bank's* clearing suspense — at initiation for a credit transfer, which the payer's bank submits, and when the collection arrives for a direct debit, which the *payee's* bank submits and whose submission posts nothing.",
     },
     {
       kind: "mc",

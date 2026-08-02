@@ -486,9 +486,10 @@ A revoked mandate causes immediate rejection (\`ErrMandateRevoked\`). An exceede
 
 \`\`\`
 Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
-                  │                       │
-                  ▼                       ▼
-              Rejected                Returned
+     │            │                        │
+     └────┬───────┘                        ▼
+          ▼                             Returned
+      Rejected
 \`\`\`
 
 Every arrow is drawn by a **named institution**, and no two adjacent ones by the same:
@@ -497,7 +498,7 @@ Every arrow is drawn by a **named institution**, and no two adjacent ones by the
 - **Initiated → Accepted:** the **clearing house's** act and nobody else's — it takes the payment into the open cycle for its scheme. No open cycle means \`ErrCycleNotOpen\`, which travels as **TM01, "invalid cut-off time"**: the cut-off belongs to the clearing house, so the refusal does too.
 - **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
 - **Cleared → Settled:** the **central bank's** act, and it happens because the clearing house asked — closing a cycle sends a \`pacs.009\`. Reserves move at the [[central-bank-reserves|central bank]] and the [[creditor-leg]] is posted. A net payer who cannot cover is refused, and then nothing posts at all: the cycle stays Closed with no settlement against it.
-- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* is told to two banks, because the bank waiting for the answer and the bank holding the money are different institutions.
+- **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
 - **Returned:** after settlement; an R-transaction fully unwinds the flow (available on [[allows-return|return-enabled]] schemes only). It is sent by the bank that *received* the original instruction and executed by the central bank.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
