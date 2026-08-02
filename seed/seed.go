@@ -311,6 +311,13 @@ func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledg
 // than calling one method that does all three is the point of the split: there
 // is no such method, precisely so that no caller can validate both ends of a
 // payment by accident.
+//
+// It is the LAST composite in this repository. api had a twin of these ten lines
+// until sub-project 7b's handoff, and what replaced it there was the mesh, not a
+// shared helper. It survives here for a reason no HTTP handler has: the seed
+// runs before any actor exists, so there is nothing to send a message to and
+// nobody to answer one — and its whole job is to leave a FIXED scenario, which a
+// conversation carried out at startup could not promise.
 func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	var out payment.Payment
 	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {

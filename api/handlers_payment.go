@@ -203,57 +203,61 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
 }
 
-// initiateWholePayment runs all three halves of an initiation — the
-// submitting bank's, the receiving bank's and the clearing house's — in one
-// unit of work.
+// handleInitiatePayment hands a payment instruction to the bank whose act it is,
+// and answers with what that bank did.
 //
-// One process playing all three actors is exactly what the mesh replaces, and
-// this route is the last place it still happens: the operator's POST /payments
-// answers 201 with an Accepted payment, so it has to perform the whole
-// choreography itself. Sub-project 7b's api handoff is what removes it.
+// # What it used to be, and why the status code changed
 //
-// The same ten lines appear in seed/seed.go and payment/system_test.go. They
-// are not factored out because the three live in three packages with three
-// error conventions — writeError here, check() in the seed, t.Fatalf upstream
-// of the test helper — and because the one place a shared version could live,
-// payment itself, is precisely where the brief forbids it: a method that runs
-// all three halves is the second path into payment creation the split exists
-// to remove.
+// It used to run all three halves of an initiation — the submitting bank's, the
+// receiving bank's and the clearing house's — in a single unit of work, so that
+// it could answer 201 with an Accepted payment. One process playing three
+// institutions is exactly what the mesh replaces, and this route was the last
+// place it still happened.
 //
-// The three calls share a Tx deliberately. Run as three units of work, an
-// instruction the far side refuses would leave an Initiated payment behind
-// with the payer's money already in suspense — a real outcome in the mesh,
-// where the two banks genuinely are two actors, but not one this synchronous
-// route has ever produced or its callers know how to read.
-func (s *Server) initiateWholePayment(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	net := s.network()
-	var out payment.Payment
-	err := net.Store().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := net.SubmitPaymentTx(ctx, tx, req)
-		if err != nil {
-			return err
-		}
-		if err := net.AcceptInboundTx(ctx, tx, p.ID); err != nil {
-			return err
-		}
-		out, err = net.AcceptAtCSMTx(ctx, tx, p.ID)
-		return err
-	})
-	return out, err
-}
-
+// It now calls Mesh.Submit, which runs the submitting bank's half and sends. The
+// counterparty's answer and the clearing house's acceptance arrive later, at
+// other actors, as messages. So the payment in this response is INITIATED, in no
+// cycle, and unseen by the far side — and 202 is what says that: the instruction
+// has been taken in, and its fate is a separate question. A 201 Created here
+// would still be defensible about the resource and dishonest about everything a
+// caller reads next.
+//
+// # Which errors can come back this way, and which cannot
+//
+// Submit is synchronous up to the send, so everything the payer's own bank
+// decides is answerable here, with a status code, in this response: no funds, an
+// account that is not theirs, a mandate that does not authorise the collection,
+// a scheme nobody has registered. Those are 4xx and they are the whole of what
+// this handler can refuse.
+//
+// Everything after the send is not. A payee's bank that cannot apply the credit,
+// a clearing house with no open cycle, a settlement agent short of reserves —
+// each of those decides about a payment whose HTTP request finished long ago,
+// and each answers with a pacs.002 rather than a status code. That is the
+// difference the mesh makes, and it is why the client shape is "here is an
+// identifier, ask again". Nothing is dropped: the payment's own row is where the
+// answer lands, and a failure nobody could be told about is a mesh dead letter.
+//
+// # This is the clearing house's console, and it does not submit
+//
+// The route lives on the clearing house's surface because that is the operator
+// who can see every payment in the network, but the WORK is a member bank's:
+// Mesh.Submit reads the scheme's direction and hands the instruction to the
+// payer's bank on a push and the payee's on a pull. A customer's own instruction
+// goes to their bank's own POST /payments (see handleSubmitPayment), which is
+// the only door a retail client has.
 func (s *Server) handleInitiatePayment(w http.ResponseWriter, r *http.Request) {
 	var req initiatePaymentRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.initiateWholePayment(r.Context(), req.toDomain())
+	p, err := s.mesh.Submit(r.Context(), req.toDomain())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toPaymentDTO(p, s.network().ListSchemes()))
+	writeJSON(w, http.StatusAccepted, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
 func (s *Server) handleListPayments(w http.ResponseWriter, r *http.Request) {
@@ -279,38 +283,24 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
-// rejectWholePayment runs both halves of a rejection — the clearing house's
-// and the debtor bank's — in one unit of work.
+// handleRejectPayment declines an in-flight payment on the operator's say-so.
 //
-// One process playing two actors, exactly as initiateWholePayment plays three,
-// and for the same reason: POST /payments/{payid}/reject answers 200 with the
-// rejected payment, so it has to perform the whole choreography before it can
-// answer at all. Sub-project 7b's api handoff is what removes it.
+// It used to run both halves of a rejection — the clearing house's and the
+// payer's bank's — in one unit of work, so that it could answer 200 with a
+// payment whose payer had already been refunded. Two institutions cannot share a
+// transaction, and Mesh.Reject is what that became.
 //
-// The two calls share a Tx deliberately. Run as two units of work, a reversal
-// that failed would leave a Rejected payment behind with the payer's money
-// still in clearing suspense — the half-happened outcome RejectAtCSMTx's doc
-// comment describes, real in the mesh where the CSM and the payer's bank are
-// two actors, but not one this synchronous route has ever produced or its
-// callers know how to read.
+// So the payment in this response is REJECTED and out of its cycle, which is the
+// clearing house's own half and really has happened. The payer's money is still
+// in their bank's clearing suspense when this is written: giving it back is that
+// bank's act, in that bank's book, and it happens when the pacs.002 reaches it.
+// 202 is what says so.
 //
-// The order is the mesh's: the CSM decides, then the debtor's bank acts on the
-// decision. That is also what makes passing the payment by value safe here —
-// the copy handed to the reversal is the one the CSM's half just returned.
-func (s *Server) rejectWholePayment(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error) {
-	net := s.network()
-	var out payment.Payment
-	err := net.Store().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		var err error
-		out, err = net.RejectAtCSMTx(ctx, tx, id, code, reason)
-		if err != nil {
-			return err
-		}
-		return net.ReverseDebtorLegTx(ctx, tx, out, reason)
-	})
-	return out, err
-}
-
+// A rejection the clearing house refuses — a payment that has already settled, a
+// payment id that names nothing — is decided inside its own unit of work and
+// comes back here as a 4xx. A refund that then fails at the payer's bank cannot:
+// nobody is left to tell, so it becomes a mesh dead letter and the payment's own
+// row is where it shows, Rejected with the money still in suspense.
 func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	var req reasonRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -320,26 +310,50 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	// An operator-initiated rejection carries no more specific external status
 	// reason than MS03: the API exposes no way for a caller to name a code, so
 	// there is no more honest choice than the one that says exactly that.
-	p, err := s.rejectWholePayment(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
+	p, err := s.mesh.Reject(r.Context(), payment.PaymentID(r.PathValue("payid")), iso20022.StatusReasonNotSpecifiedAgentGenerated, req.Reason)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
+	writeJSON(w, http.StatusAccepted, toPaymentDTO(p, s.network().ListSchemes()))
 }
 
+// handleReturnPayment sends a settled payment back.
+//
+// The returning bank is not named in the request and is not this operator: a
+// return is sent by the bank that RECEIVED the original instruction — the
+// payee's bank on a push, the payer's on a pull — and Mesh.Return works that out
+// from the payment's own scheme. What that bank does is build a pacs.004 and
+// send it; the three compensating postings are the settlement agent's, four hops
+// away, because the middle one moves central-bank reserves.
+//
+// # It answers with an identifier and no payment
+//
+// Deliberately, and it is the one response on this surface that carries no
+// resource. Mesh.Return returns no payment either, for the reason its doc gives:
+// the returning bank's half posts nothing and decides nothing beyond whether
+// there is a settled payment to return, so the only Payment there is to hand
+// back is the one the caller could already read — still Settled — and re-reading
+// the row after the send would be a race dressed up as a result. Ask again with
+// the identifier; that is what 202 means here.
+//
+// The reason code is MS03 for handleRejectPayment's reason: this API gives a
+// caller no way to name one, and the free text they did give travels beside it.
+// The two code sets are different — a return reason answers "why is this money
+// coming back" and a status reason answers "why was this refused" — which is why
+// iso20022 keeps them apart and why this names the return one.
 func (s *Server) handleReturnPayment(w http.ResponseWriter, r *http.Request) {
 	var req reasonRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	p, err := s.network().ReturnPayment(r.Context(), payment.PaymentID(r.PathValue("payid")), req.Reason)
-	if err != nil {
+	id := payment.PaymentID(r.PathValue("payid"))
+	if err := s.mesh.Return(r.Context(), id, iso20022.ReturnReasonNotSpecifiedAgentGenerated, req.Reason); err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toPaymentDTO(p, s.network().ListSchemes()))
+	writeJSON(w, http.StatusAccepted, submittedPaymentDTO{PaymentID: string(id)})
 }
 
 func (s *Server) handleOpenCycle(w http.ResponseWriter, r *http.Request) {
@@ -379,8 +393,27 @@ func (s *Server) handleGetCycle(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toClearingCycleDTO(c, s.network().ListSchemes()))
 }
 
+// handleCloseCycle reaches the cut-off, and is the only way a settlement is
+// instructed in this system.
+//
+// It goes through the mesh rather than through the network, and that is the
+// whole of what Task 12 changed here. Netting is the clearing house's own act
+// and moves nothing — every payment in the batch becomes Cleared and the net
+// positions are written onto the cycle — but DISCHARGING those positions moves
+// central-bank reserves, which no clearing house may do. So the second step is a
+// pacs.009 to the central bank, and calling payment.Network.CloseCycle directly
+// from here would close the cycle and instruct nobody. There is no POST
+// /settlements any more; see api/surface.go for why a second way to settle the
+// same cycle was worse than none.
+//
+// 200 and the closed cycle, because that is a state the system is really in when
+// this is written: Closed, with net positions on it. What is NOT in the response
+// is the settlement — the central bank answers later, at another actor, and a
+// caller that wants to know reads the cycle again. A cycle that is Closed with no
+// settlement against it is an instruction the central bank refused, and the
+// console is where that shows.
 func (s *Server) handleCloseCycle(w http.ResponseWriter, r *http.Request) {
-	c, err := s.network().CloseCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
+	c, err := s.mesh.CloseCycle(r.Context(), payment.CycleID(r.PathValue("cid")))
 	if err != nil {
 		writeError(w, err)
 		return

@@ -10,6 +10,29 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
+// handleAddParticipant admits a bank: its participant row, its chart of
+// accounts, its reserve account at the central bank — and its ACTOR.
+//
+// The last of those is what the mesh added. A bank with no actor is not a slow
+// bank, it is an unreachable one: its customers' instructions are refused by
+// Mesh.Submit because there is nobody to hand them to, and every pacs.008
+// addressed to it comes back RC01 from the clearing house because its BIC is in
+// no routing table. The mesh reads the roster once, at startup, so a bank
+// admitted while the process is running has to be registered here or it never is.
+//
+// # The two steps are not one, and cannot be
+//
+// Admission is a unit of work in the store; registering an actor is a map entry
+// and a goroutine, and no transaction spans the two. So a mesh that refuses —
+// which it does for a BIC another bank already answers to — leaves a bank in the
+// roster with no actor, and there is no rolling that back from here.
+//
+// It is reported rather than hidden, and the response says which half happened,
+// because the alternative is worse in both directions: a 201 would hand back a
+// bank that cannot pay or be paid, and a silent retry-later would be a promise
+// nothing in this process keeps. The operator's fix is to admit the bank on an
+// address of its own — which is the real-world fix too, since a BIC identifies
+// an institution and two banks cannot share one.
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -31,6 +54,12 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	p, err := s.network().AddParticipant(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
 	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if err := s.mesh.AddBank(p); err != nil {
+		s.log.Error("a bank was admitted that the mesh cannot route to",
+			"participant", p.ID, "bic", p.BIC, "error", err)
+		writeUnprocessable(w, "this bank was admitted and has no actor, so it can neither pay nor be paid: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, toParticipantDTO(p))

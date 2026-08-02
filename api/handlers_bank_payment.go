@@ -63,6 +63,10 @@ func (s *Server) handleGetBankPayment(w http.ResponseWriter, r *http.Request) {
 // seen by the counterparty. Calling the type accepted — as it was while
 // submission produced an Accepted payment — now reads as a claim the response
 // does not make.
+//
+// handleReturnPayment answers with it too, for the same reason and with less
+// choice: a return's outcome is decided four hops away and there is no
+// intermediate resource to describe at all.
 type submittedPaymentDTO struct {
 	PaymentID string `json:"paymentId"`
 }
@@ -74,12 +78,26 @@ type submittedPaymentDTO struct {
 // connection in the real thing either — so submission lands on the bank, and
 // the bank is what forwards it.
 //
-// The answer is 202 with an identifier rather than 201 with the payment, even
-// though the handler is synchronous today. Sub-project 7b converts submission
-// to exactly this shape, because a real CSM answers with a pacs.002 later and
-// not by return value; a client built against a synchronous "payment created"
-// response would have to be rewritten, and one built against "here is an
-// identifier, ask again" will not be.
+// The answer is 202 with an identifier rather than 201 with the payment, and as
+// of sub-project 7b that is TRUE rather than anticipatory. 6a chose the shape
+// ahead of the behaviour, because a real CSM answers with a pacs.002 later and
+// not by return value; the mesh is what made it so. When this response is
+// written the payment is Initiated, in no cycle, and the counterparty has not
+// seen it. Ask again with the identifier.
+//
+// # Which failures reach the caller
+//
+// Mesh.Submit runs this bank's own half synchronously, so what THIS bank decides
+// is answerable here and now: no funds, an account that is not the payer's, a
+// duplicate reference, a mandate that does not authorise the collection. Those
+// are the 4xx below.
+//
+// What cannot come back is anything the far side decides. The payee's bank
+// refusing the credit, the clearing house having no window open, the settlement
+// agent short of reserves — each of those is another institution answering a
+// message, long after this response was written, and each lands on the payment's
+// own row instead. A failure that reached nobody at all is a mesh dead letter,
+// which is the point of Drain returning them.
 func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 	var req initiatePaymentRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -117,11 +135,11 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
 		return
 	}
-	// The submitting bank's half and nothing else. The payment comes back
-	// Initiated and in no cycle; the counterparty's answer and the clearing
-	// house's acceptance arrive later, which is exactly what the 202 below has
-	// been promising since 6a.
-	p, err := s.network().SubmitPayment(r.Context(), dom)
+	// The submitting bank's half, and then the send. Mesh.Submit runs it on this
+	// goroutine and marks it as this bank's work, so the books it touches are
+	// attributed to the bank and not to whoever called in; the pacs.008 or
+	// pacs.003 goes out after the unit of work has committed, never inside it.
+	p, err := s.mesh.Submit(r.Context(), dom)
 	if err != nil {
 		writeError(w, err)
 		return

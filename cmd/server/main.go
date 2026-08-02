@@ -31,11 +31,33 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/api"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/pg"
 )
+
+// meshConfig names the two institutions this process plays.
+//
+// They are configured rather than read, because neither has a participant row:
+// member banks are admitted and carry their own BIC, and the central bank and
+// the clearing house ARE the configuration. The two values are real-shaped and
+// deliberately different from each other and from every seeded bank — one BIC in
+// two roles would be one routing-table entry, which mesh.Config.validate
+// refuses.
+var meshConfig = mesh.Config{
+	CentralBankBIC:   "CBSEDEFFXXX",
+	ClearingHouseBIC: "CSMXFRPPXXX",
+}
+
+// meshShutdown bounds the drain and the stop at shutdown.
+//
+// It is generous, and the reason is in mesh.Stop's own doc: the deadline covers
+// the handler in flight PLUS the whole depth of every inbox at the moment the
+// inboxes close, because queued messages are DELIVERED rather than discarded.
+// Sizing it against one handler would be sizing it against the optimistic case.
+const meshShutdown = 30 * time.Second
 
 // store is the shape both backends share, narrowed to what this command needs.
 //
@@ -81,7 +103,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	srv := api.NewServer(net, data.Populate, log)
+	// The mesh starts AFTER the seed, and the order is load-bearing. Start reads
+	// the participant roster once and gives every bank in it an actor, so a mesh
+	// started over an unseeded store would have no member banks at all and every
+	// seeded bank would be unreachable. Banks admitted later — POST /members —
+	// register themselves through api's handler; see mesh.AddBank.
+	msh, err := mesh.New(net, meshConfig, log)
+	if err != nil {
+		log.Error("building the mesh", "error", err)
+		os.Exit(1)
+	}
+	// The mesh's lifetime is the process's, not any request's: every handler runs
+	// with this context and Stop is what cancels it.
+	if err := msh.Start(context.Background()); err != nil {
+		log.Error("starting the mesh", "error", err)
+		os.Exit(1)
+	}
+
+	srv := api.NewServer(net, msh, data.Populate, log)
 
 	entities, err := plan(context.Background(), net, *basePort)
 	if err != nil {
@@ -109,6 +148,26 @@ func main() {
 	defer cancel()
 	if err := shutdown(shutCtx); err != nil {
 		log.Error("graceful shutdown failed", "error", err)
+	}
+
+	// Drain FIRST, then Stop, and neither return value is thrown away.
+	//
+	// Stop closes every inbox in one step before it joins anybody, so a
+	// conversation still in flight when it runs is CUT — the payer debited and the
+	// pacs.002 that would have told their bank never sent. Draining is the only
+	// way one finishes, and it leaves Stop nothing to do but join. The listeners
+	// are already down by this point, so nothing new can arrive while it runs.
+	//
+	// Both hand back what handlers had nobody to report to. A shutdown that
+	// swallowed those would be the silent failure the whole dead-letter design
+	// exists to prevent, reintroduced at the last line of the process.
+	meshCtx, meshCancel := context.WithTimeout(context.Background(), meshShutdown)
+	defer meshCancel()
+	if err := msh.Drain(meshCtx); err != nil {
+		log.Error("mesh: dead letters at shutdown", "error", err)
+	}
+	if err := msh.Stop(meshCtx); err != nil {
+		log.Error("mesh: stopping", "error", err)
 	}
 }
 

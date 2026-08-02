@@ -1468,13 +1468,18 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 // roadmap assigns to sub-project 8; 7b's job is to expose the seam honestly,
 // not to close it.
 //
-// The synchronous routes that still compose both halves pass ONE transaction to
-// both, so the gap is not open there and never has been: a failed reversal
-// takes the transition down with it. Each site is pinned separately, because a
-// shared shape is not a shared test — api's rejectWholePayment by
-// TestRejectWholePaymentIsOneUnitOfWork, the seed's reject by
-// TestSeedRejectIsOneUnitOfWork, and this package's own reject test helper by
+// One caller still composes both halves in ONE transaction, so the gap is not
+// open there: the seed, which builds a fixed scenario before any actor is
+// running and has no mesh to send anything through. A failed reversal takes the
+// transition down with it, pinned by TestSeedRejectIsOneUnitOfWork; this
+// package's own reject test helper has the same shape, pinned by
 // TestAFailedReversalRollsBackTheWholeRejection.
+//
+// api no longer does. Its rejection goes through mesh.Reject, so the gap above
+// is open on that path and is measured rather than described:
+// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered forces the reversal to
+// fail and asserts that the rejection stands and the failure comes back as a
+// dead letter.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied
@@ -1538,10 +1543,10 @@ func (s *Network) ReverseDebtorLeg(ctx context.Context, p Payment, reason string
 // What it therefore relies on the caller for is the DECISION. It does not load
 // the payment and does not look at its status, so nothing here would stop it
 // reversing the live debit of a payment that is on its way to settlement. The
-// caller establishes that the payment is rejected: api's rejectWholePayment and
-// the seed's reject by running the CSM's half first in the same unit of work,
-// and in the mesh the debtor bank's handler, which runs this on a pacs.002 and
-// only for an RJCT.
+// caller establishes that the payment is rejected: the seed's reject by running
+// the CSM's half first in the same unit of work, and in the mesh the debtor
+// bank's handler, which runs this on a pacs.002 and only for an RJCT — which is
+// the path api takes now.
 //
 // Running it twice is refused rather than absorbed: the ledger flips the
 // original to Reversed under a conditional store write, so a second reversal of

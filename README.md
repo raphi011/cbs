@@ -1506,7 +1506,7 @@ Domain sentinel errors are mapped to HTTP status codes (`404` not found, `409` c
 Example — a SEPA credit transfer end to end, across three listeners:
 
 ```bash
-CSM=http://localhost:8082; H='-H Content-Type:application/json'
+CSM=http://localhost:8082; CB=http://localhost:8081; H='-H Content-Type:application/json'
 
 # A bank's own listener. Its port is its identity, so no path names the bank —
 # and a bank admitted through POST /members has no listener until the process
@@ -1525,18 +1525,35 @@ BOB=$(curl -s $H -X POST $BANK_B/deposit-accounts -d "{\"name\":\"Bob\",\"asset\
   \"productId\":\"$PRD_B\",\"identifiers\":[{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}]}" | jq -r .id)
 curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":100000,\"description\":\"opening\"}"
 
-# A payment joins its scheme's open clearing cycle by itself, and the response
-# says which. (`POST /cycles` opens one, but a scheme may only have one open at
-# a time — against the seeded dataset it answers "already open for scheme".)
-CYC=$(curl -s $H -X POST $CSM/payments -d "{\"scheme\":\"sepa.ct\",
+# The answer is `202` and an INITIATED payment: the payer's bank has run its own
+# half and sent a `pacs.008`, and nobody else has looked at it yet. Bob's IBAN is
+# quoted because the message has to carry one — an address in another bank's
+# register is exactly what Alice's bank cannot look up.
+PAY=$(curl -s $H -X POST $CSM/payments -d "{\"scheme\":\"sepa.ct\",
   \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
-  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\"},\"amount\":25000}" | jq -r .cycleId)
-curl -s $H -X POST $CSM/cycles/$CYC/close
+  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\",
+    \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}},\"amount\":25000}" | jq -r .id)
+
+# Ask again for the outcome. By now Bob's bank has answered and the clearing
+# house has taken the payment into its scheme's open cycle, so this reads
+# `Accepted` and names the cycle. (`POST /cycles` opens one, but a scheme may
+# only have one open at a time — against the seeded dataset it answers "already
+# open for scheme".)
+curl -s $CSM/payments/$PAY | jq -r .status          # Accepted
+CYC=$(curl -s $CSM/payments/$PAY | jq -r .cycleId)
+
+# The cut-off. Netting is the clearing house's act and moves nothing; the
+# `pacs.009` it then sends is what asks the central bank to discharge the net
+# positions, and the central bank does that in an actor of its own.
+curl -s $H -X POST $CSM/cycles/$CYC/close | jq -r .status   # Closed
 
 curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000 — the debtor leg
-curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 0     — not settled yet
+curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000 — settled
+curl -s $CB/cycles/$CYC | jq -r '.status, .settlementId'    # Settled, set_…
 ```
 
-**The walkthrough stops one step short of Bob being paid, and the missing step is the point.** Alice's money has left her account and is sitting in Bank A's clearing suspense; the creditor leg that puts it in Bob's account is posted at *settlement*, and there is no HTTP call left that performs one. Reaching the cut-off is what instructs it — the clearing house sends a `pacs.009` and the central bank answers — and the message layer is not yet wired behind these handlers, so against this server the cycle stays `Closed` and Bob's balance stays `0`. Watch it on the central bank's console: the closed cycle appears under *Settlement instructions* with its net positions and no settlement against it.
+**The walkthrough now runs all the way to Bob being paid, and what carries it there is the message layer rather than any of these calls.** Four institutions ran four units of work between the `POST` and the balance: Alice's bank debited her and sent a `pacs.008`, Bob's bank checked his address and answered `pacs.002`/`ACCP`, the clearing house took the payment into a cycle and told Alice's bank, and — at the cut-off — the central bank discharged the net positions on a `pacs.009` and posted the creditor leg into Bob's account. None of that is a function call: every hop is bytes in an inbox, handled by one goroutine per institution.
+
+**Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written. `POST /cycles/{cid}/close` answers `200` and a `Closed` cycle with net positions and no settlement on it, because the settlement agent has not been asked yet. Only the reads afterwards say what became of either, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops away cannot, and lands on the payment's own row instead. Watch either on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused.
 
 > Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.

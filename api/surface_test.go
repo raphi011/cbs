@@ -234,8 +234,8 @@ var preSplitRoutes = []string{
 // naming it.
 func TestABankCannotNameAnotherBank(t *testing.T) {
 	s := newServer(t, nil)
-	aurora := doJSON(t, cb(s), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
-	verde := doJSON(t, cb(s), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
+	aurora := doJSON(t, cb(s), "POST", "/members", `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
+	verde := doJSON(t, cb(s), "POST", "/members", `{"bic":"VERDITMMXXX","name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
 
 	h := bank(s, aurora)
 	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
@@ -273,10 +273,12 @@ func TestABankCannotNameAnotherBank(t *testing.T) {
 // with settlement.
 func TestTheClearingHouseReadsTheSettlementItDidNotPerform(t *testing.T) {
 	h := newServer(t, nil)
-	cid := closedCycle(t, h)
+	cid := settledCycle(t, h)
 
-	settlement := settle(t, h, cid)
-	if string(settlement.CycleID) != cid {
+	sid := settlementOfCycle(t, h, cid)
+	var settlement settlementDTO
+	getJSON(t, csm(h), "/settlements/"+sid, &settlement)
+	if settlement.CycleID != cid {
 		t.Fatalf("settlement cycleId = %v, want %s", settlement.CycleID, cid)
 	}
 
@@ -302,20 +304,23 @@ func TestTheClearingHouseReadsTheSettlementItDidNotPerform(t *testing.T) {
 // pacs.009 it acts on names a cycle and net positions, and no payment at all.
 func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	h := newServer(t, nil)
-	cid := closedCycle(t, h)
+	cid := settledCycle(t, h)
 
 	var cycles []clearingCycleDTO
 	getJSON(t, cb(h), "/cycles", &cycles)
 	if len(cycles) != 1 || cycles[0].ID != cid {
-		t.Fatalf("the central bank sees %v, want the one closed cycle %s", cycles, cid)
+		t.Fatalf("the central bank sees %v, want the one cycle %s", cycles, cid)
 	}
 
+	// Settled, and by this institution: the clearing house sent a pacs.009 and
+	// this actor discharged it. Before the mesh a cycle sat Closed until a human
+	// pressed a second button on this console.
 	got := doJSON(t, cb(h), "GET", "/cycles/"+cid, "", http.StatusOK)
-	if got["status"] != "Closed" {
-		t.Fatalf("cycle status = %v, want Closed", got["status"])
+	if got["status"] != "Settled" {
+		t.Fatalf("cycle status = %v, want Settled", got["status"])
 	}
 
-	sid := string(settle(t, h, cid).ID)
+	sid := settlementOfCycle(t, h, cid)
 
 	// And it can read back what it did, without asking the clearing house.
 	var settlements []settlementDTO
@@ -330,17 +335,24 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 	assertStatus(t, cb(h), "GET", "/payments", "", http.StatusNotFound)
 }
 
-// closedCycle builds the smallest thing that can be settled: two banks, one
-// funded payment between them, cleared into a cycle that is then closed.
-func closedCycle(t *testing.T, h *Server) string {
+// settledCycle builds the smallest thing a settlement can come out of: two
+// banks, one funded payment between them, cleared into a cycle that is then
+// closed — and, because the cut-off is what instructs settlement, discharged by
+// the central bank once the conversation has finished.
+//
+// It was called closedCycle, and the rename is the change rather than tidying.
+// Closing used to leave a Closed cycle and nothing else, and a second console
+// button settled it. There is no such button: the cut-off sends the pacs.009,
+// and after the drain below this cycle is Settled.
+func settledCycle(t *testing.T, h *Server) string {
 	t.Helper()
-	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	b := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
-		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SET-ALICE-0001"}]}`,
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-ALICE-0001"}]}`,
 		http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
-		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SET-BOB-0001"}]}`,
+		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}]}`,
 		http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, a), "POST", "/deposits",
 		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
@@ -349,11 +361,13 @@ func closedCycle(t *testing.T, h *Server) string {
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e"
-	}`, http.StatusCreated)
+	}`, http.StatusAccepted)
+	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
+	drainServer(t, h)
 	return cyc
 }
 
@@ -410,8 +424,11 @@ type seededBank struct {
 
 func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	t.Helper()
-	mk := func(name, iban string) seededBank {
-		pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"BANKDEFFXXX","name":"`+name+`"}`, http.StatusCreated)["id"].(string)
+	// A BIC each: the mesh gives every bank an actor keyed by its address and
+	// refuses two on one, so three banks that shared a BIC could not be admitted
+	// at all — let alone tell each other apart on the wire.
+	mk := func(name, bic, iban string) seededBank {
+		pid := doJSON(t, cb(h), "POST", "/members", `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusCreated)["id"].(string)
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+name+` customer","asset":"EUR","productId":"`+prdOf(t, h, pid)+
 				`","identifiers":[{"scheme":"IBAN","value":"`+iban+`"}]}`,
@@ -420,19 +437,26 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 			`{"account":"`+did+`","amount":500000,"description":"opening"}`, http.StatusOK)
 		return seededBank{pid: pid, account: did, iban: iban}
 	}
-	return mk("Bank A", "NARROW-A-0001"), mk("Bank B", "NARROW-B-0001"), mk("Bank C", "NARROW-C-0001")
+	return mk("Bank A", "BNKADEFFXXX", "SE89-NARROW-A-0001"),
+		mk("Bank B", "BNKBDEFFXXX", "IT60-NARROW-B-0001"),
+		mk("Bank C", "BNKCDEFFXXX", "NO93-NARROW-C-0001")
 }
 
 // sct initiates a credit transfer between two seeded banks and returns its id.
 func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 	t.Helper()
-	return doJSON(t, csm(h), "POST", "/payments", `{
+	id := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+from.pid+`","account":"`+from.account+`"},
-		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`"},
+		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
 		"endToEndId":"`+e2e+`"
-	}`, http.StatusCreated)["id"].(string)
+	}`, http.StatusAccepted)["id"].(string)
+	// The payment is Initiated when the 202 is written and the counterparty has
+	// not seen it. Callers of this helper assert on what became of it, so the
+	// conversation is carried to its end here.
+	drainServer(t, h)
+	return id
 }
 
 // TestABankAcceptsItsOwnCustomersInstruction pins both halves of retail
@@ -446,7 +470,7 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 	instruction := `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"` + a.pid + `","account":"` + a.account + `"},
-		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `"},
+		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
 		"endToEndId":"retail-1"
 	}`
@@ -488,7 +512,7 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 
 	collection := `{
 		"scheme":"sepa.dd",
-		"debtor":{"participant":"` + payerBank.pid + `","account":"` + payerBank.account + `"},
+		"debtor":{"participant":"` + payerBank.pid + `","account":"` + payerBank.account + `","identifier":{"scheme":"IBAN","value":"` + payerBank.iban + `"}},
 		"creditor":{"participant":"` + payeeBank.pid + `","account":"` + payeeBank.account + `"},
 		"amount":10000,
 		"mandateId":"` + mandate + `",

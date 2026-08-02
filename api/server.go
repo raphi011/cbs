@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -19,6 +20,23 @@ import (
 // the only form of it that clears a database.
 type Server struct {
 	net *payment.Network
+
+	// mesh is the message transport, and since sub-project 7b it is the only
+	// thing in this process that runs a payment's choreography.
+	//
+	// What that replaces is worth naming, because it is the whole of this
+	// layer's change. Four handlers here used to play several institutions at
+	// once inside one unit of work — the submitting bank, the receiving bank and
+	// the clearing house on POST /payments; the clearing house and the payer's
+	// bank on a rejection — so that they could answer with a finished outcome.
+	// They now hand the instruction to the actor whose act it is, and answer with
+	// what that actor did and nothing more. See handleInitiatePayment.
+	//
+	// It is not optional. A Server built with no mesh has no way to carry a
+	// payment past the first institution, so NewServer refuses one at
+	// construction rather than leaving four handlers to fail on their first
+	// request.
+	mesh *mesh.Mesh
 
 	// boundPID is the participant this listener belongs to, empty on the
 	// central bank's and the clearing house's.
@@ -41,23 +59,35 @@ type Server struct {
 	log *slog.Logger
 }
 
-// NewServer builds a Server over an existing network.
+// NewServer builds a Server over an existing network and a running mesh.
 //
 // populate is the sample-dataset builder, called again on every Reset; pass nil
 // for a server that resets to an empty system. If log is nil, the default slog
 // logger is used.
 //
+// msh may NOT be nil, and that is the one thing here that is refused rather than
+// defaulted. A missing logger has an obvious stand-in and a missing populate
+// means "reset to nothing", but a missing mesh has no honest substitute: the
+// only alternative would be this layer running the choreography itself, which is
+// precisely what sub-project 7b removed. It is a wiring mistake, not a runtime
+// condition — no caller can recover from it and no request can be answered
+// despite it — so it fails at construction, loudly, rather than at whichever
+// request first tried to pay somebody.
+//
 // NewServer performs no I/O — the caller populates the network before serving —
 // so a store that is unavailable fails where it can be reported rather than
 // inside a constructor with no error to return.
-func NewServer(net *payment.Network, populate func(context.Context, *payment.Network) error, log *slog.Logger) *Server {
+func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Context, *payment.Network) error, log *slog.Logger) *Server {
+	if msh == nil {
+		panic("api: NewServer needs a mesh; without one this layer has no way to carry a payment past the bank it was handed to")
+	}
 	if log == nil {
 		log = slog.Default()
 	}
 	if populate == nil {
 		populate = func(context.Context, *payment.Network) error { return nil }
 	}
-	return &Server{net: net, populate: populate, log: log}
+	return &Server{net: net, mesh: msh, populate: populate, log: log}
 }
 
 // network returns the live network. Cheap, lock-free, safe for concurrent use.
@@ -81,10 +111,40 @@ func (s *Server) network() *payment.Network { return s.net }
 // is exactly the right answer. Note this makes resets exclusive within ONE
 // process; two servers sharing a database could still race, which is a property
 // of a teaching tool that does not pretend to be an HA deployment.
+//
+// # It drains the mesh first, and the order is the point
+//
+// A reset that truncated with messages still in flight would leave actor
+// goroutines writing into a store the reset had already emptied — a pacs.002
+// landing on a payment row that no longer exists, a settlement posted into a
+// chart of accounts that has been deleted — and then the reseed would race those
+// same handlers for the tables it is rebuilding. The result is not an error, it
+// is a scenario with extra rows in it, which is the failure mode this whole
+// method already exists to prevent between two overlapping resets.
+//
+// Draining is the ONLY way an in-flight conversation finishes: mesh.Stop cuts
+// them (see its doc), and there is nothing here to stop anyway — the mesh
+// outlives the reset, exactly as the store does. Drain blocks until nothing is
+// in flight and needs no deadline of its own, because handleReset already gives
+// the whole operation one.
+//
+// # The dead letters are logged, not returned, and that is deliberate
+//
+// Drain hands back what handlers had nobody to report to, and this is the one
+// caller in the system that must not turn them into its own failure. A dead
+// letter describes work against state that is about to be deleted; refusing the
+// reset because of one would leave the operator with the failed scenario they
+// asked to be rid of, and the retry would report the same letter again. Taking
+// them off the mesh is what matters — a swallowed dead letter would otherwise
+// surface in whichever Drain collected it next, attributed to the wrong thing —
+// and logging them at Error is how a failure with no caller gets said out loud.
 func (s *Server) Reset(ctx context.Context) error {
 	s.resetMu.Lock()
 	defer s.resetMu.Unlock()
 
+	if err := s.mesh.Drain(ctx); err != nil {
+		s.log.Error("mesh: dead letters collected by a reset", "error", err)
+	}
 	if err := s.net.Store().Reset(ctx); err != nil {
 		return err
 	}
@@ -103,6 +163,7 @@ func (s *Server) Reset(ctx context.Context) error {
 func (s *Server) forBank(pid payment.ParticipantID) *Server {
 	return &Server{
 		net:      s.net,
+		mesh:     s.mesh,
 		boundPID: pid,
 		populate: s.populate,
 		log:      s.log,

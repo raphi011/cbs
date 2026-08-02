@@ -525,14 +525,25 @@ export function getPayment(payid: string): Promise<Payment> {
   return request("GET", csm(`/payments/${payid}`));
 }
 
+// The operator's console initiating on a bank's behalf. Like the retail route
+// above, the answer is 202 — the payment it hands back is Initiated, in no cycle
+// and unseen by the payee's bank, because the mesh carries it the rest of the way
+// afterwards. Read it again to learn what became of it.
 export function initiatePayment(
   body: InitiatePaymentRequest,
 ): Promise<Payment> {
   return request("POST", csm("/payments"), body);
 }
 
-// Reject (before settlement) and return (a completed payment) both take a
-// reason and yield the updated payment.
+// Reject (before settlement) and return (a completed payment) both take a reason,
+// and both are 202: what they start finishes at another institution.
+//
+// A rejection yields the payment as the CLEARING HOUSE left it — Rejected, out
+// of its cycle — and the payer's refund is their own bank's act, posted when the
+// pacs.002 reaches it. A return yields no payment at all: the returning bank
+// posts nothing, so there is no intermediate state to describe, and the money
+// moves at the settlement agent four hops later. Both are read back rather than
+// awaited.
 export function rejectPayment(
   payid: string,
   body: ReasonRequest,
@@ -543,7 +554,7 @@ export function rejectPayment(
 export function returnPayment(
   payid: string,
   body: ReasonRequest,
-): Promise<Payment> {
+): Promise<AcceptedPayment> {
   return request("POST", csm(`/payments/${payid}/return`), body);
 }
 
