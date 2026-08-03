@@ -398,14 +398,30 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // that composes the pacs.004 (payment.PostReturnLegTx still asks it) and not for
 // the agent that moves the reserves after one has been sent.
 //
-// With one exception, which is a limit of this handler rather than a decision:
-// a return that names no payment cannot be answered at all. OrgnlTxId is
-// optional in the schema — iso20022's ReturnTransaction.validate accepts a
-// transaction that refers back by OrgnlEndToEndId alone — and the pacs.002 this
-// actor would send quotes only what it was given, so a report with neither
-// reference fails to marshal and the refusal becomes a dead letter. No actor in
-// this mesh sends such a message; TestAReturnThatNamesNoPaymentCannotBeAnswered
-// injects one and pins what happens rather than leaving it to be discovered.
+// # A return that names no payment is answered, and dies one hop later
+//
+// This paragraph used to say the opposite twice over — that such a message
+// "cannot be answered at all", and that the report would fail to marshal for
+// want of a reference — and both halves are now false. returnedEndToEnd
+// substitutes notProvided when there is no OrgnlEndToEndId, so the report always
+// carries something to refer back by and payment.StatusMessage builds it; and
+// what refuses the message is no longer a payment lookup that fails but
+// payment.ReadReturn, which will not read a transaction with no OrgnlTxId. So
+// this actor answers RJCT to the clearing house like any other unreadable
+// message, quoting an empty transaction id because that is what it was given.
+//
+// Where it dies is one hop on: the clearing house turns an answer back into a
+// payment by OrgnlTxId, which is the element this message does not have, so the
+// refusal becomes a dead letter THERE and the returning bank is told nothing.
+// The limit is the clearing house's — it has no way to resolve a payment by its
+// end-to-end reference — and not this handler's.
+//
+// Why ReadReturn refuses it at all is about money rather than about answering:
+// SettleReturnTx derives the reserve reversal's idempotency key from the payment
+// id, so an empty one would move reserves between two real banks under a key
+// every nameless return shares. No actor in this mesh sends such a message;
+// TestAReturnThatNamesNoPaymentCannotBeAnswered injects one and pins what
+// happens rather than leaving it to be discovered.
 func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs004) error {
 	body := doc.PmtRtr
 	orig := payment.OriginalMessage{

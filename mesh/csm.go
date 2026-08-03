@@ -1052,7 +1052,15 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 //     against a return the settlement agent refused would have moved a
 //     customer's money for nothing.
 //
-// An entry is dropped only when an answer REACHES the delete below, and two
+// The delete runs BEFORE the release, so a release that fails takes the message
+// with it and no later answer can recover it. That is deliberate — an entry kept
+// on failure would be retried by nothing and swept by nothing — and its cost is
+// the same one csm.relayReturn records for a restart, reached a different way:
+// the reserves are final, the returning bank's leg is posted, and the other
+// bank's never will be. Unreachable in this transport for Mesh.send's three
+// reasons, and Task 19's to notice.
+//
+// An entry is otherwise dropped only when an answer REACHES the delete, and two
 // things can stop it. A return the settlement agent dead-letters is never
 // answered at all — a redelivered pacs.004 is the reachable case — so the entry
 // it overwrote stays. And an answer this handler cannot act on returns above the

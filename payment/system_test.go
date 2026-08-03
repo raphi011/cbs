@@ -3167,6 +3167,64 @@ func TestASettlementAgentRefusesAReturnItsCreditorBankCannotCover(t *testing.T) 
 	assertEqual(t, "bank C reserve after the refusal", reserveAt(t, sys, c), 0)
 }
 
+// TestASettlementAgentRefusesAReturnThatNamesNoPayment is the same guard
+// ReadReturn makes on the message, made a second time where the money is.
+//
+// The key on the reserve reversal is "<payment>:return-settle", and it is the
+// ONLY record this actor keeps that it settled a return — it holds no payment
+// rows. So an empty payment id is not a cosmetic defect in an instruction: it
+// moves reserves between two real banks under ":return-settle", and every later
+// nameless return then comes back ErrReturnAlreadySettled having settled
+// nothing. The first one costs money and the rest are silently wrong.
+//
+// mesh's settlement agent cannot reach this, because payment.ReadReturn refuses
+// the message before an instruction exists. That is exactly why the check is
+// ALSO here: ReadReturn is a reader, and a ReturnInstruction built any other way
+// — a future caller, a test, another transport — would reopen the hole. It is
+// ReverseReturnLegTx's own argument, which this package already made once: the
+// domain is where a check on the money belongs, and not in the handler that
+// happens to be the only caller today.
+//
+// There is no sentinel, which is deliberate: this is a judgement about the
+// sender's INSTRUCTION rather than a statement about this system's state, so
+// ReasonFor's fallback to MS03 is the right answer on the wire and not a hazard
+// — the discrimination reasonTable's empty codes exist to make. It is the shape
+// cycleOf already uses for a settlement instruction that names no cycle. What
+// the test therefore asserts is that SOMETHING refused and that it was not the
+// funding check.
+func TestASettlementAgentRefusesAReturnThatNamesNoPayment(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, _, _ := setupTwoBanks(t, sys)
+
+	// Bank A is the CREDITOR's bank here and holds the reserves, so the funding
+	// check this actor makes cannot be what refuses the instruction. Written that
+	// way round deliberately: with the short bank on that side the test passes
+	// against a settlement agent that has no id guard at all, which is the shape
+	// of a test that proves nothing.
+	_, err := sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     "",
+		DebtorAgent:   b.BIC,
+		CreditorAgent: a.BIC,
+		Amount:        1000,
+		Asset:         testAsset,
+		Reason:        "AC04: account closed",
+	})
+	if err == nil {
+		t.Fatal("settled a return naming no payment; the reserve reversal would be keyed by nothing")
+	}
+	if errors.Is(err, ledger.ErrInsufficientBalance) {
+		t.Fatalf("refused for want of reserves (%v); this fixture funds the creditor's bank so that the id is what refuses", err)
+	}
+	// Nothing moved, which is the half that matters: an instruction refused
+	// after the posting would already have cost the creditor's bank the money.
+	assertEqual(t, "bank A reserve after the refusal", reserveAt(t, sys, a), 100000)
+	assertEqual(t, "bank B reserve after the refusal", reserveAt(t, sys, b), 0)
+	// And no transaction stands under the key an empty id would have produced.
+	_, err = sys.CentralBank().GetTransactionByIdempotencyKey(ctx, ":return-settle")
+	assertError(t, err, ledger.ErrTransactionNotFound)
+}
+
 // reserveAt is a bank's reserve balance as the CENTRAL BANK holds it, which is
 // the only side of the mirror a settlement agent's act moves.
 func reserveAt(t *testing.T, sys *Network, p *Participant) ledger.Amount {

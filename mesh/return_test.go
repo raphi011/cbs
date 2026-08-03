@@ -1018,3 +1018,84 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 		}
 	}
 }
+
+// TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns the invariant
+// on csm.held into a measurement.
+//
+// That field is the only state any actor in this package keeps between messages,
+// and it is unlocked. What makes that safe is not the field: it is that
+// relayReturn and receiveReturnStatus are reached only from handle, which runs
+// on the clearing house's own goroutine and nobody else's. The three methods on
+// this type that run on a CALLER's goroutine — closeCycle, settle and reject,
+// each reached from outside the mesh — must therefore never touch it.
+//
+// A comment saying so is a claim nobody has to keep true. This is the same
+// answer this package gives to the analogous hole in the recorder, where
+// TestRecordingTxOverridesEveryBookScopedMethod guards "a method nobody
+// wrapped": assert the property rather than write it down. A future method that
+// read or wrote this map from a caller's goroutine would be a data race that
+// -race can only report if some test happens to provoke it concurrently; this
+// fails deterministically instead, and names the field.
+//
+// It drives all three through the MESH rather than calling them directly, so
+// that what is measured is the whole of what each does — including the sends and
+// the handlers they provoke — and not a hand-picked prefix of it. A return is
+// left in flight across each so that there is something to disturb: the map is
+// non-empty at the moment the operator acts, which is the only arrangement in
+// which "left it alone" is a claim about anything.
+func TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.settledPayment(t)
+
+	// A real pacs.004 is built and carried, so that the entry placed below is the
+	// value this actor really holds rather than a shape invented by the test. It
+	// cannot be LEFT in flight to hold the map open: every return this mesh
+	// carries is answered, and an answer is what empties the map. So the flow is
+	// run to completion and one entry is then put back by hand — which is the
+	// honest arrangement anyway, since what is under test is the three OTHER
+	// callers and not how an entry came to be there.
+	env, err := h.net.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
+		payment.MessageContext{From: h.creditorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "rtn-held", Now: testTime})
+	if err != nil {
+		t.Fatalf("ReturnMessage: %v", err)
+	}
+	if err := h.mesh.send(h.creditorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	h.drain(t)
+	held := heldReturn{doc: env.Document.(*iso20022.Pacs004), from: h.creditorBIC}
+	h.mesh.csm.held["pay_sentinel"] = held
+
+	// A cut-off, a re-instruction, and an operator's rejection: the three
+	// entry points that do not arrive in an inbox.
+	if _, err := h.net.OpenCycle(context.Background(), payment.SchemeSEPACT); err != nil {
+		t.Fatalf("OpenCycle: %v", err)
+	}
+	rejected := h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+	for _, c := range h.cycles(t) {
+		if c.Status == payment.CycleSettled {
+			if _, err := h.mesh.Settle(context.Background(), c.ID); err == nil {
+				t.Errorf("re-settling %s was accepted; this test wants the refusal path walked", c.ID)
+			}
+		}
+	}
+	if _, err := h.mesh.Reject(context.Background(), rejected.ID,
+		iso20022.StatusReasonNotSpecifiedAgentGenerated, "operator says no"); err == nil {
+		t.Log("the rejection was accepted; either way the map is what is measured")
+	}
+	h.drain(t)
+
+	got, ok := h.mesh.csm.held["pay_sentinel"]
+	if !ok {
+		t.Fatal("closeCycle, settle or reject dropped a held return; only handle's two callers may touch csm.held")
+	}
+	if got != held {
+		t.Errorf("a held return was rewritten by a caller-goroutine method; csm.held is unlocked precisely because none of them touches it")
+	}
+	if n := len(h.mesh.csm.held); n != 1 {
+		t.Errorf("the clearing house holds %d returns, want the 1 this test put there", n)
+	}
+}

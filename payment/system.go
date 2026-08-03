@@ -2262,7 +2262,35 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 // reserve reversal, which is derived from the payment's own id, so a second
 // instruction naming the same payment is refused by this bank's own ledger. See
 // ErrReturnAlreadySettled.
+//
+// # Which is why the payment id is required, and required HERE
+//
+// The key is the only record this actor keeps of anything, so an instruction
+// with no payment id is not a cosmetic defect: the reversal would move reserves
+// between two real banks under ":return-settle", and every later nameless
+// return would come back ErrReturnAlreadySettled having settled nothing. The
+// first costs money and the rest are silently wrong.
+//
+// ReadReturn refuses such a message before an instruction exists, and that is
+// the guard mesh actually hits. This one is not a second copy of it: ReadReturn
+// is a READER, and a ReturnInstruction built any other way — a future caller, a
+// test, a second transport — would reopen the hole with nothing in the way. It
+// is the argument ReverseReturnLegTx's doc already makes about its own Settled
+// check: a guard on the money belongs next to the money, not in whichever
+// handler happens to be the only caller today.
 func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
+	// Before anything is read, because this is a check on the KEY the posting
+	// below will carry rather than on any account. See the note above.
+	//
+	// A plain error and not a sentinel: it is a judgement about the INSTRUCTION,
+	// so ReasonFor's fallback turning it into MS03 on the wire is the right
+	// answer rather than a hazard, and it is the same shape cycleOf uses for a
+	// settlement instruction that names no cycle. ledger.ValidateText would not
+	// catch it — that one refuses control characters and invalid UTF-8, and the
+	// empty string is neither.
+	if in.PaymentID == "" {
+		return nil, fmt.Errorf("payment: a return instruction naming no payment cannot be settled; its reserve reversal would be keyed by nothing")
+	}
 	debtor, err := s.participantByBICTx(ctx, tx, in.DebtorAgent)
 	if err != nil {
 		return nil, err

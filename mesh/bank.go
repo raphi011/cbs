@@ -247,7 +247,15 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // this bank's money in its clearing suspense against a return nobody will
 // answer. That is the seam submit documents, and it is returned as an error
 // rather than swallowed, naming both halves so the operator can see which one
-// happened. It does NOT come back with the payment beside it, as submit's does:
+// happened.
+//
+// The remedy is to ASK AGAIN, and saying so is the point of naming the seam at
+// all. This is not the dead end closeCycle's is: the guard above still passes,
+// because the payment is still Settled — only the SECOND leg sets Returned —
+// and payment.PostReturnLegTx makes a redelivered first leg a no-op rather than
+// a failure or a second posting, so the retry rebuilds the message and sends it
+// with nothing double-posted. A reader of this error needs that sentence more
+// than any of the ones above it. It does NOT come back with the payment beside it, as submit's does:
 // nothing above this reads one — Mesh.Return answers with an error alone and
 // api's handler with 202 — and a value nothing reads is the defect this
 // repository keeps finding. The half-happened state is visible where it
