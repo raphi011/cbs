@@ -511,8 +511,13 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		// And is it really rejected? A pacs.002 is not on its own a decision:
 		// this network's record of the payment is. Reversing on the message
 		// alone would take a live debit back off a payment on its way to
-		// settlement — the payee is paid at settlement out of this suspense, so
-		// the money would simply be gone from the flow.
+		// settlement, and the money would simply be gone from the flow: this
+		// suspense is the PAYER's bank's, so the debit is what funds that bank's
+		// own mirror leg when the cut-off settles. (This comment used to say the
+		// payee is paid out of this suspense. The payee is paid out of the
+		// PAYEE's bank's suspense, by that bank, after settlement — a different
+		// account in a different book. The mistake made the consequence sound
+		// smaller than it is.)
 		if p.Status != payment.Rejected {
 			return fmt.Errorf("mesh: %s was told to reverse %s, which this network records as %v", b.bic, p.ID, p.Status)
 		}

@@ -254,7 +254,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. At settlement, the suspense is unwound: the bank's reserve-at-central-bank asset adjusts, and the suspense balance returns to zero. Option D describes a [[reserve-account]], not a suspense account.",
+        "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. The cut-off unwinds it — but the bank does that itself, on the advices it is sent, *after* the central bank has already [[settlement-finality|settled]]: its reserve-at-central-bank asset adjusts on the `camt.053`, its creditor legs clear on the `pacs.002` fan-out, and only once both are booked does the balance return to zero. Option D describes a [[reserve-account]], not a suspense account.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {

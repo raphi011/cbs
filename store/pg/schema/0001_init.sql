@@ -522,9 +522,17 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 -- The payment layer
 -- ---------------------------------------------------------------------------
 --
--- These entities are network-scoped: a payment belongs to no single bank, so
--- unlike everything above they are keyed by their id alone. They are sequenced
--- under ledger.NetworkBook, which is why they carry no book_id column.
+-- Most of these entities are network-scoped: a payment belongs to no single
+-- bank, so unlike everything above it is keyed by its id alone, and it is
+-- sequenced under ledger.NetworkBook rather than under any member's book.
+--
+-- Note the exact claim, because the looser one this header used to make is
+-- false twice over. It said these tables "carry no book_id column". participants
+-- carries one (:547) and settlement_advices carries one (:822) — the difference
+-- is that only settlement_advices has the book in its KEY, which is what makes
+-- it the one member-scoped table in this section. participants.book_id is data:
+-- which book that bank owns. See the comment on settlement_advices, which states
+-- this correctly and which this header contradicted for 230 lines.
 
 -- product_id is the catalogue entry this bank opens customer accounts from —
 -- the Basic product AddParticipant creates for every member. It is data, not a
@@ -779,7 +787,7 @@ CREATE TABLE settlement_positions (
 -- Every other table in this section — participants, payments, mandates, cycles,
 -- settlements — is network-scoped: those rows belong to no single bank, so they
 -- are keyed by their id alone. Note the exact claim, because a looser one is
--- false: participants DOES carry a book_id column (:539), but as DATA — which
+-- false: participants DOES carry a book_id column (:547), but as DATA — which
 -- book that bank owns — and not as part of its key. This is the first
 -- payment-layer table where the book is part of the identity, and that
 -- difference is the whole of sub-project 8. A cycle is the clearing house's; a

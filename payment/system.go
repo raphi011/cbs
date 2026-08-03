@@ -1700,8 +1700,11 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 //
 // For a push the receiver is the creditor's bank, and its half is a check —
 // the account exists, is in the scheme's asset, is addressable, and can be
-// credited at all. Nothing is posted: the payee is paid at settlement, out of
-// the creditor bank's suspense, exactly as before.
+// credited at all. Nothing is posted: the payee is paid AFTER the cut-off has
+// settled, out of the creditor bank's suspense, by that bank's own
+// PostCreditorLegTx on the clearing house's per-payment advice. This comment
+// used to say "at settlement", which was true while the settlement agent posted
+// every member's legs inside its own unit of work.
 //
 // For a pull the receiver is the DEBTOR's bank, and its half is the one that
 // moves money: it checks the account, the asset, the address and the funds,

@@ -1726,7 +1726,29 @@ type AdvisedMovement struct {
 	Movement       ledger.Amount
 	ClosingBalance ledger.Amount
 	CycleID        CycleID
-	ValueDate      time.Time
+
+	// ValueDate is CARRIED AND UNREAD, and that is recorded rather than left to
+	// be discovered.
+	//
+	// It makes the full round trip — SettlementStatement.ValueDate goes out in
+	// Ntry/ValDt, ReadStatement puts it back here — and PostSettlementAdviceTx
+	// posts the mirror leg without it, so the ledger resolves that posting's
+	// value date to its booking date instead.
+	//
+	// It is read here rather than dropped because the alternative is worse: a
+	// reader that skipped ValDt would make the field unavailable to the caller
+	// that eventually wants it, and a value date discarded on receipt is one
+	// nobody can go back for — the same argument ClosingBalance is stored
+	// under, and ClosingBalance is unread too.
+	//
+	// Using it is not a one-line change and is not obviously right, which is why
+	// this is a note and not a fix. It would alter every mirror-leg transaction
+	// this system stores, and the question it settles — whether a bank's reserve
+	// mirror takes effect on the settlement agent's value date or on the day the
+	// bank actually booked it — is a domain decision with a reconciliation
+	// consequence, and belongs with Task 19's closing-balance check rather than
+	// beside it.
+	ValueDate time.Time
 }
 
 // ReadStatement reads a received camt.053 as the movements it advises.

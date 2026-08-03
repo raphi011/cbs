@@ -857,8 +857,8 @@ Each participant's chart of accounts holds:
 | Account | Type | Purpose |
 |---|---|---|
 | Customer deposits | Liability | What the bank owes each customer. |
-| Clearing Suspense | Liability | In-transit funds that have left a customer but not yet settled between banks. Returns to zero once a cycle settles. |
-| Reserve at Central Bank | Asset | The bank's claim on the central bank. Moves only at settlement and **mirrors** the bank's reserve account in the central-bank ledger (the classic nostro/vostro reconciliation). |
+| Clearing Suspense | Liability | In-transit funds that have left a customer but not yet settled between banks. Returns to zero once this bank has booked **both** its halves of the cut-off — the mirror leg from the central bank's `camt.053` and its creditor legs from the clearing house's advices — which is *after* settlement, not at it. |
+| Reserve at Central Bank | Asset | The bank's claim on the central bank. **Mirrors** the bank's reserve account in the central-bank ledger (the classic nostro/vostro reconciliation), and moves when this bank books the `camt.053` it is sent — which is after the cut-off has already settled, so the two sides are equal only once it has. |
 | Unclaimed Balances | Liability | Where a credit goes when the payee's account will not take it — closed, and therefore terminal. The bank still owes the money, to whoever eventually claims it, which is why it is a liability and not the bank's own asset. |
 
 #### Addressing
@@ -1004,24 +1004,31 @@ The transaction-level date here is the **settlement** one, which makes the pair 
 
 **2. Clearing (cut-off)** — net positions computed; no money moves. Here `net[A] = -3000`, `net[B] = +3000`.
 
-**3. Settlement** — three postings make the money final, and they are three *institutions'*: the central bank's is one unit of work, and each bank's own is another, made when that bank is told. The order below is the order the messages arrive in.
+**3. Settlement** — **four** ledger transactions in **four** units of work, belonging to **three** institutions: the central bank posts one, each bank posts its own mirror leg, and the payee's bank posts the creditor leg on top. Only the first is settlement; the rest are the members catching up. The order below is the order the messages arrive in, and for Bank B that ordering is load-bearing rather than presentational — the `camt.053` reaches it before the `pacs.002`, which is what puts money in the suspense the creditor leg then draws on.
 
 ```
 Central Bank:  Debit  Reserve: Bank A (Liability) 3000   // A's reserves fall
                Credit Reserve: Bank B (Liability) 3000   // B's reserves rise
+                                                         // ← FINAL here
 
-Bank A:        Debit  Clearing Suspense 3000             // suspense clears to zero
-               Credit Reserve at CB     3000             // A's reserve asset falls in step
+Bank A, on its camt.053 (net payer):
+               Debit  Clearing Suspense 3000             // suspense clears to zero
+               Credit Reserve at CB     3000             // A's reserve asset falls with it
 
-Bank B:        Debit  Clearing Suspense 3000             // creditor leg: release...
-               Credit Bob (Liability)   3000             // ...funds to Bob
+Bank B, on its camt.053 (net receiver):
                Debit  Reserve at CB     3000             // B's reserve asset rises
-               Credit Clearing Suspense 3000             // and its suspense clears
+               Credit Clearing Suspense 3000             // and its suspense rises with it
+
+Bank B, on the pacs.002/ACSC for this payment:
+               Debit  Clearing Suspense 3000             // creditor leg: release...
+               Credit Bob (Liability)   3000             // ...funds to Bob
 ```
 
-(For this single inbound payment Bank B's two Clearing Suspense legs net to zero — B never posted a debtor leg here. They are shown because across a full netted cycle Bank B's *own* outgoing payments would have credited its suspense, so clearing it at settlement is what actually happens; in isolation it is just bookkeeping symmetry.)
+Note which way each suspense moves, because it is easy to get backwards: clearing suspense is a *liability*, so the net payer's `Debit` **lowers** it and the net receiver's `Credit` **raises** it. Both move in the same direction as that bank's reserve. The receiver's rising first is precisely the point — reverse the two messages and Bank B pays Bob out of a suspense the cut-off has not yet credited, which commits (the ledger does not guard liabilities against going negative) and which for that interval has B's own books saying it lent Bob the money.
 
-Afterwards both banks' suspense accounts are back to zero, and each bank's **Reserve at Central Bank** asset equals the central bank's **Reserve: \<Bank\>** liability — the books reconcile.
+(For this single inbound payment Bank B's two Clearing Suspense legs net to zero — B never posted a debtor leg here. They are shown because across a full netted cycle Bank B's *own* outgoing payments would have credited its suspense, so clearing it at the cut-off is what actually happens; in isolation it is just bookkeeping symmetry.)
+
+Once **all four** have posted, both banks' suspense accounts are back to zero and each bank's **Reserve at Central Bank** asset equals the central bank's **Reserve: \<Bank\>** liability — the books reconcile. Between the first transaction and the last they do not, and that interval is real; see below.
 
 ### Settlement Is Final at the Central Bank, and the Banks Catch Up
 
@@ -1180,7 +1187,7 @@ All four layers write to the same log, told apart by **scope**:
 | `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
 | `lending` | one bank's | facility opened, disbursed, drawn, accrued, charged, repaid, arrears changed, closed |
 
-An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes neither `cycle.settled` nor any of its `payment.settled` events.
+An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes no `cycle.settled`. It writes no `payment.settled` either, but for a different reason and not because the two share a transaction: `payment.settled` is the **payee's bank's**, appended by `PostCreditorLegTx` in that bank's own unit of work, and a cut-off that never settled produces no advice for any bank to act on.
 
 Because the log is append-only and unbounded, every audit endpoint is **paged**: `?limit=` (default 100, capped at 1000) and `?before=<seq>`, which is an exclusive upper cursor on the sequence number, plus `?type=` and `?entity=` to narrow. A page is the newest events below the cursor, handed back oldest-first, so paging walks backwards while each page still reads chronologically. The sequence number is a store-global total order rather than a per-book counter, so a cursor is only meaningful when replayed against the same filter that produced it.
 

@@ -68,6 +68,16 @@ type Tx interface {
 	// bank's record of what it was told, so it is keyed by that bank's book —
 	// which is also what makes the recorder in mesh/books_test.go see a bank
 	// reaching its own book when it books a settlement.
+	//
+	// ListSettlementAdvices has NO production caller — the only method in this
+	// interface with none. It is Task 19's scaffolding, on the same footing as
+	// SettlementAdvice.ClosingBalance, which no code reads either: a
+	// reconciliation walks a bank's own advices against a clearing suspense that
+	// has not returned to zero, and that walk is the reader. It is declared now
+	// because the rows are written now, and a listing added later would be a
+	// second occasion to get the ordering contract wrong in two stores.
+	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what holds
+	// mem and pg to one answer in the meantime.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
 	GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle CycleID, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)

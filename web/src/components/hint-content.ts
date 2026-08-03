@@ -383,7 +383,7 @@ Net positions:
 Reserves that actually move: €200  (not €400)
 \`\`\`
 
-[[netting]] reduces the volume of central-bank reserve movements dramatically. After [[clearing-vs-settlement|settlement]], both banks' [[clearing-suspense]] accounts return to zero. Compare to [[settlement-model-gross|gross settlement]], where each payment settles individually.`,
+[[netting]] reduces the volume of central-bank reserve movements dramatically. Once each bank has booked its own half of the cut-off — which is after [[settlement-finality|settlement]], not at it — both banks' [[clearing-suspense]] accounts are back to zero. Compare to [[settlement-model-gross|gross settlement]], where each payment settles individually.`,
   },
   "settlement-model-gross": {
     title: "Gross settlement",
@@ -591,7 +591,7 @@ After netting a cycle with N payments:
 
 A **negative** position means the bank pays reserves to the central bank at settlement; a **positive** position means it receives. They must sum to zero across all participants — this is the mathematical consequence of [[double-entry]] applied across the network.
 
-After settlement, each bank's [[reserve-account|reserve asset]] changes by exactly its net position, and each bank's [[clearing-suspense]] account returns to zero.`,
+After settlement each bank is *told*, and books for itself: its [[reserve-account|reserve asset]] then changes by exactly its net position, and once its creditor legs are booked too its [[clearing-suspense]] account is back to zero. Neither happens in the central bank's own transaction — see [[unreconciled-position]].`,
   },
   "reserve-account": {
     title: "Reserve at central bank",
@@ -639,7 +639,7 @@ The corresponding [[reserve-account|reserve asset]] on each bank's own books mov
   },
   "clearing-suspense": {
     title: "Clearing suspense",
-    body: `The **clearing suspense** account is a **[[account-type-liability|liability]] holding in-transit funds** that have left a customer account but have not yet settled between banks. It returns to zero at the end of every settlement cycle.
+    body: `The **clearing suspense** account is a **[[account-type-liability|liability]] holding in-transit funds** that have left a customer account but have not yet settled between banks. It returns to zero once the bank has booked **both** its halves of a cut-off — which is after [[settlement-finality|settlement]], not at it.
 
 \`\`\`
 Timeline for a SEPA Credit Transfer:
@@ -648,7 +648,7 @@ Timeline for a SEPA Credit Transfer:
    Debit  Alice Deposit (Liability)     300  ← she paid
    Credit Clearing Suspense (Liability) 300  ← in transit
 
-2. Settlement: suspense cleared
+2. The bank books the camt.053 it is sent: suspense cleared
    Debit  Clearing Suspense             300  ← transit ends
    Credit Reserve at CB (Asset)         300  ← reserve asset falls
 \`\`\`
