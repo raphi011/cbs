@@ -60,7 +60,7 @@
             <Dt>2026-08-01</Dt>
           </ValDt>
           <AcctSvcrRef>cyc_1</AcctSvcrRef>
-          <AddtlNtryInf>Settlement of clearing cycle cyc_1</AddtlNtryInf>
+          <AddtlNtryInf>Settlement of cyc_1</AddtlNtryInf>
         </Ntry>
       </Stmt>
     </BkToCstmrStmt>

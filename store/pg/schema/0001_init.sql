@@ -655,14 +655,21 @@ CREATE TABLE payments (
 );
 
 COMMENT ON COLUMN payments.return_clawback_tx IS
-    'The transaction that took the money back at the CREDITOR''s bank, out of '
-    'the account creditor_leg_account names. Written by '
-    'payment.PostReturnLegTx, empty until that bank posts its leg.';
+    'The transaction that took the money back at the CREDITOR''s bank. Written '
+    'by payment.PostReturnLegTx, empty until that bank posts its leg. It does '
+    'NOT say which account moved, and must not be read as though '
+    'creditor_leg_account answered that: the debit lands on that account in '
+    'the ordinary case, and on the bank''s own returns-receivable account when '
+    'the account creditor_leg_account names has CLOSED since — a posting into '
+    'a closed account strands, so the bank funds the refund itself and books a '
+    'claim on the biller instead. Which of the two it was is in the '
+    'transaction''s own entries and nowhere else.';
 
 COMMENT ON COLUMN payments.return_refund_tx IS
     'The transaction that gave the money back at the DEBTOR''s bank, into the '
     'payer''s account or — when that account will no longer take a credit — '
-    'into that bank''s unclaimed balances. Written by '
+    'into that bank''s unclaimed balances, which is the same reading caveat '
+    'the column above carries. Written by '
     'payment.PostReturnLegTx, empty until that bank posts its leg. '
     'Together with return_clawback_tx it is how a return knows which of its '
     'two legs is the SECOND, and therefore which one takes the payment to '

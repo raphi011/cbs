@@ -3542,3 +3542,59 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 	assertNoError(t, err)
 	assertError(t, sys.ReverseReturnLeg(ctx, c.ID, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
 }
+
+// TestACompletedReturnCannotBeUnwound is the guard on the unwind, and the case
+// it refuses is the one that would cost real money.
+//
+// ReverseReturnLegTx exists for an RJCT: the returning bank posted before it
+// sent, the network refused, and that posting has to come back. Which is a
+// statement about a return that STOPPED. A return that finished has two customer
+// legs standing in two banks' books, and undoing either one of them alone leaves
+// the other — reverse the clawback on a completed push and the payee is made
+// whole while the payer keeps the refund, with the amount out of the returning
+// bank's own suspense and the payment row still saying Returned.
+//
+// Nothing calls it on a completed return today, because nothing calls it at all;
+// Task 16e wires it to the RJCT handler, and a handler is exactly the caller
+// that acts on a message rather than on a status it checked. So the check
+// belongs here, next to the money, and not in the handler.
+//
+// ErrInvalidStateTransition rather than a new sentinel: it is the same statement
+// this package makes everywhere else about an operation a payment's status does
+// not permit, and payment's reasonTable already classifies it as a defect in
+// this system rather than a judgement to answer a counterparty with.
+func TestACompletedReturnCannotBeUnwound(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+	returned := returnTheWholeWay(t, sys, pay, "AC04: account closed")
+	assertEqual(t, "the payment's status", returned.Status, Returned)
+	assertEqual(t, "alice refunded", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "bob clawed back", customerBalance(t, b, bob), 0)
+
+	// Both banks are refused, because either one alone would break the pair.
+	for _, by := range []ParticipantID{b.ID, a.ID} {
+		assertError(t, sys.ReverseReturnLeg(ctx, by, pay.ID, "AM04: told too late"), ErrInvalidStateTransition)
+	}
+
+	// And no half of it happened: the money is where the completed return left
+	// it, and neither bank is carrying the amount in its suspense.
+	assertEqual(t, "alice after the refused unwinds", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "bob after the refused unwinds", customerBalance(t, b, bob), 0)
+	assertEqual(t, "bank A suspense after the refused unwinds",
+		bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
+	assertEqual(t, "bank B suspense after the refused unwinds",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+}

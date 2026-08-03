@@ -80,10 +80,11 @@ import (
 // # What Task 13 added, and what it deliberately did not
 //
 // One method, ReturnMessage, and it is the whole of a bank's half of a return.
-// A returning bank posts NOTHING — the three compensating transactions are the
-// settlement agent's, because the middle one moves reserves — so what it needs
-// is a way to say so and no way to do it. ReturnPayment is on settlementOps and
-// on no other interface, so no bank handler can name it.
+// A returning bank posts NOTHING — every posting a return makes is the
+// settlement agent's here, because the reserve reversal among them moves
+// central-bank money — so what it needs is a way to say so and no way to do it.
+// ReturnPayment is on settlementOps and on no other interface, so no bank
+// handler can name it.
 //
 // That is a statement about NAMING and not about capability, and the note above
 // on GetParticipant is why it has to be said twice: a bank handler already

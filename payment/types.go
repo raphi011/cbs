@@ -337,9 +337,20 @@ type Payment struct {
 	CreditorLegAccount ledger.AccountID
 
 	// ReturnClawbackTx and ReturnRefundTx are the two customer legs of a
-	// return, each in its own bank's book: the clawback out of
-	// CreditorLegAccount at the creditor's bank, the refund into the payer's
-	// account at the debtor's bank. Empty until that bank posts its leg.
+	// return, each in its own bank's book: the clawback at the creditor's bank,
+	// the refund at the debtor's bank. Empty until that bank posts its leg.
+	//
+	// Neither names the account it moved, and neither can be read as though it
+	// did. The clawback comes out of CreditorLegAccount in the ordinary case
+	// and out of that bank's ReturnsReceivable when the account CreditorLegAccount
+	// names has closed since — the bank funds the refund itself and books what
+	// it is owed. The refund goes into the payer's account, or into that bank's
+	// unclaimed balances when the payer's account has closed since. Both
+	// substitutions are decided at the moment of posting, by clawbackTx and
+	// refundTx, and the entries of the transactions these ids name are where
+	// they are recorded. There is no CreditorLegAccount equivalent for the
+	// return, and the reason there does not need to be is that nothing in this
+	// system claws a clawback back.
 	//
 	// They are how PostReturnLegTx knows it is the SECOND leg, and therefore
 	// the one that takes the payment to Returned: the leg that finds the other

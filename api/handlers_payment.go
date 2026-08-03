@@ -344,8 +344,8 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 // return is sent by the bank that RECEIVED the original instruction — the
 // payee's bank on a push, the payer's on a pull — and Mesh.Return works that out
 // from the payment's own scheme. What that bank does is build a pacs.004 and
-// send it; the three compensating postings are the settlement agent's, four hops
-// away, because the middle one moves central-bank reserves.
+// send it; the postings a return makes are the settlement agent's, four hops
+// away, because the reserve reversal among them moves central-bank money.
 //
 // # It answers with an identifier and no payment
 //

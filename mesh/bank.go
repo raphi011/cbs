@@ -58,10 +58,17 @@ import (
 // the payee's bank on a push, the payer's bank on a pull — and that is the one
 // role in this type which is neither submitting nor answering. It comes in from
 // outside the mesh, like a submission, but about a payment that has already
-// settled, and its half moves nothing at all: the three compensating postings
-// are the settlement agent's, because reserves move. So this bank builds a
+// settled, and its half moves nothing at all: every posting a return makes is
+// the settlement agent's here, because the reserve reversal among them is
+// central-bank money and no member bank may move it. So this bank builds a
 // pacs.004, sends it to the clearing house, and waits (returnPayment,
 // receiveReturnStatus).
+//
+// The domain no longer requires that this bank post nothing —
+// payment.PostReturnLegTx is a bank's own leg in its own book, and
+// payment.ReverseReturnLegTx undoes it on an RJCT — and this handler does not
+// call either yet. See payment.ReturnPaymentTx, which records that it is
+// transitional and that Task 16e is where these two roles get their postings.
 //
 // # A fifth role, and the only one that answers nothing
 //
@@ -177,16 +184,23 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // It is submit's counterpart for a payment that is already final, and the
 // difference between them is the whole of what a return is. A submission runs
 // this bank's own half and MOVES MONEY on a push; this one posts nothing at
-// all, in either direction. The three compensating transactions — the payer
-// refunded, the payee clawed back, the reserves reversed — are one unit of work
-// at the SETTLEMENT AGENT, because the middle of them moves central-bank money
-// and no member bank may do that. What this bank does is state the reason, and
-// the message is the whole of its half.
+// all, in either direction. What a return posts — the payee clawed back, the
+// reserves reversed between the two banks, each bank's reserve mirror moved with
+// them, the payer refunded — is one unit of work at the SETTLEMENT AGENT,
+// because the reserve reversal among them moves central-bank money and no member
+// bank may do that. What this bank does is state the reason, and the message is
+// the whole of its half.
+//
+// Stated as the acts rather than as a count, because the count has already gone
+// stale once: it was three while payment.ReturnPaymentTx wrote the postings out
+// by hand, and it is five now that the same function composes the split acts.
+// Task 16e moves most of them off this institution entirely.
 //
 // # The guard, and why it is here rather than on the wire
 //
-// A payment that is not Settled cannot be returned — ReturnPaymentTx says so,
-// with ErrInvalidStateTransition — and this bank refuses it BEFORE the message
+// A payment that is not Settled cannot be returned — PostReturnLegTx says so,
+// with ErrInvalidStateTransition, and ReturnPaymentTx reaches it on its first
+// leg — and this bank refuses it BEFORE the message
 // exists. That is not defensiveness about a check the settlement agent makes
 // anyway; it is the only way the caller is ever told. That sentinel is
 // classified in payment's reasonTable with the empty code because it describes

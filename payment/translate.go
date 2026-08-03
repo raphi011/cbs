@@ -135,13 +135,14 @@ var reasonTable = []reasonMapping{
 	// There is no counterparty in the conversation to tell.
 	{ErrSettlementAdviceNotFound, "ErrSettlementAdviceNotFound", ""},
 
-	// Both of these mean a message arrived at the wrong bank — a settled-payment
+	// All three mean a message arrived at the wrong bank — a settled-payment
 	// advice for somebody else's customer, a reserve statement about somebody
-	// else's account. That is a defect in the ROUTING, and the sender is the
-	// clearing house or the settlement agent rather than a counterparty with an
-	// instruction outstanding. There is no code for "you sent me your own
-	// mistake", and MS03 would report the receiving bank's correct refusal as a
-	// judgement about a payment.
+	// else's account, a return naming a payment this bank is neither side of.
+	// That is a defect in the ROUTING, and the sender is the clearing house or
+	// the settlement agent rather than a counterparty with an instruction
+	// outstanding. There is no code for "you sent me your own mistake", and MS03
+	// would report the receiving bank's correct refusal as a judgement about a
+	// payment.
 	{ErrNotThisBanksPayment, "ErrNotThisBanksPayment", ""},
 	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
 	{ErrNotAPartyToThisReturn, "ErrNotAPartyToThisReturn", ""},
@@ -178,10 +179,17 @@ var reasonTable = []reasonMapping{
 // rather than one because they are two distinct error values that no unwrapping
 // relates: neither wraps the other.
 //
-//   - deposit.ErrInsufficientAvailable is the direct debit's whole point.
-//     Scheme.Validate is a funds check run by the DEBTOR's bank, and the deposit
-//     layer is the authority for it, so a collection against an empty account
-//     comes back as deposit's error and not as anything this package names.
+//   - deposit.ErrInsufficientAvailable, from two halves rather than one. It is
+//     the direct debit's whole point: Scheme.Validate is a funds check run by
+//     the DEBTOR's bank, and the deposit layer is the authority for it, so a
+//     collection against an empty account comes back as deposit's error and not
+//     as anything this package names. Since Task 16d it also comes from
+//     PostReturnLegTx, where the RETURNING bank on a push checks its own payee
+//     before it composes the pacs.004 — a clawback it cannot fund is refused
+//     locally, so this reaches the operator who asked for the return rather than
+//     a counterparty. The mapping is the same and the sentence a reader takes
+//     from it is not: on a push return, AM04 can now be about the asking bank's
+//     OWN customer, which no push flow could produce before.
 //   - ledger.ErrInsufficientBalance is the same refusal one layer down and one
 //     institution over: a net payer whose RESERVE cannot cover its position at
 //     settlement. It used to come from the ledger itself, because SettleCycleTx
@@ -198,9 +206,13 @@ var reasonTable = []reasonMapping{
 // whether to re-present or unwind.
 //
 // A new member belongs here only if the error reaches ReasonFor at all, which
-// means a half that some mesh handler calls really returns it. The push flow
-// never produced one: its receiving half checks that the payee's account can
-// take a credit, and every way that fails is already a payment sentinel.
+// means a half that some mesh handler calls really returns it. This paragraph
+// used to add that the push flow never produced one, on the grounds that its
+// receiving half only checks whether the payee's account can take a CREDIT and
+// every way that fails is already a payment sentinel. That half is unchanged and
+// the conclusion no longer follows: a push RETURN checks whether the same
+// account can fund a WITHDRAWAL, and it is the first place in a push flow where
+// deposit's funds sentinel is produced.
 var borrowedReasons = []reasonMapping{
 	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
 	{ledger.ErrInsufficientBalance, "ledger.ErrInsufficientBalance", iso20022.StatusReasonInsufficientFunds},

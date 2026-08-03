@@ -597,13 +597,14 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 // ReturnPayment would do that too, synchronously, which is what this handler used
 // to call. It is WHO did it and WITH WHAT. Mesh.Return hands the instruction to
 // the bank that RECEIVED the original — the payee's bank on a push — which posts
-// nothing and sends a pacs.004; the three compensating postings happen four hops
-// later at the settlement agent, and the reason travels on the wire as a code and
-// a text. The refund's own description in the payer's ledger is where both
-// surface, and it is the one thing a synchronous call could not produce.
+// nothing and sends a pacs.004; the postings happen four hops later at the
+// settlement agent, and the reason travels on the wire as a code and a text. The
+// refund's own description in the payer's ledger is where both surface, and it
+// is the one thing a synchronous call could not produce.
 //
 // The payment is a SETTLED one out of the seeded dataset, because finality is a
-// return's precondition: ReturnPaymentTx refuses anything else.
+// return's precondition: PostReturnLegTx refuses anything else, on the first
+// leg ReturnPaymentTx composes.
 func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 

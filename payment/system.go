@@ -1244,8 +1244,11 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 	// holds neither kind of row — see SettlementAdvice, which records that there
 	// is deliberately no field saying which it is. This used to read "Net
 	// settlement of cycle …", which was true of every statement that existed
-	// when it was written and became a false claim on a customer-visible
-	// description the moment a return could produce one.
+	// when it was written and became a false claim the moment a return could
+	// produce one. No customer reads it — the leg is Suspense against Reserve in
+	// the bank's own book — but it is what an operator reconciling that bank's
+	// suspense has to go on, and a reconciliation told to look for a cycle that
+	// does not exist is worse off than one told nothing.
 	posted, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: m.Reference + ":reserve:" + string(p.ID),
 		Description:    "Settlement of " + m.Reference,
@@ -2659,12 +2662,31 @@ func (s *Network) ReverseReturnLeg(ctx context.Context, by ParticipantID, id Pay
 // reacting to a status it did not choose, and "there was nothing to undo" is
 // the answer, not a failure.
 //
+// # A COMPLETED return is refused, and that guard is not defensiveness
+//
+// This undoes ONE leg, and one leg is only ever the whole of a return while the
+// return has stopped. Once both banks have posted there are two legs standing in
+// two books, and reversing either alone leaves the other: reverse the clawback
+// on a completed push and the payee is made whole while the payer keeps the
+// refund, with the amount out of the returning bank's own suspense and the row
+// still saying Returned. Nothing in the ledger would notice — both postings are
+// individually balanced.
+//
+// So it refuses anything that is not still Settled. The caller this guard exists
+// for is Task 16e's RJCT handler, which acts on a MESSAGE: a status arriving
+// late, or twice, is exactly the shape that would otherwise unwind half of a
+// return that finished, and a handler cannot be relied on to have checked a
+// status it was not sent. ErrInvalidStateTransition rather than a new sentinel —
+// it is this package's word for an operation a payment's status does not permit,
+// and reasonTable already classifies it as a defect here rather than a judgement
+// to answer a counterparty with.
+//
 // The transaction id is left on the payment rather than cleared. It records
 // what this bank DID, and it did post; the ledger is where the fact that it no
-// longer stands is recorded, on the transaction itself. Nothing re-runs a
-// rejected return — the idempotency key is spent, and the returning bank has
-// been told no — so there is no reader for whom a stale id here decides
-// anything.
+// longer stands is recorded, on the transaction itself. Re-posting the same leg
+// is refused by its own idempotency key, and a return whose OTHER leg later
+// arrives is refused by the guard above, so there is no reader for whom a stale
+// id here decides anything.
 func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, by ParticipantID, id PaymentID, reason string) error {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return err
@@ -2672,6 +2694,9 @@ func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, by ParticipantI
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return err
+	}
+	if p.Status != Settled {
+		return ErrInvalidStateTransition
 	}
 	var leg ledger.TransactionID
 	switch by {
