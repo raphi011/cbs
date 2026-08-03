@@ -585,11 +585,27 @@ The gap `ReturnPaymentTx`'s doc has recorded since before Task 15: a payer whose
 account is closed between settlement and the return. Assert the refund reaches
 `Unclaimed` and the payment still reaches `Returned`.
 
-- [ ] **Step 9: delete `ReturnPaymentTx` and `ReturnPayment`**
+- [ ] **Step 9: reduce `ReturnPaymentTx` to a transitional composition**
 
-Every caller must be gone or migrated. `mesh/centralbank.go:354` is Task 16e's;
-if it does not compile yet, that is expected and Task 16e is where it is fixed —
-do **not** leave a shim.
+**Corrected during execution.** This step used to say "delete it; if the mesh does
+not compile yet, that is expected and Task 16e fixes it". That was wrong: it
+leaves the branch un-buildable between two tasks, so Task 16d could not be
+verified or reviewed on its own, and neither could anything until 16e landed.
+
+Instead, `ReturnPaymentTx` **keeps its name, its signature and its behaviour** and
+becomes a composition of the three new acts inside one `Store.Update`: the
+returning bank's leg, then `SettleReturnTx`, then the other bank's leg. It builds
+the `ReturnInstruction` from the payment row, which is exactly the crossing this
+task exists to remove — and that is the point of saying so in its doc.
+
+Its doc must state, in the open, that it is **transitional**, that Task 16e
+deletes it, and that its existence is the reason
+`TestWhichBooksAReturnReaches` has not moved yet. A composition that does not
+announce its own expiry reads as the intended design.
+
+`mesh/centralbank.go:354` is therefore untouched here, and every existing return
+test still passes unchanged — which is the real check that the three new acts
+compose to what the atomic version did.
 
 - [ ] **Step 10: watch every new guard fail**
 
@@ -680,7 +696,12 @@ down**, do not copy these two sets from this plan. Task 15's handoff records tha
 needed, never through a posting, so which bank carries it depends on which one
 writes the row that reaches `Returned`.
 
-- [ ] **Step 3: rewrite `centralBank.receiveReturn`**
+- [ ] **Step 3: delete the transitional composition, and rewrite `centralBank.receiveReturn`**
+
+Task 16d left `ReturnPaymentTx` alive as a composition of the three new acts so
+that the branch stayed buildable. Delete it here — it is the last thing in the
+domain that posts in three books in one unit of work, and every caller is being
+rewritten in this task anyway.
 
 `ReadReturn` → `SettleReturn` → `advise` both statements → `answer`. Its long doc
 at :268-333 is now wrong in its central claim ("`ReturnPaymentTx` posts THREE
