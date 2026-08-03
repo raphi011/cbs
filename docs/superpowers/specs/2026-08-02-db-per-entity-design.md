@@ -375,6 +375,36 @@ then looks authoritative.
 So `TestWhichBooksEachBankActuallyReaches`'s receiver assertion moves from
 `bankBooks()` to `[creditor]` in **Task 18**, with its pull mirror.
 
+### The store underneath becomes SQLite, between Task 17 and Task 18 (2026-08-03)
+
+`store/pg` and `store/mem` are both being replaced by one backend,
+`store/sqlite`, on the cgo-free `modernc.org/sqlite`. That is sub-project 9 —
+`specs/2026-08-03-sqlite-only-store-design.md` — landing as Tasks **17.1 / 17.2 /
+17.3**, after admission and before the split. The numbering was chosen so that
+nothing here renumbers.
+
+The rows above are left as written, per this file's convention. Three of them
+mean something different afterwards, and the differences all make Task 18
+smaller:
+
+1. **Task 18 is three shapes × one backend, not × two.** Six implementations
+   become three. This is the main reason the swap goes first: porting a backend
+   after the split is three times the work of porting it before.
+2. **"Postgres: one schema per entity in one database", under *Testing*, is
+   gone** — with `TEST_DATABASE_URL` and `make test-pg`. It was a compromise
+   taken to keep the Postgres test path working, and namespacing is a weaker
+   thing than this sub-project's own thesis asks for. Under SQLite it is **one
+   file per entity**, or one named `mode=memory&cache=shared` database per entity
+   under test, which is isolation of the kind the DDL boundary was meant to
+   express.
+3. **"`storetest` becomes three conformance suites" is half wrong from 17.3
+   onward.** With one implementation there is nothing to conform *to*. It becomes
+   three shape suites — the same suite reused across `bank`, `csm` and
+   `centralbank` — and its doc comment has to stop claiming otherwise.
+
+What does not change: the shapes, the crossings, the measurements, and the rule
+that every measurement move is watched failing first.
+
 ## What Task 18 changes that is not a store
 
 - **Per-entity payment rows.** `bank.receiveStatus` today "deliberately reads the
