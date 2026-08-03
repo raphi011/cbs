@@ -24,6 +24,16 @@ Two consequences that apply to every sub-project below:
   indistinguishable through `store/storetest`. Every new entity added below
   needs conformance coverage, not just a `store/pg` implementation.
 
+  **Both sentences expire at Task 17.3** (`specs/2026-08-03-sqlite-only-store-design.md`).
+  `store/pg` and `store/mem` are being replaced by a single backend,
+  `store/sqlite`, on the cgo-free `modernc.org/sqlite`. What survives is the
+  property underneath — *a fresh checkout runs the whole suite with no setup* —
+  and it survives more cheaply, because one backend that needs nothing beats two
+  backends of which one did. What ends is conformance *between implementations*:
+  `store/storetest` becomes the suite each of Task 18's three store shapes runs,
+  and every new entity below still needs to be in it. The schema path in the
+  bullet above moves with it.
+
 ## Where the code stands today
 
 - `ledger` — pure double-entry GL: ledgers, subledgers, accounts (Asset,
@@ -123,6 +133,13 @@ Two things the implementation sharpened, both worth carrying forward:
   turn a one-line change to a Go slice into a migration. `0001_init.sql` records
   the reasoning in the database with `COMMENT ON COLUMN`, because the absence of
   a constraint is invisible in a schema dump.
+
+  *Task 17.3 removes the first reason and keeps the ruling.* With `store/mem`
+  gone, "Postgres could express it and a Go map could not" stops being an
+  argument — but the migration reason never mentioned either store, and it is now
+  the whole reason. SQLite has no `COMMENT ON`, so the last sentence's mechanism
+  changes too: comments move inside the `CREATE TABLE`, where `sqlite_master`
+  keeps them in the stored statement text.
 
 ### 2. Lending — `done`
 
@@ -298,6 +315,12 @@ The deployment unit is the **listener, not the process** — `store/mem` is one
 process's memory, so N processes would be N disconnected universes, and
 Postgres-optional is load-bearing. One binary runs every listener by default;
 `-entity` ran one per process and refused to start without a DSN, saying why.
+
+*Task 17.3 reverses the constraint, in a direction nobody asked for.* A SQLite
+file under WAL is shared between processes, so `-entity`-per-process stops
+needing a server — the DSN it refuses to start without becomes a path. That is
+recorded, not acted on: nothing below depends on it, and the listener is still
+the deployment unit.
 (7b removed the flag — see below. One binary runs every listener, full stop.)
 
 Out of scope: splitting the store, splitting the call graph (inter-operator
