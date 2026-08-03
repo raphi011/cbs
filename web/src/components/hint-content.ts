@@ -722,7 +722,9 @@ Bank B posts its creditor leg; the payee's account is Closed:
   Credit Unclaimed Balances (Liability)   3000   ← not the closed account
 \`\`\`
 
-The payment still reaches **Settled**, because it did: the reserves moved and the payee's bank has been paid. Which of that bank's own accounts holds the money afterwards is between the bank and its customer, and is not a fact about the payment.
+The payment still reaches **Settled**, because it did: the reserves moved and the payee's bank has been paid. Whether the **customer** has been paid is a different question, and it is between the bank and its customer.
+
+**Which account it landed in is recorded on the payment**, because a [[allows-return|return]] has to claw the money back from wherever it actually went. This used to be described as "not a fact about the payment", and a return proved otherwise: it debited the payee's closed account for money never credited to it, and left the unclaimed liability standing. It cannot be worked out afterwards either — an account open at the cut-off and closed later looks exactly like one closed at the cut-off — so the destination is written down when the leg posts.
 
 **Having somewhere for it to go is what made the check affordable.** While the creditor leg was posted inside the settlement agent's one unit of work, refusing a credit would have taken the whole cut-off down for one retail customer — so nothing checked, and the money stranded. One payment at one bank fails on its own now.`,
   },

@@ -724,6 +724,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
 	})
 
+	t.Run("PaymentRecordsWhereTheCreditorLegLanded", func(t *testing.T) {
+		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore))
+	})
+
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
@@ -949,6 +953,91 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 	}
 	if got.CreditorDetails != p.CreditorDetails {
 		t.Errorf("creditor details round-tripped as %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
+	}
+}
+
+// paymentRecordsWhereTheCreditorLegLanded pins that
+// payment.Payment.CreditorLegAccount survives a round trip through both stores,
+// in both of the states it has, and that the empty one is a value rather than a
+// missing field.
+//
+// This is a MONEY column, not a trace. payment.ReturnPaymentTx claws the funds
+// back from the account named here, and the account is not the payee's whenever
+// the creditor leg diverted to unclaimed balances. A store that dropped it would
+// send a return to the payee's GL account — which for a diverted payment was
+// never credited — and the ledger would post it happily: an overdrawn deposit is
+// a Liability going negative, which nothing in the book refuses.
+//
+// Both states are asserted because both are written. The empty one is what every
+// payment carries until its creditor leg posts, and it is stored in Postgres as
+// ” under a NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a
+// CHECK that refused it — would refuse a write store/mem accepts.
+func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+
+	// The ordinary settlement: the payee's own GL account.
+	paid := samplePayment("pay_paid", "e2e-paid", early)
+	paid.Status = payment.Settled
+	paid.CreditorLegTx = "txn_paid"
+	paid.CreditorLegAccount = "acc_bob"
+
+	// The diversion: the CREDITOR BANK's unclaimed-balances account, because the
+	// payee's account would not take the credit.
+	diverted := samplePayment("pay_diverted", "e2e-diverted", early)
+	diverted.Status = payment.Settled
+	diverted.CreditorLegTx = "txn_diverted"
+	diverted.CreditorLegAccount = "acc_unclaimed"
+
+	// And a payment whose creditor leg has not been posted at all.
+	pending := samplePayment("pay_pending", "e2e-pending", early)
+	pending.Status = payment.Cleared
+	pending.CreditorLegTx = ""
+	pending.CreditorLegAccount = ""
+
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, p := range []payment.Payment{paid, diverted, pending} {
+			if err := tx.PutPayment(ctx, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("PutPayment: %v", err)
+	}
+
+	var listed []payment.Payment
+	got := map[payment.PaymentID]payment.Payment{}
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, id := range []payment.PaymentID{paid.ID, diverted.ID, pending.ID} {
+			p, err := tx.GetPayment(ctx, id)
+			if err != nil {
+				return err
+			}
+			got[id] = p
+		}
+		var err error
+		listed, err = tx.ListPayments(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("GetPayment: %v", err)
+	}
+
+	for _, want := range []payment.Payment{paid, diverted, pending} {
+		if acct := got[want.ID].CreditorLegAccount; acct != want.CreditorLegAccount {
+			t.Errorf("%s round-tripped its creditor-leg account as %q, want %q",
+				want.ID, acct, want.CreditorLegAccount)
+		}
+	}
+
+	// And through the LISTING too, which is a different query in store/pg and
+	// the same column list only because it is written down once.
+	for _, p := range listed {
+		want := map[payment.PaymentID]ledger.AccountID{
+			paid.ID: "acc_bob", diverted.ID: "acc_unclaimed", pending.ID: "",
+		}[p.ID]
+		if p.CreditorLegAccount != want {
+			t.Errorf("%s listed its creditor-leg account as %q, want %q", p.ID, p.CreditorLegAccount, want)
+		}
 	}
 }
 

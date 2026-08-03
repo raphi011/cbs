@@ -477,6 +477,83 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	assertEqual(t, "payment status after a failed creditor leg", after.Status, Cleared)
 }
 
+// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability is
+// the other end of the diversion above, and it was a money bug.
+//
+// The diversion made "the payee's bank was paid" and "the payee was paid" two
+// different facts for the first time. ReturnPaymentTx did not know that, and
+// there was nothing on the payment for it to know it FROM: it debited the payee's
+// GL account, which for a diverted payment had never been credited. Measured
+// before Payment.CreditorLegAccount existed:
+//
+//	AFTER SETTLE:  bankB unclaimed=30000  bob=0      bankB reserve=30000
+//	AFTER RETURN:  bankB unclaimed=30000  bob=-30000 bankB reserve=0
+//
+// Three things wrong at once. Bob's CLOSED account held minus 30000 — an
+// overdraft nobody granted, on an account that can neither be drawn on nor
+// closed again. The unclaimed-balances liability was never released, so the bank
+// still owed money it had just paid back. And the reserves went out anyway, which
+// is the half that made the other two invisible: two liabilities that net to zero
+// keep the book balanced, so no ledger guard fires. checkSufficientBalance does
+// not refuse a Liability account going negative — that is what an overdrawn
+// deposit IS — so nothing in the ledger was ever going to catch this.
+//
+// The fix is a fact recorded at settlement rather than re-derived at return:
+// PostCreditorLegTx writes the account it actually credited onto the payment. It
+// cannot be re-derived, and that is the substance. An account open at settlement
+// and closed afterwards looks identical, TODAY, to one closed at settlement, so a
+// return that re-checked the status would claw back from the wrong account in
+// exactly the case that matters.
+func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	cyc, err := sys.OpenCycle(ctx, SchemeSEPACT)
+	assertNoError(t, err)
+	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
+		Scheme: SchemeSEPACT, Amount: 30000,
+		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+	})
+	assertNoError(t, err)
+	closeCreditorAccount(t, sys, pay)
+
+	_, err = sys.CloseCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	_, statements, err := sys.SettleCycle(ctx, cyc.ID)
+	assertNoError(t, err)
+	bookTheAdvices(t, sys, statements)
+	_, err = sys.PostCreditorLeg(ctx, b.ID, pay.ID)
+	assertNoError(t, err)
+
+	// Where the money is before the return, and it is not with Bob.
+	assertEqual(t, "bank B unclaimed after settlement", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 30000)
+	assertEqual(t, "bank B reserve after settlement", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 30000)
+	assertEqual(t, "bob after settlement", customerBalance(t, b, bob), 0)
+
+	returned, err := sys.ReturnPayment(ctx, pay.ID, "creditor account is closed")
+	assertNoError(t, err)
+	assertEqual(t, "status", returned.Status, Returned)
+
+	// Bob's closed account is not touched by a return of money it never
+	// received. This is the assertion the old code failed at minus 30000.
+	assertEqual(t, "bob after the return", customerBalance(t, b, bob), 0)
+	// And the liability the bank took on when it could not pay him is released,
+	// because the money went back to the payer instead. A return of a diverted
+	// payment is the bank discharging that obligation to the ONLY other party
+	// with a claim on it.
+	assertEqual(t, "bank B unclaimed after the return", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 0)
+
+	// The reserves unwind exactly as they do for an undiverted return: this is
+	// the half that was already right, and it is asserted so that a fix which
+	// released the liability by NOT paying the reserves back would not pass.
+	assertEqual(t, "bank B reserve after the return", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 0)
+	assertEqual(t, "alice refunded", customerBalance(t, a, alice), 100000)
+	assertReserveMirror(t, sys, a)
+	assertReserveMirror(t, sys, b)
+}
+
 // PSD2 Art. 87(2): the payer's debit value date may be no earlier than the
 // moment the amount leaves the account, so the customer's leg must not share
 // the suspense leg's settlement-date value date.

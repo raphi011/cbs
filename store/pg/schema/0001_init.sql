@@ -634,8 +634,31 @@ CREATE TABLE payments (
     created_at                 TIMESTAMPTZ,
     debtor_leg_tx              TEXT NOT NULL,
     creditor_leg_tx            TEXT NOT NULL,
+    creditor_leg_account       TEXT NOT NULL DEFAULT '',
     seq                        BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN payments.creditor_leg_account IS
+    'The account in the CREDITOR BANK''s book that the creditor leg actually '
+    'credited: normally the payee''s own GL account, and that bank''s '
+    'unclaimed-balances account when the payee''s account would not take the '
+    'credit. Written by payment.PostCreditorLegTx, empty until that leg posts. '
+    'It is STORED rather than derived because it records a MOMENT that no later '
+    'reading recovers. A return has to claw the money back from where it '
+    'landed, and the only other way to find out is to re-ask whether the '
+    'payee''s account is creditable — which answers a question about now, not '
+    'about the cut-off. A payee open at settlement and closed afterwards is '
+    'indistinguishable from one closed at settlement, so a return that '
+    're-derived would debit the wrong account in exactly the case this column '
+    'exists for, and nothing would catch it: an overdrawn deposit is a '
+    'Liability going negative, which the ledger does not refuse. That was '
+    'measured — the payee''s closed account at minus the amount, the unclaimed '
+    'liability never released, and the reserves paid back out anyway. No '
+    'foreign key to any account table, for the same reason the two agent '
+    'columns have none: this row records what WAS done, not a view onto the '
+    'chart of accounts as it stands now. DEFAULT '''' rather than NULL because '
+    'a payment whose creditor leg has not been posted has no such account, and '
+    'an absent one and an empty one are the same fact here.';
 
 COMMENT ON COLUMN payments.reject_code IS
     'The external status-reason code (AC01, AM04, MD01, ...) a rejection '

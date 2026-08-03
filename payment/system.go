@@ -1225,9 +1225,19 @@ func (s *Network) PostCreditorLeg(ctx context.Context, by ParticipantID, id Paym
 // on its own, and the residual has somewhere to go: the bank's unclaimed-balances
 // account, which is what a real bank does with money that arrives for an account
 // that cannot receive it. The payment still reaches Settled, because it did — the
-// reserves moved and the payee's bank has been paid. What is unsettled is which
-// of that bank's own accounts holds the money, which is between the bank and its
-// customer and is not a fact about the payment.
+// reserves moved and the payee's bank has been paid. What is left open is whether
+// the CUSTOMER has been paid, which is between the bank and its customer.
+//
+// # The diversion is recorded on the payment
+//
+// It has to be, and the first version of this was not: a return of a diverted
+// payment debited the payee's closed account to minus the amount and left the
+// unclaimed liability standing, because ReturnPaymentTx had nothing to read.
+// CreditorLegAccount is written HERE, in both arms, because the account the
+// credit went to is a fact about a moment that no later reading recovers. See
+// Payment.CreditorLegAccount for why re-deriving it is unsafe, and
+// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability for
+// the numbers.
 //
 // # Only the payee's bank may call it
 //
@@ -1310,6 +1320,10 @@ func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID
 		return Payment{}, err
 	}
 	p.CreditorLegTx = posted.ID
+	// Recorded in BOTH arms, not only the diverting one. A return has to claw
+	// the money back from where it actually went, and it cannot ask this
+	// question again later: see Payment.CreditorLegAccount and ReturnPaymentTx.
+	p.CreditorLegAccount = target
 	if err := transition(&p, Settled); err != nil {
 		return Payment{}, err
 	}
@@ -2161,6 +2175,25 @@ func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string
 // The same move is available here — the payer's bank has an unclaimed-balances
 // account too, and the refund could go to it — and this function does not make
 // it. That is a gap in the RETURN path and no longer a missing account.
+//
+// # A SECOND gap, which the diversion opened and which IS closed
+//
+// The note above is about the DEBTOR side, and there was a creditor-side one
+// too, created by the very fix it credits. Once PostCreditorLegTx could send a
+// settled payment's money somewhere other than the payee, this function's claw
+// back — which debited the payee's GL account unconditionally — was debiting an
+// account that had never been credited. Measured: the payee's closed account at
+// minus the amount, the unclaimed liability still standing, and the reserves paid
+// back out of the creditor bank all the same. Two liabilities that net to zero,
+// so the book balanced and no ledger guard fired.
+//
+// It is closed by reading Payment.CreditorLegAccount rather than by re-deriving
+// anything: the account is a fact recorded when the credit was made. Note what
+// is NOT claimed — the payee is not made whole here, because a payee whose
+// account was closed at the cut-off never had this money in the first place;
+// what the return does is give it back to the payer, who is entitled to it, out
+// of the account that is actually holding it. See
+// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability.
 func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
@@ -2200,10 +2233,19 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	if err != nil {
 		return Payment{}, err
 	}
-	creditorGL, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
-	if err != nil {
-		return Payment{}, err
-	}
+	// Where the money actually is at the creditor's bank, READ OFF THE PAYMENT
+	// rather than resolved again. Usually the payee's GL account; the bank's
+	// unclaimed-balances account when the creditor leg could not reach the payee
+	// and diverted. Only PostCreditorLegTx can know which, and only at the
+	// moment it posted — see Payment.CreditorLegAccount.
+	//
+	// A Settled payment always carries it: reaching Settled is what
+	// PostCreditorLegTx does, and it sets this in both arms. There is no
+	// fallback to the payee's GL account for an empty one, and that is the
+	// point — the GL account is exactly the wrong guess in the case this field
+	// exists for. An empty value would be a store that lost the column, and the
+	// posting below fails on an unknown account rather than moving money.
+	creditorHolding := p.CreditorLegAccount
 
 	// Debtor's bank refunds the payer, funded by reserves coming back in.
 	if _, err := debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -2217,12 +2259,23 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 		return Payment{}, err
 	}
 
-	// Creditor's bank claws the funds back from the payee, paying out reserves.
+	// Creditor's bank claws the funds back from wherever its creditor leg put
+	// them, paying out reserves. Both destinations are that bank's own
+	// liabilities, so the direction is the same either way and the entry does
+	// not branch: debiting a liability discharges it.
+	//
+	// What it MEANS does differ, and it is worth saying which. Against the
+	// payee's account it is the bank taking money back off a customer who was
+	// paid. Against unclaimed balances there is no customer to take it from —
+	// the payee never received this money and their account is closed — so it
+	// releases the obligation the bank took on when it could not pay them out.
+	// The bank owed "whoever eventually claims it"; the payer has claimed it,
+	// and is entitled to, because the funds are sitting right here.
 	if _, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-credit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
-			{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: creditorHolding, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: creditorAccts.Reserve, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {

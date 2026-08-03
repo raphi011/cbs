@@ -308,6 +308,32 @@ type Payment struct {
 	// ledgers (there is no shared transaction id between banks).
 	DebtorLegTx   ledger.TransactionID
 	CreditorLegTx ledger.TransactionID
+
+	// CreditorLegAccount is the account in the CREDITOR BANK's book that the
+	// creditor leg actually credited, set by PostCreditorLegTx and empty until
+	// that leg is posted.
+	//
+	// Usually it is the payee's own GL account. It is the bank's
+	// unclaimed-balances account when the payee's account would not take the
+	// credit — see PostCreditorLegTx, which diverts rather than stranding.
+	//
+	// # Why it is STORED and not derived
+	//
+	// Because the fact it records is about a MOMENT, and the account it names
+	// cannot be worked out from any later reading of the world. ReturnPaymentTx
+	// has to claw the money back from wherever it landed, and the only other way
+	// to find out is to re-ask whether the payee's account is creditable — which
+	// answers a question about NOW, not about the cut-off. A payee who was open
+	// at settlement and closed afterwards is indistinguishable from one who was
+	// closed at settlement, so a return that re-derived would debit the wrong
+	// account in precisely the case that matters, and the ledger would not
+	// notice: an overdrawn deposit is a Liability going negative, which
+	// ledger.checkSufficientBalance does not refuse.
+	//
+	// It is an AccountID rather than a "was diverted" flag deliberately. The
+	// flag would be a record of one special case; this is a record of what
+	// happened, and it stays true if a later scheme grows a third destination.
+	CreditorLegAccount ledger.AccountID
 }
 
 // Mandate is a debtor's standing authorization for a specific creditor to
