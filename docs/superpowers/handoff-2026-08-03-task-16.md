@@ -35,6 +35,37 @@ on this machine** — use the explicit `TEST_DATABASE_URL`.
 before any code, and it is the authority. The plan is
 `docs/superpowers/plans/2026-08-03-task-16-return-becomes-a-conversation.md`.
 
+### Added after this handoff was written (2026-08-03)
+
+The pointer above is section-scoped and is no longer enough. Read **also**
+`### The store underneath becomes SQLite, between Task 17 and Task 18` in that
+same spec — it is in the Tasks area, not in `## The return`, so following the
+line above literally will miss it.
+
+**`store/pg` and `store/mem` are both being replaced by one backend**,
+`store/sqlite`, on the cgo-free `modernc.org/sqlite`. That is sub-project 9,
+specced at `docs/superpowers/specs/2026-08-03-sqlite-only-store-design.md`,
+landing as Tasks **17.1 / 17.2 / 17.3** — after Task 17, before Task 18. The
+numbering was chosen so that nothing in this file renumbers.
+
+**Nothing else in this handoff is wrong for Task 17.** Both rules at the bottom
+that the swap eventually reverses — "There is **one migration**. Edit
+`0001_init.sql` in place" and the `TEST_DATABASE_URL` verification line — are
+still true while admission is being built. They expire at 17.1, and it is **Task
+17's own handoff** that must say so rather than copy this file's rule list
+forward.
+
+Two things it does change, both small:
+
+- **Task 18 becomes three shapes × one backend, not × two**, and its isolation is
+  one database *file* per entity rather than one Postgres schema per entity. If
+  anything in Task 17 would be designed around Task 18's store, design it around
+  that.
+- **Task 16f sweeps `0001_init.sql`'s comments, and 17.1 then translates that
+  file whole.** Not wasted — the comments are the content and they carry across —
+  but where 16f has the choice, write the *reasoning* rather than the Postgres
+  mechanism. Postgres spellings will not survive; the arguments will.
+
 ## What Task 16 did
 
 **The return stopped being one institution's act.** `ReturnPaymentTx` posted
