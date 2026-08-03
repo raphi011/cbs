@@ -271,12 +271,18 @@ they were written; this repository corrects forward.
 That cuts against one thing, and it is worth naming rather than leaving to be
 tripped over. `handoff-2026-08-03-task-16.md` is not only a record — its closing
 *rules that cost the most when forgotten* is the live instruction set for whoever
-takes Task 17, and two of its entries expire here: "**There is one migration.**
-Edit `0001_init.sql` in place", and the `TEST_DATABASE_URL` line in its
-verification block. Both stay as written. The obligation moves to **Task 17's
-plan and its own handoff**, which must carry them forward corrected — an
-expired rule in a handoff is exactly the "comment written during a transition
-should announce its own expiry" lesson that same file records, pointed at itself.
+takes Task 17, and two of its entries expire: "**There is one migration.** Edit
+`0001_init.sql` in place", and the `TEST_DATABASE_URL` line in its verification
+block.
+
+They expire **after** Task 17, not during it — both are still true while
+admission is being built, so Task 17's plan says nothing about either and Task 17
+is written exactly as that handoff describes. The obligation lands on **Task 17's
+own handoff**, the one that hands over to 17.1: it is the first document whose
+next task is on the other side of the swap, and it must state both corrections
+rather than copy its predecessor's rule list forward. An expired rule in a
+handoff is the "a comment written during a transition should announce its own
+expiry" lesson that same file records, pointed at itself.
 
 The documentation half is the larger half. This is a curriculum change wearing a
 backend change's clothes: the README's persistence argument is *built* on there
