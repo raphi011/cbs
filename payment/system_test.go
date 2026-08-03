@@ -3046,8 +3046,9 @@ func TestSettlingAReturnReadsNoPayment(t *testing.T) {
 		assertEqual(t, "the asset", st.Asset, testAsset)
 	}
 
-	// And the payment row is exactly as the cut-off left it. This is the
-	// assertion that fails if SettleReturnTx ever grows a GetPayment.
+	// And the payment row is exactly as the cut-off left it: the settlement
+	// agent moved reserves and wrote nothing about the payment, because it has
+	// no payment to write about.
 	after, err := sys.GetPayment(ctx, pay.ID)
 	assertNoError(t, err)
 	assertEqual(t, "the payment's status after its reserves were reversed", after.Status, Settled)

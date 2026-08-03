@@ -100,11 +100,13 @@ var (
 	//
 	// It is a redelivery, and it is detected in the ledger rather than in a row
 	// of its own: the reserve reversal carries "<payment>:return-settle" as its
-	// idempotency key, so a second instruction naming the same payment comes
-	// back from PostTransactionTx as ledger.ErrDuplicateIdempotencyKey and is
-	// wrapped as this. The settlement agent holds no payment rows — that is the
-	// whole point of SettleReturnTx — so there is nowhere else it could have
-	// recorded that it had settled this one.
+	// idempotency key, and that key is the only record the settlement agent has
+	// that it settled this return. It holds no payment rows — that is the whole
+	// point of SettleReturnTx — so there is nowhere else it could have written
+	// one. SettleReturnTx reads the key before it posts, so that the answer is
+	// this rather than a funding refusal, and the ledger refuses the posting on
+	// the same key, so that two deliveries in flight at once cannot both pass
+	// the read.
 	//
 	// It is a statement about THIS system's state and not about the sender's
 	// message, which is the same discrimination ErrInvalidStateTransition

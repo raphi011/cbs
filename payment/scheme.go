@@ -126,9 +126,10 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // And a party who is both — a payment from a bank to itself — would make a
 // negation ambiguous, while these two rules stay total.
 //
-// It takes the two refs rather than a Payment, because mesh.Mesh.Submit's
-// counterpart rule has only a request to work from and the two are written the
-// same way.
+// It takes the two refs rather than a Payment, which is how mesh.submitterOf —
+// its counterpart in both senses, the other party and the other role — is
+// written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
+// request, and a request is not yet a payment.
 //
 // # Why it lives here and not in mesh
 //

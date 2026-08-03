@@ -2556,7 +2556,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, 
 	// payment always carries it, and there is deliberately no fallback to the
 	// payee's GL account: that is exactly the wrong guess in the case the field
 	// exists for.
-	from := p.CreditorLegAccount
+	from, description := p.CreditorLegAccount, "Return of payment "+string(p.ID)+": "+reason
 	if from != accts.Unclaimed {
 		err := creditor.Deposit.CheckWithdrawalTx(ctx, tx, p.Creditor.Account, p.Amount)
 		switch {
@@ -2566,7 +2566,12 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, 
 			// is the whole of the refusal.
 			return ledger.Transaction{}, err
 		case errors.Is(err, deposit.ErrAccountClosed):
-			from = accts.ReturnsReceivable
+			// The account cannot be posted to at all, so the bank funds the
+			// refund itself and books what it is owed. The description says so
+			// for the same reason the refund's diversion does: the money is in a
+			// pooled account with nobody's name on it, and the entry is the only
+			// place the reason can be read months later.
+			from, description = accts.ReturnsReceivable, "Returns receivable: "+description
 		case errors.Is(err, deposit.ErrInsufficientAvailable),
 			errors.Is(err, deposit.ErrAccountDormant),
 			errors.Is(err, deposit.ErrAccountFrozen):
@@ -2583,7 +2588,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, 
 	}
 	return creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-claw",
-		Description:    "Return of payment " + string(p.ID) + ": " + reason,
+		Description:    description,
 		Entries: []ledger.Entry{
 			{AccountID: from, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
@@ -2602,16 +2607,18 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Participant, acct
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
 	to := accts.Unclaimed
-	if err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account); err != nil {
-		if !errors.Is(err, deposit.ErrAccountClosed) {
-			return ledger.Transaction{}, err
-		}
-		description = "Unclaimed: " + description
-	} else {
-		var err error
+	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
+	switch {
+	case err == nil:
+		// The payer's own account, resolved only once the register has said it
+		// can take the credit.
 		if to, err = debtor.glAccountTx(ctx, tx, p.Debtor.Account); err != nil {
 			return ledger.Transaction{}, err
 		}
+	case errors.Is(err, deposit.ErrAccountClosed):
+		description = "Unclaimed: " + description
+	default:
+		return ledger.Transaction{}, err
 	}
 	return debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-refund",

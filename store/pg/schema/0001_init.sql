@@ -679,8 +679,8 @@ COMMENT ON COLUMN payments.return_refund_tx IS
     'constraint across them could not be written at all. That split is also '
     'what ends this pair: one payment is one row that both banks read today, '
     'and when it becomes two rows in two stores neither bank can see the '
-    'other''s leg, so the second leg will have to be recognised from the '
-    'message a bank receives against the status its own row is already at.';
+    'other''s leg, so the counterparty''s id stops being available to read at '
+    'all. What replaces it is that task''s to decide.';
 
 COMMENT ON COLUMN payments.creditor_leg_account IS
     'The account in the CREDITOR BANK''s book that the creditor leg actually '

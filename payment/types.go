@@ -351,11 +351,11 @@ type Payment struct {
 	//
 	// It works because one payment is one row that both banks can see. Under
 	// sub-project 8's store split it is two rows in two stores, and neither
-	// bank can read the other's; the second leg will have to be recognised from
-	// what the bank was TOLD — the return message it received against the
-	// status its own row is already at — rather than from the counterparty's
-	// transaction id. Task 18 inherits that, and these two fields become one
-	// field each, in each bank's own copy, recording only that bank's own leg.
+	// bank can read the other's, so the counterparty's transaction id stops
+	// being available to read at all. What replaces it is Task 18's to decide —
+	// the material a bank will have is the return message it received and the
+	// status its own row is already at. This note exists so that task inherits
+	// the problem rather than discovering it.
 	ReturnClawbackTx ledger.TransactionID
 	ReturnRefundTx   ledger.TransactionID
 }

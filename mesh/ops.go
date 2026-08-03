@@ -268,7 +268,7 @@ type csmOps interface {
 // one act: payment.SettleReturnTx is the settlement agent's whole part and
 // posts only in the central bank's own book. See payment.ReturnPaymentTx, which
 // records that it is transitional and that Task 16e deletes it — and with it
-// this method, and this interface's second line.
+// the ReturnPayment method declared below.
 type settlementOps interface {
 	// SettleCycle hands back the STATEMENTS beside the settlement, because the
 	// closing balance each carries is a claim about a moment inside the unit of
