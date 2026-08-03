@@ -100,15 +100,17 @@ var reasonTable = []reasonMapping{
 	// are discriminated that way because three are reached on paths nothing is
 	// wrong with:
 	//
-	//   - ErrInvalidStateTransition, an ordinary redelivery — mesh/bank.go's
-	//     receiveCreditTransfer, csm.receiveInstruction and csm.receiveReturn.
+	//   - ErrInvalidStateTransition, an ordinary redelivery, in four places:
+	//     bank.accept (which is where bank.receiveCreditTransfer and
+	//     receiveDirectDebit both end up), csm.receiveStatus, csm.clear and
+	//     centralBank.receiveReturn.
 	//   - ErrNotThisBanksPayment, the ordinary happy path of EVERY push
 	//     settlement. csm.tellSettled fans the ACSC to both banks; the payer's
 	//     bank has no creditor leg, and PostCreditorLeg tells it so. Discarded
-	//     by name at mesh/bank.go's receiveStatus.
+	//     by name in bank.receiveStatus.
 	//   - ErrCycleNotClosed, an ordinary redelivered pacs.009 — a cycle already
-	//     settled is not a rejection to answer. Discriminated at
-	//     mesh/centralbank.go's receiveInstruction.
+	//     settled is not a rejection to answer. Discriminated in
+	//     centralBank.receiveSettlement.
 	//
 	// This paragraph used to say "the one of the nine" and "the other eight",
 	// and the counts were right while the list held six. Both halves are wrong
