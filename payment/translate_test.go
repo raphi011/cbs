@@ -549,6 +549,28 @@ func TestReadReturnRefusesAnAbsentOrgnlTxRef(t *testing.T) {
 	}
 }
 
+// TestReadReturnRefusesATransactionThatNamesNoPayment is the same argument
+// about a different element, and it is a MONEY guard rather than a resolution
+// one.
+//
+// OrgnlTxId is optional in the schema: iso20022.ReturnTransaction.validate
+// accepts a transaction that refers back by OrgnlEndToEndId alone, and this
+// system has no way to resolve a payment from that. What made it worth
+// refusing here rather than shrugging at is what SettleReturnTx does with an
+// empty id — it posts the reserve reversal under the idempotency key
+// "<payment>:return-settle", so an empty one keys every such return to
+// ":return-settle". The FIRST would move reserves between two banks for a
+// payment nobody can name, and every one after it would come back
+// ErrReturnAlreadySettled. Refused where the message is read, because that is
+// the last point at which nothing has happened yet.
+func TestReadReturnRefusesATransactionThatNamesNoPayment(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.TxInf[0].OrgnlTxId = ""
+	if _, err := ReadReturn(doc); err == nil {
+		t.Fatal("read a return naming no payment; the reserve reversal would be keyed by nothing")
+	}
+}
+
 // TestReadReturnRefusesAnOrgnlTxRefNamingOneAgent covers the case
 // iso20022.ReturnTransaction.validate would refuse were it run — this proves
 // ReadReturn does not rely on the caller having validated first.

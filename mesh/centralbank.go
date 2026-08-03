@@ -46,29 +46,29 @@ import (
 //
 // # It holds a settlementOps, which is two methods wide
 //
-// SettleCycle and ReturnPayment are on that interface and on no other, so a
+// SettleCycle and SettleReturn are on that interface and on no other, so a
 // bank handler or a clearing-house handler cannot NAME either. That is what
 // these interfaces narrow, and the whole of what they narrow — it is not a ban
 // on those handlers moving money. GetParticipant is on both of the other two and
 // returns a value carrying live ledger and deposit handles bound to whichever
 // bank it names (Network.bind), and a member bank's ledger is exactly where a
-// return's compensating legs go, so posting in one is reachable from either of
+// return's customer legs go, so posting in one is reachable from either of
 // those handlers through a method each legitimately holds. The recorder in
 // books_test.go is what watches for that, here as everywhere else in this
 // package; see the note on bankOps in ops.go for the whole of the hole.
 //
-// The two methods behind this interface no longer reach the same distance.
-// SETTLEMENT posts its netting transaction in the central bank's own book and in
-// no member's: the mirror leg is the member's, booked from the statement advise
-// sends, and the creditor leg is the payee's bank's, booked from the clearing
-// house's per-payment advice. A RETURN still reaches three books of which two
-// are member banks', because payment.ReturnPayment is a TRANSITIONAL
-// composition of the acts a split return is made of; the settlement agent's own
-// act within it, payment.SettleReturnTx, posts in this book and no other. So
-// this institution is the widest-reaching actor in this system on one flow and
-// one of the narrowest on the other, and Task 16e is where the two converge.
-// See TestWhichBooksTheCentralBankReachesWhenItSettles and
-// TestWhichBooksAReturnReaches for the measurements.
+// The two methods behind this interface reach the same distance, and that is
+// new. This note used to record the opposite — that settlement posted in this
+// book alone while a RETURN reached three books, two of them member banks' —
+// and it was an accurate description of payment.ReturnPayment, the transitional
+// composition Task 16d kept alive and 16e deleted. Both calls now post the
+// reserve movement in the central bank's own book and in no member's; every
+// customer leg on either path is made by the bank whose customer it moves, from
+// a message. So this institution is one of the NARROWEST-reaching actors in the
+// system on both of its flows rather than the widest on one of them. See
+// TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches for the measurements, and
+// TestEachBankBooksItsOwnReturnAndNoOtherBooks for where the two legs went.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -178,6 +178,20 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 
 // advise sends each member the statement of its own reserve account.
 //
+// # Two callers, and everything below holds for both
+//
+// A CUT-OFF and a RETURN both end here, with one statement per member whose
+// reserve account moved: two members at a cut-off that netted, and always
+// exactly two on a return, since a return moves reserves between the payer's
+// bank and the payee's and nobody else. The statements differ only in what they
+// name — a cycle id or a payment id — which is a difference the receiving bank
+// does not act on either (payment.PostSettlementAdviceTx books on a reference
+// without asking which kind it is).
+//
+// That matters most for the failure below, which was written for the cut-off
+// and is now reachable from a second flow. It is the same defect with a second
+// route to it, not a new one; see the last section.
+//
 // # Why the members and not the clearing house
 //
 // The clearing house is the party that INSTRUCTED and is the one this actor
@@ -206,6 +220,13 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // funding it, and a member whose position nets to zero is sent no statement at
 // all — either way that bank's suspense was funded by its own customers'
 // debtor legs, long before the cut-off.
+//
+// A RETURN has the same shape with a different second message. The bank
+// receiving the reserves back is the net receiver of a batch of one; the leg
+// that draws on the suspense its statement credits is its own customer leg,
+// posted from the pacs.004 the clearing house relays out of the handler of THIS
+// answer. So the chain is one hop longer and identical in substance, and
+// TestTheMessagesAReturnPutsOnTheWire asserts the same pair.
 //
 // The other order is not a corruption, and saying why is the point of stating
 // this at all. Suspense is a Liability and the ledger does not guard those
@@ -241,6 +262,18 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 //     cycle — INCLUDING the ones successfully advised — is left holding an
 //     instruction it believes outstanding, on a payment the domain has already
 //     marked Settled. That is the largest of the three and the least visible.
+//
+// On a RETURN the same three land differently and the third is worse. A member
+// never advised has an unreconciled suspense with no advice row, exactly as
+// above. The early return still suppresses the second statement. And the answer
+// that never runs costs more than an answer: csm.receiveReturnStatus is what
+// releases the pacs.004 the clearing house is holding, so the OTHER bank's
+// customer leg is never posted at all — the reserves have moved and are final,
+// one bank's customer has been debited or credited, and the payment stays
+// Settled for ever with half a return standing in one book. It is the same
+// shape as the settlement path's third item and it reaches a customer's account
+// rather than a bank's expectations. See csm.relayReturn, where the held
+// message and its failure mode are recorded together.
 //
 // None of it is reachable in this transport. Mesh.send fails in exactly three
 // ways — a message that will not marshal, a BIC with no actor, and an actor that
@@ -279,22 +312,40 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // system rather than being cleared and netted in a later R-cycle. A return
 // therefore IS a settlement act, and it belongs where settlement does.
 //
-// The price is the same one receiveSettlement pays and it is worth naming
-// again: postings land in member banks' books, made by this handler — each
-// bank's customer leg and each bank's reserve mirror. In a real network the
-// pacs.004 travels bank to bank, each posts its own leg, and each books its own
-// mirror from the camt.053 it is sent. Under one store this actor does all of
-// it, and TestWhichBooksAReturnReaches measures exactly that rather than
-// assuming it.
+// # There is no price any more, and the paragraph that said there was is gone
 //
-// What has changed under it is that the domain no longer requires this. Task
-// 16d split the return into three acts — payment.PostReturnLegTx for each
-// bank's own leg, payment.SettleReturnTx for the reserves, which reads no
-// payment at all — and payment.ReturnPayment, which this handler still calls, is
-// a transitional composition of them that announces its own expiry. Task 16e
-// replaces this handler with the conversation: this actor keeps
-// SettleReturnTx, sends a camt.053 to both banks as it does at a cut-off, and
-// the banks post their own legs.
+// This doc used to record a price, in the same words receiveSettlement's did:
+// postings landing in member banks' books, made by this handler — each bank's
+// customer leg and each bank's reserve mirror — because under one store this
+// actor did all of it. That is the reversal Task 16e is. The pacs.004 now
+// travels bank to bank as it does in a real network: the returning bank posts
+// its own leg before it sends, the other bank posts its own when the clearing
+// house relays the message after finality, and each books its reserve mirror
+// from the camt.053 this handler sends. What is left here is the reserve
+// reversal and nothing else. TestWhichBooksAReturnReaches measures that rather
+// than assuming it.
+//
+// # It reads the parties off the MESSAGE
+//
+// payment.ReadReturn, and not a payment row: this actor holds none, never saw
+// the payment clear, and could not look one up. Both agents and the amount come
+// out of OrgnlTxRef, which is what iso20022.OriginalTransactionReference exists
+// for — a pacs.004 in this system used to name no parties at all, and a
+// settlement agent handed one had nothing to resolve accounts from. See
+// payment.SettleReturnTx, which is written so that it never reads a payment.
+//
+// # The order: advise, then answer
+//
+// The camt.053 goes to BOTH banks before the pacs.002 goes to the clearing
+// house, for centralBank.advise's existing reason and for a second one this
+// flow adds. The other bank's refund DRAWS on the clearing suspense its own
+// mirror leg credits, and what makes it draw is the pacs.004 the clearing house
+// relays out of the handler of this answer — so the statement has to be in that
+// bank's inbox first. That is not luck: Mesh.send pushes synchronously on the
+// sender's goroutine, so a statement pushed before the answer is queued before
+// the message the answer provokes can exist. See
+// TestTheMessagesAReturnPutsOnTheWire, which states the chain and asserts the
+// pair.
 //
 // # One return per message, and the sender's own count must agree
 //
@@ -315,22 +366,37 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 //
 // # What is answered, and what is dead-lettered
 //
-// A redelivered return names a payment this network has already returned, and
-// ReturnPayment refuses it with ErrInvalidStateTransition — a statement about
-// THIS system's state and not about the sender's message. payment's reasonTable
-// gives it the empty code for exactly that reason, and ReasonFor would turn it
-// into MS03 and tell the returning bank that a return which in fact happened
-// was rejected. Dead letter, and no pacs.002; it is the same discrimination
-// receiveSettlement makes.
+// A redelivered return names a payment this network has already settled the
+// return of, and SettleReturn refuses it with ErrReturnAlreadySettled — a
+// statement about THIS system's state and not about the sender's message.
+// payment's reasonTable gives it the empty code for exactly that reason, and
+// ReasonFor would turn it into MS03 and tell the returning bank that a return
+// which in fact happened was rejected. Dead letter, and no pacs.002; it is the
+// same discrimination receiveSettlement makes.
+//
+// The sentinel MOVED, and the reason it moved is worth a sentence rather than a
+// diff. It was ErrInvalidStateTransition, which came from the payment row this
+// handler's call used to transition. There is no payment row on this path any
+// more, so the redelivery is caught where the only durable trace of a settled
+// return now is: the idempotency key on the reserve reversal, in this bank's own
+// ledger. See payment.ErrReturnAlreadySettled, which records that it needs no
+// row of its own.
 //
 // Everything else the domain refuses is answered, with the code ReasonFor maps
 // it to, because a refusal a counterparty can act on is completed work rather
-// than a defect. ErrSchemeUnsupportedReturn is the one that belongs to this
-// operation alone — a scheme whose rule book has no return — and payment's
-// reasonTable maps it to MS03, "unspecified", which is what the external code
-// set has for a condition the scheme does not contemplate. No scheme in this
-// repository forbids returns (payment.SCT.AllowsReturn and SDD.AllowsReturn
-// both report true), so nothing here provokes it.
+// than a defect. There are two, and both are about this actor's own book: a
+// creditor's bank whose reserves cannot cover the reversal is
+// ledger.ErrInsufficientBalance and therefore AM04, and an agent BIC that names
+// no member of this network is ErrParticipantNotFound. A message that cannot be
+// READ — no OrgnlTxRef, an agent with no BICFI, an amount in no known asset — is
+// answered too, and by the same rule: the sender composed it and can fix it.
+//
+// ErrSchemeUnsupportedReturn is no longer among them, and its absence is a
+// consequence rather than an omission. It was raised by ReturnPaymentTx, which
+// read the payment's scheme; SettleReturnTx reads no payment and no scheme,
+// because whether a scheme's rule book allows returns is a question for the bank
+// that composes the pacs.004 (payment.PostReturnLegTx still asks it) and not for
+// the agent that moves the reserves after one has been sent.
 //
 // With one exception, which is a limit of this handler rather than a decision:
 // a return that names no payment cannot be answered at all. OrgnlTxId is
@@ -359,12 +425,24 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 			fmt.Errorf("GrpHdr/NbOfTxs says %q and one transaction arrived; a return lost in transit is a payer who is not repaid", said))
 	}
 
+	// The whole of the input, read off the message. The count above has already
+	// established there is exactly one instruction to act on.
 	id := payment.PaymentID(first.OrgnlTxId)
-	if _, err := cb.ops.ReturnPayment(ctx, id, payment.ReturnReason(first.RtrRsnInf)); err != nil {
-		if errors.Is(err, payment.ErrInvalidStateTransition) {
+	ins, err := payment.ReadReturn(doc)
+	if err != nil {
+		return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
+	}
+
+	statements, err := cb.ops.SettleReturn(ctx, ins[0])
+	if err != nil {
+		if errors.Is(err, payment.ErrReturnAlreadySettled) {
 			return fmt.Errorf("mesh: %s was told to return %s again: %w", cb.bic, id, err)
 		}
 		return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusRejected, err)
+	}
+	// Before the answer. See advise, and the note above on the order.
+	if err := cb.advise(statements); err != nil {
+		return err
 	}
 	return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
 }

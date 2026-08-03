@@ -219,6 +219,73 @@ func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settle
 	return st
 }
 
+// returnWholePayment is every institution's half of an R-transaction, played in
+// order and each in its OWN unit of work: the returning bank's customer leg, the
+// settlement agent's reserve reversal, both members' reserve mirrors, and the
+// other bank's customer leg.
+//
+// It is the test's stand-in for the four hops the mesh carries, and it replaces
+// ReturnPaymentTx, which used to be one call that did all of this and which Task
+// 16e deleted — no institution may post in another's book, and that function
+// was three institutions in one unit of work. What these tests are about is
+// where the money ends up, which is unchanged; each of them says so at the
+// accounts rather than through the call, which is why moving the composition
+// into the fixture leaves their assertions alone.
+//
+// Separate units of work, unlike seed's builder.returnPayment, and the
+// difference is what each is for: the seed builds a fixed scenario and wants the
+// whole return or none of it, while these tests are about the domain calls and
+// one of them (TestReturnBeforeSettleIsRefused, in
+// TestPaymentStateMachineRefusesIllegalTransitions) asserts that the FIRST half
+// refuses on its own.
+//
+// The instruction is built from the payment row, as seed's is, because this
+// package has no messages. See payment.ReadReturn for where the mesh gets the
+// same values from instead.
+func returnWholePayment(ctx context.Context, sys *Network, id PaymentID, reason string) (Payment, error) {
+	p, err := sys.GetPayment(ctx, id)
+	if err != nil {
+		return Payment{}, err
+	}
+	scheme, ok := sys.Scheme(p.Scheme)
+	if !ok || !scheme.AllowsReturn() {
+		return Payment{}, ErrSchemeUnsupportedReturn
+	}
+	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
+	other := p.Debtor.Participant
+	if other == returner {
+		other = p.Creditor.Participant
+	}
+	if _, err := sys.PostReturnLeg(ctx, returner, id, reason); err != nil {
+		return Payment{}, err
+	}
+	statements, err := sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     p.ID,
+		EndToEndID:    p.EndToEndID,
+		DebtorAgent:   p.DebtorDetails.Agent,
+		CreditorAgent: p.CreditorDetails.Agent,
+		Amount:        p.Amount,
+		Asset:         scheme.Asset(),
+		Reason:        reason,
+	})
+	if err != nil {
+		return Payment{}, err
+	}
+	for _, st := range statements {
+		if _, err := sys.PostSettlementAdvice(ctx, st.Member, AdvisedMovement{
+			Account:        st.Account,
+			Asset:          st.Asset,
+			Movement:       st.Movement,
+			ClosingBalance: st.ClosingBalance,
+			Reference:      st.Reference,
+			ValueDate:      st.ValueDate,
+		}); err != nil {
+			return Payment{}, err
+		}
+	}
+	return sys.PostReturnLeg(ctx, other, id, reason)
+}
+
 // bookTheAdvices is every member's half of a cut-off: each books the mirror leg
 // the statement it was sent advises.
 //
@@ -350,7 +417,7 @@ func TestSCT_HappyPath(t *testing.T) {
 }
 
 // TestASettlementIntoAClosedAccountGoesToUnclaimedBalances is the fix for the
-// ruling SettleCycleTx and ReturnPaymentTx both recorded and neither could make.
+// ruling SettleCycleTx and the return both recorded and neither could make.
 //
 // A payee who empties and closes their account between their bank's acceptance
 // and the cut-off used to be credited INTO the closed account: Close requires a
@@ -481,7 +548,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 // the other end of the diversion above, and it was a money bug.
 //
 // The diversion made "the payee's bank was paid" and "the payee was paid" two
-// different facts for the first time. ReturnPaymentTx did not know that, and
+// different facts for the first time. The return did not know that, and
 // there was nothing on the payment for it to know it FROM: it debited the payee's
 // GL account, which for a diverted payment had never been credited. Measured
 // before Payment.CreditorLegAccount existed:
@@ -532,7 +599,7 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 	assertEqual(t, "bank B reserve after settlement", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 30000)
 	assertEqual(t, "bob after settlement", customerBalance(t, b, bob), 0)
 
-	returned, err := sys.ReturnPayment(ctx, pay.ID, "creditor account is closed")
+	returned, err := returnWholePayment(ctx, sys, pay.ID, "creditor account is closed")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 
@@ -754,12 +821,12 @@ func TestSDD_Return(t *testing.T) {
 	})
 	assertEqual(t, "alice after collection", customerBalance(t, a, alice), 75000)
 
-	returned, err := sys.ReturnPayment(ctx, pay.ID, "insufficient funds at debtor")
+	returned, err := returnWholePayment(ctx, sys, pay.ID, "insufficient funds at debtor")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 	// A return is not a rejection: it carries no StatusReason. pacs.004 draws
 	// its reason from iso20022.ReturnReason instead — a different external
-	// code set — and ReturnPaymentTx does not set RejectCode, only the free
+	// code set — and PostReturnLegTx does not set RejectCode, only the free
 	// text. See the RejectCode doc comment on payment.Payment.
 	assertEqual(t, "return sets no reject code", string(returned.RejectCode), "")
 
@@ -1090,7 +1157,7 @@ func TestStateMachineGuards(t *testing.T) {
 
 	t.Run("return before settle", func(t *testing.T) {
 		p, cyc := mkPayment()
-		_, err := sys.ReturnPayment(ctx, p.ID, "too early")
+		_, err := returnWholePayment(ctx, sys, p.ID, "too early")
 		assertError(t, err, ErrInvalidStateTransition)
 		_, _ = sys.CloseCycle(ctx, cyc)
 		_, _, _ = sys.SettleCycle(ctx, cyc)
@@ -3347,7 +3414,7 @@ func returnTheWholeWay(t *testing.T, sys *Network, p Payment, reason string) Pay
 // TestARefundIntoAClosedPayersAccountGoesToUnclaimedBalances closes a gap that
 // was a recorded RULING for two tasks rather than a defect nobody had noticed.
 //
-// ReturnPaymentTx's doc measured it: a payer who empties and closes their
+// The old ReturnPaymentTx's doc measured it: a payer who empties and closes their
 // account after a payment settles, whose payment is then returned, ended with
 // the money in an account whose status is Closed — the withdrawal check answers
 // "closed", the credit check answers "closed", and closing again is an invalid
@@ -3554,10 +3621,10 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 // whole while the payer keeps the refund, with the amount out of the returning
 // bank's own suspense and the payment row still saying Returned.
 //
-// Nothing calls it on a completed return today, because nothing calls it at all;
-// Task 16e wires it to the RJCT handler, and a handler is exactly the caller
-// that acts on a message rather than on a status it checked. So the check
-// belongs here, next to the money, and not in the handler.
+// Nothing calls it on a completed return, and the caller it does have is exactly
+// why the check belongs here: mesh's bank.receiveReturnStatus acts on a MESSAGE
+// rather than on a status it checked, so a late or duplicated RJCT is the shape
+// that would otherwise arrive. Next to the money, and not in the handler.
 //
 // ErrInvalidStateTransition rather than a new sentinel: it is the same statement
 // this package makes everywhere else about an operation a payment's status does

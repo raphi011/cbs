@@ -16,8 +16,9 @@ func init() {
 // This is the R-transaction, and it is a distinct MESSAGE rather than a status
 // precisely because settlement was final. A pacs.002 says an instruction was
 // refused; a pacs.004 says a completed payment is being reversed by sending an
-// equal and opposite one. payment.Network.ReturnPayment already implements the
-// operation.
+// equal and opposite one. payment.PostReturnLegTx and payment.SettleReturnTx
+// implement the two halves of the operation — the customer leg each bank owns,
+// and the reserve reversal between them.
 type Pacs004 struct {
 	XMLName xml.Name      `xml:"urn:iso:std:iso:20022:tech:xsd:pacs.004.001.09 Document"`
 	PmtRtr  PaymentReturn `xml:"PmtRtr"`
@@ -143,8 +144,9 @@ func (i ReturnReasonInformation) validate() error {
 // ReturnTransaction is one payment being returned.
 //
 // OrgnlIntrBkSttlmAmt and RtrdIntrBkSttlmAmt are separate fields because a
-// return may be PARTIAL. This system's returns are always whole — ReturnPayment
-// takes no amount — so the two are always equal here. The field stays because
+// return may be PARTIAL. This system's returns are always whole — the domain's
+// return acts take no amount, and payment.ReturnMessage renders the payment's
+// own — so the two are always equal here. The field stays because
 // dropping it would make the message unable to express something the standard
 // is specifically shaped to express, and a reader comparing this against the
 // real schema would find a hole with no explanation.

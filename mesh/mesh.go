@@ -246,7 +246,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	clearing := unhandled("clearing house")
 	settlement := unhandled("central bank")
 	if net != nil {
-		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC}
+		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC, held: map[payment.PaymentID]heldReturn{}}
 		clearing = m.csm.handle
 		settlement = (&centralBank{m: m, ops: net, bic: cfg.CentralBankBIC}).handle
 	}
@@ -1223,6 +1223,8 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 // goroutine, sending only after the returning bank's half has run — because a
 // return arrives from outside the mesh in the same way both of those do. An
 // operator (or api's POST /payments/{payid}/return) asks for it; no inbox is involved.
+// Since Task 16e "after the returning bank's half has run" means after that bank
+// has POSTED, not merely after it has checked; see bank.returnPayment.
 //
 // # Which bank is handed the instruction
 //
@@ -1236,14 +1238,27 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 //
 // # It answers with an error and nothing else
 //
-// Not with a payment, deliberately. The returning bank's half posts nothing and
-// decides nothing beyond whether there is a settled payment to return at all,
-// so the Payment it would hand back is the one the caller could already read —
-// unchanged, still Settled. What the caller actually wants to know happens
-// later, at the settlement agent, and arrives as a message. Submit returns an
-// Initiated payment because it CREATED one; there is no such value here, and
-// inventing one by re-reading the row after the send would be a race dressed up
-// as a result.
+// Not with a payment, and the reason has changed under it. This used to say the
+// returning bank's half posts nothing and decides nothing beyond whether there
+// is a settled payment to return. That half posts now — its own customer leg,
+// before the message exists — and it can refuse there, which is why an error is
+// the whole of what a caller needs: on a push a payee who has spent the money
+// comes back AM04 and nothing was sent.
+//
+// What survives is the reason a PAYMENT would be no use. The row the caller
+// could read is still Settled — one leg is posted, and a return is not finished
+// until the other bank posts, which happens at another actor after this call has
+// returned — so handing it back would say less than the caller already knows.
+// Submit returns an Initiated payment because it CREATED one; there is no such
+// value here, and inventing one by re-reading the row after the send would be a
+// race dressed up as a result.
+//
+// It follows that a send that fails after the leg is posted comes back as an
+// error alone rather than with the payment beside it, which is where this
+// differs from bank.submit. The half-happened state is real and is recorded on
+// the payment row — this bank's leg id, with the status still Settled — and
+// nothing above this reads a Payment it could be carried in. See
+// bank.returnPayment.
 //
 // Like Mesh.Submit it reads the network, so it exists only on a mesh that has
 // one — and like Submit it DEREFERENCES rather than checking: a mesh with no

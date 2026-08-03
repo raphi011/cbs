@@ -95,15 +95,13 @@
 //
 //   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
 //     pacs.004 and pacs.009 are implemented — translate.go now renders and
-//     reads all five. ReadReturn is the newest of the five readers and still
-//     has no caller: mesh/centralbank.go reads an arriving return's fields
-//     itself and calls ReturnPayment with them. What it produces —
-//     ReturnInstruction — does have one now, because Task 16d gave the
-//     settlement agent an act that takes it and reads no payment row
-//     (SettleReturnTx). Wiring the reader to it is Task 16e's, and that is
-//     the task that makes the pair mean what it exists to mean: a settlement
-//     agent resolving accounts from OrgnlTxRef instead of from a payment row
-//     it may no longer hold. Package mesh is what carries messages between the
+//     reads all five. ReadReturn is the newest of the five readers and is now
+//     wired: mesh/centralbank.go turns an arriving pacs.004 into a
+//     ReturnInstruction and hands it to SettleReturnTx, which reads no payment
+//     row at all, and mesh/bank.go reads the relayed copy the same way to post
+//     its own customer leg. That pair is what it exists to mean — a settlement
+//     agent resolving accounts from OrgnlTxRef instead of from a payment row it
+//     may no longer hold. Package mesh is what carries messages between the
 //     institutions as marshalled bytes, so they are parsed on arrival rather
 //     than passed as structs. What is absent is
 //     pain.001/pain.008 customer initiation (an instruction arrives over this
@@ -158,12 +156,13 @@
 //     interval between the central bank's commit and a member's is the
 //     unreconciled position, and it is modelled rather than hidden — see
 //     SettleCycle.
-//     A RETURN's window still spans the members, and that is the one exception:
-//     ReturnPaymentTx composes every institution's act inside one Store.Update
-//     so that the branch stays buildable, and its own doc records that it is
-//     transitional and that Task 16e ends it. The acts it composes —
-//     SettleReturnTx, PostReturnLegTx — are already each one institution's, and
-//     SettleReturnTx reads no payment at all.
+//     A RETURN's window used to span the members too, and that exception is
+//     gone: ReturnPaymentTx composed every institution's act inside one
+//     Store.Update, and Task 16e deleted it once mesh could carry the
+//     conversation instead. What is left is SettleReturnTx — the reserve
+//     reversal, in the central bank's own book, reading no payment at all — with
+//     each customer leg its own bank's act (PostReturnLegTx) and each reserve
+//     mirror booked from a camt.053, exactly as at a cut-off.
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried

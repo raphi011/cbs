@@ -60,7 +60,7 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 // Cleared, the payer debited into their own bank's clearing suspense and the
 // payee unpaid — and no transition out of that for ANY object: CloseCycleTx
 // wants an open cycle, RejectAtCSMTx an Initiated or Accepted payment,
-// ReturnPaymentTx a settled one. SettleCycle's only non-seed caller is the
+// PostReturnLegTx a settled one. SettleCycle's only non-seed caller is the
 // pacs.009 handler, and the only sender of a pacs.009 was a cut-off, which
 // needs an open cycle. Terminal, with every payer's money stranded.
 //

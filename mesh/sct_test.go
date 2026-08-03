@@ -152,22 +152,33 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 
 // A message type an actor has no handler for is a dead letter and not a shrug.
 //
-// pacs.004 is a return, and after Task 13 a bank still has no arm for one — it
-// SENDS returns and is never sent one. The settlement agent executes a return,
-// including the refund into the payer's bank's own book, because
-// payment.ReturnPayment is still one unit of work over every institution the
-// return touches and the reserve reversal among its postings moves central-bank
-// money. It is a TRANSITIONAL composition of acts each bank could make for
-// itself and says so in its own doc. In a real network the debtor's bank would
-// receive this message and post its own leg; here there is nothing for it to do
-// with one, and swallowing it would make a half this system does not have look
-// like one it does. Task 16e is where that arm arrives and this test changes.
+// It used to be a pacs.004 sent to a bank, because a bank SENT returns and was
+// never sent one: the settlement agent made every posting a return needed,
+// including the refund into the payer's bank's own book. Task 16e gave that bank
+// the arm — the pacs.004 travels to it after finality and it posts its own leg —
+// so the message that was the example is now the one flow this test cannot use.
+//
+// A pacs.009 takes its place, and it is the same kind of thing rather than a
+// substitute chosen for convenience. A settlement instruction is addressed to
+// the SETTLEMENT AGENT and to nobody else: it names net positions between
+// members and the central bank, and a member bank has nothing it could do with
+// one. So one arriving at a bank is a bug in whoever sent it, and swallowing it
+// would make a half this system does not have look like one it does.
+//
+// Every message definition this system's actors emit now has an arm at a member
+// bank except this one, which is why it is the last example available. A future
+// task that gives banks a pacs.009 arm has to find another — or conclude that
+// this assertion has run out of subject and say so.
 func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	h := newMeshHarness(t)
-	env, err := h.net.ReturnMessage(h.submitCreditTransfer(t), iso20022.ReturnReasonNotSpecifiedAgentGenerated, "no reason",
-		payment.MessageContext{From: h.cfg.ClearingHouseBIC, To: h.debtorBIC, MsgID: "rtn-1", Now: testTime})
+	env, err := payment.SettlementMessage(
+		[]payment.SettlementLeg{{
+			From: h.debtorBIC, To: h.cfg.CentralBankBIC,
+			Amount: harnessAmount, Asset: "EUR", Reference: "cyc_never",
+		}},
+		payment.MessageContext{From: h.cfg.ClearingHouseBIC, To: h.debtorBIC, MsgID: "stl-1", Now: testTime})
 	if err != nil {
-		t.Fatalf("ReturnMessage: %v", err)
+		t.Fatalf("SettlementMessage: %v", err)
 	}
 	if err := h.mesh.send(h.cfg.ClearingHouseBIC, h.debtorBIC, env); err != nil {
 		t.Fatalf("send: %v", err)
@@ -177,7 +188,7 @@ func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	if err == nil {
 		t.Fatal("Drain was clean; the bank swallowed a message it has no handler for")
 	}
-	if !strings.Contains(err.Error(), "pacs.004") {
+	if !strings.Contains(err.Error(), "pacs.009") {
 		t.Errorf("dead letter %q does not name the message the bank could not handle", err)
 	}
 }

@@ -1305,7 +1305,7 @@ func (s *Network) PostCreditorLeg(ctx context.Context, by ParticipantID, id Paym
 //
 // It has to be, and the first version of this was not: a return of a diverted
 // payment debited the payee's closed account to minus the amount and left the
-// unclaimed liability standing, because ReturnPaymentTx had nothing to read.
+// unclaimed liability standing, because the return had nothing to read.
 // CreditorLegAccount is written HERE, in both arms, because the account the
 // credit went to is a fact about a moment that no later reading recovers. See
 // Payment.CreditorLegAccount for why re-deriving it is unsafe, and
@@ -2433,11 +2433,12 @@ func (s *Network) PostReturnLeg(ctx context.Context, by ParticipantID, id Paymen
 //
 // # The refund closes a gap that was a ruling for two tasks
 //
-// ReturnPaymentTx's doc recorded at length that a refund into a payer's closed
-// account stranded for ever, and that refusing would only trade one stranding
-// for another. It could not be fixed while a return was one unit of work over
-// three institutions. It is fixed here the same way PostCreditorLegTx fixed the
-// settlement-side twin: divert to this bank's unclaimed balances.
+// ReturnPaymentTx's doc — deleted with the function at Task 16e — recorded at
+// length that a refund into a payer's closed account stranded for ever, and that
+// refusing would only trade one stranding for another. It could not be fixed
+// while a return was one unit of work over three institutions. It is fixed here
+// the same way PostCreditorLegTx fixed the settlement-side twin: divert to this
+// bank's unclaimed balances.
 //
 // The diversion happens on deposit.ErrAccountClosed and on NOTHING else, and
 // the check runs BEFORE the payer's GL account is resolved so that a store
@@ -2673,10 +2674,11 @@ func (s *Network) ReverseReturnLeg(ctx context.Context, by ParticipantID, id Pay
 // individually balanced.
 //
 // So it refuses anything that is not still Settled. The caller this guard exists
-// for is Task 16e's RJCT handler, which acts on a MESSAGE: a status arriving
-// late, or twice, is exactly the shape that would otherwise unwind half of a
-// return that finished, and a handler cannot be relied on to have checked a
-// status it was not sent. ErrInvalidStateTransition rather than a new sentinel —
+// for is mesh's bank.receiveReturnStatus, which acts on a MESSAGE: a status
+// arriving late, or twice, is exactly the shape that would otherwise unwind half
+// of a return that finished, and a handler cannot be relied on to have checked a
+// status it was not sent. There it surfaces as a dead letter, which is the
+// truthful outcome for an RJCT about a return this network completed. ErrInvalidStateTransition rather than a new sentinel —
 // it is this package's word for an operation a payment's status does not permit,
 // and reasonTable already classifies it as a defect here rather than a judgement
 // to answer a counterparty with.
@@ -2716,131 +2718,6 @@ func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, by ParticipantI
 	}
 	_, err = bank.Ledger.ReverseTransactionTx(ctx, tx, leg, "Rejected return of payment "+string(p.ID)+": "+reason)
 	return err
-}
-
-// ReturnPayment returns a settled payment (a SEPA R-transaction), playing every
-// institution the return passes through in one unit of work.
-//
-// It is TRANSITIONAL. See ReturnPaymentTx.
-func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string) (Payment, error) {
-	var out Payment
-	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = s.ReturnPaymentTx(ctx, tx, id, reason)
-		return err
-	})
-	return out, err
-}
-
-// ReturnPaymentTx is the whole return — every institution's act — in one unit of
-// work, and it is TRANSITIONAL. Task 16e deletes it.
-//
-// # What it is now
-//
-// It used to BE the return: three compensating postings written out here, two of
-// them in member banks' books and made by the settlement agent. It is now a
-// composition of the three acts that replace it, in the order the messages
-// travel:
-//
-//  1. the returning bank posts its own leg — the clawback on a push, the refund
-//     on a pull — and may refuse there (PostReturnLegTx, ReturnerOf);
-//  2. the settlement agent reverses the reserves and states both accounts
-//     (SettleReturnTx);
-//  3. each member books its reserve mirror from the statement it was sent
-//     (PostSettlementAdviceTx);
-//  4. the other bank posts the leg it was sent, which is what sets Returned.
-//
-// The net effect on every account is what the three hand-written postings
-// produced, which is why every return test in this repository still passes
-// unchanged. That is the point of keeping it: those tests are the check that the
-// three acts compose to what the atomic version did.
-//
-// # Why it still exists, and why that is a problem
-//
-// It builds the ReturnInstruction for step 2 out of the PAYMENT ROW — which is
-// exactly the crossing this task exists to remove. A settlement agent under
-// sub-project 8 holds no payment rows; SettleReturnTx is written so that it
-// never reads one, and this function hands it what a pacs.004 would have carried
-// by looking it up instead. Steps 3 and 4 are worse: they are postings in member
-// banks' books, made from here.
-//
-// It is kept for exactly one task's width, because deleting it here would leave
-// the branch un-buildable between two tasks — mesh's centralBank.receiveReturn
-// calls it, and nothing could be verified or reviewed until 16e landed. Task 16e
-// replaces that handler with the conversation, moves the four steps above onto
-// the actors that own them, and deletes this.
-//
-// Its existence is also why mesh's TestWhichBooksAReturnReaches still measures
-// one actor reaching all four books. That test is not stale: it is an accurate
-// measurement of this function, and it moves when this function goes.
-//
-// # Two rulings this reverses
-//
-// The doc this replaces recorded a gap at length and ruled it unfixable: a
-// refund credited into a payer's CLOSED account stranded for ever, and refusing
-// the return would only have traded that stranding for another one, since the
-// disputed money would then stay with the payee permanently. That ruling no
-// longer holds, and it was the unit of work rather than the missing account that
-// held it up — PostReturnLegTx diverts the refund to the payer's bank's
-// unclaimed balances, because that bank now has an act of its own to decide in.
-// TestARefundIntoAClosedPayersAccountGoesToUnclaimedBalances is the measurement.
-//
-// The same doc said the creditor's bank debits the payee's holding account "with
-// no check in either direction". It does check now, and what the check does
-// depends on which bank is the returner rather than on which account is short:
-// a push refuses before it sends, a pull forces after finality. See
-// PostReturnLegTx, which states the rule, and the design note "The return".
-func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
-	p, err := tx.GetPayment(ctx, id)
-	if err != nil {
-		return Payment{}, err
-	}
-	scheme, ok := s.scheme(p.Scheme)
-	if !ok || !scheme.AllowsReturn() {
-		return Payment{}, ErrSchemeUnsupportedReturn
-	}
-	// Which bank goes first, and it is the only thing about this composition
-	// that is not a straight sequence: the returning bank is the one holding a
-	// payment it cannot keep, and it is the only one that may still say no.
-	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
-	other := p.Debtor.Participant
-	if other == returner {
-		other = p.Creditor.Participant
-	}
-	if _, err := s.PostReturnLegTx(ctx, tx, returner, id, reason); err != nil {
-		return Payment{}, err
-	}
-
-	// The crossing. Both agents come off the payment row here; in the mesh they
-	// come off the pacs.004's OrgnlTxRef, which ReturnMessage fills from these
-	// same two fields and ReadReturn reads back — so the value is identical and
-	// the way it was obtained is the whole difference.
-	statements, err := s.SettleReturnTx(ctx, tx, ReturnInstruction{
-		PaymentID:     p.ID,
-		EndToEndID:    p.EndToEndID,
-		DebtorAgent:   p.DebtorDetails.Agent,
-		CreditorAgent: p.CreditorDetails.Agent,
-		Amount:        p.Amount,
-		Asset:         scheme.Asset(),
-		Reason:        reason,
-	})
-	if err != nil {
-		return Payment{}, err
-	}
-	for _, st := range statements {
-		if _, err := s.PostSettlementAdviceTx(ctx, tx, st.Member, AdvisedMovement{
-			Account:        st.Account,
-			Asset:          st.Asset,
-			Movement:       st.Movement,
-			ClosingBalance: st.ClosingBalance,
-			Reference:      st.Reference,
-			ValueDate:      st.ValueDate,
-		}); err != nil {
-			return Payment{}, err
-		}
-	}
-
-	return s.PostReturnLegTx(ctx, tx, other, id, reason)
 }
 
 // ---------------------------------------------------------------------------

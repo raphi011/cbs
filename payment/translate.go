@@ -1023,7 +1023,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 		OrgnlEndToEndId: p.EndToEndID,
 		OrgnlTxId:       string(p.ID),
 		// The two amounts are equal because this system's returns are whole —
-		// ReturnPayment takes no amount. They are two elements because the
+		// nothing in the domain takes a partial amount. They are two elements because the
 		// standard is shaped for partial returns; see iso20022.ReturnTransaction.
 		OrgnlIntrBkSttlmAmt: amt,
 		RtrdIntrBkSttlmAmt:  amt,
@@ -1652,6 +1652,14 @@ func ReturnReason(info *iso20022.ReturnReasonInformation) string {
 // here may assume every return in a bulk shares one asset just because this
 // system's returns happen to be EUR-only today.
 //
+// A transaction that names no PAYMENT is refused first, and that one is about
+// money rather than about resolution. OrgnlTxId is optional in the schema —
+// iso20022.ReturnTransaction.validate accepts a transaction referring back by
+// OrgnlEndToEndId alone — and SettleReturnTx derives the idempotency key of the
+// reserve reversal from it, so an empty one would move reserves under
+// ":return-settle" and make every later nameless return look like a redelivery
+// of the first. This is the last point at which nothing has happened yet.
+//
 // A transaction whose OrgnlTxRef is absent, names only one agent, or names an
 // agent with no BICFI, is refused rather than half-read.
 // iso20022.ReturnTransaction.validate makes OrgnlTxRef optional — a hard
@@ -1672,6 +1680,11 @@ func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
 	}
 	ins := make([]ReturnInstruction, 0, len(body.TxInf))
 	for i, tx := range body.TxInf {
+		if tx.OrgnlTxId == "" {
+			return nil, fmt.Errorf(
+				"payment: TxInf[%d]: OrgnlTxId is absent; this return names no payment and its reserve reversal would be keyed by nothing",
+				i)
+		}
 		ref := tx.OrgnlTxRef
 		if ref == nil || ref.DbtrAgt == nil || ref.CdtrAgt == nil ||
 			ref.DbtrAgt.FinInstnId.BICFI == "" || ref.CdtrAgt.FinInstnId.BICFI == "" {

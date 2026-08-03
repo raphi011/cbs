@@ -52,33 +52,46 @@ import (
 // answering. payment.SubmitPaymentTx and payment.AcceptInboundTx are the two
 // halves that say so.
 //
-// # A fourth role, played after the payment is final
+// # A fourth and fifth role, played after the payment is final
 //
 // A RETURN is asked for by the bank that received the original instruction —
 // the payee's bank on a push, the payer's bank on a pull — and that is the one
 // role in this type which is neither submitting nor answering. It comes in from
 // outside the mesh, like a submission, but about a payment that has already
-// settled, and its half moves nothing at all: every posting a return makes is
-// the settlement agent's here, because the reserve reversal among them is
-// central-bank money and no member bank may move it. So this bank builds a
-// pacs.004, sends it to the clearing house, and waits (returnPayment,
-// receiveReturnStatus).
+// settled. Its half MOVES MONEY: this bank posts its own customer leg — the
+// clawback if it is the creditor's bank, the refund if it is the payer's —
+// BEFORE it composes the pacs.004, and that ordering is the whole of why a
+// refusal binds. See returnPayment and payment.PostReturnLegTx.
 //
-// The domain no longer requires that this bank post nothing —
-// payment.PostReturnLegTx is a bank's own leg in its own book, and
-// payment.ReverseReturnLegTx undoes it on an RJCT — and this handler does not
-// call either yet. See payment.ReturnPaymentTx, which records that it is
-// transitional and that Task 16e is where these two roles get their postings.
+// This paragraph used to say the opposite: that a returning bank's half moved
+// nothing at all, because every posting a return made was the settlement
+// agent's. Half of that is still exactly right — the reserve reversal is
+// central-bank money and no member bank may move it — and the half that was
+// wrong is that a return's CUSTOMER legs were ever the settlement agent's to
+// make. Each belongs to the bank whose customer it moves, and Task 16e gave
+// each bank its own.
 //
-// # A fifth role, and the only one that answers nothing
+// The OTHER bank plays the fifth role and it is the counterpart of the fourth:
+// it is sent the pacs.004 after finality (receiveReturn) and posts the leg the
+// returning bank does not hold. It cannot refuse, because there is nothing left
+// to refuse — the reserves have already moved. So the two roles are one rule: a
+// bank can refuse a leg only if it posts it before it sends.
 //
-// At a cut-off a member is TOLD what its reserve account did, in a camt.053 from
-// the settlement agent, and books its own mirror leg from it
-// (receiveStatement). It is the one inbound message in this type that produces
-// no pacs.002, because a statement is not an instruction: the settlement has
-// already happened and there is nothing to accept or refuse. It is also the only
-// role in which this bank posts without any customer of its own being involved —
-// what moves is its own position at the central bank.
+// A REFUSED return brings the fourth role back for one more act. This bank has
+// already posted, so an RJCT is not news with nothing behind it: the leg is
+// unwound (receiveReturnStatus, payment.ReverseReturnLegTx).
+//
+// # A sixth role, and the second that answers nothing
+//
+// At a cut-off — and on a return, which is a cut-off of one payment as far as
+// the reserves are concerned — a member is TOLD what its reserve account did, in
+// a camt.053 from the settlement agent, and books its own mirror leg from it
+// (receiveStatement). It produces no pacs.002, because a statement is not an
+// instruction: the settlement has already happened and there is nothing to
+// accept or refuse. It used to be the ONE inbound message here with that
+// property; receiveReturn is the second, for a related reason — see its own
+// doc. It is still the only role in which this bank posts without any customer
+// of its own being involved: what moves is its own position at the central bank.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -109,21 +122,23 @@ type bank struct {
 // whole reason this takes the sender as an argument rather than reading it out
 // of the header: the header is exactly what is unreadable.
 //
-// A message type this bank has no handler for is an ERROR and not a shrug, and
-// after Task 13 the pacs.004 is the one that stays that way. A bank in this
-// system SENDS a return and is never sent one: the message goes to the
-// settlement agent, which makes every one of a return's postings in one unit of
-// work — including the refund into the payer's bank's own book. That is
-// payment.ReturnPayment being a TRANSITIONAL composition of acts each bank could
-// make for itself, and its own doc says so.
+// A message type this bank has no handler for is an ERROR and not a shrug. The
+// pacs.004 used to be one of them: a bank in this system SENT a return and was
+// never sent one, because the settlement agent made every one of a return's
+// postings in one unit of work, including the refund into the payer's bank's own
+// book.
 //
-// In a real network the debtor's bank receives the pacs.004 and credits its
-// customer itself, and this handler would have an arm for it —
-// payment.PostReturnLegTx is exactly that leg, and Task 16e is where this
-// handler grows the arm that calls it. Until then it does not, so one arriving
-// is a bug in whoever sent it, and swallowing it would make a half this system
-// does not have look like one it does. See the return flow in the package
-// doc.
+// It has an arm now, and that arm is the substance of Task 16e rather than a
+// completeness exercise. In a real network the pacs.004 travels to the bank that
+// did not ask for the return, and that bank moves its own customer's money
+// itself; here it does too. Which of the two banks is sent one follows from the
+// direction — the payer's bank on a push, the payee's bank on a pull — and
+// neither this handler nor the clearing house decides it: the domain refuses a
+// bank that is not that leg's owner (payment.ErrNotAPartyToThisReturn). See
+// receiveReturn, and the return flow in the package doc.
+//
+// Every message definition this system emits now has an arm here, so the
+// default is reached only by a message no actor in this mesh sends.
 func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -134,6 +149,8 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveCreditTransfer(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs003:
 		return b.receiveDirectDebit(ctx, from, env.AppHdr, doc)
+	case *iso20022.Pacs004:
+		return b.receiveReturn(ctx, from, doc)
 	case *iso20022.Pacs002:
 		return b.receiveStatus(ctx, doc)
 	case *iso20022.Camt053:
@@ -186,34 +203,67 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // returnPayment is a bank sending a settled payment back: the R-transaction's
 // first hop.
 //
-// It is submit's counterpart for a payment that is already final, and the
-// difference between them is the whole of what a return is. A submission runs
-// this bank's own half and MOVES MONEY on a push; this one posts nothing at
-// all, in either direction. What a return posts — the payee clawed back, the
-// reserves reversed between the two banks, each bank's reserve mirror moved with
-// them, the payer refunded — is one unit of work at the SETTLEMENT AGENT,
-// because the reserve reversal among them moves central-bank money and no member
-// bank may do that. What this bank does is state the reason, and the message is
-// the whole of its half.
+// It is submit's counterpart for a payment that is already final, and the two
+// now have the same shape: this bank's own half posts, and then the message
+// hands the rest of the work to another institution.
 //
-// Stated as the acts rather than as a count, because the count has already gone
-// stale once: it was three while payment.ReturnPaymentTx wrote the postings out
-// by hand, and it is five now that the same function composes the split acts.
-// Task 16e moves most of them off this institution entirely.
+// # It posts BEFORE it sends, and that is the return's one rule
+//
+// The paragraph this replaces said the opposite — "this one posts nothing at
+// all, in either direction" — and gave a reason that was half right: the
+// reserve reversal moves central-bank money and no member bank may make it. It
+// does not follow, and it used to be treated as though it did, that a return's
+// CUSTOMER legs are the settlement agent's. This bank posts the leg it owns:
+// the clawback if it is the creditor's bank, the refund if it is the payer's.
+// payment.PostReturnLegTx decides which, from the payment rather than from
+// anything this handler passes it.
+//
+// The ordering is what makes a refusal BIND. On a push this bank is the payee's
+// bank and holds the clawback, so a payee who has already spent the money stops
+// the return dead: nothing is posted, no pacs.004 is composed, and the caller is
+// told — deposit.ErrInsufficientAvailable, which ReasonFor maps to AM04, about
+// this bank's OWN customer. A check that was not a posting could be outrun by
+// that customer between the check and the send, and after finality there is
+// nothing left to refuse. On a pull this bank is the payer's and holds the
+// refund, which is unconditional, so there is nothing here to refuse and the
+// forced leg is the other bank's. See payment.PostReturnLegTx, which states the
+// rule, and TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent.
+//
+// # The message is built first, and the seam is between the posting and the send
+//
+// Building it can fail — an amount whose asset has no scale, a payment carrying
+// no agent to name — and a build that failed AFTER the leg was posted would
+// leave this bank's customer moved for a return that never left the building.
+// So the message is composed first, when nothing has happened yet, and the
+// reason the leg is described by is read back off it: both banks then derive
+// that description from the same bytes rather than from two renderings of one
+// intent.
+//
+// What remains is a posting that COMMITTED and a send that failed, which leaves
+// this bank's money in its clearing suspense against a return nobody will
+// answer. That is the seam submit documents, and it is returned as an error
+// rather than swallowed, naming both halves so the operator can see which one
+// happened. It does NOT come back with the payment beside it, as submit's does:
+// nothing above this reads one — Mesh.Return answers with an error alone and
+// api's handler with 202 — and a value nothing reads is the defect this
+// repository keeps finding. The half-happened state is visible where it
+// actually is, on the payment row, which carries this bank's leg id with the
+// status still Settled.
 //
 // # The guard, and why it is here rather than on the wire
 //
 // A payment that is not Settled cannot be returned — PostReturnLegTx says so,
-// with ErrInvalidStateTransition, and ReturnPaymentTx reaches it on its first
-// leg — and this bank refuses it BEFORE the message exists. That is not
-// defensiveness about a check the settlement agent makes
-// anyway; it is the only way the caller is ever told. That sentinel is
-// classified in payment's reasonTable with the empty code because it describes
-// a defect in this system rather than a judgement about anyone's instruction,
-// so an actor that got one must dead-letter it — which means a return sent for
-// an unsettled payment would be answered by NOBODY, and the operator who asked
-// for it would hear nothing at all. Refusals that CAN be answered are left to
-// travel; see centralBank.receiveReturn for the ones that do.
+// with ErrInvalidStateTransition — and this bank refuses it BEFORE the message
+// exists. The guard is repeated here anyway, and not out of defensiveness: it
+// is the only place the caller is told WHAT the payment is instead of merely
+// that the transition was illegal, and the status is the whole of what an
+// operator needs to know. That sentinel is classified in payment's reasonTable
+// with the empty code because it describes a defect in this system rather than
+// a judgement about anyone's instruction, so an actor that got one must
+// dead-letter it — which means a return sent for an unsettled payment would be
+// answered by NOBODY, and the operator who asked for it would hear nothing at
+// all. Refusals that CAN be answered are left to travel; see
+// centralBank.receiveReturn for the ones that do.
 //
 // The payment is read here rather than taken from Mesh.Return, which already
 // holds one. The read is what makes the judgement this bank's own: the router
@@ -244,7 +294,40 @@ func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 	if err != nil {
 		return fmt.Errorf("mesh: %s could not build the return of %s: %w", b.bic, p.ID, err)
 	}
-	return b.m.send(b.bic, to, env)
+
+	// This bank's own leg, described by what the message says. The refusal on a
+	// push happens here and costs nothing: the pacs.004 is built and dropped.
+	if _, err := b.ops.PostReturnLeg(ctx, b.pid, p.ID, returnReasonOf(env)); err != nil {
+		return fmt.Errorf("mesh: %s cannot fund its own leg of the return of %s: %w", b.bic, p.ID, err)
+	}
+	if err := b.m.send(b.bic, to, env); err != nil {
+		return fmt.Errorf("mesh: %s posted its leg of the return of %s and could not send it: %w", b.bic, p.ID, err)
+	}
+	return nil
+}
+
+// returnReasonOf is what a return is described as in a bank's own ledger, read
+// off the message that bank is about to send.
+//
+// Off the MESSAGE and not off the code and text the caller gave, so that the
+// returning bank's leg and the other bank's carry the same words: the other
+// bank has nothing but the pacs.004 to read, and two renderings of one intent
+// are two things that can drift. payment.ReturnReason is the single reading,
+// and receiveReturn reaches it through payment.ReadReturn.
+//
+// The type assertion cannot fail: ReturnMessage builds a pacs.004 and this is
+// called on what it returned. It is written as a comma-ok rather than a bare
+// assertion because the alternative is a panic, and the fallback is not a guess:
+// "returned" is the word payment.ReturnReason itself uses when a return carries
+// no reason at all, so the two banks would still describe the leg identically.
+// A leg described vaguely is a worse statement; a panicking process is a worse
+// bank.
+func returnReasonOf(env iso20022.Envelope) string {
+	doc, ok := env.Document.(*iso20022.Pacs004)
+	if !ok || len(doc.PmtRtr.TxInf) == 0 {
+		return "returned"
+	}
+	return payment.ReturnReason(doc.PmtRtr.TxInf[0].RtrRsnInf)
 }
 
 // receiveCreditTransfer is the PAYEE's bank answering a credit transfer.
@@ -472,7 +555,7 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 // for what happens instead.
 func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	if isAbout(doc, returnMsgDef) {
-		return b.receiveReturnStatus(doc)
+		return b.receiveReturnStatus(ctx, doc)
 	}
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
@@ -547,45 +630,123 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	return nil
 }
 
+// receiveReturn is the OTHER bank's leg of a return: the one the bank that
+// asked does not hold, posted from the pacs.004 the clearing house relayed.
+//
+// # It answers nothing, and the reason is receiveStatement's
+//
+// Like a statement, this is not an instruction. By the time it arrives the
+// reserves have already moved and the return is final — that is exactly why the
+// clearing house held it back until it had an ACSC, see csm.relayReturn — so a
+// bank answering "no" would be refusing something that has happened. There is no
+// pacs.002 in this arm and its absence is the message definition rather than an
+// omission. Said explicitly, because "no answer" and "an answer nobody wrote
+// yet" look the same from outside.
+//
+// What a failure produces instead is an ERROR, which this transport turns into a
+// dead letter. That is the whole of the price of not answering, and it is a real
+// one: the return is settled at the central bank and this bank's customer leg
+// is missing, which leaves the payment Settled for ever with one leg standing in
+// the other bank's book. Nothing in this flow can put that back — the reserves
+// are final — so it is a case for Task 19's reconciliation and not for a
+// message. See centralBank.advise, which records the same shape one hop up.
+//
+// # Which leg, and whose business it is
+//
+// Neither this handler nor the clearing house decides. payment.PostReturnLegTx
+// takes the acting participant and works out from the PAYMENT which of the two
+// legs that bank owns — the clawback at the creditor's bank, the refund at the
+// payer's — and refuses a bank that is neither with
+// payment.ErrNotAPartyToThisReturn. This bank passes its own id (see bank.pid),
+// so a misrouted pacs.004 becomes a dead letter rather than a posting in
+// somebody else's return.
+//
+// It cannot refuse the leg on its merits, and that is the other half of the
+// return's one rule: the returning bank posted before it sent and could say no;
+// this bank is posting after finality and cannot. On a pull that is the
+// creditor's bank forcing a clawback against a biller who may be gone, with the
+// shortfall landing in its own Returns Receivable.
+//
+// # It reads the message the same way the settlement agent does
+//
+// payment.ReadReturn, which is also what centralBank.receiveReturn calls. This
+// bank HAS the payment row today and could read the reason off it instead, but
+// the row is the shared store showing through and the message is what will be
+// left when it is gone.
+//
+// The loop is over what the reader returns, and that is written for what the
+// reader can PRODUCE rather than for what this flow sends. ReadReturn holds a
+// sender to its own count and refuses a transaction it cannot resolve, but it
+// does not refuse a bulk message — a pacs.004 is shaped for several returns per
+// file. This system's does not send one, and one could not reach here anyway:
+// the settlement agent refuses a bulk return WHOLE before any ACSC exists, and
+// the clearing house relays nothing until it has one.
+func (b *bank) receiveReturn(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs004) error {
+	ins, err := payment.ReadReturn(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the return %s sent it: %w", b.bic, from, err)
+	}
+	for _, in := range ins {
+		if _, err := b.ops.PostReturnLeg(ctx, b.pid, in.PaymentID, in.Reason); err != nil {
+			return fmt.Errorf("mesh: %s could not post its leg of the return of %s: %w", b.bic, in.PaymentID, err)
+		}
+	}
+	return nil
+}
+
 // receiveReturnStatus is the bank that asked for a return learning what the
 // settlement agent did with it.
 //
-// Neither outcome gives this bank anything to post, and the reason is the same
-// one that sent the pacs.004 to the settlement agent in the first place. A
-// return that WENT THROUGH was made entirely at the SETTLEMENT AGENT, in one
-// unit of work — this bank's own customer leg, the reserve reversal, both
-// banks' reserve mirrors, and the other bank's customer leg. Postings landed in
-// this bank's book and this bank did not make them, so there is no second write
-// left for the bank that asked. What the message buys is that it KNOWS, which
-// before the mesh it could learn only from the return value of the call that
-// did the returning.
+// # An ACSC needs nothing from this bank, and a REFUSAL does
 //
-// A REFUSED return is logged and nothing else, for csm.receiveSettlementStatus's
-// reason: nothing was posted anywhere, so the payment is exactly where it was —
-// Settled, the payee still holding the money — and there is no state here to put
-// back. The code is logged because the code is the one thing that arrives on the
-// wire and is nowhere in the store; the payment's own row is where the failure
-// shows, by still saying Settled.
+// That is the reverse of what this doc used to say, and the reversal is the
+// whole of Task 16e in one handler. It used to read: neither outcome gives this
+// bank anything to post, because a return that went through was made entirely at
+// the settlement agent — this bank's own customer leg among them — and a refused
+// return had posted nothing anywhere, so the payment was exactly where it was.
 //
-// It is emphatically NOT a dead letter. A dead letter is for what nobody could
-// be told, and this bank was told: it asked, and it has its answer.
+// Both halves have flipped. This bank posts its own leg BEFORE it sends the
+// pacs.004 (returnPayment, payment.PostReturnLegTx), so:
 //
-// # Both paragraphs above expire at Task 16e, and it is worth saying which way
+//   - an ACSC finds the leg already posted and needs nothing further. The other
+//     bank's leg is the other bank's, made from the pacs.004 the clearing house
+//     relays on this same answer. What the message buys is that this bank KNOWS.
+//   - an RJCT finds this bank holding a posting against a return that will not
+//     happen — its customer's money moved for nothing — and unwinding it is the
+//     work. payment.ReverseReturnLegTx is equal and opposite, through a ledger
+//     reversal, so the original stays in the book marked Reversed.
 //
-// They describe payment.ReturnPayment, which is a TRANSITIONAL composition of
-// the acts a split return is made of and says so in its own doc. Once this bank
-// posts its own leg BEFORE it sends (payment.PostReturnLegTx), an RJCT arriving
-// here stops being news with nothing behind it: this bank will be holding a
-// posting against a return that will not happen, and unwinding it is
-// payment.ReverseReturnLegTx, which exists and which nothing calls yet. So the
-// "nothing was posted anywhere" above is true today and will be false then, and
-// this handler is where that shows.
-func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
+// # The unwind refuses a return that COMPLETED, and that guard is the point
+//
+// ReverseReturnLegTx takes only a payment that is still Settled. A status that
+// arrives late, or twice, would otherwise reverse one leg of a finished return
+// and leave the other standing — the payee made whole while the payer keeps the
+// refund, both postings individually balanced and nothing in the ledger to
+// notice. This handler acts on a message and cannot be relied on to have
+// checked; the domain is where that check belongs, and it answers
+// ErrInvalidStateTransition. Here that surfaces as a dead letter, which is the
+// truthful outcome: an RJCT about a return this network completed is a message
+// nobody can act on.
+//
+// The code is still logged, because the code is the one thing that arrives on
+// the wire and is nowhere in the store.
+//
+// It is emphatically NOT a dead letter in the ordinary case. A dead letter is
+// for what nobody could be told, and this bank was told: it asked, and it has
+// its answer.
+func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
-		if r.Status == iso20022.TransactionStatusRejected {
-			b.m.log.Error("mesh: return refused",
-				"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
+		if r.Status != iso20022.TransactionStatusRejected || r.TxID == "" {
+			// A status naming no transaction is skipped rather than refused, for
+			// receiveStatus's reason: it is the FF01 a counterparty sends when it
+			// could not parse a file, and there is no leg it could be about.
+			continue
+		}
+		b.m.log.Error("mesh: return refused",
+			"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
+		if err := b.ops.ReverseReturnLeg(ctx, b.pid, payment.PaymentID(r.TxID), rejectionText(r)); err != nil {
+			return fmt.Errorf("mesh: %s could not unwind its leg of the refused return of %s: %w", b.bic, r.TxID, err)
 		}
 	}
 	return nil

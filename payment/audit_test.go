@@ -279,7 +279,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 		payID = p.ID
 	})
 
-	_, err = sys.ReturnPayment(ctx, payID, "AC04")
+	_, err = returnWholePayment(ctx, sys, payID, "AC04")
 	assertNoError(t, err)
 
 	assertEqual(t, "trail for the returned payment", eventTypes(paymentAudit(t, sys, string(payID))),

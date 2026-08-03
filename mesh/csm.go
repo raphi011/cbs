@@ -36,14 +36,21 @@ import (
 // cannot, because it is the one that knows which payments are in the batch. See
 // closeCycle and receiveSettlementStatus.
 //
-// # And it carries returns, without being party to them
+// # And it carries returns, HOLDING one end of the conversation
 //
-// Task 13 gave it a fourth job, and it is the one where this actor does least.
-// A pacs.004 from a member bank is handed straight to the central bank, because
-// a return moves reserves; the answer comes back here and is passed to the bank
-// that asked. Nothing is cleared, nothing is netted, no cycle is touched — a
-// return in this system is final the moment the settlement agent posts it. See
-// relayReturn and receiveReturnStatus.
+// Task 13 gave it a fourth job and this note called it the one where this actor
+// does least: a pacs.004 handed straight to the central bank, the answer passed
+// back to the bank that asked, nothing cleared and nothing netted. The first
+// two clauses are still true and the "does least" is not. A return is a
+// conversation with THREE participants and two of them never address each
+// other, so the message that makes the second bank move its customer's money
+// has to be carried by the institution that has seen both ends. This actor
+// holds the pacs.004 until the settlement agent has said ACSC and only then
+// relays it onward. See relayReturn, which is where that state lives and where
+// its failure mode is recorded, and receiveReturnStatus, which releases it.
+//
+// It still clears nothing and nets nothing: a return in this system is final the
+// moment the settlement agent posts it, and no cycle is touched.
 //
 // It holds a csmOps: nothing about clearing moves money, and that is what makes
 // clearing and settlement different jobs. What that does NOT amount to is a
@@ -57,6 +64,38 @@ type csm struct {
 	m   *Mesh
 	ops csmOps
 	bic iso20022.BIC
+
+	// held is the returns this actor has relayed to the settlement agent and has
+	// not yet heard about, keyed by the payment each names.
+	//
+	// It is the only state any actor in this package keeps between messages, and
+	// it is deliberate rather than convenient: see relayReturn for why the
+	// message cannot be relayed onward before finality, and for what is lost if
+	// this map is.
+	//
+	// No lock. Only relayReturn and receiveReturnStatus touch it and both are
+	// reached only from handle, which runs on this actor's own goroutine and
+	// nobody else's — the property mesh.actor's doc states and the reason a
+	// handler may touch its actor's state without one. The three methods on this
+	// type that DO run on a caller's goroutine (closeCycle, settle, reject) are
+	// the ones that must never read it, and none does.
+	held map[payment.PaymentID]heldReturn
+}
+
+// heldReturn is one pacs.004 in flight: the document itself, and who sent it.
+//
+// The document rather than the bytes, because relaying is rebuilding the
+// envelope around an unchanged document — see relay — and re-parsing what this
+// actor has already parsed would be a second answer to what the message says.
+//
+// from is the RETURNING bank, and it is what the second hop is routed against:
+// the other bank is whichever of OrgnlTxRef's two agents this is not. Kept here
+// rather than re-derived, because it is a fact about the transport that this
+// actor observed, and re-deriving it would mean asking the store which bank
+// ought to have sent a message it can see the sender of.
+type heldReturn struct {
+	doc  *iso20022.Pacs004
+	from iso20022.BIC
 }
 
 // handle dispatches on the message that arrived. See bank.handle, which has the
@@ -144,32 +183,79 @@ func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *is
 	return c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI)
 }
 
-// relayReturn hands a return on to the SETTLEMENT AGENT.
+// relayReturn hands a return on to the SETTLEMENT AGENT, and keeps a copy for
+// the bank that has not heard about it yet.
 //
-// Not to a bank, and that is the whole routing decision of this flow. A return
-// moves central-bank reserves back — payment.SettleReturnTx reverses the
+// # The first hop, which is unchanged
+//
+// Not to a bank, and that is the whole routing decision of the way OUT. A
+// return moves central-bank reserves back — payment.SettleReturnTx reverses the
 // movement between the two banks' settlement accounts — and moving reserves is
-// the settlement agent's act, as it is at a cut-off. So
-// the destination is a fact about the MESSAGE DEFINITION rather than about
-// anything inside the message, which is why this hop reads no element to route
-// by and no store either. A pacs.008 or a pacs.003 names the agent it is for; a
-// pacs.004 names no parties at all (see payment.ReturnMessage), and it does not
-// need to.
+// the settlement agent's act, as it is at a cut-off. So the destination is a
+// fact about the MESSAGE DEFINITION rather than about anything inside the
+// message, and this hop reads no element to route by.
 //
 // It still goes THROUGH the clearing house rather than from the bank to the
 // central bank directly. A member bank in this mesh addresses the clearing
 // house and nothing else — that is the shape every other flow has, and the
 // routing table lives in one actor for the same reason RC01 can only be said
-// here. What the clearing house does with a return is carry it: it takes it
-// into no cycle, nets nothing, and posts nothing.
+// here.
 //
 // A bulk return is NOT refused here, unlike a bulk pacs.008 or pacs.003, and
 // the difference is what refuseBulk is actually about: several transactions in
 // an instruction mean several counterparty agents and therefore several
 // destinations, and this actor has one routing decision per message to make.
-// Every return in one message has the same destination, so routing has no
+// Every return in one message has the same first destination, so routing has no
 // objection to make. The settlement agent has one, and makes it — see
-// centralBank.receiveReturn.
+// centralBank.receiveReturn, which refuses anything but a single return whole.
+//
+// # The second hop, which is why this actor now keeps state
+//
+// This doc used to say a pacs.004 "names no parties at all" and that this hop
+// "reads no element to route by and no store either". Neither survives. A
+// pacs.004 carries OrgnlTxRef since Task 16b, so it names both agents; and the
+// message has a SECOND destination — the bank that did not ask for the return
+// and has to post the leg the returning bank does not hold. That hop is routed
+// by the agents in OrgnlTxRef: the other bank is whichever of the two this
+// actor did not receive the message from.
+//
+// It cannot be sent now. The returning bank may still be refused — the
+// settlement agent answers RJCT when the creditor's bank cannot cover the
+// reserve reversal, or when the message names nothing it can resolve — and a
+// bank that had already posted its customer leg against a refused return would
+// have moved a customer's money for nothing, with no message in the flow that
+// would ever tell it. So the message waits here until an ACSC arrives, and
+// csm.receiveReturnStatus is what releases it.
+//
+// # Where this state lives, and what is lost when it is lost
+//
+// In memory, in one map on this actor, and that is a decision rather than an
+// oversight. This process is the clearing house; the map is its record of the
+// conversations it is in the middle of, and it does not survive a restart.
+//
+// What a restart costs is exact and worth writing down rather than discovering:
+// a return relayed but not yet answered is gone, so when the ACSC arrives
+// — or if it arrived while nobody was listening — the second bank is never sent
+// the pacs.004 and never posts its leg. The reserves have moved and are final,
+// the returning bank's customer has been debited or credited, and the payment
+// stays Settled for ever with half a return standing in one book. That is the
+// same shape Task 15 carried into main for a cycle left Cleared after its
+// settlement, and it has the same remedy: none from inside this flow, and Task
+// 19's reconciliation to make it visible.
+//
+// The alternative was to relay immediately and have the other bank tolerate a
+// return that is later refused. It was rejected because there is no such
+// tolerating. That bank posts after finality and cannot refuse, so "tolerate"
+// means unwinding a leg it already posted — which needs a second message this
+// flow does not have (the settlement agent answers the bank that ASKED, and
+// only that one), and until it arrived the payer would be holding a refund the
+// network had refused. Holding trades a durability gap for a correctness one,
+// and the correctness one is on a customer's account.
+//
+// Making it durable is a row, and the row belongs to the clearing house's own
+// store — which sub-project 8 gives it and which does not exist yet. Writing
+// one into the shared payment store today would be this actor recording a fact
+// about a payment on a row it is not supposed to hold at all.
 func (c *csm) relayReturn(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs004) error {
 	body := doc.PmtRtr
 	orig := payment.OriginalMessage{
@@ -184,7 +270,66 @@ func (c *csm) relayReturn(from iso20022.BIC, env iso20022.Envelope, doc *iso2002
 		EndToEndId: first.OrgnlEndToEndId,
 		TxId:       first.OrgnlTxId,
 	}
+	// Held under the payment the answer will name, which is the only thing the
+	// two messages have in common. A return that names no payment is relayed and
+	// NOT held: the answer to it names none either, so nothing could ever match
+	// it and an entry under the empty key would sit here for ever. That message
+	// dies at the settlement agent's answer instead, which is where
+	// TestAReturnThatNamesNoPaymentCannotBeAnswered pins it.
+	if first.OrgnlTxId != "" {
+		c.held[payment.PaymentID(first.OrgnlTxId)] = heldReturn{doc: doc, from: from}
+	}
 	return c.relay(from, env, doc, orig, ref, c.m.cfg.CentralBankBIC)
+}
+
+// releaseReturn sends the held pacs.004 on to the bank that did not ask for the
+// return, now that the settlement agent has made it final.
+//
+// # It is routed by the message and not by the store
+//
+// The two agents are on OrgnlTxRef and the returning bank is the one this actor
+// took the message FROM, so the recipient is a subtraction rather than a lookup.
+// receiveReturnStatus does read the store to address the ANSWER — it has only a
+// payment id to go on there — but the message being relayed carries its own
+// parties, and relaying it by anything else would be this actor asserting
+// something the document already says.
+//
+// A payment between two accounts at ONE bank has both agents equal, so the
+// subtraction leaves that same bank and the message goes back to it. That is
+// correct and not a degenerate case: that bank holds both legs and
+// payment.PostReturnLegTx posts them one call at a time, so the second call is
+// exactly what this message is for.
+//
+// # A held return with no agents cannot be relayed
+//
+// It also cannot happen: payment.ReadReturn refuses a pacs.004 whose OrgnlTxRef
+// names no agents, and the settlement agent answers that RJCT, so an ACSC
+// implies the document is readable. The guard is here anyway because the cost
+// of being wrong is a nil dereference in an actor's goroutine, which takes the
+// mesh down; an error is a dead letter, which is a test failure.
+func (c *csm) releaseReturn(held heldReturn, id payment.PaymentID) error {
+	ref := held.doc.PmtRtr.TxInf[0].OrgnlTxRef
+	if ref == nil || ref.DbtrAgt == nil || ref.CdtrAgt == nil {
+		return fmt.Errorf("mesh: %s settled the return of %s and the message names no agents to relay it to", c.bic, id)
+	}
+	to := ref.DbtrAgt.FinInstnId.BICFI
+	if to == held.from {
+		to = ref.CdtrAgt.FinInstnId.BICFI
+	}
+	return c.m.send(c.bic, to, iso20022.Envelope{
+		AppHdr: iso20022.AppHdr{
+			Fr:        iso20022.NewAgent(c.bic),
+			To:        iso20022.NewAgent(to),
+			BizMsgIdr: c.m.nextMsgID(c.bic),
+			MsgDefIdr: returnMsgDef,
+			CreDt:     iso20022.ISODateTime{Time: c.m.now()},
+		},
+		// The document travels unchanged, for relay's reason: it is what the
+		// returning bank said and is not this actor's to rewrite. Its GrpHdr/MsgId
+		// therefore stays that bank's, which is what makes the two copies of this
+		// return one message rather than two.
+		Document: held.doc,
+	})
 }
 
 // refuseBulk is this system's one-payment-per-message limit, stated to the
@@ -208,11 +353,18 @@ func (c *csm) refuseBulk(from iso20022.BIC, orig payment.OriginalMessage, ref is
 // not route a message about a payment it does not hold. Which is every message,
 // in a real network.
 //
-// A RETURN is routed by neither element, because a pacs.004 carries no agent
-// and needs none: its destination is the settlement agent, which follows from
-// the message DEFINITION. Its caller passes that address in rather than reading
-// one out (see relayReturn), which keeps this function's property intact — the
-// store is untouched either way.
+// A RETURN's FIRST hop is routed by neither element, because its destination
+// follows from the message DEFINITION: the settlement agent, whoever the parties
+// are. Its caller passes that address in rather than reading one out (see
+// relayReturn), which keeps this function's property intact — the store is
+// untouched either way.
+//
+// Its SECOND hop does read an element, and it does not come through here. A
+// pacs.004 carries both agents in OrgnlTxRef since Task 16b, and the bank that
+// did not ask for the return is whichever of them the message did not arrive
+// from — a subtraction this function has no argument for, and one that happens
+// long after the first hop rather than in place of it. See releaseReturn, which
+// builds its own envelope for that reason and keeps the same no-store property.
 //
 // The DOCUMENT travels unchanged and only the header is replaced. That is what
 // relaying is: the header says who is handing this to whom and is this hop's,
@@ -567,7 +719,7 @@ func (c *csm) closeCycle(ctx context.Context, id payment.CycleID) (payment.Clear
 // batch of payments that are Cleared, every payer debited into their own bank's
 // clearing suspense and every payee unpaid. Every other route is shut by a
 // guard that is right: CloseCycleTx wants an open cycle, RejectAtCSMTx takes
-// only an Initiated or Accepted payment, ReturnPaymentTx wants a settled one.
+// only an Initiated or Accepted payment, PostReturnLegTx wants a settled one.
 // Until this method existed the operator's remedy — fund the short member and
 // ask again — had nothing to ask.
 //
@@ -859,27 +1011,56 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 	return nil
 }
 
-// receiveReturnStatus is the clearing house passing the settlement agent's
-// answer about a RETURN back to the bank that asked for one.
+// receiveReturnStatus is the clearing house acting on the settlement agent's
+// answer about a RETURN: it tells the bank that asked, and on a yes it releases
+// the message to the bank that did not.
 //
-// It is the mirror of tellSettled and much the smaller half, because a return
-// is answered per PAYMENT all the way down. A settlement answer is about a
-// cycle and has to be turned into per-payment news by the only actor that knows
-// what is in the batch; a return answer already names the one payment it is
-// about, so this actor's whole job is to address it.
+// It is the mirror of tellSettled and it has grown into the same shape. A
+// settlement answer is about a cycle and has to be turned into per-payment news
+// by the only actor that knows what is in the batch; a return answer already
+// names the one payment it is about, so this actor does not have to enumerate
+// anything — but it does have to reach two banks with two different things, for
+// the same reason tellSettled does: one is waiting for an answer and the other
+// has a LEG TO POST.
 //
-// Addressing it is the part that needs the store. The clearing house keeps no
-// record of who sent it which message — it relays and forgets, which is what
-// lets it route a message about a payment it does not hold — so "who asked for
-// this return" is recomputed from the payment the answer names, by the same
-// rule that chose the bank in the first place. See returnerOf.
+// Addressing the answer is the part that needs the store. The clearing house
+// keeps no record of who sent it which message — it relays and forgets, which is
+// what lets it route a message about a payment it does not hold — so "who asked
+// for this return" is recomputed from the payment the answer names, by the same
+// rule that chose the bank in the first place. See returnerOf. Releasing the
+// pacs.004 needs no such lookup: the message carries its own parties, and the
+// bank to send it to is whichever agent is not the one it came from. See
+// releaseReturn.
 //
-// Both outcomes are forwarded, unchanged in substance. That is not the
-// asymmetry receiveSettlementStatus has: a refused SETTLEMENT is news no bank
-// can act on and some banks would act on wrongly, while a refused RETURN is the
-// answer to a question one bank asked and is owed. What the bank does with it
-// is nothing — see bank.receiveReturnStatus — but being told nothing and being
-// told no are different things.
+// # The two outcomes are no longer symmetrical
+//
+// This doc used to say both were forwarded unchanged in substance, and that was
+// true when a refused return had cost nobody anything. Both are still forwarded
+// — a refused RETURN is the answer to a question one bank asked and is owed,
+// which is the asymmetry receiveSettlementStatus has and this one does not —
+// but what they carry with them differs:
+//
+//   - ACSC: the answer goes to the bank that asked, and the held pacs.004 goes
+//     to the other bank, which posts the leg the returner does not hold. The
+//     ANSWER goes first, so the bank that asked hears the outcome before the
+//     other bank starts moving money on it. Both are attempted regardless, and
+//     the errors are joined, for the reason tell gives: a failed message to one
+//     bank must not silently cancel the other, and the second is the one that
+//     moves a customer's money.
+//   - RJCT: only the answer goes, and the held message is DROPPED. That is the
+//     whole point of holding it — a bank that had already posted its leg
+//     against a return the settlement agent refused would have moved a
+//     customer's money for nothing.
+//
+// An entry is dropped only when an answer REACHES the delete below, and two
+// things can stop it. A return the settlement agent dead-letters is never
+// answered at all — a redelivered pacs.004 is the reachable case — so the entry
+// it overwrote stays. And an answer this handler cannot act on returns above the
+// delete: a payment it cannot read, a scheme it does not hold, a participant it
+// cannot address. Both leak one entry apiece, both are bounded by the number of
+// returns a process carries, and both are recorded rather than swept: a sweep
+// needs a clock and a policy, and this map needs a store first. See
+// relayReturn.
 func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *iso20022.Pacs002) error {
 	orig, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
@@ -889,7 +1070,8 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 			// message this actor cannot act on and has nobody to ask about.
 			return fmt.Errorf("mesh: %s got a return status from %s naming no payment", c.bic, from)
 		}
-		p, err := c.ops.GetPayment(ctx, payment.PaymentID(r.TxID))
+		id := payment.PaymentID(r.TxID)
+		p, err := c.ops.GetPayment(ctx, id)
 		if err != nil {
 			return fmt.Errorf("mesh: %s was told about the return of %s and cannot read it: %w", c.bic, r.TxID, err)
 		}
@@ -905,7 +1087,14 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 		// The SETTLEMENT AGENT decided this, not the clearing house, and the
 		// message says so. It is the one hop in this system where the sender and
 		// the originator are different institutions; see forwardDecision.
-		if err := c.forwardDecision(returner.BIC, from, orig, r); err != nil {
+		errs := []error{c.forwardDecision(returner.BIC, from, orig, r)}
+
+		held, holding := c.held[id]
+		delete(c.held, id)
+		if holding && r.Status == iso20022.TransactionStatusSettlementCompleted {
+			errs = append(errs, c.releaseReturn(held, id))
+		}
+		if err := errors.Join(errs...); err != nil {
 			return err
 		}
 	}

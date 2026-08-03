@@ -574,8 +574,9 @@ func (h *meshHarness) closeCycle(t *testing.T) {
 // accepted, cleared at the cut-off and discharged by the central bank.
 //
 // It is what a RETURN needs and what nothing before Task 13 needed, because a
-// return is the one flow whose precondition is finality — ReturnPaymentTx
-// refuses anything that is not Settled. Built by driving the mesh rather than
+// return is the one flow whose precondition is finality — the returning bank's
+// own guard and payment.PostReturnLegTx both refuse anything that is not
+// Settled. Built by driving the mesh rather than
 // by writing a Settled payment into the store, so that what is returned is a
 // payment this system really carried: the payer's money is in the payee's
 // account and the reserves have moved, which is exactly what the return has to
@@ -612,6 +613,48 @@ func (h *meshHarness) settle(t *testing.T, p payment.Payment) payment.Payment {
 		t.Fatalf("the fixture payment is %v, want Settled — a return starts from finality", got.Status)
 	}
 	return got
+}
+
+// spendTheCredit is the payee sending the money straight back to the payer, and
+// having that carried to finality too.
+//
+// It is the fixture for the two conditions a return can only meet after the
+// money has MOVED AGAIN, and both of them are about a bank being unable to fund
+// a leg it is asked for:
+//
+//   - the payee's own account is empty, so the clawback cannot be posted. On a
+//     push that is the returning bank refusing before it sends;
+//   - the payee's BANK's settlement account is empty, so the central bank cannot
+//     reverse the reserves. That is the refusal that comes back RJCT.
+//
+// One helper for both because they are the same movement seen from two books: a
+// customer paying money away takes it out of their bank's reserve and out of
+// that bank's settlement account at the central bank, which is what a cut-off
+// between the two banks does.
+//
+// It opens a cycle of its own, because the fixture's cut-off has already been
+// reached by whatever settled the first payment and a payment with no open
+// window is refused TM01 by the clearing house. Opened on h.net rather than
+// through the mesh: opening one is nobody's message, and closeCycle is what
+// makes reaching the cut-off the clearing house's act.
+func (h *meshHarness) spendTheCredit(t *testing.T) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := h.net.OpenCycle(ctx, payment.SchemeSEPACT); err != nil {
+		t.Fatalf("OpenCycle for the payee to spend it in: %v", err)
+	}
+	p, err := h.mesh.Submit(ctx, payment.InitiatePaymentRequest{
+		Scheme:          payment.SchemeSEPACT,
+		Debtor:          payment.PartyRef{Participant: h.creditorPID, Account: h.creditorAcct.ID, Identifier: h.creditorAcct.Identifiers[0]},
+		Creditor:        h.debtorRef(),
+		Amount:          harnessAmount,
+		Description:     "spending what arrived",
+		CreditorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
+	})
+	if err != nil {
+		t.Fatalf("the payee could not spend the credit: %v", err)
+	}
+	h.settle(t, p)
 }
 
 // returnPayment sends a settled payment back, and fails the test if the bank

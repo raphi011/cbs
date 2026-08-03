@@ -186,7 +186,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1],
       explanation:
-        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `ReturnPaymentTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
+        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `PostReturnLegTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
