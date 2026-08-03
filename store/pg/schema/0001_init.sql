@@ -649,8 +649,38 @@ CREATE TABLE payments (
     debtor_leg_tx              TEXT NOT NULL,
     creditor_leg_tx            TEXT NOT NULL,
     creditor_leg_account       TEXT NOT NULL DEFAULT '',
+    return_clawback_tx         TEXT NOT NULL DEFAULT '',
+    return_refund_tx           TEXT NOT NULL DEFAULT '',
     seq                        BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN payments.return_clawback_tx IS
+    'The transaction that took the money back at the CREDITOR''s bank, out of '
+    'the account creditor_leg_account names. Written by '
+    'payment.PostReturnLegTx, empty until that bank posts its leg.';
+
+COMMENT ON COLUMN payments.return_refund_tx IS
+    'The transaction that gave the money back at the DEBTOR''s bank, into the '
+    'payer''s account or — when that account will no longer take a credit — '
+    'into that bank''s unclaimed balances. Written by '
+    'payment.PostReturnLegTx, empty until that bank posts its leg. '
+    'Together with return_clawback_tx it is how a return knows which of its '
+    'two legs is the SECOND, and therefore which one takes the payment to '
+    'Returned: the leg that finds the other side''s id already written is the '
+    'one arriving last. Neither column can be that marker on its own, because '
+    'which leg goes first flips with the scheme''s direction — the returning '
+    'bank posts before it sends, and the returning bank is the payee''s on a '
+    'push and the payer''s on a pull. Both are DEFAULT '''' rather than NULL, '
+    'for creditor_leg_account''s reason: a leg that has not been posted has '
+    'no transaction, and an absent id and an empty one are the same fact. No '
+    'foreign key to transactions, and here the reason is stronger than the '
+    'one the agent columns give — these two ids are in DIFFERENT BOOKS, and '
+    'under the store split they will be in different databases, so a '
+    'constraint across them could not be written at all. That split is also '
+    'what ends this pair: one payment is one row that both banks read today, '
+    'and when it becomes two rows in two stores neither bank can see the '
+    'other''s leg, so the second leg will have to be recognised from the '
+    'message a bank receives against the status its own row is already at.';
 
 COMMENT ON COLUMN payments.creditor_leg_account IS
     'The account in the CREDITOR BANK''s book that the creditor leg actually '

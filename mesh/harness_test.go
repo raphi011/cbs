@@ -655,8 +655,8 @@ func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct depos
 // idempotency key the domain gave it.
 //
 // By key and not by scanning descriptions, because the key is what identifies
-// the leg — payment.ReturnPaymentTx posts "<payment>:return-debit" in the
-// payer's bank's book and "<payment>:return-credit" in the payee's — and a test
+// the leg — payment.PostReturnLegTx posts "<payment>:return-refund" in the
+// payer's bank's book and "<payment>:return-claw" in the payee's — and a test
 // that searched the text for what it is about to assert about the text would be
 // asserting nothing.
 func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {

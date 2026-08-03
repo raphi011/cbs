@@ -741,6 +741,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore))
 	})
 
+	t.Run("PaymentRecordsBothReturnLegs", func(t *testing.T) {
+		paymentRecordsBothReturnLegs(t, openPayment(t, newStore))
+	})
+
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
@@ -974,7 +978,7 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 // in both of the states it has, and that the empty one is a value rather than a
 // missing field.
 //
-// This is a MONEY column, not a trace. payment.ReturnPaymentTx claws the funds
+// This is a MONEY column, not a trace. payment.PostReturnLegTx claws the funds
 // back from the account named here, and the account is not the payee's whenever
 // the creditor leg diverted to unclaimed balances. A store that dropped it would
 // send a return to the payee's GL account — which for a diverted payment was
@@ -1051,6 +1055,96 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 		if p.CreditorLegAccount != want {
 			t.Errorf("%s listed its creditor-leg account as %q, want %q", p.ID, p.CreditorLegAccount, want)
 		}
+	}
+}
+
+// paymentRecordsBothReturnLegs pins that payment.Payment's two return-leg
+// transaction ids survive a round trip through both stores, and that a payment
+// carrying only ONE of them round-trips as one rather than as two or none.
+//
+// The half-returned state is the one that matters, and it is not a corner case:
+// it is what every return looks like between the two banks' acts. The returning
+// bank posts its leg and sends; the other bank posts hours later. In between,
+// exactly one of these columns is set, and it is the ONLY thing that tells the
+// second bank it is the second — payment.PostReturnLegTx reads the other side's
+// id to decide whether this leg takes the payment to Returned. A store that
+// dropped either column, or that turned an unset one into anything other than
+// the empty value, would make both banks think they were first: two clawbacks
+// and no refund, or a payment stuck at Settled with the money in two suspenses.
+//
+// Both are stored in Postgres as ” under a NOT NULL DEFAULT ”, for
+// creditor_leg_account's reason: a leg that has not been posted has no
+// transaction, and an absent id and an empty one are the same fact here.
+func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+
+	// A return that has completed: both banks have posted.
+	returned := samplePayment("pay_returned", "e2e-returned", early)
+	returned.Status = payment.Returned
+	returned.CreditorLegAccount = "acc_bob"
+	returned.ReturnClawbackTx = "txn_claw"
+	returned.ReturnRefundTx = "txn_refund"
+
+	// A push in flight: the payee's bank has clawed back and sent, and the
+	// payer's bank has not been told yet.
+	halfway := samplePayment("pay_halfway", "e2e-halfway", early)
+	halfway.Status = payment.Settled
+	halfway.CreditorLegAccount = "acc_bob"
+	halfway.ReturnClawbackTx = "txn_claw_only"
+
+	// And a settled payment nobody has returned.
+	settled := samplePayment("pay_settled", "e2e-settled", early)
+	settled.Status = payment.Settled
+	settled.CreditorLegAccount = "acc_bob"
+
+	all := []payment.Payment{returned, halfway, settled}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, p := range all {
+			if err := tx.PutPayment(ctx, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("PutPayment: %v", err)
+	}
+
+	got := map[payment.PaymentID]payment.Payment{}
+	var listed []payment.Payment
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, want := range all {
+			p, err := tx.GetPayment(ctx, want.ID)
+			if err != nil {
+				return err
+			}
+			got[want.ID] = p
+		}
+		var err error
+		listed, err = tx.ListPayments(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("GetPayment: %v", err)
+	}
+
+	check := func(where string, p, want payment.Payment) {
+		if p.ReturnClawbackTx != want.ReturnClawbackTx {
+			t.Errorf("%s %s its clawback leg as %q, want %q", want.ID, where, p.ReturnClawbackTx, want.ReturnClawbackTx)
+		}
+		if p.ReturnRefundTx != want.ReturnRefundTx {
+			t.Errorf("%s %s its refund leg as %q, want %q", want.ID, where, p.ReturnRefundTx, want.ReturnRefundTx)
+		}
+	}
+	for _, want := range all {
+		check("round-tripped", got[want.ID], want)
+	}
+
+	// And through the LISTING, which is a different query in store/pg.
+	byID := map[payment.PaymentID]payment.Payment{}
+	for _, p := range listed {
+		byID[p.ID] = p
+	}
+	for _, want := range all {
+		check("listed", byID[want.ID], want)
 	}
 }
 

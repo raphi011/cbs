@@ -147,9 +147,9 @@ func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *is
 // relayReturn hands a return on to the SETTLEMENT AGENT.
 //
 // Not to a bank, and that is the whole routing decision of this flow. A return
-// moves central-bank reserves back — payment.ReturnPaymentTx posts the payer's
-// refund, the payee's clawback and the reserve reversal in one unit of work —
-// and moving reserves is the settlement agent's act, as it is at a cut-off. So
+// moves central-bank reserves back — payment.SettleReturnTx reverses the
+// movement between the two banks' settlement accounts — and moving reserves is
+// the settlement agent's act, as it is at a cut-off. So
 // the destination is a fact about the MESSAGE DEFINITION rather than about
 // anything inside the message, which is why this hop reads no element to route
 // by and no store either. A pacs.008 or a pacs.003 names the agent it is for; a

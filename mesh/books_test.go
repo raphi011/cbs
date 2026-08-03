@@ -1253,19 +1253,26 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // # The central bank reaches all four, and two of them are not its own
 //
 // The same shape settlement has, arrived at through a different domain call.
-// ReturnPaymentTx posts three compensating transactions in one unit of work:
-// the payer refunded out of the payer's bank's reserve (a posting in that
-// BANK's book), the payee clawed back into the payee's bank's reserve (a
-// posting in THAT bank's book), and the reserve movement reversed between the
-// two settlement accounts (CentralBankBook). NetworkBook is the fourth, and it
-// arrives the way it always does here — the payment row's audit event and the
-// id that event needed — never through a posting. See the note above the tests.
+// ReturnPaymentTx runs the whole return in one unit of work: the payee's bank
+// claws the money back into its own clearing suspense (a posting in THAT bank's
+// book), the reserve movement reverses between the two settlement accounts
+// (CentralBankBook), each bank books its reserve mirror from the statement it
+// was handed (a posting in each bank's book), and the payer's bank refunds its
+// customer out of its own suspense (a posting in that BANK's book).
+// NetworkBook is the fourth, and it arrives the way it always does here — the
+// payment row's audit event and the id that event needed — never through a
+// posting. See the note above the tests.
 //
 // So the widest-reaching actor in this system is the one with the narrowest
-// interface, for the second time and for the same reason: what makes an act
-// this institution's is that reserves move, and the compensating legs in the
-// members' books are part of the same atomic act. Sub-project 8 is where those
-// two legs stop being reachable from here and become a conversation.
+// interface, for the second time — but no longer for the same reason, and that
+// is the difference this test has not caught up with yet. Task 16d split the
+// return into three acts, and the settlement agent's own act
+// (payment.SettleReturnTx) posts in CentralBankBook and nowhere else. What
+// reaches all four is payment.ReturnPaymentTx, which is now a TRANSITIONAL
+// composition of those acts and says so in its own doc: it exists so that the
+// branch stays buildable while mesh still calls it. Task 16e replaces this
+// handler with the conversation, and this test moves then. Until it does, the
+// set below is an accurate measurement of what this mesh does.
 //
 // # The clearing house reaches nothing, and that is a real measurement
 //
@@ -1292,7 +1299,9 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // pacs.004. It touches no book because that is all a returning bank does here —
 // the clawback in its OWN book is posted by the settlement agent, inside the
 // unit of work that moves the reserves, which is why that book appears in the
-// central bank's set above and in nobody else's.
+// central bank's set above and in nobody else's. That is the crossing Task 16e
+// closes: payment.PostReturnLegTx already exists for this bank to call, and
+// what is missing is the handler that calls it.
 //
 // An actor that DID reach into a bank's ledger over this window is not
 // invisible to these assertions, and that is measured rather than assumed: a

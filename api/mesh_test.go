@@ -649,7 +649,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	// it with the text alone: there would have been no message to put a code on.
 	var txns []transactionDTO
 	getJSON(t, bank(srv, string(settled.Debtor.Participant)), "/transactions", &txns)
-	want := settled.ID + ":return-debit"
+	want := settled.ID + ":return-refund"
 	for _, tx := range txns {
 		if tx.IdempotencyKey != want {
 			continue

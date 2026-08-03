@@ -270,22 +270,26 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 //
 // # Why this actor and not a bank
 //
-// ReturnPaymentTx posts THREE compensating transactions in one unit of work —
-// the payer refunded at their own bank, the payee clawed back at theirs, and
-// the reserve movement reversed between the two settlement accounts here — and
-// they commit together or not at all. The middle one is central-bank money, so
-// no member bank could make it; and splitting the three across three actors
-// would mean a payer refunded against a payee who was not debited, which is the
-// atomicity a settlement window exists to provide. payment/doc.go already
-// records the consequence: returns settle immediately in this system rather
-// than being cleared and netted in a later R-cycle. A return therefore IS a
-// settlement act, and it belongs where settlement does.
+// The reserve reversal between the two members' settlement accounts is
+// central-bank money, so no member bank and no clearing house may make it.
+// payment/doc.go records the consequence: returns settle immediately in this
+// system rather than being cleared and netted in a later R-cycle. A return
+// therefore IS a settlement act, and it belongs where settlement does.
 //
 // The price is the same one receiveSettlement pays and it is worth naming
-// again: two of those three postings land in member banks' books, made by this
-// handler. In a real network the pacs.004 would travel bank to bank and each
-// would post its own leg. Under one store this actor does all three, and
+// again: the two CUSTOMER legs land in member banks' books, made by this
+// handler. In a real network the pacs.004 travels bank to bank and each posts
+// its own leg. Under one store this actor does all of it, and
 // TestWhichBooksAReturnReaches measures exactly that rather than assuming it.
+//
+// What has changed under it is that the domain no longer requires this. Task
+// 16d split the return into three acts — payment.PostReturnLegTx for each
+// bank's own leg, payment.SettleReturnTx for the reserves, which reads no
+// payment at all — and payment.ReturnPayment, which this handler still calls, is
+// a transitional composition of them that announces its own expiry. Task 16e
+// replaces this handler with the conversation: this actor keeps
+// SettleReturnTx, sends a camt.053 to both banks as it does at a cut-off, and
+// the banks post their own legs.
 //
 // # One return per message, and the sender's own count must agree
 //
@@ -307,7 +311,7 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // # What is answered, and what is dead-lettered
 //
 // A redelivered return names a payment this network has already returned, and
-// ReturnPaymentTx refuses it with ErrInvalidStateTransition — a statement about
+// ReturnPayment refuses it with ErrInvalidStateTransition — a statement about
 // THIS system's state and not about the sender's message. payment's reasonTable
 // gives it the empty code for exactly that reason, and ReasonFor would turn it
 // into MS03 and tell the returning bank that a return which in fact happened

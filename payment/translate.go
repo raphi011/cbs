@@ -144,6 +144,7 @@ var reasonTable = []reasonMapping{
 	// judgement about a payment.
 	{ErrNotThisBanksPayment, "ErrNotThisBanksPayment", ""},
 	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
+	{ErrNotAPartyToThisReturn, "ErrNotAPartyToThisReturn", ""},
 
 	// Cycle lifecycle errors reach only the operator who drove the cycle into
 	// the wrong state; no counterparty ever sees one.
@@ -154,6 +155,14 @@ var reasonTable = []reasonMapping{
 	// somewhere its own state machine forbids. Telling the counterparty
 	// "rejected, unspecified" would hide a defect behind a plausible message.
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
+
+	// A return the settlement agent has already settled. It is the redelivery
+	// case ErrInvalidStateTransition covers on every other path, arriving from
+	// the one actor that has no payment row to read a status off — so it is a
+	// separate sentinel and it gets the same empty code for the same reason:
+	// answering RJCT would tell the returning bank that a return which in fact
+	// completed was refused. Dead-letter it.
+	{ErrReturnAlreadySettled, "ErrReturnAlreadySettled", ""},
 }
 
 // borrowedReasons classifies the errors an actor's half produces that this
@@ -1600,10 +1609,10 @@ func CodeAndText(code, text, none string) string {
 // unchanged, because it asserts through the mesh, not against this function
 // directly.
 //
-// Two of the three postings, not three. ReturnPaymentTx writes this into the
-// payer's refund and the payee's clawback, and describes the reserve reversal
-// between the two banks as the settlement it is — a bank's own position
-// moving carries no customer's reason.
+// The two CUSTOMER legs, and not the reserve reversal between the two banks.
+// PostReturnLegTx writes this into the payer's refund and into the payee's
+// clawback; SettleReturnTx describes the reversal as the settlement it is,
+// because a bank's own position moving carries no customer's reason.
 //
 // Both arms of the choice are read, because both are legal — iso20022's
 // ReturnReasonChoice requires exactly one of a code and a proprietary text,
@@ -1833,13 +1842,21 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 				Dt:        iso20022.DateAndDateTime{Dt: &day},
 			}},
 			Ntry: []iso20022.StatementEntry{{
-				Amt:          entryAmt,
-				CdtDbtInd:    entryInd,
-				Sts:          iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
-				BookgDt:      iso20022.DateAndDateTime{Dt: &day},
-				ValDt:        iso20022.DateAndDateTime{Dt: &day},
-				AcctSvcrRef:  st.Reference,
-				AddtlNtryInf: "Settlement of clearing cycle " + st.Reference,
+				Amt:         entryAmt,
+				CdtDbtInd:   entryInd,
+				Sts:         iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
+				BookgDt:     iso20022.DateAndDateTime{Dt: &day},
+				ValDt:       iso20022.DateAndDateTime{Dt: &day},
+				AcctSvcrRef: st.Reference,
+				// Named after the reference and nothing more, for the reason the
+				// paragraph above gives: a cycle id and a payment id are equally
+				// opaque to the member reading this, and the sender saying which
+				// kind it sent would be telling that bank something it has no row
+				// to resolve. It used to read "Settlement of clearing cycle …",
+				// which was accurate while the cut-off was the only thing that
+				// settled and became a false statement on the wire the moment a
+				// return could produce a statement too.
+				AddtlNtryInf: "Settlement of " + st.Reference,
 			}},
 		}},
 	}}

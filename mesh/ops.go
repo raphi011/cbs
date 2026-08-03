@@ -257,11 +257,18 @@ type csmOps interface {
 // and the difference is the whole of Task 15. SettleCycleTx posts in the central
 // bank's own book and in no member's: the mirror leg is the member's own, made
 // from the statement this call hands back, and the creditor leg is the payee's
-// bank's, made from the clearing house's advice. ReturnPaymentTx still posts in
+// bank's, made from the clearing house's advice. ReturnPayment still posts in
 // three books, two of which belong to member banks, so this institution is still
 // the widest-reaching actor in this system — but at a cut-off it is now one of
 // the narrowest. TestWhichBooksTheCentralBankReachesWhenItSettles and
 // TestWhichBooksAReturnReaches measure both rather than assuming either.
+//
+// ReturnPayment reaches that far because it is now a COMPOSITION of the three
+// acts a split return is made of, and not because the return still has to be
+// one act: payment.SettleReturnTx is the settlement agent's whole part and
+// posts only in the central bank's own book. See payment.ReturnPaymentTx, which
+// records that it is transitional and that Task 16e deletes it — and with it
+// this method, and this interface's second line.
 type settlementOps interface {
 	// SettleCycle hands back the STATEMENTS beside the settlement, because the
 	// closing balance each carries is a claim about a moment inside the unit of

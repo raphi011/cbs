@@ -95,13 +95,15 @@
 //
 //   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
 //     pacs.004 and pacs.009 are implemented — translate.go now renders and
-//     reads all five. ReadReturn is the newest of the five readers and, as of
-//     sub-project 8's Task 16a, has no caller yet: mesh/centralbank.go still
-//     reads an arriving return's fields itself and calls ReturnPayment with
-//     them, because the store split that ReadReturn exists for — a
-//     settlement agent resolving accounts from OrgnlTxRef instead of a
-//     payment row it may no longer hold — is a later task's change, not
-//     this one's. Package mesh is what carries messages between the
+//     reads all five. ReadReturn is the newest of the five readers and still
+//     has no caller: mesh/centralbank.go reads an arriving return's fields
+//     itself and calls ReturnPayment with them. What it produces —
+//     ReturnInstruction — does have one now, because Task 16d gave the
+//     settlement agent an act that takes it and reads no payment row
+//     (SettleReturnTx). Wiring the reader to it is Task 16e's, and that is
+//     the task that makes the pair mean what it exists to mean: a settlement
+//     agent resolving accounts from OrgnlTxRef instead of from a payment row
+//     it may no longer hold. Package mesh is what carries messages between the
 //     institutions as marshalled bytes, so they are parsed on arrival rather
 //     than passed as structs. What is absent is
 //     pain.001/pain.008 customer initiation (an instruction arrives over this

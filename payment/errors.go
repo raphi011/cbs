@@ -95,6 +95,36 @@ var (
 	// payment whose scheme does not support returns.
 	ErrSchemeUnsupportedReturn = errors.New("scheme does not support returns")
 
+	// ErrReturnAlreadySettled is a return instruction the settlement agent has
+	// already acted on.
+	//
+	// It is a redelivery, and it is detected in the ledger rather than in a row
+	// of its own: the reserve reversal carries "<payment>:return-settle" as its
+	// idempotency key, so a second instruction naming the same payment comes
+	// back from PostTransactionTx as ledger.ErrDuplicateIdempotencyKey and is
+	// wrapped as this. The settlement agent holds no payment rows — that is the
+	// whole point of SettleReturnTx — so there is nowhere else it could have
+	// recorded that it had settled this one.
+	//
+	// It is a statement about THIS system's state and not about the sender's
+	// message, which is the same discrimination ErrInvalidStateTransition
+	// carries on the cut-off path: a caller answering a counterparty with it
+	// would report a return that in fact happened as rejected. Dead-letter it.
+	ErrReturnAlreadySettled = errors.New("payment: this return has already been settled")
+
+	// ErrNotAPartyToThisReturn is a bank asked to post a return leg for a
+	// payment it is neither side of.
+	//
+	// A return has exactly two customer legs and each belongs to one bank: the
+	// clawback at the creditor's, the refund at the debtor's. Which one a bank
+	// posts follows from which side it is on, so a bank on neither side has no
+	// leg to post at all — and neither the caller nor the message gets to say
+	// which leg is which. It is ErrNotThisBanksPayment's counterpart on the
+	// return path, and separate from it because that one names the ONE bank a
+	// creditor leg belongs to, where this names a bank that is not either of
+	// two.
+	ErrNotAPartyToThisReturn = errors.New("payment: this bank is neither side of this return")
+
 	// ErrAccountNotInParticipant is returned when a party references an
 	// account that does not exist in that participant's ledger.
 	ErrAccountNotInParticipant = errors.New("account does not belong to participant")

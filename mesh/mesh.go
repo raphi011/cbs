@@ -1295,26 +1295,18 @@ func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payme
 	return debtor
 }
 
-// returnerOf is the party whose bank sends a settled payment back.
+// returnerOf is the party whose bank sends a settled payment back: submitterOf's
+// counterpart in both senses, the other party and the other role.
 //
-// It is submitterOf's counterpart in both senses: the other party, and the
-// other role. A return is sent by the bank that RECEIVED the instruction —
-// the payee's bank on a push, the payer's bank on a pull — which is the SEPA
-// rule book's own division. The beneficiary bank returns a credit transfer it
-// cannot apply; the debtor bank returns a collection its customer disputes.
-//
-// Written as its own rule rather than as "not the submitter", because the two
-// are answers to different questions and the reason each is what it is has
-// nothing to do with the other: a submitter is chosen by who is instructing,
-// and a returner by who is holding a payment they cannot keep. That they come
-// out opposite in both directions is a fact about these two flows, not a
-// derivation. And a party who is both — a payment from a bank to itself — would
-// make a negation ambiguous, while these two rules stay total.
+// The rule itself is payment.ReturnerOf, and that is where its reasoning lives.
+// It moved out of this file when the domain acquired a second use for it —
+// payment.PostReturnLegTx decides whether a bank may REFUSE its leg by asking
+// whether that bank is the returner — and two copies would have been free to
+// disagree about who the returner is. This stays as a delegation so that the
+// call sites in this package, which read as mesh-local rules beside
+// submitterOf, do not have to.
 func returnerOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
-	if scheme.Direction() == payment.Pull {
-		return debtor
-	}
-	return creditor
+	return payment.ReturnerOf(scheme, debtor, creditor)
 }
 
 // returnMsgDef is the pacs.004's message name, which two actors here dispatch a

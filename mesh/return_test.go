@@ -357,14 +357,15 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 //     copy the clearing house carried, so it also says the relay left the
 //     document alone (csm.relay replaces the header and nothing else).
 //   - IN THE BOOKS, in the descriptions of the two postings that move a
-//     customer's money. payment.ReturnPaymentTx writes the reason into both,
-//     which is what makes the return legible on a statement months later.
+//     customer's money. payment.PostReturnLegTx writes the reason into both —
+//     the clawback in one bank's book, the refund in the other's — which is
+//     what makes the return legible on a statement months later.
 //
 // The CENTRAL BANK's own leg is asserted NOT to carry it, and that is not
 // pedantry: it is the sentence in payment.ReturnReason's doc that would
-// otherwise be wrong. ReturnPaymentTx describes the reserve reversal as the
-// settlement it is, so the reason reaches two of the three postings and not
-// three.
+// otherwise be wrong. payment.SettleReturnTx describes the reserve reversal as
+// the settlement it is, so the reason reaches the two customer legs and not the
+// third posting.
 func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.settledPayment(t)
@@ -395,8 +396,8 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 		who  payment.ParticipantID
 		key  string
 	}{
-		{"the payer's refund", h.debtorPID, ":return-debit"},
-		{"the payee's clawback", h.creditorPID, ":return-credit"},
+		{"the payer's refund", h.debtorPID, ":return-refund"},
+		{"the payee's clawback", h.creditorPID, ":return-claw"},
 	} {
 		if got := h.postingByKey(t, leg.who, string(p.ID)+leg.key).Description; !strings.Contains(got, want) {
 			t.Errorf("%s is described as %q, want it to carry %q", leg.what, got, want)
@@ -448,7 +449,7 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	if got := h.payment(t, p.ID); got.Status != payment.Returned {
 		t.Fatalf("status = %v, want Returned", got.Status)
 	}
-	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-debit").Description; !strings.Contains(got, prtry) {
+	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-refund").Description; !strings.Contains(got, prtry) {
 		t.Errorf("the payer's refund is described as %q, want it to carry the proprietary reason %q", got, prtry)
 	}
 }

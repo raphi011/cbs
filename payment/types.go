@@ -288,8 +288,9 @@ type Payment struct {
 	// produced inside this system without a code would be one the mesh could
 	// not put in a pacs.002.
 	//
-	// A RETURN (Status == Returned, set by ReturnPaymentTx) is not a
-	// rejection and does not set RejectCode: pacs.004 draws its reason from a
+	// A RETURN (Status == Returned, set by PostReturnLegTx when the SECOND of
+	// the two banks posts its leg) is not a rejection and does not set
+	// RejectCode: pacs.004 draws its reason from a
 	// different external code set, iso20022.ReturnReason, not this one, and
 	// giving a return a StatusReason here would misrepresent which set it
 	// actually carries on the wire. RejectReason is reused as the return's
@@ -320,7 +321,7 @@ type Payment struct {
 	// # Why it is STORED and not derived
 	//
 	// Because the fact it records is about a MOMENT, and the account it names
-	// cannot be worked out from any later reading of the world. ReturnPaymentTx
+	// cannot be worked out from any later reading of the world. PostReturnLegTx
 	// has to claw the money back from wherever it landed, and the only other way
 	// to find out is to re-ask whether the payee's account is creditable — which
 	// answers a question about NOW, not about the cut-off. A payee who was open
@@ -334,6 +335,29 @@ type Payment struct {
 	// flag would be a record of one special case; this is a record of what
 	// happened, and it stays true if a later scheme grows a third destination.
 	CreditorLegAccount ledger.AccountID
+
+	// ReturnClawbackTx and ReturnRefundTx are the two customer legs of a
+	// return, each in its own bank's book: the clawback out of
+	// CreditorLegAccount at the creditor's bank, the refund into the payer's
+	// account at the debtor's bank. Empty until that bank posts its leg.
+	//
+	// They are how PostReturnLegTx knows it is the SECOND leg, and therefore
+	// the one that takes the payment to Returned: the leg that finds the other
+	// side's id already written is the one arriving last. Which of the two goes
+	// first flips with the scheme's direction — the returning bank posts before
+	// it sends — so neither field can be the marker on its own.
+	//
+	// # What this cannot survive
+	//
+	// It works because one payment is one row that both banks can see. Under
+	// sub-project 8's store split it is two rows in two stores, and neither
+	// bank can read the other's; the second leg will have to be recognised from
+	// what the bank was TOLD — the return message it received against the
+	// status its own row is already at — rather than from the counterparty's
+	// transaction id. Task 18 inherits that, and these two fields become one
+	// field each, in each bank's own copy, recording only that bank's own leg.
+	ReturnClawbackTx ledger.TransactionID
+	ReturnRefundTx   ledger.TransactionID
 }
 
 // Mandate is a debtor's standing authorization for a specific creditor to

@@ -273,15 +273,20 @@
 // exactly the opposite end from the one that submitted, in both directions. Its
 // half MOVES NOTHING; the message is the whole of it.
 //
-// The CENTRAL BANK executes it, and that is this flow's one real decision.
-// ReturnPaymentTx posts three compensating transactions in a single unit of
-// work — the payer refunded, the payee clawed back, and the reserve movement
-// between the two banks reversed — and the third is central-bank money, which
-// no member bank and no clearing house may move. Splitting them would mean a
-// payer refunded against a payee who was not debited. payment/doc.go records
-// the consequence: returns settle immediately in this system rather than being
-// netted in a later R-cycle, so a return IS a settlement act and belongs where
-// settlement does.
+// The CENTRAL BANK executes it, and that is this flow's one real decision: it
+// reverses the reserve movement between the two banks' settlement accounts,
+// which is central-bank money and which no member bank and no clearing house
+// may move. payment/doc.go records the consequence: returns settle immediately
+// in this system rather than being netted in a later R-cycle, so a return IS a
+// settlement act and belongs where settlement does.
+//
+// The two CUSTOMER legs are not that actor's, and as of sub-project 8's Task
+// 16d they are not that actor's ACT either: payment.PostReturnLegTx is a bank
+// posting its own leg in its own book, and payment.SettleReturnTx reads no
+// payment at all. What this handler still calls — payment.ReturnPayment — runs
+// all of it in one unit of work as a transitional composition, so what the
+// diagram above shows is still what the mesh does. Task 16e is where the two
+// customer legs become messages and this paragraph gets shorter.
 //
 // The CLEARING HOUSE carries it, and takes it into no cycle. It is in the path
 // because a member bank in this mesh addresses the clearing house and nothing
