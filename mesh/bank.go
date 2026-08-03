@@ -622,7 +622,7 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 			b.bic, from, len(moves))
 	}
 	if _, err := b.ops.PostSettlementAdvice(ctx, b.pid, moves[0]); err != nil {
-		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].CycleID, err)
+		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].Reference, err)
 	}
 	return nil
 }

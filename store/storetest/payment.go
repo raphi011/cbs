@@ -729,6 +729,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore))
 	})
 
+	t.Run("AdvicesAreKeyedByReferenceNotByCycle", func(t *testing.T) {
+		advicesAreKeyedByReferenceNotByCycle(t, openPayment(t, newStore))
+	})
+
 	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
 		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
 	})
@@ -1061,12 +1065,12 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.Store) {
 	ctx := context.Background()
 	one := payment.SettlementAdvice{
-		Book: "bank_2", CycleID: "cyc_1", Asset: "EUR",
+		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
 		Movement: -250000, ClosingBalance: 750000,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
 	two := payment.SettlementAdvice{
-		Book: "bank_3", CycleID: "cyc_1", Asset: "EUR",
+		Book: "bank_3", Reference: "cyc_1", Asset: "EUR",
 		Movement: 250000, ClosingBalance: 250000,
 		Status: payment.AdvicePosted, MirrorTx: "txn_9",
 		AdvisedAt: early, PostedAt: early,
@@ -1122,15 +1126,15 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// key would pass on distinct timestamps and fail here.
 	later := early.Add(time.Hour)
 	for _, a := range []payment.SettlementAdvice{
-		{Book: "bank_2", CycleID: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
+		{Book: "bank_2", Reference: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
-		{Book: "bank_2", CycleID: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
+		{Book: "bank_2", Reference: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
 	} {
 		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutSettlementAdvice(ctx, a.Book, a)
 		}); err != nil {
-			t.Fatalf("PutSettlementAdvice %s: %v", a.CycleID, err)
+			t.Fatalf("PutSettlementAdvice %s: %v", a.Reference, err)
 		}
 	}
 	var ordered []payment.SettlementAdvice
@@ -1143,7 +1147,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	}
 	var got []string
 	for _, a := range ordered {
-		got = append(got, string(a.CycleID))
+		got = append(got, a.Reference)
 	}
 	want := []string{"cyc_1", "cyc_4", "cyc_3"}
 	if len(got) != len(want) {
@@ -1180,7 +1184,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// an advice whose field disagrees with the argument is the only thing that can
 	// tell whether it still does.
 	misfiled := payment.SettlementAdvice{
-		Book: "bank_9", CycleID: "cyc_2", Asset: "EUR",
+		Book: "bank_9", Reference: "cyc_2", Asset: "EUR",
 		Movement: 100, ClosingBalance: 100,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
@@ -1205,6 +1209,59 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 		return nil
 	}); err != nil {
 		t.Fatalf("reading the misfiled advice: %v", err)
+	}
+}
+
+// advicesAreKeyedByReferenceNotByCycle pins that a bank's record of having
+// booked a reserve movement is the same row whether the movement discharged a
+// cut-off or a single return: the two put here differ only in what their
+// Reference names — a cycle id and a payment id — and neither collides with
+// the other, in the same book and the same asset.
+func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+	cutOff := payment.SettlementAdvice{
+		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
+		Movement: -250000, ClosingBalance: 750000,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	rtn := payment.SettlementAdvice{
+		Book: "bank_2", Reference: "pay_9", Asset: "EUR",
+		Movement: 5000, ClosingBalance: 755000,
+		Status: payment.AdvicePosted, MirrorTx: "txn_5",
+		AdvisedAt: early, PostedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := tx.PutSettlementAdvice(ctx, cutOff.Book, cutOff); err != nil {
+			return err
+		}
+		return tx.PutSettlementAdvice(ctx, rtn.Book, rtn)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice: %v", err)
+	}
+
+	var gotCutOff, gotReturn payment.SettlementAdvice
+	var listed []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		if gotCutOff, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		if gotReturn, err = tx.GetSettlementAdvice(ctx, "bank_2", "pay_9", "EUR"); err != nil {
+			return err
+		}
+		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("reading advices: %v", err)
+	}
+	if gotCutOff != cutOff {
+		t.Errorf("the cycle-referenced advice round-tripped as %+v, want %+v", gotCutOff, cutOff)
+	}
+	if gotReturn != rtn {
+		t.Errorf("the payment-referenced advice round-tripped as %+v, want %+v", gotReturn, rtn)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("bank_2 lists %d advices, want 2 — one referencing a cycle and one a payment", len(listed))
 	}
 }
 

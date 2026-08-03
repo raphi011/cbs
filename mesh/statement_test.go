@@ -219,7 +219,7 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 		Asset:          "EUR",
 		Movement:       -harnessAmount,
 		ClosingBalance: 0,
-		CycleID:        cyc.ID,
+		Reference:      string(cyc.ID),
 	})
 	if !errors.Is(err, payment.ErrStatementNotForThisBank) {
 		t.Errorf("booking another member's statement got %v, want ErrStatementNotForThisBank", err)

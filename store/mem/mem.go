@@ -216,11 +216,11 @@ type state struct {
 	settlements  map[payment.SettlementID]payment.Settlement
 
 	// settlementAdvices is the ONE payment-layer table that is not
-	// network-scoped: an advice is a member bank's own record of a cut-off it
-	// was told about, so its book is part of its identity. It is keyed by
-	// (book, cycle, asset) in a flat map rather than nested per book, so an
-	// upsert is a single map assignment — the same identity store/pg gets from
-	// a primary key on (book_id, cycle_id, asset).
+	// network-scoped: an advice is a member bank's own record of a reserve
+	// movement it was told about, so its book is part of its identity. It is
+	// keyed by (book, reference, asset) in a flat map rather than nested per
+	// book, so an upsert is a single map assignment — the same identity store/pg
+	// gets from a primary key on (book_id, reference, asset).
 	settlementAdvices map[adviceKey]payment.SettlementAdvice
 
 	// endToEnd maps end-to-end ids to payment IDs, the payment layer's
@@ -299,13 +299,14 @@ type facilityTermsKey struct {
 }
 
 // adviceKey is a settlement advice's composite identity: the bank that was
-// advised, the cut-off it was advised of, and the asset it settles in. All
-// three, because two banks advised of one cut-off hold two rows and a bank
-// operating in two assets settles each separately.
+// advised, the reference it was advised about — a cycle id or a payment id,
+// opaque to this store either way — and the asset it settles in. All three,
+// because two banks advised of one movement hold two rows and a bank operating
+// in two assets settles each separately.
 type adviceKey struct {
-	book  ledger.BookID
-	cycle payment.CycleID
-	asset ledger.AssetCode
+	book      ledger.BookID
+	reference string
+	asset     ledger.AssetCode
 }
 
 // rowKind names the table a row belongs to, so sequences are per table.

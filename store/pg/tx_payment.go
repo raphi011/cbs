@@ -647,7 +647,7 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 // methods in this file that take a BookID — and the only ones that have to
 // ensureBook, because settlement_advices.book_id is a real foreign key.
 
-const settlementAdviceColumns = `book_id, cycle_id, asset, movement, closing_balance,
+const settlementAdviceColumns = `book_id, reference, asset, movement, closing_balance,
 	status, mirror_tx, advised_at, posted_at`
 
 func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
@@ -660,17 +660,17 @@ func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a paym
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO settlement_advices (`+settlementAdviceColumns+`)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT (book_id, cycle_id, asset) DO UPDATE SET
+		ON CONFLICT (book_id, reference, asset) DO UPDATE SET
 			movement        = EXCLUDED.movement,
 			closing_balance = EXCLUDED.closing_balance,
 			status          = EXCLUDED.status,
 			mirror_tx       = EXCLUDED.mirror_tx,
 			advised_at      = EXCLUDED.advised_at,
 			posted_at       = EXCLUDED.posted_at`,
-		string(book), string(a.CycleID), string(a.Asset), a.Movement, a.ClosingBalance,
+		string(book), a.Reference, string(a.Asset), a.Movement, a.ClosingBalance,
 		int16(a.Status), string(a.MirrorTx), nullTime(a.AdvisedAt), nullTime(a.PostedAt))
 	if err != nil {
-		return fmt.Errorf("pg: put settlement advice %s/%s/%s: %w", book, a.CycleID, a.Asset, err)
+		return fmt.Errorf("pg: put settlement advice %s/%s/%s: %w", book, a.Reference, a.Asset, err)
 	}
 	return nil
 }
@@ -681,7 +681,7 @@ func scanSettlementAdvice(row pgx.Row) (payment.SettlementAdvice, error) {
 		status          int16
 		advised, posted *time.Time
 	)
-	err := row.Scan(&a.Book, &a.CycleID, &a.Asset, &a.Movement, &a.ClosingBalance,
+	err := row.Scan(&a.Book, &a.Reference, &a.Asset, &a.Movement, &a.ClosingBalance,
 		&status, &a.MirrorTx, &advised, &posted)
 	if err != nil {
 		return payment.SettlementAdvice{}, err
@@ -692,15 +692,15 @@ func scanSettlementAdvice(row pgx.Row) (payment.SettlementAdvice, error) {
 	return a, nil
 }
 
-func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
 	a, err := scanSettlementAdvice(t.tx.QueryRow(ctx,
-		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 AND cycle_id = $2 AND asset = $3",
-		string(book), string(cycle), string(asset)))
+		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 AND reference = $2 AND asset = $3",
+		string(book), reference, string(asset)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return payment.SettlementAdvice{}, payment.ErrSettlementAdviceNotFound
 	}
 	if err != nil {
-		return payment.SettlementAdvice{}, fmt.Errorf("pg: get settlement advice %s/%s/%s: %w", book, cycle, asset, err)
+		return payment.SettlementAdvice{}, fmt.Errorf("pg: get settlement advice %s/%s/%s: %w", book, reference, asset, err)
 	}
 	return a, nil
 }

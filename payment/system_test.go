@@ -234,7 +234,7 @@ func bookTheAdvices(t *testing.T, sys *Network, statements []SettlementStatement
 			Asset:          st.Asset,
 			Movement:       st.Movement,
 			ClosingBalance: st.ClosingBalance,
-			CycleID:        st.CycleID,
+			Reference:      st.Reference,
 			ValueDate:      st.ValueDate,
 		})
 		assertNoError(t, err)

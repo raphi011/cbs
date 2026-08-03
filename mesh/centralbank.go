@@ -259,7 +259,7 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 			return fmt.Errorf("mesh: %s could not build the statement for %s: %w", cb.bic, st.Agent, err)
 		}
 		if err := cb.m.send(cb.bic, st.Agent, env); err != nil {
-			return fmt.Errorf("mesh: %s settled %s and could not tell %s: %w", cb.bic, st.CycleID, st.Agent, err)
+			return fmt.Errorf("mesh: %s settled %s and could not tell %s: %w", cb.bic, st.Reference, st.Agent, err)
 		}
 	}
 	return nil

@@ -528,7 +528,7 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 --
 -- Note the exact claim, because the looser one this header used to make is
 -- false twice over. It said these tables "carry no book_id column". participants
--- carries one (:547) and settlement_advices carries one (:822) — the difference
+-- carries one (:547) and settlement_advices carries one (:837) — the difference
 -- is that only settlement_advices has the book in its KEY, which is what makes
 -- it the one member-scoped table in this section. participants.book_id is data:
 -- which book that bank owns. See the comment on settlement_advices, which states
@@ -787,8 +787,9 @@ CREATE TABLE settlement_positions (
     PRIMARY KEY (settlement_id, participant_id)
 );
 
--- settlement_advices is a MEMBER BANK's record of a cut-off it was told about,
--- and it is the first payment-layer table keyed by book.
+-- settlement_advices is a MEMBER BANK's record of a reserve movement it was
+-- told about — a cut-off's net settlement or a single return — and it is the
+-- first payment-layer table keyed by book.
 --
 -- Every other table in this section — participants, payments, mandates, cycles,
 -- settlements — is network-scoped: those rows belong to no single bank, so they
@@ -801,13 +802,13 @@ CREATE TABLE settlement_positions (
 -- split it moves into that member's own database and the other two do not
 -- follow it.
 --
--- Two banks advised of one cut-off write two rows independently. That is not
+-- Two banks advised of one movement write two rows independently. That is not
 -- redundancy: settlement is final at the central bank and participants catch up
 -- afterwards, so "this bank has booked it and that one has not" is a state the
 -- system must be able to be in — and it shows as one row present and the other
 -- ABSENT.
 --
--- What a row MEANS is that this bank booked this cut-off. No committed row says
+-- What a row MEANS is that this bank booked this movement. No committed row says
 -- status 0 (payment.AdviceAdvised) today: payment.PostSettlementAdviceTx writes
 -- the row and posts the mirror leg in ONE unit of work, so a failed posting rolls
 -- the row back with it and a successful one leaves status 1. That is deliberate —
@@ -821,12 +822,20 @@ CREATE TABLE settlement_positions (
 -- reads it yet; Task 19 is the reconciliation that does. It is stored because it
 -- arrives, and a balance discarded on receipt is one nobody can go back for.
 --
--- No foreign key to cycles. A member bank HAS no cycles — after the split the
--- cycles table is not in its database at all — so a constraint here would encode
--- exactly the sharing this sub-project removes.
+-- reference is the account servicer's own reference for the entry that moved
+-- this bank's reserve — a cycle id on the cut-off path payment.SettleCycleTx
+-- builds today, a payment id on the return path sub-project 8's Task 16d adds.
+-- There is no `kind` column beside it to say which: ids are unique across the
+-- whole store, and Task 19's reconciliation reads one shape, not two.
+--
+-- No foreign key to anything. A member bank HAS no cycles — after the split the
+-- cycles table is not in its database at all — and a payment id is the same
+-- shape of foreign fact in the other direction: the reference names a row in an
+-- institution the member does not share a database with, in either direction.
+-- A constraint here would encode exactly the sharing this sub-project removes.
 CREATE TABLE settlement_advices (
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
-    cycle_id        TEXT NOT NULL,
+    reference       TEXT NOT NULL,
     asset           TEXT NOT NULL,
     movement        BIGINT NOT NULL,
     closing_balance BIGINT NOT NULL,
@@ -838,7 +847,7 @@ CREATE TABLE settlement_advices (
     advised_at      TIMESTAMPTZ,
     posted_at       TIMESTAMPTZ,
     seq             BIGSERIAL NOT NULL,
-    PRIMARY KEY (book_id, cycle_id, asset)
+    PRIMARY KEY (book_id, reference, asset)
 );
 
 COMMENT ON COLUMN settlement_advices.movement IS

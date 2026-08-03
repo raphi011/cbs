@@ -407,19 +407,32 @@ const (
 	AdvicePosted
 )
 
-// SettlementAdvice is a member bank's own record of a cut-off it was told about:
-// what its reserve moved by, what the central bank says it was left at, and
-// whether this bank has booked it yet.
+// SettlementAdvice is a member bank's own record of a reserve movement it was
+// told about — a cut-off's net settlement or a single return — and whether this
+// bank has booked it yet: what its reserve moved by and what the central bank
+// says it was left at.
 //
 // # It belongs to the BANK and not to the network
 //
 // Book is part of its identity, which is the whole point. A cycle is the
 // clearing house's and a settlement is the central bank's; this is the member's,
 // and under sub-project 8 it lives in that member's own store. Two banks advised
-// of the same cut-off write two rows independently, so "one bank has booked this
-// cut-off and the other has not" is expressible — as one row present and the
-// other ABSENT, rather than as two rows at different statuses. See AdviceAdvised
-// for why the difference matters and what it cost to get wrong.
+// of the same movement write two rows independently, so "one bank has booked
+// this and the other has not" is expressible — as one row present and the other
+// ABSENT, rather than as two rows at different statuses. See AdviceAdvised for
+// why the difference matters and what it cost to get wrong.
+//
+// # Reference is opaque, and that is the point
+//
+// It is the AcctSvcrRef a statement carried, kept verbatim: a cycle id on the
+// path SettleCycleTx builds today, a payment id on the return path sub-project
+// 8's Task 16d adds. A member bank holds no cycles and no other institution's
+// payment ids, so it cannot tell the two apart and has no reason to — Reference
+// exists to be quoted back at the central bank and to be this row's own key, not
+// to be resolved to anything this bank holds. There is deliberately no field
+// saying which kind a row is: ids are unique across the store, and Task 19's
+// reconciliation walks one shape, not two. See AdvisedMovement's doc and
+// StatementMessage's.
 //
 // # ClosingBalance is stored and nothing checks it yet
 //
@@ -429,9 +442,9 @@ const (
 // stored now because it arrives now, and a statement's balance discarded on
 // receipt is a balance nobody can ever go back for.
 type SettlementAdvice struct {
-	Book    ledger.BookID
-	CycleID CycleID
-	Asset   ledger.AssetCode
+	Book      ledger.BookID
+	Reference string
+	Asset     ledger.AssetCode
 
 	// Movement is SIGNED: positive means this bank's reserve went up.
 	Movement       ledger.Amount
@@ -460,13 +473,21 @@ type SettlementAdvice struct {
 // Movement is SIGNED — positive means the member's reserve went up — and the
 // message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the
 // direction travels as CdtDbtInd. See StatementMessage.
+//
+// Reference travels as AcctSvcrRef and StatementRef as Stmt/Id — the account
+// servicer's own reference for the entry and for the statement it sits in.
+// SettleCycleTx sets Reference to the cycle's id and StatementRef to the
+// settlement row's, as string(SettlementID); the return path Task 16d adds sets
+// Reference to a payment id and StatementRef to a value that is NOT a row's key
+// (see AdvisedMovement's doc), which is why StatementRef is a plain string and
+// not a typed SettlementID.
 type SettlementStatement struct {
 	Member       ParticipantID
 	Agent        iso20022.BIC
 	Account      ledger.AccountID
 	Asset        ledger.AssetCode
-	CycleID      CycleID
-	SettlementID SettlementID
+	Reference    string
+	StatementRef string
 
 	Movement       ledger.Amount
 	ClosingBalance ledger.Amount

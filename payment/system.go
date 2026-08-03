@@ -965,7 +965,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 				Agent:          leg.participant.BIC,
 				Account:        leg.accounts.Settlement,
 				Asset:          asset,
-				CycleID:        c.ID,
+				Reference:      string(c.ID),
 				Movement:       leg.net,
 				ClosingBalance: closing,
 				ValueDate:      s.now(),
@@ -992,7 +992,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	// allocated one. It travels as Stmt/Id — the account servicer's reference for
 	// the statement — so a member can quote it back at the central bank.
 	for i := range statements {
-		statements[i].SettlementID = st.ID
+		statements[i].StatementRef = string(st.ID)
 	}
 
 	c.Status = CycleSettled
@@ -1131,9 +1131,9 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 //
 // # Booking twice is not reachable
 //
-// The idempotency key is the same "<cycle>:reserve:<participant>" the central
-// bank used to post under, so a redelivered statement posts nothing; and the
-// advice row is checked first, so it does not even try.
+// The idempotency key is the same "<reference>:reserve:<participant>" the
+// central bank used to post under, so a redelivered statement posts nothing;
+// and the advice row is checked first, so it does not even try.
 func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
 	p, err := s.participantTx(ctx, tx, by)
 	if err != nil {
@@ -1147,7 +1147,7 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		return SettlementAdvice{}, fmt.Errorf("%w: %s is not %s's reserve account", ErrStatementNotForThisBank, m.Account, by)
 	}
 
-	switch existing, err := tx.GetSettlementAdvice(ctx, p.BookID, m.CycleID, m.Asset); {
+	switch existing, err := tx.GetSettlementAdvice(ctx, p.BookID, m.Reference, m.Asset); {
 	case err == nil && existing.Status == AdvicePosted:
 		return existing, nil
 	case err != nil && !errors.Is(err, ErrSettlementAdviceNotFound):
@@ -1157,7 +1157,7 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 	now := s.now()
 	advice := SettlementAdvice{
 		Book:           p.BookID,
-		CycleID:        m.CycleID,
+		Reference:      m.Reference,
 		Asset:          m.Asset,
 		Movement:       m.Movement,
 		ClosingBalance: m.ClosingBalance,
@@ -1206,8 +1206,8 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		return advice, nil
 	}
 	posted, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		IdempotencyKey: string(m.CycleID) + ":reserve:" + string(p.ID),
-		Description:    "Net settlement of cycle " + string(m.CycleID),
+		IdempotencyKey: m.Reference + ":reserve:" + string(p.ID),
+		Description:    "Net settlement of cycle " + m.Reference,
 		Entries:        entries,
 	})
 	if err != nil {

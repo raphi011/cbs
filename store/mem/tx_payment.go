@@ -245,10 +245,11 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 // ---------------------------------------------------------------------------
 //
 // The one payment-layer table that IS book-scoped. An advice is a member bank's
-// own record of a cut-off it was told about, so the book is part of its identity
-// and its sequence is taken under that book rather than under NetworkBook.
+// own record of a reserve movement it was told about, so the book is part of
+// its identity and its sequence is taken under that book rather than under
+// NetworkBook.
 
-// PutSettlementAdvice stores one bank's advice for one cut-off in one asset.
+// PutSettlementAdvice stores one bank's advice for one reference in one asset.
 //
 // SettlementAdvice is all scalars — two IDs, an asset code, two amounts, a
 // status, a transaction ID and two instants — so struct assignment IS the deep
@@ -265,14 +266,14 @@ func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a paym
 	// that column — so a caller passing an advice whose Book disagrees must read
 	// the same answer from both stores.
 	a.Book = book
-	k := adviceKey{book: book, cycle: a.CycleID, asset: a.Asset}
+	k := adviceKey{book: book, reference: a.Reference, asset: a.Asset}
 	t.state.insertSeq(book, kindAdvice, adviceSeqID(k))
 	t.state.settlementAdvices[k] = a
 	return nil
 }
 
-func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
-	a, ok := t.state.settlementAdvices[adviceKey{book: book, cycle: cycle, asset: asset}]
+func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+	a, ok := t.state.settlementAdvices[adviceKey{book: book, reference: reference, asset: asset}]
 	if !ok {
 		return payment.SettlementAdvice{}, payment.ErrSettlementAdviceNotFound
 	}
@@ -287,7 +288,7 @@ func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]p
 		}
 	}
 	sortRows(t.state, out, book, kindAdvice, func(a payment.SettlementAdvice) (time.Time, string) {
-		return a.AdvisedAt, adviceSeqID(adviceKey{book: book, cycle: a.CycleID, asset: a.Asset})
+		return a.AdvisedAt, adviceSeqID(adviceKey{book: book, reference: a.Reference, asset: a.Asset})
 	})
 	return out, nil
 }
@@ -296,7 +297,7 @@ func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]p
 // by. The book is already the sequence's own scope, so only the two remaining
 // parts go in.
 func adviceSeqID(k adviceKey) string {
-	return string(k.cycle) + ":" + string(k.asset)
+	return k.reference + ":" + string(k.asset)
 }
 
 // ---------------------------------------------------------------------------

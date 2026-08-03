@@ -1510,8 +1510,8 @@ func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 		Agent:          "BRVODEFFXXX",
 		Account:        "acc_cb_reserve_bank_2",
 		Asset:          "EUR",
-		CycleID:        "cyc_1",
-		SettlementID:   "set_1",
+		Reference:      "cyc_1",
+		StatementRef:   "set_1",
 		Movement:       250000,
 		ClosingBalance: 300000,
 		ValueDate:      messageNow,
@@ -1543,7 +1543,7 @@ func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 		Asset:          st.Asset,
 		Movement:       st.Movement,
 		ClosingBalance: st.ClosingBalance,
-		CycleID:        st.CycleID,
+		Reference:      st.Reference,
 		ValueDate:      ledger.DayStart(messageNow),
 	}
 	if moves[0] != want {
@@ -1562,7 +1562,7 @@ func TestStatementMessageRoundTripsThroughTheWire(t *testing.T) {
 func TestStatementMessageCarriesTheDirectionInWordsAndTheAmountAsAMagnitude(t *testing.T) {
 	st := SettlementStatement{
 		Member: "bank_2", Agent: "BRVODEFFXXX", Account: "acc_1", Asset: "EUR",
-		CycleID: "cyc_1", SettlementID: "set_1",
+		Reference: "cyc_1", StatementRef: "set_1",
 		Movement: -250000, ClosingBalance: -1, ValueDate: messageNow,
 	}
 	env, err := StatementMessage(st, MessageContext{

@@ -308,16 +308,16 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "unreconciled-position",
       prompt:
-        "`settlement_advices` is a member bank's record of a cut-off it was told about. Its `cycle_id` column has no foreign key to `cycles`. Why is that deliberate?",
+        "`settlement_advices` is a member bank's record of a reserve movement it was told about. Its `reference` column has no foreign key to anything. Why is that deliberate?",
       options: [
         "Because a foreign key would be too slow on a table this large",
         "Because the cycle may not have been created yet when the advice arrives",
-        "Because a member bank has no cycles — the cycle row is the clearing house's, and after the split it is not in the bank's database at all",
-        "Because `cycle_id` is nullable, and a foreign key cannot reference a nullable column",
+        "Because the reference names a cycle or a payment row in an institution the member does not share a database with, in either direction",
+        "Because `reference` is nullable, and a foreign key cannot reference a nullable column",
       ],
       answer: 2,
       explanation:
-        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, cycle_id, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same cut-off write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
+        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) `reference` holds a cycle id on that path, and — once a return can settle on its own — a payment id on another, and a member bank can no more resolve one than the other. A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same movement write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
     },
   ],
 };

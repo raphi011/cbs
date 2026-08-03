@@ -386,7 +386,7 @@ func (b *builder) settle(id payment.CycleID) {
 				Asset:          st.Asset,
 				Movement:       st.Movement,
 				ClosingBalance: st.ClosingBalance,
-				CycleID:        st.CycleID,
+				Reference:      st.Reference,
 				ValueDate:      st.ValueDate,
 			}); err != nil {
 				return err

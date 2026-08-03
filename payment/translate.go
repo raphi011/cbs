@@ -1790,17 +1790,19 @@ func SettlementMessage(legs []SettlementLeg, mc MessageContext) (iso20022.Envelo
 // ReadStatement's job, and losing it there would make a member post its mirror
 // leg backwards.
 //
-// # The cycle rides on AcctSvcrRef
+// # The reference rides on AcctSvcrRef
 //
-// A member bank has no cycles — it never sees a batch — so the only way it can
-// tell which cut-off a reserve movement discharged is for the central bank to
-// say. AcctSvcrRef is the servicer's own reference for the entry, which is
-// exactly what a cycle id is from the central bank's side.
+// A member bank has no cycles — it never sees a batch — and no other
+// institution's payment ids either, so the only way it can tell what a reserve
+// movement discharged is for the central bank to say. AcctSvcrRef is the
+// servicer's own reference for the entry, which is exactly what a cycle id is
+// from the central bank's side on the cut-off path, and what a payment id is on
+// the return path — both equally opaque to the member reading them.
 func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envelope, error) {
 	if st.Account == "" {
 		return iso20022.Envelope{}, fmt.Errorf("%w: Stmt/Acct/Id/Othr/Id", iso20022.ErrMissingElement)
 	}
-	if st.CycleID == "" {
+	if st.Reference == "" {
 		return iso20022.Envelope{}, fmt.Errorf("%w: Ntry/AcctSvcrRef", iso20022.ErrMissingElement)
 	}
 	entryAmt, entryInd, err := signedAmountOf(st.Movement, st.Asset)
@@ -1819,7 +1821,7 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
 		},
 		Stmt: []iso20022.AccountStatement{{
-			Id:      string(st.SettlementID),
+			Id:      st.StatementRef,
 			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
 			Acct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{
 				Othr: &iso20022.GenericAccountIdentification{Id: string(st.Account)},
@@ -1836,8 +1838,8 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 				Sts:          iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
 				BookgDt:      iso20022.DateAndDateTime{Dt: &day},
 				ValDt:        iso20022.DateAndDateTime{Dt: &day},
-				AcctSvcrRef:  string(st.CycleID),
-				AddtlNtryInf: "Settlement of clearing cycle " + string(st.CycleID),
+				AcctSvcrRef:  st.Reference,
+				AddtlNtryInf: "Settlement of clearing cycle " + st.Reference,
 			}},
 		}},
 	}}
@@ -1869,27 +1871,37 @@ func signedAmountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveC
 }
 
 // AdvisedMovement is what a member bank can see in a statement about its own
-// reserve account: the movement, the balance it was left at, and the cut-off
-// that caused it.
+// reserve account: the movement, the balance it was left at, and the reference
+// that names what caused it.
 //
 // It is a DIFFERENT type from SettlementStatement, deliberately. That one is
 // what the sender knew; this is what the receiver can learn, and they are not the
 // same set of facts. ParticipantID never reaches the wire at all — nothing in the
 // message carries it, because a member bank has no use for the central bank's
-// internal name for itself. SettlementID is on the wire, in Stmt/Id, but
-// ReadStatement does not surface it here: it identifies the central bank's OWN
-// settlement row, a member has nothing to do with it and no way to check it
-// against anything it holds, and carrying it through would let a caller mistake
-// the sender's bookkeeping key for something the receiver can act on.
-// Collapsing the two types would put fields on the receiving side that are
-// either always empty or copied from the wire with nothing to verify them
-// against, and invite a caller to trust them either way.
+// internal name for itself. StatementRef is on the wire, in Stmt/Id, but
+// ReadStatement does not surface it here: it is the account servicer's own
+// reference for the STATEMENT, not for the movement — the settlement row's id on
+// the cut-off path, and on the return path (sub-project 8's Task 16d) a value
+// that is not any row's key at all, see SettlementStatement's doc. A member has
+// nothing to do with either and no way to check it against anything it holds,
+// and carrying it through would let a caller mistake the sender's own reference
+// for something the receiver can act on. Collapsing the two types would put
+// fields on the receiving side that are either always empty or copied from the
+// wire with nothing to verify them against, and invite a caller to trust them
+// either way.
+//
+// Reference is the one identifier that DOES cross: it is AcctSvcrRef, read back
+// exactly as StatementMessage wrote it, and it is exactly as opaque to this bank
+// as StatementRef is — a cycle id or a payment id, and a member bank holds
+// neither. See SettlementAdvice's doc for why that opacity is fine: Reference
+// exists to be quoted back and to key this bank's own advice row, not to be
+// resolved to anything.
 type AdvisedMovement struct {
 	Account        ledger.AccountID
 	Asset          ledger.AssetCode
 	Movement       ledger.Amount
 	ClosingBalance ledger.Amount
-	CycleID        CycleID
+	Reference      string
 
 	// ValueDate is CARRIED AND UNREAD, and that is recorded rather than left to
 	// be discovered.
@@ -1962,7 +1974,7 @@ func ReadStatement(doc *iso20022.Camt053) ([]AdvisedMovement, error) {
 			Asset:          asset,
 			Movement:       movement,
 			ClosingBalance: closing,
-			CycleID:        CycleID(entry.AcctSvcrRef),
+			Reference:      entry.AcctSvcrRef,
 			ValueDate:      day,
 		})
 	}

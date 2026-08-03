@@ -524,9 +524,9 @@ func (r *recordingTx) PutSettlementAdvice(ctx context.Context, book ledger.BookI
 	return r.Tx.PutSettlementAdvice(ctx, book, a)
 }
 
-func (r *recordingTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+func (r *recordingTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
 	r.rec.note(book)
-	return r.Tx.GetSettlementAdvice(ctx, book, cycle, asset)
+	return r.Tx.GetSettlementAdvice(ctx, book, reference, asset)
 }
 
 func (r *recordingTx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {

@@ -684,7 +684,7 @@ In the books it shows as a non-zero [[clearing-suspense|clearing suspense]]: the
 What a bank leaves behind when it *does* book is a **settlement-advice row** of its own. The row and the mirror leg are written in the **same unit of work**, so they commit together or neither does — which means the row says "this bank booked this cut-off", and never "this bank was told and did not". A posting that fails takes the row with it.
 
 \`\`\`
-settlement_advices (book_id, cycle_id, asset)
+settlement_advices (book_id, reference, asset)
   row present, status = Posted    this bank booked this cut-off
   no row, suspense not zero       the unreconciled position
 \`\`\`

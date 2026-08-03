@@ -298,7 +298,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 // such method: an advice is a member's own row and nothing in this system reads
 // another institution's yet. The unit of work is opened on a bare context, so the
 // recorder attributes the read to no actor and it cannot spoil a per-actor set.
-func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payment.CycleID) payment.SettlementAdvice {
+func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference payment.CycleID) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.net.GetParticipant(ctx, id)
@@ -307,10 +307,10 @@ func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payme
 	}
 	var out payment.SettlementAdvice
 	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		out, err = tx.GetSettlementAdvice(ctx, p.BookID, cycle, "EUR")
+		out, err = tx.GetSettlementAdvice(ctx, p.BookID, string(reference), "EUR")
 		return err
 	}); err != nil {
-		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, cycle, err)
+		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, reference, err)
 	}
 	return out
 }
