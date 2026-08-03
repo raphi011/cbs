@@ -629,7 +629,8 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 
 // rejectionText is what the reversal is described as in the payer's bank's own
 // ledger: the code, and the free text beside it when there is one. See
-// codeAndText, and payment.TransactionStatusReport for why both are carried.
+// payment.CodeAndText, and payment.TransactionStatusReport for why both are
+// carried.
 func rejectionText(r payment.TransactionStatusReport) string {
-	return codeAndText(string(r.Code), r.Text, "rejected")
+	return payment.CodeAndText(string(r.Code), r.Text, "rejected")
 }

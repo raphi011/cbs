@@ -1345,29 +1345,6 @@ func isAbout(doc *iso20022.Pacs002, msgDef string) bool {
 	return orig.MsgDefIdr == msgDef
 }
 
-// codeAndText is a reason code and the free text beside it, joined for a ledger
-// description.
-//
-// Both, because they say different things — the code is what makes a reversal
-// machine-actionable in a statement or an exception queue, and the text is
-// the part no code can say. The word for "neither was given" is the caller's,
-// because rejectionText is not the only place this shape of join is made:
-// payment.ReturnReason makes the identical one, in its own package, over the
-// sibling code set — see that function's doc for why the two are not one
-// shared helper.
-func codeAndText(code, text, none string) string {
-	switch {
-	case code == "" && text == "":
-		return none
-	case text == "":
-		return code
-	case code == "":
-		return text
-	default:
-		return code + ": " + text
-	}
-}
-
 // notProvided is what a message says where a reference is genuinely unavailable.
 //
 // It is the EPC's convention, already used by payment for a credit transfer with

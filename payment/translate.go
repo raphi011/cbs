@@ -975,13 +975,15 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // still makes ReturnMessage a method rather than a function is narrower than
 // "no I/O": the amount's scale comes from the scheme's asset and only the
 // Network holds the scheme registry, which is an in-memory map, not a store —
-// there is nothing here to cancel. A pacs.004 names no PARTIES: it refers to
-// the original payment by identifier and carries amounts, so nothing in it
-// needs an account holder's name looked up, which is also why it is the one
-// outbound builder with no messageParty in its signature at all. It does now
-// name two AGENTS — see OrgnlTxRef below — and both come off the payment's
-// own DebtorDetails/CreditorDetails, which SubmitPaymentTx already resolved,
-// so this needs no lookup of its own either.
+// there is nothing here to cancel. A pacs.004 names no ACCOUNT HOLDERS: it
+// refers to the original payment by identifier and carries amounts, so
+// nothing in it needs a customer's name looked up, which is also why it is
+// the one outbound builder with no messageParty in its signature at all. It
+// does name a party — RtrRsnInf.Orgtr, the bank that decided to send the
+// money back, see mc.orgtr() — and now two AGENTS too, see OrgnlTxRef below,
+// both of which come off the payment's own DebtorDetails/CreditorDetails,
+// which SubmitPaymentTx already resolved, so this needs no lookup of its own
+// either.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
@@ -1558,15 +1560,42 @@ type ReturnInstruction struct {
 	Reason        string
 }
 
+// CodeAndText is a reason code and the free text beside it, joined for a
+// ledger description.
+//
+// Both, because they say different things — the code is what makes a
+// rejection or a return machine-actionable in a statement or an exception
+// queue, and the text is the part no code can say. The word for "neither was
+// given" is the caller's, because CodeAndText serves two callers answering
+// different questions: mesh.rejectionText, over iso20022.StatusReason, and
+// ReturnReason below, over iso20022.ReturnReason — the sibling external code
+// set pacs004.go keeps as a separate type precisely so that a rejection
+// reason cannot be used as a return reason with nothing to notice. It lives
+// here rather than in mesh because ReturnReason does, and mesh already
+// imports payment; mesh.rejectionText calls through to this rather than
+// keeping its own copy of the same four lines.
+func CodeAndText(code, text, none string) string {
+	switch {
+	case code == "" && text == "":
+		return none
+	case text == "":
+		return code
+	case code == "":
+		return text
+	default:
+		return code + ": " + text
+	}
+}
+
 // ReturnReason is what a return is described as where a CUSTOMER's money
 // moves: the reason the returning bank gave, code and text.
 //
 // It moved here from mesh/centralbank.go, where it used to live beside
-// mesh.rejectionText (which reads the sibling StatusReason code set for a
-// rejection), because ReadReturn needs this exact reading a second time — for
-// ReturnInstruction.Reason above — and mesh cannot be imported from this
-// package (mesh already imports payment). mesh.receiveReturn now calls
-// straight through to this instead of keeping its own copy;
+// mesh.rejectionText (mesh/bank.go, which reads the sibling StatusReason code
+// set for a rejection), because ReadReturn needs this exact reading a second
+// time — for ReturnInstruction.Reason above — and mesh cannot be imported
+// from this package (mesh already imports payment). mesh.receiveReturn now
+// calls straight through to this instead of keeping its own copy;
 // TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers still passes
 // unchanged, because it asserts through the mesh, not against this function
 // directly.
@@ -1581,12 +1610,6 @@ type ReturnInstruction struct {
 // and refuses a return that has neither, so what arrives is one or the
 // other. The nil case is a caller's guard rather than a message: RtrRsnInf is
 // mandatory in a pacs.004 that has been through Unmarshal.
-//
-// The code-and-text join is written out here rather than shared with
-// mesh.rejectionText's identical four lines (mesh.codeAndText), for the same
-// import-direction reason the whole function moved: this package cannot reach
-// into mesh, and four lines are not worth promoting to exported API across
-// two small packages for.
 func ReturnReason(info *iso20022.ReturnReasonInformation) string {
 	if info == nil {
 		return "returned"
@@ -1598,16 +1621,7 @@ func ReturnReason(info *iso20022.ReturnReasonInformation) string {
 	case info.Rsn.Prtry != nil:
 		code = *info.Rsn.Prtry
 	}
-	switch {
-	case code == "" && info.AddtlInf == "":
-		return "returned"
-	case info.AddtlInf == "":
-		return code
-	case code == "":
-		return info.AddtlInf
-	default:
-		return code + ": " + info.AddtlInf
-	}
+	return CodeAndText(code, info.AddtlInf, "returned")
 }
 
 // ReadReturn reads a received pacs.004 as the instructions it carries.
@@ -1617,17 +1631,19 @@ func ReturnReason(info *iso20022.ReturnReasonInformation) string {
 // here may assume every return in a bulk shares one asset just because this
 // system's returns happen to be EUR-only today.
 //
-// A transaction whose OrgnlTxRef is absent, or names only one agent, is
-// refused rather than half-read. iso20022.ReturnTransaction.validate makes
-// OrgnlTxRef optional — a hard requirement would make a return built before
-// this task, or a counterparty that has not adopted it, unreadable — so a
-// document that has been through Unmarshal can still reach here with nothing
-// to resolve accounts from. This function does not assume validate ran at
-// all, and checks both agents itself rather than trusting the pointer is
-// non-nil. ReadSettlement's argument applies unchanged: a settlement
-// instruction that cannot be resolved to accounts must not be half-acted-on,
-// so this refuses the whole message rather than returning some instructions
-// and silently dropping others.
+// A transaction whose OrgnlTxRef is absent, names only one agent, or names an
+// agent with no BICFI, is refused rather than half-read.
+// iso20022.ReturnTransaction.validate makes OrgnlTxRef optional — a hard
+// requirement would make a return built before this task, or a counterparty
+// that has not adopted it, unreadable — so a document that has been through
+// Unmarshal can still reach here with nothing to resolve accounts from. This
+// function does not assume validate ran at all: it checks both agents'
+// presence AND their BICFI itself, rather than trusting either the pointer or
+// the value validate would otherwise have guaranteed. ReadSettlement's
+// argument applies unchanged: a settlement instruction that cannot be
+// resolved to accounts must not be half-acted-on, so this refuses the whole
+// message rather than returning some instructions and silently dropping
+// others.
 func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
 	body := doc.PmtRtr
 	if err := checkNbOfTxs("TxInf", body.TxInf, body.GrpHdr.NbOfTxs); err != nil {
@@ -1635,7 +1651,9 @@ func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
 	}
 	ins := make([]ReturnInstruction, 0, len(body.TxInf))
 	for i, tx := range body.TxInf {
-		if tx.OrgnlTxRef == nil || tx.OrgnlTxRef.DbtrAgt == nil || tx.OrgnlTxRef.CdtrAgt == nil {
+		ref := tx.OrgnlTxRef
+		if ref == nil || ref.DbtrAgt == nil || ref.CdtrAgt == nil ||
+			ref.DbtrAgt.FinInstnId.BICFI == "" || ref.CdtrAgt.FinInstnId.BICFI == "" {
 			return nil, fmt.Errorf(
 				"payment: TxInf[%d]: OrgnlTxRef names no agents; a settlement agent with no payment row cannot resolve this return",
 				i)
@@ -1647,20 +1665,28 @@ func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
 		ins = append(ins, ReturnInstruction{
 			PaymentID:     PaymentID(tx.OrgnlTxId),
 			EndToEndID:    tx.OrgnlEndToEndId,
-			DebtorAgent:   tx.OrgnlTxRef.DbtrAgt.FinInstnId.BICFI,
-			CreditorAgent: tx.OrgnlTxRef.CdtrAgt.FinInstnId.BICFI,
+			DebtorAgent:   ref.DbtrAgt.FinInstnId.BICFI,
+			CreditorAgent: ref.CdtrAgt.FinInstnId.BICFI,
 			Amount:        amount,
 			Asset:         asset,
-			Reason:        ReturnReason(tx.RtrRsnInf),
+			// RtrdIntrBkSttlmAmt, not OrgnlIntrBkSttlmAmt: the two are equal in
+			// this system's own returns, which are always whole, but a
+			// settlement agent moves the amount actually coming back, and only
+			// RtrdIntrBkSttlmAmt says that under the standard's own partial-
+			// return shape — see the comment on ReturnMessage's construction of
+			// the two, and iso20022.ReturnTransaction.
+			Reason: ReturnReason(tx.RtrRsnInf),
 		})
 	}
 	return ins, nil
 }
 
 // checkNbOfTxs holds a sender to its own count. It is onlyTransaction's first
-// half, split out for the one message this system reads in bulk: a settlement
-// instruction is many legs by nature, so the count matters there and the
-// one-transaction limit does not apply.
+// half, split out for the messages this system reads in bulk — a settlement
+// instruction is many legs by nature, and ReadReturn's pacs.004 is shaped for
+// several returns per file even though this system's own mesh only ever
+// sends one — so the count matters for both and the one-transaction limit
+// does not apply to either.
 func checkNbOfTxs[T any](element string, txs []T, nbOfTxs string) error {
 	declared, err := strconv.Atoi(nbOfTxs)
 	if err != nil {

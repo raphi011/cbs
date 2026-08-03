@@ -506,8 +506,8 @@ func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
 }
 
 // returnFixture builds a minimally valid pacs.004 body: one transaction, one
-// reason, no OrgnlTxRef. Each ReadReturn test below starts from this and
-// changes exactly the one thing it means to test.
+// reason, and an OrgnlTxRef naming both agents. Each ReadReturn test below
+// removes or breaks exactly the one thing it means to test.
 func returnFixture() *iso20022.Pacs004 {
 	reason := iso20022.ReturnReasonClosedAccountNumber
 	return &iso20022.Pacs004{PmtRtr: iso20022.PaymentReturn{
@@ -557,6 +557,19 @@ func TestReadReturnRefusesAnOrgnlTxRefNamingOneAgent(t *testing.T) {
 	doc.PmtRtr.TxInf[0].OrgnlTxRef.CdtrAgt = nil
 	if _, err := ReadReturn(doc); err == nil {
 		t.Fatal("read a return naming one agent; a settlement agent cannot resolve the other side's account")
+	}
+}
+
+// TestReadReturnRefusesAnEmptyAgentBICFI is the other half of "checks both
+// agents itself": a present *BranchAndFinancialInstitution whose BICFI is the
+// empty string is what iso20022.BranchAndFinancialInstitution.validate would
+// also refuse (party.go), but ReadReturn does not assume validate ran, so it
+// checks the value and not just the pointer.
+func TestReadReturnRefusesAnEmptyAgentBICFI(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.TxInf[0].OrgnlTxRef.DbtrAgt.FinInstnId.BICFI = ""
+	if _, err := ReadReturn(doc); err == nil {
+		t.Fatal("read a return whose DbtrAgt carries no BICFI; a settlement agent cannot resolve an empty account")
 	}
 }
 
