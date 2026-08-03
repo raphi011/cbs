@@ -158,6 +158,12 @@
 //     interval between the central bank's commit and a member's is the
 //     unreconciled position, and it is modelled rather than hidden — see
 //     SettleCycle.
+//     A RETURN's window still spans the members, and that is the one exception:
+//     ReturnPaymentTx composes every institution's act inside one Store.Update
+//     so that the branch stays buildable, and its own doc records that it is
+//     transitional and that Task 16e ends it. The acts it composes —
+//     SettleReturnTx, PostReturnLegTx — are already each one institution's, and
+//     SettleReturnTx reads no payment at all.
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried

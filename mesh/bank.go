@@ -112,13 +112,18 @@ type bank struct {
 // A message type this bank has no handler for is an ERROR and not a shrug, and
 // after Task 13 the pacs.004 is the one that stays that way. A bank in this
 // system SENDS a return and is never sent one: the message goes to the
-// settlement agent, which posts all three of a return's legs — including the
-// refund into the payer's bank's own book — in one unit of work. In a real
-// network the debtor's bank receives the pacs.004 and credits its customer
-// itself, and this handler would have an arm for it. Here it does not, so one
-// arriving is a bug in whoever sent it, and swallowing it would make a half
-// this system does not have look like one it does. See the return flow in the
-// package doc.
+// settlement agent, which makes every one of a return's postings in one unit of
+// work — including the refund into the payer's bank's own book. That is
+// payment.ReturnPayment being a TRANSITIONAL composition of acts each bank could
+// make for itself, and its own doc says so.
+//
+// In a real network the debtor's bank receives the pacs.004 and credits its
+// customer itself, and this handler would have an arm for it —
+// payment.PostReturnLegTx is exactly that leg, and Task 16e is where this
+// handler grows the arm that calls it. Until then it does not, so one arriving
+// is a bug in whoever sent it, and swallowing it would make a half this system
+// does not have look like one it does. See the return flow in the package
+// doc.
 func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -200,8 +205,8 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 //
 // A payment that is not Settled cannot be returned — PostReturnLegTx says so,
 // with ErrInvalidStateTransition, and ReturnPaymentTx reaches it on its first
-// leg — and this bank refuses it BEFORE the message
-// exists. That is not defensiveness about a check the settlement agent makes
+// leg — and this bank refuses it BEFORE the message exists. That is not
+// defensiveness about a check the settlement agent makes
 // anyway; it is the only way the caller is ever told. That sentinel is
 // classified in payment's reasonTable with the empty code because it describes
 // a defect in this system rather than a judgement about anyone's instruction,
@@ -547,12 +552,13 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 //
 // Neither outcome gives this bank anything to post, and the reason is the same
 // one that sent the pacs.004 to the settlement agent in the first place. A
-// return that WENT THROUGH was three postings in one unit of work — the payer
-// refunded, the payee clawed back, the reserves reversed — and two of those
-// three landed in member banks' books, including this one's. There is no second
-// write left for the bank that asked. What the message buys is that it KNOWS,
-// which before the mesh it could learn only from the return value of the call
-// that did the returning.
+// return that WENT THROUGH was made entirely at the SETTLEMENT AGENT, in one
+// unit of work — this bank's own customer leg, the reserve reversal, both
+// banks' reserve mirrors, and the other bank's customer leg. Postings landed in
+// this bank's book and this bank did not make them, so there is no second write
+// left for the bank that asked. What the message buys is that it KNOWS, which
+// before the mesh it could learn only from the return value of the call that
+// did the returning.
 //
 // A REFUSED return is logged and nothing else, for csm.receiveSettlementStatus's
 // reason: nothing was posted anywhere, so the payment is exactly where it was —
@@ -563,6 +569,17 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 //
 // It is emphatically NOT a dead letter. A dead letter is for what nobody could
 // be told, and this bank was told: it asked, and it has its answer.
+//
+// # Both paragraphs above expire at Task 16e, and it is worth saying which way
+//
+// They describe payment.ReturnPayment, which is a TRANSITIONAL composition of
+// the acts a split return is made of and says so in its own doc. Once this bank
+// posts its own leg BEFORE it sends (payment.PostReturnLegTx), an RJCT arriving
+// here stops being news with nothing behind it: this bank will be holding a
+// posting against a return that will not happen, and unwinding it is
+// payment.ReverseReturnLegTx, which exists and which nothing calls yet. So the
+// "nothing was posted anywhere" above is true today and will be false then, and
+// this handler is where that shows.
 func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {

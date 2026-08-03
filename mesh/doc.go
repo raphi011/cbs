@@ -299,10 +299,11 @@
 //
 // A bank in this system SENDS a return and never receives one, which is the
 // shared store showing through. In a real network the pacs.004 travels to the
-// debtor's bank, which credits its own customer; here the settlement agent
-// posts that leg too, inside the atomic three. So a pacs.004 arriving at a bank
-// is a dead letter, and TestAMessageAnActorHasNoHandlerForIsADeadLetter is what
-// says so.
+// debtor's bank, which credits its own customer; here the settlement agent posts
+// that leg too, inside the one unit of work payment.ReturnPayment still
+// composes. So a pacs.004 arriving at a bank is a dead letter, and
+// TestAMessageAnActorHasNoHandlerForIsADeadLetter is what says so — until Task
+// 16e, when the debtor's bank is sent one and posts its own leg from it.
 //
 // The two refusals are split by whether anyone could be TOLD. A payment that
 // has not settled cannot be returned, and the returning bank refuses that

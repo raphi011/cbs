@@ -61,10 +61,13 @@ import (
 // SETTLEMENT posts its netting transaction in the central bank's own book and in
 // no member's: the mirror leg is the member's, booked from the statement advise
 // sends, and the creditor leg is the payee's bank's, booked from the clearing
-// house's per-payment advice. A RETURN still posts in three books of which two
-// are member banks'. So this institution is the widest-reaching actor in this
-// system on one flow and one of the narrowest on the other. See
-// TestWhichBooksTheCentralBankReachesWhenItSettles and
+// house's per-payment advice. A RETURN still reaches three books of which two
+// are member banks', because payment.ReturnPayment is a TRANSITIONAL
+// composition of the acts a split return is made of; the settlement agent's own
+// act within it, payment.SettleReturnTx, posts in this book and no other. So
+// this institution is the widest-reaching actor in this system on one flow and
+// one of the narrowest on the other, and Task 16e is where the two converge.
+// See TestWhichBooksTheCentralBankReachesWhenItSettles and
 // TestWhichBooksAReturnReaches for the measurements.
 type centralBank struct {
 	m   *Mesh
@@ -277,10 +280,12 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // therefore IS a settlement act, and it belongs where settlement does.
 //
 // The price is the same one receiveSettlement pays and it is worth naming
-// again: the two CUSTOMER legs land in member banks' books, made by this
-// handler. In a real network the pacs.004 travels bank to bank and each posts
-// its own leg. Under one store this actor does all of it, and
-// TestWhichBooksAReturnReaches measures exactly that rather than assuming it.
+// again: postings land in member banks' books, made by this handler — each
+// bank's customer leg and each bank's reserve mirror. In a real network the
+// pacs.004 travels bank to bank, each posts its own leg, and each books its own
+// mirror from the camt.053 it is sent. Under one store this actor does all of
+// it, and TestWhichBooksAReturnReaches measures exactly that rather than
+// assuming it.
 //
 // What has changed under it is that the domain no longer requires this. Task
 // 16d split the return into three acts — payment.PostReturnLegTx for each

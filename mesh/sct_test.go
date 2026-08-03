@@ -154,11 +154,14 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 //
 // pacs.004 is a return, and after Task 13 a bank still has no arm for one — it
 // SENDS returns and is never sent one. The settlement agent executes a return,
-// including the refund into the payer's bank's own book, because the three
-// compensating postings are one unit of work and the middle one moves reserves.
-// In a real network the debtor's bank would receive this message and post its
-// own leg; here there is nothing for it to do with one, and swallowing it would
-// make a half this system does not have look like one it does.
+// including the refund into the payer's bank's own book, because
+// payment.ReturnPayment is still one unit of work over every institution the
+// return touches and the reserve reversal among its postings moves central-bank
+// money. It is a TRANSITIONAL composition of acts each bank could make for
+// itself and says so in its own doc. In a real network the debtor's bank would
+// receive this message and post its own leg; here there is nothing for it to do
+// with one, and swallowing it would make a half this system does not have look
+// like one it does. Task 16e is where that arm arrives and this test changes.
 func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	h := newMeshHarness(t)
 	env, err := h.net.ReturnMessage(h.submitCreditTransfer(t), iso20022.ReturnReasonNotSpecifiedAgentGenerated, "no reason",

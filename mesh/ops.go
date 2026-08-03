@@ -264,9 +264,9 @@ type csmOps interface {
 // the narrowest. TestWhichBooksTheCentralBankReachesWhenItSettles and
 // TestWhichBooksAReturnReaches measure both rather than assuming either.
 //
-// ReturnPayment reaches that far because it is now a COMPOSITION of the three
-// acts a split return is made of, and not because the return still has to be
-// one act: payment.SettleReturnTx is the settlement agent's whole part and
+// ReturnPayment reaches that far because it is now a COMPOSITION of the acts a
+// split return is made of, and not because the return still has to be one act:
+// payment.SettleReturnTx is the settlement agent's whole part and
 // posts only in the central bank's own book. See payment.ReturnPaymentTx, which
 // records that it is transitional and that Task 16e deletes it — and with it
 // the ReturnPayment method declared below.
