@@ -41,6 +41,19 @@ Tasks 16 and 17 are domain conversations on one store and are backend-agnostic.
 They run first. They add DDL either way, and that DDL is small beside translating
 the whole schema once.
 
+**Where that leaves things when this spec is written.** Task 16 is implemented on
+`spec/db-per-entity` at `4ac2bcc` and **not merged**: its documentation sweep
+(16f) is unstarted and no whole-branch review has run, and its handoff is explicit
+that neither is a leftover — on Task 15 the whole-branch review is what found a
+Critical money bug that per-task review structurally cannot see. So the work
+ahead of the swap is 16f, that review, the merge, and then Task 17. None of it is
+affected by the backend, which is the point of doing it first.
+
+One consequence for 16f specifically: it sweeps `0001_init.sql`'s comments along
+with the other layers, and 17.1 then translates that file whole. That is not
+wasted work — the comments are the content and they carry across — but 16f should
+write the *reasoning*, not the Postgres mechanism, wherever it has the choice.
+
 ## The three tasks
 
 The order inside the swap matters more than it looks.
@@ -231,8 +244,8 @@ and must stay green — that is the task's entire point.
 
 ## Existing documents that change
 
-**Amended when this spec lands**, because Tasks 16 and 17 execute before the swap
-and would otherwise be planned against the Postgres shape:
+**Amended when this spec lands**, because Task 16f and Task 17 execute before the
+swap and would otherwise be written against the Postgres shape:
 
 - **`specs/2026-08-02-db-per-entity-design.md`**, as a dated section rather than
   an edit, per its own convention: Task 18 becomes three shapes × **one**
@@ -251,9 +264,19 @@ section *Two Stores, One Conformance Suite*), `web/src/components/hint-content.t
 quiz chapters 15 and 16, `web/src/components/reset-button.tsx`, the `Makefile`,
 and `docker-compose.yml`.
 
-**Not touched:** the six handoffs, the twenty-four plans, and
+**Not touched:** the seven handoffs, the twenty-four plans, and
 `architecture-review-2026-07-30.md`. They are dated records of what was true when
 they were written; this repository corrects forward.
+
+That cuts against one thing, and it is worth naming rather than leaving to be
+tripped over. `handoff-2026-08-03-task-16.md` is not only a record — its closing
+*rules that cost the most when forgotten* is the live instruction set for whoever
+takes Task 17, and two of its entries expire here: "**There is one migration.**
+Edit `0001_init.sql` in place", and the `TEST_DATABASE_URL` line in its
+verification block. Both stay as written. The obligation moves to **Task 17's
+plan and its own handoff**, which must carry them forward corrected — an
+expired rule in a handoff is exactly the "comment written during a transition
+should announce its own expiry" lesson that same file records, pointed at itself.
 
 The documentation half is the larger half. This is a curriculum change wearing a
 backend change's clothes: the README's persistence argument is *built* on there
