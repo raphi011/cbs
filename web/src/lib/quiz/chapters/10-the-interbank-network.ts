@@ -161,9 +161,9 @@ export const chapter: Chapter = {
       concept: "central-bank-reserves",
       prompt:
         "Bank A's 'Reserve at Central Bank' (an asset on Bank A's books) and the central bank's 'Reserve: Bank A' (a liability on the central bank's books) must always show the same dollar balance.",
-      answer: true,
+      answer: false,
       explanation:
-        "These two entries are mirror images of the same pile of reserves — one recorded as Bank A's claim, the other as the central bank's obligation. [[central-bank-reserves]]: if they ever diverged, one party would have a record of money the other side doesn't — precisely the error that double-entry reconciliation exists to make impossible.",
+        "They are mirror images of the same pile of reserves — Bank A's claim and the central bank's obligation — and they agree **once both institutions have booked**. They do not agree in between, and that gap is designed in, not an error. The central bank posts its netting transaction and is [[settlement-finality|final]] there; it then *tells* Bank A, by `camt.053`, and Bank A books its own side in a [[unit-of-work|unit of work]] of its own. Until it does, the two differ by exactly Bank A's net position. That window is the [[unreconciled-position|unreconciled position]], and the whole point of naming it is that the mismatch is the honest state of a system where no institution writes in another's books.",
     },
     {
       kind: "truefalse",

@@ -96,14 +96,31 @@ var reasonTable = []reasonMapping{
 	// ReasonFor itself still cannot tell one of these apart from an error the
 	// table has never heard of at all — both come back MS03 through the same
 	// fallback path, and TestReasonForEmptyCodeEntriesFallToMS03 pins that. So
-	// the discrimination is the CALLER's, made by name: mesh's handlers test
-	// for ErrInvalidStateTransition — the one of the nine an ordinary
-	// redelivery reaches — before they ask for a code at all. The other eight
-	// are not produced by the halves those handlers call, except through a
-	// message quoting an identifier this network has never issued, which
-	// answers MS03. That residue is stated rather than hidden; closing it
-	// needs a two-valued ReasonFor, which is a change to this signature and
-	// to every caller of it.
+	// the discrimination is the CALLER's, made by name, and THREE of the nine
+	// are discriminated that way because three are reached on paths nothing is
+	// wrong with:
+	//
+	//   - ErrInvalidStateTransition, an ordinary redelivery — mesh/bank.go's
+	//     receiveCreditTransfer, csm.receiveInstruction and csm.receiveReturn.
+	//   - ErrNotThisBanksPayment, the ordinary happy path of EVERY push
+	//     settlement. csm.tellSettled fans the ACSC to both banks; the payer's
+	//     bank has no creditor leg, and PostCreditorLeg tells it so. Discarded
+	//     by name at mesh/bank.go's receiveStatus.
+	//   - ErrCycleNotClosed, an ordinary redelivered pacs.009 — a cycle already
+	//     settled is not a rejection to answer. Discriminated at
+	//     mesh/centralbank.go's receiveInstruction.
+	//
+	// This paragraph used to say "the one of the nine" and "the other eight",
+	// and the counts were right while the list held six. Both halves are wrong
+	// now, and the second half was the more misleading of the two: it read as a
+	// claim that the remaining sentinels arise only from malformed messages,
+	// when two of them are on the busiest path in the system.
+	//
+	// The other six are not produced by the halves those handlers call, except
+	// through a message quoting an identifier this network has never issued,
+	// which answers MS03. That residue is stated rather than hidden; closing it
+	// needs a two-valued ReasonFor, which is a change to this signature and to
+	// every caller of it.
 
 	// A lookup for an id this system generated and then could not find is a
 	// bug here, not a defect in the message.

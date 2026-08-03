@@ -595,7 +595,7 @@ After settlement, each bank's [[reserve-account|reserve asset]] changes by exact
   },
   "reserve-account": {
     title: "Reserve at central bank",
-    body: `The **reserve at central bank** is each commercial bank's **asset account** representing its claim on the [[central-bank-reserves|central bank]]. It moves only at settlement and mirrors the bank's reserve liability in the central-bank ledger — the classic **nostro/vostro** reconciliation.
+    body: `The **reserve at central bank** is each commercial bank's **asset account** representing its claim on the [[central-bank-reserves|central bank]]. It mirrors the bank's reserve liability in the central-bank ledger — the classic **nostro/vostro** reconciliation. It moves when this bank books its own **mirror leg**, from the \`camt.053\` the central bank sends it — which is *after* the cut-off has [[settlement-finality|already settled]].
 
 \`\`\`
 Bank A's chart of accounts:
@@ -605,9 +605,11 @@ Central Bank's chart of accounts:
   Reserve: Bank A (EUR) (Liability) ←── the other side
 \`\`\`
 
-These two accounts must always agree: when Bank A's reserve asset rises by €200, the central bank's Reserve: Bank A (EUR) liability also rises by €200. If they diverge, it signals a bookkeeping error. This is the [[double-entry]] invariant applied across the two institutions.
+The two accounts agree **once both institutions have booked**: when Bank A's reserve asset rises by €200, the central bank's Reserve: Bank A (EUR) liability has risen by €200 too. That is the [[double-entry]] invariant applied across two institutions.
 
-The reserve account is the ultimate destination of all [[net-positions|net settlement]] flows — no payment is final until it is reflected here.`,
+**They diverge in between, and that is not an error.** The central bank posts its side first and is [[settlement-finality|final]] there; Bank A is then *told*, by \`camt.053\`, and books its side in a [[unit-of-work|unit of work]] of its own. Until it does, the two balances differ by exactly Bank A's net position. This note used to say they "must always agree" and that a divergence signalled a bookkeeping error — true while one institution posted both sides, and false the moment each posts its own. The window has a name: the [[unreconciled-position|unreconciled position]].
+
+The reserve account is the ultimate destination of all [[net-positions|net settlement]] flows. It is *not* what makes a payment final — the central bank's own commit is — but a bank whose reserve asset has not moved has a cut-off it has not caught up with.`,
   },
   "central-bank-reserves": {
     title: "Central-bank reserves",
@@ -631,7 +633,9 @@ Debit  Reserve: Bank A (EUR) (Liability) 20000  ← A's balance falls
 Credit Reserve: Bank B (EUR) (Liability) 20000  ← B's balance rises
 \`\`\`
 
-The central bank's own books stay balanced under [[double-entry]] — one liability falls as another rises. Commercial banks never write into each other's ledgers; they only interact via these central-bank accounts. The corresponding [[reserve-account|reserve asset]] on each bank's own books moves in lockstep.`,
+The central bank's own books stay balanced under [[double-entry]] — one liability falls as another rises. Commercial banks never write into each other's ledgers; they only interact via these central-bank accounts.
+
+The corresponding [[reserve-account|reserve asset]] on each bank's own books moves **afterwards, not in lockstep**: the central bank sends each member a \`camt.053\` and each member books its own side. This note used to say lockstep, which was true while the settlement agent posted every member's leg inside its own transaction — a posting in a book that was not its. Now the gap between the two is real, and it is the [[unreconciled-position|unreconciled position]].`,
   },
   "clearing-suspense": {
     title: "Clearing suspense",

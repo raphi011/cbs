@@ -1072,8 +1072,26 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 //
 // A bank's clearing suspense holds money that has left a customer and not yet
 // settled between banks. Settlement is when it stops being in transit, so the
-// suspense moves against the reserve: a net receiver's reserve goes up and its
-// suspense down, a net payer's the reverse. Suspense returns to zero only if the
+// suspense is the contra to the reserve: one entry Debit, one Credit. A net
+// receiver's reserve goes UP and its suspense goes UP with it; a net payer's
+// reserve goes DOWN and its suspense goes DOWN.
+//
+// These three comments used to say a net receiver's suspense went down and a net
+// payer's up, and they were wrong about the code they sit on. Contra does not
+// mean opposite BALANCES here: suspense is a ledger.Liability (see
+// AddParticipant), so the receiver's Credit RAISES it and the payer's Debit
+// LOWERS it. Measured in the seed — Verde, a net receiver, credits its suspense
+// 10000; Aurora, a net payer, debits its suspense 25000 to zero.
+//
+// Not a typo worth passing over, because the whole ordering argument for sending
+// the camt.053 BEFORE the ACSC rests on the receiver's suspense going UP first,
+// so that its creditor legs have something to draw on. A reader who trusted the
+// old wording would conclude that requirement was backwards. See
+// mesh.centralBank.advise, mesh's package doc and
+// TestTheMessagesACutOffPutsOnTheWire, which state it the right way round and
+// always did.
+//
+// Suspense returns to zero only if the
 // central bank's reserve movement and the clearing house's payment list agree,
 // which is the reconciliation this whole conversation is for and which needs no
 // cross-store read — that is what makes it legal under isolation.
@@ -1161,12 +1179,12 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 
 	var entries []ledger.Entry
 	switch {
-	case m.Movement > 0: // net receiver: reserve up, suspense down
+	case m.Movement > 0: // net receiver: reserve up, and the suspense up with it
 		entries = []ledger.Entry{
 			{AccountID: accts.Reserve, Amount: m.Movement, Direction: ledger.Debit},
 			{AccountID: accts.Suspense, Amount: m.Movement, Direction: ledger.Credit},
 		}
-	case m.Movement < 0: // net payer: reserve down, suspense up
+	case m.Movement < 0: // net payer: reserve down, and the suspense down with it
 		entries = []ledger.Entry{
 			{AccountID: accts.Suspense, Amount: -m.Movement, Direction: ledger.Debit},
 			{AccountID: accts.Reserve, Amount: -m.Movement, Direction: ledger.Credit},
