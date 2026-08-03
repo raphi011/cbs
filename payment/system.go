@@ -457,15 +457,26 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
+		// An Asset, and the contrast with Unclaimed Balances two lines up is the
+		// point. Unclaimed is money the bank OWES to somebody it has not
+		// identified; this is money OWED TO the bank by somebody it has
+		// identified perfectly well — a biller whose account could not fund a
+		// refund the bank was obliged to honour anyway. Same event, opposite
+		// sides of the balance sheet.
+		returnsReceivable, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Returns Receivable ("+string(asset)+")", ledger.Asset, asset)
+		if err != nil {
+			return nil, err
+		}
 		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
 		if err != nil {
 			return nil, err
 		}
 		accounts[asset] = ParticipantAccounts{
-			Suspense:   suspense.ID,
-			Reserve:    reserve.ID,
-			Unclaimed:  unclaimed.ID,
-			Settlement: cbReserve.ID,
+			Suspense:          suspense.ID,
+			Reserve:           reserve.ID,
+			Unclaimed:         unclaimed.ID,
+			ReturnsReceivable: returnsReceivable.ID,
+			Settlement:        cbReserve.ID,
 		}
 	}
 

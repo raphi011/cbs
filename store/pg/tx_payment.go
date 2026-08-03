@@ -81,10 +81,10 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	for _, asset := range slices.Sorted(maps.Keys(p.Assets)) {
 		accts := p.Assets[asset]
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, settlement)
-			VALUES ($1, $2, $3, $4, $5, $6)`,
+			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			string(p.ID), string(asset),
-			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.Settlement)); err != nil {
+			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable), string(accts.Settlement)); err != nil {
 			return fmt.Errorf("pg: put participant %s asset %s: %w", p.ID, asset, err)
 		}
 	}
@@ -115,7 +115,7 @@ func scanParticipant(row pgx.Row) (payment.Participant, error) {
 // have to be de-duplicated on the way back — the same shape the cycle and
 // settlement readers use, and not worth it for a child table this small.
 func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts, error) {
-	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, settlement FROM participant_assets"
+	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement FROM participant_assets"
 	args := []any{}
 	if id != "" {
 		query += " WHERE participant_id = $1"
@@ -136,7 +136,7 @@ func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (m
 			asset ledger.AssetCode
 			accts payment.ParticipantAccounts
 		)
-		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.Settlement); err != nil {
+		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable, &accts.Settlement); err != nil {
 			return nil, fmt.Errorf("pg: participant assets: %w", err)
 		}
 		if out[pid] == nil {

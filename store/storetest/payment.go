@@ -103,8 +103,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			return tx.PutParticipant(ctx, payment.Participant{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
 				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
-					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
-					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", Settlement: "200.res.002"},
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", ReturnsReceivable: "200.ib.003", Settlement: "200.res.001"},
+					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", ReturnsReceivable: "200.ib.004", Settlement: "200.res.002"},
 				},
 			})
 		})
@@ -119,6 +119,15 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			if got.Assets["USD"].Reserve != "100.ib.002" {
 				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
+			}
+			// returns_receivable is the newest of the four plumbing accounts, and
+			// the one most recently at risk of being silently dropped by an
+			// INSERT column list that forgot it.
+			if got.Assets["EUR"].ReturnsReceivable != "200.ib.003" {
+				t.Errorf("EUR returns receivable = %q, want 200.ib.003", got.Assets["EUR"].ReturnsReceivable)
+			}
+			if got.Assets["USD"].ReturnsReceivable != "200.ib.004" {
+				t.Errorf("USD returns receivable = %q, want 200.ib.004", got.Assets["USD"].ReturnsReceivable)
 			}
 			// A listing must carry them too, not just a single Get — the
 			// listing is the path SettleCycle resolves every member through.

@@ -1256,6 +1256,29 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 	assertEqual(t, "assets after a reload", len(reloaded.Assets), 2)
 }
 
+// TestABankJoinsWithAReturnsReceivableAccount pins the account's CLASS as much
+// as its existence. It is an Asset — a claim on a biller the bank paid out for
+// — and not a liability like Unclaimed Balances, which is money the bank OWES.
+// Getting that backwards would balance and mean the opposite.
+func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	p, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	assertNoError(t, err)
+
+	accts, err := p.AccountsFor(testAsset)
+	assertNoError(t, err)
+	if accts.ReturnsReceivable == "" {
+		t.Fatal("returns receivable account is empty")
+	}
+
+	acct, err := p.Ledger.GetAccount(ctx, accts.ReturnsReceivable)
+	assertNoError(t, err)
+	assertEqual(t, "returns receivable account type", acct.Type, ledger.Asset)
+	assertEqual(t, "returns receivable account name", acct.Name, "Returns Receivable (EUR)")
+}
+
 func TestAccountsForUnknownAssetFails(t *testing.T) {
 	sys := testNetwork(t)
 

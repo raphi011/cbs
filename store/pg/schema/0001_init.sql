@@ -575,16 +575,22 @@ COMMENT ON COLUMN participants.bic IS
 -- registering one afterwards produced customer accounts that could never
 -- settle. What a bank operates in is these rows; what an asset *is* is code.
 CREATE TABLE participant_assets (
-    participant_id TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
-    asset          TEXT NOT NULL,
-    suspense       TEXT NOT NULL,
-    reserve        TEXT NOT NULL,
+    participant_id     TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
+    asset              TEXT NOT NULL,
+    suspense           TEXT NOT NULL,
+    reserve            TEXT NOT NULL,
     -- Where a credit goes when the payee's account will not take it. A
     -- liability, because the bank still owes the money — to whoever eventually
     -- claims it — exactly as it owes a deposit.
-    unclaimed      TEXT NOT NULL,
-    settlement     TEXT NOT NULL,
-    seq            BIGSERIAL NOT NULL,
+    unclaimed          TEXT NOT NULL,
+    -- A claim on a biller, opened when this bank honours a refund it cannot
+    -- fund out of the biller's account. An ASSET, unlike unclaimed above it:
+    -- unclaimed is money the bank owes to somebody it has not identified,
+    -- this is money owed TO the bank by somebody it has identified
+    -- perfectly well. See the COMMENT ON COLUMN below for the full case.
+    returns_receivable TEXT NOT NULL,
+    settlement         TEXT NOT NULL,
+    seq                BIGSERIAL NOT NULL,
     PRIMARY KEY (participant_id, asset)
 );
 
@@ -925,9 +931,23 @@ COMMENT ON COLUMN deposit_accounts.asset IS
     'accounts.asset.';
 
 COMMENT ON COLUMN participant_assets.asset IS
-    'One row per asset this bank operates in, holding the three plumbing '
+    'One row per asset this bank operates in, holding the four plumbing '
     'accounts that asset needs. Unconstrained, for the reason given on '
     'accounts.asset.';
+
+COMMENT ON COLUMN participant_assets.returns_receivable IS
+    'The GL account for a claim on a biller: opened when this bank is forced '
+    'to honour a direct-debit refund it cannot fund out of the biller''s own '
+    'account. It is an ASSET, and the contrast with unclaimed two columns up '
+    'is the point, not an accident. Unclaimed is money this bank OWES to a '
+    'payee it has not identified — a customer it cannot name. This is money '
+    'OWED TO this bank by a biller it has identified perfectly well, whose '
+    'account simply could not cover the clawback the payer''s eight-week '
+    'right made unconditional. Same kind of event — a credit reversed after '
+    'the bank already paid out — landing on opposite sides of the balance '
+    'sheet depending on whether the bank knows who owes it money or owes '
+    'money to someone unknown. Booking it as a liability, like unclaimed, '
+    'would still balance and would say the exact opposite of what happened.';
 
 COMMENT ON COLUMN facilities.asset IS
     'The asset this facility is denominated in, duplicated from the GL '

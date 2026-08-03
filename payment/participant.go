@@ -26,10 +26,15 @@ import (
 //     it has, and the interval between is the unreconciled position.
 //   - Unclaimed (Liability): where a credit goes when the payee's account will
 //     not take it. Money the bank owes somebody it has not yet identified.
+//   - ReturnsReceivable (Asset): a claim on a biller, opened when this bank
+//     honours a refund it cannot fund out of the biller's account. The
+//     opposite class from Unclaimed, on purpose: that one is owed BY the bank
+//     to somebody it hasn't identified, this is owed TO the bank by somebody
+//     it has.
 //   - Settlement: this participant's reserve account in the central-bank
 //     ledger — the central bank's "vostro" view of the bank.
 //
-// The first three are the bank's own; the fourth is the central bank's row for
+// The first four are the bank's own; the fifth is the central bank's row for
 // it, and is named here because settlement needs both ends.
 type ParticipantAccounts struct {
 	Suspense ledger.AccountID
@@ -45,6 +50,15 @@ type ParticipantAccounts struct {
 	// why the gap at ReturnPaymentTx and SettleCycleTx was a ruling rather than a
 	// line of code.
 	Unclaimed ledger.AccountID
+
+	// ReturnsReceivable is a claim on a biller: money the bank paid out to
+	// honour a refund (a SEPA direct debit's unconditional eight-week right,
+	// today) when the biller's account could not fund it. An Asset — the bank
+	// is owed this, by someone it has identified perfectly well — and the
+	// mirror image of Unclaimed two lines up, which is owed BY the bank to
+	// someone it has not identified. Nothing posts to it yet; see
+	// ReturnPaymentTx.
+	ReturnsReceivable ledger.AccountID
 
 	Settlement ledger.AccountID
 }
@@ -79,8 +93,13 @@ type ParticipantAccounts struct {
 //     account cannot receive it. The bank still owes the money — to whoever
 //     eventually claims it — so it is a liability like a deposit, and holding
 //     it here is what lets one payment fail without stranding it.
+//   - Returns Receivable (Asset): a claim on a biller, opened when this bank
+//     honours a refund it cannot fund out of the biller's account. The
+//     opposite class from Unclaimed Balances above, on purpose: that one is
+//     money the bank owes to somebody it hasn't identified, this is money
+//     owed TO the bank by somebody it has.
 //
-// The last three, plus the bank's reserve account in the central-bank ledger,
+// The last four, plus the bank's reserve account in the central-bank ledger,
 // exist once per asset the bank operates in — see Assets.
 type Participant struct {
 	ID   ParticipantID
