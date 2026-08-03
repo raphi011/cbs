@@ -208,6 +208,67 @@ Today `ReturnPaymentTx` debits `creditorGL` with no check in either direction, s
 the push-side refusal is new behaviour and is falsifiable: a settled SCT whose
 payee has spent the money must stop producing a pacs.004.
 
+### Task 16's shape, settled 2026-08-03
+
+The section above states the rule and leaves the mechanism open. The mechanism,
+decided before any code and recorded here so that the plan does not get to invent
+it:
+
+**Two legs, and which bank owns each never changes.** The **clawback** is always
+at the **creditor's** bank, out of `Payment.CreditorLegAccount`. The **refund** is
+always at the **debtor's** bank, into `Payment.Debtor.Account`. What flips with
+the scheme's direction is only which of the two the *returning* bank is holding:
+
+| | the returning bank posts, before it sends | the other bank posts, after finality |
+|---|---|---|
+| push (SCT) | the clawback — **refusable**, so no pacs.004 ever exists | the refund — always postable |
+| pull (SDD refund) | the refund — always postable | the clawback — **forced**; a shortfall lands in `Returns Receivable` |
+
+So the direction-dependence above is one rule rather than two cases: **a bank can
+refuse a leg only if it posts it before it sends.** The section above says the
+returning bank *checks* before it composes the message; this sharpens that to
+*posts*, and the sharpening is the whole of why the refusal binds. A check that
+is not a posting can be outrun by the customer between the check and the credit,
+which under a split settlement is a window that opens after finality and cannot
+be closed by refusing. `Returns Receivable` is needed
+exactly on the pull side, and the reason is structural rather than stipulated —
+the bank that must force the posting is the one that first hears about the return
+after it is already final.
+
+**The order on the wire.** The returning bank posts its own leg against its
+clearing suspense and refuses there if it cannot; sends the pacs.004, now carrying
+`OrgnlTxRef`; the clearing house relays it to the settlement agent. The central
+bank reads the parties **off the message**, reverses reserves in its own book and
+is final either way. It sends a camt.053 to **both** banks — before the answer,
+for the reason `mesh.centralBank.advise` already records — and answers the
+clearing house, which forwards the status to the returning bank and relays the
+pacs.004 to the other bank. Each bank books its reserve mirror from the statement
+and its customer leg from the payment message, exactly as Task 15 has it, so
+suspense returning to zero is the reconciliation on this path too.
+
+**Which act sets `Returned`** is the *second* leg — the other bank's — in both
+directions. That is `PostCreditorLegTx`'s shape reused: the final customer leg is
+what the status is about, and one row takes one transition.
+
+**A rejected return must unwind.** The returning bank has already posted when the
+answer arrives, so `bank.receiveReturnStatus` stops being a log line: an RJCT
+reverses the local leg. This is the price of the binding refusal and is worth it —
+the alternative moves a customer's money on a check that finality can outrun.
+
+**New in the domain.** `ParticipantAccounts.ReturnsReceivable`, a `ledger.Asset`
+per asset — the bank's claim on a biller it paid out for. `SettlementAdvice`
+generalises to a key of `(Book, Reference, Asset)`, `Reference` being a cycle id
+or a payment id, plus a kind: a return's statement names a payment and there is
+otherwise no row for a bank to record having booked it, and Task 19 should
+reconcile one shape rather than two. And the settlement agent needs **its own**
+dedupe for a redelivered pacs.004, because it can no longer lean on
+`ErrInvalidStateTransition` from a payment row it will not have.
+
+**The measurement** is the table's — `allBooks()` → `[CentralBankBook, Network]` —
+plus a counterpart for the banks, as Task 15 needed. Task 15's lesson applies: the
+counterpart is the one whose *name* will claim the opposite of its measurement if
+it is not rewritten.
+
 ## Rulings this sub-project reverses
 
 Each must be written down as a reversal. A reversed ruling that looks like an
