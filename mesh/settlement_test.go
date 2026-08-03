@@ -273,7 +273,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 		{"the payer's bank", h.debtorPID, -harnessAmount},
 		{"the payee's bank", h.creditorPID, harnessAmount},
 	} {
-		advice := h.advice(t, member.pid, cyc.ID)
+		advice := h.advice(t, member.pid, string(cyc.ID))
 		if advice.Status != payment.AdvicePosted || advice.MirrorTx == "" {
 			t.Errorf("%s holds an advice that is %v with mirror %q, want Posted with a transaction",
 				member.name, advice.Status, advice.MirrorTx)
@@ -298,7 +298,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 // such method: an advice is a member's own row and nothing in this system reads
 // another institution's yet. The unit of work is opened on a bare context, so the
 // recorder attributes the read to no actor and it cannot spoil a per-actor set.
-func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference payment.CycleID) payment.SettlementAdvice {
+func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.net.GetParticipant(ctx, id)
@@ -307,7 +307,7 @@ func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference p
 	}
 	var out payment.SettlementAdvice
 	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		out, err = tx.GetSettlementAdvice(ctx, p.BookID, string(reference), "EUR")
+		out, err = tx.GetSettlementAdvice(ctx, p.BookID, reference, "EUR")
 		return err
 	}); err != nil {
 		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, reference, err)

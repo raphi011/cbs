@@ -1131,9 +1131,10 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 //
 // # Booking twice is not reachable
 //
-// The idempotency key is the same "<reference>:reserve:<participant>" the
-// central bank used to post under, so a redelivered statement posts nothing;
-// and the advice row is checked first, so it does not even try.
+// The idempotency key is derived from the statement's own reference —
+// "<reference>:reserve:<participant>" — so a redelivered statement's posting
+// request lands on the same key in THIS bank's own ledger, and the ledger
+// refuses it; and the advice row is checked first, so it does not even try.
 func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
 	p, err := s.participantTx(ctx, tx, by)
 	if err != nil {

@@ -103,8 +103,8 @@ func injectStatement(t *testing.T, h *meshHarness, to iso20022.BIC, env iso20022
 //
 // The money assertion is the substance: the mirror leg moved the reserve once.
 // Behind the guard the posting carries the idempotency key
-// "<cycle>:reserve:<participant>", so a defect that got past it could not post
-// twice either — the guard's own job is to stop the bank TRYING, and its
+// "<reference>:reserve:<participant>", so a defect that got past it could not
+// post twice either — the guard's own job is to stop the bank TRYING, and its
 // observable form is the unchanged advice row that comes back.
 func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	h := newMeshHarness(t)
@@ -114,7 +114,7 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	h.drain(t)
 
 	cyc := h.creditTransferCycle(t)
-	before := h.advice(t, h.creditorPID, cyc.ID)
+	before := h.advice(t, h.creditorPID, string(cyc.ID))
 	if before.Status != payment.AdvicePosted {
 		t.Fatalf("the payee's bank holds an advice that is %v; there is no redelivery to test otherwise", before.Status)
 	}
@@ -126,7 +126,7 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 	h.injectRaw(t, h.cfg.CentralBankBIC, h.creditorBIC, raw)
 	h.drain(t)
 
-	after := h.advice(t, h.creditorPID, cyc.ID)
+	after := h.advice(t, h.creditorPID, string(cyc.ID))
 	if after != before {
 		t.Errorf("the advice row is %+v after a replayed statement, want the unchanged %+v", after, before)
 	}
@@ -295,7 +295,7 @@ func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
 	h.drain(t)
 
 	cyc := h.creditTransferCycle(t)
-	before := h.advice(t, h.creditorPID, cyc.ID)
+	before := h.advice(t, h.creditorPID, string(cyc.ID))
 	reserveBefore := h.reserveOf(t, h.creditorPID)
 
 	env, doc := statementTo(t, h, h.creditorBIC)
@@ -306,7 +306,7 @@ func TestAnUnreadableStatementIsNotBooked(t *testing.T) {
 	if drained == nil || !strings.Contains(drained.Error(), "could not read the statement") {
 		t.Fatalf("draining after an unreadable statement = %v, want a dead letter", drained)
 	}
-	if after := h.advice(t, h.creditorPID, cyc.ID); after != before {
+	if after := h.advice(t, h.creditorPID, string(cyc.ID)); after != before {
 		t.Errorf("the advice row is %+v after an unreadable statement, want the unchanged %+v", after, before)
 	}
 	if got := h.reserveOf(t, h.creditorPID); got != reserveBefore {

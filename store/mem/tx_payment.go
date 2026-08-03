@@ -251,11 +251,11 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 
 // PutSettlementAdvice stores one bank's advice for one reference in one asset.
 //
-// SettlementAdvice is all scalars — two IDs, an asset code, two amounts, a
-// status, a transaction ID and two instants — so struct assignment IS the deep
-// copy the store contract asks for: there is no map or slice for a caller to
-// keep a reference into, unlike the participants, payments, cycles and
-// settlements copied at the bottom of this file.
+// SettlementAdvice is all scalars — an ID, a reference string, an asset code,
+// two amounts, a status, a transaction ID and two instants — so struct
+// assignment IS the deep copy the store contract asks for: there is no map or
+// slice for a caller to keep a reference into, unlike the participants,
+// payments, cycles and settlements copied at the bottom of this file.
 func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
 	if err := t.write(); err != nil {
 		return err
