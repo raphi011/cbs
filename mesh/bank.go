@@ -137,8 +137,12 @@ type bank struct {
 // bank that is not that leg's owner (payment.ErrNotAPartyToThisReturn). See
 // receiveReturn, and the return flow in the package doc.
 //
-// Every message definition this system emits now has an arm here, so the
-// default is reached only by a message no actor in this mesh sends.
+// What is left for the default is the pacs.009: a settlement instruction is
+// addressed to the settlement agent, names net positions between members and the
+// central bank, and is the one message definition this system emits that a
+// member bank has nothing to do with. Nobody sends one here — the clearing house
+// addresses them to the central bank — which is why
+// TestAMessageAnActorHasNoHandlerForIsADeadLetter has to inject one.
 func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
