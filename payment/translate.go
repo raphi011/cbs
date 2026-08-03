@@ -338,6 +338,15 @@ func agentOf(b iso20022.BIC) iso20022.BranchAndFinancialInstitution {
 	}
 }
 
+// agentRef is agentOf as a pointer, for the elements — OrgnlTxRef's DbtrAgt
+// and CdtrAgt — where the schema makes the agent optional and so the field is
+// *BranchAndFinancialInstitution rather than the value every mandatory Dbtr/
+// Cdtr on this package's other messages uses.
+func agentRef(b iso20022.BIC) *iso20022.BranchAndFinancialInstitution {
+	a := agentOf(b)
+	return &a
+}
+
 // amountOf converts a ledger amount to the standard's decimal representation.
 //
 // The scale comes from the asset definition rather than from a constant,
@@ -966,10 +975,13 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // still makes ReturnMessage a method rather than a function is narrower than
 // "no I/O": the amount's scale comes from the scheme's asset and only the
 // Network holds the scheme registry, which is an in-memory map, not a store —
-// there is nothing here to cancel. A pacs.004 names no parties: it refers to
+// there is nothing here to cancel. A pacs.004 names no PARTIES: it refers to
 // the original payment by identifier and carries amounts, so nothing in it
-// needs a BIC or an account holder's name looked up, which is also why it is
-// the one outbound builder with no messageParty in its signature at all.
+// needs an account holder's name looked up, which is also why it is the one
+// outbound builder with no messageParty in its signature at all. It does now
+// name two AGENTS — see OrgnlTxRef below — and both come off the payment's
+// own DebtorDetails/CreditorDetails, which SubmitPaymentTx already resolved,
+// so this needs no lookup of its own either.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
@@ -997,6 +1009,15 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 			Orgtr:    mc.orgtr(),
 			Rsn:      iso20022.ReturnReasonChoice{Cd: &reason},
 			AddtlInf: text,
+		},
+		// The settlement agent that must reverse this return's two reserve
+		// legs holds no payment row under sub-project 8 — see
+		// iso20022.OriginalTransactionReference. Both agents are already on
+		// the payment: DebtorDetails/CreditorDetails were resolved once, at
+		// submission, and are not looked up again here.
+		OrgnlTxRef: &iso20022.OriginalTransactionReference{
+			DbtrAgt: agentRef(p.DebtorDetails.Agent),
+			CdtrAgt: agentRef(p.CreditorDetails.Agent),
 		},
 	}}
 
@@ -1519,6 +1540,121 @@ func ReadSettlement(doc *iso20022.Pacs009) ([]SettlementLeg, error) {
 		})
 	}
 	return legs, nil
+}
+
+// ReturnInstruction is one payment being returned, as a settlement agent needs
+// it: which two agents move reserves, how much, and why.
+//
+// DebtorAgent and CreditorAgent come off OrgnlTxRef, not off a payment row —
+// see iso20022.OriginalTransactionReference for why a settlement agent under
+// sub-project 8 has no row to read them from instead.
+type ReturnInstruction struct {
+	PaymentID     PaymentID
+	EndToEndID    string
+	DebtorAgent   iso20022.BIC
+	CreditorAgent iso20022.BIC
+	Amount        ledger.Amount
+	Asset         ledger.AssetCode
+	Reason        string
+}
+
+// ReturnReason is what a return is described as where a CUSTOMER's money
+// moves: the reason the returning bank gave, code and text.
+//
+// It moved here from mesh/centralbank.go, where it used to live beside
+// mesh.rejectionText (which reads the sibling StatusReason code set for a
+// rejection), because ReadReturn needs this exact reading a second time — for
+// ReturnInstruction.Reason above — and mesh cannot be imported from this
+// package (mesh already imports payment). mesh.receiveReturn now calls
+// straight through to this instead of keeping its own copy;
+// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers still passes
+// unchanged, because it asserts through the mesh, not against this function
+// directly.
+//
+// Two of the three postings, not three. ReturnPaymentTx writes this into the
+// payer's refund and the payee's clawback, and describes the reserve reversal
+// between the two banks as the settlement it is — a bank's own position
+// moving carries no customer's reason.
+//
+// Both arms of the choice are read, because both are legal — iso20022's
+// ReturnReasonChoice requires exactly one of a code and a proprietary text,
+// and refuses a return that has neither, so what arrives is one or the
+// other. The nil case is a caller's guard rather than a message: RtrRsnInf is
+// mandatory in a pacs.004 that has been through Unmarshal.
+//
+// The code-and-text join is written out here rather than shared with
+// mesh.rejectionText's identical four lines (mesh.codeAndText), for the same
+// import-direction reason the whole function moved: this package cannot reach
+// into mesh, and four lines are not worth promoting to exported API across
+// two small packages for.
+func ReturnReason(info *iso20022.ReturnReasonInformation) string {
+	if info == nil {
+		return "returned"
+	}
+	var code string
+	switch {
+	case info.Rsn.Cd != nil:
+		code = string(*info.Rsn.Cd)
+	case info.Rsn.Prtry != nil:
+		code = *info.Rsn.Prtry
+	}
+	switch {
+	case code == "" && info.AddtlInf == "":
+		return "returned"
+	case info.AddtlInf == "":
+		return code
+	case code == "":
+		return info.AddtlInf
+	default:
+		return code + ": " + info.AddtlInf
+	}
+}
+
+// ReadReturn reads a received pacs.004 as the instructions it carries.
+//
+// The scale comes from ledger.LookupAsset on the transaction's OWN currency,
+// never from a constant — ReadSettlement's reason, one message over: nothing
+// here may assume every return in a bulk shares one asset just because this
+// system's returns happen to be EUR-only today.
+//
+// A transaction whose OrgnlTxRef is absent, or names only one agent, is
+// refused rather than half-read. iso20022.ReturnTransaction.validate makes
+// OrgnlTxRef optional — a hard requirement would make a return built before
+// this task, or a counterparty that has not adopted it, unreadable — so a
+// document that has been through Unmarshal can still reach here with nothing
+// to resolve accounts from. This function does not assume validate ran at
+// all, and checks both agents itself rather than trusting the pointer is
+// non-nil. ReadSettlement's argument applies unchanged: a settlement
+// instruction that cannot be resolved to accounts must not be half-acted-on,
+// so this refuses the whole message rather than returning some instructions
+// and silently dropping others.
+func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
+	body := doc.PmtRtr
+	if err := checkNbOfTxs("TxInf", body.TxInf, body.GrpHdr.NbOfTxs); err != nil {
+		return nil, err
+	}
+	ins := make([]ReturnInstruction, 0, len(body.TxInf))
+	for i, tx := range body.TxInf {
+		if tx.OrgnlTxRef == nil || tx.OrgnlTxRef.DbtrAgt == nil || tx.OrgnlTxRef.CdtrAgt == nil {
+			return nil, fmt.Errorf(
+				"payment: TxInf[%d]: OrgnlTxRef names no agents; a settlement agent with no payment row cannot resolve this return",
+				i)
+		}
+		amount, asset, err := amountIn(tx.RtrdIntrBkSttlmAmt)
+		if err != nil {
+			return nil, fmt.Errorf("TxInf[%d]: %w", i, err)
+		}
+		ins = append(ins, ReturnInstruction{
+			PaymentID:     PaymentID(tx.OrgnlTxId),
+			EndToEndID:    tx.OrgnlEndToEndId,
+			DebtorAgent:   tx.OrgnlTxRef.DbtrAgt.FinInstnId.BICFI,
+			CreditorAgent: tx.OrgnlTxRef.CdtrAgt.FinInstnId.BICFI,
+			Amount:        amount,
+			Asset:         asset,
+			Reason:        ReturnReason(tx.RtrRsnInf),
+		})
+	}
+	return ins, nil
 }
 
 // checkNbOfTxs holds a sender to its own count. It is onlyTransaction's first

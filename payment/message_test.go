@@ -411,6 +411,34 @@ func TestReturnMessageCarriesTheReturnReason(t *testing.T) {
 	}
 }
 
+// TestAReturnCarriesTheTwoAgentsItsSettlementNeeds is the whole of why
+// OrgnlTxRef stopped being deliberately absent. A settlement agent with no
+// payment rows learns whose reserves to move from this element or from
+// nothing.
+func TestAReturnCarriesTheTwoAgentsItsSettlementNeeds(t *testing.T) {
+	n, p := networkWithOnePayment(t)
+	env, err := n.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
+		MessageContext{From: "VERDITMMXXX", To: "CSMXFRPPXXX", MsgID: "VERDE-R2", Now: messageNow})
+	if err != nil {
+		t.Fatalf("ReturnMessage: %v", err)
+	}
+	ins, err := ReadReturn(env.Document.(*iso20022.Pacs004))
+	if err != nil {
+		t.Fatalf("ReadReturn: %v", err)
+	}
+	if len(ins) != 1 {
+		t.Fatalf("got %d instructions, want 1", len(ins))
+	}
+	got := ins[0]
+	if got.DebtorAgent != p.DebtorDetails.Agent || got.CreditorAgent != p.CreditorDetails.Agent {
+		t.Errorf("agents came back %s/%s, want %s/%s",
+			got.DebtorAgent, got.CreditorAgent, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	}
+	if got.PaymentID != p.ID || got.Amount != p.Amount {
+		t.Errorf("got %s for %d, want %s for %d", got.PaymentID, got.Amount, p.ID, p.Amount)
+	}
+}
+
 func TestSettlementMessageIsOneLegPerBank(t *testing.T) {
 	env, err := SettlementMessage([]SettlementLeg{
 		{From: "AURODEFFXXX", To: "VERDITMMXXX", Amount: 250000, Asset: "EUR", Reference: "cyc_1:bank_1"},

@@ -505,6 +505,96 @@ func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
 	}
 }
 
+// returnFixture builds a minimally valid pacs.004 body: one transaction, one
+// reason, no OrgnlTxRef. Each ReadReturn test below starts from this and
+// changes exactly the one thing it means to test.
+func returnFixture() *iso20022.Pacs004 {
+	reason := iso20022.ReturnReasonClosedAccountNumber
+	return &iso20022.Pacs004{PmtRtr: iso20022.PaymentReturn{
+		GrpHdr: iso20022.ReturnGroupHeader{MsgId: "VERDE-R1", NbOfTxs: "1"},
+		TxInf: []iso20022.ReturnTransaction{{
+			RtrId:               "pay-0001:rtr",
+			OrgnlEndToEndId:     "e2e-1",
+			OrgnlTxId:           "pay-0001",
+			OrgnlIntrBkSttlmAmt: iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "25.00"},
+			RtrdIntrBkSttlmAmt:  iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "25.00"},
+			RtrRsnInf: &iso20022.ReturnReasonInformation{
+				Orgtr: &iso20022.PartyIdentification{
+					Id: &iso20022.PartyChoice{OrgId: &iso20022.OrganisationIdentification{AnyBIC: "VERDITMMXXX"}},
+				},
+				Rsn: iso20022.ReturnReasonChoice{Cd: &reason},
+			},
+			OrgnlTxRef: &iso20022.OriginalTransactionReference{
+				DbtrAgt: &iso20022.BranchAndFinancialInstitution{
+					FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "AURODEFFXXX"},
+				},
+				CdtrAgt: &iso20022.BranchAndFinancialInstitution{
+					FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: "VERDITMMXXX"},
+				},
+			},
+		}},
+	}}
+}
+
+// TestReadReturnRefusesAnAbsentOrgnlTxRef is ReadSettlement's argument, one
+// message over: a return whose agents cannot be read must not be half-acted-
+// on. OrgnlTxRef is optional on the wire — a return built before this task,
+// or by a counterparty that has not adopted it, carries none — and ReadReturn
+// is where that absence stops rather than reaching a caller as two empty BICs.
+func TestReadReturnRefusesAnAbsentOrgnlTxRef(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.TxInf[0].OrgnlTxRef = nil
+	if _, err := ReadReturn(doc); err == nil {
+		t.Fatal("read a return naming no agents; a settlement agent cannot resolve accounts from nothing")
+	}
+}
+
+// TestReadReturnRefusesAnOrgnlTxRefNamingOneAgent covers the case
+// iso20022.ReturnTransaction.validate would refuse were it run — this proves
+// ReadReturn does not rely on the caller having validated first.
+func TestReadReturnRefusesAnOrgnlTxRefNamingOneAgent(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.TxInf[0].OrgnlTxRef.CdtrAgt = nil
+	if _, err := ReadReturn(doc); err == nil {
+		t.Fatal("read a return naming one agent; a settlement agent cannot resolve the other side's account")
+	}
+}
+
+// TestReadReturnTakesItsScaleFromTheAsset mirrors
+// TestReadSettlementTakesItsScaleFromTheAsset: the scale comes from
+// ledger.LookupAsset on the transaction's own currency, never a constant.
+func TestReadReturnTakesItsScaleFromTheAsset(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.TxInf[0].RtrdIntrBkSttlmAmt = iso20022.ActiveCurrencyAndAmount{Ccy: "BTC", Value: "0.00250000"}
+
+	got, err := ReadReturn(doc)
+	if err != nil {
+		t.Fatalf("ReadReturn of a BTC return: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d instructions, want 1", len(got))
+	}
+	if got[0].Amount != 250000 || got[0].Asset != "BTC" {
+		t.Errorf("instruction = %d %s, want 250000 BTC (0.00250000 at the asset's scale of 8)",
+			got[0].Amount, got[0].Asset)
+	}
+}
+
+// TestReadReturnRefusesACountThatIsNotANumber mirrors
+// TestReadSettlementRefusesACountThatIsNotANumber: NbOfTxs is what the sender
+// asserted, and an assertion that is not a count is not one.
+func TestReadReturnRefusesACountThatIsNotANumber(t *testing.T) {
+	doc := returnFixture()
+	doc.PmtRtr.GrpHdr.NbOfTxs = "many"
+	_, err := ReadReturn(doc)
+	if err == nil {
+		t.Fatal("accepted a return whose NbOfTxs is not a number")
+	}
+	if !strings.Contains(err.Error(), "NbOfTxs") {
+		t.Errorf("error = %v, want it to name the count that was not a count", err)
+	}
+}
+
 // camt053Fixture builds a minimally valid statement: one entry, one CLBD
 // balance, an Othr-identified account. Each ReadStatement refusal test below
 // starts from this and breaks exactly the one thing it means to test, so a

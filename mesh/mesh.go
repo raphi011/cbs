@@ -1349,10 +1349,12 @@ func isAbout(doc *iso20022.Pacs002, msgDef string) bool {
 // description.
 //
 // Both, because they say different things — the code is what makes a reversal
-// or a return machine-actionable in a statement or an exception queue, and the
-// text is the part no code can say. The word for "neither was given" is the
-// caller's, because the two code sets it serves are answering different
-// questions: see rejectionText and returnReason.
+// machine-actionable in a statement or an exception queue, and the text is
+// the part no code can say. The word for "neither was given" is the caller's,
+// because rejectionText is not the only place this shape of join is made:
+// payment.ReturnReason makes the identical one, in its own package, over the
+// sibling code set — see that function's doc for why the two are not one
+// shared helper.
 func codeAndText(code, text, none string) string {
 	switch {
 	case code == "" && text == "":

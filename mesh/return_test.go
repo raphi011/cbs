@@ -361,9 +361,10 @@ func TestAReturnTheSettlementAgentCannotActOnWholeIsRefused(t *testing.T) {
 //     which is what makes the return legible on a statement months later.
 //
 // The CENTRAL BANK's own leg is asserted NOT to carry it, and that is not
-// pedantry: it is the sentence in returnReason's doc that would otherwise be
-// wrong. ReturnPaymentTx describes the reserve reversal as the settlement it
-// is, so the reason reaches two of the three postings and not three.
+// pedantry: it is the sentence in payment.ReturnReason's doc that would
+// otherwise be wrong. ReturnPaymentTx describes the reserve reversal as the
+// settlement it is, so the reason reaches two of the three postings and not
+// three.
 func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.settledPayment(t)
@@ -413,7 +414,7 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 }
 
 // TestAProprietaryReturnReasonReachesTheLedgersToo is the other arm of the
-// choice, and it is why returnReason reads both.
+// choice, and it is why payment.ReturnReason reads both.
 //
 // ReturnReasonChoice is an xsd:choice with a code and a PROPRIETARY text, and
 // iso20022 refuses a return carrying neither. A code is what this system's own

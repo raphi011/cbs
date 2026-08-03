@@ -58,6 +58,18 @@
           </Rsn>
           <AddtlInf>beneficiary account closed 2026-08-02</AddtlInf>
         </RtrRsnInf>
+        <OrgnlTxRef>
+          <DbtrAgt>
+            <FinInstnId>
+              <BICFI>AURTSESSXXX</BICFI>
+            </FinInstnId>
+          </DbtrAgt>
+          <CdtrAgt>
+            <FinInstnId>
+              <BICFI>VERDITMMXXX</BICFI>
+            </FinInstnId>
+          </CdtrAgt>
+        </OrgnlTxRef>
       </TxInf>
     </PmtRtr>
   </Document>

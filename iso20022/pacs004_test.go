@@ -37,6 +37,18 @@ func TestPacs004RoundTrip(t *testing.T) {
 	if orig != returned {
 		t.Fatalf("original %d and returned %d differ; this system returns whole payments", orig, returned)
 	}
+	// OrgnlTxRef is what a settlement agent with no payment row resolves a
+	// return's accounts from — see the ruling above ReturnTransaction.
+	ref := tx[0].OrgnlTxRef
+	if ref == nil || ref.DbtrAgt == nil || ref.CdtrAgt == nil {
+		t.Fatalf("OrgnlTxRef = %+v, want both agents", ref)
+	}
+	if got := ref.DbtrAgt.FinInstnId.BICFI; got != "AURTSESSXXX" {
+		t.Errorf("OrgnlTxRef/DbtrAgt/FinInstnId/BICFI = %q, want the original payer's bank AURTSESSXXX", got)
+	}
+	if got := ref.CdtrAgt.FinInstnId.BICFI; got != "VERDITMMXXX" {
+		t.Errorf("OrgnlTxRef/CdtrAgt/FinInstnId/BICFI = %q, want the returning bank VERDITMMXXX", got)
+	}
 }
 
 // TestPacs004NamesTheReturningBank pins the EPC-mandatory, ISO-optional
@@ -118,6 +130,21 @@ func TestPacs004Validate(t *testing.T) {
 		d.PmtRtr.TxInf[0].RtrRsnInf.Orgtr = nil
 		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
 			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement", err)
+		}
+	})
+	t.Run("no OrgnlTxRef at all is valid", func(t *testing.T) {
+		d := valid()
+		d.PmtRtr.TxInf[0].OrgnlTxRef = nil
+		if err := d.validate(); err != nil {
+			t.Fatalf("validate() = %v, want OrgnlTxRef to stay optional", err)
+		}
+	})
+	t.Run("an OrgnlTxRef naming one agent is a missing element", func(t *testing.T) {
+		d := valid()
+		d.PmtRtr.TxInf[0].OrgnlTxRef.CdtrAgt = nil
+		if err := d.validate(); !errors.Is(err, ErrMissingElement) {
+			t.Fatalf("validate() = %v, want it to wrap ErrMissingElement — a reference naming one "+
+				"agent is one a settlement agent cannot act on", err)
 		}
 	})
 

@@ -160,30 +160,76 @@ func (i ReturnReasonInformation) validate() error {
 // an amount quoted from a past instruction and meaningless for SEPA's
 // EUR-only rulebook.
 //
-// # OrgnlTxRef is deliberately absent
+// # OrgnlTxRef was absent, and is reversed here — and only here
 //
 // PaymentTransaction112 also carries OrgnlTxRef, EPC-mandatory here exactly as
-// it is on pacs.002, and this package does not implement it — the same ruling,
-// for the same reason, and it is recorded once in full on
-// PaymentTransactionStatus rather than repeated here. This message is an EPC
-// subset in that one identified respect and no other.
+// it is on pacs.002, and this package used not to implement it, on the ruling
+// recorded in full on PaymentTransactionStatus: a roughly twenty-field echo of
+// the original instruction, mostly optional, duplicating CreditTransferTransaction
+// to say nothing new. That ruling still holds on pacs.002 and is NOT reversed
+// there — a rejection answers a payment the same message flow already carries
+// a record of, so nothing there needs OrgnlTxRef to find its way home.
+//
+// A pacs.004 answers a payment that has already SETTLED, and sub-project 8 is
+// what makes that difference load-bearing: once settlement is split one
+// database per institution, the settlement agent that must reverse a return's
+// two reserve legs holds no payment row to read DbtrAgt/CdtrAgt from. It has
+// only what arrived on the wire. So this package implements the narrow slice
+// of OrgnlTxRef those two agents are — OriginalTransactionReference below,
+// not the twenty-field structure the standard defines — and leaves the rest
+// of the omission exactly as PaymentTransactionStatus describes it.
 //
 // The field order is a subsequence of PaymentTransaction112's, which is what
 // the schema requires: RtrId, OrgnlGrpInf, OrgnlEndToEndId, OrgnlTxId,
-// OrgnlIntrBkSttlmAmt, RtrdIntrBkSttlmAmt, ChrgBr, RtrRsnInf.
+// OrgnlIntrBkSttlmAmt, RtrdIntrBkSttlmAmt, ChrgBr, RtrRsnInf, OrgnlTxRef.
 type ReturnTransaction struct {
-	RtrId               string                    `xml:"RtrId"`
-	OrgnlGrpInf         *OriginalGroupInformation `xml:"OrgnlGrpInf,omitempty"`
-	OrgnlEndToEndId     string                    `xml:"OrgnlEndToEndId,omitempty"`
-	OrgnlTxId           string                    `xml:"OrgnlTxId,omitempty"`
-	OrgnlIntrBkSttlmAmt ActiveCurrencyAndAmount   `xml:"OrgnlIntrBkSttlmAmt"`
-	RtrdIntrBkSttlmAmt  ActiveCurrencyAndAmount   `xml:"RtrdIntrBkSttlmAmt"`
-	ChrgBr              ChargeBearer              `xml:"ChrgBr,omitempty"`
-	RtrRsnInf           *ReturnReasonInformation  `xml:"RtrRsnInf,omitempty"`
+	RtrId               string                        `xml:"RtrId"`
+	OrgnlGrpInf         *OriginalGroupInformation     `xml:"OrgnlGrpInf,omitempty"`
+	OrgnlEndToEndId     string                        `xml:"OrgnlEndToEndId,omitempty"`
+	OrgnlTxId           string                        `xml:"OrgnlTxId,omitempty"`
+	OrgnlIntrBkSttlmAmt ActiveCurrencyAndAmount       `xml:"OrgnlIntrBkSttlmAmt"`
+	RtrdIntrBkSttlmAmt  ActiveCurrencyAndAmount       `xml:"RtrdIntrBkSttlmAmt"`
+	ChrgBr              ChargeBearer                  `xml:"ChrgBr,omitempty"`
+	RtrRsnInf           *ReturnReasonInformation      `xml:"RtrRsnInf,omitempty"`
+	OrgnlTxRef          *OriginalTransactionReference `xml:"OrgnlTxRef,omitempty"`
+}
+
+// OriginalTransactionReference is this package's slice of PaymentTransaction112's
+// OrgnlTxRef: the two agents, and nothing else of the twenty-odd fields the
+// standard allows there. See the ruling above ReturnTransaction for why only
+// these two, and why now.
+//
+// It stays OPTIONAL where the EPC makes it mandatory — validate below enforces
+// only that, when present, it names both agents or neither, because a
+// reference naming one side is one a settlement agent cannot act on, and a
+// half-filled element is worse than an absent one for looking usable when it
+// is not.
+type OriginalTransactionReference struct {
+	DbtrAgt *BranchAndFinancialInstitution `xml:"DbtrAgt,omitempty"`
+	CdtrAgt *BranchAndFinancialInstitution `xml:"CdtrAgt,omitempty"`
+}
+
+func (r OriginalTransactionReference) validate() error {
+	switch {
+	case r.DbtrAgt == nil && r.CdtrAgt == nil:
+		return nil
+	case r.DbtrAgt == nil:
+		return fmt.Errorf("%w: OrgnlTxRef/DbtrAgt without CdtrAgt", ErrMissingElement)
+	case r.CdtrAgt == nil:
+		return fmt.Errorf("%w: OrgnlTxRef/CdtrAgt without DbtrAgt", ErrMissingElement)
+	}
+	if err := r.DbtrAgt.validate(); err != nil {
+		return fmt.Errorf("OrgnlTxRef/DbtrAgt: %w", err)
+	}
+	if err := r.CdtrAgt.validate(); err != nil {
+		return fmt.Errorf("OrgnlTxRef/CdtrAgt: %w", err)
+	}
+	return nil
 }
 
 // validate enforces the return's own identifier, something to refer the
-// original payment back by, both amounts, and the EPC-mandatory return reason.
+// original payment back by, both amounts, the EPC-mandatory return reason,
+// and — when OrgnlTxRef is present at all — both its agents.
 //
 // ChrgBr is NOT required, unlike on a pacs.008 or a pacs.003. The EPC
 // guidelines leave it 0..1 for a return and restrict it to SLEV when present,
@@ -207,5 +253,11 @@ func (t ReturnTransaction) validate() error {
 	if t.RtrRsnInf == nil {
 		return fmt.Errorf("%w: TxInf/RtrRsnInf", ErrMissingElement)
 	}
-	return t.RtrRsnInf.validate()
+	if err := t.RtrRsnInf.validate(); err != nil {
+		return err
+	}
+	if t.OrgnlTxRef != nil {
+		return t.OrgnlTxRef.validate()
+	}
+	return nil
 }

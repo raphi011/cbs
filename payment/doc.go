@@ -94,12 +94,16 @@
 // This is a learning model, not a production payment processor:
 //
 //   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
-//     pacs.004 and pacs.009 are implemented — translate.go renders all five
-//     and reads all but pacs.004: ReturnMessage has no reading counterpart
-//     here, because mesh/centralbank.go reads an arriving return's fields
-//     itself and calls ReturnPayment with them. Package mesh is what carries
-//     them between the institutions as marshalled bytes, so they are parsed on
-//     arrival rather than passed as structs. What is absent is
+//     pacs.004 and pacs.009 are implemented — translate.go now renders and
+//     reads all five. ReadReturn is the newest of the five readers and, as of
+//     sub-project 8's Task 16a, has no caller yet: mesh/centralbank.go still
+//     reads an arriving return's fields itself and calls ReturnPayment with
+//     them, because the store split that ReadReturn exists for — a
+//     settlement agent resolving accounts from OrgnlTxRef instead of a
+//     payment row it may no longer hold — is a later task's change, not
+//     this one's. Package mesh is what carries messages between the
+//     institutions as marshalled bytes, so they are parsed on arrival rather
+//     than passed as structs. What is absent is
 //     pain.001/pain.008 customer initiation (an instruction arrives over this
 //     repository's REST API instead), the camt reporting family — including
 //     camt.054 and the admi.002 a real receiver answers an unreadable file

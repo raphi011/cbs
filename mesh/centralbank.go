@@ -351,7 +351,7 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 	}
 
 	id := payment.PaymentID(first.OrgnlTxId)
-	if _, err := cb.ops.ReturnPayment(ctx, id, returnReason(first.RtrRsnInf)); err != nil {
+	if _, err := cb.ops.ReturnPayment(ctx, id, payment.ReturnReason(first.RtrRsnInf)); err != nil {
 		if errors.Is(err, payment.ErrInvalidStateTransition) {
 			return fmt.Errorf("mesh: %s was told to return %s again: %w", cb.bic, id, err)
 		}
@@ -372,41 +372,6 @@ func returnedEndToEnd(tx iso20022.ReturnTransaction) string {
 		return notProvided
 	}
 	return tx.OrgnlEndToEndId
-}
-
-// returnReason is what a return is described as where a CUSTOMER's money moves:
-// the reason the returning bank gave, code and text.
-//
-// Two of the three postings, not three. payment.ReturnPaymentTx writes this
-// into the payer's refund and the payee's clawback, and describes the reserve
-// reversal between the two banks as the settlement it is — a bank's own
-// position moving carries no customer's reason.
-// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers asserts both halves
-// of that, including the one the reason does not reach.
-//
-// Both arms of the choice are read, because both are legal — iso20022's
-// ReturnReasonChoice requires exactly one of a code and a proprietary text, and
-// refuses a return that has neither, so what arrives is one or the other. The
-// nil case is a caller's guard rather than a message: RtrRsnInf is mandatory in
-// a pacs.004 that has been through Unmarshal.
-//
-// It is a separate function from rejectionText, over a shared join, because the
-// two read different external code sets — iso20022.ReturnReason and
-// iso20022.StatusReason — which pacs004.go keeps as separate types precisely so
-// that a rejection reason cannot be used as a return reason with nothing to
-// notice.
-func returnReason(info *iso20022.ReturnReasonInformation) string {
-	if info == nil {
-		return "returned"
-	}
-	var code string
-	switch {
-	case info.Rsn.Cd != nil:
-		code = string(*info.Rsn.Cd)
-	case info.Rsn.Prtry != nil:
-		code = *info.Rsn.Prtry
-	}
-	return codeAndText(code, info.AddtlInf, "returned")
 }
 
 // cycleOf is which closed cycle an instruction discharges, taken from the legs
