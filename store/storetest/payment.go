@@ -1096,6 +1096,57 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 		t.Errorf("bank_2 lists %d advices, want 1 — the list is scoped to one book", len(listed))
 	}
 
+	// The ORDER, which the scoping assertion above could not reach: bank_2 held
+	// exactly one row, so a listing that sorted by nothing at all passed.
+	//
+	// payment.Store documents this list as AdvisedAt then seq, like every other
+	// listing in the interface, and the two stores arrive at it by different
+	// means — store/pg with ORDER BY advised_at, seq and store/mem by sorting a
+	// map, whose iteration order is deliberately randomised by the runtime. So a
+	// single unordered read is exactly what this suite exists to catch, and this
+	// is the only place it can be caught: a bank in one asset holds one advice
+	// per cut-off, and it takes three cut-offs before order means anything.
+	//
+	// The last two share an instant, which is the half that matters. Ties are
+	// broken by INSERTION sequence and not by cycle id — cyc_4 is written before
+	// cyc_3 and must come back first — so a store that fell back to sorting by
+	// key would pass on distinct timestamps and fail here.
+	later := early.Add(time.Hour)
+	for _, a := range []payment.SettlementAdvice{
+		{Book: "bank_2", CycleID: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
+			Status: payment.AdviceAdvised, AdvisedAt: later},
+		{Book: "bank_2", CycleID: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
+			Status: payment.AdviceAdvised, AdvisedAt: later},
+	} {
+		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementAdvice(ctx, a.Book, a)
+		}); err != nil {
+			t.Fatalf("PutSettlementAdvice %s: %v", a.CycleID, err)
+		}
+	}
+	var ordered []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		ordered, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("ListSettlementAdvices: %v", err)
+	}
+	var got []string
+	for _, a := range ordered {
+		got = append(got, string(a.CycleID))
+	}
+	want := []string{"cyc_1", "cyc_4", "cyc_3"}
+	if len(got) != len(want) {
+		t.Fatalf("bank_2 lists %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("bank_2 lists %v, want %v — AdvisedAt ascending, ties by insertion sequence", got, want)
+			break
+		}
+	}
+
 	// A cycle this bank was never advised of is a sentinel, not a zero value: a
 	// bank that read a zero advice would post a mirror leg of nothing and mark
 	// a cut-off it never heard about as settled.
