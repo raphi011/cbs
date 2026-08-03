@@ -258,11 +258,19 @@ the alternative moves a customer's money on a check that finality can outrun.
 **New in the domain.** `ParticipantAccounts.ReturnsReceivable`, a `ledger.Asset`
 per asset — the bank's claim on a biller it paid out for. `SettlementAdvice`
 generalises to a key of `(Book, Reference, Asset)`, `Reference` being a cycle id
-or a payment id, plus a kind: a return's statement names a payment and there is
-otherwise no row for a bank to record having booked it, and Task 19 should
-reconcile one shape rather than two. And the settlement agent needs **its own**
-dedupe for a redelivered pacs.004, because it can no longer lean on
-`ErrInvalidStateTransition` from a payment row it will not have.
+or a payment id: a return's statement names a payment and there is otherwise no
+row for a bank to record having booked it, and Task 19 should reconcile one shape
+rather than two. **No discriminator beside it** — ids are unique across the store,
+so a `kind` column would be a field nothing reads, which is the defect class this
+repository keeps finding.
+
+The settlement agent's **dedupe for a redelivered pacs.004** needs no row either,
+and that is worth stating because it looks like it should. It can no longer lean
+on `ErrInvalidStateTransition` from a payment row it will not have, but
+`ledger.Book.PostTransactionTx` already refuses a repeated idempotency key with
+`ErrDuplicateIdempotencyKey`, and the reversal posts under one derived from the
+payment. The sentinel is renamed at the domain boundary and dead-lettered in the
+mesh exactly as the state-transition refusal is today.
 
 **The measurement** is the table's — `allBooks()` → `[CentralBankBook, Network]` —
 plus a counterpart for the banks, as Task 15 needed. Task 15's lesson applies: the
