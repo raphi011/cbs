@@ -67,6 +67,30 @@ var (
 	// any settlement.
 	ErrSettlementNotFound = errors.New("settlement not found")
 
+	// ErrSettlementAdviceNotFound is a cut-off this bank was never told about.
+	ErrSettlementAdviceNotFound = errors.New("settlement advice not found")
+
+	// ErrNotThisBanksPayment is a bank asked to post a leg for a payment whose
+	// party is somebody else's customer.
+	//
+	// It is the direction rule said about a settlement advice. On a push the
+	// clearing house tells BOTH banks a payment settled — the payer's bank
+	// because it has been waiting for the answer to its instruction, the payee's
+	// bank because it has a leg to post — and only one of them may post. A
+	// system that let either post would credit the payee twice or credit them in
+	// the wrong bank's book.
+	ErrNotThisBanksPayment = errors.New("payment: this bank is not the party whose leg this is")
+
+	// ErrStatementNotForThisBank is a statement about an account this bank does
+	// not hold.
+	//
+	// A member checks the account the statement names against its OWN reserve
+	// account before booking anything from it. A bank that booked whatever
+	// arrived would move its reserve mirror on another member's position — and
+	// under isolation a misrouted statement is exactly the failure that has no
+	// second reader to catch it.
+	ErrStatementNotForThisBank = errors.New("payment: this statement is about an account this bank does not hold")
+
 	// ErrSchemeUnsupportedReturn is returned when a return is attempted on a
 	// payment whose scheme does not support returns.
 	ErrSchemeUnsupportedReturn = errors.New("scheme does not support returns")
@@ -100,18 +124,21 @@ var (
 	// posting contains the claim that some posting in another bank's book is
 	// its other half. Only the payment layer holds both ends at once.
 	//
-	// It does catch it at SETTLEMENT. SettleCycleTx resolves the creditor's
-	// suspense account with creditor.AccountsFor(scheme.Asset()), so the
-	// creditor leg comes out as a EUR suspense debit against a BTC credit and
+	// It does catch it at the CREDITOR LEG. PostCreditorLegTx resolves the
+	// creditor's suspense account with creditor.AccountsFor(scheme.Asset()), so
+	// the leg comes out as a EUR suspense debit against a BTC credit and
 	// validateBalance refuses it with ledger.ErrUnbalancedAsset.
 	//
-	// That is a bad place to find out. Settlement is all-or-nothing, so one
-	// mismatched payment fails the entire clearing cycle, and the error names
-	// an unbalanced asset rather than the payment that caused it. This
-	// sentinel is what turns a late, batch-wide, misattributed failure into an
-	// immediate, correctly attributed one.
+	// That is still a bad place to find out, though less bad than it was. Until
+	// Task 15b.3 the leg was posted inside the settlement agent's unit of work,
+	// so one mismatched payment failed the entire clearing cycle; it is the
+	// payee's bank's own act now, so the cut-off settles and this one payment
+	// stays Cleared. What has not improved is the error: it names an unbalanced
+	// asset rather than the payment that caused it, and it arrives long after
+	// the payer was debited. This sentinel is what turns a late, misattributed
+	// failure into an immediate, correctly attributed one.
 	//
-	// TestCrossAssetPaymentSurvivesInitiationAndFailsTheWholeCycle in
+	// TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank in
 	// system_test.go pins both halves of that.
 	ErrAssetMismatch = errors.New("payment accounts are not denominated in the scheme's asset")
 

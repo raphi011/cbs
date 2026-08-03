@@ -245,7 +245,7 @@ var tables = []string{
 	"products", "product_versions",
 	"facilities", "installments", "facility_terms",
 	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
-	"settlements", "settlement_positions",
+	"settlements", "settlement_positions", "settlement_advices",
 	"audit_events", "id_sequences",
 }
 

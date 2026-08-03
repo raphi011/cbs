@@ -108,6 +108,13 @@ Two things the implementation sharpened, both worth carrying forward:
   could each hold a conforming account in a scheme neither is entitled to) and
   strictly what a real bank can do. Where the check runs and why it is not in
   `Validate` are unchanged; only the claim about a single moment is.
+  *Superseded again by sub-project 8's Task 15:* "settlement is all-or-nothing,
+  so one bad payment fails the whole cycle" is no longer true either. The
+  creditor leg is the payee's bank's own posting now, made in its own unit of
+  work on the clearing house's per-payment advice, so a cross-asset payment
+  fails at that one bank and the cut-off settles around it. What still holds is
+  the argument the sentence was making: the failure is late and names an
+  imbalance rather than a payment, which is why the check is at initiation.
 - **The asset check is a domain rule, so the schema gets no constraint.**
   `accounts.asset` deliberately has no `CHECK` restricting it to the known
   codes; Postgres could express "the asset must be one the system knows" and
@@ -452,6 +459,26 @@ model is misleading rather than merely simplified.
 
 So the sub-project's real deliverable is a concept the repository does not have:
 an unreconciled position, and what a bank does with one.
+
+*Superseded by sub-project 8's Task 15, and this is the paragraph that came
+true.* "`SettleCycleTx` today moves the netted reserves, mirrors them in each
+bank's own books and pays out every creditor inside one `Store.Update`" is a
+description of code that no longer exists, and it went **before** the stores
+split rather than with them: the central bank posts only its own netting
+transaction, each member books its mirror leg from a statement, and each payee's
+bank posts its own creditor leg on a per-payment advice. What this section said
+the model got wrong is now what the model teaches — a member that fails to book
+has a reconciliation break and not a rollback, visible as a clearing suspense
+that has not returned to zero with no `SettlementAdvice` row against the cycle.
+(That row commits in the same unit of work as the mirror leg it records, so a
+failed booking leaves none; an `Advised` row is not what a break looks like, and
+several layers said it was until the review of Task 15b.4.) Two details landed
+differently. The message is a
+**`camt.053`**, not a `camt.054`, because a notification carries no balance and
+therefore cannot detect a wrong posting; and "the settlement agent holds every
+reserve account there" is exact only about the central bank's own book, which is
+where each member's position is recorded on that side. `Network.bind` and the
+live handles on `Participant` survive, because Task 18 is what removes them.
 
 **Dependencies.** 6a, for the per-entity API. 7b, for seams that are already
 message-shaped — attempted before 7b this is a redesign, attempted after it a

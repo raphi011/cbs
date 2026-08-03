@@ -51,17 +51,21 @@ import (
 // these interfaces narrow, and the whole of what they narrow — it is not a ban
 // on those handlers moving money. GetParticipant is on both of the other two and
 // returns a value carrying live ledger and deposit handles bound to whichever
-// bank it names (Network.bind), and a member bank's ledger is exactly where the
-// mirror and creditor legs below go, so posting them is reachable from either of
+// bank it names (Network.bind), and a member bank's ledger is exactly where a
+// return's compensating legs go, so posting in one is reachable from either of
 // those handlers through a method each legitimately holds. The recorder in
 // books_test.go is what watches for that, here as everywhere else in this
 // package; see the note on bankOps in ops.go for the whole of the hole.
 //
-// Both methods behind this interface also reach much further than two methods
-// suggest. Settlement posts in every participant's book as well as the central
-// bank's, which is what SettleCycleTx is, and a return posts in three books of
-// which two are member banks'. See TestWhichBooksTheCentralBankReachesWhenItSettles
-// and TestWhichBooksAReturnReaches for the measurements.
+// The two methods behind this interface no longer reach the same distance.
+// SETTLEMENT posts its netting transaction in the central bank's own book and in
+// no member's: the mirror leg is the member's, booked from the statement advise
+// sends, and the creditor leg is the payee's bank's, booked from the clearing
+// house's per-payment advice. A RETURN still posts in three books of which two
+// are member banks'. So this institution is the widest-reaching actor in this
+// system on one flow and one of the narrowest on the other. See
+// TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches for the measurements.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -97,29 +101,42 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 //
 // # AM04 is the answer this task exists to make expressible
 //
-// A net payer whose reserve cannot cover its position is refused by the ledger,
-// inside SettleCycleTx's single unit of work, so nothing is posted anywhere and
-// the whole batch fails — which is what a settlement window is. Before the mesh
-// that refusal was a Go error returned to whoever clicked settle. It is now
-// AM04 on the wire, addressed to the clearing house, which is the party that
-// can act on it: it holds the cycle, and it is the one that would re-present or
-// unwind.
+// A net payer whose reserve cannot cover its position is refused inside
+// SettleCycleTx, and the whole batch fails with it — which is what a settlement
+// window is. Before the mesh that refusal was a Go error returned to whoever
+// clicked settle. It is now AM04 on the wire, addressed to the clearing house,
+// which is the party that can act on it: it holds the cycle, and it is the one
+// that would re-present or unwind.
+//
+// "Nothing is posted anywhere" is still true and no longer true for the reason it
+// used to be. It once held because one unit of work spanned every book and a
+// failure rolled all of them back. It holds now because the check runs ABOVE the
+// netting transaction, so the central bank has written nothing of its own; and
+// because advise runs only on the success path, so no member is sent a statement
+// and the clearing house fans no ACSC out. There is nothing for a member to undo
+// because no member was ever told.
 //
 // The code comes from payment.ReasonFor, which maps ledger.ErrInsufficientBalance
 // to AM04 through borrowedReasons — the same route deposit.ErrInsufficientAvailable
 // takes for a customer's empty account. Two layers, one code, and it is the
 // right one both times: "the account cannot cover this".
 //
-// # Two errors are dead-lettered instead, and never answered
+// # One error is dead-lettered instead, and never answered
 //
 // A queue redelivers, so a settlement instruction can arrive twice. The second
 // copy names a cycle this network has already settled, and SettleCycleTx refuses
 // it with ErrCycleNotClosed — a statement about THIS system's state and not
 // about the sender's message. payment's reasonTable gives it the EMPTY code for
 // exactly that reason, and ReasonFor would turn it into MS03 and tell the
-// clearing house that a cycle which in fact settled was rejected. The same goes
-// for ErrInvalidStateTransition, which SettleCycleTx produces when a payment in
-// the batch is not Cleared. Both become dead letters and neither is answered.
+// clearing house that a cycle which in fact settled was rejected. So it becomes
+// a dead letter and is not answered.
+//
+// ErrInvalidStateTransition used to be caught here beside it, because
+// SettleCycleTx transitioned every payment in the batch to Settled and refused a
+// batch holding one that was not Cleared. It no longer touches a payment at all
+// — that leg is the payee's bank's, on the clearing house's advice — so the
+// sentinel is no longer reachable from this call and the arm that caught it is
+// gone with the claim.
 func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs009) error {
 	body := doc.FICdtTrf
 	orig := payment.OriginalMessage{
@@ -143,13 +160,109 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 		return cb.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 
-	if _, err := cb.ops.SettleCycle(ctx, id); err != nil {
-		if errors.Is(err, payment.ErrCycleNotClosed) || errors.Is(err, payment.ErrInvalidStateTransition) {
+	_, statements, err := cb.ops.SettleCycle(ctx, id)
+	if err != nil {
+		if errors.Is(err, payment.ErrCycleNotClosed) {
 			return fmt.Errorf("mesh: %s was told to settle %s again: %w", cb.bic, id, err)
 		}
 		return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)
 	}
+	if err := cb.advise(statements); err != nil {
+		return err
+	}
 	return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// advise sends each member the statement of its own reserve account.
+//
+// # Why the members and not the clearing house
+//
+// The clearing house is the party that INSTRUCTED and is the one this actor
+// answers; the members are the parties whose accounts moved, and they are not
+// parties to that conversation at all. Each gets a message about its own account
+// and about no other, which is the whole of what an account servicer tells an
+// account holder.
+//
+// # After the unit of work, and before the answer
+//
+// After, for Mesh.Submit's reason: a statement enqueued from inside SettleCycleTx
+// would be one a bank could book against a settlement the store then rolled back.
+//
+// Before the answer, and since 15b.3 that is load-bearing rather than tidy. The
+// CREDITOR leg is now posted by the payee's bank, from the per-payment advice the
+// clearing house derives FROM the ACSC this answer produces. Sending the
+// statement first is what puts it in that bank's inbox before the ACSC is even
+// built — see TestTheMessagesACutOffPutsOnTheWire, which states the
+// happens-before chain and asserts the pair.
+//
+// It matters for a NET RECEIVER, and that is the case to state precisely rather
+// than generally. A net receiver's mirror leg CREDITS its clearing suspense, and
+// its creditor legs then draw on that suspense; so for that bank the order
+// decides whether the money is there when it pays. It does not arise for the
+// other two shapes: a net PAYER's mirror leg debits its suspense rather than
+// funding it, and a member whose position nets to zero is sent no statement at
+// all — either way that bank's suspense was funded by its own customers'
+// debtor legs, long before the cut-off.
+//
+// The other order is not a corruption, and saying why is the point of stating
+// this at all. Suspense is a Liability and the ledger does not guard those
+// against going negative, so a net receiver that paid its customer first would
+// simply commit, with its suspense overdrawn until the statement arrived. For
+// that interval its own books would say it had lent its customer the money,
+// which is a claim about this bank's balance sheet that nothing in the cut-off
+// justifies. The ordering is what stops it being said.
+//
+// # A failed send is not a failed settlement, and it suppresses three things
+//
+// The reserves have moved and the cycle is Settled: that is final, and this
+// actor cannot unsay it. So a send that fails comes back as an error to the
+// caller — which in this transport reaches Drain as a dead letter — rather than
+// being retried or swallowed. Deliberately no retry: see below on why the path
+// is unreachable, and untested machinery for an unreachable failure is worse
+// than a stated limitation.
+//
+// What the failure costs is wider than the bank that could not be reached, and
+// all three parts belong in one place because a reader who finds only the first
+// will under-estimate the second and third:
+//
+//  1. The unreachable member is never advised, so its advice row is ABSENT —
+//     which is indistinguishable in the store from a member that was told and
+//     could not book, because that row commits with the mirror leg. Either way
+//     it is the unreconciled position: a clearing suspense that has not returned
+//     to zero, with nothing recording why.
+//  2. This returns on the FIRST failing send, so every member AFTER it in the
+//     statement order is never advised either, for a reason that has nothing to
+//     do with that member.
+//  3. cb.answer never runs, so the clearing house is never told ACSC and
+//     csm.tellSettled's per-payment fan-out never happens. Every bank in the
+//     cycle — INCLUDING the ones successfully advised — is left holding an
+//     instruction it believes outstanding, on a payment the domain has already
+//     marked Settled. That is the largest of the three and the least visible.
+//
+// None of it is reachable in this transport. Mesh.send fails in exactly three
+// ways — a message that will not marshal, a BIC with no actor, and an actor that
+// has been stopped — and none of them occurs for a member of a live roster whose
+// statement the domain has just built. The mesh's own doc says why more
+// generally: delivery here is exactly-once and in order, because the transport
+// is a queue inside one process. It becomes reachable the moment the transport
+// can lose a message, which is every real one. Task 19's reconciliation is what
+// makes any of the three detectable from inside the system.
+func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
+	for _, st := range statements {
+		env, err := payment.StatementMessage(st, payment.MessageContext{
+			From:  cb.bic,
+			To:    st.Agent,
+			MsgID: cb.m.nextMsgID(cb.bic),
+			Now:   cb.m.now(),
+		})
+		if err != nil {
+			return fmt.Errorf("mesh: %s could not build the statement for %s: %w", cb.bic, st.Agent, err)
+		}
+		if err := cb.m.send(cb.bic, st.Agent, env); err != nil {
+			return fmt.Errorf("mesh: %s settled %s and could not tell %s: %w", cb.bic, st.CycleID, st.Agent, err)
+		}
+	}
+	return nil
 }
 
 // receiveReturn is the central bank executing a return: the R-transaction, and

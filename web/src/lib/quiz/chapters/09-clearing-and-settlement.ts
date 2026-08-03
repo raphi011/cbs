@@ -254,7 +254,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. At settlement, the suspense is unwound: the bank's reserve-at-central-bank asset adjusts, and the suspense balance returns to zero. Option D describes a [[reserve-account]], not a suspense account.",
+        "The [[clearing-suspense]] account is a liability (the bank holds funds on the network's behalf) that accumulates in-transit amounts during the clearing window. The cut-off unwinds it — but the bank does that itself, on the advices it is sent, *after* the central bank has already [[settlement-finality|settled]]: its reserve-at-central-bank asset adjusts on the `camt.053`, its creditor legs clear on the `pacs.002` fan-out, and only once both are booked does the balance return to zero. Option D describes a [[reserve-account]], not a suspense account.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
@@ -298,7 +298,7 @@ export const chapter: Chapter = {
       ],
       answers: [1, 3, 4],
       explanation:
-        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, the creditor leg delivers funds to the payee, and finality is achieved — the payment can no longer be unwound. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.",
+        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, and that is where [[settlement-finality|finality]] is achieved — the payment can no longer be unwound. The [[creditor-leg]] delivers funds to the payee, and it is posted by the **payee's own bank**, in its own unit of work, once the clearing house has told it that this payment settled. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
@@ -313,6 +313,42 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "Bank A's net outflow = $80,000 − $30,000 = **$50,000**. Under [[settlement-model-net|net settlement]], only this net amount moves as [[central-bank-reserves]] — not the $110,000 gross total. This is why netting dramatically reduces the liquidity each participant must hold to cover a full cycle.",
+    },
+    {
+      kind: "mc",
+      id: "ch9-q21",
+      difficulty: "core",
+      concept: "settlement-finality",
+      prompt:
+        "The central bank commits its netting transaction for a cycle. A member bank is then told, and its own posting of the mirror leg fails. What is the state of the settlement?",
+      options: [
+        "The settlement is unwound, because one member could not book it",
+        "The settlement is final; that member has an unreconciled position to resolve",
+        "The settlement is provisional until every member confirms",
+        "The cycle reverts to Closed and the clearing house re-presents it",
+      ],
+      answer: 1,
+      explanation:
+        "[[settlement-finality|Settlement is final at the central bank]] and the participants catch up afterwards. Once that one unit of work commits, the reserves have moved and nothing a member does next unwinds it. In the EU this is not a modelling convenience but the **Settlement Finality Directive** (98/26/EC), which exists so that one participant's failure cannot reach back into a batch that has already settled. What the failed posting leaves is an [[unreconciled-position|unreconciled position]]: a [[clearing-suspense|clearing suspense]] that has not returned to zero, with **no** settlement-advice row against the cycle — the row and the mirror leg are one unit of work, so a failed posting leaves nothing behind rather than a half-written record. A refusal *before* the commit is the other outcome, and it is equally decisive: `RJCT`/`AM04`, nothing posted anywhere, every payment still Cleared.",
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
+    },
+    {
+      kind: "multi",
+      id: "ch9-q22",
+      difficulty: "challenge",
+      concept: "nostro-reconciliation",
+      prompt:
+        "After a cut-off, a bank's clearing suspense should return to zero. Which statements about how it gets there are correct? (Select all that apply.)",
+      options: [
+        "The central bank's statement says what the bank's reserve moved by",
+        "The clearing house's per-payment advices say which payments settled",
+        "Both advices come from the central bank, which is the only party that knows",
+        "The suspense returns to zero only if the two advices agree",
+        "The bank computes the movement itself by reading the cycle's net positions",
+      ],
+      answers: [0, 1, 3],
+      explanation:
+        "A bank reconciles [[nostro-reconciliation|two advices from two institutions against one balance]]. The central bank sends a `camt.053` stating what that bank's [[reserve-account|reserve account]] did — the mirror leg. The clearing house sends one `pacs.002`/`ACSC` per payment — the [[creditor-leg|creditor legs]]. The [[clearing-suspense]] account returns to zero only if the two agree, which is precisely why the split matters: two **senders** make a check possible, and if both advices had one sender the bank would be checking it against itself. Option E is what the system deliberately does *not* do — a member never reads the cycle row; the cycle belongs to the clearing house.",
     },
   ],
 };

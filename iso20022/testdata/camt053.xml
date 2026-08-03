@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CBSEDEFFXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>BRVODEFFXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>msg_7</BizMsgIdr>
+    <MsgDefIdr>camt.053.001.08</MsgDefIdr>
+    <CreDt>2026-08-01T10:30:00Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.08">
+    <BkToCstmrStmt>
+      <GrpHdr>
+        <MsgId>msg_7</MsgId>
+        <CreDtTm>2026-08-01T10:30:00Z</CreDtTm>
+      </GrpHdr>
+      <Stmt>
+        <Id>set_1</Id>
+        <CreDtTm>2026-08-01T10:30:00Z</CreDtTm>
+        <Acct>
+          <Id>
+            <Othr>
+              <Id>acc_cb_reserve_bank_2</Id>
+            </Othr>
+          </Id>
+        </Acct>
+        <Bal>
+          <Tp>
+            <CdOrPrtry>
+              <Cd>CLBD</Cd>
+            </CdOrPrtry>
+          </Tp>
+          <Amt Ccy="EUR">3000.00</Amt>
+          <CdtDbtInd>CRDT</CdtDbtInd>
+          <Dt>
+            <Dt>2026-08-01</Dt>
+          </Dt>
+        </Bal>
+        <Ntry>
+          <Amt Ccy="EUR">2500.00</Amt>
+          <CdtDbtInd>CRDT</CdtDbtInd>
+          <Sts>
+            <Cd>BOOK</Cd>
+          </Sts>
+          <BookgDt>
+            <Dt>2026-08-01</Dt>
+          </BookgDt>
+          <ValDt>
+            <Dt>2026-08-01</Dt>
+          </ValDt>
+          <AcctSvcrRef>cyc_1</AcctSvcrRef>
+          <AddtlNtryInf>Settlement of clearing cycle cyc_1</AddtlNtryInf>
+        </Ntry>
+      </Stmt>
+    </BkToCstmrStmt>
+  </Document>
+</Envelope>

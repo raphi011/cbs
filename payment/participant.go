@@ -16,16 +16,36 @@ import (
 // asset:
 //
 //   - Suspense (Liability): an in-transit account holding funds that have left
-//     a customer but not yet settled between banks. Returns to zero once a
-//     cycle settles.
+//     a customer but not yet settled between banks. Returns to zero once this
+//     bank has booked BOTH its halves of a cut-off — the mirror leg from the
+//     central bank's camt.053 and its creditor legs from the clearing house's
+//     per-payment advices — which is AFTER settlement, not at it.
 //   - Reserve (Asset): the bank's claim on the central bank. It mirrors the
-//     bank's reserve account in the central-bank ledger and moves only at
-//     settlement.
+//     bank's reserve account in the central-bank ledger, and it moves when this
+//     bank books the statement it is sent — so the two sides are equal only once
+//     it has, and the interval between is the unreconciled position.
+//   - Unclaimed (Liability): where a credit goes when the payee's account will
+//     not take it. Money the bank owes somebody it has not yet identified.
 //   - Settlement: this participant's reserve account in the central-bank
 //     ledger — the central bank's "vostro" view of the bank.
+//
+// The first three are the bank's own; the fourth is the central bank's row for
+// it, and is named here because settlement needs both ends.
 type ParticipantAccounts struct {
-	Suspense   ledger.AccountID
-	Reserve    ledger.AccountID
+	Suspense ledger.AccountID
+	Reserve  ledger.AccountID
+
+	// Unclaimed is where a credit goes when the payee's account will not take
+	// it — closed, and therefore terminal.
+	//
+	// A real bank has one. Money that arrives for an account that cannot receive
+	// it does not vanish and does not sit in the payee's closed account: it is
+	// held as a liability to whoever eventually claims it, and the bank has a
+	// process for finding them. This system had nowhere for it to go, which is
+	// why the gap at ReturnPaymentTx and SettleCycleTx was a ruling rather than a
+	// line of code.
+	Unclaimed ledger.AccountID
+
 	Settlement ledger.AccountID
 }
 
@@ -50,12 +70,17 @@ type ParticipantAccounts struct {
 //     OpenCustomerAccount.
 //   - Clearing Suspense (Liability): an in-transit account holding funds
 //     that have left a customer but not yet settled between banks. It
-//     returns to zero once a cycle settles.
+//     returns to zero once this bank has booked both its halves of a cut-off,
+//     which is after settlement rather than at it — see ParticipantAccounts.
 //   - Reserve at Central Bank (Asset): the bank's claim on the central bank.
 //     It mirrors the bank's reserve account in the central-bank ledger and
-//     moves only at settlement.
+//     moves when this bank books the camt.053 the central bank sends it.
+//   - Unclaimed Balances (Liability): where a credit goes when the payee's
+//     account cannot receive it. The bank still owes the money — to whoever
+//     eventually claims it — so it is a liability like a deposit, and holding
+//     it here is what lets one payment fail without stranding it.
 //
-// The last two, plus the bank's reserve account in the central-bank ledger,
+// The last three, plus the bank's reserve account in the central-bank ledger,
 // exist once per asset the bank operates in — see Assets.
 type Participant struct {
 	ID   ParticipantID

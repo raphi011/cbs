@@ -31,11 +31,24 @@ func eventTypes(events []ledger.AuditEvent) string {
 	return strings.Join(out, " ")
 }
 
-// TestPaymentAuditCoversTheNetting flow pins the two fan-out events: closing a
-// cycle records one payment.cleared per payment plus one cycle.closed, and
-// settling it records one payment.settled per payment plus one cycle.settled.
-// A cycle with two payments is the smallest fixture that can tell "once" from
-// "once per payment" apart.
+// TestPaymentAuditCoversTheNettingFlow pins the fan-out events: closing a cycle
+// records one payment.cleared per payment plus one cycle.closed, and settling it
+// records one cycle.settled plus one payment.settled per payment. A cycle with
+// two payments is the smallest fixture that can tell "once" from "once per
+// payment" apart.
+//
+// # The ORDER across the cut-off is the measurement Task 15 moved
+//
+// payment.settled used to come BEFORE cycle.settled, because both were appended
+// inside the settlement agent's one unit of work and the payments were done
+// first. They are two institutions' acts now: cycle.settled is the settlement
+// agent's, and each payment.settled is a payee's bank's, appended when that bank
+// posts its own creditor leg on the clearing house's advice. So the settlement
+// closes first and the payments follow it.
+//
+// A trail in which they ran the other way round would mean a payee had been paid
+// before the reserves moved, which is what finality forbids and which no bank
+// could have known to do.
 func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -70,9 +83,9 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		ledger.EventPaymentCleared, // one per payment in the cycle
 		ledger.EventPaymentCleared,
 		ledger.EventCycleClosed,
-		ledger.EventPaymentSettled, // one per payment in the cycle
+		ledger.EventCycleSettled,   // the settlement agent's, and it comes first
+		ledger.EventPaymentSettled, // one per payment, each its own bank's
 		ledger.EventPaymentSettled,
-		ledger.EventCycleSettled,
 	}, " ")
 	assertEqual(t, "network audit trail", eventTypes(paymentAudit(t, sys, "")), want)
 
@@ -116,13 +129,35 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	}
 }
 
-// TestAuditEventsRollBackWithTheOperation is why the events are written on the
+// TestARefusedSettlementLeavesNoAuditTrail is why the events are written on the
 // operation's own transaction rather than through a wrapper that opens its own.
 //
 // A settlement that fails on an underfunded member must leave nothing behind —
-// including its audit trail. An event that survived would be worse than no
-// event at all: an immutable log asserting that money moved when it did not.
-func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
+// including its audit trail. An event that survived would be worse than no event
+// at all: an immutable log asserting that money moved when it did not.
+//
+// # It was called TestAuditEventsRollBackWithTheOperation, and that name stopped
+// being true
+//
+// The claim was a ROLLBACK, and it was the right description of the code that
+// carried it: SettleCycleTx posted the central bank's netting transaction and
+// then every member's mirror leg, so an underfunded member was discovered after
+// the unit of work had already written, and the store had to undo it.
+//
+// The mirror leg is the member's own act since Task 15b.2, so SettleCycleTx
+// checks each net payer's reserve ITSELF, above the netting transaction and with
+// only reads behind it. Against this fixture the refusal is therefore a clean
+// no-op: nothing was written, so nothing was rolled back, and the assertions
+// below pass for a different reason than the one they were written for. They are
+// kept because what they measure — a refused cut-off leaves no trace, which is
+// what makes asking again safe once the member is funded — is still worth
+// pinning, and because a settlement that started appending before it checked
+// would fail them again.
+//
+// TestSettleCycleIsAtomic in system_test.go is the same correction on the
+// balances rather than the trail, and it names the test that still carries the
+// mid-flight rollback claim: TestAFailedReversalRollsBackTheWholeRejection.
+func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 	ctx := context.Background()
 	sys, cycleID := newClosedCycleWithUnderfundedMember(t)
 
@@ -131,7 +166,7 @@ func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
 		t.Fatal("fixture produced no audit events")
 	}
 
-	if _, err := sys.SettleCycle(ctx, cycleID); err == nil {
+	if _, _, err := sys.SettleCycle(ctx, cycleID); err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
 
@@ -139,12 +174,12 @@ func TestAuditEventsRollBackWithTheOperation(t *testing.T) {
 	assertEqual(t, "audit events after a failed settlement", len(after), len(before))
 	for _, e := range after {
 		if e.Type == ledger.EventCycleSettled || e.Type == ledger.EventPaymentSettled {
-			t.Fatalf("%s for %s survived a rolled-back settlement", e.Type, e.EntityID)
+			t.Fatalf("%s for %s survived a refused settlement", e.Type, e.EntityID)
 		}
 	}
 
-	// The successful part of the fixture is still on record, so the rollback
-	// removed the failed unit of work and nothing else.
+	// The successful part of the fixture is still on record, so the refusal cost
+	// the failed unit of work and nothing else.
 	assertEqual(t, "cycle trail", eventTypes(paymentAudit(t, sys, string(cycleID))),
 		strings.Join([]string{ledger.EventCycleOpened, ledger.EventCycleClosed}, " "))
 }

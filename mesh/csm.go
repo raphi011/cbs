@@ -733,11 +733,13 @@ func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, 
 // somebody else's call.
 //
 // RJCT is told to NOBODY, and that is deliberate rather than an omission. The
-// batch failed whole — SettleCycleTx is one unit of work, so nothing was posted
-// anywhere — which leaves every payment in the cycle exactly where the cut-off
-// left it: Cleared, with the payer's money still in its own bank's clearing
-// suspense. A bank told "rejected" would try to reverse a debtor leg that must
-// not be reversed, and bank.receiveStatus refuses to: it checks this network's
+// batch failed whole and nothing was posted in any book: the central bank checks
+// each net payer's reserve before it posts anything of its own, and it advises no
+// member unless it settles, so no bank was told and no bank booked. That leaves
+// every payment in the cycle exactly where the cut-off left it: Cleared, with the
+// payer's money still in its own bank's clearing suspense. A bank told "rejected"
+// would try to reverse a debtor leg that must not be reversed, and
+// bank.receiveStatus refuses to: it checks this network's
 // own record of the payment and finds it Cleared rather than Rejected, so the
 // message would become a dead letter at every recipient. There is nothing
 // truthful to tell a bank here, because nothing about its payments changed.
@@ -776,22 +778,40 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 	return nil
 }
 
-// tellSettled turns one settled CYCLE into one pacs.002 per PAYMENT, addressed
-// to the bank that submitted it.
+// tellSettled turns one settled CYCLE into per-PAYMENT advices, addressed to the
+// banks that have something to do about each.
 //
-// Per payment, because that is the unit a bank has an outstanding instruction
-// about: it sent a pacs.008 or a pacs.003 naming one payment and has heard ACCP
-// since, and ACSC is the answer that closes it. The central bank could not send
-// these: it is answering about a CYCLE, and settlementOps holds nothing that
-// turns one into the payments inside it — SettleCycle answers with a Settlement,
-// and neither GetCycle nor GetPayment is on that interface. It can act on a
-// payment somebody else named to it, which is what a return is, and that is a
-// different thing from being able to enumerate a batch.
+// # Two recipients, and they are not told the same thing for the same reason
 //
-// To the SUBMITTER, chosen by the scheme's direction exactly as tell does, and
-// for the same reason: the payer's bank pushed, or the payee's bank pulled, and
-// the other one never asked. On a push that is the payer's bank; on a pull it is
-// the payee's, which is the bank that has been waiting to be paid.
+// The SUBMITTER is waiting for the answer to its instruction: it sent a pacs.008
+// or a pacs.003 naming one payment and has heard ACCP since, and ACSC is what
+// closes it. That recipient is unchanged from Task 12, and it is chosen by the
+// scheme's direction exactly as tell does — the payer's bank pushed, or the
+// payee's bank pulled, and the other one never asked.
+//
+// The CREDITOR's bank has a LEG TO POST. Settlement moved the reserves; the
+// payee is paid when its own bank releases the money out of its clearing
+// suspense, and until Task 15 the central bank did that FOR it, in that bank's
+// own book. This message is what replaces the reach.
+//
+// On a PULL they are the same institution and there is one message: the payee's
+// bank submitted the collection and is also the creditor. On a PUSH they are two,
+// and the second is new. Deduplicating rather than sending twice, because a bank
+// that received the same advice twice would post nothing the second time — the
+// ledger's idempotency key and PostCreditorLegTx's own Settled guard both see to
+// that — but would still be told twice, and a system that says everything twice
+// teaches nothing about who needs to hear what.
+//
+// # The central bank could not send these
+//
+// It is answering about a CYCLE, and settlementOps holds nothing that turns one
+// into the payments inside it — SettleCycle answers with a Settlement and one
+// statement per MEMBER, and neither GetCycle nor GetPayment is on that interface.
+// It can act on a payment somebody else named to it, which is what a return is,
+// and that is a different thing from being able to enumerate a batch. That was
+// true before this task and it is why the fan-out lives here; what is new is that
+// the message now causes a POSTING at the recipient rather than merely closing
+// its instruction.
 //
 // The ORIGINAL message these refer back to is the SETTLEMENT INSTRUCTION, not
 // the bank's own pacs.008, and that is a limitation worth naming. A bank matches
@@ -815,16 +835,25 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 			return fmt.Errorf("mesh: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
 				c.bic, id, p.Scheme, p.ID, payment.ErrSchemeNotFound)
 		}
-		submitter, err := c.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
-		if err != nil {
-			return fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err)
+		// The submitter first, so a push's two messages go out in the order the
+		// banks have reason to expect them: the answer to the instruction, then
+		// the advice to act on. On a pull the two ids are equal and there is one.
+		recipients := []payment.ParticipantID{submitterOf(scheme, p.Debtor, p.Creditor).Participant}
+		if creditor := p.Creditor.Participant; creditor != recipients[0] {
+			recipients = append(recipients, creditor)
 		}
-		if err := c.forward(submitter.BIC, orig, payment.TransactionStatusReport{
-			EndToEndID: endToEndOf(p),
-			TxID:       string(p.ID),
-			Status:     r.Status,
-		}); err != nil {
-			return err
+		for _, recipient := range recipients {
+			member, err := c.ops.GetParticipant(ctx, recipient)
+			if err != nil {
+				return fmt.Errorf("mesh: %s cannot address a bank %s settled for: %w", c.bic, p.ID, err)
+			}
+			if err := c.forward(member.BIC, orig, payment.TransactionStatusReport{
+				EndToEndID: endToEndOf(p),
+				TxID:       string(p.ID),
+				Status:     r.Status,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

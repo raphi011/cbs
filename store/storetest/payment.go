@@ -716,8 +716,16 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	t.Run("SettlementAdviceIsScopedToTheBankThatWasAdvised", func(t *testing.T) {
+		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore))
+	})
+
 	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
 		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
+	})
+
+	t.Run("PaymentRecordsWhereTheCreditorLegLanded", func(t *testing.T) {
+		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore))
 	})
 
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
@@ -945,6 +953,249 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 	}
 	if got.CreditorDetails != p.CreditorDetails {
 		t.Errorf("creditor details round-tripped as %+v, want %+v", got.CreditorDetails, p.CreditorDetails)
+	}
+}
+
+// paymentRecordsWhereTheCreditorLegLanded pins that
+// payment.Payment.CreditorLegAccount survives a round trip through both stores,
+// in both of the states it has, and that the empty one is a value rather than a
+// missing field.
+//
+// This is a MONEY column, not a trace. payment.ReturnPaymentTx claws the funds
+// back from the account named here, and the account is not the payee's whenever
+// the creditor leg diverted to unclaimed balances. A store that dropped it would
+// send a return to the payee's GL account — which for a diverted payment was
+// never credited — and the ledger would post it happily: an overdrawn deposit is
+// a Liability going negative, which nothing in the book refuses.
+//
+// Both states are asserted because both are written. The empty one is what every
+// payment carries until its creditor leg posts, and it is stored in Postgres as
+// ” under a NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a
+// CHECK that refused it — would refuse a write store/mem accepts.
+func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+
+	// The ordinary settlement: the payee's own GL account.
+	paid := samplePayment("pay_paid", "e2e-paid", early)
+	paid.Status = payment.Settled
+	paid.CreditorLegTx = "txn_paid"
+	paid.CreditorLegAccount = "acc_bob"
+
+	// The diversion: the CREDITOR BANK's unclaimed-balances account, because the
+	// payee's account would not take the credit.
+	diverted := samplePayment("pay_diverted", "e2e-diverted", early)
+	diverted.Status = payment.Settled
+	diverted.CreditorLegTx = "txn_diverted"
+	diverted.CreditorLegAccount = "acc_unclaimed"
+
+	// And a payment whose creditor leg has not been posted at all.
+	pending := samplePayment("pay_pending", "e2e-pending", early)
+	pending.Status = payment.Cleared
+	pending.CreditorLegTx = ""
+	pending.CreditorLegAccount = ""
+
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, p := range []payment.Payment{paid, diverted, pending} {
+			if err := tx.PutPayment(ctx, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("PutPayment: %v", err)
+	}
+
+	var listed []payment.Payment
+	got := map[payment.PaymentID]payment.Payment{}
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, id := range []payment.PaymentID{paid.ID, diverted.ID, pending.ID} {
+			p, err := tx.GetPayment(ctx, id)
+			if err != nil {
+				return err
+			}
+			got[id] = p
+		}
+		var err error
+		listed, err = tx.ListPayments(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("GetPayment: %v", err)
+	}
+
+	for _, want := range []payment.Payment{paid, diverted, pending} {
+		if acct := got[want.ID].CreditorLegAccount; acct != want.CreditorLegAccount {
+			t.Errorf("%s round-tripped its creditor-leg account as %q, want %q",
+				want.ID, acct, want.CreditorLegAccount)
+		}
+	}
+
+	// And through the LISTING too, which is a different query in store/pg and
+	// the same column list only because it is written down once.
+	for _, p := range listed {
+		want := map[payment.PaymentID]ledger.AccountID{
+			paid.ID: "acc_bob", diverted.ID: "acc_unclaimed", pending.ID: "",
+		}[p.ID]
+		if p.CreditorLegAccount != want {
+			t.Errorf("%s listed its creditor-leg account as %q, want %q", p.ID, p.CreditorLegAccount, want)
+		}
+	}
+}
+
+// settlementAdviceIsScopedToTheBankThatWasAdvised pins that an advice belongs to
+// ONE bank's book and that two banks advised of the same cycle do not collide.
+//
+// The book is part of the key, not a column on it. A member bank's record of
+// what it was told about a cut-off is its own — under sub-project 8 it lives in
+// that bank's store and nowhere else — and a key that omitted the book would
+// make the second bank's advice overwrite the first's here and be unmigratable
+// there.
+func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+	one := payment.SettlementAdvice{
+		Book: "bank_2", CycleID: "cyc_1", Asset: "EUR",
+		Movement: -250000, ClosingBalance: 750000,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	two := payment.SettlementAdvice{
+		Book: "bank_3", CycleID: "cyc_1", Asset: "EUR",
+		Movement: 250000, ClosingBalance: 250000,
+		Status: payment.AdvicePosted, MirrorTx: "txn_9",
+		AdvisedAt: early, PostedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := tx.PutSettlementAdvice(ctx, one.Book, one); err != nil {
+			return err
+		}
+		return tx.PutSettlementAdvice(ctx, two.Book, two)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice: %v", err)
+	}
+
+	var gotOne, gotTwo payment.SettlementAdvice
+	var listed []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		if gotOne, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		if gotTwo, err = tx.GetSettlementAdvice(ctx, "bank_3", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("reading advices: %v", err)
+	}
+	if gotOne != one {
+		t.Errorf("bank_2's advice round-tripped as %+v, want %+v", gotOne, one)
+	}
+	if gotTwo != two {
+		t.Errorf("bank_3's advice round-tripped as %+v, want %+v", gotTwo, two)
+	}
+	if len(listed) != 1 {
+		t.Errorf("bank_2 lists %d advices, want 1 — the list is scoped to one book", len(listed))
+	}
+
+	// The ORDER, which the scoping assertion above could not reach: bank_2 held
+	// exactly one row, so a listing that sorted by nothing at all passed.
+	//
+	// payment.Store documents this list as AdvisedAt then seq, like every other
+	// listing in the interface, and the two stores arrive at it by different
+	// means — store/pg with ORDER BY advised_at, seq and store/mem by sorting a
+	// map, whose iteration order is deliberately randomised by the runtime. So a
+	// single unordered read is exactly what this suite exists to catch, and this
+	// is the only place it can be caught: a bank in one asset holds one advice
+	// per cut-off, and it takes three cut-offs before order means anything.
+	//
+	// The last two share an instant, which is the half that matters. Ties are
+	// broken by INSERTION sequence and not by cycle id — cyc_4 is written before
+	// cyc_3 and must come back first — so a store that fell back to sorting by
+	// key would pass on distinct timestamps and fail here.
+	later := early.Add(time.Hour)
+	for _, a := range []payment.SettlementAdvice{
+		{Book: "bank_2", CycleID: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
+			Status: payment.AdviceAdvised, AdvisedAt: later},
+		{Book: "bank_2", CycleID: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
+			Status: payment.AdviceAdvised, AdvisedAt: later},
+	} {
+		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementAdvice(ctx, a.Book, a)
+		}); err != nil {
+			t.Fatalf("PutSettlementAdvice %s: %v", a.CycleID, err)
+		}
+	}
+	var ordered []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		ordered, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("ListSettlementAdvices: %v", err)
+	}
+	var got []string
+	for _, a := range ordered {
+		got = append(got, string(a.CycleID))
+	}
+	want := []string{"cyc_1", "cyc_4", "cyc_3"}
+	if len(got) != len(want) {
+		t.Fatalf("bank_2 lists %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("bank_2 lists %v, want %v — AdvisedAt ascending, ties by insertion sequence", got, want)
+			break
+		}
+	}
+
+	// A cycle this bank was never advised of is a sentinel, not a zero value: a
+	// bank that read a zero advice would post a mirror leg of nothing and mark
+	// a cut-off it never heard about as settled.
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_nope", "EUR")
+		if !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
+			t.Errorf("got %v, want ErrSettlementAdviceNotFound", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("View: %v", err)
+	}
+
+	// The book ARGUMENT is the scope; the Book FIELD is the row's record of it.
+	//
+	// This is the only method in payment.Tx that carries a book twice, and
+	// mesh/books_test.go's recorder relies on the two being the same thing: its
+	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
+	// cites this subtest as the evidence that nothing else could be recorded.
+	// store/pg holds it by construction — its INSERT writes book_id from the
+	// argument and never reads a.Book — so store/mem has to be made to agree, and
+	// an advice whose field disagrees with the argument is the only thing that can
+	// tell whether it still does.
+	misfiled := payment.SettlementAdvice{
+		Book: "bank_9", CycleID: "cyc_2", Asset: "EUR",
+		Movement: 100, ClosingBalance: 100,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutSettlementAdvice(ctx, "bank_2", misfiled)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice with a mismatched Book: %v", err)
+	}
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		got, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_2", "EUR")
+		if err != nil {
+			return err
+		}
+		if got.Book != "bank_2" {
+			t.Errorf("an advice put under bank_2 carrying Book %q read back as %q; "+
+				"the argument chooses the book and the field records it", misfiled.Book, got.Book)
+		}
+		// And the field did not file it anywhere: bank_9 was never written to.
+		if _, err := tx.GetSettlementAdvice(ctx, "bank_9", "cyc_2", "EUR"); !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
+			t.Errorf("bank_9 holds the advice its Book field named: got %v, want ErrSettlementAdviceNotFound", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reading the misfiled advice: %v", err)
 	}
 }
 

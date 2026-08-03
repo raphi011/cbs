@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"testing"
 
@@ -229,6 +230,91 @@ func (h *meshHarness) creditTransferCycle(t *testing.T) payment.ClearingCycle {
 	return payment.ClearingCycle{}
 }
 
+// TestEachMemberBooksTheStatementItWasSent is what the camt.053 is FOR, measured
+// at the far end: after a cut-off each member holds its own record of it, posted,
+// with the closing balance the settlement agent asserted.
+//
+// TestEachBankBooksItsOwnSettlementAndNoOtherBooks says which book each bank
+// touched; this says what it wrote there, and the two together are the whole of
+// the move. Three things per member, and each rules out a different way of
+// getting this wrong:
+//
+//   - Status is Posted and MirrorTx names a transaction. Advised is the other
+//     value the type carries, and asserting the row is NOT at it is what stops a
+//     row recording nothing from passing for a booking. It is not the state a
+//     failure leaves behind: the row and the leg are one unit of work, so a
+//     failure leaves no row at all — see payment.AdviceAdvised.
+//   - Movement is SIGNED and opposite at the two banks. It travels as a magnitude
+//     plus CdtDbtInd and is reassembled by payment.ReadStatement, so a member that
+//     lost the sign in transit would post its mirror leg backwards — and the two
+//     banks are the only pair that can show it, since one of them is the net payer.
+//   - ClosingBalance equals what the central bank's book actually says the
+//     reserve account stands at. That is the assertion the whole message
+//     definition exists to make checkable: camt.053 was chosen over camt.054
+//     precisely because it carries a balance to check a posting against, and a
+//     statement quoting the wrong one would be worse than none.
+func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
+	h := newMeshHarness(t)
+	h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	cyc := h.creditTransferCycle(t)
+	if cyc.Status != payment.CycleSettled {
+		t.Fatalf("cycle is %v, want Settled — there is no statement to have been sent otherwise", cyc.Status)
+	}
+
+	for _, member := range []struct {
+		name string
+		pid  payment.ParticipantID
+		want ledger.Amount
+	}{
+		{"the payer's bank", h.debtorPID, -harnessAmount},
+		{"the payee's bank", h.creditorPID, harnessAmount},
+	} {
+		advice := h.advice(t, member.pid, cyc.ID)
+		if advice.Status != payment.AdvicePosted || advice.MirrorTx == "" {
+			t.Errorf("%s holds an advice that is %v with mirror %q, want Posted with a transaction",
+				member.name, advice.Status, advice.MirrorTx)
+		}
+		if advice.Movement != member.want {
+			t.Errorf("%s booked a movement of %d, want %d", member.name, advice.Movement, member.want)
+		}
+		reserve, err := h.net.ReserveBalance(context.Background(), member.pid, "EUR")
+		if err != nil {
+			t.Fatalf("ReserveBalance %s: %v", member.pid, err)
+		}
+		if advice.ClosingBalance != reserve {
+			t.Errorf("%s was told its reserve closed at %d; the central bank's book says %d",
+				member.name, advice.ClosingBalance, reserve)
+		}
+	}
+}
+
+// advice is one bank's own record of a cut-off, read out of that bank's book.
+//
+// Through the store rather than through a Network method, because there is no
+// such method: an advice is a member's own row and nothing in this system reads
+// another institution's yet. The unit of work is opened on a bare context, so the
+// recorder attributes the read to no actor and it cannot spoil a per-actor set.
+func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payment.CycleID) payment.SettlementAdvice {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetParticipant(ctx, id)
+	if err != nil {
+		t.Fatalf("GetParticipant %s: %v", id, err)
+	}
+	var out payment.SettlementAdvice
+	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		out, err = tx.GetSettlementAdvice(ctx, p.BookID, cycle, "EUR")
+		return err
+	}); err != nil {
+		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, cycle, err)
+	}
+	return out
+}
+
 // One instruction per asset. SettleCycleTx settles per asset, and a message
 // mixing currencies in one IntrBkSttlmAmt would not be expressible.
 func TestOneSettlementInstructionPerAsset(t *testing.T) {
@@ -252,18 +338,32 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 // payer would look right. On a PULL they are opposite: the payee's bank sent the
 // collection and has been waiting since, and the payer's bank answered it long
 // ago and has nothing outstanding. Settlement is the moment the payee's bank is
-// actually paid — the creditor leg posts here and nowhere else — so it is the
-// message that closes the thing it started.
+// actually paid, and this message is what tells it to pay its own customer, so
+// it closes the thing it started and starts the last posting the payment needs.
 //
 // The payer's bank is told NOTHING, and that is the assertion beside it. The
 // last thing it heard was the clearing house's ACCP, and a system that announced
 // settlement to every party to a payment would be one where "who is waiting for
 // this" had stopped meaning anything.
+//
+// # ONE message, not two, and that is the pull half of the direction rule
+//
+// The fan-out addresses two roles — the bank that submitted, and the CREDITOR's
+// bank, which has the leg to post. On a push those are two institutions and the
+// clearing house sends twice. Here they are one, so it sends once: the payee's
+// bank submitted the collection and is also the creditor. The count is asserted
+// because nothing else would catch a fan-out that sent the same advice twice —
+// PostCreditorLegTx's Settled guard makes the second one a no-op, so the money
+// would still be right and only the conversation would be wrong. See
+// csm.tellSettled.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)
 	h.drain(t)
 
+	// Counted from here, so the ACCP this bank was already sent when it
+	// submitted is not in the total.
+	before := h.statusesSentTo(h.creditorBIC)
 	h.closeCycle(t)
 	h.drain(t)
 
@@ -271,6 +371,9 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 		t.Fatalf("status = %v, want Settled", got.Status)
 	}
 	h.assertLastTxStatusTo(t, h.creditorBIC, iso20022.TransactionStatusSettlementCompleted)
+	if got := h.statusesSentTo(h.creditorBIC) - before; got != 1 {
+		t.Errorf("the payee's bank was sent %d statuses over the cut-off; it is the submitter AND the creditor's bank, which is one message", got)
+	}
 	if got := h.statusesSentTo(h.debtorBIC); got != 0 {
 		t.Errorf("the payer's bank was sent %d statuses; on a pull it answered the collection and is waiting for nothing", got)
 	}
@@ -432,14 +535,100 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 	}
 }
 
-// TestTheSettlementChainIsTwoMessages names the conversation, the way
+// TestTheMessagesACutOffPutsOnTheWire names the conversation, the way
 // TestTheCreditTransferChainIsFourMessages names the push.
 //
-// Two between the institutions — the instruction and its answer — and then one
-// per PAYMENT out to the banks that submitted them. The fan-out is the clearing
-// house's and could not be the central bank's: it is answering about a cycle,
-// and it holds no method that could turn one into payments.
-func TestTheSettlementChainIsTwoMessages(t *testing.T) {
+// It was TestTheSettlementChainIsTwoMessages, and the name outran the code the
+// moment this task gave the ACSC a second recipient: six hops, of which only two
+// are the chain the name described. Renamed for the reason every other rename in
+// this package had — the name is the string a failure prints and a reader greps
+// for, and one that claims more than it measures is worse than none.
+//
+// Two messages between the institutions — the instruction and its answer — and
+// then two fan-outs from them, which are two different things addressed to two
+// different sets of banks:
+//
+//   - one camt.053 per MEMBER whose position moved, from the CENTRAL BANK. It is
+//     a statement of that member's own reserve account, and it is what the member
+//     books its mirror leg from (bank.receiveStatement). Both banks get one here,
+//     because both had a non-zero net position.
+//   - one pacs.002 per PAYMENT per BANK THAT HAS SOMETHING TO DO ABOUT IT, from
+//     the CLEARING HOUSE. That is the bank that submitted, which is waiting for
+//     the answer to its instruction, and the CREDITOR's bank, which has a leg to
+//     post: settlement moved the reserves, and the payee is paid when its own
+//     bank releases the money out of its own suspense. On this push those are two
+//     institutions and there are two messages for the one payment; on a pull they
+//     are one and there is one. That fan-out could not be the central bank's: it
+//     is answering about a cycle, and it holds no method that could turn one into
+//     payments.
+//
+// # It is a SET, plus the three orderings that are actually forced
+//
+// The three messages this used to assert formed a chain — each was sent by the
+// handler of the one before, so their whole order was forced. The statements are
+// not in that chain: they go to other actors' inboxes, and those goroutines run
+// concurrently with the clearing house's. The tap fires in Mesh.dispatch, on the
+// RECEIVING actor's goroutine, so what this test observes is handling order and
+// not send order, and a positional assertion over all six would be flaky rather
+// than strict.
+//
+// Three relations survive that, and all three are asserted because "it is a set"
+// would give away more than the concurrency takes:
+//
+//   - the INSTRUCTION is handled first, because every other message here is sent
+//     from the handler that receives it;
+//   - the central bank's pacs.002 to the clearing house is handled BEFORE the
+//     clearing house's pacs.002 to the submitting bank, because the second is
+//     sent from the first's handler. Same argument, one hop further along.
+//   - the PAYEE's BANK's camt.053 is handled before the ACSC addressed to that
+//     same bank. This one is not a chain argument and it is the load-bearing
+//     one; see below.
+//
+// # Why that pair CAN be asserted when the set cannot be ordered
+//
+// Not merely "both go to one actor". That is necessary and not sufficient — two
+// messages racing into one inbox from two goroutines would arrive in either
+// order. What forces this pair is a happens-before chain, and it is worth
+// spelling out because the obvious way to try to break it does not:
+//
+//  1. Mesh.send pushes onto the target's queue SYNCHRONOUSLY, in the sender's
+//     own goroutine (mesh.sendRaw).
+//  2. centralBank.receiveSettlement calls advise before answer, so the camt.053
+//     is pushed into the payee's bank's queue before the pacs.002 is pushed into
+//     the clearing house's.
+//  3. The ACSC does not exist until the clearing house HANDLES that pacs.002,
+//     which cannot happen before step 2 pushed it.
+//  4. So the camt.053 is already in the payee's bank's queue before the ACSC is
+//     created, and Mesh.run is one goroutine popping that queue FIFO with
+//     Mesh.dispatch firing the tap immediately before the handler.
+//
+// Deterministic, then, not lucky — and h.seen's relative index for two messages
+// to the same actor is exactly that actor's handling order.
+//
+// A reader who tries to falsify this by simply swapping advise and answer will
+// find the test still passes, and should not conclude the assertion is weak.
+// Swapping makes the pair a RACE rather than an inversion — the central bank
+// pushes the camt.053 while the clearing house is being scheduled to produce the
+// ACSC — and the central bank wins that race almost always. Inverting it takes a
+// delay between the answer and the advice, and with one the assertion fails
+// every run.
+//
+// What it pins is the reason centralBank.advise sends the statements before it
+// answers the clearing house. The payee's bank is a net RECEIVER here, so its
+// camt.053 CREDITS the clearing suspense that the creditor leg then draws on;
+// the ACSC is what makes it draw. Reverse the two and that bank pays its
+// customer out of a suspense the cut-off has not yet credited — which commits,
+// because suspense is a Liability and the ledger does not guard those, and which
+// for that interval has the bank's own books saying it lent its customer the
+// money.
+//
+// The PAYER's bank receives a pair too — a camt.053 and, because it submitted,
+// the same ACSC — and the same chain orders it. It is not asserted because
+// nothing depends on it: that bank has no leg to post from the ACSC, so the
+// order buys it nothing. What remains genuinely undetermined is the
+// INTERLEAVING across actors: where either of the payer's bank's two messages
+// falls relative to either of the payee's bank's.
+func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
 	h.drain(t)
@@ -449,30 +638,68 @@ func TestTheSettlementChainIsTwoMessages(t *testing.T) {
 	h.closeCycle(t)
 	h.drain(t)
 
-	want := []struct {
+	type hop struct {
 		from, to iso20022.BIC
 		msgDef   string
-	}{
-		{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"},
-		{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"},
-		{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"},
+	}
+	instruction := hop{h.cfg.ClearingHouseBIC, h.cfg.CentralBankBIC, "pacs.009.001.08"}
+	answer := hop{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, "pacs.002.001.10"}
+	fanOut := hop{h.cfg.ClearingHouseBIC, h.debtorBIC, "pacs.002.001.10"}
+	// The two the payee's bank receives, and the pair whose order is forced.
+	// The creditor's bank's copy of the advice is the second message a push
+	// produces for one payment, and it is the one that causes a POSTING; the
+	// statement is what credits the suspense that posting draws on. See
+	// bank.receiveStatus and centralBank.advise.
+	payeeStatement := hop{h.cfg.CentralBankBIC, h.creditorBIC, "camt.053.001.08"}
+	payeeAdvice := hop{h.cfg.ClearingHouseBIC, h.creditorBIC, "pacs.002.001.10"}
+	want := map[hop]int{
+		instruction:    1,
+		answer:         1,
+		fanOut:         1,
+		payeeStatement: 1,
+		payeeAdvice:    1,
+		{h.cfg.CentralBankBIC, h.debtorBIC, "camt.053.001.08"}: 1,
 	}
 	h.mu.Lock()
 	seen := append([]tappedMessage(nil), h.seen[before:]...)
 	h.mu.Unlock()
 
-	if len(seen) != len(want) {
-		t.Fatalf("the cut-off put %d messages on the wire, want %d", len(seen), len(want))
-	}
+	got := map[hop]int{}
+	order := map[hop]int{}
 	for i, m := range seen {
 		env, err := iso20022.Unmarshal(m.raw)
 		if err != nil {
 			t.Fatalf("message %d does not parse: %v", i, err)
 		}
-		if m.from != want[i].from || m.to != want[i].to || env.AppHdr.MsgDefIdr != want[i].msgDef {
-			t.Errorf("message %d is %s -> %s (%s), want %s -> %s (%s)",
-				i, m.from, m.to, env.AppHdr.MsgDefIdr, want[i].from, want[i].to, want[i].msgDef)
+		h := hop{m.from, m.to, env.AppHdr.MsgDefIdr}
+		got[h]++
+		order[h] = i
+		if i == 0 && h != instruction {
+			t.Errorf("the cut-off's first message is %s -> %s (%s), want the instruction %s -> %s (%s)",
+				h.from, h.to, h.msgDef, instruction.from, instruction.to, instruction.msgDef)
 		}
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("the cut-off put %v on the wire, want %v", got, want)
+	}
+	// A chain pair. The clearing house sends the per-payment status FROM the
+	// handler of the central bank's answer, so it cannot be handled before it.
+	if order[answer] > order[fanOut] {
+		t.Errorf("the clearing house's status to %s was handled at %d and the central bank's answer to it at %d; "+
+			"the first is sent from the second's handler and cannot precede it",
+			h.debtorBIC, order[fanOut], order[answer])
+	}
+	// The load-bearing pair, and not a chain argument: both of these are handled
+	// by the PAYEE'S BANK, one goroutine popping one FIFO queue, so their order
+	// here is that bank's handling order. The statement credits the clearing
+	// suspense; the advice is what makes the creditor leg draw on it. The other
+	// way round and that bank pays its customer out of a suspense the cut-off
+	// has not credited yet. centralBank.advise sends before it answers for
+	// exactly this reason.
+	if order[payeeStatement] > order[payeeAdvice] {
+		t.Errorf("the payee's bank handled the ACSC at %d and its own camt.053 at %d; "+
+			"the statement credits the suspense the creditor leg draws on and must come first",
+			order[payeeAdvice], order[payeeStatement])
 	}
 }
 
@@ -518,6 +745,33 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 	}
 	if len(settlements) != 0 {
 		t.Errorf("%d settlements recorded for an instruction this actor refused", len(settlements))
+	}
+}
+
+// TestOnlyThePayeesBankPaysThePayee pins which of the two banks told about a
+// settled payment may act on it.
+//
+// On a push the clearing house tells both: the payer's bank because it has been
+// waiting for the answer to its instruction, the payee's bank because it has a
+// leg to post. If the payer's bank posted it, the payee would be credited in the
+// wrong institution's book — the exact crossing this sub-project removes, arrived
+// at from the other direction.
+//
+// It is asserted at the DOMAIN layer, where the refusal lives, because that is
+// where it can be made to fail: the mesh never hands the payer's bank's id to a
+// payment it does not own, so a mesh-level test would pass with the guard gone.
+func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
+	h := newMeshHarness(t)
+	p := h.submitCreditTransfer(t)
+	h.drain(t)
+	h.closeCycle(t)
+	h.drain(t)
+
+	// The payer's bank asking to post the payee's leg is refused, whatever else
+	// is true of the payment.
+	_, err := h.net.PostCreditorLeg(context.Background(), h.debtor.ID, p.ID)
+	if !errors.Is(err, payment.ErrNotThisBanksPayment) {
+		t.Errorf("the payer's bank got %v, want ErrNotThisBanksPayment", err)
 	}
 }
 

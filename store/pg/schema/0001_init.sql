@@ -522,9 +522,17 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 -- The payment layer
 -- ---------------------------------------------------------------------------
 --
--- These entities are network-scoped: a payment belongs to no single bank, so
--- unlike everything above they are keyed by their id alone. They are sequenced
--- under ledger.NetworkBook, which is why they carry no book_id column.
+-- Most of these entities are network-scoped: a payment belongs to no single
+-- bank, so unlike everything above it is keyed by its id alone, and it is
+-- sequenced under ledger.NetworkBook rather than under any member's book.
+--
+-- Note the exact claim, because the looser one this header used to make is
+-- false twice over. It said these tables "carry no book_id column". participants
+-- carries one (:547) and settlement_advices carries one (:822) — the difference
+-- is that only settlement_advices has the book in its KEY, which is what makes
+-- it the one member-scoped table in this section. participants.book_id is data:
+-- which book that bank owns. See the comment on settlement_advices, which states
+-- this correctly and which this header contradicted for 230 lines.
 
 -- product_id is the catalogue entry this bank opens customer accounts from —
 -- the Basic product AddParticipant creates for every member. It is data, not a
@@ -571,6 +579,10 @@ CREATE TABLE participant_assets (
     asset          TEXT NOT NULL,
     suspense       TEXT NOT NULL,
     reserve        TEXT NOT NULL,
+    -- Where a credit goes when the payee's account will not take it. A
+    -- liability, because the bank still owes the money — to whoever eventually
+    -- claims it — exactly as it owes a deposit.
+    unclaimed      TEXT NOT NULL,
     settlement     TEXT NOT NULL,
     seq            BIGSERIAL NOT NULL,
     PRIMARY KEY (participant_id, asset)
@@ -630,8 +642,31 @@ CREATE TABLE payments (
     created_at                 TIMESTAMPTZ,
     debtor_leg_tx              TEXT NOT NULL,
     creditor_leg_tx            TEXT NOT NULL,
+    creditor_leg_account       TEXT NOT NULL DEFAULT '',
     seq                        BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN payments.creditor_leg_account IS
+    'The account in the CREDITOR BANK''s book that the creditor leg actually '
+    'credited: normally the payee''s own GL account, and that bank''s '
+    'unclaimed-balances account when the payee''s account would not take the '
+    'credit. Written by payment.PostCreditorLegTx, empty until that leg posts. '
+    'It is STORED rather than derived because it records a MOMENT that no later '
+    'reading recovers. A return has to claw the money back from where it '
+    'landed, and the only other way to find out is to re-ask whether the '
+    'payee''s account is creditable — which answers a question about now, not '
+    'about the cut-off. A payee open at settlement and closed afterwards is '
+    'indistinguishable from one closed at settlement, so a return that '
+    're-derived would debit the wrong account in exactly the case this column '
+    'exists for, and nothing would catch it: an overdrawn deposit is a '
+    'Liability going negative, which the ledger does not refuse. That was '
+    'measured — the payee''s closed account at minus the amount, the unclaimed '
+    'liability never released, and the reserves paid back out anyway. No '
+    'foreign key to any account table, for the same reason the two agent '
+    'columns have none: this row records what WAS done, not a view onto the '
+    'chart of accounts as it stands now. DEFAULT '''' rather than NULL because '
+    'a payment whose creditor leg has not been posted has no such account, and '
+    'an absent one and an empty one are the same fact here.';
 
 COMMENT ON COLUMN payments.reject_code IS
     'The external status-reason code (AC01, AM04, MD01, ...) a rejection '
@@ -745,6 +780,67 @@ CREATE TABLE settlement_positions (
     amount         BIGINT NOT NULL,
     PRIMARY KEY (settlement_id, participant_id)
 );
+
+-- settlement_advices is a MEMBER BANK's record of a cut-off it was told about,
+-- and it is the first payment-layer table keyed by book.
+--
+-- Every other table in this section — participants, payments, mandates, cycles,
+-- settlements — is network-scoped: those rows belong to no single bank, so they
+-- are keyed by their id alone. Note the exact claim, because a looser one is
+-- false: participants DOES carry a book_id column (:547), but as DATA — which
+-- book that bank owns — and not as part of its key. This is the first
+-- payment-layer table where the book is part of the identity, and that
+-- difference is the whole of sub-project 8. A cycle is the clearing house's; a
+-- settlement is the central bank's; this is the member's, and when the stores
+-- split it moves into that member's own database and the other two do not
+-- follow it.
+--
+-- Two banks advised of one cut-off write two rows independently. That is not
+-- redundancy: settlement is final at the central bank and participants catch up
+-- afterwards, so "this bank has booked it and that one has not" is a state the
+-- system must be able to be in — and it shows as one row present and the other
+-- ABSENT.
+--
+-- What a row MEANS is that this bank booked this cut-off. No committed row says
+-- status 0 (payment.AdviceAdvised) today: payment.PostSettlementAdviceTx writes
+-- the row and posts the mirror leg in ONE unit of work, so a failed posting rolls
+-- the row back with it and a successful one leaves status 1. That is deliberate —
+-- the leg and the record of it must be atomic — and this comment used to claim
+-- the opposite, that a row stuck at status 0 was the unreconciled position and
+-- the only trace of a posting that failed. It never was. The unreconciled
+-- position is the ABSENCE of a row against a clearing suspense that has not
+-- returned to zero, and detecting it is Task 19's.
+--
+-- closing_balance is what the central bank said the reserve stands at. Nothing
+-- reads it yet; Task 19 is the reconciliation that does. It is stored because it
+-- arrives, and a balance discarded on receipt is one nobody can go back for.
+--
+-- No foreign key to cycles. A member bank HAS no cycles — after the split the
+-- cycles table is not in its database at all — so a constraint here would encode
+-- exactly the sharing this sub-project removes.
+CREATE TABLE settlement_advices (
+    book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
+    cycle_id        TEXT NOT NULL,
+    asset           TEXT NOT NULL,
+    movement        BIGINT NOT NULL,
+    closing_balance BIGINT NOT NULL,
+    -- SMALLINT, like every other status column in this schema, because
+    -- payment.AdviceStatus is an int enum and store/pg stores those as their
+    -- ordinal. status 0 is payment.AdviceAdvised, 1 is payment.AdvicePosted.
+    status          SMALLINT NOT NULL,
+    mirror_tx       TEXT NOT NULL DEFAULT '',
+    advised_at      TIMESTAMPTZ,
+    posted_at       TIMESTAMPTZ,
+    seq             BIGSERIAL NOT NULL,
+    PRIMARY KEY (book_id, cycle_id, asset)
+);
+
+COMMENT ON COLUMN settlement_advices.movement IS
+    'SIGNED: positive means this bank''s reserve went up. The statement it came '
+    'from carries a magnitude and a CdtDbtInd, because the ISO 20022 money type '
+    'cannot be negative; the sign is reconstructed on the way in and stored, '
+    'because a mirror leg posted in the wrong direction is the most expensive '
+    'way to be wrong about a settlement.';
 
 -- ---------------------------------------------------------------------------
 -- The audit log

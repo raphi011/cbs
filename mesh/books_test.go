@@ -215,14 +215,18 @@ func bookOf(book ledger.BookID) ledger.BookID {
 // the audit log is not per-book — see structCarriedBooks, which is where a
 // method of that shape is now decided rather than overlooked.
 //
-// payment.Tx's OWN methods are network-scoped: participants, payments, mandates,
-// cycles and settlements belong to no single bank and live under
-// ledger.NetworkBook. They are correctly absent from the overrides below, and
-// they still leave a trace — not through the row, but through the ID the row
+// Almost all of payment.Tx's OWN methods are network-scoped: participants,
+// payments, mandates, cycles and settlements belong to no single bank and live
+// under ledger.NetworkBook. They are correctly absent from the overrides below,
+// and they still leave a trace — not through the row, but through the ID the row
 // needed and the audit event it wrote, both of which are taken under
 // NetworkBook. See the block above the tests, which spells that out for Task 10
 // and pins it with a test, because an earlier version of this comment claimed
 // the exact opposite.
+//
+// The settlement advice is the exception, and it is the first one: it is a
+// member bank's own record of a cut-off it was told about, so it carries that
+// bank's book and IS recorded, exactly like a ledger or deposit row.
 //
 // It EMBEDS payment.Tx, so everything else is promoted untouched.
 // TestRecordingTxOverridesEveryBookScopedMethod is what keeps the override set
@@ -510,6 +514,26 @@ func (r *recordingTx) GetFacilityTermsAsOf(ctx context.Context, book ledger.Book
 	return r.Tx.GetFacilityTermsAsOf(ctx, book, id, day)
 }
 
+// --- payment.Tx ---
+//
+// Only the settlement advice. Every other method payment.Tx declares is
+// network-scoped — see the comment above recordingTx — and takes no book at all.
+
+func (r *recordingTx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
+	r.rec.note(book)
+	return r.Tx.PutSettlementAdvice(ctx, book, a)
+}
+
+func (r *recordingTx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+	r.rec.note(book)
+	return r.Tx.GetSettlementAdvice(ctx, book, cycle, asset)
+}
+
+func (r *recordingTx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]payment.SettlementAdvice, error) {
+	r.rec.note(book)
+	return r.Tx.ListSettlementAdvices(ctx, book)
+}
+
 // ---------------------------------------------------------------------------
 // The decision the parser cannot make
 // ---------------------------------------------------------------------------
@@ -565,6 +589,17 @@ var structCarriedBooks = map[string]structCarriedBook{
 		Why: "payment/store.go: participants are network-scoped and stored under ledger.NetworkBook. " +
 			"Participant.BookID names the book the bank owns; it does not scope this write. " +
 			"TestWritingAParticipantTouchesNoBankBook is the evidence.",
+	},
+	// A PASSENGER, and the only one: the book argument scopes this write and
+	// SettlementAdvice.Book is the row's record of where it landed.
+	"PutSettlementAdvice": {
+		Scoping: false,
+		Why: "payment/store.go: the book ARGUMENT scopes this write. store/pg writes book_id from that " +
+			"argument and never reads a.Book at all; store/mem overwrites a.Book from it, so neither " +
+			"store can answer with a book the caller did not name. storetest's " +
+			"SettlementAdviceIsScopedToTheBankThatWasAdvised is the evidence: it puts an advice whose " +
+			"Book field disagrees with the argument and pins that both stores file it under the " +
+			"argument's book and read the field back as that book.",
 	},
 }
 
@@ -625,9 +660,11 @@ var structCarriedBooks = map[string]structCarriedBook{
 // ever bound to it. Clearing posts nothing at all. Settlement does, and in three
 // places — the netting transaction in the CENTRAL BANK's book (CentralBankBook),
 // the mirror leg in each participant's own book, and each creditor leg in the
-// creditor's book. None of them is NetworkBook, so a handler that settles
-// contributes those books and not this one. Do not go looking for a NetworkBook
-// posting: there is none to find.
+// creditor's book. Those three are still the postings a cut-off makes; what
+// changed at Task 15b.2 is WHO makes the second, which is now the member itself
+// on the statement it was sent. None of them is NetworkBook, so a handler that
+// settles contributes those books and not this one. Do not go looking for a
+// NetworkBook posting: there is none to find.
 //
 // # This is a property of today's domain layer, not a structural invariant
 //
@@ -1064,9 +1101,9 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 // claims more than it measures is worse than no name, because the name is the
 // string a failure prints and a reader greps for.
 //
-// The central bank reaches EVERY book in this network when it settles, and Task
-// 10's own note said why without following the sentence through: settlement
-// posts in three places, and only one of them is the central bank's.
+// The central bank used to reach EVERY book in this network when it settled, and
+// Task 10's own note said why without following the sentence through: settlement
+// posted in three places, and only one of them was the central bank's.
 //
 //   - CentralBankBook, for the netting transaction — the one posting that is
 //     genuinely this institution's own, moving reserves between the members'
@@ -1074,35 +1111,40 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 //   - Each PARTICIPANT's book, twice over. The mirror leg moves that bank's
 //     suspense against its reserve so the suspense returns to zero, and the
 //     creditor leg releases each payee's funds out of its bank's suspense into
-//     the payee's account. Both are postings in a member bank's ledger, made by
+//     the payee's account. Both were postings in a member bank's ledger, made by
 //     the central bank's handler.
 //   - NetworkBook, for the settlement row's id and the audit events — the same
 //     route every network-scoped write takes here, and never through a posting.
 //     See the note above the tests.
 //
-// So the whole set is allBooks() — which is the fixture's two banks plus the
-// central bank's book and the network's, and which is a HELPER over this
-// fixture rather than a derivation from the network. It names h.debtorBook and
-// h.creditorBook explicitly, so a third bank in the fixture would be reached by
-// settlement and absent from this expectation, and this test would fail rather
-// than track it. That is the right failure — a set that grew silently would be
-// no measurement at all — but it is a thing to fix in the helper and not a
-// property this test already has.
+// # BOTH member legs have left, and that is what this set now measures
+//
+// Task 15b.2 turned the mirror leg into a camt.053: the central bank sends each
+// member a statement of its own reserve account, and the member posts its own
+// mirror leg from it (payment.PostSettlementAdviceTx, bank.receiveStatement).
+//
+// Task 15b.3 took the CREDITOR leg the same way. The clearing house's ACSC
+// fan-out now reaches the creditor's bank as well as the submitter, and that
+// bank releases its own customer's funds out of its own suspense
+// (payment.PostCreditorLegTx, bank.receiveStatus). So no member's book is in
+// this set at all: SettleCycleTx reads the cycle, the roster and its own book,
+// and no payment.
 //
 // # What that measurement is evidence FOR
 //
-// Not a boundary violation. It is what a settlement window IS: one unit of work
-// that holds every member's accounts at once, checks that every net payer can
-// cover, and posts the whole batch or none of it. A settlement agent that could
-// not reach the members' books could not clear their suspense accounts, and the
-// money would settle at the central bank and stay stuck in transit at the banks.
+// The two books that remain are the central bank's own and the network's. The
+// claim that a settlement agent posts in a member's ledger is gone entirely,
+// and it is gone by measurement rather than by assertion — this expectation was
+// written at Task 10 to fail the day it stopped being true, and it did.
 //
-// It is nonetheless the widest reach any actor in this system has, and the one
-// sub-project 8 will have the most to say about: when each entity gets its own
-// store, the mirror and creditor legs cannot be posted from here at all, and
-// this becomes a conversation — the central bank tells each bank its position is
-// discharged, and each bank posts its own two legs. This measurement is what
-// that change will be measured against.
+// What it cost is stated at the domain call rather than hidden here: the ledger's
+// refusal of an overdrawn net payer came from the mirror leg, in the member's own
+// book, where "Reserve at Central Bank" is an Asset account. A member's
+// settlement account HERE is a Liability, which ledger.Book.checkSufficientBalance
+// does not guard, so moving the leg without moving the check would have settled a
+// cycle whose net payer was short. SettleCycleTx now refuses that explicitly; see
+// TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction, which is the measurement
+// that would fail if it were ever deleted.
 func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -1116,48 +1158,77 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 		t.Fatalf("the payment is %v, want Settled — this test measures a settlement that happened", got.Status)
 	}
 	assertBooksTouched(t, "the central bank, settling a cycle",
-		h.booksTouchedBy(h.cfg.CentralBankBIC), h.allBooks())
+		h.booksTouchedBy(h.cfg.CentralBankBIC),
+		[]ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
 }
 
-// TestNeitherBankTouchesABookWhileTheCycleSettles is the counterpart of the
-// measurement above, and the strongest form the claim takes anywhere in this
-// package: across a cut-off the member banks reach NO book at all.
+// TestEachBankBooksItsOwnSettlementAndNoOtherBooks is the counterpart of the
+// measurement above: across a cut-off each member bank reaches its OWN book and
+// no other.
 //
 // TestWhichBooksEachBankActuallyReaches makes a claim about a credit transfer up
 // to acceptance, and TestWhichBooksEachBankReachesInAPull about a collection.
 // Neither could say anything about settlement, because at Task 10 there was
 // none. Now there is, and it is the moment at which reserves actually move — so
 // it is the point in the system's life where a bank reaching into the central
-// bank's book would be least visible and most wrong.
+// bank's book, or into the other bank's, would be least visible and most wrong.
 //
-// The empty set is a MEASUREMENT and not a vacuum. The payer's bank runs a
-// handler over this window, attributed to it by the same mechanism every other
-// set here uses: it is handed the ACSC pacs.002 the clearing house fans out. It
-// touches nothing because an acceptance needs nothing from a bank —
-// bank.receiveStatus returns without reading any book unless the status is a
-// rejection. Measured: a receiving half that resolved the payee's participant and
-// listed its ledgers comes out [bank_3] and fails here.
+// # The claim this used to make, and why it stopped being true
 //
-// # What an empty set does NOT rule out, measured rather than assumed
+// It was TestNeitherBankTouchesABookWhileTheCycleSettles, and it asserted the
+// empty set for both banks: "settlement is not a bank's work". That was a true
+// measurement of a system in which the settlement agent posted every member's
+// mirror leg inside its own unit of work — the banks touched nothing because
+// nothing was left for them to do. Task 15b.2 moved the mirror leg to the member
+// that owns the book, so both banks now post, and the old name claims the exact
+// opposite of what this measures. It is renamed rather than adjusted in place for
+// the reason TestWhichBooksEachBankActuallyReaches was renamed: the name is the
+// string a failure prints and a reader greps for, and one that outran its code is
+// worse than no name at all.
 //
-// A bank that merely RE-READ the payment row would still pass this, and the
-// reason is the recorder's and not this test's: a network-scoped row reaches
-// touched() through the id its write allocated and the audit event that write
-// appended, never through the read itself (see the note above the tests). So
-// GetPayment and GetParticipant record nothing at all. The claim this makes is
-// therefore about BOOKS — no bank reads or writes any book, its own or anybody
-// else's, while a cycle settles — and it is not a claim that a bank learns
-// nothing.
+// # What each bank reaches, and what is ABSENT
 //
-// The payee's bank is in the loop for symmetry and its set is empty for a second
-// reason as well: on a push the clearing house fans the ACSC out to the SUBMITTER
-// alone, so that bank is handed no message at all over this window. An assertion
-// that it touched nothing is true of it and weaker than it looks, which is worth
-// saying rather than leaving to be discovered.
+// Its own book, and only its own. The payer's bank posts once, for the mirror
+// leg — suspense against reserve, so the suspense returns to zero. The payee's
+// bank posts that leg too and then a second one: Task 15b.3 made the CREDITOR
+// leg the payee's bank's act, so it also releases its own customer's funds out
+// of that same suspense.
+//
+// The central bank's book is absent from both, which is the claim the old test
+// made most sharply and this one still makes: a member books its own mirror leg
+// from a statement, and never reads the account the statement is about.
+//
+// # The asymmetry in NetworkBook is a measurement, not noise
+//
+// NetworkBook is in the payee's bank's set and not the payer's, and the reason
+// is which of them writes a PAYMENT row. PostSettlementAdviceTx writes a
+// book-scoped advice row and appends no audit event, so a member's mirror leg
+// allocates no network id — that is why the payer's bank's set is its own book
+// alone. PostCreditorLegTx transitions the payment to Settled and appends
+// payment.settled, and a payment is a network-scoped row, so the payee's bank
+// reaches NetworkBook through the id that event needed (see the note above the
+// tests).
+//
+// So the asymmetry says the payment row is still ONE row shared by the whole
+// network rather than each institution's own record. Task 18 is where it
+// becomes per-entity, and then both banks will touch their own and neither this
+// one. Until then, a NetworkBook that appeared in the PAYER's set would mean a
+// bank had written a network row it has no business writing; read what touched
+// it before changing this expectation.
+//
+// # What these sets do NOT rule out, measured rather than assumed
+//
+// A bank that merely RE-READ the payment row would still show only its own book,
+// and the reason is the recorder's and not this test's: a network-scoped row
+// reaches touched() through the id its write allocated and the audit event that
+// write appended, never through the read itself (see the note above the tests).
+// So GetPayment and GetParticipant record nothing at all. The claim here is about
+// BOOKS — no bank reads or writes any book but its own while a cycle settles —
+// and it is not a claim that a bank learns nothing.
 //
 // It measures over the cut-off ONLY, resetting after the submission has drained,
 // so a book reached earlier can neither satisfy nor spoil it.
-func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
+func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
 	h.drain(t)
@@ -1166,11 +1237,10 @@ func TestNeitherBankTouchesABookWhileTheCycleSettles(t *testing.T) {
 	h.closeCycle(t)
 	h.drain(t)
 
-	for _, who := range []iso20022.BIC{h.debtorBIC, h.creditorBIC} {
-		if got := h.booksTouchedBy(who); len(got) != 0 {
-			t.Errorf("%s reached %v while the cycle settled; settlement is not a bank's work", who, got)
-		}
-	}
+	assertBooksTouched(t, "the payer's bank, booking its own settlement",
+		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
+	assertBooksTouched(t, "the payee's bank, booking its own settlement and paying its customer",
+		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, ledger.NetworkBook})
 }
 
 // TestWhichBooksAReturnReaches is the last flow's measurement, and it is the
@@ -1316,10 +1386,16 @@ func TestRecordingTxOverridesEveryBookScopedMethod(t *testing.T) {
 // the parser finds both shapes, and a method whose book travels inside its
 // argument must be DECIDED — recorded as scoping, or excluded with evidence.
 // Neither silence nor an unbacked assertion is available.
+//
+// PASSENGERS count too: a struct-carried book in a method that already takes its
+// book positionally (PutSettlementAdvice) is decided here like any other. It
+// looks harmless — the override notes argument 1 and that is the scope — but
+// "and that is the scope" is precisely the claim being made, and a claim nobody
+// has to write down is a claim nobody has to back.
 func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 	candidates := map[string]bookMethod{}
 	for _, m := range txBookCandidates(t) {
-		if m.Carry == bookInsideTheArg {
+		if m.Carry == bookInsideTheArg || m.PassengerField != "" {
 			candidates[m.Name] = m
 		}
 	}
@@ -1328,17 +1404,30 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 	}
 
 	for name, m := range candidates {
+		arg, field := m.Arg, m.Field
+		if m.PassengerField != "" {
+			arg, field = m.PassengerArg, m.PassengerField
+		}
 		decision, ok := structCarriedBooks[name]
 		if !ok {
 			t.Errorf("%s (%s.Tx) carries a book in %s.%s and structCarriedBooks does not decide it.\n"+
 				"Say whether that field scopes the operation — whether the store reads or writes\n"+
 				"another book because of it — and if it does not, say why and back it with a test.",
-				name, m.Pkg, m.Arg, m.Field)
+				name, m.Pkg, arg, field)
 			continue
 		}
 		if !decision.Scoping && strings.TrimSpace(decision.Why) == "" {
 			t.Errorf("structCarriedBooks[%q] excludes the method without saying why.\n"+
 				"An exclusion nobody can disprove is how ListAudit stayed unrecorded.", name)
+		}
+		// A passenger that SCOPES would mean the method has two scopes and the
+		// override records one of them. There is no correct decorator for that
+		// shape, so it is not a decision this table may express.
+		if m.PassengerField != "" && decision.Scoping {
+			t.Errorf("structCarriedBooks[%q] says %s.%s scopes the operation, but %s already takes its\n"+
+				"book at argument 1 and the override records only that one. If the field really chooses\n"+
+				"a book, this method has two scopes and no two-statement override can be right.",
+				name, arg, field, name)
 		}
 	}
 	for name := range structCarriedBooks {
@@ -2112,6 +2201,16 @@ type bookMethod struct {
 	Carry bookArg
 	Arg   string // the second parameter's name in the interface declaration
 	Field string // bookInsideTheArg only: the BookID field's name
+
+	// PassengerArg and PassengerField are a SECOND book, riding inside a later
+	// argument of a method that already takes `book ledger.BookID` at argument 1
+	// — PutSettlementAdvice(ctx, book, a) where a.Book exists.
+	//
+	// It is recorded rather than ignored because "the row merely records the
+	// book the argument already chose" is a claim about the STORE, which no
+	// signature makes. It goes to structCarriedBooks like every other
+	// struct-carried book; see TestEveryStructCarriedBookIsDecided.
+	PassengerArg, PassengerField string
 }
 
 // chainWalk is one traversal of a Tx embedding chain: what it found, what it
@@ -2298,6 +2397,20 @@ func (w *chainWalk) walk(dir string) {
 
 // classify decides how one interface method carries its book, refusing a book
 // carried anywhere but straight after ctx.
+//
+// The one exception is the shape PutSettlementAdvice introduced: a method that
+// already takes `book ledger.BookID` at argument 1 and is then handed a ROW that
+// names its own book. That is not a second position for the scope to hide in —
+// the override still notes argument 1 — so it is not refused.
+//
+// It is not waved through either. Whether the row's field is merely a record of
+// the book the argument chose, or a second book the store actually reads, is a
+// claim about the STORE that no signature makes; it is the same question
+// AppendAudit and PutParticipant pose, and it gets the same answer: it is
+// recorded as a PASSENGER and must be decided in structCarriedBooks with
+// evidence. Waving it through here is what would turn that registry into a rule
+// nobody consults, and the next PutX(ctx, book, x) of this shape would be
+// accepted silently.
 func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMethod {
 	found := bookMethod{Pkg: filepath.Base(pkg.dir), Name: name}
 	for i, p := range flatParams(fn) {
@@ -2307,6 +2420,10 @@ func (w *chainWalk) classify(pkg *pkgAST, name string, fn *ast.FuncType) bookMet
 			continue
 		}
 		if i != 1 {
+			if found.Carry == bookIsTheArg && carry == bookInsideTheArg {
+				found.PassengerArg, found.PassengerField = p.name, field
+				continue
+			}
 			w.refusef("%s.Tx.%s carries its book at argument %d, not straight after ctx. "+
 				"Every override relies on that position; move it back, or teach this parser the new rule.",
 				filepath.Base(pkg.dir), name, i)

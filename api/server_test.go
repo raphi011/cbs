@@ -1310,8 +1310,12 @@ func TestPaymentAuditRecordsTheLifecycle(t *testing.T) {
 		ledger.EventPaymentAccepted,
 		ledger.EventPaymentCleared, // one per payment in the cycle
 		ledger.EventCycleClosed,
-		ledger.EventPaymentSettled, // one per payment in the cycle
+		// The settlement agent closes the cut-off, and each payee's bank
+		// settles its own payment afterwards on the clearing house's advice —
+		// so cycle.settled comes first. See
+		// payment.TestPaymentAuditCoversTheNettingFlow.
 		ledger.EventCycleSettled,
+		ledger.EventPaymentSettled, // one per payment in the cycle
 	}
 	got := auditTypes(events)
 	assertEqual(t, "event stream", strings.Join(got, " "), strings.Join(want, " "))

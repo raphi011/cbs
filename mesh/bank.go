@@ -62,6 +62,16 @@ import (
 // are the settlement agent's, because reserves move. So this bank builds a
 // pacs.004, sends it to the clearing house, and waits (returnPayment,
 // receiveReturnStatus).
+//
+// # A fifth role, and the only one that answers nothing
+//
+// At a cut-off a member is TOLD what its reserve account did, in a camt.053 from
+// the settlement agent, and books its own mirror leg from it
+// (receiveStatement). It is the one inbound message in this type that produces
+// no pacs.002, because a statement is not an instruction: the settlement has
+// already happened and there is nothing to accept or refuse. It is also the only
+// role in which this bank posts without any customer of its own being involved —
+// what moves is its own position at the central bank.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -71,6 +81,19 @@ type bank struct {
 	// by ParticipantID instead, because that is what an instruction names; see
 	// Mesh.banks.
 	bic iso20022.BIC
+
+	// pid is which participant this actor IS, which is the question a settlement
+	// advice asks: a statement is about one bank's reserve account and a payment
+	// advice is about one bank's customer, and the answer must be this actor's
+	// own identity rather than a lookup.
+	//
+	// This is NOT the bank identity Task 18 owes payment.Network. That one is
+	// about narrowing ResolveIdentifierTx's sweep to "this bank's register", and
+	// it needs the DOMAIN layer to know whose register is whose. This is the
+	// mesh's own index turned around: Mesh.banks is already keyed by
+	// ParticipantID, so the actor is being told something the mesh knew when it
+	// built it. Nothing here narrows a sweep.
+	pid payment.ParticipantID
 }
 
 // handle dispatches on the message that arrived.
@@ -101,6 +124,8 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveDirectDebit(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs002:
 		return b.receiveStatus(ctx, doc)
+	case *iso20022.Camt053:
+		return b.receiveStatement(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", b.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -366,11 +391,26 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 
 // receiveStatus is a bank learning what became of a payment it is party to.
 //
-// An ACCEPTANCE needs nothing from it. That is not an omission: the payment's
-// acceptance is the clearing house's act and the clearing house records it, so
-// there is no second write for this bank to make. What the message buys is that
-// the bank KNOWS — which, before the mesh, it could only learn by reading the
-// return value of the call that did the accepting.
+// An ACCEPTANCE needs nothing from it, and that is not an omission: an ACCP is
+// the clearing house saying it has taken the payment into a cycle, which is the
+// clearing house's own act and which the clearing house records. No money has
+// moved yet, so there is no second write for this bank to make. What the message
+// buys is that the bank KNOWS — which, before the mesh, it could only learn by
+// reading the return value of the call that did the accepting.
+//
+// A SETTLEMENT COMPLETION is a different status about a different moment, and it
+// is where the payee is finally paid. The reserves have moved at the central
+// bank; the creditor's bank now releases the money out of its own clearing
+// suspense into its own customer's account, which is a posting only that bank
+// can make in only that bank's book. See payment.PostCreditorLegTx.
+//
+// Both banks are told, and only one of them has that leg. On a push the
+// clearing house sends the same ACSC to the payer's bank, which is waiting for
+// the answer to the instruction it sent and has nothing to post; the domain is
+// what tells the two apart, and payment.ErrNotThisBanksPayment coming back is
+// the ORDINARY case for one of the two recipients rather than a failure. On a
+// pull there is one recipient, because the bank that submitted the collection
+// is the creditor's bank. See csm.tellSettled.
 //
 // A REJECTION is where there may be work, and whether there is depends on which
 // bank this is:
@@ -417,7 +457,25 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	}
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
-		if r.Status != iso20022.TransactionStatusRejected || r.TxID == "" {
+		if r.TxID == "" {
+			continue
+		}
+		if r.Status == iso20022.TransactionStatusSettlementCompleted {
+			// ACSC. This bank posts its creditor leg if the payee is its
+			// customer, and does nothing at all if it is not — which on a push
+			// is the payer's bank, hearing the answer to the instruction it
+			// sent. The domain decides which this bank is;
+			// ErrNotThisBanksPayment is the ordinary case for one of the two
+			// recipients and is not a failure.
+			if _, err := b.ops.PostCreditorLeg(ctx, b.pid, payment.PaymentID(r.TxID)); err != nil {
+				if errors.Is(err, payment.ErrNotThisBanksPayment) {
+					continue
+				}
+				return fmt.Errorf("mesh: %s could not pay its customer for %s: %w", b.bic, r.TxID, err)
+			}
+			continue
+		}
+		if r.Status != iso20022.TransactionStatusRejected {
 			continue
 		}
 		p, err := b.ops.GetPayment(ctx, payment.PaymentID(r.TxID))
@@ -453,8 +511,13 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		// And is it really rejected? A pacs.002 is not on its own a decision:
 		// this network's record of the payment is. Reversing on the message
 		// alone would take a live debit back off a payment on its way to
-		// settlement — the payee is paid at settlement out of this suspense, so
-		// the money would simply be gone from the flow.
+		// settlement, and the money would simply be gone from the flow: this
+		// suspense is the PAYER's bank's, so the debit is what funds that bank's
+		// own mirror leg when the cut-off settles. (This comment used to say the
+		// payee is paid out of this suspense. The payee is paid out of the
+		// PAYEE's bank's suspense, by that bank, after settlement — a different
+		// account in a different book. The mistake made the consequence sound
+		// smaller than it is.)
 		if p.Status != payment.Rejected {
 			return fmt.Errorf("mesh: %s was told to reverse %s, which this network records as %v", b.bic, p.ID, p.Status)
 		}
@@ -493,6 +556,73 @@ func (b *bank) receiveReturnStatus(doc *iso20022.Pacs002) error {
 			b.m.log.Error("mesh: return refused",
 				"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
 		}
+	}
+	return nil
+}
+
+// receiveStatement is a bank booking its own share of a cut-off, from the
+// central bank's statement of its reserve account.
+//
+// # It answers nothing
+//
+// Every other inbound message in this package produces a pacs.002. This produces
+// none, and that is the message definition rather than an omission: a statement
+// is not an instruction and there is nothing to accept or refuse. The central
+// bank has already settled — finality is the premise of this whole conversation —
+// so a bank that answered "no" would be refusing something that has happened.
+//
+// What a failure produces instead is an ERROR, which this transport turns into a
+// dead letter, and NO advice row at all: payment.PostSettlementAdvice is one unit
+// of work, so a mirror leg that fails takes the row with it. The dead letter is
+// the only trace in this PROCESS; in the STORE the unreconciled position is a
+// clearing suspense that has not returned to zero with no advice row against the
+// cycle. Task 19 is the reconciliation that makes that visible from inside the
+// system rather than only in Drain.
+//
+// # One statement, one member
+//
+// This system's central bank sends a member a statement about that member's own
+// reserve account and about nothing else, so a document carrying several is one
+// this handler has no rule for. It is refused whole rather than partially
+// booked, for the reason cycleOf gives: booking the first and dropping the rest
+// would move a reserve mirror by the wrong amount with nothing recording it.
+//
+// The check that the account is THIS bank's is the domain's, not this handler's
+// — see payment.PostSettlementAdviceTx and ErrStatementNotForThisBank — because
+// it is a question about this bank's chart of accounts and the handler holds no
+// chart.
+//
+// # It does not check WHO sent it, and that is deliberate
+//
+// `from` is used in the error messages and in no decision. What is checked is
+// OWNERSHIP: the account the statement names must be this bank's own reserve
+// account at the central bank, and that is the domain's question because the
+// domain is what holds the chart of accounts. Repeating it here as a sender
+// check would be a second answer to a question already answered, by the layer
+// with less to answer it with.
+//
+// What ownership buys is NOT "only the settlement agent may advise me", and the
+// difference is worth stating rather than leaving to be inferred from an
+// absence. That is a strictly stronger guarantee and this system does not make
+// it: any actor that named this bank's own settlement account would be booked
+// here, because the row it produces is indistinguishable from a real one. What
+// it does buy is that nobody can move this bank's mirror by advising it about
+// somebody else's position, which is the failure that would actually cost money.
+// Nothing in this mesh sends a camt.053 but the settlement agent; and under one
+// shared store the two properties are not separable anyway, since every account
+// id is in one table. Sub-project 8 is where a sender becomes something a
+// receiver could meaningfully insist on.
+func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso20022.Camt053) error {
+	moves, err := payment.ReadStatement(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the statement from %s: %w", b.bic, from, err)
+	}
+	if len(moves) != 1 {
+		return fmt.Errorf("mesh: %s got a statement from %s carrying %d accounts; a member is told about its own",
+			b.bic, from, len(moves))
+	}
+	if _, err := b.ops.PostSettlementAdvice(ctx, b.pid, moves[0]); err != nil {
+		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].CycleID, err)
 	}
 	return nil
 }

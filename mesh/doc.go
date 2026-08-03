@@ -119,11 +119,88 @@
 // # Settlement
 //
 // The third institution, and the only one that moves reserves. A cut-off is two
-// messages between the institutions and then one per payment out to the banks:
+// messages between the institutions, one STATEMENT out to each member whose
+// position moved, and then one status per payment out to the banks:
 //
 //	clearing house  --pacs.009-->  central bank
+//	central bank    --camt.053-->  each member whose net position moved
 //	clearing house  <--pacs.002--  central bank
-//	clearing house  --pacs.002-->  the bank that submitted each payment
+//	clearing house  --pacs.002-->  the submitter and the payee's bank, per payment
+//
+// Those two fan-outs are what a member's half of a cut-off is made of, and
+// between them nothing of it is left in the settlement agent's unit of work: the
+// camt.053 carries the MIRROR leg and the per-payment ACSC carries the CREDITOR
+// leg (bank.receiveStatus, payment.PostCreditorLegTx).
+//
+// The camt.053 is what makes the MIRROR LEG the member's own act. A bank's
+// clearing suspense holds money that has left a customer and not yet settled
+// between banks; the mirror leg is that suspense moving against the bank's
+// reserve, and it is a posting in the bank's own ledger. The settlement agent
+// used to make it, inside its own unit of work, in a book that was not its.
+// Now it states the movement and the closing balance, and the member books it
+// (bank.receiveStatement, payment.PostSettlementAdviceTx).
+//
+// A statement is not an instruction, so it is ANSWERED BY NOTHING: the central
+// bank has already settled, and there is nothing left to accept or refuse. A
+// member that cannot book what it was told produces a dead letter and NO advice
+// row: payment.PostSettlementAdviceTx writes the row and posts the mirror leg in
+// one unit of work, so a failure takes both. The unreconciled position is
+// therefore a clearing suspense that has not returned to zero with no advice row
+// against the cycle — which looks the same in the store as never having been
+// told, and telling those two apart is Task 19's problem rather than a
+// distinction this schema makes.
+//
+// It goes out BEFORE the answer, and since 15b.3 that ordering is load-bearing
+// rather than merely tidy. The CREDITOR leg is posted from the clearing house's
+// ACSC fan-out, which is derived from the answer, so sending the statement first
+// puts it in the member's inbox before the ACSC is even built — a happens-before
+// chain rather than a race, because a send pushes onto the target's queue
+// synchronously and one goroutine pops each queue in order.
+//
+// It bears on a NET RECEIVER: that bank's mirror leg credits the clearing
+// suspense its creditor legs then draw on. A net payer's mirror leg debits its
+// suspense instead, and a member whose position nets to zero is sent no
+// statement at all; in both of those the suspense was funded by its own
+// customers' debtor legs. Get the order wrong for a net receiver and it pays its
+// customer out of a suspense the cut-off has not yet credited — legal, because
+// suspense is a Liability and the ledger does not guard those, and wrong,
+// because for that interval the bank's books say it lent its own customer the
+// money. Asserted by mesh's TestTheMessagesACutOffPutsOnTheWire; see
+// centralBank.advise.
+//
+// # What an undelivered statement suppresses, and why Task 19 is scoped from here
+//
+// centralBank.advise returns on the FIRST send it cannot make, and the cost is
+// wider than the bank it could not reach:
+//
+//   - that member is never advised, and has no advice row at all — which is
+//     exactly what the store shows for a member that WAS told and could not
+//     book, since the row commits with the leg;
+//   - every member AFTER it in the statement order is never advised either;
+//   - the ACSC is never sent, so the clearing house never fans the per-payment
+//     statuses out, and EVERY bank in the cycle — including the ones that were
+//     advised — is left holding an instruction it believes outstanding on a
+//     payment the domain has already marked Settled.
+//
+// None of it is reachable here, for the reason "What this mesh is not" gives
+// below: delivery is exactly-once and in order, and a send to a live actor
+// always succeeds. It becomes reachable in any transport that can lose a
+// message. The settlement is FINAL in all three cases — the reserves moved and
+// the cycle is Settled — so nothing may be unsaid, and there is deliberately no
+// retry here rather than untested machinery for an unreachable failure. What is
+// missing is the ability to NOTICE, and that is what Task 19's reconciliation is
+// for: an absent advice row against a clearing suspense that has not returned to
+// zero, and a cycle Settled whose banks were never told, are the two shapes it
+// has to find. They are the same shape in the store, which is why noticing needs
+// the CLOSING BALANCE the statement carried rather than the row's status alone.
+//
+// The refusal moved with the leg. A net payer whose reserve cannot cover its
+// position used to be refused by the LEDGER, when the mirror leg took an Asset
+// account negative in the member's own book. A member's settlement account at
+// the central bank is a Liability, which the ledger does not guard, so
+// SettleCycleTx now checks each net payer's reserve itself and answers with the
+// same AM04. That is the central bank declining to extend uncollateralised
+// intraday credit, which is the decision a settlement agent exists to make.
 //
 // A cut-off does not arrive in an inbox. It comes in from outside the mesh the
 // way a customer's instruction does, so Mesh.CloseCycle runs the clearing
@@ -140,17 +217,33 @@
 // every bank's single claim on, or obligation to, the central bank.
 //
 // The CENTRAL BANK discharges them, whole or not at all. SettleCycleTx is one
-// unit of work holding every member's accounts at once, which is what a
-// settlement window is, and a net payer whose reserve cannot cover its position
-// aborts the batch — answered AM04, the same code a debtor's bank sends about a
-// customer's empty account, said about a bank instead of about a customer.
-// Before the mesh that refusal was a Go error returned to whoever pressed
-// settle, which is not something a clearing house can act on.
+// unit of work holding every member's reserve position at once — the settlement
+// accounts in the central bank's OWN book, which is where that position is
+// recorded on this side — and that is what a settlement window is. A net payer
+// whose reserve cannot cover its position aborts the batch, answered AM04, the
+// same code a debtor's bank sends about a customer's empty account, said about a
+// bank instead of about a customer. Before the mesh that refusal was a Go error
+// returned to whoever pressed settle, which is not something a clearing house
+// can act on.
+//
+// What that window does NOT hold is any member's own book, and it used to. Each
+// member's mirror leg and creditor legs are that member's own units of work now,
+// made on advice and afterwards. That is what makes settlement FINAL rather than
+// simultaneous: when this unit of work commits the reserves have moved, and a
+// member that has not yet booked its half has an unreconciled position rather
+// than a claim on anyone. See payment.SettleCycle.
 //
 // The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
-// submitted it. The central bank could not: it answers about a CYCLE and holds
-// no way to look a payment up, which is the shape of "a central bank never sees
-// an individual payment".
+// submitted it AND to the payee's bank. The central bank could not: it answers
+// about a CYCLE and holds no way to look a payment up, which is the shape of
+// "a central bank never sees an individual payment".
+//
+// Two recipients because they are told it for two reasons. The submitter has an
+// instruction outstanding and this closes it; the CREDITOR's bank has a leg to
+// post, and posting it is what pays the payee. On a pull they are the same
+// institution and there is one message. Only the creditor's bank may act —
+// payment.ErrNotThisBanksPayment refuses the other, and on a push that refusal
+// is the ordinary case rather than a fault.
 //
 // A REFUSAL is fanned out to nobody, and that asymmetry is the one thing here
 // worth stating twice. Nothing was posted, so every payment is exactly where the

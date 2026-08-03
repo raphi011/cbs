@@ -308,6 +308,32 @@ type Payment struct {
 	// ledgers (there is no shared transaction id between banks).
 	DebtorLegTx   ledger.TransactionID
 	CreditorLegTx ledger.TransactionID
+
+	// CreditorLegAccount is the account in the CREDITOR BANK's book that the
+	// creditor leg actually credited, set by PostCreditorLegTx and empty until
+	// that leg is posted.
+	//
+	// Usually it is the payee's own GL account. It is the bank's
+	// unclaimed-balances account when the payee's account would not take the
+	// credit — see PostCreditorLegTx, which diverts rather than stranding.
+	//
+	// # Why it is STORED and not derived
+	//
+	// Because the fact it records is about a MOMENT, and the account it names
+	// cannot be worked out from any later reading of the world. ReturnPaymentTx
+	// has to claw the money back from wherever it landed, and the only other way
+	// to find out is to re-ask whether the payee's account is creditable — which
+	// answers a question about NOW, not about the cut-off. A payee who was open
+	// at settlement and closed afterwards is indistinguishable from one who was
+	// closed at settlement, so a return that re-derived would debit the wrong
+	// account in precisely the case that matters, and the ledger would not
+	// notice: an overdrawn deposit is a Liability going negative, which
+	// ledger.checkSufficientBalance does not refuse.
+	//
+	// It is an AccountID rather than a "was diverted" flag deliberately. The
+	// flag would be a record of one special case; this is a record of what
+	// happened, and it stays true if a later scheme grows a third destination.
+	CreditorLegAccount ledger.AccountID
 }
 
 // Mandate is a debtor's standing authorization for a specific creditor to
@@ -349,4 +375,100 @@ type Settlement struct {
 	SettlementTx ledger.TransactionID // the transaction in the central-bank ledger
 	ValueDate    time.Time
 	SettledAt    time.Time
+}
+
+// AdviceStatus is how far a member bank has got with a settlement it was told
+// about.
+type AdviceStatus int
+
+const (
+	// AdviceAdvised is told and not yet booked — and NO COMMITTED ROW SAYS IT
+	// today, which has to be known before it is read as a detector.
+	//
+	// PostSettlementAdviceTx writes the row and posts the mirror leg in one unit
+	// of work: a failed posting rolls the row back with it, and a successful one
+	// supersedes it with AdvicePosted before the commit. The only arm that
+	// commits this status is the zero-movement guard, and the settlement path
+	// never reaches it — the central bank sends no statement for a position of
+	// zero, because settlementLegsTx skips one.
+	//
+	// It is kept rather than deleted because it is the honest name for a state
+	// this type has to be able to express, and because it becomes reachable the
+	// moment the write and the posting stop sharing a unit of work. They must not
+	// while a bank's mirror leg and its record of having made it have to be
+	// atomic: a row asserting a booking that did not happen is worse than no row.
+	//
+	// So the detector for a bank that was told and did not book is the ABSENCE of
+	// a row against a clearing suspense that has not returned to zero. This doc
+	// used to claim the opposite, and so did four other layers; see
+	// SettlementAdvice and PostSettlementAdviceTx.
+	AdviceAdvised AdviceStatus = iota
+	// AdvicePosted is booked: the mirror leg is in this bank's own ledger.
+	AdvicePosted
+)
+
+// SettlementAdvice is a member bank's own record of a cut-off it was told about:
+// what its reserve moved by, what the central bank says it was left at, and
+// whether this bank has booked it yet.
+//
+// # It belongs to the BANK and not to the network
+//
+// Book is part of its identity, which is the whole point. A cycle is the
+// clearing house's and a settlement is the central bank's; this is the member's,
+// and under sub-project 8 it lives in that member's own store. Two banks advised
+// of the same cut-off write two rows independently, so "one bank has booked this
+// cut-off and the other has not" is expressible — as one row present and the
+// other ABSENT, rather than as two rows at different statuses. See AdviceAdvised
+// for why the difference matters and what it cost to get wrong.
+//
+// # ClosingBalance is stored and nothing checks it yet
+//
+// It is what the central bank says this bank's reserve stands at, and it is the
+// only figure in this system that a bank can check its own books against without
+// reading another institution's store. Task 19 is where that check happens. It is
+// stored now because it arrives now, and a statement's balance discarded on
+// receipt is a balance nobody can ever go back for.
+type SettlementAdvice struct {
+	Book    ledger.BookID
+	CycleID CycleID
+	Asset   ledger.AssetCode
+
+	// Movement is SIGNED: positive means this bank's reserve went up.
+	Movement       ledger.Amount
+	ClosingBalance ledger.Amount
+
+	Status   AdviceStatus
+	MirrorTx ledger.TransactionID
+
+	AdvisedAt time.Time
+	PostedAt  time.Time
+}
+
+// SettlementStatement is one member's share of a settlement, as the CENTRAL BANK
+// saw it at the moment it posted: the movement on that member's reserve account
+// and the balance the account was left at.
+//
+// It exists to be captured INSIDE the settling transaction's unit of work and
+// returned from it, rather than re-read afterwards, because the closing balance
+// is a claim about a moment. A balance read after the commit is a different
+// number the instant anything else settles, and a statement asserting the wrong
+// one is worse than no statement: the whole point of carrying Bal/CLBD is that a
+// member can check its own posting against it. SettleCycleTx builds one per
+// member, inside the unit of work and after the netting transaction has posted,
+// and returns them beside the Settlement for exactly that reason.
+//
+// Movement is SIGNED — positive means the member's reserve went up — and the
+// message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the
+// direction travels as CdtDbtInd. See StatementMessage.
+type SettlementStatement struct {
+	Member       ParticipantID
+	Agent        iso20022.BIC
+	Account      ledger.AccountID
+	Asset        ledger.AssetCode
+	CycleID      CycleID
+	SettlementID SettlementID
+
+	Movement       ledger.Amount
+	ClosingBalance ledger.Amount
+	ValueDate      time.Time
 }

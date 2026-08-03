@@ -207,9 +207,13 @@ func validateNamedParty(element string, p PartyIdentification) error {
 // GenericAccountIdentification is the non-IBAN arm of an account
 // identification: an identifier plus, optionally, the scheme that issued it.
 //
-// Nothing in this system produces one today — SEPA is IBAN-only. It exists
-// because it is the OTHER half of a choice, and a choice with one arm is not a
-// choice. It is also where a card PAN would arrive.
+// It existed for a long time because it is the OTHER half of a choice, and a
+// choice with one arm is not a choice — nothing in this system produced one, and
+// its doc said so. camt.053 is what changed that: a member bank's reserve
+// account at the central bank has no IBAN, because it is not a payment address
+// and no customer ever quotes it. It is identified by the servicer's own account
+// identifier, which is exactly what this arm is for. It is still where a card
+// PAN would arrive.
 type GenericAccountIdentification struct {
 	Id string `xml:"Id"`
 }

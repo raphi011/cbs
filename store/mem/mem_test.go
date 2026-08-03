@@ -49,8 +49,10 @@ func TestProductConformance(t *testing.T) {
 // TestPaymentConformance runs the payment half of the suite against the same
 // implementation, through the payment.Store view. It is the same underlying
 // *mem.Store and the same *tx as the ledger and deposit views — which is what
-// lets a settlement post across every participant's book, the central bank's
-// and its own record in one unit of work.
+// lets one unit of work post across every participant's book, the central bank's
+// and the network's own rows. Since Task 15b.3 no institution's own call does
+// that at a cut-off; seed.builder.settle is the caller that still needs it, and
+// it is allowed to because the seed is not an institution.
 func TestPaymentConformance(t *testing.T) {
 	storetest.RunPayment(t, func(t *testing.T) payment.Store {
 		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() }).Payment()

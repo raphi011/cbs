@@ -70,8 +70,8 @@
 //
 // # Messages
 //
-// Five, each the interbank counterpart of an operation the payment package
-// already performs:
+// Six. Five are each the interbank counterpart of an operation the payment
+// package already performs; the sixth reports on one after the fact:
 //
 //   - pacs.008.001.08 FIToFICstmrCdtTrf — a SEPA Credit Transfer.
 //   - pacs.003.001.08 FIToFICstmrDrctDbt — a SEPA Direct Debit collection.
@@ -84,11 +84,27 @@
 //     house sends its settlement agent when a cycle closes. The other four are
 //     sub-project 7a's; this one is 7b's, which is the sub-project that made
 //     the central bank an actor with something to receive.
+//   - camt.053.001.08 BkToCstmrStmt — a statement: an account servicer telling
+//     an account holder what happened on an account the holder does not keep.
+//     The central bank sends one to each member after a cut-off, for that
+//     member's reserve account. It is sub-project 8's, and it is the message
+//     that reverses the ruling below.
 //
-// Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer), the
-// camt reporting family, camt.056 recalls and pacs.007 reversals, message
-// signing, and runtime XSD validation. Each is recorded in the design document
-// with the reason.
+// Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer),
+// camt.056 recalls and pacs.007 reversals, message signing, and runtime XSD
+// validation. Each is recorded in the design document with the reason.
+//
+// # A reversed ruling: the camt family
+//
+// The whole camt family was recorded here as deliberately absent, and the reason
+// was true when it was written: no institution in this system needed to be TOLD
+// about a movement on an account it does not hold, because every actor could
+// read every book. Sub-project 8 creates the first institution that cannot — a
+// member bank whose reserve at the central bank moves in the CENTRAL BANK's
+// book — so the movement has to arrive as a message or not at all. camt.053 is
+// carried; the rest of the family is not, and camt.054 is refused on the
+// specific ground that a notification carries no balance and therefore cannot
+// detect a wrong posting. See Camt053.
 //
 // # Two things encoding/xml cannot do
 //

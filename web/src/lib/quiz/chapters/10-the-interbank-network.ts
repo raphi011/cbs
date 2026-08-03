@@ -161,9 +161,9 @@ export const chapter: Chapter = {
       concept: "central-bank-reserves",
       prompt:
         "Bank A's 'Reserve at Central Bank' (an asset on Bank A's books) and the central bank's 'Reserve: Bank A' (a liability on the central bank's books) must always show the same dollar balance.",
-      answer: true,
+      answer: false,
       explanation:
-        "These two entries are mirror images of the same pile of reserves — one recorded as Bank A's claim, the other as the central bank's obligation. [[central-bank-reserves]]: if they ever diverged, one party would have a record of money the other side doesn't — precisely the error that double-entry reconciliation exists to make impossible.",
+        "They are mirror images of the same pile of reserves — Bank A's claim and the central bank's obligation — and they agree **once both institutions have booked**. They do not agree in between, and that gap is designed in, not an error. The central bank posts its netting transaction and is [[settlement-finality|final]] there; it then *tells* Bank A, by `camt.053`, and Bank A books its own side in a [[unit-of-work|unit of work]] of its own. Until it does, the two differ by exactly Bank A's net position. That window is the [[unreconciled-position|unreconciled position]], and the whole point of naming it is that the mismatch is the honest state of a system where no institution writes in another's books.",
     },
     {
       kind: "truefalse",
@@ -192,7 +192,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2, 4],
       explanation:
-        "[[clearing-suspense]] is a temporary liability: credited at initiation (Step 1) and debited at settlement (Step 3), leaving a net balance of zero for each settled payment. It is a completely separate account from the reserve asset — one captures in-transit obligations; the other is the bank's funded claim on the central bank.",
+        "[[clearing-suspense]] is a temporary liability: credited at initiation (Step 1) and debited when Bank A books the cut-off it is told about, leaving a net balance of zero for each settled payment. It returns to zero *after* settlement rather than at it — the central bank commits first and Bank A books its own mirror leg on the `camt.053` it is then sent, so the gap between the two is the [[unreconciled-position|unreconciled position]]. It is a completely separate account from the reserve asset — one captures in-transit obligations; the other is the bank's funded claim on the central bank.",
     },
     {
       kind: "numeric",
@@ -312,7 +312,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 3, 4],
       explanation:
-        "At settlement three ledgers move in lockstep: (1) the **central bank** debits Bank A's reserve liability and credits Bank B's; (2) **Bank A** closes its [[clearing-suspense]] with a debit and records the outgoing reserves with a credit to its reserve asset; (3) **Bank B** debits (raises) its reserve asset and credits Bob's deposit. Alice's deposit was debited at *initiation* — not at settlement.",
+        "Three ledgers move, and they move one after another rather than in lockstep: (1) the **central bank** debits Bank A's reserve liability and credits Bank B's, in its own unit of work, and is [[settlement-finality|final]] there; (2) **Bank A**, told by `camt.053`, closes its [[clearing-suspense]] with a debit and records the outgoing reserves with a credit to its reserve asset; (3) **Bank B**, told by its own `camt.053` and then by a `pacs.002` per payment, debits (raises) its reserve asset and credits Bob's deposit. The entries are the same; the timing is not, and the gap between (1) and the rest is the [[unreconciled-position|unreconciled position]]. Alice's deposit was debited at *initiation* — not at settlement.",
       explore: { label: "View central bank reserves", href: "/central-bank" },
     },
   ],

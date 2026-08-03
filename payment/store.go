@@ -61,6 +61,26 @@ type Tx interface {
 	PutSettlement(ctx context.Context, s Settlement) error
 	GetSettlement(ctx context.Context, id SettlementID) (Settlement, error)
 	ListSettlements(ctx context.Context) ([]Settlement, error)
+
+	// The advice rows are BOOK-SCOPED, unlike every other method in this block.
+	// Participants, payments, mandates, cycles and settlements belong to no
+	// single bank and live under ledger.NetworkBook; an advice is one member
+	// bank's record of what it was told, so it is keyed by that bank's book —
+	// which is also what makes the recorder in mesh/books_test.go see a bank
+	// reaching its own book when it books a settlement.
+	//
+	// ListSettlementAdvices has NO production caller — the only method in this
+	// interface with none. It is Task 19's scaffolding, on the same footing as
+	// SettlementAdvice.ClosingBalance, which no code reads either: a
+	// reconciliation walks a bank's own advices against a clearing suspense that
+	// has not returned to zero, and that walk is the reader. It is declared now
+	// because the rows are written now, and a listing added later would be a
+	// second occasion to get the ordering contract wrong in two stores.
+	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what holds
+	// mem and pg to one answer in the meantime.
+	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
+	GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle CycleID, asset ledger.AssetCode) (SettlementAdvice, error)
+	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
 }
 
 // Contract notes for implementers. Each of these is asserted by
@@ -102,6 +122,13 @@ type Tx interface {
 //   - Rollback spans all three layers: a failed Update undoes payment rows,
 //     deposit rows, ledger rows and audit appends written through the same Tx.
 //     (UpdateRollsBackAllThreeLayersTogether.)
+//
+//   - GetSettlementAdvice -> ErrSettlementAdviceNotFound. The key is
+//     (book, cycle, asset), all three: two banks advised of one cut-off hold two
+//     rows, and a bank operating in two assets settles each separately.
+//     ListSettlementAdvices is scoped to ONE book and ordered by AdvisedAt then
+//     seq, like every other listing here.
+//     (SettlementAdviceIsScopedToTheBankThatWasAdvised.)
 //
 //   - Reset clears the payment tables too. (ResetClearsPaymentState.)
 

@@ -193,13 +193,13 @@ export const chapter: Chapter = {
         "Suppose `ErrAssetMismatch` did not exist, and a payment from a euro account to a bitcoin account got past initiation. What would happen to it?",
       options: [
         "Nothing would catch it — each leg balances within its own asset, so the payment settles and 3000 satoshi appear out of 3000 cents",
-        "It would survive initiation and fail at settlement with `ErrUnbalancedAsset`, failing the entire clearing cycle rather than just that payment",
+        "It would survive initiation and fail at the creditor leg with `ErrUnbalancedAsset`, long after the payer was debited and the cycle had already settled",
         "The debtor leg would be refused at initiation, because its two entries are in different assets",
         "It would settle, and the imbalance would surface afterwards as a discrepancy in the central bank's reserve accounts",
       ],
       answer: 1,
       explanation:
-        "The ledger does catch it — in the worst possible place. At initiation there is only the debtor leg, *debit Alice EUR / credit Suspense EUR*, which is impeccable [[double-entry]] within one asset and contains no claim that a posting in another bank's book is its other half. At settlement the creditor leg is built from the creditor's suspense account **in the scheme's asset**, so it comes out *debit Suspense EUR / credit Bob BTC* — and that does not balance. But settlement is all-or-nothing: one bad payment fails every member's positions with it, and the error names an unbalanced asset rather than the payment behind it. [[scheme-asset|`ErrAssetMismatch`]] turns a late, batch-wide, misattributed failure into an immediate, correctly attributed one. The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.",
+        "The ledger does catch it — in the worst possible place. At initiation there is only the debtor leg, *debit Alice EUR / credit Suspense EUR*, which is impeccable [[double-entry]] within one asset and contains no claim that a posting in another bank's book is its other half. The creditor leg — posted by the payee's own bank once the cycle has settled — is built from the creditor's suspense account **in the scheme's asset**, so it comes out *debit Suspense EUR / credit Bob BTC*, and that does not balance. By then the payer has been debited for hours, the reserves have moved and the cut-off is final, and the error names an unbalanced asset rather than the payment behind it. It no longer takes the whole cycle down with it — the leg is one bank's own unit of work, so the damage is confined to this one payment — but confined and late is still late. [[scheme-asset|`ErrAssetMismatch`]] turns a late, misattributed failure into an immediate, correctly attributed one. The general rule: an invariant is enforceable where the whole of it is visible, and cheapest where it is visible earliest.",
     },
     {
       kind: "truefalse",

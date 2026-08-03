@@ -122,18 +122,25 @@ func TestReasonForAnEmptyAccountIsAM04(t *testing.T) {
 
 // TestReasonForAnEmptyReserveIsAM04 is the pin on the second borrowed entry.
 //
-// A net payer whose reserve cannot cover its position is refused by the LEDGER,
-// inside SettleCycleTx: the mirror leg would take an asset account negative, and
-// PostTransactionTx will not. So the error that has to become a code is
-// ledger.ErrInsufficientBalance, one layer below the deposit error that
-// classifies the same condition for a customer's account.
+// A net payer whose reserve cannot cover its position is refused inside
+// SettleCycleTx, and ledger.ErrInsufficientBalance is what that refusal carries
+// — one layer below the deposit error that classifies the same condition for a
+// customer's account.
+//
+// It used to come from the LEDGER itself: the mirror leg would take an Asset
+// account negative and PostTransactionTx will not. The mirror leg is the
+// member's own posting since Task 15b.2, so SettleCycleTx checks each net
+// payer's reserve at the central bank itself and returns this same sentinel
+// deliberately — a member's settlement account there is a Liability, which the
+// ledger does not guard, and a new sentinel would have changed the code on the
+// wire for a refusal that did not change at all.
 //
 // The same code for both is right rather than convenient: AM04 says "the account
 // cannot cover this", and the settlement agent answering a clearing house is
 // saying exactly what a debtor's bank says to a creditor's. MS03 is what it fell
 // to before, which told the clearing house nothing it could act on.
 func TestReasonForAnEmptyReserveIsAM04(t *testing.T) {
-	err := fmt.Errorf("posting the mirror leg: %w", ledger.ErrInsufficientBalance)
+	err := fmt.Errorf("bank_1 is short 250000 in EUR: %w", ledger.ErrInsufficientBalance)
 	if got := ReasonFor(err); got != iso20022.StatusReasonInsufficientFunds {
 		t.Errorf("ReasonFor(%v) = %q, want AM04", err, got)
 	}
@@ -495,6 +502,110 @@ func TestReadSettlementRefusesACountThatIsNotANumber(t *testing.T) {
 	// the element, which is what reaches the sender as free text beside MS03.
 	if !strings.Contains(err.Error(), "NbOfTxs") {
 		t.Errorf("error = %v, want it to name the count that was not a count", err)
+	}
+}
+
+// camt053Fixture builds a minimally valid statement: one entry, one CLBD
+// balance, an Othr-identified account. Each ReadStatement refusal test below
+// starts from this and breaks exactly the one thing it means to test, so a
+// failure can only be about that one thing.
+func camt053Fixture() *iso20022.Camt053 {
+	return &iso20022.Camt053{BkToCstmrStmt: iso20022.BankToCustomerStatement{
+		Stmt: []iso20022.AccountStatement{{
+			Id:   "set_1",
+			Acct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{Othr: &iso20022.GenericAccountIdentification{Id: "acc_1"}}},
+			Bal: []iso20022.CashBalance{{
+				Tp:        iso20022.BalanceTypeChoice{CdOrPrtry: iso20022.BalanceTypeCode{Cd: iso20022.BalanceTypeClosingBooked}},
+				Amt:       iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "3000.00"},
+				CdtDbtInd: iso20022.CreditDebitCredit,
+			}},
+			Ntry: []iso20022.StatementEntry{{
+				Amt:         iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "2500.00"},
+				CdtDbtInd:   iso20022.CreditDebitCredit,
+				AcctSvcrRef: "cyc_1",
+			}},
+		}},
+	}}
+}
+
+// A statement carrying two entries is refused whole, not read as one movement
+// with the second silently dropped. This system's central bank posts exactly
+// one netting movement per member per cycle, so a second entry is a shape this
+// reader has no rule for — and posting the first while ignoring the second
+// would move a bank's reserve mirror by the wrong amount with nothing anywhere
+// recording it.
+func TestReadStatementRefusesMoreThanOneEntry(t *testing.T) {
+	doc := camt053Fixture()
+	doc.BkToCstmrStmt.Stmt[0].Ntry = append(doc.BkToCstmrStmt.Stmt[0].Ntry, iso20022.StatementEntry{
+		Amt:         iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "100.00"},
+		CdtDbtInd:   iso20022.CreditDebitCredit,
+		AcctSvcrRef: "cyc_1",
+	})
+	_, err := ReadStatement(doc)
+	if err == nil {
+		t.Fatal("read a statement carrying two entries as one movement")
+	}
+	if !strings.Contains(err.Error(), "2 entries") {
+		t.Errorf("error = %v, want it to name the count that was not one", err)
+	}
+}
+
+// A statement with no CLBD balance is refused for the reason camt.053 was
+// chosen over camt.054: without a closing balance there is nothing to check a
+// posting against, and a message that cannot be checked is a notification
+// wearing a statement's name.
+func TestReadStatementRefusesNoClosingBalance(t *testing.T) {
+	doc := camt053Fixture()
+	doc.BkToCstmrStmt.Stmt[0].Bal = nil
+	_, err := ReadStatement(doc)
+	if err == nil {
+		t.Fatal("read a statement with no CLBD balance as one that had something to check against")
+	}
+	if !strings.Contains(err.Error(), "CLBD") {
+		t.Errorf("error = %v, want it to name the balance type that was missing", err)
+	}
+}
+
+// An account not identified by Othr is refused: a reserve account has no IBAN,
+// so an IBAN-identified (or wholly unidentified) account is not one this
+// central bank ever put a member's reserve balance in.
+func TestReadStatementRefusesAnAccountWithNoOthr(t *testing.T) {
+	doc := camt053Fixture()
+	doc.BkToCstmrStmt.Stmt[0].Acct = iso20022.CashAccount{}
+	_, err := ReadStatement(doc)
+	if err == nil {
+		t.Fatal("read a statement whose account carried no Othr identifier")
+	}
+	if !strings.Contains(err.Error(), "Othr") {
+		t.Errorf("error = %v, want it to name the element that was missing", err)
+	}
+}
+
+// closingBalanceIn searches for the CLBD balance rather than taking Bal[0],
+// because the standard permits several balances in one Bal and does not fix
+// their order. A decoy balance ahead of the real one — deliberately a type
+// (OPBD, opening booked) this codec never builds and has no constant for —
+// pins that the search does not stop at the first entry.
+func TestReadStatementFindsTheClosingBalanceEvenWhenItIsNotFirst(t *testing.T) {
+	doc := camt053Fixture()
+	doc.BkToCstmrStmt.Stmt[0].Bal = []iso20022.CashBalance{
+		{
+			Tp:        iso20022.BalanceTypeChoice{CdOrPrtry: iso20022.BalanceTypeCode{Cd: iso20022.BalanceType("OPBD")}},
+			Amt:       iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "999999.00"},
+			CdtDbtInd: iso20022.CreditDebitCredit,
+		},
+		{
+			Tp:        iso20022.BalanceTypeChoice{CdOrPrtry: iso20022.BalanceTypeCode{Cd: iso20022.BalanceTypeClosingBooked}},
+			Amt:       iso20022.ActiveCurrencyAndAmount{Ccy: "EUR", Value: "3000.00"},
+			CdtDbtInd: iso20022.CreditDebitCredit,
+		},
+	}
+	moves, err := ReadStatement(doc)
+	if err != nil {
+		t.Fatalf("ReadStatement: %v", err)
+	}
+	if moves[0].ClosingBalance != 300000 {
+		t.Errorf("closing balance = %d, want 300000 (the CLBD entry, not the OPBD decoy ahead of it)", moves[0].ClosingBalance)
 	}
 }
 

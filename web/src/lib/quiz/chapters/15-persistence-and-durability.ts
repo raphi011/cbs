@@ -48,7 +48,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "A [[unit-of-work]] is `BEGIN … COMMIT`, or `ROLLBACK` and it is as if nothing happened. It is not one statement — the interesting operations here span many statements across all three layers. (A clearing cycle is a business-level batch; it is a different idea that happens to settle *inside* one unit of work.)",
+        "A [[unit-of-work]] is `BEGIN … COMMIT`, or `ROLLBACK` and it is as if nothing happened. It is not one statement — the interesting operations here span many statements across all three layers. (A clearing cycle is a business-level batch; it is a different idea, and only the central bank's half of it settles *inside* one unit of work.)",
     },
     {
       kind: "truefalse",
@@ -126,7 +126,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "unit-of-work",
       prompt:
-        "Settling a clearing cycle posts creditor legs in several member banks, moves reserves at the central bank, and marks the cycle and its payments as settled. Why must all of that be one unit of work?",
+        "The central bank's settlement of a clearing cycle debits every net payer's reserve account, credits every net receiver's, and marks the cycle settled. Why must all of that be one unit of work?",
       options: [
         "Because a partial success would leave money that had left one bank without arriving at another",
         "Because the database can only hold one connection open at a time",
@@ -135,7 +135,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "Settlement is atomic or it is broken. If the reserve movement committed and a [[creditor-leg]] did not, money would have left the payer's bank without reaching the payee's, and no later retry could tell which half had happened. One [[unit-of-work]] spanning all three layers makes 'all of it or none of it' a property of the code rather than a hope.",
+        "A settlement window is atomic or it is broken. If a net payer's reserve were debited and a net receiver's never credited, central-bank money would have left one bank without reaching another, and no later retry could tell which half had happened. One [[unit-of-work]] makes 'all of it or none of it' a property of the code rather than a hope. Note what it does **not** span: each member's own [[creditor-leg|creditor leg]] and reserve mirror are that bank's own units of work, posted when it is told, because no institution's transaction may reach into another's books.",
     },
     {
       kind: "multi",
@@ -301,6 +301,23 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "Three entries for the original and three for the [[reversal]], so **6**. The reversal is a separate parent row in `transactions` with its own children; nothing is edited or deleted. The original's status becomes `Reversed` for reporting, but its entries stay exactly as posted — which is what lets the [[audit-trail|history]] be replayed to recompute any past balance.",
+    },
+    {
+      kind: "mc",
+      id: "ch15-q21",
+      difficulty: "challenge",
+      concept: "unreconciled-position",
+      prompt:
+        "`settlement_advices` is a member bank's record of a cut-off it was told about. Its `cycle_id` column has no foreign key to `cycles`. Why is that deliberate?",
+      options: [
+        "Because a foreign key would be too slow on a table this large",
+        "Because the cycle may not have been created yet when the advice arrives",
+        "Because a member bank has no cycles — the cycle row is the clearing house's, and after the split it is not in the bank's database at all",
+        "Because `cycle_id` is nullable, and a foreign key cannot reference a nullable column",
+      ],
+      answer: 2,
+      explanation:
+        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, cycle_id, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same cut-off write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
     },
   ],
 };

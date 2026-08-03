@@ -129,6 +129,38 @@ The third row is why this task exists. It is the shape of defect 7b kept finding
 — a test that still passes with the bug reinstated — and under isolation no
 entity may look in another's store to find it.
 
+#### The second row's mechanism was wrong, and shipped before it was caught (2026-08-03)
+
+Left as written, per this file's convention for pre-ruling wording, and corrected
+here rather than in the row.
+
+"the per-cycle settlement-position row, whose status stays `Advised`" is not what
+happens. `payment.PostSettlementAdviceTx` writes the row and posts the mirror leg
+in **one unit of work**, so a failed posting rolls the row back with it and a
+successful one supersedes `AdviceAdvised` with `AdvicePosted` before the commit.
+`store/mem` restores its pre-`fn` snapshot on error and `store/pg` issues a
+`ROLLBACK`; nothing survives. No committed row says `Advised` on the settlement
+path at all — the only arm that would is the zero-movement guard, which the
+central bank never reaches, because it sends no statement for a position of zero.
+
+**The code is right and the prose was wrong.** Splitting the write from the
+posting so that an `Advised` row could outlive a failure would be strictly worse:
+a bank's mirror leg and its record of having made it must be atomic, or a bank
+can post and fail to record, and a row asserting a booking that never happened is
+worse than no row.
+
+What the second failure is actually caught by, today, is **nothing** — which
+moves it into the same column as the third and makes it Task 19's too. A bank
+that was told and could not book shows as a clearing suspense that has not
+returned to zero with **no** advice row against the cycle, and that is
+indistinguishable in the store from a bank that was never told. Telling them
+apart needs the stored closing balance, which is exactly what row three says.
+
+This wording reached Task 15b.1's brief, `payment/system.go`, `payment/types.go`,
+`store/pg/schema/0001_init.sql`, `mesh/doc.go`, `mesh/bank.go`,
+`mesh/centralbank.go`, `mesh/settlement_test.go`, `README.md`, the hint registry
+and two quiz chapters before a review caught it. All are corrected.
+
 ### The unclaimed-balances account falls out
 
 Once a bank posts its own creditor legs, a payee's closed account fails **one
@@ -212,6 +244,21 @@ is measured by the existing recorder before the safety net is removed.
 
 Task 18 is the largest single item. If it runs long it splits into **18a**
 (shapes and storetest) and **18b** (wiring and per-entity rows).
+
+### camt.053 moved from Task 19 to Task 15, and why (2026-08-02)
+
+Task 15's mirror leg needs an advice from the CENTRAL BANK, and the spec's own
+settlement flow says so: the bank posts "its mirror leg from the statement and its
+creditor legs from the payment advices". That split is load-bearing rather than
+incidental — "suspense returns to zero only if the central bank's reserve movement
+and the clearing house's payment list agree" is a check between two SENDERS, and
+if both legs came from the clearing house there would be nothing to reconcile.
+
+So the message family landed as Task 15a and the conversation as 15b. Task 19
+keeps the reconciliation it is named for: the closing-balance check against
+Bal/CLBD, break detection, and the surface that makes a break visible to an
+operator rather than only to the test suite. `SettlementAdvice.ClosingBalance` is
+already stored and already unread; Task 19 is what reads it.
 
 ### The name crossing has a second door, and Task 14 does not close it
 

@@ -37,12 +37,14 @@ import (
 // decision. While they were empty they constrained nothing, and only the
 // recorder bit.
 //
-// Task 13 was the last flow, so every method below is one some handler in this
-// package calls today and there are no others. What that is worth is stated
-// exactly, in each interface's own note and nowhere more widely: a handler
-// cannot NAME a method its interface does not carry. It is not a ban on the
-// operation — see the note on GetParticipant below, which two of these three
-// carry and which hands back another bank's live handles.
+// Task 13 was the last new FLOW, and Task 15 is what has added to them since —
+// by moving a posting from one institution to another rather than by inventing
+// work. Either way every method below is one some handler in this package calls
+// today and there are no others. What that is worth is stated exactly, in each
+// interface's own note and nowhere more widely: a handler cannot NAME a method
+// its interface does not carry. It is not a ban on the operation — see the note
+// on GetParticipant below, which two of these three carry and which hands back
+// another bank's live handles.
 //
 // # What Task 10 put in, and the hole it could not close
 //
@@ -89,6 +91,23 @@ import (
 // posting a return's legs by hand is reachable from here. What stops it is the
 // recorder in books_test.go, which measures that a returning bank touches no
 // book at all (TestWhichBooksAReturnReaches).
+//
+// # What Task 15 added, and why they are a bank's methods at all
+//
+// Two methods, PostSettlementAdvice and PostCreditorLeg, and they are the first
+// things on this interface that the settlement agent used to do TO a bank rather
+// than things a bank does. Both are postings in the member's own ledger, so both
+// belong to the member; what arrives from the settlement agent is a camt.053
+// saying what the reserve account did, and what arrives from the clearing house
+// is a pacs.002 saying one payment settled.
+//
+// Each takes the acting participant as an argument, as the two halves of a
+// payment do, and the domain refuses the one that is not this bank's business:
+// a statement about anybody else's reserve account
+// (payment.ErrStatementNotForThisBank), a payment whose creditor banks somewhere
+// else (payment.ErrNotThisBanksPayment). The actor passes its own id — see
+// bank.pid — so neither can be used to post another member's half even though
+// nothing in the SIGNATURES stops a caller naming one.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
@@ -136,6 +155,22 @@ type bankOps interface {
 	// settled payment to return; see bank.returnPayment for why that judgement
 	// is made here rather than left to the settlement agent.
 	ReturnMessage(p payment.Payment, reason iso20022.ReturnReason, text string, mc payment.MessageContext) (iso20022.Envelope, error)
+
+	// The bank's half of settlement, and it is the half that used to be done TO
+	// it. A member books its own mirror leg from the statement the settlement
+	// agent sent; nothing else in this mesh may post in that book, and nothing
+	// on this interface lets this bank post in anybody else's.
+	PostSettlementAdvice(ctx context.Context, by payment.ParticipantID, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
+
+	// The payee's bank's half of settlement: release one payment out of its own
+	// clearing suspense into its own customer's account.
+	//
+	// It takes the ACTING participant because both banks are told a payment
+	// settled and only one may post it — see payment.ErrNotThisBanksPayment. The
+	// domain refuses the other, rather than this package deciding: which bank a
+	// payment's creditor banks at is a fact about the payment, and a handler that
+	// decided it would be asserting something it cannot check.
+	PostCreditorLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) (payment.Payment, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
@@ -218,15 +253,21 @@ type csmOps interface {
 // through a method each legitimately holds. The recorder in books_test.go is
 // what watches for that, here as everywhere else in this package.
 //
-// And both methods behind it reach further than two methods suggest.
-// SettleCycleTx posts in EVERY participant's book as well as the central bank's
-// — the mirror leg and the creditor leg are both postings in a member's ledger —
-// and ReturnPaymentTx posts in three books, two of which belong to member
-// banks. So the central bank is the widest-reaching actor in this system rather
-// than the most confined. TestWhichBooksTheCentralBankReachesWhenItSettles and
-// TestWhichBooksAReturnReaches measure that rather than assuming it.
+// The two methods behind it no longer reach the same distance as each other,
+// and the difference is the whole of Task 15. SettleCycleTx posts in the central
+// bank's own book and in no member's: the mirror leg is the member's own, made
+// from the statement this call hands back, and the creditor leg is the payee's
+// bank's, made from the clearing house's advice. ReturnPaymentTx still posts in
+// three books, two of which belong to member banks, so this institution is still
+// the widest-reaching actor in this system — but at a cut-off it is now one of
+// the narrowest. TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches measure both rather than assuming either.
 type settlementOps interface {
-	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error)
+	// SettleCycle hands back the STATEMENTS beside the settlement, because the
+	// closing balance each carries is a claim about a moment inside the unit of
+	// work and cannot be re-read after it. Sending them is this actor's, not the
+	// domain's: see centralBank.advise.
+	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, []payment.SettlementStatement, error)
 	ReturnPayment(ctx context.Context, id payment.PaymentID, reason string) (payment.Payment, error)
 }
 

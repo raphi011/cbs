@@ -23,16 +23,22 @@ import (
 // Every book — each participant's and the central bank's — lives in the same
 // Store, distinguished by its ledger.BookID, and the network's own entities
 // (participants, payments, mandates, cycles, settlements) live there too under
-// ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx,
-// one transaction reaches all of them, so an operation that touches several
-// banks is a single unit of work: SettleCycle moves reserves at the central
-// bank, mirrors the movement in every participant's book and pays out every
-// creditor inside one Update, and a failure anywhere leaves none of it behind.
+// ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx, one
+// transaction can reach all of them, which is what makes an operation spanning
+// several books a single unit of work.
 //
-// This is what a real RTGS calls a settlement window: an interval during which
-// the settlement agent holds the participants' accounts, checks that every net
-// payer can cover its position, and posts the whole batch or none of it. The
-// database transaction is what supplies the window here. See SettleCycle.
+// SettleCycle used to be that operation at its widest: it moved reserves at the
+// central bank, posted every member's mirror leg and paid out every creditor
+// inside one Update. It no longer does either of the last two. What is one unit
+// of work is what ONE institution does — the central bank's netting transaction,
+// whole or not at all — and each member books its own halves afterwards, on
+// advice, in units of work of its own. See SettleCycle on why the interval
+// between them is now the thing being modelled rather than something to hide.
+//
+// A settlement window is still what the central bank's half is: an interval
+// during which the settlement agent holds the participants' reserve accounts,
+// checks that every net payer can cover its position, and posts the whole batch
+// or none of it. The database transaction is what supplies that window here.
 //
 // # Where the state lives
 //
@@ -428,7 +434,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if _, seen := accounts[asset]; seen {
 			// A repeated code would otherwise create a second set of accounts
 			// and then overwrite the map entry pointing at the first, orphaning
-			// three accounts in the chart.
+			// four accounts in the chart.
 			continue
 		}
 		// The other side of every reserve credit in this asset.
@@ -444,11 +450,23 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
+		// A Liability, because it is money the bank owes somebody it has not yet
+		// identified — the same class as a customer's deposit, and specifically
+		// not an asset of the bank's.
+		unclaimed, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Unclaimed Balances ("+string(asset)+")", ledger.Liability, asset)
+		if err != nil {
+			return nil, err
+		}
 		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
 		if err != nil {
 			return nil, err
 		}
-		accounts[asset] = ParticipantAccounts{Suspense: suspense.ID, Reserve: reserve.ID, Settlement: cbReserve.ID}
+		accounts[asset] = ParticipantAccounts{
+			Suspense:   suspense.ID,
+			Reserve:    reserve.ID,
+			Unclaimed:  unclaimed.ID,
+			Settlement: cbReserve.ID,
+		}
 	}
 
 	// The bank's default deposit product, created here because a bank with no
@@ -759,20 +777,59 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 	return c, nil
 }
 
-// SettleCycle settles a closed cycle. It moves each participant's net
-// position across reserve accounts at the central bank, mirrors that movement
-// in each bank's own reserve account (clearing its suspense to zero), and
-// posts the creditor leg of every payment so the payees receive their funds.
+// SettleCycle settles a closed cycle: it moves each participant's net position
+// across the members' reserve accounts at the central bank, in ONE transaction,
+// in the central bank's own book.
 //
-// # The settlement window
+// That is the whole of what it posts. Neither of the two legs in a member's own
+// book is here any more:
 //
-// All of it is one unit of work. That is the whole point: a net payer that
-// cannot cover its position must abort the batch, not leave the other members
-// paid and the central bank's books moved. Under store/mem the Update holds the
-// write lock for the duration; under store/pg it is one BEGIN … COMMIT, with
-// every touched account row locked. Either way the interval in which the books
-// are inconsistent is not observable, which is what a real RTGS buys with a
-// locked settlement window.
+//   - the MIRROR leg — a member's suspense moving against its own reserve — left
+//     in Task 15b.2, and what this returns beside the settlement is the
+//     STATEMENTS that tell each member what to post. See PostSettlementAdviceTx.
+//   - the CREDITOR leg — a payee's funds released out of that payee's bank's
+//     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
+//     See PostCreditorLegTx.
+//
+// So this reads a cycle, the roster and its own book, and no payment at all,
+// which is the whole of what a settlement agent has.
+//
+// # The settlement window, and what stopped being true about it
+//
+// This doc used to argue that ALL of settlement was one unit of work and that
+// "the interval in which the books are inconsistent is not observable". That was
+// a true description of the code that carried it and the right thing to want: a
+// net payer that cannot cover its position must abort the batch, not leave the
+// other members paid and the central bank's books moved. The batch is still
+// atomic in exactly that sense, and that much is unchanged — see the reserve
+// check above the postings, and TestSettleCycleIsAtomic.
+//
+// What was wrong was the SCOPE. One process cannot hold every institution's
+// books inside a window, because they are not one process's to hold, and this
+// system has stopped pretending otherwise. What is atomic is what this
+// institution does: the central bank posts one transaction, in its own book, and
+// is FINAL either way. What each member does afterwards is that member's own, on
+// advice, in its own unit of work, and it can fail on its own.
+//
+// The interval between is therefore not merely observable — it is the thing
+// being modelled. It is the UNRECONCILED POSITION: the reserves have moved and a
+// member has been told and has not yet booked. Where it is visible is that
+// member's CLEARING SUSPENSE, which has not returned to zero, with no
+// SettlementAdvice row against the cycle — the row is written only by a member
+// that books, and it commits with the mirror leg. In the EU that gap is not a
+// modelling convenience but
+// a directive: the Settlement Finality Directive is about exactly this moment,
+// when a transfer order becomes irrevocable regardless of what any participant
+// does next.
+//
+// # A redelivered instruction posts nothing
+//
+// Which is what makes finality safe to publish over a lossy transport. This
+// refuses a cycle that is not CycleClosed with ErrCycleNotClosed, so a second
+// settlement instruction for a cycle already Settled is a refusal rather than a
+// second batch; and the central bank's posting carries the idempotency key
+// "<cycle>:settle", so even a caller that reached the posting would move
+// nothing twice.
 //
 // # Ordering
 //
@@ -780,25 +837,33 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // entries of the central bank's settlement transaction come out the same on
 // every run. That order is persisted — store/pg gives each entry an explicit
 // seq — so leaving it to Go's randomised map iteration would make the stored
-// transaction differ from run to run for no reason.
-func (s *Network) SettleCycle(ctx context.Context, id CycleID) (Settlement, error) {
+// transaction differ from run to run for no reason. The statements come out in
+// the same order, so the messages a caller sends do too.
+func (s *Network) SettleCycle(ctx context.Context, id CycleID) (Settlement, []SettlementStatement, error) {
 	var out Settlement
+	var statements []SettlementStatement
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.SettleCycleTx(ctx, tx, id)
+		out, statements, err = s.SettleCycleTx(ctx, tx, id)
 		return err
 	})
-	return out, err
+	return out, statements, err
 }
 
 // SettleCycleTx is SettleCycle within a caller-supplied unit of work.
-func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlement, error) {
+//
+// It returns the STATEMENTS beside the settlement because the closing balances
+// are a claim about a moment. A caller that re-read them after the commit would
+// be quoting whatever the accounts stand at then, and a statement asserting the
+// wrong balance is worse than none: the balance is the only thing a member can
+// check its own posting against.
+func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlement, []SettlementStatement, error) {
 	c, err := tx.GetCycle(ctx, id)
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
 	if c.Status != CycleClosed {
-		return Settlement{}, ErrCycleNotClosed
+		return Settlement{}, nil, ErrCycleNotClosed
 	}
 
 	// The cycle settles in its scheme's asset, resolved once here and used for
@@ -807,7 +872,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	// no reserve account to fall back to.
 	scheme, ok := s.scheme(c.Scheme)
 	if !ok {
-		return Settlement{}, ErrSchemeNotFound
+		return Settlement{}, nil, ErrSchemeNotFound
 	}
 	asset := scheme.Asset()
 
@@ -815,10 +880,41 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	//    participants. The net positions sum to zero, so this balances.
 	//
 	//    The participants are read in registration order so that both this
-	//    transaction's entries and the mirror postings below are deterministic.
+	//    transaction's entries and the statements below are deterministic.
 	legs, err := s.settlementLegsTx(ctx, tx, c, asset)
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
+	}
+
+	// The central bank's decision, and the whole of what it decides: can each net
+	// payer cover its position out of the reserves it holds HERE?
+	//
+	// It is checked explicitly because the ledger will not check it. A member's
+	// settlement account in this book is a LIABILITY — the central bank owes the
+	// member its reserve — and Book.checkSufficientBalance only guards Asset and
+	// Expense accounts. Until this task the refusal came from the MIRROR leg in
+	// the member's own book, where "Reserve at Central Bank" is an Asset; moving
+	// that leg to the bank would have taken AM04 with it and settled a cycle
+	// whose net payer was short, leaving the shortfall to surface at the bank as
+	// a dead letter.
+	//
+	// Refusing to take a member's reserve below zero is the central bank
+	// declining to extend uncollateralised intraday credit, which is the decision
+	// a settlement agent exists to make. ledger.ErrInsufficientBalance is
+	// returned rather than a new sentinel so that ReasonFor's borrowedReasons
+	// keeps mapping it to AM04 — same code, same layer, same meaning.
+	for _, leg := range legs {
+		if leg.net >= 0 {
+			continue
+		}
+		held, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+		if err != nil {
+			return Settlement{}, nil, err
+		}
+		if held+leg.net < 0 {
+			return Settlement{}, nil, fmt.Errorf("%w: %s is short %d in %s",
+				ledger.ErrInsufficientBalance, leg.participant.ID, -(held + leg.net), asset)
+		}
 	}
 
 	cbEntries := make([]ledger.Entry, 0, len(legs))
@@ -831,6 +927,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	}
 
 	var settlementTx ledger.TransactionID
+	statements := make([]SettlementStatement, 0, len(legs))
 	if len(cbEntries) > 0 {
 		posted, err := s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 			IdempotencyKey: string(c.ID) + ":settle",
@@ -838,92 +935,36 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 			Entries:        cbEntries,
 		})
 		if err != nil {
-			return Settlement{}, err
+			return Settlement{}, nil, err
 		}
 		settlementTx = posted.ID
 
-		// 2. Mirror each net movement in the participant's own ledger,
-		//    moving funds between its suspense and reserve so suspense
-		//    returns to zero and its reserve asset tracks the central bank.
+		// 2. What each member is TOLD, in place of the mirror leg this used to
+		//    post in its book. The balance is read AFTER the posting and inside
+		//    the same unit of work, which is what makes it a CLOSING balance:
+		//    reading it before would produce an opening balance labelled CLBD,
+		//    which is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
-			p, accts, net := leg.participant, leg.accounts, leg.net
-			var entries []ledger.Entry
-			if net > 0 { // net receiver: reserve up, suspense down
-				entries = []ledger.Entry{
-					{AccountID: accts.Reserve, Amount: net, Direction: ledger.Debit},
-					{AccountID: accts.Suspense, Amount: net, Direction: ledger.Credit},
-				}
-			} else { // net payer: reserve down, suspense up
-				entries = []ledger.Entry{
-					{AccountID: accts.Suspense, Amount: -net, Direction: ledger.Debit},
-					{AccountID: accts.Reserve, Amount: -net, Direction: ledger.Credit},
-				}
+			closing, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+			if err != nil {
+				return Settlement{}, nil, err
 			}
-			if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-				IdempotencyKey: string(c.ID) + ":reserve:" + string(p.ID),
-				Description:    "Net settlement of cycle " + string(c.ID),
-				Entries:        entries,
-			}); err != nil {
-				return Settlement{}, err
-			}
-		}
-	}
-
-	// 3. Post the creditor leg of every payment: the payee's bank releases
-	//    the funds from its suspense to the payee's account.
-	//
-	//    Without a CheckCreditTx, unlike creditorSideTx and DepositTx. A payee
-	//    who closes their account between their bank's acceptance and this
-	//    cut-off is credited into a Closed account and the money strands. It is
-	//    the same gap ReturnPaymentTx's doc sets out at length, including why
-	//    adding the check here is a ruling rather than a line: this is one unit
-	//    of work, so the check would fail the whole batch, and a Cleared payment
-	//    has no route out of the cycle it is in.
-	for _, pid := range c.PaymentIDs {
-		p, err := tx.GetPayment(ctx, pid)
-		if err != nil {
-			return Settlement{}, err
-		}
-		creditor, err := s.participantTx(ctx, tx, p.Creditor.Participant)
-		if err != nil {
-			return Settlement{}, err
-		}
-		creditorAccts, err := creditor.AccountsFor(asset)
-		if err != nil {
-			return Settlement{}, err
-		}
-		creditorGL, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
-		if err != nil {
-			return Settlement{}, err
-		}
-		posted, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-			IdempotencyKey: string(p.ID) + ":credit",
-			Description:    p.Description,
-			ValueDate:      p.ValueDate,
-			Metadata:       paymentMetadata(&p),
-			Entries: []ledger.Entry{
-				{AccountID: creditorAccts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
-				{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Credit},
-			},
-		})
-		if err != nil {
-			return Settlement{}, err
-		}
-		p.CreditorLegTx = posted.ID
-		if err := transition(&p, Settled); err != nil {
-			return Settlement{}, err
-		}
-		if err := tx.PutPayment(ctx, p); err != nil {
-			return Settlement{}, err
-		}
-		if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentSettled, string(p.ID), p); err != nil {
-			return Settlement{}, err
+			statements = append(statements, SettlementStatement{
+				Member:         leg.participant.ID,
+				Agent:          leg.participant.BIC,
+				Account:        leg.accounts.Settlement,
+				Asset:          asset,
+				CycleID:        c.ID,
+				Movement:       leg.net,
+				ClosingBalance: closing,
+				ValueDate:      s.now(),
+			})
 		}
 	}
 
 	settlementID, err := tx.NextID(ctx, ledger.NetworkBook, "set")
 	if err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
 	st := Settlement{
 		ID:           SettlementID(settlementID),
@@ -934,20 +975,27 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		SettledAt:    s.now(),
 	}
 	if err := tx.PutSettlement(ctx, st); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
+	}
+	// The settlement's own id, which only exists once the row above has been
+	// allocated one. It travels as Stmt/Id — the account servicer's reference for
+	// the statement — so a member can quote it back at the central bank.
+	for i := range statements {
+		statements[i].SettlementID = st.ID
 	}
 
 	c.Status = CycleSettled
 	c.SettlementID = st.ID
 	if err := tx.PutCycle(ctx, c); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
-	// One payment.settled per payment (above) plus one cycle.settled, all on
-	// this transaction — the batch is atomic, so its audit trail is too.
+	// One cycle.settled, and that is the whole of this unit of work's audit
+	// trail. It used to be one payment.settled per payment as well; those are
+	// appended by each payee's bank now, when it posts its own creditor leg.
 	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleSettled, string(c.ID), st); err != nil {
-		return Settlement{}, err
+		return Settlement{}, nil, err
 	}
-	return st, nil
+	return st, statements, nil
 }
 
 // settlementLeg pairs a participant with its non-zero net position in a cycle,
@@ -1002,6 +1050,308 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, 
 		return nil, ErrParticipantNotFound
 	}
 	return legs, nil
+}
+
+// PostSettlementAdvice is PostSettlementAdviceTx in its own unit of work, which
+// is what a bank acting on a statement it has just been handed needs: the
+// message is the whole of the input, so there is nothing else to commit with it.
+func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
+	var out SettlementAdvice
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostSettlementAdviceTx(ctx, tx, by, m)
+		return err
+	})
+	return out, err
+}
+
+// PostSettlementAdviceTx is a member bank booking a cut-off it was told about:
+// the mirror leg, in its OWN ledger, and the row that records that it did.
+//
+// # What the mirror leg is
+//
+// A bank's clearing suspense holds money that has left a customer and not yet
+// settled between banks. Settlement is when it stops being in transit, so the
+// suspense is the contra to the reserve: one entry Debit, one Credit. A net
+// receiver's reserve goes UP and its suspense goes UP with it; a net payer's
+// reserve goes DOWN and its suspense goes DOWN.
+//
+// These three comments used to say a net receiver's suspense went down and a net
+// payer's up, and they were wrong about the code they sit on. Contra does not
+// mean opposite BALANCES here: suspense is a ledger.Liability (see
+// AddParticipant), so the receiver's Credit RAISES it and the payer's Debit
+// LOWERS it. Measured in the seed — Verde, a net receiver, credits its suspense
+// 10000; Aurora, a net payer, debits its suspense 25000 to zero.
+//
+// Not a typo worth passing over, because the whole ordering argument for sending
+// the camt.053 BEFORE the ACSC rests on the receiver's suspense going UP first,
+// so that its creditor legs have something to draw on. A reader who trusted the
+// old wording would conclude that requirement was backwards. See
+// mesh.centralBank.advise, mesh's package doc and
+// TestTheMessagesACutOffPutsOnTheWire, which state it the right way round and
+// always did.
+//
+// Suspense returns to zero only if the
+// central bank's reserve movement and the clearing house's payment list agree,
+// which is the reconciliation this whole conversation is for and which needs no
+// cross-store read — that is what makes it legal under isolation.
+//
+// # It is the BANK's act
+//
+// It used to be the central bank's, inline: SettleCycleTx posted every member's
+// mirror leg inside its own unit of work, which is a posting in another
+// institution's book. TestWhichBooksTheCentralBankReachesWhenItSettles measured
+// exactly that. A settlement agent has no access to a member's ledger and no
+// business in it; what it has is a statement to send.
+//
+// It no longer calls this at all. SettleCycleTx returns one SettlementStatement
+// per member, the settlement agent sends each as a camt.053, and the member that
+// receives it calls this for itself — see mesh's centralBank.advise and
+// bank.receiveStatement. TestEachBankBooksItsOwnSettlementAndNoOtherBooks is what
+// measures that the posting is now made in the acting bank's own book and in no
+// other.
+//
+// # The statement is checked before it is booked
+//
+// The account the statement names must be THIS bank's reserve account at the
+// central bank. A bank that booked whatever arrived would move its reserve
+// mirror on another member's position, and under isolation there is no second
+// reader to notice. See ErrStatementNotForThisBank.
+//
+// # Booking twice is not reachable
+//
+// The idempotency key is the same "<cycle>:reserve:<participant>" the central
+// bank used to post under, so a redelivered statement posts nothing; and the
+// advice row is checked first, so it does not even try.
+func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
+	p, err := s.participantTx(ctx, tx, by)
+	if err != nil {
+		return SettlementAdvice{}, err
+	}
+	accts, err := p.AccountsFor(m.Asset)
+	if err != nil {
+		return SettlementAdvice{}, err
+	}
+	if m.Account != accts.Settlement {
+		return SettlementAdvice{}, fmt.Errorf("%w: %s is not %s's reserve account", ErrStatementNotForThisBank, m.Account, by)
+	}
+
+	switch existing, err := tx.GetSettlementAdvice(ctx, p.BookID, m.CycleID, m.Asset); {
+	case err == nil && existing.Status == AdvicePosted:
+		return existing, nil
+	case err != nil && !errors.Is(err, ErrSettlementAdviceNotFound):
+		return SettlementAdvice{}, err
+	}
+
+	now := s.now()
+	advice := SettlementAdvice{
+		Book:           p.BookID,
+		CycleID:        m.CycleID,
+		Asset:          m.Asset,
+		Movement:       m.Movement,
+		ClosingBalance: m.ClosingBalance,
+		Status:         AdviceAdvised,
+		AdvisedAt:      now,
+	}
+	// Written before the posting and committed WITH it. This is one unit of work,
+	// so the row and the mirror leg stand or fall together: a posting that fails
+	// takes this write back with it and leaves nothing at all.
+	//
+	// That is the right shape and not a limitation. Booking the leg and recording
+	// that you booked it must be atomic, or a bank can post and fail to record —
+	// and a bank whose own store claims a booking it did not make is worse off
+	// than one with no row. The ordering therefore buys nothing observable: the
+	// second Put below is the only version any reader outside this transaction
+	// ever sees.
+	//
+	// This comment used to say the opposite — that a failed posting left the row
+	// at Advised, and that such a row was the unreconciled position. It was never
+	// true of this code. store/mem restores its pre-fn snapshot on error and
+	// store/pg issues a ROLLBACK, so there is no half of this that can survive.
+	// What the row actually is: this bank's own durable record that it BOOKED
+	// this cut-off, which is what makes a redelivered statement a no-op (the
+	// GetSettlementAdvice check above) and what Task 19's reconciliation reads.
+	// The unreconciled position is the ABSENCE of a row against a clearing
+	// suspense that has not returned to zero.
+	if err := tx.PutSettlementAdvice(ctx, p.BookID, advice); err != nil {
+		return SettlementAdvice{}, err
+	}
+
+	var entries []ledger.Entry
+	switch {
+	case m.Movement > 0: // net receiver: reserve up, and the suspense up with it
+		entries = []ledger.Entry{
+			{AccountID: accts.Reserve, Amount: m.Movement, Direction: ledger.Debit},
+			{AccountID: accts.Suspense, Amount: m.Movement, Direction: ledger.Credit},
+		}
+	case m.Movement < 0: // net payer: reserve down, and the suspense down with it
+		entries = []ledger.Entry{
+			{AccountID: accts.Suspense, Amount: -m.Movement, Direction: ledger.Debit},
+			{AccountID: accts.Reserve, Amount: -m.Movement, Direction: ledger.Credit},
+		}
+	default:
+		// A movement of nothing produces no leg, and the central bank sends no
+		// statement for a position of zero. This arm is a guard on a caller.
+		return advice, nil
+	}
+	posted, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		IdempotencyKey: string(m.CycleID) + ":reserve:" + string(p.ID),
+		Description:    "Net settlement of cycle " + string(m.CycleID),
+		Entries:        entries,
+	})
+	if err != nil {
+		return SettlementAdvice{}, err
+	}
+
+	advice.Status, advice.MirrorTx, advice.PostedAt = AdvicePosted, posted.ID, now
+	if err := tx.PutSettlementAdvice(ctx, p.BookID, advice); err != nil {
+		return SettlementAdvice{}, err
+	}
+	return advice, nil
+}
+
+// PostCreditorLeg is PostCreditorLegTx in its own unit of work, which is what a
+// bank acting on an advice it has just been handed needs: the message names one
+// payment and there is nothing else to commit with it.
+//
+// One payment at a time is the point rather than a convenience. While this ran
+// inside the cut-off's unit of work a single payee's closed account could fail
+// the whole batch; now each bank's each payment succeeds or fails alone.
+func (s *Network) PostCreditorLeg(ctx context.Context, by ParticipantID, id PaymentID) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostCreditorLegTx(ctx, tx, by, id)
+		return err
+	})
+	return out, err
+}
+
+// PostCreditorLegTx is the payee's bank releasing one settled payment out of its
+// clearing suspense into the payee's account.
+//
+// # The check that could not be made before
+//
+// creditorSideTx and DepositTx both call Deposit.CheckCreditTx before money lands
+// in a customer's account. This never did, and its own doc said why: settlement
+// was one unit of work over the whole batch, so a check that failed took the
+// entire cut-off down for one retail customer who closed an account — and a
+// Cleared payment has no route out of the cycle it is in. Refusing was worse than
+// stranding, so it stranded, and the ruling was recorded rather than fixed.
+//
+// The split is what makes the check affordable. One payment at one bank now fails
+// on its own, and the residual has somewhere to go: the bank's unclaimed-balances
+// account, which is what a real bank does with money that arrives for an account
+// that cannot receive it. The payment still reaches Settled, because it did — the
+// reserves moved and the payee's bank has been paid. What is left open is whether
+// the CUSTOMER has been paid, which is between the bank and its customer.
+//
+// # The diversion is recorded on the payment
+//
+// It has to be, and the first version of this was not: a return of a diverted
+// payment debited the payee's closed account to minus the amount and left the
+// unclaimed liability standing, because ReturnPaymentTx had nothing to read.
+// CreditorLegAccount is written HERE, in both arms, because the account the
+// credit went to is a fact about a moment that no later reading recovers. See
+// Payment.CreditorLegAccount for why re-deriving it is unsafe, and
+// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability for
+// the numbers.
+//
+// # Only the payee's bank may call it
+//
+// On a push the clearing house tells both banks the payment settled: the payer's
+// bank because it has been waiting for the answer to its instruction, the payee's
+// bank because it has this leg to post. Only the second may post it. See
+// ErrNotThisBanksPayment.
+func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID, id PaymentID) (Payment, error) {
+	p, err := tx.GetPayment(ctx, id)
+	if err != nil {
+		return Payment{}, err
+	}
+	if p.Creditor.Participant != by {
+		return Payment{}, fmt.Errorf("%w: %s is %s's creditor, not %s's", ErrNotThisBanksPayment, id, p.Creditor.Participant, by)
+	}
+	if p.Status == Settled {
+		// A redelivered advice. The ledger's idempotency key would refuse the
+		// second posting anyway; this refuses to transition twice, which
+		// ErrInvalidStateTransition would otherwise report as a failure to a
+		// handler that did nothing wrong.
+		return p, nil
+	}
+	creditor, err := s.participantTx(ctx, tx, by)
+	if err != nil {
+		return Payment{}, err
+	}
+	asset, err := s.assetOf(p)
+	if err != nil {
+		return Payment{}, err
+	}
+	accts, err := creditor.AccountsFor(asset)
+	if err != nil {
+		return Payment{}, err
+	}
+
+	// Resolving the payee's account is not allowed to fail SOFTLY here, and the
+	// reason is one line of glAccountTx: it collapses every error from its read
+	// into ErrAccountNotInParticipant, so a dropped connection, a scan error and
+	// a genuinely absent account are one value by the time they arrive. There is
+	// no shape of failure this caller could tell apart, which means there is no
+	// failure it may route money on.
+	//
+	// So it fails the cut-off, which is retriable, rather than diverting. That
+	// costs nothing real: this bank RESOLVED the payee's account once already,
+	// when it accepted the payment, so a read that cannot answer now is a fault
+	// in the reading and not news about the account.
+	glAccount, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
+	if err != nil {
+		return Payment{}, err
+	}
+
+	// Where the money goes: the payee's account if it can take it, and the
+	// unclaimed-balances account if it cannot. Both are this bank's own.
+	target, description := glAccount, p.Description
+	if err := creditor.Deposit.CheckCreditTx(ctx, tx, p.Creditor.Account); err != nil {
+		if !errors.Is(err, deposit.ErrAccountClosed) {
+			// ErrAccountClosed is the ONLY refusal CheckCreditTx makes —
+			// deposit.requireCreditable checks Closed and nothing else — so
+			// anything else from here is a STORE FAILURE and not a statement
+			// about the account. Diverting money to unclaimed balances because a
+			// database connection dropped would be the settlement-time twin of
+			// the defect Task 14 fixed in checkPartyTx, where a dropped
+			// connection reported AC01 to another bank.
+			return Payment{}, err
+		}
+		target, description = accts.Unclaimed, "Unclaimed: "+p.Description
+	}
+
+	posted, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		IdempotencyKey: string(p.ID) + ":credit",
+		Description:    description,
+		ValueDate:      p.ValueDate,
+		Metadata:       paymentMetadata(&p),
+		Entries: []ledger.Entry{
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: target, Amount: p.Amount, Direction: ledger.Credit},
+		},
+	})
+	if err != nil {
+		return Payment{}, err
+	}
+	p.CreditorLegTx = posted.ID
+	// Recorded in BOTH arms, not only the diverting one. A return has to claw
+	// the money back from where it actually went, and it cannot ask this
+	// question again later: see Payment.CreditorLegAccount and ReturnPaymentTx.
+	p.CreditorLegAccount = target
+	if err := transition(&p, Settled); err != nil {
+		return Payment{}, err
+	}
+	if err := tx.PutPayment(ctx, p); err != nil {
+		return Payment{}, err
+	}
+	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentSettled, string(p.ID), p); err != nil {
+		return Payment{}, err
+	}
+	return p, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1350,8 +1700,11 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 //
 // For a push the receiver is the creditor's bank, and its half is a check —
 // the account exists, is in the scheme's asset, is addressable, and can be
-// credited at all. Nothing is posted: the payee is paid at settlement, out of
-// the creditor bank's suspense, exactly as before.
+// credited at all. Nothing is posted: the payee is paid AFTER the cut-off has
+// settled, out of the creditor bank's suspense, by that bank's own
+// PostCreditorLegTx on the clearing house's per-payment advice. This comment
+// used to say "at settlement", which was true while the settlement agent posted
+// every member's legs inside its own unit of work.
 //
 // For a pull the receiver is the DEBTOR's bank, and its half is the one that
 // moves money: it checks the account, the asset, the address and the funds,
@@ -1815,35 +2168,53 @@ func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string
 // lands in a customer's account, and both give the same reason: Close requires
 // a zero balance, no withdrawal can reach a closed account afterwards, and
 // Closed is terminal, so a credit into one strands for ever. This function
-// credits debtorGL below with no such check, and SettleCycleTx credits
-// creditorGL with none either.
+// credits debtorGL below with no such check.
 //
 // It is reachable and it was measured rather than reasoned about. A payer whose
 // account is emptied and closed after a payment settles, whose payment is then
 // returned, ends with 250,000 in an account whose status is Closed: the
 // withdrawal check answers "account is closed", the credit check answers
-// "account is closed", and closing again is an invalid status transition. The
-// settlement half is shorter still — a payee who closes their account between
-// their bank's acceptance and the cut-off is credited by SettleCycleTx into the
-// closed account.
+// "account is closed", and closing again is an invalid status transition.
 //
-// It is NOT fixed here, because both fixes are rulings rather than code:
+// It is NOT fixed by REFUSING, which was the only option this note used to
+// weigh: refusing the return answers RJCT to the returning bank and leaves the
+// disputed money with the payee permanently, since Settled is the only status
+// ReturnPaymentTx accepts and there is no second attempt that would ever differ.
+// One stranding is traded for another.
 //
-//   - Refusing the RETURN answers RJCT to the returning bank and leaves the
-//     disputed money with the payee permanently, since Settled is the only
-//     status ReturnPaymentTx accepts and there is no second attempt that would
-//     ever differ. One stranding is traded for another.
-//   - Refusing at SETTLEMENT fails the whole batch, because SettleCycleTx is
-//     one unit of work — one retail customer closing an account stops the
-//     cut-off for every payment in the cycle — and there is no route out of the
-//     resulting state: RejectAtCSMTx takes only an Initiated or Accepted
-//     payment and these are Cleared. That is the terminal shape
-//     POST /cycles/{cid}/settle was added to remove, reintroduced by a
-//     different door.
+// # The settlement half of this gap is now closed, and this one is not
 //
-// What both really want is somewhere for unreachable money to go — an
-// unclaimed-balances account at the receiving bank — which this system does not
-// have and which is a design decision, not a missing call.
+// This note used to cover SettleCycleTx too, which credited the payee with no
+// check for the same reason. Both halves wanted the same thing — somewhere for
+// unreachable money to go, an unclaimed-balances account at the receiving bank —
+// which the system did not have. It has one now
+// (ParticipantAccounts.Unclaimed), and PostCreditorLegTx uses it: a payee whose
+// account is closed at the cut-off is credited to their bank's unclaimed
+// balances and the batch settles. That is what
+// TestASettlementIntoAClosedAccountGoesToUnclaimedBalances pins.
+//
+// The same move is available here — the payer's bank has an unclaimed-balances
+// account too, and the refund could go to it — and this function does not make
+// it. That is a gap in the RETURN path and no longer a missing account.
+//
+// # A SECOND gap, which the diversion opened and which IS closed
+//
+// The note above is about the DEBTOR side, and there was a creditor-side one
+// too, created by the very fix it credits. Once PostCreditorLegTx could send a
+// settled payment's money somewhere other than the payee, this function's claw
+// back — which debited the payee's GL account unconditionally — was debiting an
+// account that had never been credited. Measured: the payee's closed account at
+// minus the amount, the unclaimed liability still standing, and the reserves paid
+// back out of the creditor bank all the same. Two liabilities that net to zero,
+// so the book balanced and no ledger guard fired.
+//
+// It is closed by reading Payment.CreditorLegAccount rather than by re-deriving
+// anything: the account is a fact recorded when the credit was made. Note what
+// is NOT claimed — the payee is not made whole here, because a payee whose
+// account was closed at the cut-off never had this money in the first place;
+// what the return does is give it back to the payer, who is entitled to it, out
+// of the account that is actually holding it. See
+// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability.
 func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
@@ -1883,10 +2254,19 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	if err != nil {
 		return Payment{}, err
 	}
-	creditorGL, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
-	if err != nil {
-		return Payment{}, err
-	}
+	// Where the money actually is at the creditor's bank, READ OFF THE PAYMENT
+	// rather than resolved again. Usually the payee's GL account; the bank's
+	// unclaimed-balances account when the creditor leg could not reach the payee
+	// and diverted. Only PostCreditorLegTx can know which, and only at the
+	// moment it posted — see Payment.CreditorLegAccount.
+	//
+	// A Settled payment always carries it: reaching Settled is what
+	// PostCreditorLegTx does, and it sets this in both arms. There is no
+	// fallback to the payee's GL account for an empty one, and that is the
+	// point — the GL account is exactly the wrong guess in the case this field
+	// exists for. An empty value would be a store that lost the column, and the
+	// posting below fails on an unknown account rather than moving money.
+	creditorHolding := p.CreditorLegAccount
 
 	// Debtor's bank refunds the payer, funded by reserves coming back in.
 	if _, err := debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
@@ -1900,12 +2280,23 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 		return Payment{}, err
 	}
 
-	// Creditor's bank claws the funds back from the payee, paying out reserves.
+	// Creditor's bank claws the funds back from wherever its creditor leg put
+	// them, paying out reserves. Both destinations are that bank's own
+	// liabilities, so the direction is the same either way and the entry does
+	// not branch: debiting a liability discharges it.
+	//
+	// What it MEANS does differ, and it is worth saying which. Against the
+	// payee's account it is the bank taking money back off a customer who was
+	// paid. Against unclaimed balances there is no customer to take it from —
+	// the payee never received this money and their account is closed — so it
+	// releases the obligation the bank took on when it could not pay them out.
+	// The bank owed "whoever eventually claims it"; the payer has claimed it,
+	// and is entitled to, because the funds are sitting right here.
 	if _, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: string(p.ID) + ":return-credit",
 		Description:    "Return of payment " + string(p.ID) + ": " + reason,
 		Entries: []ledger.Entry{
-			{AccountID: creditorGL, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: creditorHolding, Amount: p.Amount, Direction: ledger.Debit},
 			{AccountID: creditorAccts.Reserve, Amount: p.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
