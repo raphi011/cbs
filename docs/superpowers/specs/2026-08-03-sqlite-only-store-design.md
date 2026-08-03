@@ -264,25 +264,32 @@ section *Two Stores, One Conformance Suite*), `web/src/components/hint-content.t
 quiz chapters 15 and 16, `web/src/components/reset-button.tsx`, the `Makefile`,
 and `docker-compose.yml`.
 
-**Not touched:** the seven handoffs, the twenty-four plans, and
+**Not touched:** six of the seven handoffs, the twenty-four plans, and
 `architecture-review-2026-07-30.md`. They are dated records of what was true when
 they were written; this repository corrects forward.
 
-That cuts against one thing, and it is worth naming rather than leaving to be
-tripped over. `handoff-2026-08-03-task-16.md` is not only a record — its closing
-*rules that cost the most when forgotten* is the live instruction set for whoever
-takes Task 17, and two of its entries expire: "**There is one migration.** Edit
-`0001_init.sql` in place", and the `TEST_DATABASE_URL` line in its verification
-block.
+**`handoff-2026-08-03-task-16.md` is the exception, and it got a dated
+addendum.** The rule above is right for a handoff that is only a record, and this
+one is not: it is the file being fed to the agent that takes Task 17, so a gap in
+it is a gap in the work. The gap was specific. Its *Read this first* names the
+db-per-entity spec **section `## The return`**, and this sub-project's amendment
+is in that spec's Tasks area — an agent following the pointer literally would
+have read around it. The addendum redirects the pointer, names sub-project 9, and
+states the two things that change for Task 17: Task 18 loses a backend and gains
+file-level isolation, and Task 16f writes reasoning rather than Postgres
+mechanism into `0001_init.sql`'s comments because 17.1 translates that file
+whole.
 
-They expire **after** Task 17, not during it — both are still true while
-admission is being built, so Task 17's plan says nothing about either and Task 17
-is written exactly as that handoff describes. The obligation lands on **Task 17's
-own handoff**, the one that hands over to 17.1: it is the first document whose
-next task is on the other side of the swap, and it must state both corrections
-rather than copy its predecessor's rule list forward. An expired rule in a
-handoff is the "a comment written during a transition should announce its own
-expiry" lesson that same file records, pointed at itself.
+It also states what does **not** change, which is most of it. The two rules the
+swap eventually reverses — "**There is one migration.** Edit `0001_init.sql` in
+place", and the `TEST_DATABASE_URL` verification line — are still true while
+admission is being built. They expire at 17.1, so Task 17's plan says nothing
+about either and Task 17 runs exactly as that handoff describes. The obligation
+lands one document later, on **Task 17's own handoff**: the first whose next task
+sits on the far side of the swap, and which must state both corrections rather
+than copy its predecessor's rule list forward. An expired rule in a handoff is
+the "a comment written during a transition should announce its own expiry" lesson
+that same file records, pointed at itself.
 
 The documentation half is the larger half. This is a curriculum change wearing a
 backend change's clothes: the README's persistence argument is *built* on there
