@@ -55,8 +55,8 @@ type ParticipantAccounts struct {
 	// honour a refund (a SEPA direct debit's unconditional eight-week right,
 	// today) when the biller's account could not fund it. An Asset — the bank
 	// is owed this, by someone it has identified perfectly well — and the
-	// mirror image of Unclaimed two lines up, which is owed BY the bank to
-	// someone it has not identified. Nothing posts to it yet; see
+	// mirror image of Unclaimed, which is owed BY the bank to someone it has
+	// not identified. Nothing posts to it yet; see
 	// ReturnPaymentTx.
 	ReturnsReceivable ledger.AccountID
 

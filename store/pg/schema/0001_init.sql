@@ -938,16 +938,17 @@ COMMENT ON COLUMN participant_assets.asset IS
 COMMENT ON COLUMN participant_assets.returns_receivable IS
     'The GL account for a claim on a biller: opened when this bank is forced '
     'to honour a direct-debit refund it cannot fund out of the biller''s own '
-    'account. It is an ASSET, and the contrast with unclaimed two columns up '
-    'is the point, not an accident. Unclaimed is money this bank OWES to a '
-    'payee it has not identified — a customer it cannot name. This is money '
-    'OWED TO this bank by a biller it has identified perfectly well, whose '
-    'account simply could not cover the clawback the payer''s eight-week '
-    'right made unconditional. Same kind of event — a credit reversed after '
-    'the bank already paid out — landing on opposite sides of the balance '
-    'sheet depending on whether the bank knows who owes it money or owes '
-    'money to someone unknown. Booking it as a liability, like unclaimed, '
-    'would still balance and would say the exact opposite of what happened.';
+    'account. It is an ASSET, and the contrast with unclaimed, immediately '
+    'above it, is the point, not an accident. Unclaimed is money this bank '
+    'OWES to a payee it has not identified — a customer it cannot name. This '
+    'is money OWED TO this bank by a biller it has identified perfectly well, '
+    'whose account simply could not cover the clawback the payer''s '
+    'eight-week right made unconditional. Same kind of event — a credit '
+    'reversed after the bank already paid out — landing on opposite sides of '
+    'the balance sheet depending on whether the bank knows who owes it money '
+    'or owes money to someone unknown. Booking it as a liability, like '
+    'unclaimed, would still balance and would say the exact opposite of what '
+    'happened.';
 
 COMMENT ON COLUMN facilities.asset IS
     'The asset this facility is denominated in, duplicated from the GL '

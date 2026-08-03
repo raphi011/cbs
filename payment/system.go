@@ -457,7 +457,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
-		// An Asset, and the contrast with Unclaimed Balances two lines up is the
+		// An Asset, and the contrast with Unclaimed Balances above is the
 		// point. Unclaimed is money the bank OWES to somebody it has not
 		// identified; this is money OWED TO the bank by somebody it has
 		// identified perfectly well — a biller whose account could not fund a
