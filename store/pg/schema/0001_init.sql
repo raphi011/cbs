@@ -737,20 +737,29 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
 -- RosterEntry.Assets is an ordered slice, so the position is data rather than a
 -- surrogate; and a slice can repeat a value, so a key on (bic, asset) would let
 -- store/pg REFUSE a row store/mem accepts. That divergence is the one thing the
--- two stores may never do, and this table had it: the writer that exists today
--- sorts the keys of a map and cannot repeat, but the writer Task 17d adds
--- builds this list from an acmt.010's unbounded AccountForAction1, which is
--- exactly where a repeat arrives. storetest's RosterEntryAssetsAreAnOrderedList
--- is what holds both stores to the same answer.
+-- two stores may never do, and this table had it. storetest's
+-- RosterEntryAssetsAreAnOrderedList is what holds both stores to the same
+-- answer.
+--
+-- What this constraint is NOT about is any writer's behaviour, and the reason
+-- it says so is that it used to. It predicted that Task 17d would build this
+-- list from an acmt.010's unbounded AccountForAction1 and that a repeat would
+-- arrive that way. The writer arrived at Task 17c instead — payment's
+-- AdmitMemberTx — and it cannot produce one from either end: it takes the
+-- assets from a map keyed by asset, and it appends only the ones the entry does
+-- not already hold. A message repeating a currency collapses in that map before
+-- this table is reached. The key is still position, because a store's contract
+-- is with the TYPE it is handed: PutRosterEntry must store whatever slice a
+-- caller passes, and store/mem does.
 --
 -- Whether a repeated asset is a message worth refusing is a question about the
 -- message and belongs to the institution reading it, not to the store.
 --
--- Whose order the position preserves depends on who wrote the row. The writer
--- that exists today sorts, because it builds the list from the keys of a map
--- and map iteration is random; the writer Task 17d adds takes the order off the
--- acknowledgement, which is the servicer's list of what it opened. This column
--- is what lets the second be true without a schema change.
+-- The order the position preserves is AdmitMemberTx's: the assets of one
+-- acknowledgement sorted, because they come out of a map and Go randomises map
+-- iteration, appended after the ones the member was already admitted for. So an
+-- extension leaves the earlier assets where they were, and this column is what
+-- lets that be true without a schema change.
 CREATE TABLE roster_entry_assets (
     bic      TEXT NOT NULL REFERENCES roster_entries (bic) ON DELETE CASCADE,
     position INTEGER NOT NULL,

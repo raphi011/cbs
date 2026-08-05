@@ -422,10 +422,17 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// The second is the one this case was written for. store/pg keyed this child
 	// table by (bic, asset), so it refused with SQLSTATE 23505 a slice store/mem
 	// stored verbatim — the single divergence between the two stores that this
-	// suite exists to make impossible. Nothing could reach it: the only writer
-	// today sorts the keys of a map. The writer Task 17d adds builds the list
-	// from an acmt.010's AccountForAction1, which is unbounded, so a servicer
-	// listing one BIC's euro account twice arrives as a repeat.
+	// suite exists to make impossible.
+	//
+	// No writer in the system reaches it, and this case is not about a writer.
+	// It used to say the writer Task 17d adds would, by building the list from
+	// an acmt.010's unbounded AccountForAction1; the writer turned out to be
+	// payment.AdmitMemberTx at Task 17c, taking the assets from a map keyed by
+	// asset and appending only the ones the entry does not already hold, so a
+	// message that repeats a currency collapses before this table is reached.
+	// What is asserted here is the STORE's contract with the Go type it is
+	// handed: Assets is a slice, a slice can repeat, and a store must hold what
+	// a caller passes it whether or not any caller passes that.
 	//
 	// What a store must NOT do is decide about it. Refusing a duplicate is a
 	// judgement about the message that carried it, and it belongs to the

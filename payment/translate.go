@@ -35,11 +35,20 @@ type reasonMapping struct {
 
 // reasonTable is the mapping sub-project 7a decided, made undriftable here.
 //
-// EVERY sentinel in errors.go must appear. An error that cannot reach a
-// counterparty is mapped to the empty code with a comment saying why, rather
-// than omitted — omission is indistinguishable from an oversight, which is the
-// exact failure this table exists to prevent. TestReasonTableCoversEverySentinel
-// parses errors.go and fails on any gap.
+// EVERY sentinel in errors.go must appear. An error that gets no code is mapped
+// to the empty one with a comment saying why, rather than omitted — omission is
+// indistinguishable from an oversight, which is the exact failure this table
+// exists to prevent. TestReasonTableCoversEverySentinel parses errors.go and
+// fails on any gap.
+//
+// The empty code means two different things and the comment on each entry is
+// what says which. Most of them are errors that CANNOT reach a counterparty:
+// this system's own bookkeeping failing, with nothing truthful to tell a sender.
+// The admission refusals are the other kind — one of them does reach a
+// counterparty, on an acmt.011, whose reason is free prose rather than a code.
+// The codes here are the pacs.002's external set, so there is nothing in it for
+// an account-opening refusal either way. Both blocks are below, each under its
+// own heading.
 var reasonTable = []reasonMapping{
 	// --- Rejections a counterparty actually receives ---
 

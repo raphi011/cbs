@@ -11,6 +11,8 @@ package pg_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -146,13 +148,18 @@ func TestViewRejectsWrites(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The three races
+// The races
 // ---------------------------------------------------------------------------
 //
-// Each of the tests below runs two units of work at once and asserts that
-// exactly one wins. None of them can fail against store/mem, because store/mem
-// serializes every unit of work behind one lock — which is precisely why these
-// races were invisible until there was a second implementation.
+// Each of the tests below runs several units of work at once and asserts that
+// the outcome is the one the domain intends — usually that exactly one wins.
+// None of them can fail against store/mem, because store/mem serializes every
+// unit of work behind one lock, which is precisely why these races were
+// invisible until there was a second implementation.
+//
+// The heading used to say "the three races" and there were five before this
+// task added two. The number is left out rather than corrected, because a count
+// in a comment is wrong again on the next one.
 
 // Race 1: a balance check followed by a posting.
 //
@@ -502,6 +509,126 @@ func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
 	payments, err := net.ListPayments(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "payment rows", len(payments), 1)
+}
+
+// The sixth race and the seventh, and they were live in the commit that split
+// admission into acts.
+//
+// Every other race here is about a call that allocates an id first.
+// AddParticipantTx does, and every admission before the split went through it —
+// so the two rows admission writes were decided under a lock nobody had to think
+// about. The acts are separately callable and Task 17d calls them from a message
+// handler with no id to allocate, and each of them reads one key and then writes
+// it. Measured before payment.admissionSequenceTx existed, over sixty runs of the
+// two cases below: 50 of 60 admitted two different admissions to one address, and
+// 60 of 60 lost one of two settlement accounts. Both were 0 of 60 on store/mem,
+// whose single mutex makes any read-then-write atomic — the exact divergence
+// storetest's ConcurrentReadThenWriteOnOneKeyAgrees exists to describe, on two
+// calls storetest cannot see.
+//
+// These are pg-only for that suite's own stated reason: a concurrency case can
+// only show a divergence where transactions really run at once, and store/mem's
+// answer is not in doubt. What storetest holds both stores to is the SHAPE;
+// these two hold payment's acts to the ordering that makes the shape safe, the
+// way TestConcurrentSubmissionsOfOneReferenceAcceptOne does for SubmitPaymentTx.
+func TestConcurrentAdmissionsOfOneBICAdmitOne(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	net := payment.NewNetwork(s.Payment(), frozen)
+
+	// Two acknowledgements, one address, two DIFFERENT admissions — which is the
+	// only case AdmitMemberTx refuses, and the case that must not depend on
+	// which store is underneath.
+	// Eight, for the reason the duplicate-reference race above uses eight: with
+	// two racers a run can win by luck often enough to be a flaky guard, and the
+	// probe that found this measured 50 losses in 60 rather than 60.
+	errs := runConcurrently(8, func(i int) error {
+		ack := payment.AdmissionAcknowledgement{
+			Name: fmt.Sprintf("Applicant %d", i),
+			BIC:  "AURODEFFXXX",
+			Ref:  fmt.Sprintf("adm-%d", i),
+			Accounts: map[ledger.AssetCode]ledger.AccountID{
+				"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
+			},
+		}
+		return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			_, err := net.AdmitMemberTx(ctx, tx, ack)
+			return err
+		})
+	})
+	assertOneWinner(t, "AdmitMemberTx", errs, payment.ErrBICAlreadyAdmitted)
+
+	// And the roster routes to the admission that won, whole. A lost race here
+	// does not fail loudly: it leaves an entry naming whichever transaction
+	// committed last, which is the impostor half the time.
+	assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		rows, err := tx.ListRosterEntries(ctx)
+		if err != nil {
+			return err
+		}
+		assertEqual(t, "roster entries", len(rows), 1)
+		return nil
+	}))
+}
+
+// TestConcurrentSettlementAccountOpeningsKeepEveryAsset is the lost update the
+// same ordering closes, on the settlement agent's own row.
+//
+// One member asks for two assets at once. Both requests read the member row,
+// both write a map holding only their own account, and the account the loser
+// opened is left in the central bank's book with nothing pointing at it — a
+// reserve account the settlement agent cannot resolve, in its own ledger.
+func TestConcurrentSettlementAccountOpeningsKeepEveryAsset(t *testing.T) {
+	s := newStore(t)
+	ctx := context.Background()
+	net := payment.NewNetwork(s.Payment(), frozen)
+
+	assets := []ledger.AssetCode{"EUR", "USD"}
+	errs := runConcurrently(len(assets), func(i int) error {
+		return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			_, err := net.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
+				Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: assets[i], Ref: "adm-aurora",
+			})
+			return err
+		})
+	})
+	for _, err := range errs {
+		assertNoError(t, err)
+	}
+
+	// Both requests are legitimate and both must survive: one acmt.007 names one
+	// currency, so this is how a two-currency bank is admitted.
+	assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		member, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+		if err != nil {
+			return err
+		}
+		assertEqual(t, "settlement accounts the central bank records", len(member.Accounts), 2)
+		for _, asset := range assets {
+			if member.Accounts[asset] == "" {
+				t.Errorf("the member row names no %s account; the other request overwrote it", asset)
+			}
+		}
+		return nil
+	}))
+
+	// And no account was opened that the row does not name. Counting them is
+	// what catches the lost update from the other side: the row can name two
+	// accounts while the book holds three.
+	reserves := 0
+	assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		accounts, err := tx.ListAccounts(ctx, payment.CentralBankBook)
+		if err != nil {
+			return err
+		}
+		for _, a := range accounts {
+			if strings.Contains(a.Name, "Aurora Bank") {
+				reserves++
+			}
+		}
+		return nil
+	}))
+	assertEqual(t, "reserve accounts in the central bank's book", reserves, 2)
 }
 
 // ---------------------------------------------------------------------------

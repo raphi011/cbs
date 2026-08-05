@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
@@ -33,8 +35,9 @@ import (
 // Seeded, because the mesh routes by participant and BIC: a payment needs two
 // banks that can address each other, an open cut-off window for its scheme, and
 // a payer with money. seed.Populate is the dataset the running system serves, so
-// these tests exercise the same ids a reader will see in the app — bank_1 is
-// Aurora Bank and dep_22 is Alice's account in it.
+// these tests exercise the same rows a reader will see in the app. They name
+// them by IBAN rather than by id — see seededParty, which says why the ids are
+// no longer written down.
 //
 // The mesh is started AFTER the seed, which is the order cmd/server uses and for
 // the same reason: mesh.Start reads the participant roster once, so a mesh
@@ -183,26 +186,61 @@ var testMeshConfig = mesh.Config{
 	ClearingHouseBIC: "CSMXFRPPXXX",
 }
 
+// seededParty is the participant and account behind one of the seed's IBANs.
+//
+// The ids used to be written down here — bank_1 and dep_22 for Alice — on the
+// grounds that the store's id sequences start from nothing and the seed builds
+// the same things in the same order every time. Both halves are still true and
+// the numbers are not: admission draws two more network ids than it did (see
+// payment.admissionSequenceTx), so Banca Verde moved from bank_3 to bank_5 and
+// every id after it moved with it. The next task to add an allocation will move
+// them again. An IBAN is the seed's own stable name for a customer, so it is
+// what these tests ask by.
+func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
+	t.Helper()
+	ref, err := s.network().ResolveIdentifier(context.Background(),
+		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban})
+	if err != nil {
+		t.Fatalf("resolving the seed's %s: %v", iban, err)
+	}
+	return ref
+}
+
+// payerRoutes is the bank router of whichever bank holds the seed's Alice — the
+// payer every submission below is made by.
+func payerRoutes(t *testing.T, s *Server) http.Handler {
+	t.Helper()
+	return s.BankRoutes(seededParty(t, s, aliceIBAN).Participant)
+}
+
+// The seed's two customers these tests move money between, named by address.
+const (
+	aliceIBAN = "SE89-AURORA-1001"
+	bellaIBAN = "IT60-VERDE-2002"
+)
+
 // validSubmission is Alice at Aurora Bank paying Bella at Banca Verde: a credit
 // transfer the seeded network can carry the whole way.
 //
-// The ids are the seed's own and are deterministic — the store's id sequences
-// start from nothing, so bank_1/dep_22 is Alice on every run and after every
-// reset. The IBANs are quoted because SEPA credit transfer is addressed BY iban
-// (payment.Scheme.AddressedBy): without them the payee's bank has no address to
-// resolve and answers AC01.
+// The IBANs are quoted in the body as well as used to look the ids up, because
+// SEPA credit transfer is addressed BY iban (payment.Scheme.AddressedBy):
+// without them the payee's bank has no address to resolve and answers AC01.
 //
 // The amount is small enough that Alice can afford it whatever else the seeded
 // scenario has already taken out of her account.
-func validSubmission() string {
-	return `{
+func validSubmission(t *testing.T, s *Server) string {
+	t.Helper()
+	payer, payee := seededParty(t, s, aliceIBAN), seededParty(t, s, bellaIBAN)
+	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"bank_1","account":"dep_22","identifier":{"scheme":"IBAN","value":"SE89-AURORA-1001"}},
-		"creditor":{"participant":"bank_3","account":"dep_25","identifier":{"scheme":"IBAN","value":"IT60-VERDE-2002"}},
+		"debtor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
+		"creditor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"amount":1000,
 		"description":"mesh handoff",
 		"creditorName":"Bella Bruno"
-	}`
+	}`,
+		payer.Participant, payer.Account, aliceIBAN,
+		payee.Participant, payee.Account, bellaIBAN)
 }
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -260,7 +298,7 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 	// meshGate: without it this assertion was true by scheduling luck, and its
 	// failure was indistinguishable from a regression's.
 	open := holdMessagesTo(t, msh, testMeshConfig.ClearingHouseBIC)
-	rec := postJSON(t, srv.BankRoutes("bank_1"), "/payments", validSubmission())
+	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", rec.Code)
 	}
@@ -285,7 +323,7 @@ func TestSubmitAnswers202AndThePaymentIsNotYetAccepted(t *testing.T) {
 // its own leftovers.
 func TestResetDrainsBeforeTruncating(t *testing.T) {
 	srv, msh := newAPIHarness(t)
-	postJSON(t, srv.BankRoutes("bank_1"), "/payments", validSubmission())
+	postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("reset = %d", rec.Code)
@@ -428,7 +466,7 @@ func TestPayingAfterAResetGoesThroughTheReseededBanks(t *testing.T) {
 		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body.String())
 	}
 
-	rec = postJSON(t, srv.BankRoutes("bank_1"), "/payments", validSubmission())
+	rec = postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("submitting after a reset = %d (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -456,16 +494,16 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 
 	// Answerable: Alice cannot pay a hundred million. Her own bank says so,
 	// inside Submit's unit of work, and nothing is sent.
-	tooMuch := strings.Replace(validSubmission(), `"amount":1000`, `"amount":100000000`, 1)
-	rec := postJSON(t, srv.BankRoutes("bank_1"), "/payments", tooMuch)
+	tooMuch := strings.Replace(validSubmission(t, srv), `"amount":1000`, `"amount":100000000`, 1)
+	rec := postJSON(t, payerRoutes(t, srv), "/payments", tooMuch)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("a payment the payer's own bank refuses answered %d, want 422 (body: %s)", rec.Code, rec.Body.String())
 	}
 
 	// Unanswerable: the IBAN is well-formed and belongs to nobody. Only the
 	// payee's bank can know that, and it is not this request's to report.
-	unknown := strings.Replace(validSubmission(), "IT60-VERDE-2002", "IT60-VERDE-9999", 1)
-	rec = postJSON(t, srv.BankRoutes("bank_1"), "/payments", unknown)
+	unknown := strings.Replace(validSubmission(t, srv), "IT60-VERDE-2002", "IT60-VERDE-9999", 1)
+	rec = postJSON(t, payerRoutes(t, srv), "/payments", unknown)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("a payment only the far side can refuse answered %d, want 202 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -503,7 +541,7 @@ func TestWhichRefusalsReachTheCallerAndWhichDoNot(t *testing.T) {
 func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
-	rec := postJSON(t, srv.BankRoutes("bank_1"), "/payments", validSubmission())
+	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("submit = %d (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -567,7 +605,7 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
-	rec := postJSON(t, srv.BankRoutes("bank_1"), "/payments", validSubmission())
+	rec := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
 	id := decodePaymentID(t, rec)
 	drain(t, msh)
 	before := aliceBalance(t, srv)
@@ -668,6 +706,8 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 // aliceBalance is the seeded payer's book balance, read through her own bank.
 func aliceBalance(t *testing.T, s *Server) int64 {
 	t.Helper()
-	bal := doJSON(t, bank(s, "bank_1"), "GET", "/deposit-accounts/dep_22/balance", "", http.StatusOK)
+	alice := seededParty(t, s, aliceIBAN)
+	bal := doJSON(t, bank(s, string(alice.Participant)), "GET",
+		"/deposit-accounts/"+string(alice.Account)+"/balance", "", http.StatusOK)
 	return int64(bal["book"].(float64))
 }

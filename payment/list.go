@@ -102,9 +102,10 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // is now a state the domain can produce rather than a stated impossibility: a
 // bank founded by FoundBankTx and not yet admitted has a row and no entry, which
 // is a founded bank waiting for an admission — legitimate, and the whole point
-// of splitting founding from joining. Nothing in this repository founds a bank
-// without going on to admit it in the same unit of work (see AddParticipantTx),
-// so no caller reaches it yet; Task 17d is where the two stop being one call.
+// of splitting founding from joining. No PRODUCTION caller reaches it: every
+// path that founds a bank goes on to admit it in the same unit of work (see
+// AddParticipantTx), and the tests that call FoundBankTx on its own are how the
+// state is measured at all. Task 17d is where the two stop being one call.
 func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

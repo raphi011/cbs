@@ -419,10 +419,17 @@ func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.B
 // Ref is the admission's process id — acmt Refs/PrcId, echoed by every message
 // of one admission. It is the conversation's only correlator, because the
 // acknowledgement carries no back-reference to the request that caused it.
-// OpenSettlementAccountTx does not read it — an account servicer opens what it is
-// asked for; what reads it is the clearing house's refusal, against the reference
-// on the roster entry (see AdmitMemberTx). It is carried here because the answer
-// has to be able to quote it.
+// OpenSettlementAccountTx does not read it — an account servicer opens what it
+// is asked for; what reads it is the clearing house's refusal, against the
+// reference on the roster entry (see AdmitMemberTx).
+//
+// Nothing carries it from here into the acknowledgement yet, and the field is
+// here anyway. OpenSettlementAccountTx answers with a SettlementMember, which
+// has no reference on it, and AddParticipantTx builds the acknowledgement's Ref
+// itself — empty, because it composes no messages. The hop that copies one to
+// the other is the relay Task 17d builds, where a handler holds the request and
+// the answer at once. Until then the two references are only equal because both
+// are "".
 //
 // It is a plain struct and not a message. The acts below are the domain's and
 // the messages are Task 17d's, which is where the reader that builds one of
@@ -467,6 +474,82 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 		return []ledger.AssetCode{"EUR"}
 	}
 	return assets
+}
+
+// admissionSequenceTx takes the network's identity counter before an admission
+// act reads the row it decides from.
+//
+// # Without it the refusals hold on one store and not the other
+//
+// Two of the acts below decide by reading one key and then writing it, and a
+// third question rides along with them:
+//
+//   - AdmitMemberTx reads the roster entry, compares its admission reference and
+//     writes. Two DIFFERENT admissions of one address at once both read nothing
+//     and both write, and the entry ends up naming whichever committed last.
+//   - OpenSettlementAccountTx reads the member row to decide whether it has
+//     already opened an account for (BIC, asset). Two requests for one member in
+//     two assets at once both read the same row, and each writes a map holding
+//     only its own account — so the central bank opens two reserve accounts in
+//     its own book and records one, leaving a liability account nothing points
+//     at.
+//   - centralBankChartTx, which OpenSettlementAccountTx calls, resolves the
+//     central bank's chart of accounts find-or-create BY NAME. store/pg's schema
+//     records that there is deliberately no unique constraint behind it and that
+//     the race is closed one layer up, by AddParticipantTx drawing a
+//     network-scoped id first — and names the consequence to watch: "if
+//     AddParticipantTx ever stops drawing a network-scoped ID first, the
+//     find-or-create becomes racy again and will need its own lock". Splitting
+//     that call into acts is exactly that, for every caller that drives an act
+//     on its own.
+//
+// store/mem serializes every Update on one process-wide mutex, so all three are
+// atomic there whatever the caller does. store/pg runs READ COMMITTED, where two
+// transactions both read "not there" and both write. Measured on this branch
+// before this call existed: 50 runs in 60 admitted two different admissions to
+// one address, and 60 in 60 lost one of two settlement accounts, against 0 in 60
+// for each on store/mem. A domain refusal that holds on one store and not the
+// other is not a refusal.
+//
+// # Why an id allocation is the lock
+//
+// It is the ordering this repository already depends on twice — SubmitPaymentTx
+// allocates before it reads the end-to-end index, FoundBankTx allocates before
+// the composition touches anything — and it is the one store/storetest's
+// ConcurrentReadThenWriteOnOneKeyAgrees names and holds both stores to. NextID's
+// INSERT … ON CONFLICT DO UPDATE takes a row lock on id_sequences that is held
+// until the transaction ends, so the second caller blocks there and then sees
+// what the first committed.
+//
+// The number is discarded, and that is the whole of the difference from those
+// two callers. Neither row an admission writes is keyed by an id — the
+// identifier between these institutions is the BIC — so what is wanted here is
+// the lock and not the number.
+//
+// # It leaves gaps in the network's numbering, and they are visible
+//
+// One counter serves every prefix within a book (see store/pg's NextID), so this
+// advances the same counter that numbers banks, payments, mandates and cycles.
+// A euro-only admission now draws four network ids: the bank's, one here per
+// settlement account asked for, one here for the roster entry, and the
+// participant.added event's, which appendAuditTx has always drawn. Measured on
+// the seed, whose four banks are bank_1, bank_5, bank_9 and bank_13; they were
+// bank_1, bank_3, bank_5 and bank_7 before this call existed, because the audit
+// event was already interleaving with them.
+//
+// So the gaps are not new, they are wider — which is what the counter has always
+// meant, since it interleaves every prefix in the book and doubles as a creation
+// order. It is why api's mesh tests resolve the ids they use from the seed's
+// IBANs instead of naming them.
+//
+// Inside AddParticipantTx the acts' own calls are redundant, because FoundBankTx
+// has taken the same lock before the first of them runs. What they are for is
+// the act driven ON ITS OWN — an institution doing its own unit of work, which
+// is what these four are — where there is no bank being founded and nothing else
+// draws an id at all.
+func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
+	_, err := tx.NextID(ctx, ledger.NetworkBook, "adm")
+	return err
 }
 
 // AddParticipant registers a new bank: it founds it, opens it a settlement
@@ -666,9 +749,17 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // out of a half-happened admission this system documents, so the second half is
 // reachable in practice and not only in principle.
 //
+// The idempotency is this act's own and not a store's: it reads the member row
+// and then writes it, which under READ COMMITTED is two callers both reading
+// "not there". What makes it hold on both stores is the id drawn before the read
+// — see admissionSequenceTx, which measures what the act does without it.
+//
 // The name on the row is the one it was first opened under. An account servicer
 // names an account after the member it opened it for, and a second request that
 // renamed the row would leave the accounts under it named two different things.
+// AdmitMemberTx keeps the name it first wrote too, so the three institutions'
+// records cannot end up disagreeing about who a BIC belongs to; the argument for
+// making them agree is there.
 //
 // # What it refuses, and what it does not
 //
@@ -680,8 +771,23 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // two different institutions cannot tell them apart, and this system's answer to
 // that is a refusal one institution earlier rather than a weaker test here — see
 // ErrBICAlreadyAdmitted.
+//
+// That leaves something for the relay to guarantee rather than nothing, and it
+// is worth naming because this act is reached from a message at Task 17d. The
+// BIC it is handed becomes the primary key of the settlement agent's own row —
+// settlement_members.bic in store/pg — so a request carrying a malformed or
+// empty address writes a member row keyed by one, which no later message can
+// address and no reader can find. What must not reach here is an address
+// nothing validated: iso20022.BIC.Validate is what the reader of an acmt.007
+// has to run, in the actor that receives it, before this act is called.
 func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, error) {
 	if _, err := ledger.LookupAsset(in.Asset); err != nil {
+		return SettlementMember{}, err
+	}
+	// Before the read below, and before centralBankChartTx's find-or-create.
+	// See admissionSequenceTx: without it this act's idempotency is a store's
+	// property rather than this act's, and it is store/mem's only.
+	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return SettlementMember{}, err
 	}
 
@@ -754,8 +860,27 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 // distinction possible at all.
 //
 // It refuses before it writes, so a refused acknowledgement leaves routing
-// pointing where it pointed.
+// pointing where it pointed — and it draws an id before it reads, which is what
+// makes the refusal binding rather than a race two callers can both win. See
+// admissionSequenceTx.
+//
+// An extension does not rename the entry, and neither does an extension of the
+// settlement agent's row (see OpenSettlementAccountTx, which takes the same
+// decision for the reason its accounts are already named). The two acts agree
+// on purpose: a member's name reaches an institution once, in the message that
+// created its record there, and every later message of that admission is the
+// same bank saying the same thing. On the paths the domain allows, the name is
+// identical anyway — a second currency and a re-drive both repeat it — so the
+// rule only decides a case something upstream has already refused, and the two
+// records must not answer it differently.
 func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
+	// Before the read the refusal is decided from. See admissionSequenceTx:
+	// without it two different admissions of one address are both accepted on
+	// store/pg and the entry names whichever committed last, which is the
+	// impostor half the time.
+	if err := s.admissionSequenceTx(ctx, tx); err != nil {
+		return RosterEntry{}, err
+	}
 	entry, err := tx.GetRosterEntry(ctx, in.BIC)
 	switch {
 	case err == nil:
@@ -764,12 +889,11 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 				ErrBICAlreadyAdmitted, in.BIC, entry.AdmissionRef, in.Ref)
 		}
 	case errors.Is(err, ErrRosterEntryNotFound):
-		entry = RosterEntry{BIC: in.BIC, AdmissionRef: in.Ref, AdmittedAt: s.now()}
+		entry = RosterEntry{BIC: in.BIC, Name: in.Name, AdmissionRef: in.Ref, AdmittedAt: s.now()}
 	default:
 		return RosterEntry{}, err
 	}
 
-	entry.Name = in.Name
 	// Sorted, and only the assets that are new. The sort is this writer's rather
 	// than the row's contract: Accounts is a map, Go randomises its iteration,
 	// and an unsorted append would make two identical acknowledgements store two
@@ -806,18 +930,6 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 //
 // A bank that is already a Member is refused rather than overwritten — see
 // ErrBankNotFounded.
-//
-// # One recording per bank, and the question that leaves open
-//
-// A bank clearing two currencies is acknowledged twice, because it asked twice,
-// and the second acknowledgement would reach a bank this call has already made a
-// Member — so it would be refused. Nothing composes that second message:
-// AddParticipantTx asks for every asset and then records ONE acknowledgement
-// listing all of them, so the case does not arise on any path that exists. It
-// arises as soon as the conversation is real, and whether the answer is a second
-// recording or an admission that is not finished until the last currency is
-// acknowledged belongs to the task that builds the conversation rather than to a
-// guess made here.
 //
 // # An account for an asset this bank does not operate in is not recorded
 //
@@ -1456,7 +1568,7 @@ type settlementLeg struct {
 // anything is posted, with ErrParticipantAssetNotFound; so does a member whose
 // own row says it does not operate in it.
 //
-// # The bank's row is read twice, and both are one crossing this task leaves open
+// # The bank's row is read twice: one crossing, and one check that belongs here
 //
 // A cycle's net positions are keyed by ParticipantID and the settlement agent's
 // own records are keyed by BIC, so the id has to become an address before the
@@ -1471,10 +1583,13 @@ type settlementLeg struct {
 // mesh's centralBank records against itself and Task 18 owns. Narrowing the read
 // here would leave the same crossing in a smaller shape and hide it.
 //
-// The second read on that row is AccountsFor, and it stays: whether a member
-// operates in an asset is the member's own statement about itself, and the
-// central bank holding an account it never asked about would not be the same
-// answer. TestSettleCycleFailsWhenParticipantLacksTheAsset is what pins it.
+// The second read on that row is AccountsFor, and it is not part of that
+// crossing: it is a check rather than a lookup, and the thing it checks is the
+// member's own statement about itself — whether this bank operates in the
+// cycle's asset at all. The central bank holding an account the member never
+// asked about would not answer the same question.
+// TestSettleCycleFailsWhenParticipantLacksTheAsset is what pins it. It stays
+// where it is; what moves at Task 18 is the id-to-BIC read above it.
 func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, asset ledger.AssetCode) ([]settlementLeg, error) {
 	participants, err := tx.ListBanks(ctx)
 	if err != nil {
@@ -3376,8 +3491,13 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 //
 // It takes an asset because a bank holds one reserve account per asset, and a
 // single number across several of them would be an addition of unlike things.
-// Returns ErrParticipantAssetNotFound if the central bank holds no account for
-// the bank in it.
+//
+// Two different answers mean two different things, and this task makes the first
+// of them reachable for the first time. A bank the central bank holds NO account
+// for is ErrSettlementMemberNotFound — the true state of a bank that is founded
+// and not yet admitted, which is not an error about the asset at all. A bank it
+// holds accounts for but not in this asset is ErrParticipantAssetNotFound. See
+// settlementAccountTx, which is where both come from.
 //
 // The account is read from the CENTRAL BANK's own member row. This is the
 // operator console asking the central bank about the central bank's book, and
