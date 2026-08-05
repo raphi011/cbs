@@ -41,6 +41,11 @@ and the spec disagree, **the spec wins and the plan is wrong.**
   claim has to be swept, read whole every comment block whose subject is that
   claim and **report which files you read in full**, not which pattern you
   searched. A list of files read is checkable; a grep pattern is not.
+- **A comment asserting a property is not a check of it.** `camt053.go` carried
+  "the field order is the schema's sequence order and must not be changed"
+  directly above the field that broke it, and every camt.053 the system emitted
+  was invalid for a whole sub-project. Where a comment claims conformance to
+  something external, either a test checks it or the comment says nobody has.
 - **A count in a comment goes stale; a description of what happens does not.**
   Where a comment says "three", "six", "two of them", rewrite it as what happens.
   `iso20022/doc.go`'s message list opens with **"Six."** and this task makes it
@@ -79,6 +84,13 @@ and the spec disagree, **the spec wins and the plan is wrong.**
   from the seed rather than by re-hardcoding; the handoff has carried this as a
   defect for two tasks.
 
+- **The ISO 20022 schemas are on disk and the check is runnable.**
+  `iso20022/testdata/xsd/` holds all ten, `xmllint` is installed, and
+  `make test-schemas` turns every skip into a failure. **They are gitignored**
+  — not this repository's to vendor — so they exist on this machine and not in a
+  fresh clone. Any task touching `iso20022` runs `make test-schemas` and expects
+  **no skips**; a skip means a schema went missing and the check did not run.
+
 **Verification, run in full at the end of every task:**
 
 ```bash
@@ -86,6 +98,7 @@ gofmt -l . && go vet ./... && go build ./...
 go test ./... -count=1
 TEST_DATABASE_URL="postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable" go test ./... -count=1
 go test ./mesh/ ./api/ ./cmd/... -race -count=1
+make test-schemas
 cd web && rm -rf .next && npm run typecheck && npm run lint && npm run test
 ```
 
@@ -94,10 +107,16 @@ cd web && rm -rf .next && npm run typecheck && npm run lint && npm run test
 ```bash
 git -C ~/Git/cbs fetch --all
 git worktree add ~/Git/cbs-task-17 -b spec/task-17-admission main
+cp -R ~/Git/cbs/iso20022/testdata/xsd ~/Git/cbs-task-17/iso20022/testdata/
 ```
 
-Task 16 is merged; `main` is at `8819619` plus this sub-project's two spec
-commits. Everything below is against that.
+The `cp` is not optional and not decoration: the schemas are gitignored, so a new
+worktree has none, and `make test-schemas` in it would skip every subtest and
+still print PASS.
+
+Task 16 is merged; `main` is at `8819619` plus this sub-project's spec and plan
+commits and the camt.053 schema fix at `e899066`. Everything below is against
+that.
 
 ---
 
@@ -108,6 +127,8 @@ commits. Everything below is against that.
 | `iso20022/acmt.go` | **new.** `Acmt007`, `Acmt010`, `Acmt011` and the elements they share |
 | `iso20022/acmt_test.go` | **new.** Round-trip, `validate()`, the choice constraints |
 | `iso20022/testdata/acmt007.xml`, `acmt010.xml`, `acmt011.xml` | **new.** Golden files |
+| `iso20022/xmllint_test.go` | the `files` map gains the three new documents |
+| `iso20022/testdata/README.md` | the download list gains the three acmt schemas |
 | `iso20022/doc.go` | the message list stops counting; the scope claim in the package's first sentence is reversed |
 | `payment/bank.go` | **new**, from `participant.go`. `Bank`, `BankAccounts`, `BankStatus`, `AccountsFor`, `OpenCustomerAccount`, `RunEndOfDay` |
 | `payment/roster.go` | **new.** `RosterEntry`, `SettlementMember` |
@@ -179,34 +200,60 @@ type AccountRejectionReason struct {
 `Rsn` is validated as present; a rejection that says nothing is a rejection
 nobody can act on.
 
-### The element names must be checked, not recalled
+### The element names are checkable now, and must be checked
 
-This is the first message family added since a review fetched the EPC guidelines
-and found **two of three cited claims false**. The `acmt` family has no EPC
-profile at all, so there is no scheme document to check against — only the
-standard.
+**The schemas are on disk.** `iso20022/testdata/xsd/` holds all ten, including
+`acmt.007.001.03.xsd`, `acmt.010.001.03.xsd` and `acmt.011.001.03.xsd`. They are
+gitignored — not this repository's to vendor — so a fresh clone does not have
+them and `testdata/README.md` says how to get them.
 
-- [ ] **Step 1: Fetch the message definitions and write down the element paths**
+That changes this task's shape from what it would have been. The struct shapes in
+Step 3 are this plan's **prediction**; the XSD is the authority, and it is
+sitting there. Read it.
 
-Fetch `https://www.iso20022.org/sites/default/files/2020-12/ISO20022_MDRPart2_BankAccountManagement_2020_2021_v1_ForSEGReview.pdf`
-and find `AccountOpeningRequest`, `AccountRequestAcknowledgement` and
-`AccountRequestRejection`. Write, in a scratch file, the **exact** element path
-for each of these, with the page or index you found it on:
+The reason to take that seriously is one week old. The first time the schema
+check ever ran (`e899066`), it found that **every camt.053 this system had
+emitted was invalid** on two counts: `AddtlNtryInf` six elements out of position
+— under a comment asserting the field order was the schema's — and `BkTxCd`,
+the one mandatory child of an entry, missing outright. Both shipped with Task 15
+and survived a per-task review, a documentation sweep and a whole-branch review
+with probes. **No probe finds this class of defect. Only the schema does.**
 
-1. the message root element under `<Document>` for each of the three;
-2. the reference block that carries the message identifier;
+- [ ] **Step 1: Read the three schemas and write down the element paths**
+
+```bash
+python3 - <<'PY'
+import re
+for m in ["acmt.007.001.03", "acmt.010.001.03", "acmt.011.001.03"]:
+    s = open(f"iso20022/testdata/xsd/{m}.xsd").read()
+    root = re.search(r'<xs:element name="(\w+)" type="Document"', s)
+    print(f"--- {m}  root element: {root.group(1) if root else '?'}")
+PY
+```
+
+Then, for each message, extract the top-level `complexType`'s sequence the way
+the camt.053 investigation did, and write into a scratch file the **exact**
+element path and its `minOccurs` for:
+
+1. the message root element under `<Document>`;
+2. the reference block carrying the message identifier;
 3. where the **account servicer** is named;
 4. where the **account owner** is named, and where a BIC sits inside it;
 5. where the requested **currency** sits;
 6. where an **opened account's identifier** sits on the acknowledgement;
 7. where a **rejection reason** sits on the rejection.
 
-The struct shapes in Step 3 use the names this plan predicts. **Where the
-document disagrees, the document wins and this plan is wrong** — change the
-struct and say so in the type doc. Where you cannot find an element, say that
-in the type doc as `iso20022/doc.go` already says it for the IBAN-only and
-euro-only claims: *nobody has looked this up, and it is recorded as the
-outstanding debt*. Do not silently invent a path.
+**Where the schema disagrees with this plan, the schema wins and the plan is
+wrong.** Change the struct and say so in the type doc.
+
+Two traps this task's own history has already sprung:
+
+- **Every mandatory element must be in the struct.** `BkTxCd` was missed because
+  nobody enumerated `minOccurs`. Enumerate it. An element with no `minOccurs`
+  attribute is mandatory.
+- **Sequence order is part of the schema and a comment claiming it is not
+  evidence.** `camt053.go` carried exactly that comment above the field that
+  broke it.
 
 - [ ] **Step 2: Write the failing round-trip test**
 
@@ -387,18 +434,32 @@ The type doc on `Acmt007` must carry, in this order:
 Run: `go test ./iso20022/ -run 'Acmt' -v`
 Expected: PASS.
 
-- [ ] **Step 6: Write the golden files**
+- [ ] **Step 6: Write the golden files and validate them for real**
 
 `iso20022/testdata/acmt007.xml`, `acmt010.xml`, `acmt011.xml`, following the
 existing goldens' shape. Check how `iso20022/golden_test.go` discovers them —
 whether it walks the directory or holds a list — and register them if it holds a
 list.
 
-**`TestGoldenFilesValidateAgainstTheSchema` skips every subtest** because
-`iso20022/testdata/xsd/` is absent for licensing reasons. **A skip is not a
-pass**, and the handoff has carried that for two tasks. Do not treat a green run
-of that test as evidence these files are valid. Say so in a comment beside the
-new goldens.
+Three places must gain the new messages, and missing any one of them is a check
+that silently does not run:
+
+1. the `files` map in `iso20022/xmllint_test.go` (`doc → schema`);
+2. the download list in `iso20022/testdata/README.md` — that list was missing
+   `camt.053.001.08.xsd` for a whole task because nobody kept it in step with the
+   map, and the README now says in bold that a message added to the map is a line
+   added there;
+3. whatever `golden_test.go` uses to find goldens.
+
+Then run it as a **required** check:
+
+```bash
+make test-schemas
+```
+
+Expected: PASS, with subtests for all nine documents and their headers, and **no
+skips**. A skip here means a schema is missing from `testdata/xsd/` and the check
+did not run.
 
 - [ ] **Step 7: Reverse the package's scope claim in `doc.go`**
 
@@ -1557,10 +1618,18 @@ Neither of these is optional, and the handoff is emphatic about both.
    per-task history, both found by a reviewer that **built a probe and ran it**
    rather than reading a diff. Budget for it.
 2. **Run the verification yourself before merging.** A subagent reporting it
-   green is a claim, not evidence. The Postgres run is checkable without trusting
-   anyone: 20–39s on the store-touching packages against 1–5s on `store/mem`.
+   green is a claim, not evidence. Two of the runs are checkable without trusting
+   anyone: the Postgres run takes 20–39s on the store-touching packages against
+   1–5s on `store/mem`, and `make test-schemas` must report **no skips**. Both
+   failure modes look like a pass from a distance.
 
-Two things this task's handoff must say that no earlier one could:
+Three things this task's handoff must say that no earlier one could:
+
+- **The schemas are real now, and they are local.** `iso20022/testdata/xsd/` is
+  gitignored, so the check runs on this machine and on no fresh clone and in no
+  CI job. Whoever picks up Task 17.1 or Task 18 has to copy them into their
+  worktree or `make test-schemas` will skip everything and still say PASS. Say
+  where they came from and what the first run found.
 
 - **The `TEST_DATABASE_URL` verification line and the "there is one migration"
   rule both expire at Task 17.1**, the SQLite swap. Task 16's handoff was
