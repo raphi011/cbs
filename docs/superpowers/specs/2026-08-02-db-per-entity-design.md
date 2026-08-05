@@ -66,14 +66,17 @@ That happens **in Task 18 and not before**. Tasks 14–17 run on one store, so
 expectations that still carry it are correct for the task that moves them and are
 rewritten again when the split lands.
 
-## The five crossings
+## The crossings
 
-The handoff lists three domain problems. There are five; two were found while
-reading the code for this spec.
+The handoff lists three domain problems. Two more were found while reading the
+code for this spec, and a sixth while designing Task 17.
+
+This heading counted them until 2026-08-05. It stopped, for the reason Task 16's
+documentation sweep paid to learn: **a count goes stale and a description of what
+happens does not.** The table below is the list; the heading is not a second one.
 
 The "today" column is as this spec was written; the state column records what has
-since happened, per crossing, with the task that did it. Three of the five are
-closed.
+since happened, per crossing, with the task that did it.
 
 | crossing | today | after | state |
 |---|---|---|---|
@@ -82,9 +85,23 @@ closed.
 | `SettleCycleTx` (`system.go:795`) posts in every book | one `Store.Update` holding every member's accounts | the central bank posts **only its own netting transaction** and is final. Each bank posts its mirror leg and its creditor legs locally, on advice | **closed — Task 15.** As designed, plus `PostSettlementAdviceTx` and `PostCreditorLegTx` as the members' own acts |
 | `ReturnPaymentTx` (`system.go:1723`) posts in three books | one `Store.Update` | the central bank reverses reserves from the pacs.004; each bank posts its own compensating leg locally | **closed — Task 16.** `ReturnPaymentTx` was deleted; it is `SettleReturnTx` (reserves only, reading no payment row), `PostReturnLegTx` (each bank's own customer leg) and `ReverseReturnLegTx`. The clearing house **holds** the pacs.004 until the return is final, which the design had not anticipated |
 | `AddParticipantTx` (`system.go:367`) writes into `CentralBankBook` | one `Store.Update`, "so a bank can never exist without the accounts it needs" | admission is a conversation: the central bank opens the settlement account, the clearing house adds the routing entry, the bank's chart is created in its own store | **open — Task 17** |
+| `DepositTx` (`system.go:578`) posts in the bank's book **and** `CentralBankBook` | one `Store.Update`, and the only way reserves are ever funded in this system | the model is wrong before it is split: cash paid in does not move central-bank reserves. **Vault cash** in the bank's own book, and a separate **lodgement** — a real conversation, camt.050 in TARGET2 — that moves them | **open.** Re-routed but not closed at Task 17; it **must** close at Task 18, which cannot build with it. Found 2026-08-05 |
 
 The two that were not in the handoff are **admission** and the reason the return
 cannot survive isolation unchanged, below.
+
+### The sixth was invisible to every instrument this sub-project has (2026-08-05)
+
+`DepositTx` has posted in two books since before this spec, and neither the
+recorder nor `ops.go` could ever have said so. The recorder watches mesh actors,
+and funding a reserve does not arrive in an inbox — `api.handleFundDeposit` and
+`seed` call the domain directly, exactly as admission does. `ops.go` narrows what
+a *handler* may name, and this has no handler.
+
+That is worth more than the crossing itself: **both instruments are blind to any
+operation that never becomes a message**, and the two open crossings left after
+Task 17 are both of that kind. Task 18's reconciliation harness is the successor
+instrument for the same reason.
 
 ## Settlement, and the unreconciled position
 
@@ -287,6 +304,233 @@ plus a counterpart for the banks, as Task 15 needed. Task 15's lesson applies: t
 counterpart is the one whose *name* will claim the opposite of its measurement if
 it is not rewritten.
 
+## Admission
+
+`AddParticipantTx` (`payment/system.go:405`) is one unit of work that writes
+three institutions' things: the bank's chart of accounts and its default deposit
+product in the bank's own book, one settlement account per asset in
+`CentralBankBook`, and the roster row under `NetworkBook`. Its own doc gives the
+reason — *"so a bank can never exist without the accounts it needs"* — and that
+reason is precisely what isolation takes away. A bank that cannot exist without
+another institution's accounts is a bank that cannot be admitted across a store
+boundary.
+
+**`Participant` is itself a cross-entity aggregate, and that is the deeper
+problem.** `ParticipantAccounts.Settlement` is the CENTRAL BANK's account id,
+carried on the roster row; `SettleCycleTx`, `SettleReturnTx`, `ReserveBalance`
+and `DepositTx` all read it there. The settlement agent keeps no record of its
+own members — it borrows the clearing house's. No book is touched by that read,
+so the recorder cannot see it, and it is the thing that would leave Task 18 with
+a central bank unable to settle.
+
+**The orphan-participant defect is an ordering, not a gap.**
+`api.handleAddParticipant` writes the row and *then* asks the mesh for the
+address. The address is the only thing in the whole operation that can clash. So
+the irreversible step runs first and the refusable step second, which is exactly
+why a refusal leaves a bank in the roster that can neither pay nor be paid, with
+no way back. The handler documents the consequence honestly and at length; what
+it does not say is that reversing the two would remove it.
+
+### Task 17's shape, settled 2026-08-05
+
+**Admission is a relayed conversation, and it is the return's topology.** The
+bank composes the request, the clearing house relays it to the settlement agent,
+the settlement agent acts in its own book and answers, and the clearing house
+writes its own row from the answer and forwards it. Task 16 built that shape for
+the pacs.004; this reuses it rather than inventing a second one.
+
+```
+1  operator --> Mesh.Admit(name, bic, assets)
+     reserve the BIC at the mesh        <- the only clashable thing, taken first
+     the bank's OWN unit of work: book, chart of accounts, default product,
+       Status = Founded
+     on failure: drop the actor again; nothing was written
+2  bank            --acmt.007-->  clearing house
+3  clearing house  --acmt.007-->  central bank      (relayed, header replaced)
+4  central bank: one settlement account per asset in its OWN book,
+                 its OWN member row keyed by BIC.  Idempotent per BIC.
+5  central bank    --acmt.010-->  clearing house
+6  clearing house: writes the routing entry FROM the acknowledgement.
+                   The bank is now routable.
+7  clearing house  --acmt.010-->  bank    Status = Member, settlement
+                                          references recorded
+```
+
+`acmt.011` comes back the same way on a refusal, and the bank stays `Founded`.
+
+**The clearing house holds nothing across the relay, and that is the point of
+contrast.** `csm.held` — Task 16's in-memory hold — does not survive a restart,
+and the branch carries that as a known defect. Nothing needs holding here,
+because the acknowledgement names the bank, its assets and its accounts. It is
+the same discovery Task 16 made about `OrgnlTxRef` one flow over: a message that
+carries its own parties needs no state behind it.
+
+#### Founding is a state, not a stage
+
+`Mesh.Admit` is one door, and its synchronous half founds the bank exactly as
+`Mesh.Submit`'s synchronous half runs the submitting bank's own. It returns with
+the bank `Founded`; what the scheme thinks arrives later, as a message.
+
+**Founded and not yet a member is legitimate.** A bank has a licence and a core
+banking system before it joins a scheme. Such a bank can open customer accounts
+and cannot pay or be paid — which is not a broken state but a true one, and it is
+what makes the orphan defect go away rather than move. An interrupted admission
+leaves a founded bank; re-calling `Admit` re-applies rather than re-founds.
+
+The ordering closes the rest. The address is reserved at the mesh **before**
+anything is written, and the actor is dropped again if the write fails: an
+in-memory rollback is reliable, and a rollback of a committed unit of work is
+not. That is the same argument `Mesh.AddBank` already makes internally for its
+bank index, applied one layer out.
+
+**A BIC that is already taken is two different situations and `Admit` must tell
+them apart.** If the address belongs to a bank this mesh founded and the roster
+has no entry for it, the operator is retrying an interrupted admission: nothing
+is founded a second time and the `acmt.007` goes out again. If it belongs to
+anybody else — a member, or an actor that is not a bank — it is refused. Getting
+this wrong in either direction is a defect with a name: refuse the first and a
+founded bank can never join, accept the second and admission overwrites an
+institution.
+
+**There are two states and not three.** `Founded` and `Member`. An `Applied`
+state between them would record that the request is out, and nothing would read
+it — the same field-nothing-reads this sub-project already refused for the advice
+row's `kind` discriminator, and the defect class this repository keeps finding.
+What "the request is out" is worth knowing for is a stuck admission, which is
+Task 19's kind of question and needs the reconciliation instrument rather than a
+column.
+
+#### The rows
+
+`payment.Participant` is dissolved. Three rows, each written by exactly one
+entity, each already the shape of the store it moves into at Task 18:
+
+| row | owner | holds |
+|---|---|---|
+| `Bank` | the bank | `BookID`, `CustomerSubledger`, `ProductID`, its four internal accounts per asset, `Status`, and the settlement references it learned from the acknowledgement |
+| `SettlementMember` | the central bank | BIC → name, and one settlement account per asset |
+| `RosterEntry` | the clearing house | BIC → name, assets, admitted-at. Routing, and nothing else |
+
+`SettleCycleTx`, `SettleReturnTx` and `ReserveBalance` read the central bank's
+own row instead of `p.Assets[].Settlement`. Routing and `ListParticipants` read
+the roster entry.
+
+**The identifier between institutions is the BIC, and only the BIC.** The bank's
+own id is its own; neither of the other two rows carries it. The operator console
+enumerates banks by holding every store, which is what it already does and what
+the reconciliation harness under *Testing* is designed around — it is outside the
+entity boundary by construction, and it is the only thing that is.
+
+#### The prize is in `ops.go`
+
+`GetParticipant` is the hole `ops.go` names about itself. It "hands back another
+bank's live handles", and the file records that closing it "needs a narrower
+return, which is payment's to give and sub-project 8's to want".
+
+With `Participant` dissolved there is nothing to hand over. A handler asking
+about a counterparty gets a roster entry; live ledger and deposit handles exist
+only on a bank's own record. That crossing closes as a consequence of the split,
+and **no other task on this sub-project was going to close it** — Task 18 moves
+rows between stores and would have moved this one intact.
+
+#### Two authorities on one address, resolved
+
+The mesh's actor map refuses a taken BIC today. After this the roster refuses it
+too, and two answers to one question is one too many. The resolution: **the
+roster is the domain's truth and the actor map is the transport's.** The clearing
+house refuses a duplicate BIC with `acmt.011` *before* it relays, and the mesh's
+refusal becomes what it should always have been — a statement about
+connectivity, not about membership.
+
+#### The messages, and what is not true about them
+
+`acmt.007.001` AccountOpeningRequest, `acmt.010.001` AccountRequestAcknowledgement
+and `acmt.011.001` AccountRequestRejection. Real messages, verified against the
+ISO 20022 catalogue rather than recalled; the rejection is `acmt.011` and not
+`acmt.012`, which is a different message.
+
+The family is the right shape — an account holder asking an account servicer to
+open an account — and this use of it is **not** how the real thing works, which
+has to be said in the package rather than discovered. `acmt` is eBAM, designed
+for a corporate opening an account at its bank. A bank's RTGS account at its
+central bank is created through reference data, not through eBAM: in TARGET it is
+CRDM static data and `reda` messages. This system models admission as a
+conversation because the *sequence and the ownership* are what it is teaching —
+who may open which account, and in whose book — and the message family that
+carries it is the closest true one rather than the actual one.
+
+Scheme membership is contractual in life and is not messaged at all. What the
+`acmt.007` carries here is the settlement-account request; the routing entry
+falls out of its acknowledgement, which is why the clearing house writes that row
+from a message it did not originate.
+
+#### `DepositTx` is re-routed and not fixed
+
+The sixth crossing has to be touched, because the field it reads disappears. It
+resolves the settlement account from the **central bank's own member row**
+instead.
+
+**That is not better than reading the roster; it is differently wrong.** A bank
+reading the settlement agent's records is the same crossing with a new address,
+and the re-route must not be written up as a fix. What Task 17 adds is the
+measurement — a recorder test pinning that funding reaches two books today — so
+the crossing fails loudly at the split rather than quietly, which is the
+discipline every other crossing here has had.
+
+#### The measurements
+
+- **`TestWhichBooksAdmissionReaches`**, the counterpart the Tasks table asks for.
+  Today one call reaches `[the bank's book, CentralBankBook, NetworkBook]`. After:
+  the bank reaches its own book, the central bank reaches `CentralBankBook`, the
+  clearing house reaches `NetworkBook`. Watched failing first.
+- **`TestWritingAParticipantTouchesNoBankBook`** gains entries in
+  `structCarriedBooks` for both new rows. That table fails on a candidate it does
+  not decide, so neither can slip through undecided.
+- **`TestFundingAReserveReachesTwoBooks`**, pinning crossing 6 as a fact.
+
+Task 15's lesson applies to the first of those: the counterpart is the one whose
+*name* will claim the opposite of its measurement if it is not rewritten.
+
+#### The sub-tasks
+
+Letters, not decimals. `17.1`/`17.2`/`17.3` are sub-project 9's SQLite swap and
+must not collide.
+
+| | |
+|---|---|
+| 17a | `iso20022`: acmt.007 / acmt.010 / acmt.011, goldens, `validate()` |
+| 17b | the three-way row split, and `ops.go`'s hole closing with it |
+| 17c | the three domain acts; `AddParticipantTx` kept as a transitional composition |
+| 17d | the mesh conversation; `AddParticipantTx` deleted |
+| 17e | `api`, `seed` and `web` rewiring; `DepositTx` re-routed; crossing 6 measured |
+| 17f | the documentation sweep |
+
+**The boundary between 17b and 17e is the store line, and it is stated here
+because it is the one place two tasks could each assume the other has it.** 17b
+owns `payment` and `store` — the three types, the `Tx` methods, `store/mem`,
+`store/pg`, `storetest` and `0001_init.sql` — and makes only the mechanical edits
+that keep `api`, `seed` and `web` compiling. 17e owns the *rewiring* the
+conversation makes necessary: the endpoint's new answer, the DTOs, the seed's
+admission, the web types. If 17b runs long it splits at the same line — the types
+and `payment`, then the stores and their conformance suite.
+
+**17c keeps the old call alive on purpose.** Task 16 learned that deleting it
+early leaves the branch un-buildable between two tasks, so neither can be
+verified or reviewed on its own — and the transitional composition turns every
+existing admission test into a check that three acts equal what one did. Every
+comment written for it must announce its own expiry, and 17d's reviewer is to
+treat a surviving "Task 17d will…" as a finding.
+
+#### What Task 17 does not do
+
+- It does not close crossing 2 (`ResolveIdentifierTx`) or crossing 6
+  (`DepositTx`). Both stay open with named owners.
+- It does not model vault cash or a lodgement. That is the honest fix for
+  crossing 6 and it is its own task, deliberately not folded into the task that
+  adds a message family and dissolves the central domain type.
+- It does not split the stores. Admission is a conversation on one store, and the
+  recorder measures it there — the same order Tasks 14 to 16 ran in.
+
 ## Rulings this sub-project reverses
 
 Each must be written down as a reversal. A reversed ruling that looks like an
@@ -303,6 +547,21 @@ oversight is worse than the original ruling.
 3. **"There is one migration"** (`CLAUDE.md`). Becomes one migration *per shape*,
    three files. The original rationale — no database is deployed — survives; the
    sentence does not, and `CLAUDE.md` is part of the change.
+4. **"Package iso20022 implements the SEPA interbank messages"**
+   (`iso20022/doc.go:1`). Reversed by Task 17. `acmt` is neither interbank nor
+   SEPA: the EPC profiles no part of it, so the package's whole "the standard is
+   a superset and a scheme narrows it" framing does not apply to the three
+   messages admission adds, and the doc must say which claims are the scheme's
+   and which are now only the standard's.
+5. **A bank "can never exist without the accounts it needs"**
+   (`AddParticipantTx`). Reversed by Task 17, and it is the reversal that carries
+   the domain content: a founded bank without a settlement account is a real
+   thing, and the guarantee the atomic write bought was never one a real
+   admission has.
+
+`iso20022/doc.go`'s message list opens with **"Six."** and Task 17 makes it nine.
+That is the count-goes-stale defect in the file that will teach it hardest, and
+17f rewrites the sentence as a description rather than incrementing it.
 
 ## Tasks
 
