@@ -44,11 +44,13 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 //
 // What it hands back is a bank's own record, live handles and all, so a caller
 // that is not that bank gets the ability to read and write its books. Two of
-// the five callers in api are exactly that — the directory's name lookup and
-// the mandate listing's asset lookup, both of which read another bank's deposit
-// register through the handle this binds. That is crossing 2
-// (ResolveIdentifierTx), open and Task 18's; see Bank.Ledger, which lists the
-// callers.
+// the five callers in api read another bank's deposit register through the
+// handle this binds, and they are two different institutions doing it: the
+// directory's name lookup, served on a bank's own port, which is crossing 2
+// (ResolveIdentifierTx), open and Task 18's; and the mandate listing's asset
+// lookup, served on the clearing house's port alone, which reaches every debtor
+// bank's books directly off the id on the mandate and is not on the spec's
+// table at all. See Bank.Ledger, which sets both out.
 //
 // GetRosterEntry below is the answer to the narrower question — "who is this
 // bank, so I can address it" — and it is what the mesh asks. It exists because
