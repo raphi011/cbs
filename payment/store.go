@@ -63,17 +63,18 @@ type Tx interface {
 	// Which of these has a production caller, exactly, because the alternative
 	// is a reader guessing from the placement.
 	//
-	// PutSettlementMember and PutRosterEntry are called by AddParticipantTx.
-	// GetRosterEntry is called by Network.GetRosterEntry, which is what the
-	// mesh's handlers ask instead of being handed a whole bank.
-	// GetSettlementMember, ListSettlementMembers and ListRosterEntries are
-	// called by nothing but storetest.
+	// PutSettlementMember and GetSettlementMember are the settlement agent's,
+	// called by OpenSettlementAccountTx and by settlementAccountTx — which is
+	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
+	// and ReserveBalance all resolve their account through it. PutRosterEntry
+	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and
+	// by Network.GetRosterEntry, which is what the mesh's handlers ask instead
+	// of being handed a whole bank.
 	//
-	// They are declared now for the reason ListSettlementAdvices below was: the
-	// rows are written now, and adding a reader later would be a second occasion
-	// to get the ordering and not-found contracts wrong in two stores
-	// independently. The settlement agent's readers arrive at Task 17c and Task
-	// 17e — see SettlementMember, which names them.
+	// The two listings are called by nothing but storetest. They are declared
+	// for the reason ListSettlementAdvices below is: the rows exist, and adding
+	// a listing later would be a second occasion to get the ordering contract
+	// wrong in two stores independently.
 	PutRosterEntry(ctx context.Context, e RosterEntry) error
 	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)

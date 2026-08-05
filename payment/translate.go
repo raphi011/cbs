@@ -177,6 +177,33 @@ var reasonTable = []reasonMapping{
 	// "rejected, unspecified" would hide a defect behind a plausible message.
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
 
+	// --- The admission refusals, which are answered off this code set ---
+	//
+	// These three are empty for a different reason from the block above, and the
+	// difference matters because one of them DOES reach a counterparty. An
+	// admission refusal travels as an acmt.011, whose reason is RjctnRsn:
+	// Max350Text, repeated, free prose. It is not a code, and the codes in this
+	// table are the pacs.002's external set — so there is nothing here for one
+	// of these to map to, and an entry with a code would put a payment status on
+	// an account-opening refusal. See iso20022.AccountRejectionReferences, which
+	// records that the standard itself makes this rejection prose where it makes
+	// a payment rejection a code.
+	//
+	// Nothing composes an acmt.011 yet. The four acts are called by
+	// AddParticipantTx, which composes no messages at all, so today all three
+	// reach the operator who drove the admission and no wire. That is what makes
+	// the empty code right in the meantime as well: an operator reads the error.
+	//
+	// ErrBankNotFounded and ErrNotThisBanksAdmission would belong in the block
+	// above even if acmt.011 did carry codes. Both are a bank refusing an
+	// acknowledgement that is not its business or that arrives in a state it
+	// cannot act from, which is a defect in the routing rather than a judgement
+	// the sender can act on — ErrStatementNotForThisBank's classification, for
+	// ErrStatementNotForThisBank's reason.
+	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
+	{ErrBankNotFounded, "ErrBankNotFounded", ""},
+	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
+
 	// A return the settlement agent has already settled. It is the redelivery
 	// case ErrInvalidStateTransition covers on every other path, arriving from
 	// the one actor that has no payment row to read a status off — so it is a

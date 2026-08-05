@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,8 +32,15 @@ var euroOnly = []ledger.AssetCode{testAsset}
 // testBIC is a structurally valid ISO 9362 BIC used as the default across
 // these tests. There is no uniqueness constraint on it (see banks.bic's
 // column comment), so a test bank sharing it with another is not automatically
-// a fixture bug — except where a test's own assertion turns on telling two
-// banks' BICs apart, which is what testBIC2 is for.
+// a fixture bug — except in the two situations where a bank IS its address.
+//
+// The first is an assertion that turns on telling two banks' BICs apart, which
+// is what testBIC2 is for. The second is any fixture whose banks SETTLE: the
+// central bank keys its own record of a member by BIC and by nothing else, so
+// two banks sharing an address share one settlement account and one reserve
+// balance between them. That is not a store rule that could be relaxed — it is
+// what "the identifier between institutions is the BIC" means when the
+// settlement agent keeps its own records. testBICs below is for those.
 const testBIC iso20022.BIC = "BANKDEFFXXX"
 
 // testBIC2 is a second, distinct BIC for fixtures where two banks' BICs must
@@ -41,6 +49,18 @@ const testBIC iso20022.BIC = "BANKDEFFXXX"
 // TestSubmitDerivesTheCounterpartyAgentFromTheRoster does) can actually catch
 // a derivation that silently passes the wrong value through.
 const testBIC2 iso20022.BIC = "BANKGB2LXXX"
+
+// testBICs are distinct addresses for the fixtures that build more than two
+// banks and then settle between them.
+//
+// Those fixtures gave every bank testBIC, which was harmless while each bank
+// carried its own note of its own settlement account. It stopped being harmless
+// when SettleCycleTx and ReserveBalance began asking the central bank's own
+// member row, which is keyed by address: three banks on one address became one
+// member with one reserve, so an underfunded member could be covered by another
+// bank's money and a settlement transaction's four entries all named one
+// account.
+var testBICs = []iso20022.BIC{testBIC, testBIC2, "BANKFRPPXXX", "BANKESMMXXX"}
 
 func testNetwork(t *testing.T) *Network {
 	t.Helper()
@@ -1008,11 +1028,14 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly) // net receiver
+	// Three addresses, because the central bank holds one reserve account per
+	// ADDRESS: on one BIC these three would be one member, and the underfunded
+	// one this fixture exists for would be covered by the other two's money.
+	a, err := sys.AddParticipant(ctx, "Bank A", testBICs[0], euroOnly) // net receiver
 	assertNoError(t, err)
-	b, err := sys.AddParticipant(ctx, "Bank B", testBIC, euroOnly) // solvent net payer
+	b, err := sys.AddParticipant(ctx, "Bank B", testBICs[1], euroOnly) // solvent net payer
 	assertNoError(t, err)
-	c, err := sys.AddParticipant(ctx, "Bank C", testBIC, euroOnly) // underfunded net payer
+	c, err := sys.AddParticipant(ctx, "Bank C", testBICs[2], euroOnly) // underfunded net payer
 	assertNoError(t, err)
 
 	alice := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -1074,8 +1097,12 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		sys := testNetwork(t)
 		var banks []*Bank
 		var accounts []deposit.Account
+		// One address each: the entries this test reads are settlement accounts,
+		// and four banks on one BIC would be one member with one account, so the
+		// order it compares would be four copies of the same id — deterministic
+		// whatever the code does.
 		for i, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
-			p, err := sys.AddParticipant(ctx, name, testBIC, euroOnly)
+			p, err := sys.AddParticipant(ctx, name, testBICs[i], euroOnly)
 			assertNoError(t, err)
 			acct := openCustomer(t, ctx, p, "Customer at "+name, fmt.Sprintf("SE89-BANK%d-0001", i))
 			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
@@ -1356,6 +1383,267 @@ func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "returns receivable account type", acct.Type, ledger.Asset)
 	assertEqual(t, "returns receivable account name", acct.Name, "Returns Receivable (EUR)")
+}
+
+// ---------------------------------------------------------------------------
+// Admission, one act at a time
+//
+// AddParticipant is a composition of these four now, so every test above is
+// already a check that they add up to what the atomic call did. These are the
+// tests for the parts of each act that the composition cannot exercise: what one
+// institution's work leaves untouched, and what each act refuses.
+// ---------------------------------------------------------------------------
+
+// mustUpdate runs fn in one unit of work and fails the test if it does not
+// commit. It is for the acts below, which are Tx-only: there is deliberately no
+// AddParticipant-shaped wrapper opening a unit of work per act, because the
+// point of the split is that each act is one institution's work and the caller
+// composing them decides how many commits that is.
+func mustUpdate(t *testing.T, ctx context.Context, sys *Network, fn func(context.Context, Tx) error) {
+	t.Helper()
+	assertNoError(t, sys.Store().Update(ctx, fn))
+}
+
+// mustGetBank re-reads a bank from the store, so an assertion is about what was
+// committed rather than about the value an act returned.
+func mustGetBank(t *testing.T, ctx context.Context, sys *Network, id ParticipantID) *Bank {
+	t.Helper()
+	p, err := sys.GetBank(ctx, id)
+	assertNoError(t, err)
+	return p
+}
+
+// assertCentralBankReserveAccountCount counts the accounts in the central
+// bank's own book whose name carries the given bank's name — the reserve
+// accounts it has opened for that member, one per asset (see
+// OpenSettlementAccountTx, which names them "Reserve: <bank> (<asset>)").
+//
+// It counts ACCOUNTS rather than comparing ids because a second opening leaves
+// evidence in the book even when the caller is handed the first account's id
+// back, and that is the failure this helper exists to catch.
+func assertCentralBankReserveAccountCount(t *testing.T, ctx context.Context, sys *Network, bank string, want int) {
+	t.Helper()
+	var got int
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		accounts, err := tx.ListAccounts(ctx, CentralBankBook)
+		if err != nil {
+			return err
+		}
+		for _, a := range accounts {
+			if strings.Contains(a.Name, bank) {
+				got++
+			}
+		}
+		return nil
+	}))
+	if got != want {
+		t.Errorf("the central bank's book holds %d accounts naming %s, want %d", got, bank, want)
+	}
+}
+
+// TestFoundingABankTouchesNoOtherInstitution is the whole claim of this task,
+// made about the first act. A founded bank has a book, a chart of accounts and a
+// product; the central bank has opened it nothing and the roster has never heard
+// of it.
+func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	var b *Bank
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		b, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly)
+		return err
+	})
+
+	if b.Status != BankFounded {
+		t.Errorf("a founded bank has status %q, want %q", b.Status, BankFounded)
+	}
+	if got := b.Assets[testAsset].Settlement; got != "" {
+		t.Errorf("a founded bank names settlement account %q; it has not asked for one yet", got)
+	}
+	// It is a working bank all the same: it can open a customer account, which
+	// takes a subledger and a product.
+	if _, err := b.OpenCustomerAccount(ctx, "Alice", testAsset); err != nil {
+		t.Errorf("a founded bank cannot open a customer account: %v", err)
+	}
+
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetSettlementMember(ctx, "AURODEFFXXX"); !errors.Is(err, ErrSettlementMemberNotFound) {
+			t.Errorf("the central bank has a member row for a bank that only founded itself: %v", err)
+		}
+		if _, err := tx.GetRosterEntry(ctx, "AURODEFFXXX"); !errors.Is(err, ErrRosterEntryNotFound) {
+			t.Errorf("the clearing house has a routing entry for a bank that has not applied: %v", err)
+		}
+		return nil
+	}))
+	assertCentralBankReserveAccountCount(t, ctx, sys, "Aurora Bank", 0)
+}
+
+// TestOpeningASettlementAccountTwiceOpensOne is what makes a retried admission
+// safe. The mesh delivers exactly once, so this is not reachable through the
+// transport — it is reachable through the OPERATOR, who re-drives an admission
+// that failed after the accounts were opened.
+//
+// The second half is the other side of the same idempotency. One acmt.007 names
+// one currency, so a bank clearing two schemes asks twice, and the second ask
+// must EXTEND the member rather than be swallowed as a repeat.
+func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	in := AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: testAsset, Ref: "adm-1"}
+	var first, second SettlementMember
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		first, err = sys.OpenSettlementAccountTx(ctx, tx, in)
+		return err
+	})
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		second, err = sys.OpenSettlementAccountTx(ctx, tx, in)
+		return err
+	})
+
+	if first.Accounts[testAsset] == "" {
+		t.Fatal("the first request opened no account at all")
+	}
+	if first.Accounts[testAsset] != second.Accounts[testAsset] {
+		t.Errorf("a second request answered with a different account: %q then %q",
+			first.Accounts[testAsset], second.Accounts[testAsset])
+	}
+	// And the central bank's book holds ONE, which the ids above would not catch
+	// if the second call created an account and then returned the first's id.
+	assertCentralBankReserveAccountCount(t, ctx, sys, "Aurora Bank", 1)
+
+	// A different asset is a different account, and it does not disturb the one
+	// already open.
+	var extended SettlementMember
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		extended, err = sys.OpenSettlementAccountTx(ctx, tx,
+			AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: "USD", Ref: "adm-2"})
+		return err
+	})
+	if extended.Accounts[testAsset] != first.Accounts[testAsset] {
+		t.Errorf("opening a dollar account moved the euro one: %q, want %q",
+			extended.Accounts[testAsset], first.Accounts[testAsset])
+	}
+	if extended.Accounts["USD"] == "" {
+		t.Error("a request for a second asset opened no account for it")
+	}
+	assertCentralBankReserveAccountCount(t, ctx, sys, "Aurora Bank", 2)
+}
+
+// TestAdmittingABICTwiceIsRefused is the address clash, decided by the entity
+// that owns routing. The mesh's actor map refuses a taken address too; that one
+// is a statement about connectivity, and this is the statement about membership.
+//
+// The impostor's acknowledgement carries a DIFFERENT admission reference, and
+// that is what makes it an impostor rather than a second message of the same
+// admission: a bank asking for its second currency and an operator re-driving an
+// interrupted admission both arrive on a BIC already in the roster, and refusing
+// those would refuse the only two cases this refusal must let through.
+func TestAdmittingABICTwiceIsRefused(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	ack := AdmissionAcknowledgement{
+		Name: "Aurora Bank", BIC: "AURODEFFXXX",
+		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
+		Ref:      "adm-1",
+	}
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+		_, err := sys.AdmitMemberTx(ctx, tx, ack)
+		return err
+	})
+
+	clash := ack
+	clash.Name = "Impostor Bank"
+	clash.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}
+	clash.Ref = "adm-2"
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := sys.AdmitMemberTx(ctx, tx, clash)
+		return err
+	})
+	if !errors.Is(err, ErrBICAlreadyAdmitted) {
+		t.Fatalf("admitting a second bank on a taken BIC: %v, want ErrBICAlreadyAdmitted", err)
+	}
+	// And the roster still says what it said. A refusal that overwrote the entry
+	// and then reported failure would leave routing pointing at the impostor.
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		e, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+		if err != nil {
+			return err
+		}
+		if e.Name != "Aurora Bank" {
+			t.Errorf("the roster entry now names %q; the refusal overwrote it", e.Name)
+		}
+		if e.AdmissionRef != "adm-1" {
+			t.Errorf("the roster entry now cites admission %q; the refusal overwrote it", e.AdmissionRef)
+		}
+		return nil
+	}))
+
+	// The same admission asking again is not a clash. This is the acmt.010 for
+	// the bank's second currency, and it extends the entry it finds.
+	second := ack
+	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
+	var extended RosterEntry
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		extended, err = sys.AdmitMemberTx(ctx, tx, second)
+		return err
+	})
+	if !slices.Equal(extended.Assets, []ledger.AssetCode{testAsset, "USD"}) {
+		t.Errorf("the roster entry clears in %v, want [EUR USD]", extended.Assets)
+	}
+}
+
+// TestABankCannotRecordAnotherBanksMembership is ErrStatementNotForThisBank's
+// shape, one flow over. The actor passes its own id and the domain refuses the
+// one that is not its business, because nothing in the signature can.
+func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	var aurora, verde *Bank
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		if aurora, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
+			return err
+		}
+		verde, err = sys.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", euroOnly)
+		return err
+	})
+
+	// The acknowledgement is Aurora's; Verde tries to record it as its own.
+	ack := AdmissionAcknowledgement{
+		Name: "Aurora Bank", BIC: aurora.BIC,
+		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
+		Ref:      "adm-1",
+	}
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, verde.ID, ack)
+		return err
+	})
+	if !errors.Is(err, ErrNotThisBanksAdmission) {
+		t.Fatalf("recording another bank's admission: %v, want ErrNotThisBanksAdmission", err)
+	}
+	// Neither bank moved. Verde is not a member, and Aurora did not become one
+	// because somebody else read its acknowledgement.
+	for _, want := range []*Bank{aurora, verde} {
+		got := mustGetBank(t, ctx, sys, want.ID)
+		if got.Status != BankFounded {
+			t.Errorf("%s is %q after a refused recording, want %q", got.Name, got.Status, BankFounded)
+		}
+		if got.Assets[testAsset].Settlement != "" {
+			t.Errorf("%s now names settlement account %q", got.Name, got.Assets[testAsset].Settlement)
+		}
+	}
+
+	// And the bank the acknowledgement IS addressed to records it.
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, aurora.ID, ack)
+		return err
+	})
+	got := mustGetBank(t, ctx, sys, aurora.ID)
+	assertEqual(t, "Aurora's status once it has recorded its admission", got.Status, BankMember)
+	assertEqual(t, "the settlement account Aurora recorded", got.Assets[testAsset].Settlement, "200.100.001")
 }
 
 func TestAccountsForUnknownAssetFails(t *testing.T) {

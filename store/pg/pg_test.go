@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -377,11 +378,12 @@ func TestOverlappingAccountSetsDoNotDeadlock(t *testing.T) {
 // Central Bank ledger" and each create one — after which the two participants
 // would disagree about which subledger holds member reserves.
 //
-// It cannot happen, because AddParticipantTx's first statement is
-// NextID(NetworkBook, "bank"), whose INSERT … ON CONFLICT DO UPDATE takes a row
-// lock on id_sequences. The second call blocks there until the first commits and
-// then sees everything it wrote. The gap-free counter serializes the whole
-// operation, not merely the number it hands out.
+// It cannot happen, because the first statement AddParticipantTx puts to the
+// store is NextID(NetworkBook, "bank") — the first thing the bank's own act
+// does, and admission's first act — whose INSERT … ON CONFLICT DO UPDATE takes
+// a row lock on id_sequences. The second call blocks there until the first
+// commits and then sees everything it wrote. The gap-free counter serializes the
+// whole operation, not merely the number it hands out.
 //
 // This test is what makes that argument checkable rather than a claim in a
 // comment. It fails loudly if the ordering inside AddParticipantTx ever changes.
@@ -390,9 +392,13 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 	ctx := context.Background()
 	net := payment.NewNetwork(s.Payment(), frozen)
 
+	// One address each. The central bank keys its own member record by BIC, so
+	// three banks on one BIC would be one member holding one reserve account,
+	// and the per-participant loop below would compare that account with itself.
 	names := []string{"Aurora Bank", "Banca Verde", "Nordkredit"}
+	bics := []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX"}
 	errs := runConcurrently(len(names), func(i int) error {
-		_, err := net.AddParticipant(ctx, names[i], "BANKDEFFXXX", nil)
+		_, err := net.AddParticipant(ctx, names[i], bics[i], nil)
 		return err
 	})
 	for _, err := range errs {

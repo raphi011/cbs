@@ -29,10 +29,13 @@ const (
 	//
 	// It is a legitimate state and not a broken one — a bank exists before it
 	// joins a scheme — and it is what an interrupted admission leaves behind.
-	// Nothing writes it yet: today's AddParticipantTx admits a bank to the scheme
-	// in the same unit of work that founds it, so every bank it writes is a
-	// Member. Task 17d is what splits founding from joining and starts a bank
-	// here.
+	//
+	// FoundBankTx is what writes it: founding is its own act now, and a bank that
+	// stops there is a working bank that cannot pay. What no caller can yet
+	// OBSERVE it through is AddParticipant, which calls all four acts in one unit
+	// of work, so every bank it hands back has already recorded its membership and
+	// is a Member. Task 17d is where founding and joining become separate
+	// commits with a message between them.
 	BankFounded BankStatus = "Founded"
 
 	// BankMember is a bank the scheme has admitted: the settlement agent holds an
@@ -63,16 +66,21 @@ const (
 // The first four are accounts in this bank's own book. The fifth is an account
 // in ANOTHER institution's book, and it is here as the account holder's record
 // of its own account number — the way a customer knows their IBAN without
-// holding the bank's ledger. What it is no longer is the ONLY record of that
-// account: the central bank now keeps a SettlementMember row of its own.
+// holding the bank's ledger. What it is not is the only record of that account:
+// the central bank keeps a SettlementMember row of its own, and that is the one
+// the settlement agent reads.
 //
-// Both records exist and no reader has moved. SettleCycleTx, SettleReturnTx,
-// PostSettlementAdviceTx and ReserveBalance all still resolve the account
-// through this field, so every settlement in this system is still a settlement
-// agent reading a bank's row. Task 17c and Task 17e are what point them at the
-// central bank's own row instead. DepositTx is the one reader that stays here
-// afterwards, because it is the account holder quoting its own account
-// number.
+// Which reader reads which is decided by whose question it is, and the readers
+// split two ways. SettleCycleTx, SettleReturnTx and ReserveBalance read the
+// central bank's row: those are the settlement agent posting in its own book, and
+// the operator console asking it about that book. DepositTx and
+// PostSettlementAdviceTx read THIS field, because both are the account holder
+// using its own account number — one quoting it to fund a deposit, the other
+// checking that an arriving statement is about the account it holds and not
+// another member's.
+//
+// It is empty on a founded bank. The number is something the bank has to be
+// told, and RecordMembershipTx is where being told lands.
 type BankAccounts struct {
 	Suspense ledger.AccountID
 	Reserve  ledger.AccountID

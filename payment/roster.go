@@ -12,28 +12,29 @@ import (
 // and it exists as a row of its own before then because that is the only way
 // the settlement agent stops borrowing the clearing house's records.
 //
-// It is what the settlement agent has never had. Every reserve movement in this
-// system resolves its account through the BANK's row — SettleCycleTx,
-// SettleReturnTx, PostSettlementAdviceTx and ReserveBalance all read
+// It is what the settlement agent used to do without. Every reserve movement in
+// this system resolved its account through the BANK's row —
 // Bank.Assets[asset].Settlement — so a settlement agent given its own database
-// today would have nothing to settle from. That is the deeper half of
-// dissolving the participant row, and it is why this is a row rather than a
-// lookup.
+// would have had nothing to settle from. That is the deeper half of dissolving
+// the participant row, and it is why this is a row rather than a lookup.
 //
-// # Nothing reads it yet, and that is deliberate rather than forgotten
+// # What reads it
 //
-// This task writes the row and moves no reader: AddParticipantTx writes it in
-// the same unit of work that opens the accounts it names, and the four readers
-// above still resolve through the bank's row. Task 17c is what points
-// SettleCycleTx and SettleReturnTx here and Task 17e ReserveBalance, at which
-// point the settlement agent is asking its own records for the first time.
-// DepositTx never moves: that one is the account holder quoting its own account
-// number, which is a legitimate thing for a bank to know.
+// settlementAccountTx, which is the only way anything in this package now turns
+// an address and an asset into a settlement account. Through it: SettleCycleTx
+// and SettleReturnTx, which are the settlement agent posting in its own book,
+// and ReserveBalance, which is the operator console asking the central bank
+// about that book.
 //
-// The row is written first because the alternative is worse. A later task that
-// both introduced the row and re-pointed the readers would have to backfill
-// every existing member in the same change, and the split — which is what this
-// task is for — would be invisible until then.
+// Two readers deliberately stay on the bank's own row, because the question is
+// the account holder's rather than the servicer's: DepositTx quoting its own
+// account number to fund a deposit, and PostSettlementAdviceTx checking that an
+// arriving statement is about the account this bank holds. See BankAccounts.
+//
+// The row was written a task before it was read. A single task that both
+// introduced it and re-pointed the readers would have had to backfill every
+// existing member in the same change, and the split would have been invisible
+// until then.
 //
 // # It is keyed by BIC and by nothing else
 //
@@ -83,14 +84,15 @@ type SettlementMember struct {
 //
 // Scheme membership follows the settlement account rather than the other way
 // round: a bank the central bank will not open an account for is not a bank
-// this clearing house can route a settlement instruction for. That is why the
-// row Task 17d has the clearing house write is written from an acknowledgement
-// it did not originate — the acmt.010 the settlement agent sends back.
+// this clearing house can route a settlement instruction for. That is why
+// AdmitMemberTx, the clearing house's act, writes this row from an
+// acknowledgement it did not originate.
 //
-// Today it is written by AddParticipantTx, in the same unit of work that opens
-// the accounts, because admission is still one call rather than a conversation.
-// The row is the same either way; what changes at 17d is who writes it and what
-// they write it from.
+// The acknowledgement is a value rather than a message today, built by
+// AddParticipantTx from what the settlement agent's act returned, in the same
+// unit of work as everything else. Task 17d is what makes it an acmt.010 that
+// arrived from another institution. The row is the same either way and so is
+// its writer; what changes is where the writer's argument came from.
 type RosterEntry struct {
 	BIC  iso20022.BIC
 	Name string
@@ -105,12 +107,13 @@ type RosterEntry struct {
 	// position for exactly that reason, and storetest's
 	// RosterEntryAssetsAreAnOrderedList holds them to it.
 	//
-	// Whose order it is depends on who wrote it. Today's only writer is
-	// AddParticipantTx, which sorts the keys of the bank's account map: map
-	// iteration is random, and a row whose child rows came out in a different
-	// order on every identical write would be a store answering differently
-	// each time. Task 17d writes it from an acmt.010 instead, and that order is
-	// the servicer's list of what it opened.
+	// Whose order it is depends on who wrote it. The writer is AdmitMemberTx,
+	// which sorts the assets an acknowledgement names and appends the ones this
+	// entry does not already have: the sort is because map iteration is random
+	// and a row whose child rows came out in a different order on every
+	// identical write would be a store answering differently each time, and the
+	// append is because an extension must not reorder what a member was already
+	// admitted for.
 	Assets []ledger.AssetCode
 
 	// AdmissionRef is the acmt Refs/PrcId that every message of ONE admission
@@ -129,10 +132,13 @@ type RosterEntry struct {
 	// them: same admission, relay; different admission, acmt.011 before
 	// relaying.
 	//
-	// Task 17d is what writes it from a message and what reads it to refuse.
-	// Today's atomic admission composes no messages and has no process id to
-	// echo, so the rows it writes carry "" — which is honest rather than a
-	// placeholder: those admissions were not conversations.
+	// AdmitMemberTx is what writes it and what reads it to refuse; Task 17d is
+	// what puts a message behind it. AddParticipantTx composes no messages and
+	// has no process id to echo, so the rows an admission driven through it
+	// carry "" — which is honest rather than a placeholder: those admissions
+	// were not conversations. Two of them on one address therefore quote the
+	// same empty reference and the second extends the first's entry, which is
+	// what that call has always done with a repeated BIC.
 	AdmissionRef string
 
 	// AdmittedAt is when the scheme admitted this bank, which is when this row

@@ -336,6 +336,17 @@ func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.Subledg
 // well as the name is what makes it idempotent per asset rather than per
 // central bank — see cbAssetsAccountName for why the name carries the asset
 // too.
+//
+// It lists the central bank's accounts on every call, immediately before the one
+// lookup it makes, so nothing it matches against can be stale. There used to be
+// a second form of this taking a chart and a listing the caller had already
+// made, for AddParticipantTx's loop over a bank's assets; its doc warned that a
+// caller able to ask twice for one asset would open a second account against a
+// stale listing and must list again. OpenSettlementAccountTx is exactly that
+// caller — it is idempotent per (BIC, asset) and re-entered on a retried
+// admission — and it asks about ONE asset, so the loop the pre-listed form
+// saved work in no longer exists. Deleting it removes the hazard rather than
+// arguing about it.
 func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
 	_, capital, err := s.centralBankChartTx(ctx, tx)
 	if err != nil {
@@ -345,23 +356,6 @@ func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset l
 	if err != nil {
 		return "", err
 	}
-	return s.centralBankAssetsAccountIn(ctx, tx, capital, accounts, asset)
-}
-
-// centralBankAssetsAccountIn is centralBankAssetsAccountTx against a chart the
-// caller has already resolved and listed.
-//
-// It exists for AddParticipantTx, which needs one of these per asset a bank
-// joins with. Neither the capital subledger nor the central bank's chart of
-// accounts changes underneath that loop, so re-resolving both on every
-// iteration was pure repetition — idempotent, and a full re-listing of the
-// central bank's accounts each time round.
-//
-// `accounts` may be stale with respect to accounts the caller's own loop has
-// created since. That is safe here because the match is on the asset and
-// AddParticipantTx handles each asset exactly once; a caller that could ask
-// twice for the same asset would create a second account and must list again.
-func (s *Network) centralBankAssetsAccountIn(ctx context.Context, tx Tx, capital ledger.SubledgerID, accounts []ledger.Account, asset ledger.AssetCode) (ledger.AccountID, error) {
 	for _, a := range accounts {
 		if a.SubledgerID == capital && a.Name == cbAssetsAccountName(asset) && a.Asset == asset {
 			return a.ID, nil
@@ -374,17 +368,112 @@ func (s *Network) centralBankAssetsAccountIn(ctx context.Context, tx Tx, capital
 	return created.ID, nil
 }
 
+// settlementAccountTx is the settlement agent's own answer to "which account do
+// I hold for this member, in this asset" — read from its own SettlementMember
+// row and from no bank's.
+//
+// It is what the row added by Task 17b exists for. Every reserve movement in
+// this system used to resolve its account through Bank.Assets[asset].Settlement,
+// which is the settlement agent reading a bank's record of the settlement
+// agent's own book; under Task 18's stores that read is not available at all.
+//
+// A member the agent holds nothing for is ErrSettlementMemberNotFound, which is
+// the true state of a bank that is founded and not yet admitted. A member it
+// holds accounts for but not in this asset is ErrParticipantAssetNotFound, the
+// same sentinel Bank.AccountsFor gives for the same question asked of the bank's
+// own accounts: settling a dollar position through a euro reserve is the error
+// both refusals exist to prevent.
+func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.BIC, asset ledger.AssetCode) (ledger.AccountID, error) {
+	member, err := tx.GetSettlementMember(ctx, bic)
+	if err != nil {
+		return "", err
+	}
+	account, ok := member.Accounts[asset]
+	if !ok {
+		return "", fmt.Errorf("%w: the central bank holds no %s account for %s", ErrParticipantAssetNotFound, asset, bic)
+	}
+	return account, nil
+}
+
 // ---------------------------------------------------------------------------
-// Participants
+// Admission
+//
+// Four acts, and each of them is one institution's unit of work: the bank
+// founds itself, the settlement agent opens it an account in its own book, the
+// clearing house writes the routing entry, and the bank records what it was
+// told. No act writes another institution's row.
+//
+// They do not compose themselves. AddParticipantTx below calls all four in one
+// transaction, which is the thing this split exists to stop, and it says at
+// length why it is still here.
 // ---------------------------------------------------------------------------
 
-// AddParticipant registers a new bank. It builds the bank's own book of
-// accounts and chart of accounts and opens a reserve account for it at the
-// central bank, once per asset the bank operates in.
+// AdmissionRequest is a bank asking an account servicer to open it an account:
+// who is asking, in which asset, and which admission the question belongs to.
 //
-// An empty assets list means []ledger.AssetCode{"EUR"}. That is a default for
-// the *set of assets a bank joins with*, not for the asset of any individual
-// account: every account below is created with an asset its caller named.
+// ONE asset, not a list, because it is what one acmt.007 says: the schema makes
+// Acct/Ccy minOccurs="1" maxOccurs="1", so a bank clearing a euro scheme and a
+// dollar scheme asks twice rather than once for two currencies. See
+// iso20022.RequestedAccount.
+//
+// Ref is the admission's process id — acmt Refs/PrcId, echoed by every message
+// of one admission. It is the conversation's only correlator, because the
+// acknowledgement carries no back-reference to the request that caused it.
+// OpenSettlementAccountTx does not read it — an account servicer opens what it is
+// asked for; what reads it is the clearing house's refusal, against the reference
+// on the roster entry (see AdmitMemberTx). It is carried here because the answer
+// has to be able to quote it.
+//
+// It is a plain struct and not a message. The acts below are the domain's and
+// the messages are Task 17d's, which is where the reader that builds one of
+// these from an acmt.007 arrives.
+type AdmissionRequest struct {
+	Name  string
+	BIC   iso20022.BIC
+	Asset ledger.AssetCode
+	Ref   string
+}
+
+// AdmissionAcknowledgement is an account servicer answering: these are the
+// accounts I hold for you.
+//
+// It carries EVERY account, where the request carries one asset, and the
+// asymmetry is the schema's rather than this system's: acmt.010's
+// AccountForAction1 is unbounded, so one acknowledgement lists the servicer's
+// whole account set for that BIC. Both readers below rely on that — the clearing
+// house learns which assets a member clears in from this map, and the bank
+// records every account number it is told at once.
+//
+// Ref is the same process id the request carried. It is what tells the clearing
+// house whether an acknowledgement arriving on a BIC it already routes to is the
+// same admission going on or a different bank on a taken address.
+type AdmissionAcknowledgement struct {
+	Name     string
+	BIC      iso20022.BIC
+	Accounts map[ledger.AssetCode]ledger.AccountID
+	Ref      string
+}
+
+// joiningAssets applies the joining default: a bank that names no assets joins
+// with the euro.
+//
+// It is the default for the SET of assets a bank joins with and not for the
+// asset of any account: every account created below is created with an asset
+// somebody named. Two callers apply it — the bank's own act, and the
+// composition that has to ask for one settlement account per asset in the same
+// order — which is why it is a function rather than a line in each.
+func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
+	if len(assets) == 0 {
+		return []ledger.AssetCode{"EUR"}
+	}
+	return assets
+}
+
+// AddParticipant registers a new bank: it founds it, opens it a settlement
+// account per asset at the central bank, admits it to the roster and records
+// the accounts on the bank's own row.
+//
+// It is the composition AddParticipantTx describes, in its own unit of work.
 //
 // The new bank starts with zero reserves; fund it with Deposit.
 func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
@@ -400,35 +489,45 @@ func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.
 	return out, nil
 }
 
-// AddParticipantTx is AddParticipant within a caller-supplied unit of work.
+// FoundBankTx is the bank's own act: a bank with a licence building itself.
 //
-// It is one unit of work doing three institutions' work: the bank's book, chart
-// of accounts and default product; the central bank's settlement account and
-// its own member row; the clearing house's routing entry. All of it commits or
-// none of it does, which is what makes a bank here unable to exist without the
-// accounts it needs.
+// It creates the bank's book, its chart of accounts, one set of internal
+// accounts per asset it means to operate in, and the deposit product every
+// customer account is opened from — because there is no such thing as an
+// unpriced deposit account, and a bank that cannot open one is not yet a bank.
 //
-// That guarantee is the thing this sub-project is taking away, and it is worth
-// saying why rather than leaving it to look like a regression. A bank that
-// cannot exist without another institution's accounts is a bank that cannot be
-// admitted across a store boundary — and no real admission has this guarantee
-// either: a bank is licensed and built before any scheme has heard of it, and
-// what follows is a request that can be refused. Task 17d replaces this call
-// with that conversation.
-func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+// The bank comes out Founded, and that is a whole state rather than half of
+// one. It can take deposits; it cannot pay or be paid, because no settlement
+// agent holds an account for it and no clearing house routes to it. That is
+// what a bank is between its licence and its scheme membership, and it is what
+// an interrupted admission leaves behind — which is why the guarantee this call
+// gives up (see AddParticipantTx) is one no real admission ever had.
+//
+// Assets[asset].Settlement is EMPTY on every set of accounts it writes. The
+// settlement account is another institution's to open and its number is
+// something this bank has to be told; RecordMembershipTx is where it lands.
+//
+// What it writes outside the bank's own BOOK is network-scoped storage rather
+// than another institution's record: the id allocation, the Bank row itself —
+// which names a book without being scoped to one, as
+// TestWritingAParticipantTouchesNoBankBook pins — and one participant.added audit
+// event, the audit log being network-scoped in this system by construction (see
+// appendAuditTx). The other three acts append no audit event, so an admission
+// still leaves exactly one, which is what
+// TestParticipantAuditPayloadDropsLiveHandles counts.
+func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
 	}
-	// Validated at admission rather than at first use. A bank with a malformed
-	// BIC is one the mesh cannot route to, and the moment to refuse it is when
-	// it joins — not when the first payment addressed to it fails somewhere
-	// else entirely.
+	// Validated at founding rather than at first use. A bank with a malformed
+	// BIC is one the mesh cannot route to and one the other two institutions
+	// cannot key their rows by — the BIC is the only identifier that crosses
+	// between them — and the moment to refuse it is when the bank is built, not
+	// when the first payment addressed to it fails somewhere else entirely.
 	if err := bic.Validate(); err != nil {
 		return nil, fmt.Errorf("bic: %w", err)
 	}
-	if len(assets) == 0 {
-		assets = []ledger.AssetCode{"EUR"}
-	}
+	assets = joiningAssets(assets)
 
 	// The bank gets its own book within the shared store, identified by its
 	// participant ID, so its chart of accounts is numbered independently of
@@ -452,18 +551,6 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 	if err != nil {
 		return nil, err
 	}
-	// The bank's reserve accounts live in the central-bank ledger, alongside
-	// every other member's. Resolved once, with the chart of accounts listed
-	// alongside it: the per-asset loop below needs both and neither moves while
-	// it runs.
-	reserveSubledger, capitalSubledger, err := s.centralBankChartTx(ctx, tx)
-	if err != nil {
-		return nil, err
-	}
-	cbAccounts, err := tx.ListAccounts(ctx, CentralBankBook)
-	if err != nil {
-		return nil, err
-	}
 
 	// One set of internal accounts per asset. Naming them with the asset in
 	// parentheses keeps them apart in a chart of accounts that now holds
@@ -481,10 +568,6 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 			// and then overwrite the map entry pointing at the first, orphaning
 			// four accounts in the chart.
 			continue
-		}
-		// The other side of every reserve credit in this asset.
-		if _, err := s.centralBankAssetsAccountIn(ctx, tx, capitalSubledger, cbAccounts, asset); err != nil {
-			return nil, err
 		}
 
 		suspense, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Clearing Suspense ("+string(asset)+")", ledger.Liability, asset)
@@ -512,23 +595,18 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
-		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
-		if err != nil {
-			return nil, err
-		}
 		accounts[asset] = BankAccounts{
 			Suspense:          suspense.ID,
 			Reserve:           reserve.ID,
 			Unclaimed:         unclaimed.ID,
 			ReturnsReceivable: returnsReceivable.ID,
-			Settlement:        cbReserve.ID,
 		}
 	}
 
 	// The bank's default deposit product, created here because a bank with no
 	// product cannot open an account: every deposit account is opened FROM one.
 	// It belongs with the chart of accounts for the same reason those are built
-	// here — onboarding a bank produces a bank that works.
+	// here — founding a bank produces a bank that works.
 	//
 	// Its opening version is INTEREST-FREE, which is a real product and not an
 	// absence: a bank that has not decided a price has not decided a price, and
@@ -548,7 +626,6 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		return nil, err
 	}
 
-	now := s.now()
 	p := Bank{
 		ID:                ParticipantID(id),
 		Name:              name,
@@ -556,46 +633,11 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,
-		Status:            BankMember,
+		Status:            BankFounded,
 		Assets:            accounts,
-		CreatedAt:         now,
+		CreatedAt:         s.now(),
 	}
 	if err := tx.PutBank(ctx, p); err != nil {
-		return nil, err
-	}
-	// The other two institutions' rows, written here because this one call is
-	// still all three institutions acting at once — which is exactly what the
-	// conversation replaces.
-	//
-	// The central bank's row records the accounts the loop above opened in the
-	// central bank's own book, so that a settlement agent asking about its own
-	// book has something of its own to ask. The clearing house's row records
-	// the address and the assets, and nothing else.
-	//
-	// Its admission reference is empty, and that is not a placeholder: this
-	// call composes no messages, so there is no process id for the row to echo.
-	// A row written here is the record of an admission that was never a
-	// conversation. Task 17c splits this composition into the three acts it is
-	// made of and Task 17d deletes it, at which point every one of these rows
-	// is written by the institution that owns it, from a message.
-	if err := tx.PutSettlementMember(ctx, SettlementMember{
-		BIC:      bic,
-		Name:     name,
-		Accounts: settlementAccounts(accounts),
-		OpenedAt: now,
-	}); err != nil {
-		return nil, err
-	}
-	// Sorted, and the sort is this writer's rather than the row's contract:
-	// accounts is a map, Go randomises its iteration, and an unsorted slice here
-	// would make two identical admissions store two different orders. Task 17d's
-	// writer takes the order off an acmt.010 and does not sort.
-	if err := tx.PutRosterEntry(ctx, RosterEntry{
-		BIC:        bic,
-		Name:       name,
-		Assets:     slices.Sorted(maps.Keys(accounts)),
-		AdmittedAt: now,
-	}); err != nil {
 		return nil, err
 	}
 	if err := s.appendAuditTx(ctx, tx, ledger.EventParticipantAdded, string(p.ID), p); err != nil {
@@ -604,20 +646,286 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 	return s.bind(p), nil
 }
 
-// settlementAccounts projects the per-asset accounts a bank was given onto the
-// one account of each that belongs to the CENTRAL BANK — the reserve account it
-// opened in its own book.
+// OpenSettlementAccountTx is the settlement agent's own act: opening one
+// account, in one asset, in its own book, and recording that it holds it.
 //
-// It is a projection and not a shared value on purpose: the bank keeps its own
-// note of the account number and the central bank keeps the account. They are
-// equal here because one call made both, and they are two records because at
-// Task 18 they are in two databases.
-func settlementAccounts(accounts map[ledger.AssetCode]BankAccounts) map[ledger.AssetCode]ledger.AccountID {
-	out := make(map[ledger.AssetCode]ledger.AccountID, len(accounts))
-	for asset, accts := range accounts {
-		out[asset] = accts.Settlement
+// It writes nothing of the bank's. What it produces is the central bank's
+// SettlementMember row — the record whose absence would leave a settlement agent
+// with its own database unable to post anything at all — and the account itself,
+// a Liability, because a reserve is money the central bank owes its member.
+//
+// # Idempotent per (BIC, asset), not per BIC
+//
+// A request for an asset it has already opened returns the accounts it holds and
+// opens none. A request for an asset it has not returns a member extended by
+// one account. Both halves are needed and for different reasons: one acmt.007
+// names one currency, so a bank in two schemes asks twice and the second ask
+// must not be swallowed as a repeat; and an operator re-driving an admission
+// that failed after the accounts were opened must not be given a second account
+// that the first one's balance is already sitting in. That re-drive is the route
+// out of a half-happened admission this system documents, so the second half is
+// reachable in practice and not only in principle.
+//
+// The name on the row is the one it was first opened under. An account servicer
+// names an account after the member it opened it for, and a second request that
+// renamed the row would leave the accounts under it named two different things.
+//
+// # What it refuses, and what it does not
+//
+// An unknown asset code, because it is about to create an account denominated
+// in it. Not the BIC and not the name: whether an address is well formed is the
+// applicant's own act to establish (see FoundBankTx) and whether an applicant
+// may hold this address at all is the clearing house's decision, made before a
+// request is relayed. An account servicer asked twice for the same address by
+// two different institutions cannot tell them apart, and this system's answer to
+// that is a refusal one institution earlier rather than a weaker test here — see
+// ErrBICAlreadyAdmitted.
+func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, error) {
+	if _, err := ledger.LookupAsset(in.Asset); err != nil {
+		return SettlementMember{}, err
 	}
-	return out
+
+	member, err := tx.GetSettlementMember(ctx, in.BIC)
+	switch {
+	case err == nil:
+		if _, held := member.Accounts[in.Asset]; held {
+			return member, nil
+		}
+		if member.Accounts == nil {
+			// This act never writes a member with no accounts, so a nil map here
+			// is a row somebody else wrote. Assigning into one panics, and a
+			// panic is a bad answer to a row this act can simply fill in.
+			member.Accounts = make(map[ledger.AssetCode]ledger.AccountID, 1)
+		}
+	case errors.Is(err, ErrSettlementMemberNotFound):
+		member = SettlementMember{
+			BIC:      in.BIC,
+			Name:     in.Name,
+			Accounts: make(map[ledger.AssetCode]ledger.AccountID, 1),
+			OpenedAt: s.now(),
+		}
+	default:
+		return SettlementMember{}, err
+	}
+
+	reserves, _, err := s.centralBankChartTx(ctx, tx)
+	if err != nil {
+		return SettlementMember{}, err
+	}
+	// The other side of every reserve credit in this asset, in the central
+	// bank's own capital block. One per asset and shared by every member, so
+	// this is a lookup on the second admission in an asset and a creation on the
+	// first.
+	if _, err := s.centralBankAssetsAccountTx(ctx, tx, in.Asset); err != nil {
+		return SettlementMember{}, err
+	}
+	account, err := s.centralBank.CreateAccountTx(ctx, tx, reserves,
+		"Reserve: "+member.Name+" ("+string(in.Asset)+")", ledger.Liability, in.Asset)
+	if err != nil {
+		return SettlementMember{}, err
+	}
+
+	member.Accounts[in.Asset] = account.ID
+	if err := tx.PutSettlementMember(ctx, member); err != nil {
+		return SettlementMember{}, err
+	}
+	return member, nil
+}
+
+// AdmitMemberTx is the clearing house's own act: writing down where to send a
+// message addressed to this member.
+//
+// It writes the entry from an acknowledgement it did not originate, and that is
+// the ordering the domain has rather than an accident of who holds the message.
+// Scheme membership follows the settlement account: a bank the settlement agent
+// will not open an account for is not a bank this clearing house can route a
+// settlement instruction for. So the assets it records are the assets the
+// servicer says it opened accounts in, and nothing here asks the bank what it
+// wanted.
+//
+// # It writes or extends, and refuses only a different admission
+//
+// Two things legitimately arrive on a BIC already in the roster: this same
+// bank's next currency, and an operator re-driving an interrupted admission.
+// Both echo the process id the admission started with, so both extend the entry
+// they find. An acknowledgement quoting a different reference is a second
+// institution on a taken address, which is the one case this refuses. See
+// ErrBICAlreadyAdmitted, and RosterEntry.AdmissionRef, which is what makes the
+// distinction possible at all.
+//
+// It refuses before it writes, so a refused acknowledgement leaves routing
+// pointing where it pointed.
+func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
+	entry, err := tx.GetRosterEntry(ctx, in.BIC)
+	switch {
+	case err == nil:
+		if entry.AdmissionRef != in.Ref {
+			return RosterEntry{}, fmt.Errorf("%w: %s is admitted under %q and this acknowledgement quotes %q",
+				ErrBICAlreadyAdmitted, in.BIC, entry.AdmissionRef, in.Ref)
+		}
+	case errors.Is(err, ErrRosterEntryNotFound):
+		entry = RosterEntry{BIC: in.BIC, AdmissionRef: in.Ref, AdmittedAt: s.now()}
+	default:
+		return RosterEntry{}, err
+	}
+
+	entry.Name = in.Name
+	// Sorted, and only the assets that are new. The sort is this writer's rather
+	// than the row's contract: Accounts is a map, Go randomises its iteration,
+	// and an unsorted append would make two identical acknowledgements store two
+	// different orders. Appending rather than replacing is what makes an
+	// extension an extension — the entry keeps the order it was admitted in and
+	// the new asset goes on the end.
+	for _, asset := range slices.Sorted(maps.Keys(in.Accounts)) {
+		if !slices.Contains(entry.Assets, asset) {
+			entry.Assets = append(entry.Assets, asset)
+		}
+	}
+	if err := tx.PutRosterEntry(ctx, entry); err != nil {
+		return RosterEntry{}, err
+	}
+	return entry, nil
+}
+
+// RecordMembershipTx is the bank's second act: writing down what it was told.
+//
+// The bank learns its settlement account numbers here and nowhere else. They are
+// another institution's account ids, and this is the account holder's note of
+// them — the way a customer knows their own IBAN without holding the bank's
+// ledger. The bank becomes a Member in the same write, because being told the
+// account exists is exactly what being admitted consists of.
+//
+// # The actor names itself, so the domain has to check
+//
+// `by` is the bank claiming the acknowledgement, and nothing in the signature
+// stops a caller naming somebody else's. A bank that recorded whatever arrived
+// would write another member's account numbers onto its own row and every
+// reserve movement it made afterwards would name an account it does not hold.
+// This is ErrStatementNotForThisBank's argument one flow over, and the check is
+// the same one: the message names an address, and it must be this bank's.
+//
+// A bank that is already a Member is refused rather than overwritten — see
+// ErrBankNotFounded.
+//
+// # One recording per bank, and the question that leaves open
+//
+// A bank clearing two currencies is acknowledged twice, because it asked twice,
+// and the second acknowledgement would reach a bank this call has already made a
+// Member — so it would be refused. Nothing composes that second message:
+// AddParticipantTx asks for every asset and then records ONE acknowledgement
+// listing all of them, so the case does not arise on any path that exists. It
+// arises as soon as the conversation is real, and whether the answer is a second
+// recording or an admission that is not finished until the last currency is
+// acknowledged belongs to the task that builds the conversation rather than to a
+// guess made here.
+//
+// # An account for an asset this bank does not operate in is not recorded
+//
+// The acknowledgement lists every account the servicer holds for the address,
+// which can be more than this bank has internal accounts for. There is nowhere
+// to put such a number — a settlement reference lives on the set of internal
+// accounts for its asset, and there is no such set — and it is not an error
+// either, because the servicer is answering about its own book rather than
+// about this bank's. What the bank records is what it can use.
+func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantID, in AdmissionAcknowledgement) (*Bank, error) {
+	bank, err := s.bankTx(ctx, tx, by)
+	if err != nil {
+		return nil, err
+	}
+	// Whose acknowledgement this is, before what state the bank is in: a bank
+	// handed somebody else's message has been misrouted, which is true of it
+	// whatever state it happens to be in itself.
+	if bank.BIC != in.BIC {
+		return nil, fmt.Errorf("%w: %s is addressed by %s and this acknowledgement is for %s",
+			ErrNotThisBanksAdmission, by, bank.BIC, in.BIC)
+	}
+	if bank.Status != BankFounded {
+		return nil, fmt.Errorf("%w: %s is %s", ErrBankNotFounded, by, bank.Status)
+	}
+
+	for asset, account := range in.Accounts {
+		accts, held := bank.Assets[asset]
+		if !held {
+			continue
+		}
+		accts.Settlement = account
+		bank.Assets[asset] = accts
+	}
+	bank.Status = BankMember
+	if err := tx.PutBank(ctx, *bank); err != nil {
+		return nil, err
+	}
+	return bank, nil
+}
+
+// AddParticipantTx is the transitional composition Task 17d deletes.
+//
+// The four acts above are three institutions' units of work and this calls all
+// four in one, which is the thing this task exists to stop. It stays for exactly
+// one task's length because deleting it here would leave the branch
+// un-buildable between two tasks, so neither could be verified or reviewed on
+// its own — the mistake Task 16's plan made and its implementer corrected.
+//
+// What it is worth beyond compiling: every existing admission test now runs
+// through the four acts, so this is a check that they compose to what the
+// atomic version did.
+//
+// # The guarantee it gives up
+//
+// This used to be one unit of work whose whole point was that a bank could never
+// exist without the accounts it needs. It still is one, because it is still one
+// call — but the acts it is made of are not, and at Task 17d each is a different
+// institution's commit with a message between them. That guarantee is what
+// isolation takes away, and it is worth saying why rather than leaving it to
+// look like a regression: a bank that cannot exist without another institution's
+// accounts is a bank that cannot be admitted across a store boundary, and no
+// real admission has the guarantee either. A bank is licensed and built before
+// any scheme has heard of it, and what follows is a request that can be refused.
+//
+// # The admission it composes has no reference, and that is honest
+//
+// The request and the acknowledgement it builds both carry an empty Ref. There
+// is no process id because there is no process: nothing here composes a message,
+// so there is nothing for the rows to echo, and the roster entry records an
+// admission that was never a conversation.
+//
+// The consequence is a duplicate ADDRESS. Two banks admitted through this call on
+// one BIC quote the same empty reference, so AdmitMemberTx extends the first
+// bank's entry instead of refusing — which is what this call has always done with
+// a repeated address, and what the fixtures that give several test banks one BIC
+// rely on. What is new is that the settlement agent keys its own record by that
+// address too, so the second bank is told about the FIRST bank's settlement
+// account and the two share one reserve. That is not a shortcut taken here; it is
+// what "two institutions on one address" means once the settlement agent keeps
+// its own records, and it is why a fixture whose banks settle has to give each of
+// them an address of its own.
+func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+	bank, err := s.FoundBankTx(ctx, tx, name, bic, assets)
+	if err != nil {
+		return nil, err
+	}
+
+	// One request per asset, in the order the caller named them, because one
+	// acmt.007 asks for one currency. Each answer carries the member's whole
+	// account set, so the last one is the acknowledgement the other two acts
+	// read — which is also true of the real conversation: a bank's second
+	// acknowledgement lists both accounts.
+	var member SettlementMember
+	for _, asset := range joiningAssets(assets) {
+		if member, err = s.OpenSettlementAccountTx(ctx, tx, AdmissionRequest{
+			Name:  name,
+			BIC:   bic,
+			Asset: asset,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	ack := AdmissionAcknowledgement{Name: name, BIC: bic, Accounts: member.Accounts}
+	if _, err := s.AdmitMemberTx(ctx, tx, ack); err != nil {
+		return nil, err
+	}
+	return s.RecordMembershipTx(ctx, tx, bank.ID, ack)
 }
 
 // Deposit funds a customer deposit account with cash, modelled as the bank
@@ -641,6 +949,24 @@ func (s *Network) Deposit(ctx context.Context, participant ParticipantID, accoun
 }
 
 // DepositTx is Deposit within a caller-supplied unit of work.
+//
+// # The account it credits at the central bank is read off the bank's own row
+//
+// Every other reader of a settlement account now asks the settlement agent's own
+// SettlementMember row; this one does not, and the difference is whose question
+// it is. Here the funding bank is quoting its OWN account number — the reference
+// it learned from its admission acknowledgement, the way an account holder knows
+// its own IBAN — so Bank.Assets[asset].Settlement is the right record to read
+// and reading the central bank's would be this bank looking somebody else's
+// customer up.
+//
+// That leaves the read legitimate and leaves the crossing exactly where it has
+// always been: THE POSTING. The second PostTransactionTx below writes an entry
+// in CentralBankBook, which is a bank posting in the central bank's ledger, and
+// no re-routing of a lookup changes it by a line. It is crossing 6 in the spec's
+// table, it is open, and what closes it is a model of cash arriving somewhere —
+// a vault and a lodgement — which is its own task and deliberately not folded
+// into this one.
 func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
@@ -1016,7 +1342,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		if leg.net >= 0 {
 			continue
 		}
-		held, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+		held, err := s.centralBank.BookBalanceTx(ctx, tx, leg.settlement)
 		if err != nil {
 			return Settlement{}, nil, err
 		}
@@ -1029,9 +1355,9 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	cbEntries := make([]ledger.Entry, 0, len(legs))
 	for _, leg := range legs {
 		if leg.net > 0 {
-			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.accounts.Settlement, Amount: leg.net, Direction: ledger.Credit})
+			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.settlement, Amount: leg.net, Direction: ledger.Credit})
 		} else {
-			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.accounts.Settlement, Amount: -leg.net, Direction: ledger.Debit})
+			cbEntries = append(cbEntries, ledger.Entry{AccountID: leg.settlement, Amount: -leg.net, Direction: ledger.Debit})
 		}
 	}
 
@@ -1054,14 +1380,14 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		//    reading it before would produce an opening balance labelled CLBD,
 		//    which is the exact error closingBalanceIn refuses on the other side.
 		for _, leg := range legs {
-			closing, err := s.centralBank.BookBalanceTx(ctx, tx, leg.accounts.Settlement)
+			closing, err := s.centralBank.BookBalanceTx(ctx, tx, leg.settlement)
 			if err != nil {
 				return Settlement{}, nil, err
 			}
 			statements = append(statements, SettlementStatement{
 				Member:         leg.participant.ID,
 				Agent:          leg.participant.BIC,
-				Account:        leg.accounts.Settlement,
+				Account:        leg.settlement,
 				Asset:          asset,
 				Reference:      string(c.ID),
 				Movement:       leg.net,
@@ -1108,25 +1434,47 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 }
 
 // settlementLeg pairs a participant with its non-zero net position in a cycle,
-// together with the internal accounts that position moves through in the
-// cycle's asset.
+// together with the account in the CENTRAL BANK's own book that the position
+// moves through — the settlement agent's own record of what it holds for that
+// member, not the member's record of it.
 type settlementLeg struct {
 	participant *Bank
-	accounts    BankAccounts
+	settlement  ledger.AccountID
 	net         ledger.Amount
 }
 
 // settlementLegsTx resolves a cycle's net positions to participants in
-// registration order, and each participant to its accounts in the cycle's
-// asset.
+// registration order, and each participant to the account the settlement agent
+// holds for it in the cycle's asset.
 //
 // Registration order rather than map order because these legs decide the entry
 // order of the settlement transaction, which is persisted. Iterating the
 // NetPositions map directly would produce a different stored transaction on
 // every run.
 //
-// A member with a position but no accounts in the asset fails here, before
-// anything is posted, with ErrParticipantAssetNotFound.
+// A member the central bank holds no account for in the asset fails here, before
+// anything is posted, with ErrParticipantAssetNotFound; so does a member whose
+// own row says it does not operate in it.
+//
+// # The bank's row is read twice, and both are one crossing this task leaves open
+//
+// A cycle's net positions are keyed by ParticipantID and the settlement agent's
+// own records are keyed by BIC, so the id has to become an address before the
+// agent can ask itself anything — and the only thing that knows the mapping is
+// the bank's own row. That is a settlement agent reading a bank's database, and
+// under Task 18's stores it is not a read it can make.
+//
+// Task 17 does not close it, and the reason it does not is that the fix is not
+// here. The pacs.009 the settlement agent is sent already carries both legs'
+// BICs, so closing this means settling from the MESSAGE rather than from the
+// cycle row — which is the settlement agent holding no cycles at all, the gap
+// mesh's centralBank records against itself and Task 18 owns. Narrowing the read
+// here would leave the same crossing in a smaller shape and hide it.
+//
+// The second read on that row is AccountsFor, and it stays: whether a member
+// operates in an asset is the member's own statement about itself, and the
+// central bank holding an account it never asked about would not be the same
+// answer. TestSettleCycleFailsWhenParticipantLacksTheAsset is what pins it.
 func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, asset ledger.AssetCode) ([]settlementLeg, error) {
 	participants, err := tx.ListBanks(ctx)
 	if err != nil {
@@ -1140,11 +1488,14 @@ func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, 
 			continue
 		}
 		p := s.bind(rec)
-		accts, err := p.AccountsFor(asset)
+		if _, err := p.AccountsFor(asset); err != nil {
+			return nil, err
+		}
+		settlement, err := s.settlementAccountTx(ctx, tx, p.BIC, asset)
 		if err != nil {
 			return nil, err
 		}
-		legs = append(legs, settlementLeg{participant: p, accounts: accts, net: net})
+		legs = append(legs, settlementLeg{participant: p, settlement: settlement, net: net})
 	}
 
 	// Every non-zero position must have matched a participant; a position that
@@ -1188,7 +1539,7 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 // These three comments used to say a net receiver's suspense went down and a net
 // payer's up, and they were wrong about the code they sit on. Contra does not
 // mean opposite BALANCES here: suspense is a ledger.Liability (see
-// AddParticipant), so the receiver's Credit RAISES it and the payer's Debit
+// FoundBankTx, which opens it), so the receiver's Credit RAISES it and the payer's Debit
 // LOWERS it. Measured in the seed — Verde, a net receiver, credits its suspense
 // 10000; Aurora, a net payer, debits its suspense 25000 to zero.
 //
@@ -2300,8 +2651,20 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 // resolve accounts from. See ReadReturn, which is what turns the message into
 // the argument here.
 //
-// The BICs are swept over the roster rather than indexed — see
-// bankByBICTx, which records what that costs.
+// # The accounts it moves are its own records', and the ids on the statements are not
+//
+// Which account each side's reserves sit in is read from the settlement agent's
+// own SettlementMember rows, keyed by the two BICs the message carries. It used
+// to be read off each bank's row, which was the agent asking its members where
+// its own money is.
+//
+// It still reads the two bank rows, and for one thing only: a SettlementStatement
+// names its addressee by ParticipantID, and the message names it by BIC. So the
+// BICs are swept over the bank rows rather than indexed — see bankByBICTx, which
+// records what that costs — and that read is a crossing this task does not
+// close. It closes when a statement's addressee is an address rather than an id,
+// which is the same change that lets the settlement agent stop holding rows
+// about members at all: Task 18's.
 //
 // # The one decision it makes
 //
@@ -2365,11 +2728,14 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	if err != nil {
 		return nil, err
 	}
-	debtorAccts, err := debtor.AccountsFor(in.Asset)
+	// The accounts are the settlement agent's own, read from its own member rows
+	// by the addresses the message carries. Nothing about which account moves
+	// comes from a bank here.
+	debtorSettlement, err := s.settlementAccountTx(ctx, tx, in.DebtorAgent, in.Asset)
 	if err != nil {
 		return nil, err
 	}
-	creditorAccts, err := creditor.AccountsFor(in.Asset)
+	creditorSettlement, err := s.settlementAccountTx(ctx, tx, in.CreditorAgent, in.Asset)
 	if err != nil {
 		return nil, err
 	}
@@ -2389,7 +2755,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		return nil, err
 	}
 
-	held, err := s.centralBank.BookBalanceTx(ctx, tx, creditorAccts.Settlement)
+	held, err := s.centralBank.BookBalanceTx(ctx, tx, creditorSettlement)
 	if err != nil {
 		return nil, err
 	}
@@ -2407,8 +2773,8 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		IdempotencyKey: key,
 		Description:    "Return settlement for payment " + string(in.PaymentID),
 		Entries: []ledger.Entry{
-			{AccountID: creditorAccts.Settlement, Amount: in.Amount, Direction: ledger.Debit},
-			{AccountID: debtorAccts.Settlement, Amount: in.Amount, Direction: ledger.Credit},
+			{AccountID: creditorSettlement, Amount: in.Amount, Direction: ledger.Debit},
+			{AccountID: debtorSettlement, Amount: in.Amount, Direction: ledger.Credit},
 		},
 	}); err != nil {
 		if errors.Is(err, ledger.ErrDuplicateIdempotencyKey) {
@@ -2439,8 +2805,8 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 		account  ledger.AccountID
 		movement ledger.Amount
 	}{
-		{creditor, creditorAccts.Settlement, -in.Amount},
-		{debtor, debtorAccts.Settlement, in.Amount},
+		{creditor, creditorSettlement, -in.Amount},
+		{debtor, debtorSettlement, in.Amount},
 	} {
 		closing, err := s.centralBank.BookBalanceTx(ctx, tx, side.account)
 		if err != nil {
@@ -3010,7 +3376,21 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 //
 // It takes an asset because a bank holds one reserve account per asset, and a
 // single number across several of them would be an addition of unlike things.
-// Returns ErrParticipantAssetNotFound if the bank does not operate in it.
+// Returns ErrParticipantAssetNotFound if the central bank holds no account for
+// the bank in it.
+//
+// The account is read from the CENTRAL BANK's own member row. This is the
+// operator console asking the central bank about the central bank's book, and
+// the answer should not depend on what the bank being asked about wrote down —
+// a console that read the bank's note of its account number would report a
+// balance the bank had chosen the account for.
+//
+// The id-to-BIC step is the same crossing settlementLegsTx records: the caller
+// holds a ParticipantID and the central bank's records are keyed by address, so
+// the bank's own row is read to translate. The console is outside the entity
+// boundary by construction — it is the one caller in this system that holds
+// every institution's store — so it is the one place that translation is not a
+// crossing to close.
 func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset ledger.AssetCode) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -3018,11 +3398,11 @@ func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset le
 		if err != nil {
 			return err
 		}
-		accts, err := p.AccountsFor(asset)
+		settlement, err := s.settlementAccountTx(ctx, tx, p.BIC, asset)
 		if err != nil {
 			return err
 		}
-		out, err = s.centralBank.BookBalanceTx(ctx, tx, accts.Settlement)
+		out, err = s.centralBank.BookBalanceTx(ctx, tx, settlement)
 		return err
 	})
 	return out, err

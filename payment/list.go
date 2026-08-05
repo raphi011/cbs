@@ -98,12 +98,13 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // # Two rows read, and one error it can return that GetParticipant could not
 //
 // A bank whose row exists and whose roster entry does not comes back
-// ErrRosterEntryNotFound, where the method this replaced returned the bank. No
-// caller can reach it today: the one writer of either row writes both in one
-// unit of work. It is stated because "this task changes no behaviour" is
-// stronger than what is true — and because the state it describes is exactly
-// what Task 17d makes legitimate, when a founded bank waits for an admission
-// that has not come back.
+// ErrRosterEntryNotFound, where the method this replaced returned the bank. That
+// is now a state the domain can produce rather than a stated impossibility: a
+// bank founded by FoundBankTx and not yet admitted has a row and no entry, which
+// is a founded bank waiting for an admission — legitimate, and the whole point
+// of splitting founding from joining. Nothing in this repository founds a bank
+// without going on to admit it in the same unit of work (see AddParticipantTx),
+// so no caller reaches it yet; Task 17d is where the two stop being one call.
 func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

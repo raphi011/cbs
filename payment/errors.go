@@ -115,6 +115,45 @@ var (
 	// second reader to catch it.
 	ErrStatementNotForThisBank = errors.New("payment: this statement is about an account this bank does not hold")
 
+	// ErrBICAlreadyAdmitted is an acknowledgement arriving on a BIC the clearing
+	// house already routes to, under a DIFFERENT admission.
+	//
+	// The qualification is the whole sentinel. Two things legitimately arrive on
+	// a BIC that is already in the roster: the same bank's second currency —
+	// one acmt.007 names one currency, so a bank clearing two schemes admits
+	// twice — and an operator re-driving an admission that failed partway. A
+	// refusal keyed on "is this BIC in the roster" would refuse exactly those
+	// two and never fire on the case it exists for. Keyed on the admission
+	// reference it separates them: same reference, extend the entry; different
+	// reference, refuse.
+	//
+	// It is the clearing house's answer and not the mesh's. The mesh's actor map
+	// refuses a taken address too, and that one is a statement about
+	// connectivity; this is the statement about membership, made by the
+	// institution that owns routing.
+	ErrBICAlreadyAdmitted = errors.New("payment: this BIC is already admitted under another admission")
+
+	// ErrBankNotFounded is a bank recording a membership from a state it cannot
+	// record one from.
+	//
+	// A bank records what it was told exactly once, on the way from Founded to
+	// Member. A bank that has already recorded one has already written the
+	// account numbers it holds, and a second acknowledgement would overwrite
+	// them with whatever arrived — which is what a bank must not do with a
+	// message it cannot check.
+	ErrBankNotFounded = errors.New("payment: this bank is not awaiting an admission")
+
+	// ErrNotThisBanksAdmission is a bank recording an acknowledgement addressed
+	// to another bank's BIC.
+	//
+	// It is ErrStatementNotForThisBank one flow over, and for the same reason:
+	// the actor passes its OWN id alongside a message it did not address, so
+	// nothing in the signature stops a caller naming somebody else's. A bank
+	// that recorded whatever arrived would write another member's settlement
+	// account numbers onto its own row, and every reserve movement it made
+	// afterwards would name an account it does not hold.
+	ErrNotThisBanksAdmission = errors.New("payment: this acknowledgement is addressed to another bank")
+
 	// ErrSchemeUnsupportedReturn is returned when a return is attempted on a
 	// payment whose scheme does not support returns.
 	ErrSchemeUnsupportedReturn = errors.New("scheme does not support returns")
