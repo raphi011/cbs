@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -213,14 +215,14 @@ func (s *Network) scheme(id SchemeID) (Scheme, bool) {
 // audit trail). Treat it as read-only.
 func (s *Network) CentralBank() *ledger.Book { return s.centralBank }
 
-// bind attaches the live handles a Participant record needs to be usable: its
+// bind attaches the live handles a Bank record needs to be usable: its
 // own book of accounts, the deposit register and the lending portfolio over
 // it, all scoped to its BookID within the network's store.
 //
-// The handles are stateless, so binding is cheap and a bound Participant is
+// The handles are stateless, so binding is cheap and a bound Bank is
 // safe to hold; the record's data fields are a snapshot, as with every other
 // value the store returns.
-func (s *Network) bind(p Participant) *Participant {
+func (s *Network) bind(p Bank) *Bank {
 	p.Ledger = ledger.NewBook(s.ledgers, p.BookID, s.clock)
 	p.Deposit = deposit.NewRegister(s.deposits, p.Ledger, p.BookID, s.clock)
 	p.Lending = lending.NewPortfolio(s.lendings, p.Ledger, p.BookID, s.clock)
@@ -228,21 +230,21 @@ func (s *Network) bind(p Participant) *Participant {
 	return &p
 }
 
-// participantTx loads a participant and binds its live handles.
-func (s *Network) participantTx(ctx context.Context, tx Tx, id ParticipantID) (*Participant, error) {
-	rec, err := tx.GetParticipant(ctx, id)
+// bankTx loads a participant and binds its live handles.
+func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, error) {
+	rec, err := tx.GetBank(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return s.bind(rec), nil
 }
 
-// participantByBICTx finds the member a BIC addresses and binds its live
-// handles. It is participantTx over the identifier a MESSAGE carries rather
+// bankByBICTx finds the member a BIC addresses and binds its live
+// handles. It is bankTx over the identifier a MESSAGE carries rather
 // than the one this system numbers its members by.
 //
 // A sweep over the roster, because the roster is the only index there is: BIC
-// carries no uniqueness constraint (see the participants.bic column comment,
+// carries no uniqueness constraint (see the banks.bic column comment,
 // which records why), so there is nothing to look up by. At four members that
 // is honest; a real settlement agent's directory is a service with an index,
 // exactly as ResolveIdentifier's is.
@@ -256,8 +258,8 @@ func (s *Network) participantTx(ctx context.Context, tx Tx, id ParticipantID) (*
 // should never have accepted, and refusing every return in the network on
 // account of it would be a worse answer than picking. What removes the limit is
 // a unique index on the column, which is a schema decision nobody has taken.
-func (s *Network) participantByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Participant, error) {
-	members, err := tx.ListParticipants(ctx)
+func (s *Network) bankByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Bank, error) {
+	members, err := tx.ListBanks(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -385,8 +387,8 @@ func (s *Network) centralBankAssetsAccountIn(ctx context.Context, tx Tx, capital
 // account: every account below is created with an asset its caller named.
 //
 // The new bank starts with zero reserves; fund it with Deposit.
-func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Participant, error) {
-	var out *Participant
+func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
+	var out *Bank
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		out, err = s.AddParticipantTx(ctx, tx, name, bic, assets)
@@ -398,11 +400,22 @@ func (s *Network) AddParticipant(ctx context.Context, name string, bic iso20022.
 	return out, nil
 }
 
-// AddParticipantTx is AddParticipant within a caller-supplied unit of work. The
-// bank's chart of accounts, its reserve account at the central bank and the
-// participant record are all written through the same Tx, so a bank can never
-// exist without the accounts it needs.
-func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Participant, error) {
+// AddParticipantTx is AddParticipant within a caller-supplied unit of work.
+//
+// It is one unit of work doing three institutions' work: the bank's book, chart
+// of accounts and default product; the central bank's settlement account and
+// its own member row; the clearing house's routing entry. All of it commits or
+// none of it does, which is what makes a bank here unable to exist without the
+// accounts it needs.
+//
+// That guarantee is the thing this sub-project is taking away, and it is worth
+// saying why rather than leaving it to look like a regression. A bank that
+// cannot exist without another institution's accounts is a bank that cannot be
+// admitted across a store boundary — and no real admission has this guarantee
+// either: a bank is licensed and built before any scheme has heard of it, and
+// what follows is a request that can be refused. Task 17d replaces this call
+// with that conversation.
+func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
 	}
@@ -455,7 +468,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 	// One set of internal accounts per asset. Naming them with the asset in
 	// parentheses keeps them apart in a chart of accounts that now holds
 	// several of each.
-	accounts := make(map[ledger.AssetCode]ParticipantAccounts, len(assets))
+	accounts := make(map[ledger.AssetCode]BankAccounts, len(assets))
 	for _, asset := range assets {
 		// Reject an unknown code before writing anything, rather than letting
 		// the first CreateAccountTx below fail after part of the chart of
@@ -503,7 +516,7 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
-		accounts[asset] = ParticipantAccounts{
+		accounts[asset] = BankAccounts{
 			Suspense:          suspense.ID,
 			Reserve:           reserve.ID,
 			Unclaimed:         unclaimed.ID,
@@ -535,23 +548,72 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		return nil, err
 	}
 
-	p := Participant{
+	now := s.now()
+	p := Bank{
 		ID:                ParticipantID(id),
 		Name:              name,
 		BIC:               bic,
 		BookID:            bookID,
 		CustomerSubledger: customers.ID,
 		ProductID:         basic.ID,
+		Status:            BankMember,
 		Assets:            accounts,
-		CreatedAt:         s.now(),
+		CreatedAt:         now,
 	}
-	if err := tx.PutParticipant(ctx, p); err != nil {
+	if err := tx.PutBank(ctx, p); err != nil {
+		return nil, err
+	}
+	// The other two institutions' rows, written here because this one call is
+	// still all three institutions acting at once — which is exactly what the
+	// conversation replaces.
+	//
+	// The central bank's row records the accounts the loop above opened in the
+	// central bank's own book, so that a settlement agent asking about its own
+	// book has something of its own to ask. The clearing house's row records
+	// the address and the assets, and nothing else.
+	//
+	// Its admission reference is empty, and that is not a placeholder: this
+	// call composes no messages, so there is no process id for the row to echo.
+	// A row written here is the record of an admission that was never a
+	// conversation. Task 17c splits this composition into the three acts it is
+	// made of and Task 17d deletes it, at which point every one of these rows
+	// is written by the institution that owns it, from a message.
+	if err := tx.PutSettlementMember(ctx, SettlementMember{
+		BIC:      bic,
+		Name:     name,
+		Accounts: settlementAccounts(accounts),
+		OpenedAt: now,
+	}); err != nil {
+		return nil, err
+	}
+	if err := tx.PutRosterEntry(ctx, RosterEntry{
+		BIC:        bic,
+		Name:       name,
+		Assets:     slices.Sorted(maps.Keys(accounts)),
+		AdmittedAt: now,
+	}); err != nil {
 		return nil, err
 	}
 	if err := s.appendAuditTx(ctx, tx, ledger.EventParticipantAdded, string(p.ID), p); err != nil {
 		return nil, err
 	}
 	return s.bind(p), nil
+}
+
+// settlementAccounts projects the per-asset accounts a bank was given onto the
+// one account of each that belongs to the CENTRAL BANK — the reserve account it
+// opened in its own book.
+//
+// It is a projection and not a shared value on purpose: the bank keeps its own
+// note of the account number and the central bank keeps the account. They are
+// equal here because one call made both, and they are two records because at
+// Task 18 they are in two databases.
+func settlementAccounts(accounts map[ledger.AssetCode]BankAccounts) map[ledger.AssetCode]ledger.AccountID {
+	out := make(map[ledger.AssetCode]ledger.AccountID, len(accounts))
+	for asset, accts := range accounts {
+		out[asset] = accts.Settlement
+	}
+	return out
 }
 
 // Deposit funds a customer deposit account with cash, modelled as the bank
@@ -585,7 +647,7 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err := ledger.ValidateText("account", string(account)); err != nil {
 		return err
 	}
-	p, err := s.participantTx(ctx, tx, participant)
+	p, err := s.bankTx(ctx, tx, participant)
 	if err != nil {
 		return err
 	}
@@ -1045,8 +1107,8 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 // together with the internal accounts that position moves through in the
 // cycle's asset.
 type settlementLeg struct {
-	participant *Participant
-	accounts    ParticipantAccounts
+	participant *Bank
+	accounts    BankAccounts
 	net         ledger.Amount
 }
 
@@ -1062,7 +1124,7 @@ type settlementLeg struct {
 // A member with a position but no accounts in the asset fails here, before
 // anything is posted, with ErrParticipantAssetNotFound.
 func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, asset ledger.AssetCode) ([]settlementLeg, error) {
-	participants, err := tx.ListParticipants(ctx)
+	participants, err := tx.ListBanks(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1168,7 +1230,7 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 // request lands on the same key in THIS bank's own ledger, and the ledger
 // refuses it; and the advice row is checked first, so it does not even try.
 func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
-	p, err := s.participantTx(ctx, tx, by)
+	p, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return SettlementAdvice{}, err
 	}
@@ -1333,7 +1395,7 @@ func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID
 		// handler that did nothing wrong.
 		return p, nil
 	}
-	creditor, err := s.participantTx(ctx, tx, by)
+	creditor, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return Payment{}, err
 	}
@@ -1680,7 +1742,7 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// BIC — "routing needs the bank, not the name".
 	//
 	// Reading the roster is NOT a read of the counterparty's book. Participants
-	// are network-scoped rows: tx.GetParticipant takes no BookID and is
+	// are network-scoped rows: tx.GetBank takes no BookID and is
 	// deliberately not one of the recorder's overrides in mesh/books_test.go, so
 	// the submitting bank's measured set is unchanged by this call. The same
 	// test asserts that, on both directions.
@@ -1691,7 +1753,7 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// and addressedPartyTx both set out at length: a dropped connection is not a
 	// statement about the instruction, and RC01 "bank identifier incorrect" on
 	// the wire would be a false one.
-	counterpartyBank, err := tx.GetParticipant(ctx, counterpartyRef.Participant)
+	counterpartyBank, err := tx.GetBank(ctx, counterpartyRef.Participant)
 	if err != nil {
 		return Payment{}, err
 	}
@@ -1951,7 +2013,7 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 // the submitting call may use what it returns to fill DebtorDetails from the
 // register — see the comment at the call site in SubmitPaymentTx for why that
 // must not happen here.
-func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Participant, error) {
+func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
 	account, part, err := s.checkPartyTx(ctx, tx, "debtor", p.Debtor)
 	if err != nil {
 		return deposit.Account{}, nil, err
@@ -1993,7 +2055,7 @@ func (s *Network) debtorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Pay
 // pull, where the creditor is the SUBMITTING bank) and AcceptInboundTx (a
 // push, where the creditor is the RECEIVING bank), and only the submitting
 // call may use what it returns to fill CreditorDetails from the register.
-func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Participant, error) {
+func (s *Network) creditorSideTx(ctx context.Context, tx Tx, scheme Scheme, p *Payment, sc SchemeContext) (deposit.Account, *Bank, error) {
 	account, part, err := s.checkPartyTx(ctx, tx, "creditor", p.Creditor)
 	if err != nil {
 		return deposit.Account{}, nil, err
@@ -2024,7 +2086,7 @@ func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *
 	// The deposit layer is the authority for the funds/status check (run in
 	// debtorSideTx); the GL posting here references the deposit account's
 	// backing GL account.
-	debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
+	debtor, err := s.bankTx(ctx, tx, p.Debtor.Participant)
 	if err != nil {
 		return err
 	}
@@ -2192,7 +2254,7 @@ func (s *Network) ReverseDebtorLegTx(ctx context.Context, tx Tx, p Payment, reas
 	if p.DebtorLegTx == "" {
 		return nil
 	}
-	debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
+	debtor, err := s.bankTx(ctx, tx, p.Debtor.Participant)
 	if err != nil {
 		return err
 	}
@@ -2235,7 +2297,7 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 // the argument here.
 //
 // The BICs are swept over the roster rather than indexed — see
-// participantByBICTx, which records what that costs.
+// bankByBICTx, which records what that costs.
 //
 // # The one decision it makes
 //
@@ -2291,11 +2353,11 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	if in.PaymentID == "" {
 		return nil, fmt.Errorf("payment: a return instruction naming no payment cannot be settled; its reserve reversal would be keyed by nothing")
 	}
-	debtor, err := s.participantByBICTx(ctx, tx, in.DebtorAgent)
+	debtor, err := s.bankByBICTx(ctx, tx, in.DebtorAgent)
 	if err != nil {
 		return nil, err
 	}
-	creditor, err := s.participantByBICTx(ctx, tx, in.CreditorAgent)
+	creditor, err := s.bankByBICTx(ctx, tx, in.CreditorAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -2369,7 +2431,7 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	now := s.now()
 	statements := make([]SettlementStatement, 0, 2)
 	for _, side := range []struct {
-		member   *Participant
+		member   *Bank
 		account  ledger.AccountID
 		movement ledger.Amount
 	}{
@@ -2458,7 +2520,7 @@ func (s *Network) PostReturnLeg(ctx context.Context, by ParticipantID, id Paymen
 // an overdrawn biller is a debt the bank collects from a customer it still has.
 // Against a CLOSED one there is nowhere on the account to put it: a posting into
 // a closed account strands, for CloseTx's reason. That is the case
-// ParticipantAccounts.ReturnsReceivable exists for, and its only reachable one.
+// BankAccounts.ReturnsReceivable exists for, and its only reachable one.
 // A store failure is neither, and returns: see the refund below for why that
 // discrimination is not optional.
 //
@@ -2548,7 +2610,7 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, by ParticipantID, 
 	if p.Status != Settled {
 		return Payment{}, ErrInvalidStateTransition
 	}
-	bank, err := s.participantTx(ctx, tx, by)
+	bank, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return Payment{}, err
 	}
@@ -2662,7 +2724,7 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, by ParticipantID, 
 //
 // `replacing` is the id of this bank's own previous attempt at this leg, if it
 // has one and it was unwound. See returnLegKey.
-func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, accts ParticipantAccounts,
+func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts BankAccounts,
 	p Payment, reason string, mayRefuse bool, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	// Where the money actually is, READ OFF THE PAYMENT rather than resolved
@@ -2720,7 +2782,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, 
 //
 // `replacing` is the id of this bank's own previous attempt at this leg, if it
 // has one and it was unwound. See returnLegKey.
-func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Participant, accts ParticipantAccounts,
+func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Bank, accts BankAccounts,
 	p Payment, reason string, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	description := "Return of payment " + string(p.ID) + ": " + reason
@@ -2763,7 +2825,7 @@ func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Participant, acct
 // would post a leg keyed off an id nobody can resolve. Money is not routed on a
 // read this system cannot make sense of — the same discrimination clawbackTx
 // makes between a closed account and a dropped connection.
-func (s *Network) legStandsTx(ctx context.Context, tx Tx, bank *Participant, leg ledger.TransactionID) (bool, error) {
+func (s *Network) legStandsTx(ctx context.Context, tx Tx, bank *Bank, leg ledger.TransactionID) (bool, error) {
 	if leg == "" {
 		return false, nil
 	}
@@ -2893,7 +2955,7 @@ func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, by ParticipantI
 	if leg == "" {
 		return nil
 	}
-	bank, err := s.participantTx(ctx, tx, by)
+	bank, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return err
 	}
@@ -2948,7 +3010,7 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset ledger.AssetCode) (ledger.Amount, error) {
 	var out ledger.Amount
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		p, err := tx.GetParticipant(ctx, id)
+		p, err := tx.GetBank(ctx, id)
 		if err != nil {
 			return err
 		}
@@ -3033,7 +3095,7 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 	if err := ident.Validate("identifier"); err != nil {
 		return PartyRef{}, err
 	}
-	members, err := tx.ListParticipants(ctx)
+	members, err := tx.ListBanks(ctx)
 	if err != nil {
 		return PartyRef{}, err
 	}
@@ -3066,7 +3128,7 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 // this function already makes — s.bind wraps the row it just read with live
 // handles built from the Network's own stores, not a second round trip — so
 // returning a bound participant here is free, and a caller re-fetching the
-// same row with participantTx (as debtorSideTx used to) is not.
+// same row with bankTx (as debtorSideTx used to) is not.
 //
 // # Only a NOT-FOUND becomes a domain error
 //
@@ -3089,11 +3151,11 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 // could not carry the instruction out, which is the only true thing there is to
 // say. TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is the pin, on
 // both halves.
-func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, *Participant, error) {
+func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, *Bank, error) {
 	if err := validateParty(field, ref); err != nil {
 		return deposit.Account{}, nil, err
 	}
-	rec, err := tx.GetParticipant(ctx, ref.Participant)
+	rec, err := tx.GetBank(ctx, ref.Participant)
 	if errors.Is(err, ErrParticipantNotFound) {
 		return deposit.Account{}, nil, fmt.Errorf("%w: %s", ErrParticipantNotFound, ref.Participant)
 	}

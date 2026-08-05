@@ -73,10 +73,12 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	// The refund was posted by the payer's BANK and by nobody else. The clearing
 	// house reached the network book, where a payment row lives, and no bank's.
 	//
-	// What that catches, exactly: a clearing house that WROTE in a member's book,
-	// which is reachable through GetParticipant's live handles and is the hole
-	// ops.go says no interface can close. Adding a write to the payer's bank in
-	// csm.reject fails this line with [bank_1 network].
+	// What that catches, exactly: a clearing house that WROTE in a member's
+	// book. That used to be one method away — GetParticipant's live handles,
+	// the hole ops.go named — and Task 17 closed that particular door; what it
+	// did not close, and what no interface can, is that any posting method
+	// takes its book as an ordinary argument. Adding a write to the payer's
+	// bank in csm.reject fails this line with [bank_1 network].
 	//
 	// What it does not catch is a reject that forgot withActor. The clearing
 	// house's own goroutine has already written the network book carrying this
@@ -323,7 +325,7 @@ func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 	if err := h.mesh.ForgetBanks(ctx); err != nil {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
-	beside := &payment.Participant{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
+	beside := &payment.Bank{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
 	if err := h.mesh.AddBank(beside); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
@@ -358,7 +360,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 	// Somebody else answering to the payer's bank's address.
-	squatter := &payment.Participant{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
+	squatter := &payment.Bank{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
 	if err := h.mesh.AddBank(squatter); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}

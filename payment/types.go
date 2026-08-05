@@ -12,6 +12,20 @@ import (
 // these are defined types (not aliases) so the compiler prevents mixing up,
 // say, a MandateID and a PaymentID.
 type (
+	// ParticipantID names a bank, and the row it keys is called Bank. The
+	// mismatch is deliberate, and it is written down here so that the next
+	// reader does not take it for an oversight left behind by the split.
+	//
+	// It is on both of a payment's PartyRefs, on every bank path in the API, in
+	// the store conformance suite and in the web types. Renaming it is a
+	// mechanical diff across the whole repository for no behavioural change, and
+	// it would bury the content of the task that split the row.
+	//
+	// It is also the one identifier of the three rows that is not a BIC, and
+	// that is what it is for: the network numbers its members, and a bank's own
+	// id is its own. Neither the settlement agent's row nor the clearing house's
+	// carries it — see SettlementMember and RosterEntry, which are keyed by BIC
+	// because a BIC is all either institution is ever told.
 	ParticipantID string
 	PaymentID     string
 	MandateID     string

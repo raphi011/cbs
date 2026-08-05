@@ -219,7 +219,7 @@ func (r AccountRequestReferences) validate() error {
 // carried: the currency the account is to be denominated in.
 //
 // ONE currency, not a list: Ccy's maxOccurs defaults to 1. A settlement account
-// holds one asset, which is the same shape payment.ParticipantAccounts already
+// holds one asset, which is the same shape payment.BankAccounts already
 // has — one set of internal accounts per asset a bank operates in — so a bank
 // clearing a euro and a dollar scheme sends two of these messages rather than
 // one naming two currencies.

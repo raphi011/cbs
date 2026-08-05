@@ -81,7 +81,7 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 }
 
 // Two banks sharing a BIC is a routing table that cannot say which one a
-// message is for. The store permits it — participants.bic has no unique
+// message is for. The store permits it — banks.bic has no unique
 // constraint, because a BIC identifies an institution and not a row — so the
 // mesh is where it has to be refused, and it refuses at startup rather than at
 // the first payment that goes to the wrong bank.

@@ -18,19 +18,19 @@ import (
 // contract notes in store.go.
 // ---------------------------------------------------------------------------
 
-// ListParticipants returns all participant banks in registration order.
+// ListBanks returns all member banks in registration order.
 //
-// The returned Participants carry live Ledger and Deposit handles bound to the
+// The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
 // Their data fields are a snapshot; mutating them changes nothing.
-func (s *Network) ListParticipants(ctx context.Context) ([]*Participant, error) {
-	var out []*Participant
+func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
+	var out []*Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		records, err := tx.ListParticipants(ctx)
+		records, err := tx.ListBanks(ctx)
 		if err != nil {
 			return err
 		}
-		out = make([]*Participant, len(records))
+		out = make([]*Bank, len(records))
 		for i, rec := range records {
 			out[i] = s.bind(rec)
 		}
@@ -39,18 +39,62 @@ func (s *Network) ListParticipants(ctx context.Context) ([]*Participant, error) 
 	return out, err
 }
 
-// GetParticipant returns the participant bank with the given ID, with its
-// Ledger and Deposit handles bound. Returns ErrParticipantNotFound if no such
-// participant exists.
-func (s *Network) GetParticipant(ctx context.Context, id ParticipantID) (*Participant, error) {
-	var out *Participant
+// GetBank returns the member bank with the given ID, with its Ledger and
+// Deposit handles bound. Returns ErrParticipantNotFound if no such bank exists.
+//
+// What it hands back is a BANK'S OWN record, live handles and all, so it is a
+// method for that bank and for the operator console — not for a counterparty
+// asking who somebody is. That question is GetRosterEntry's, below.
+func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
+	var out *Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.participantTx(ctx, tx, id)
+		out, err = s.bankTx(ctx, tx, id)
 		return err
 	})
 	if err != nil {
 		return nil, err
+	}
+	return out, nil
+}
+
+// GetRosterEntry returns what the clearing house holds about one member: its
+// address, its name, and the assets it clears in. Nothing else.
+//
+// It is what a handler asking about SOMEBODY ELSE gets, and the whole of it. A
+// bank deciding whether a rejection is about a payment whose payer banks here
+// needs a BIC; a clearing house addressing a status back to the bank that
+// submitted a payment needs a BIC. Neither needs a ledger handle, and until
+// this existed both got one — mesh/ops.go carried GetParticipant on two of its
+// three interfaces and every caller of it took the BIC off a value carrying the
+// named bank's live Ledger, Deposit and Catalogue.
+//
+// # It is keyed by the network's id and the store's method is keyed by the BIC
+//
+// The two are not the same lookup and the difference is a crossing this task
+// does NOT close. A payment names its parties by ParticipantID, so a caller
+// holding one has to turn it into a BIC before the roster can be asked — and
+// the only thing that knows the mapping is the bank's own row. So this reads a
+// bank's row to learn its address and then reads the roster.
+//
+// Under one store that is a read like any other. Under Task 18's stores it is a
+// clearing house reading a bank's database, and it does not survive: what
+// closes it is a payment that carries BICs rather than ids, which is that
+// task's to do because it is the task where a payment row stops being one row
+// the whole network shares. It is written down here rather than laundered
+// behind a method name.
+func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
+	var out RosterEntry
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		bank, err := tx.GetBank(ctx, id)
+		if err != nil {
+			return err
+		}
+		out, err = tx.GetRosterEntry(ctx, bank.BIC)
+		return err
+	})
+	if err != nil {
+		return RosterEntry{}, err
 	}
 	return out, nil
 }

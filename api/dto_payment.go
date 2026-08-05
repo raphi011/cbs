@@ -46,7 +46,7 @@ type participantDTO struct {
 	Assets            []participantAccountsDTO `json:"assets"`
 }
 
-func toParticipantDTO(p *payment.Participant) participantDTO {
+func toParticipantDTO(p *payment.Bank) participantDTO {
 	assets := make([]participantAccountsDTO, 0, len(p.Assets))
 	for code, accts := range p.Assets {
 		assets = append(assets, participantAccountsDTO{

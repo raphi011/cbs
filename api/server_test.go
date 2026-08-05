@@ -943,7 +943,7 @@ func TestResetEmptiesState(t *testing.T) {
 	// The tests' sample dataset: one bank with one customer. Idempotent, like
 	// the real one, so booting and resetting are the same call.
 	baseline := func(ctx context.Context, net *payment.Network) error {
-		existing, err := net.ListParticipants(ctx)
+		existing, err := net.ListBanks(ctx)
 		if err != nil {
 			return err
 		}
@@ -1015,7 +1015,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 	baseline := func(ctx context.Context, net *payment.Network) error {
 		populateRan = true
 		populateCtx = ctx.Err()
-		existing, err := net.ListParticipants(ctx)
+		existing, err := net.ListBanks(ctx)
 		if err != nil {
 			return err
 		}
@@ -1065,7 +1065,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // participants where there should have been four.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 	baseline := func(ctx context.Context, net *payment.Network) error {
-		existing, err := net.ListParticipants(ctx)
+		existing, err := net.ListBanks(ctx)
 		if err != nil {
 			return err
 		}
@@ -2197,7 +2197,7 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 }
 
 // TestEndOfDayAccruesBothFacilityAndOverdraftInterest is the HTTP-layer half
-// of payment.Participant.RunEndOfDay: one POST /end-of-day drives both credit
+// of payment.Bank.RunEndOfDay: one POST /end-of-day drives both credit
 // batches, so a facility and an overdrawn deposit account both accrue from a
 // single call. The deposit account's window opens at account opening — the
 // opening terms row — and the facility's at disbursement, so both accrue on

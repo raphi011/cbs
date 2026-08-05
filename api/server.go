@@ -219,8 +219,8 @@ func (s *Server) forBank(pid payment.ParticipantID) *Server {
 // An unbound Server reaching here asks the network for the participant "",
 // which is a clean not-found rather than some other bank's data — the failure
 // mode worth having if a route is ever registered on the wrong surface.
-func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Participant, bool) {
-	p, err := s.network().GetParticipant(r.Context(), s.boundPID)
+func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Bank, bool) {
+	p, err := s.network().GetBank(r.Context(), s.boundPID)
 	if err != nil {
 		writeError(w, err)
 		return nil, false

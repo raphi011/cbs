@@ -445,7 +445,7 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 	if m.net == nil {
 		return nil
 	}
-	ps, err := m.net.ListParticipants(ctx)
+	ps, err := m.net.ListBanks(ctx)
 	if err != nil {
 		return fmt.Errorf("mesh: reading the participant roster: %w", err)
 	}
@@ -613,7 +613,7 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // the process restarts and Start reads the roster again — at which point Start
 // refuses the whole roster instead. See api's handleAddParticipant, which says
 // so in the response.
-func (m *Mesh) AddBank(p *payment.Participant) error {
+func (m *Mesh) AddBank(p *payment.Bank) error {
 	if m.net == nil {
 		return errors.New("mesh: no network, so there are no member banks to give actors to")
 	}

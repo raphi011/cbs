@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -35,163 +36,428 @@ import (
 var _ payment.Tx = (*tx)(nil)
 
 // ---------------------------------------------------------------------------
-// Participants
+// The three rows admission writes
 // ---------------------------------------------------------------------------
+//
+// One table per institution, plus a child table wherever a row holds something
+// per asset. They are separate tables and not one wide one because each has a
+// single writer and each moves into a different database at Task 18 — see the
+// schema, which is where that argument is written down in full.
 
-// PutParticipant stores a participant and the set of internal accounts it
-// holds per asset. Its Ledger and Deposit fields are simply not written: they
-// are live handles over this very store, not data, and there is no column that
-// could hold a *ledger.Book. store/mem nils them for the same reason, and the
-// Network rebinds them on the way out.
+// PutBank stores a bank and the set of internal accounts it holds per asset.
+// Its Ledger and Deposit fields are simply not written: they are live handles
+// over this very store, not data, and there is no column that could hold a
+// *ledger.Book. store/mem nils them for the same reason, and the Network
+// rebinds them on the way out.
 //
 // The child rows are deleted and rewritten rather than upserted. An upsert
-// alone would leave behind a row for an asset the participant no longer holds,
-// and a stale row here is not a cosmetic problem: settlement would resolve an
-// account the bank has given up.
-func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
+// alone would leave behind a row for an asset the bank no longer holds, and a
+// stale row here is not a cosmetic problem: settlement would resolve an account
+// the bank has given up.
+func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	if err := t.write(); err != nil {
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
-		INSERT INTO participants
-			(id, name, bic, book_id, customer_subledger, product_id, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO banks
+			(id, name, bic, book_id, customer_subledger, product_id, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
 			bic                = EXCLUDED.bic,
 			book_id            = EXCLUDED.book_id,
 			customer_subledger = EXCLUDED.customer_subledger,
 			product_id         = EXCLUDED.product_id,
+			status             = EXCLUDED.status,
 			created_at         = EXCLUDED.created_at`,
-		string(p.ID), p.Name, string(p.BIC), string(p.BookID), string(p.CustomerSubledger),
-		string(p.ProductID), nullTime(p.CreatedAt))
+		string(b.ID), b.Name, string(b.BIC), string(b.BookID), string(b.CustomerSubledger),
+		string(b.ProductID), string(b.Status), nullTime(b.CreatedAt))
 	if err != nil {
-		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
+		return fmt.Errorf("pg: put bank %s: %w", b.ID, err)
 	}
 
-	if _, err := t.tx.Exec(ctx, "DELETE FROM participant_assets WHERE participant_id = $1", string(p.ID)); err != nil {
-		return fmt.Errorf("pg: put participant %s: %w", p.ID, err)
+	if _, err := t.tx.Exec(ctx, "DELETE FROM bank_assets WHERE bank_id = $1", string(b.ID)); err != nil {
+		return fmt.Errorf("pg: put bank %s: %w", b.ID, err)
 	}
 	// Sorted, because `seq` is a BIGSERIAL and Go's map iteration order is
-	// deliberately random: inserting straight from the map gave a participant's
+	// deliberately random: inserting straight from the map gave a bank's
 	// asset rows an arbitrary sequence, different on every write of the same
 	// data. Nothing reads that order today — the rows fold back into a map — but
 	// `seq` means real, load-bearing ordering everywhere else in this schema,
 	// and store/mem has no equivalent randomness to diverge from.
-	for _, asset := range slices.Sorted(maps.Keys(p.Assets)) {
-		accts := p.Assets[asset]
+	for _, asset := range slices.Sorted(maps.Keys(b.Assets)) {
+		accts := b.Assets[asset]
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement)
+			INSERT INTO bank_assets (bank_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement)
 			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			string(p.ID), string(asset),
+			string(b.ID), string(asset),
 			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable), string(accts.Settlement)); err != nil {
-			return fmt.Errorf("pg: put participant %s asset %s: %w", p.ID, asset, err)
+			return fmt.Errorf("pg: put bank %s asset %s: %w", b.ID, asset, err)
 		}
 	}
 	return nil
 }
 
-const participantColumns = `id, name, bic, book_id, customer_subledger, product_id, created_at`
+const bankColumns = `id, name, bic, book_id, customer_subledger, product_id, status, created_at`
 
-func scanParticipant(row pgx.Row) (payment.Participant, error) {
+func scanBank(row pgx.Row) (payment.Bank, error) {
 	var (
-		p         payment.Participant
+		b         payment.Bank
 		createdAt *time.Time
 	)
-	err := row.Scan(&p.ID, &p.Name, &p.BIC, &p.BookID, &p.CustomerSubledger, &p.ProductID, &createdAt)
+	err := row.Scan(&b.ID, &b.Name, &b.BIC, &b.BookID, &b.CustomerSubledger, &b.ProductID, &b.Status, &createdAt)
 	if err != nil {
-		return payment.Participant{}, err
+		return payment.Bank{}, err
 	}
-	p.CreatedAt = readTime(createdAt)
-	return p, nil
+	b.CreatedAt = readTime(createdAt)
+	return b, nil
 }
 
-// participantAssets reads the internal accounts of one participant, or of
-// every participant when id is empty.
+// bankAssets reads the internal accounts of one bank, or of every bank when id
+// is empty.
 //
-// Listing takes the second form deliberately: one query keyed by participant
-// id, folded into the records afterwards, rather than a query per row. A join
-// would work too, but it would flatten the participant row once per asset and
+// Listing takes the second form deliberately: one query keyed by bank id,
+// folded into the records afterwards, rather than a query per row. A join
+// would work too, but it would flatten the bank row once per asset and
 // have to be de-duplicated on the way back — the same shape the cycle and
 // settlement readers use, and not worth it for a child table this small.
-func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts, error) {
-	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement FROM participant_assets"
+func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.BankAccounts, error) {
+	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement FROM bank_assets"
 	args := []any{}
 	if id != "" {
-		query += " WHERE participant_id = $1"
+		query += " WHERE bank_id = $1"
 		args = append(args, string(id))
 	}
-	query += " ORDER BY participant_id, seq"
+	query += " ORDER BY bank_id, seq"
 
 	rows, err := t.tx.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("pg: participant assets: %w", err)
+		return nil, fmt.Errorf("pg: bank assets: %w", err)
 	}
 	defer rows.Close()
 
-	out := make(map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts)
+	out := make(map[payment.ParticipantID]map[ledger.AssetCode]payment.BankAccounts)
 	for rows.Next() {
 		var (
-			pid   payment.ParticipantID
+			id    payment.ParticipantID
 			asset ledger.AssetCode
-			accts payment.ParticipantAccounts
+			accts payment.BankAccounts
 		)
-		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable, &accts.Settlement); err != nil {
-			return nil, fmt.Errorf("pg: participant assets: %w", err)
+		if err := rows.Scan(&id, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable, &accts.Settlement); err != nil {
+			return nil, fmt.Errorf("pg: bank assets: %w", err)
 		}
-		if out[pid] == nil {
-			out[pid] = make(map[ledger.AssetCode]payment.ParticipantAccounts)
+		if out[id] == nil {
+			out[id] = make(map[ledger.AssetCode]payment.BankAccounts)
 		}
-		out[pid][asset] = accts
+		out[id][asset] = accts
 	}
 	return out, rows.Err()
 }
 
-func (t *tx) GetParticipant(ctx context.Context, id payment.ParticipantID) (payment.Participant, error) {
-	p, err := scanParticipant(t.tx.QueryRow(ctx,
-		"SELECT "+participantColumns+" FROM participants WHERE id = $1", string(id)))
+func (t *tx) GetBank(ctx context.Context, id payment.ParticipantID) (payment.Bank, error) {
+	b, err := scanBank(t.tx.QueryRow(ctx,
+		"SELECT "+bankColumns+" FROM banks WHERE id = $1", string(id)))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return payment.Participant{}, payment.ErrParticipantNotFound
+		return payment.Bank{}, payment.ErrParticipantNotFound
 	}
 	if err != nil {
-		return payment.Participant{}, fmt.Errorf("pg: get participant %s: %w", id, err)
+		return payment.Bank{}, fmt.Errorf("pg: get bank %s: %w", id, err)
 	}
-	assets, err := t.participantAssets(ctx, id)
+	assets, err := t.bankAssets(ctx, id)
 	if err != nil {
-		return payment.Participant{}, err
+		return payment.Bank{}, err
 	}
-	p.Assets = assets[id]
-	return p, nil
+	b.Assets = assets[id]
+	return b, nil
 }
 
-func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error) {
+func (t *tx) ListBanks(ctx context.Context) ([]payment.Bank, error) {
 	rows, err := t.tx.Query(ctx,
-		"SELECT "+participantColumns+" FROM participants ORDER BY created_at ASC NULLS FIRST, seq")
+		"SELECT "+bankColumns+" FROM banks ORDER BY created_at ASC NULLS FIRST, seq")
 	if err != nil {
-		return nil, fmt.Errorf("pg: list participants: %w", err)
+		return nil, fmt.Errorf("pg: list banks: %w", err)
 	}
 	defer rows.Close()
 
-	out := make([]payment.Participant, 0)
+	out := make([]payment.Bank, 0)
 	for rows.Next() {
-		p, err := scanParticipant(rows)
+		b, err := scanBank(rows)
 		if err != nil {
-			return nil, fmt.Errorf("pg: list participants: %w", err)
+			return nil, fmt.Errorf("pg: list banks: %w", err)
 		}
-		out = append(out, p)
+		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	// One extra query for every participant's assets, rather than one per
-	// participant.
-	assets, err := t.participantAssets(ctx, "")
+	// One extra query for every bank's assets, rather than one per bank.
+	assets, err := t.bankAssets(ctx, "")
 	if err != nil {
 		return nil, err
 	}
 	for i := range out {
 		out[i].Assets = assets[out[i].ID]
+	}
+	return out, nil
+}
+
+// PutSettlementMember stores the central bank's own record of one member and
+// the account it holds for that member per asset.
+//
+// The child rows are deleted and rewritten for the reason PutBank's are: an
+// account left behind for an asset the member has given up is one a cut-off
+// would still post to.
+func (t *tx) PutSettlementMember(ctx context.Context, m payment.SettlementMember) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO settlement_members (bic, name, opened_at)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (bic) DO UPDATE SET
+			name      = EXCLUDED.name,
+			opened_at = EXCLUDED.opened_at`,
+		string(m.BIC), m.Name, nullTime(m.OpenedAt))
+	if err != nil {
+		return fmt.Errorf("pg: put settlement member %s: %w", m.BIC, err)
+	}
+
+	if _, err := t.tx.Exec(ctx, "DELETE FROM settlement_member_accounts WHERE bic = $1", string(m.BIC)); err != nil {
+		return fmt.Errorf("pg: put settlement member %s: %w", m.BIC, err)
+	}
+	// Sorted for the reason bank_assets is sorted: `seq` is a BIGSERIAL and map
+	// iteration is random, so an unsorted insert gives the same data a different
+	// sequence on every write.
+	for _, asset := range slices.Sorted(maps.Keys(m.Accounts)) {
+		if _, err := t.tx.Exec(ctx, `
+			INSERT INTO settlement_member_accounts (bic, asset, account) VALUES ($1, $2, $3)`,
+			string(m.BIC), string(asset), string(m.Accounts[asset])); err != nil {
+			return fmt.Errorf("pg: put settlement member %s asset %s: %w", m.BIC, asset, err)
+		}
+	}
+	return nil
+}
+
+// settlementMemberAccounts reads the accounts of one member, or of every member
+// when bic is empty — the same one-query-then-fold shape as bankAssets.
+func (t *tx) settlementMemberAccounts(ctx context.Context, bic iso20022.BIC) (map[iso20022.BIC]map[ledger.AssetCode]ledger.AccountID, error) {
+	query := "SELECT bic, asset, account FROM settlement_member_accounts"
+	args := []any{}
+	if bic != "" {
+		query += " WHERE bic = $1"
+		args = append(args, string(bic))
+	}
+	query += " ORDER BY bic, seq"
+
+	rows, err := t.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pg: settlement member accounts: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[iso20022.BIC]map[ledger.AssetCode]ledger.AccountID)
+	for rows.Next() {
+		var (
+			memberBIC iso20022.BIC
+			asset     ledger.AssetCode
+			account   ledger.AccountID
+		)
+		if err := rows.Scan(&memberBIC, &asset, &account); err != nil {
+			return nil, fmt.Errorf("pg: settlement member accounts: %w", err)
+		}
+		if out[memberBIC] == nil {
+			out[memberBIC] = make(map[ledger.AssetCode]ledger.AccountID)
+		}
+		out[memberBIC][asset] = account
+	}
+	return out, rows.Err()
+}
+
+func scanSettlementMember(row pgx.Row) (payment.SettlementMember, error) {
+	var (
+		m        payment.SettlementMember
+		openedAt *time.Time
+	)
+	if err := row.Scan(&m.BIC, &m.Name, &openedAt); err != nil {
+		return payment.SettlementMember{}, err
+	}
+	m.OpenedAt = readTime(openedAt)
+	return m, nil
+}
+
+func (t *tx) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (payment.SettlementMember, error) {
+	m, err := scanSettlementMember(t.tx.QueryRow(ctx,
+		"SELECT bic, name, opened_at FROM settlement_members WHERE bic = $1", string(bic)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment.SettlementMember{}, payment.ErrSettlementMemberNotFound
+	}
+	if err != nil {
+		return payment.SettlementMember{}, fmt.Errorf("pg: get settlement member %s: %w", bic, err)
+	}
+	accounts, err := t.settlementMemberAccounts(ctx, bic)
+	if err != nil {
+		return payment.SettlementMember{}, err
+	}
+	m.Accounts = accounts[bic]
+	return m, nil
+}
+
+func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMember, error) {
+	rows, err := t.tx.Query(ctx,
+		"SELECT bic, name, opened_at FROM settlement_members ORDER BY opened_at ASC NULLS FIRST, seq")
+	if err != nil {
+		return nil, fmt.Errorf("pg: list settlement members: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.SettlementMember, 0)
+	for rows.Next() {
+		m, err := scanSettlementMember(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list settlement members: %w", err)
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	accounts, err := t.settlementMemberAccounts(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Accounts = accounts[out[i].BIC]
+	}
+	return out, nil
+}
+
+// PutRosterEntry stores the clearing house's routing row for one member.
+//
+// The assets are a child table like the other two rows', but they are a SET and
+// not a map: the clearing house holds no account per asset, which is what the
+// absence of a third column on that table says.
+func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	_, err := t.tx.Exec(ctx, `
+		INSERT INTO roster_entries (bic, name, admission_ref, admitted_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (bic) DO UPDATE SET
+			name          = EXCLUDED.name,
+			admission_ref = EXCLUDED.admission_ref,
+			admitted_at   = EXCLUDED.admitted_at`,
+		string(e.BIC), e.Name, e.AdmissionRef, nullTime(e.AdmittedAt))
+	if err != nil {
+		return fmt.Errorf("pg: put roster entry %s: %w", e.BIC, err)
+	}
+
+	if _, err := t.tx.Exec(ctx, "DELETE FROM roster_entry_assets WHERE bic = $1", string(e.BIC)); err != nil {
+		return fmt.Errorf("pg: put roster entry %s: %w", e.BIC, err)
+	}
+	// NOT sorted, and this is the one child table here that is not. The slice's
+	// order is the acknowledgement's, `seq` preserves it, and the reader below
+	// reads it back by seq — so sorting would silently reorder data the caller
+	// gave in an order of its own.
+	for _, asset := range e.Assets {
+		if _, err := t.tx.Exec(ctx, `
+			INSERT INTO roster_entry_assets (bic, asset) VALUES ($1, $2)`,
+			string(e.BIC), string(asset)); err != nil {
+			return fmt.Errorf("pg: put roster entry %s asset %s: %w", e.BIC, asset, err)
+		}
+	}
+	return nil
+}
+
+// rosterEntryAssets reads the assets of one roster entry, or of every entry
+// when bic is empty. Ordered by seq within a BIC, which is the order the caller
+// wrote — see PutRosterEntry.
+func (t *tx) rosterEntryAssets(ctx context.Context, bic iso20022.BIC) (map[iso20022.BIC][]ledger.AssetCode, error) {
+	query := "SELECT bic, asset FROM roster_entry_assets"
+	args := []any{}
+	if bic != "" {
+		query += " WHERE bic = $1"
+		args = append(args, string(bic))
+	}
+	query += " ORDER BY bic, seq"
+
+	rows, err := t.tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("pg: roster entry assets: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[iso20022.BIC][]ledger.AssetCode)
+	for rows.Next() {
+		var (
+			entryBIC iso20022.BIC
+			asset    ledger.AssetCode
+		)
+		if err := rows.Scan(&entryBIC, &asset); err != nil {
+			return nil, fmt.Errorf("pg: roster entry assets: %w", err)
+		}
+		out[entryBIC] = append(out[entryBIC], asset)
+	}
+	return out, rows.Err()
+}
+
+func scanRosterEntry(row pgx.Row) (payment.RosterEntry, error) {
+	var (
+		e          payment.RosterEntry
+		admittedAt *time.Time
+	)
+	if err := row.Scan(&e.BIC, &e.Name, &e.AdmissionRef, &admittedAt); err != nil {
+		return payment.RosterEntry{}, err
+	}
+	e.AdmittedAt = readTime(admittedAt)
+	return e, nil
+}
+
+func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error) {
+	e, err := scanRosterEntry(t.tx.QueryRow(ctx,
+		"SELECT bic, name, admission_ref, admitted_at FROM roster_entries WHERE bic = $1", string(bic)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return payment.RosterEntry{}, payment.ErrRosterEntryNotFound
+	}
+	if err != nil {
+		return payment.RosterEntry{}, fmt.Errorf("pg: get roster entry %s: %w", bic, err)
+	}
+	assets, err := t.rosterEntryAssets(ctx, bic)
+	if err != nil {
+		return payment.RosterEntry{}, err
+	}
+	e.Assets = assets[bic]
+	return e, nil
+}
+
+func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error) {
+	rows, err := t.tx.Query(ctx,
+		"SELECT bic, name, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
+	if err != nil {
+		return nil, fmt.Errorf("pg: list roster entries: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]payment.RosterEntry, 0)
+	for rows.Next() {
+		e, err := scanRosterEntry(rows)
+		if err != nil {
+			return nil, fmt.Errorf("pg: list roster entries: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	assets, err := t.rosterEntryAssets(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Assets = assets[out[i].BIC]
 	}
 	return out, nil
 }

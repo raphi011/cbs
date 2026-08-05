@@ -158,7 +158,7 @@ func (p *Portfolio) recomputeArrearsFacilityTx(ctx context.Context, tx Tx, f Fac
 //
 // This is one of two end-of-day entry points — deposit.Register has the other,
 // for overdraft accrual — because the two layers own different products and
-// neither imports the other. payment.Participant.RunEndOfDay calls both, and is
+// neither imports the other. payment.Bank.RunEndOfDay calls both, and is
 // what the API exposes, so a caller cannot run one without the other by
 // accident.
 func (p *Portfolio) RunEndOfDay(ctx context.Context, date time.Time) error {

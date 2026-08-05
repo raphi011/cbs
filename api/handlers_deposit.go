@@ -276,7 +276,7 @@ func effectiveFromOrToday(t *time.Time) time.Time {
 }
 
 // writeAccountWithTerms is the response the three terms writes share.
-func writeAccountWithTerms(w http.ResponseWriter, r *http.Request, p *payment.Participant, did deposit.AccountID) {
+func writeAccountWithTerms(w http.ResponseWriter, r *http.Request, p *payment.Bank, did deposit.AccountID) {
 	acct, err := p.Deposit.GetAccountWithTerms(r.Context(), did)
 	if err != nil {
 		writeError(w, err)

@@ -96,9 +96,9 @@ var reasonTable = []reasonMapping{
 	// ReasonFor itself still cannot tell one of these apart from an error the
 	// table has never heard of at all — both come back MS03 through the same
 	// fallback path, and TestReasonForEmptyCodeEntriesFallToMS03 pins that. So
-	// the discrimination is the CALLER's, made by name, and THREE of the nine
-	// are discriminated that way because three are reached on paths nothing is
-	// wrong with:
+	// the discrimination is the CALLER's, made by name, and the ones
+	// discriminated that way are the ones reached on paths nothing is wrong
+	// with:
 	//
 	//   - ErrInvalidStateTransition, an ordinary redelivery, in four places:
 	//     bank.accept (which is where bank.receiveCreditTransfer and
@@ -112,17 +112,19 @@ var reasonTable = []reasonMapping{
 	//     settled is not a rejection to answer. Discriminated in
 	//     centralBank.receiveSettlement.
 	//
-	// This paragraph used to say "the one of the nine" and "the other eight",
-	// and the counts were right while the list held six. Both halves are wrong
-	// now, and the second half was the more misleading of the two: it read as a
-	// claim that the remaining sentinels arise only from malformed messages,
-	// when two of them are on the busiest path in the system.
+	// This paragraph used to count them — "the one of the nine", then "the
+	// other eight", then "THREE of the nine" — and every one of those numbers
+	// was wrong within a task or two of being written, because a sentinel added
+	// to errors.go adds a row here. So it says which errors and not how many,
+	// and the misreading the old wording invited is worth naming: "the others
+	// arise only from malformed messages" was never true, since two of them are
+	// on the busiest path in the system.
 	//
-	// The other six are not produced by the halves those handlers call, except
-	// through a message quoting an identifier this network has never issued,
-	// which answers MS03. That residue is stated rather than hidden; closing it
-	// needs a two-valued ReasonFor, which is a change to this signature and to
-	// every caller of it.
+	// The errors NOT in the list above are not produced by the halves those
+	// handlers call, except through a message quoting an identifier this
+	// network has never issued, which answers MS03. That residue is stated
+	// rather than hidden; closing it needs a two-valued ReasonFor, which is a
+	// change to this signature and to every caller of it.
 
 	// A lookup for an id this system generated and then could not find is a
 	// bug here, not a defect in the message.
@@ -134,6 +136,24 @@ var reasonTable = []reasonMapping{
 	// missing one is a question this bank asked itself and got no answer to.
 	// There is no counterparty in the conversation to tell.
 	{ErrSettlementAdviceNotFound, "ErrSettlementAdviceNotFound", ""},
+
+	// The two rows admission gives the other institutions, missing.
+	//
+	// Both are an institution asking about its OWN record and not finding it,
+	// which is this system's own inconsistency rather than a judgement about
+	// anybody's instruction: the settlement agent holds no account for a BIC it
+	// is asked to settle for, the clearing house routes to no address for a
+	// bank the network numbers. Nothing writes one of the three admission rows
+	// without the other two, so reaching either means the store disagrees with
+	// itself — and RC01, which is what ErrParticipantNotFound answers, would say
+	// the SENDER quoted a bank that does not exist. It did not.
+	//
+	// A bank that is founded and not yet a member will make the second of these
+	// an ordinary state rather than an inconsistency, and what it will be
+	// answered with is an acmt.011 refusing the admission — not a payment
+	// status. So this classification is the right one either way.
+	{ErrSettlementMemberNotFound, "ErrSettlementMemberNotFound", ""},
+	{ErrRosterEntryNotFound, "ErrRosterEntryNotFound", ""},
 
 	// All three mean a message arrived at the wrong bank — a settled-payment
 	// advice for somebody else's customer, a reserve statement about somebody

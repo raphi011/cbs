@@ -244,7 +244,10 @@ var tables = []string{
 	"deposit_accounts", "holds", "snapshots", "overdraft_terms",
 	"products", "product_versions",
 	"facilities", "installments", "facility_terms",
-	"participants", "participant_assets", "mandates", "payments", "cycles", "cycle_payments",
+	"banks", "bank_assets",
+	"settlement_members", "settlement_member_accounts",
+	"roster_entries", "roster_entry_assets",
+	"mandates", "payments", "cycles", "cycle_payments",
 	"settlements", "settlement_positions", "settlement_advices",
 	"audit_events", "id_sequences",
 }

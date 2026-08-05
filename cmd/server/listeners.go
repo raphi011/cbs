@@ -41,7 +41,7 @@ type entity struct {
 // provisioning a connection — and an API call that instantly yielded a running
 // bank would teach the wrong thing.
 func plan(ctx context.Context, net *payment.Network, base int) ([]entity, error) {
-	parts, err := net.ListParticipants(ctx)
+	parts, err := net.ListBanks(ctx)
 	if err != nil {
 		return nil, err
 	}

@@ -565,8 +565,8 @@ type structCarriedBook struct {
 //     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/mem/tx.go
 //     compares e.BookID against f.BookID, store/pg's tx_audit.go writes book_id
 //     and adds `book_id = $n`. The field IS the scope.
-//   - payment.PutParticipant(ctx, p Participant) writes a network-scoped row
-//     under ledger.NetworkBook whatever p.BookID says. p.BookID is a column on
+//   - payment.PutBank(ctx, b Bank) writes a network-scoped row
+//     under ledger.NetworkBook whatever b.BookID says. b.BookID is a column on
 //     that row — the name of the book this bank owns — not the book being
 //     written to. Recording it would make a clearing-house handler that admits a
 //     member look like it had reached into that member's ledger, and Task 10's
@@ -584,11 +584,14 @@ type structCarriedBook struct {
 var structCarriedBooks = map[string]structCarriedBook{
 	"AppendAudit": {Scoping: true},
 	"ListAudit":   {Scoping: true},
-	"PutParticipant": {
+	"PutBank": {
 		Scoping: false,
-		Why: "payment/store.go: participants are network-scoped and stored under ledger.NetworkBook. " +
-			"Participant.BookID names the book the bank owns; it does not scope this write. " +
-			"TestWritingAParticipantTouchesNoBankBook is the evidence.",
+		Why: "payment/store.go: banks are network-scoped and stored under ledger.NetworkBook. " +
+			"Bank.BookID names the book the bank owns; it does not scope this write. " +
+			"TestWritingAParticipantTouchesNoBankBook is the evidence. " +
+			"The other two rows admission writes are not candidates at all and that is worth knowing " +
+			"rather than rediscovering: SettlementMember and RosterEntry carry no BookID, because " +
+			"neither the settlement agent nor the clearing house holds a book of the bank's.",
 	},
 	// A PASSENGER, and the only one: the book argument scopes this write and
 	// SettlementAdvice.Book is the row's record of where it landed.
@@ -611,7 +614,7 @@ var structCarriedBooks = map[string]structCarriedBook{
 // through a posting.
 //
 // The Put* methods for network-scoped rows — PutPayment, PutCycle,
-// PutSettlement, PutMandate, PutParticipant — take no book and record nothing
+// PutSettlement, PutMandate, PutBank — take no book and record nothing
 // themselves. But no network row is written on its own: the domain allocates its
 // id first, with NextID(ctx, ledger.NetworkBook, …), and writes an audit event
 // under BookID: ledger.NetworkBook. Both of those ARE recorded — NextID
@@ -1057,14 +1060,18 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 // the settlement conversation that follows it.
 //
 // Same set, and that is the finding. The clearing house now nets a batch, builds
-// a pacs.009, reads two participants to name them in it, and fans the answer out
+// a pacs.009, reads two members to name them in it, and fans the answer out
 // to the bank that submitted each payment — and none of that leaves NetworkBook,
 // because none of it posts and every row it reads belongs to no single bank.
-// GetParticipant is the one that could have gone the other way: it returns a
-// value with the named bank's Ledger, Deposit and Catalogue handles attached
-// (Network.bind), so a handler holding it can reach that bank's book through a
-// method it legitimately has. This measures that this one does not — it takes
-// the BIC off the value and nothing else.
+//
+// The member lookup is the one that could have gone the other way, and until
+// Task 17 it did more than it needed to: GetParticipant returned a value with
+// the named bank's Ledger, Deposit and Catalogue handles attached
+// (Network.bind), so a handler holding it could reach that bank's book through
+// a method it legitimately had. It is GetRosterEntry now and there is no handle
+// on what comes back. This measurement did not move, and that is the point: it
+// was already measuring that this handler took the BIC and nothing else, which
+// is why the narrowing changed no expectation in this file.
 //
 // That is the whole reason the recorder exists beside the interfaces in ops.go.
 // csmOps could not have expressed this: the method is on it, and must be.
@@ -1222,8 +1229,8 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 // and the reason is the recorder's and not this test's: a network-scoped row
 // reaches touched() through the id its write allocated and the audit event that
 // write appended, never through the read itself (see the note above the tests).
-// So GetPayment and GetParticipant record nothing at all. The claim here is about
-// BOOKS — no bank reads or writes any book but its own while a cycle settles —
+// So GetPayment and GetRosterEntry record nothing at all. The claim here is
+// about BOOKS — no bank reads or writes any book but its own while a cycle settles —
 // and it is not a claim that a bank learns nothing.
 //
 // It measures over the cut-off ONLY, resetting after the submission has drained,
@@ -1287,11 +1294,12 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // follows from the message DEFINITION. The third reads none either: the other
 // bank is whichever of OrgnlTxRef's two agents the message did not come from,
 // which is on the message. The middle one reads the payment, its scheme and a
-// participant, and none of those is a book access: payments are network-scoped
-// rows, and a read records nothing. GetParticipant is the one that could have
-// gone the other way — it hands back the named bank's live Ledger and Deposit
-// handles — and this measures that this handler takes the BIC off it and nothing
-// else.
+// roster entry, and none of those is a book access: payments are network-scoped
+// rows, and a read records nothing. The member lookup is the one that could have
+// gone the other way — until Task 17 it handed back the named bank's live Ledger
+// and Deposit handles — and this was already measuring that the handler took the
+// BIC off it and nothing else, which is why the narrowing to GetRosterEntry left
+// this expectation where it was.
 //
 // What an empty set here does NOT say is that the clearing house learned
 // nothing: it read the payment, and it is now the only actor in this package
@@ -1501,12 +1509,12 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 // TestWritingAParticipantTouchesNoBankBook is the evidence behind the one
 // exclusion in structCarriedBooks, made falsifiable rather than asserted.
 //
-// The claim is that Participant.BookID is a column on a network-scoped row, not
+// The claim is that Bank.BookID is a column on a network-scoped row, not
 // the scope of the write. So writing a participant that NAMES a bank's book must
 // leave that book empty — and this reads the book back through the store to say
 // so, rather than trusting the recorder that is itself under test.
 //
-// If PutParticipant ever did write into p.BookID, this fails and the entry in
+// If PutBank ever did write into p.BookID, this fails and the entry in
 // structCarriedBooks becomes wrong at the same moment, which is what makes the
 // exclusion a claim about the code rather than about the author's confidence.
 func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
@@ -1516,7 +1524,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	victim := ledger.BookID("bank_verde")
 
 	if err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return tx.PutParticipant(ctx, payment.Participant{
+		return tx.PutBank(ctx, payment.Bank{
 			ID:        "p_aurora",
 			Name:      "Aurora Bank",
 			BIC:       "AURODEFFXXX",
@@ -1524,7 +1532,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 			CreatedAt: testTime,
 		})
 	}); err != nil {
-		t.Fatalf("PutParticipant: %v", err)
+		t.Fatalf("PutBank: %v", err)
 	}
 
 	// Nothing landed in the book the row names.
@@ -1551,7 +1559,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	// And the row itself is readable without naming any book at all, which is
 	// what "network-scoped" means.
 	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := tx.GetParticipant(ctx, "p_aurora")
+		p, err := tx.GetBank(ctx, "p_aurora")
 		if err != nil {
 			return err
 		}
@@ -1560,7 +1568,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("GetParticipant: %v", err)
+		t.Fatalf("GetBank: %v", err)
 	}
 }
 
@@ -2127,7 +2135,7 @@ type Tx interface {
 //
 // A book behind an unexported field is not a blind spot, it is out of reach —
 // recordingTx is written in package mesh and cannot name it. Refusing it would
-// be noise, and expensive noise: payment.Participant reaches four books this
+// be noise, and expensive noise: payment.Bank reaches four books this
 // way, through the live handles whose types keep their book unexported, and a
 // parser that refused those would refuse the real repository on every run.
 //
@@ -2239,7 +2247,7 @@ const (
 	// bookIsTheArg: `book ledger.BookID` — 50 of the 53 candidates.
 	bookIsTheArg
 	// bookInsideTheArg: a struct with a BookID field, as AuditEvent,
-	// AuditFilter and Participant have.
+	// AuditFilter and Bank have.
 	bookInsideTheArg
 )
 
@@ -2466,7 +2474,7 @@ func (w *chainWalk) walk(dir string) {
 // It is not waved through either. Whether the row's field is merely a record of
 // the book the argument chose, or a second book the store actually reads, is a
 // claim about the STORE that no signature makes; it is the same question
-// AppendAudit and PutParticipant pose, and it gets the same answer: it is
+// AppendAudit and PutBank pose, and it gets the same answer: it is
 // recorded as a PASSENGER and must be decided in structCarriedBooks with
 // evidence. Waving it through here is what would turn that registry into a rule
 // nobody consults, and the next PutX(ctx, book, x) of this shape would be
@@ -2628,7 +2636,7 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // reachable only through one is not a path the recorder could ever take — there
 // is nothing to "decide", which is what a refusal is for.
 //
-// Nor is it a crossing left open, and payment.Participant is the case that
+// Nor is it a crossing left open, and payment.Bank is the case that
 // proves it. Its Ledger, Deposit, Lending and Catalogue fields are live handles
 // whose types keep the book in an unexported field (ledger/book.go: `id
 // BookID`), so the transitive scan reaches four books through them. But a

@@ -8,7 +8,31 @@ import "errors"
 var (
 	// ErrParticipantNotFound is returned when a participant ID does not
 	// match any bank registered with the system.
+	//
+	// It keeps its name for the reason ParticipantID keeps its: the id is the
+	// thing not found, and renaming the sentinel would ripple through the API's
+	// status mapping and every caller comparing against it without changing
+	// what is being said.
 	ErrParticipantNotFound = errors.New("participant not found")
+
+	// ErrSettlementMemberNotFound is a BIC the settlement agent holds no
+	// account for.
+	//
+	// It is separate from ErrParticipantNotFound because the two are different
+	// institutions' answers to different questions. That one means the network
+	// has no bank under this id. This one means the CENTRAL BANK has never
+	// opened an account for this address — which is the true state of a bank
+	// that is founded and not yet admitted, and the answer a settlement agent
+	// with its own store gives when it is asked to settle for a stranger.
+	ErrSettlementMemberNotFound = errors.New("payment: the settlement agent holds no account for this BIC")
+
+	// ErrRosterEntryNotFound is a BIC the clearing house does not route to.
+	//
+	// Separate from the two above for the reason they are separate from each
+	// other: it is a third institution's answer, and what it means is that this
+	// address is not in the scheme — not that no such bank exists, and not that
+	// it holds no settlement account.
+	ErrRosterEntryNotFound = errors.New("payment: no member is routed to under this BIC")
 
 	// ErrPaymentNotFound is returned when a payment ID does not match any
 	// payment in the system.

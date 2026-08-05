@@ -3,10 +3,12 @@ package storetest
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -16,7 +18,7 @@ import (
 //
 // It talks only to payment.Store and payment.Tx — never to payment.Network — so
 // what it pins is the storage contract: the not-found sentinels, the fact that
-// a Participant's live handles are derived rather than stored, listing order,
+// a Bank's live handles are derived rather than stored, listing order,
 // the open-cycle and end-to-end-id lookups, deep copying, and the three-layer
 // rollback that payment.Tx embedding deposit.Tx embedding ledger.Tx exists to
 // provide.
@@ -26,28 +28,28 @@ import (
 func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	t.Helper()
 
-	t.Run("ParticipantRoundTripsAndDropsLiveHandles", func(t *testing.T) {
+	t.Run("BankRoundTripsAndDropsLiveHandles", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
-		p := participant("bank_1", "Aurora Bank", early)
-		// A Network hands the store a fully bound Participant. Ledger and
+		p := bankRow("bank_1", "Aurora Bank", early)
+		// A Network hands the store a fully bound Bank. Ledger and
 		// Deposit are handles over the store, not data: store/pg has no column
 		// to put a *ledger.Book in, so store/mem must not keep them either —
 		// otherwise code works in memory and breaks on Postgres.
 		p.Ledger = ledger.NewBook(nil, "bank_1", nil)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, p)
+			return tx.PutBank(ctx, p)
 		})
 
-		var got payment.Participant
-		var listed []payment.Participant
+		var got payment.Bank
+		var listed []payment.Bank
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			var err error
-			if got, err = tx.GetParticipant(ctx, "bank_1"); err != nil {
+			if got, err = tx.GetBank(ctx, "bank_1"); err != nil {
 				return err
 			}
-			listed, err = tx.ListParticipants(ctx)
+			listed, err = tx.ListBanks(ctx)
 			return err
 		})
 
@@ -71,38 +73,47 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
 		assertEqual(t, "created at", got.CreatedAt.Equal(early), true)
+		// Status is asserted on its own because it is the field whose default is
+		// not safe. A Bank read back with Status "" is neither Founded nor a
+		// Member, and both readers of it would take the wrong branch: a founded
+		// bank that reads as a member is one the scheme thinks it can route to,
+		// and a member that reads as founded is one that can no longer pay.
+		// Asserted in the listing too, because a store can lose a column in one
+		// query and not the other — the reason the BIC is asserted twice above.
+		assertEqual(t, "status", string(got.Status), "Member")
+		assertEqual(t, "status in listings", string(listed[0].Status), "Member")
 
 		assertEqual(t, "Ledger is not persisted", got.Ledger == nil, true)
 		assertEqual(t, "Deposit is not persisted", got.Deposit == nil, true)
-		assertEqual(t, "participants listed", len(listed), 1)
+		assertEqual(t, "banks listed", len(listed), 1)
 		assertEqual(t, "Ledger is not persisted in listings", listed[0].Ledger == nil, true)
 
-		// PutParticipant is an upsert on ID: renaming a bank must not create a
+		// PutBank is an upsert on ID: renaming a bank must not create a
 		// second one.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			renamed := got
 			renamed.Name = "Aurora Bank AB"
-			return tx.PutParticipant(ctx, renamed)
+			return tx.PutBank(ctx, renamed)
 		})
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			all, err := tx.ListParticipants(ctx)
+			all, err := tx.ListBanks(ctx)
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "participants after an upsert", len(all), 1)
+			assertEqual(t, "banks after an upsert", len(all), 1)
 			assertEqual(t, "name after an upsert", all[0].Name, "Aurora Bank AB")
 			assertEqual(t, "product id after an upsert", string(all[0].ProductID), "prd_basic")
 			return nil
 		})
 	})
 
-	t.Run("ParticipantAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
+	t.Run("BankAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, payment.Participant{
+			return tx.PutBank(ctx, payment.Bank{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
-				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+				Assets: map[ledger.AssetCode]payment.BankAccounts{
 					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", ReturnsReceivable: "200.ib.003", Settlement: "200.res.001"},
 					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", ReturnsReceivable: "200.ib.004", Settlement: "200.res.002"},
 				},
@@ -110,12 +121,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetParticipant(ctx, "alpha")
+			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
 			}
 			if len(got.Assets) != 2 {
-				t.Fatalf("participant has %d assets, want 2", len(got.Assets))
+				t.Fatalf("bank has %d assets, want 2", len(got.Assets))
 			}
 			if got.Assets["USD"].Reserve != "100.ib.002" {
 				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
@@ -131,35 +142,35 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			// A listing must carry them too, not just a single Get — the
 			// listing is the path SettleCycle resolves every member through.
-			listed, err := tx.ListParticipants(ctx)
+			listed, err := tx.ListBanks(ctx)
 			if err != nil {
 				return err
 			}
 			if len(listed) != 1 || len(listed[0].Assets) != 2 {
-				t.Errorf("ListParticipants = %+v, want one participant with two assets", listed)
+				t.Errorf("ListBanks = %+v, want one bank with two assets", listed)
 			}
 			return nil
 		})
 
 		// An upsert must replace the set, not merge into it: a stale asset
-		// left behind would settle through an account the participant no
+		// left behind would settle through an account the bank no
 		// longer holds.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, payment.Participant{
+			return tx.PutBank(ctx, payment.Bank{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
-				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+				Assets: map[ledger.AssetCode]payment.BankAccounts{
 					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
 				},
 			})
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetParticipant(ctx, "alpha")
+			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
 			}
 			if len(got.Assets) != 1 {
-				t.Errorf("after upsert participant has %d assets, want 1", len(got.Assets))
+				t.Errorf("after upsert bank has %d assets, want 1", len(got.Assets))
 			}
 			return nil
 		})
@@ -168,12 +179,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// must not reach into the store, which store/mem could only get wrong
 		// by handing out its own map.
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetParticipant(ctx, "alpha")
+			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
 			}
 			delete(got.Assets, "EUR")
-			again, err := tx.GetParticipant(ctx, "alpha")
+			again, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
 				return err
 			}
@@ -184,13 +195,233 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	// SettlementMemberIsKeyedByBIC is the central bank's own record of a bank it
+	// holds a settlement account for, and the point of the case is the key.
+	//
+	// The settlement agent holds no roster and no participant ids. What an
+	// acmt.007 tells it is a BIC, so a lookup by anything else is a lookup it
+	// could not make — which is why the store is asked for this row by BIC here
+	// and never by a bank id.
+	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
+			return tx.PutSettlementMember(ctx, settlementMember("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "member name", got.Name, "Banca Verde")
+			assertEqual(t, "member bic", string(got.BIC), "VERDITMMXXX")
+			assertEqual(t, "member opened at", got.OpenedAt.Equal(early.Add(time.Hour)), true)
+
+			// A BIC no bank answers to is the sentinel, not an empty row: the
+			// central bank asked to settle for a member it has never opened an
+			// account for must fail rather than post to "".
+			_, err = tx.GetSettlementMember(ctx, "NORDSESSXXX")
+			assertErrorIs(t, "GetSettlementMember on a BIC with no member", err, payment.ErrSettlementMemberNotFound)
+
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "settlement members", ids(members, func(m payment.SettlementMember) string {
+				return string(m.BIC)
+			}), "AURODEFFXXX", "VERDITMMXXX")
+			return nil
+		})
+
+		// The upsert is on the BIC, which is what makes re-driving an admission
+		// safe: the same bank asking twice must not become two members.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			renamed := settlementMember("VERDITMMXXX", "Banca Verde SpA", early.Add(time.Hour))
+			return tx.PutSettlementMember(ctx, renamed)
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "members after an upsert", len(members), 2)
+			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "member name after an upsert", got.Name, "Banca Verde SpA")
+			return nil
+		})
+	})
+
+	// SettlementMemberKeepsOneAccountPerAsset pins that the map survives the
+	// round trip with its keys.
+	//
+	// A member read back with an empty map settles nothing — the settlement
+	// agent would have no account to post the net position of a cut-off to — and
+	// under store/pg the map is a second table, so "the row came back" and "the
+	// accounts came back" are two different claims about two different reads.
+	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementMember(ctx, payment.SettlementMember{
+				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
+				Accounts: map[ledger.AssetCode]ledger.AccountID{
+					"EUR": "200.100.001",
+					"USD": "200.100.002",
+				},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts held", len(got.Accounts), 2)
+			assertEqual(t, "EUR settlement account", string(got.Accounts["EUR"]), "200.100.001")
+			assertEqual(t, "USD settlement account", string(got.Accounts["USD"]), "200.100.002")
+
+			// The listing carries them too. A settlement agent walking its
+			// members to settle a cut-off reads the listing, not a Get per BIC.
+			listed, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 || len(listed[0].Accounts) != 2 {
+				t.Errorf("ListSettlementMembers = %+v, want one member with two accounts", listed)
+			}
+			return nil
+		})
+
+		// An upsert replaces the set rather than merging into it: an account for
+		// an asset the member no longer holds would be settled through after the
+		// member gave it up.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementMember(ctx, payment.SettlementMember{
+				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
+				Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "200.100.001"},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts after an upsert", len(got.Accounts), 1)
+
+			// And the map handed back is the caller's own.
+			delete(got.Accounts, "EUR")
+			again, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts after a reader mutation", len(again.Accounts), 1)
+			return nil
+		})
+	})
+
+	// RosterEntryCarriesNoAccountIdentifiers is the case that makes the split a
+	// claim about the code rather than about the plan.
+	//
+	// The clearing house routes. It has no business holding a bank's subledger,
+	// its product, or its account at the central bank, and the way that stops
+	// being a promise is a check on the STRUCT: the table below is the whole set
+	// of fields a RosterEntry may have, so a field added to it fails this case by
+	// name instead of passing silently.
+	//
+	// AdmissionRef is in the table and is not an account identifier. It is the
+	// PrcId every message of one admission echoes — a correlator for a
+	// conversation, naming no account in any book — and the clearing house's
+	// refusal is what reads it. What this case exists to keep out is an
+	// identifier that would let this institution reach into another's ledger; a
+	// process id reaches nothing.
+	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		allowed := map[string]bool{
+			"BIC":          true,
+			"Name":         true,
+			"Assets":       true,
+			"AdmissionRef": true,
+			"AdmittedAt":   true,
+		}
+		typ := reflect.TypeOf(payment.RosterEntry{})
+		for i := range typ.NumField() {
+			name := typ.Field(i).Name
+			if !allowed[name] {
+				t.Errorf("RosterEntry carries %s %s.\n"+
+					"The clearing house's row is routing and nothing else. If this field is an account "+
+					"identifier, a subledger or a product it belongs on the bank's own row; if it is "+
+					"genuinely routing, add it to the table above and say why here.",
+					name, typ.Field(i).Type)
+			}
+		}
+		for name := range allowed {
+			if _, ok := typ.FieldByName(name); !ok {
+				t.Errorf("the allowed-field table names %s, which RosterEntry no longer has", name)
+			}
+		}
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
+			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster name", got.Name, "Aurora Bank")
+			assertEqual(t, "roster admission reference", got.AdmissionRef, "adm-AURODEFFXXX")
+			assertEqual(t, "roster admitted at", got.AdmittedAt.Equal(early), true)
+			assertOrder(t, "roster assets", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "EUR", "USD")
+
+			_, err = tx.GetRosterEntry(ctx, "NORDSESSXXX")
+			assertErrorIs(t, "GetRosterEntry on an unadmitted BIC", err, payment.ErrRosterEntryNotFound)
+
+			entries, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster entries", ids(entries, func(e payment.RosterEntry) string {
+				return string(e.BIC)
+			}), "AURODEFFXXX", "VERDITMMXXX")
+			if len(entries[0].Assets) != 2 {
+				t.Errorf("listed roster entry has %d assets, want 2", len(entries[0].Assets))
+			}
+
+			// The slice handed back is the caller's own, for the reason every
+			// other row here deep-copies: a stored row a caller can mutate in
+			// place is not stored.
+			got.Assets[0] = "GBP"
+			again, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster asset after a reader mutation", string(again.Assets[0]), "EUR")
+			return nil
+		})
+	})
+
 	t.Run("GetOnMissingPaymentRowsReturnsSentinels", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
 		// Seed one row of every kind, so the not-found path is exercised on a
 		// populated store rather than only on an empty one.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutParticipant(ctx, participant("bank_1", "Aurora Bank", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
@@ -206,8 +437,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			_, err := tx.GetParticipant(ctx, "bank_nope")
-			assertErrorIs(t, "GetParticipant on an unknown bank", err, payment.ErrParticipantNotFound)
+			_, err := tx.GetBank(ctx, "bank_nope")
+			assertErrorIs(t, "GetBank on an unknown bank", err, payment.ErrParticipantNotFound)
 
 			_, err = tx.GetPayment(ctx, "pay_nope")
 			assertErrorIs(t, "GetPayment on an unknown payment", err, payment.ErrPaymentNotFound)
@@ -386,7 +617,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				id string
 				at time.Time
 			}{{"bank_10", late}, {"bank_8", early}, {"bank_20", early}, {"bank_9", early}} {
-				if err := tx.PutParticipant(ctx, participant(payment.ParticipantID(p.id), p.id, p.at)); err != nil {
+				if err := tx.PutBank(ctx, bankRow(payment.ParticipantID(p.id), p.id, p.at)); err != nil {
 					return err
 				}
 			}
@@ -425,14 +656,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			return nil
 		})
 
-		var participants []payment.Participant
+		var banks []payment.Bank
 		var payments []payment.Payment
 		var mandates []payment.Mandate
 		var cycles []payment.ClearingCycle
 		var settlements []payment.Settlement
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			var err error
-			if participants, err = tx.ListParticipants(ctx); err != nil {
+			if banks, err = tx.ListBanks(ctx); err != nil {
 				return err
 			}
 			if payments, err = tx.ListPayments(ctx); err != nil {
@@ -448,7 +679,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			return err
 		})
 
-		assertOrder(t, "ListParticipants", ids(participants, func(p payment.Participant) string { return string(p.ID) }),
+		assertOrder(t, "ListBanks", ids(banks, func(b payment.Bank) string { return string(b.ID) }),
 			"bank_8", "bank_20", "bank_9", "bank_10")
 		assertOrder(t, "ListPayments", ids(payments, func(p payment.Payment) string { return string(p.ID) }),
 			"pay_8", "pay_20", "pay_9", "pay_10")
@@ -632,8 +863,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		st := settlement("set_1", "cyc_1", early)
 		st.NetPositions = map[payment.ParticipantID]ledger.Amount{"bank_1": 100}
 
-		// A participant carries one too: the accounts it holds per asset.
-		bank := participant("bank_1", "Aurora Bank", early)
+		// A bank carries one too: the accounts it holds per asset.
+		bank := bankRow("bank_1", "Aurora Bank", early)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutCycle(ctx, c); err != nil {
@@ -642,7 +873,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			if err := tx.PutPayment(ctx, p); err != nil {
 				return err
 			}
-			if err := tx.PutParticipant(ctx, bank); err != nil {
+			if err := tx.PutBank(ctx, bank); err != nil {
 				return err
 			}
 			return tx.PutSettlement(ctx, st)
@@ -653,7 +884,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		c.NetPositions["bank_1"] = 999
 		p.Metadata["scheme"] = "tampered"
 		st.NetPositions["bank_1"] = 999
-		bank.Assets["EUR"] = payment.ParticipantAccounts{Suspense: "tampered"}
+		bank.Assets["EUR"] = payment.BankAccounts{Suspense: "tampered"}
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			gotCycle, err := tx.GetCycle(ctx, "cyc_1")
@@ -669,12 +900,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			assertEqual(t, "payment metadata after caller mutation", gotPayment.Metadata["scheme"], "sepa.ct")
 
-			gotParticipant, err := tx.GetParticipant(ctx, "bank_1")
+			gotBank, err := tx.GetBank(ctx, "bank_1")
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "participant suspense after caller mutation",
-				string(gotParticipant.Assets["EUR"].Suspense), "200.200.001")
+			assertEqual(t, "bank suspense after caller mutation",
+				string(gotBank.Assets["EUR"].Suspense), "200.200.001")
 
 			gotSettlement, err := tx.GetSettlement(ctx, "set_1")
 			if err != nil {
@@ -752,12 +983,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// payment rows, posts through the ledger and reads the deposit layer in
 		// one unit of work, so a failure must undo all of it.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutParticipant(ctx, participant("bank_1", "Aurora Bank", early))
+			return tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early))
 		})
 
 		boom := errors.New("storetest: deliberate failure")
 		err := s.Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutParticipant(ctx, participant("bank_2", "Banca Verde", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow("bank_2", "Banca Verde", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
@@ -788,8 +1019,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		assertErrorIs(t, "Update return", err, boom)
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			_, err := tx.GetParticipant(ctx, "bank_2")
-			assertErrorIs(t, "participant from the failed unit of work", err, payment.ErrParticipantNotFound)
+			_, err := tx.GetBank(ctx, "bank_2")
+			assertErrorIs(t, "bank from the failed unit of work", err, payment.ErrParticipantNotFound)
 
 			_, err = tx.GetPayment(ctx, "pay_1")
 			assertErrorIs(t, "payment from the failed unit of work", err, payment.ErrPaymentNotFound)
@@ -822,13 +1053,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			assertEqual(t, "audit events after rollback", len(events), 0)
 
-			// The participant written before the failed unit of work survived:
+			// The bank written before the failed unit of work survived:
 			// a rollback undoes its own transaction, not the store.
-			survivor, err := tx.GetParticipant(ctx, "bank_1")
+			survivor, err := tx.GetBank(ctx, "bank_1")
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "participant from the committed unit of work", survivor.Name, "Aurora Bank")
+			assertEqual(t, "bank from the committed unit of work", survivor.Name, "Aurora Bank")
 			return nil
 		})
 	})
@@ -837,7 +1068,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		s := openPayment(t, newStore)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutParticipant(ctx, participant("bank_1", "Aurora Bank", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
@@ -849,6 +1080,16 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early)); err != nil {
 				return err
 			}
+			// The other two rows admission writes. They are seeded here because
+			// each is its own table in store/pg, so a table left out of the
+			// truncation list is a row that survives a reset — and the whole
+			// point of Reset is that a reset store behaves like a fresh one.
+			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
 			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
 		})
 
@@ -857,11 +1098,23 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		}
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			participants, err := tx.ListParticipants(ctx)
+			banks, err := tx.ListBanks(ctx)
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "participants after reset", len(participants), 0)
+			assertEqual(t, "banks after reset", len(banks), 0)
+
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "settlement members after reset", len(members), 0)
+
+			entries, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster entries after reset", len(entries), 0)
 
 			payments, err := tx.ListPayments(ctx)
 			if err != nil {
@@ -904,18 +1157,45 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 // Payment helpers
 // ---------------------------------------------------------------------------
 
-func participant(id payment.ParticipantID, name string, createdAt time.Time) payment.Participant {
-	return payment.Participant{
+// bankRow is a bank's own record of itself, admitted: Member rather than
+// Founded, because that is what every bank in this suite's other cases is and
+// the status a store drops has to be a status it was given.
+func bankRow(id payment.ParticipantID, name string, createdAt time.Time) payment.Bank {
+	return payment.Bank{
 		ID:                id,
 		Name:              name,
 		BIC:               "AURODEFFXXX",
 		BookID:            ledger.BookID(id),
 		CustomerSubledger: "100",
 		ProductID:         "prd_basic",
-		Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
+		Status:            payment.BankMember,
+		Assets: map[ledger.AssetCode]payment.BankAccounts{
 			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},
 		},
 		CreatedAt: createdAt,
+	}
+}
+
+// settlementMember is the central bank's row for one bank, keyed by the only
+// identifier the settlement agent is ever told: the BIC.
+func settlementMember(bic iso20022.BIC, name string, openedAt time.Time) payment.SettlementMember {
+	return payment.SettlementMember{
+		BIC:      bic,
+		Name:     name,
+		Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "200.100.001"},
+		OpenedAt: openedAt,
+	}
+}
+
+// rosterEntry is the clearing house's row for one bank: where to send a message
+// addressed to it, and which admission put it there.
+func rosterEntry(bic iso20022.BIC, name string, admittedAt time.Time) payment.RosterEntry {
+	return payment.RosterEntry{
+		BIC:          bic,
+		Name:         name,
+		Assets:       []ledger.AssetCode{"EUR", "USD"},
+		AdmissionRef: "adm-" + string(bic),
+		AdmittedAt:   admittedAt,
 	}
 }
 

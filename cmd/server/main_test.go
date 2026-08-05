@@ -123,7 +123,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		mid[sc.Asset()] += p.Amount
 	}
 
-	parts, err := net.ListParticipants(ctx)
+	parts, err := net.ListBanks(ctx)
 	if err != nil {
 		t.Fatalf("listing participants: %v", err)
 	}

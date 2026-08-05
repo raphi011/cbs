@@ -87,8 +87,8 @@ type meshHarness struct {
 	mesh *Mesh
 	cfg  Config
 
-	debtor       *payment.Participant
-	creditor     *payment.Participant
+	debtor       *payment.Bank
+	creditor     *payment.Bank
 	debtorAcct   deposit.Account
 	creditorAcct deposit.Account
 
@@ -356,7 +356,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 
 // openCustomer opens a deposit account in one asset, addressable by an IBAN, with
 // an overdraft limit of the caller's choosing.
-func (h *meshHarness) openCustomer(t *testing.T, p *payment.Participant, name string,
+func (h *meshHarness) openCustomer(t *testing.T, p *payment.Bank, name string,
 	asset ledger.AssetCode, overdraft ledger.Amount, iban string) deposit.Account {
 
 	t.Helper()
@@ -690,9 +690,9 @@ func (h *meshHarness) returnErr(id payment.PaymentID, reason iso20022.ReturnReas
 func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct deposit.AccountID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetParticipant(ctx, id)
+	p, err := h.net.GetBank(ctx, id)
 	if err != nil {
-		t.Fatalf("GetParticipant %s: %v", id, err)
+		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	bal, err := p.Deposit.GetBalance(ctx, acct)
 	if err != nil {
@@ -712,9 +712,9 @@ func (h *meshHarness) balance(t *testing.T, id payment.ParticipantID, acct depos
 func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key string) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetParticipant(ctx, id)
+	p, err := h.net.GetBank(ctx, id)
 	if err != nil {
-		t.Fatalf("GetParticipant %s: %v", id, err)
+		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	txn, err := p.Ledger.GetTransactionByIdempotencyKey(ctx, key)
 	if err != nil {
@@ -734,9 +734,9 @@ func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key s
 func (h *meshHarness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetParticipant(ctx, id)
+	p, err := h.net.GetBank(ctx, id)
 	if err != nil {
-		t.Fatalf("GetParticipant %s: %v", id, err)
+		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	txn, err := p.Ledger.GetTransaction(ctx, txID)
 	if err != nil {
@@ -817,9 +817,9 @@ func (h *meshHarness) instructionsTo(t *testing.T, to iso20022.BIC) []*iso20022.
 func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Amount {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetParticipant(ctx, id)
+	p, err := h.net.GetBank(ctx, id)
 	if err != nil {
-		t.Fatalf("GetParticipant %s: %v", id, err)
+		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	accts, err := p.AccountsFor("EUR")
 	if err != nil {

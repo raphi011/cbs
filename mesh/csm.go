@@ -53,13 +53,15 @@ import (
 // moment the settlement agent posts it, and no cycle is touched.
 //
 // It holds a csmOps: nothing about clearing moves money, and that is what makes
-// clearing and settlement different jobs. What that does NOT amount to is a
-// compile-time ban on posting — GetParticipant hands back live ledger and deposit
-// handles bound to the bank it names, so a clearing house that wanted another
-// bank's book has one. See the note on bankOps in ops.go for the whole of that
-// hole. TestTheCSMTouchesOnlyTheNetworkBook is what actually holds this actor to
-// it, and TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends that
-// over the cut-off and the settlement conversation.
+// clearing and settlement different jobs. What that still does NOT amount to is
+// a compile-time ban on posting. It used to be one method short of a way in —
+// GetParticipant handed back live ledger and deposit handles bound to the bank
+// it named — and Task 17 replaced it with GetRosterEntry, which hands back an
+// address. What has not changed is that these interfaces narrow by method and
+// never by book, so the ban stays the recorder's:
+// TestTheCSMTouchesOnlyTheNetworkBook is what holds this actor to it, and
+// TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends that over the
+// cut-off and the settlement conversation.
 type csm struct {
 	m   *Mesh
 	ops csmOps
@@ -497,8 +499,8 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 // collection and nothing else — is what makes it give a customer their money
 // back. Sending the informational one first and returning on its error left the
 // refund unattempted, and that is reachable: the send is answered with
-// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window, and GetParticipant
-// fails on a store error. A payer whose money is in a suspense against a
+// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window, and
+// GetRosterEntry fails on a store error. A payer whose money is in a suspense against a
 // payment this network records as Rejected has nobody left to notice.
 //
 // So the refund message is attempted first and both are attempted regardless,
@@ -519,7 +521,7 @@ func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.Original
 	// reaches this — on a push the two are one participant and one message.
 	var refunded iso20022.BIC
 	if r.Status == iso20022.TransactionStatusRejected && p.DebtorLegTx != "" && p.Debtor.Participant != submitterID {
-		if debtor, err := c.ops.GetParticipant(ctx, p.Debtor.Participant); err != nil {
+		if debtor, err := c.ops.GetRosterEntry(ctx, p.Debtor.Participant); err != nil {
 			errs = append(errs, fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, p.ID, err))
 		} else {
 			refunded = debtor.BIC
@@ -533,7 +535,7 @@ func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.Original
 	// second guard behind the participant one above: two participants on one
 	// address cannot be admitted (Mesh.AddBank refuses it), and a duplicate
 	// pacs.002 would be a second acceptance at a bank that already has one.
-	if submitter, err := c.ops.GetParticipant(ctx, submitterID); err != nil {
+	if submitter, err := c.ops.GetRosterEntry(ctx, submitterID); err != nil {
 		errs = append(errs, fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err))
 	} else if submitter.BIC != refunded {
 		if err := c.forward(submitter.BIC, orig, r); err != nil {
@@ -853,7 +855,7 @@ func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, 
 		if net == 0 {
 			continue
 		}
-		p, err := c.ops.GetParticipant(ctx, pid)
+		p, err := c.ops.GetRosterEntry(ctx, pid)
 		if err != nil {
 			return nil, fmt.Errorf("mesh: %s closed %s and cannot name the bank behind %s: %w", c.bic, closed.ID, pid, err)
 		}
@@ -995,7 +997,7 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 			recipients = append(recipients, creditor)
 		}
 		for _, recipient := range recipients {
-			member, err := c.ops.GetParticipant(ctx, recipient)
+			member, err := c.ops.GetRosterEntry(ctx, recipient)
 			if err != nil {
 				return fmt.Errorf("mesh: %s cannot address a bank %s settled for: %w", c.bic, p.ID, err)
 			}
@@ -1088,7 +1090,7 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 			return fmt.Errorf("mesh: %s was told about the return of %s and holds no %q scheme to say who asked: %w",
 				c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 		}
-		returner, err := c.ops.GetParticipant(ctx, returnerOf(scheme, p.Debtor, p.Creditor).Participant)
+		returner, err := c.ops.GetRosterEntry(ctx, returnerOf(scheme, p.Debtor, p.Creditor).Participant)
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot address the bank that returned %s: %w", c.bic, p.ID, err)
 		}

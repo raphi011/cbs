@@ -137,7 +137,7 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 		t.Fatal("the rejected collection has no debtor leg; the fixture no longer covers a reversal")
 	}
 
-	bank, err := net.GetParticipant(ctx, rejected.Debtor.Participant)
+	bank, err := net.GetBank(ctx, rejected.Debtor.Participant)
 	if err != nil {
 		t.Fatalf("get participant: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	var verde *payment.Participant
+	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
 		if p.Name == "Banca Verde" {
 			verde = p
@@ -325,7 +325,7 @@ func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	ctx := context.Background()
 	net, data := testNetworkAndClock(t)
 
-	var verde *payment.Participant
+	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
 		if p.Name == "Banca Verde" {
 			verde = p
@@ -474,9 +474,9 @@ func TestClockWentLive(t *testing.T) {
 
 // listParticipants and listPayments keep the ctx/error plumbing out of the
 // assertions above.
-func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Participant {
+func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Bank {
 	t.Helper()
-	parts, err := net.ListParticipants(ctx)
+	parts, err := net.ListBanks(ctx)
 	if err != nil {
 		t.Fatalf("list participants: %v", err)
 	}

@@ -47,7 +47,7 @@ var messageNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 // by readable identifiers like SE89-BANKA-0001. A test asserting which bank and
 // which address reached the wire cannot use a fixture where both banks are the
 // same bank.
-func addressedBanks(t *testing.T) (sys *Network, aurora, verde *Participant, alice, bruno deposit.Account) {
+func addressedBanks(t *testing.T) (sys *Network, aurora, verde *Bank, alice, bruno deposit.Account) {
 	t.Helper()
 	ctx := context.Background()
 	sys = testNetwork(t)

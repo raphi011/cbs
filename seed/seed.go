@@ -86,7 +86,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 	// Populate returns.
 	defer d.clock.goLive()
 
-	existing, err := net.ListParticipants(ctx)
+	existing, err := net.ListBanks(ctx)
 	if err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ const seedAsset ledger.AssetCode = "EUR"
 //     rows are untouched.
 //
 // Both are forward-dated, which is the only direction PublishVersion allows.
-func (b *builder) products(p *payment.Participant) {
+func (b *builder) products(p *payment.Bank) {
 	from := ledger.DayStart(b.clock.now())
 
 	b.publish(p, p.ProductID, from.AddDate(0, 0, 1), product.OverdraftPricing{
@@ -229,7 +229,7 @@ func (b *builder) products(p *payment.Participant) {
 // publish drafts and publishes in one step, which is what every seeded version
 // wants: the draft state is a thing an operator passes through, not a thing the
 // demo data should sit in.
-func (b *builder) publish(p *payment.Participant, id product.ID, from time.Time, pricing product.OverdraftPricing) {
+func (b *builder) publish(p *payment.Bank, id product.ID, from time.Time, pricing product.OverdraftPricing) {
 	must(p.Catalogue.DraftVersion(b.ctx, id, from, pricing))
 	must(p.Catalogue.PublishVersion(b.ctx, id, from))
 }
@@ -240,7 +240,7 @@ func (b *builder) publish(p *payment.Participant, id product.ID, from time.Time,
 // It goes through the register rather than p.OpenCustomerAccount because that
 // helper opens from the participant's configured default, and this seed has
 // retired that one in favour of a priced catalogue of its own.
-func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
+func (b *builder) open(p *payment.Bank, name, iban string) deposit.Account {
 	return b.openOverdraft(p, name, iban, 0)
 }
 
@@ -251,14 +251,14 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // is per account and the PRICE is not: it comes from the Basic product, so the
 // day-30 reprice above reaches every account opened here without touching one
 // of them.
-func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
+func (b *builder) openOverdraft(p *payment.Bank, name, iban string, limit ledger.Amount) deposit.Account {
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
 	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
 }
 
 // openLoan opens a term loan and disburses it in full into the borrower's own
 // account, so the caller is left with a facility that has begun accruing.
-func (b *builder) openLoan(p *payment.Participant, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
+func (b *builder) openLoan(p *payment.Bank, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
 	loan := must(p.Lending.OpenTermLoan(b.ctx, p.CustomerSubledger, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
 	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
 	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerGL, firstDue, description))
@@ -267,7 +267,7 @@ func (b *builder) openLoan(p *payment.Participant, borrower deposit.Account, nam
 
 // openLine opens a revolving line and draws it once into the borrower's own
 // account, so the caller is left with a facility carrying a balance.
-func (b *builder) openLine(p *payment.Participant, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
+func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
 	line := must(p.Lending.OpenRevolvingLine(b.ctx, p.CustomerSubledger, name, seedAsset, limit, rate, interest.ACT365, minPayment))
 	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
 	must(p.Lending.Draw(b.ctx, line.ID, borrowerGL, draw, description))
@@ -275,9 +275,9 @@ func (b *builder) openLine(p *payment.Participant, borrower deposit.Account, nam
 }
 
 // runDays advances the clock a day at a time, driving RunEndOfDay through each
-// one — the same entry point payment.Participant exposes to the API — so the
+// one — the same entry point payment.Bank exposes to the API — so the
 // seed's accrual and arrears move exactly as a running day would produce them.
-func (b *builder) runDays(p *payment.Participant, days int) {
+func (b *builder) runDays(p *payment.Bank, days int) {
 	for i := 0; i < days; i++ {
 		b.clock.advance(24 * time.Hour)
 		check(p.RunEndOfDay(b.ctx, b.clock.now()))
@@ -286,7 +286,7 @@ func (b *builder) runDays(p *payment.Participant, days int) {
 
 // ref builds a PartyRef for a customer deposit account from the account's own
 // IBAN identifier, so the same account always produces an identical PartyRef.
-func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.PartyRef {
+func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
 	ref := payment.PartyRef{Participant: p.ID, Account: acct.ID}
 	for _, ident := range acct.Identifiers {
 		if ident.Scheme == deposit.IdentifierIBAN {
@@ -298,7 +298,7 @@ func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.Part
 }
 
 // fund credits a deposit account with cash and raises the bank's reserve.
-func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledger.Amount) {
+func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
 	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
@@ -499,7 +499,7 @@ func (b *builder) settle(id payment.CycleID) {
 // and anything set here would be discarded, so setting it would be the seed
 // demonstrating an input this system does not accept — see
 // payment.PartyDetails.Agent.
-func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
+func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
 		Debtor:          b.ref(dp, d),
@@ -514,7 +514,7 @@ func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *paymen
 // initSDD submits a direct debit. It is the SUBMITTING (creditor's) bank, so
 // the request must name the counterparty: the name on the debtor's account,
 // and not the debtor's bank. See initSCT.
-func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
+func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:        payment.SchemeSEPADD,
 		Debtor:        b.ref(dp, d),
@@ -542,7 +542,7 @@ func (b *builder) build() {
 	// Before any account, because every deposit account is opened FROM a
 	// product: a floating terms row with no product would have nothing to
 	// float to.
-	for _, p := range []*payment.Participant{aurora, verde, nord, soleil} {
+	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
 		b.products(p)
 	}
 
@@ -669,7 +669,7 @@ func (b *builder) build() {
 // actually accruing rather than sitting at a limit that costs nothing. This is
 // the data the web app's facility pages, its arrears badge, and Bruno's
 // deposit page read.
-func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alice, bruno, bella, niklas deposit.Account) {
+func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno, bella, niklas deposit.Account) {
 	ctx := b.ctx
 	b.clock.advance(1 * time.Hour)
 
@@ -824,7 +824,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 // five account types (Asset, Liability, Equity, Revenue, Expense) and a manual
 // transaction + reversal appear in the data. Liability is already present via the
 // bank's customer-deposit and suspense GL accounts; this adds the other four.
-func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
+func (b *builder) glShowcase(p *payment.Bank, customer deposit.Account) {
 	ctx := b.ctx
 	glID := must(p.Ledger.GetSubledger(ctx, p.CustomerSubledger)).LedgerID
 

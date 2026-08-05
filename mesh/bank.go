@@ -604,7 +604,7 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		// Whose payer is this? A bank that acted on a misrouted rejection would
 		// reverse a debit in somebody else's ledger, so the answer decides
 		// everything below.
-		debtor, err := b.ops.GetParticipant(ctx, p.Debtor.Participant)
+		debtor, err := b.ops.GetRosterEntry(ctx, p.Debtor.Participant)
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot tell whose payment %s is: %w", b.bic, p.ID, err)
 		}
@@ -612,7 +612,7 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 			// Not the payer's bank. The only other party with any business
 			// receiving this is the one that submitted and is waiting for an
 			// answer, and it has nothing to give back.
-			submitter, err := b.ops.GetParticipant(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
+			submitter, err := b.ops.GetRosterEntry(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
 			if err != nil {
 				return fmt.Errorf("mesh: %s cannot tell who submitted %s: %w", b.bic, p.ID, err)
 			}

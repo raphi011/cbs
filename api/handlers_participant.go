@@ -90,7 +90,7 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListParticipants(w http.ResponseWriter, r *http.Request) {
-	parts, err := s.network().ListParticipants(r.Context())
+	parts, err := s.network().ListBanks(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
@@ -152,7 +152,7 @@ func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {
 // in — one row per (participant, asset), because a reserve in one asset says
 // nothing about a reserve in another and the two must not be added up.
 func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
-	parts, err := s.network().ListParticipants(r.Context())
+	parts, err := s.network().ListBanks(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
@@ -172,7 +172,7 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 // handleGetReserve reports one bank's reserves, one row per asset, for the
 // same reason handleListReserves does.
 func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
-	p, err := s.network().GetParticipant(r.Context(), payment.ParticipantID(r.PathValue("pid")))
+	p, err := s.network().GetBank(r.Context(), payment.ParticipantID(r.PathValue("pid")))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -187,7 +187,7 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 
 // reserveRows reads one participant's reserve in each of its assets, in asset
 // order so the response does not reshuffle between identical requests.
-func (s *Server) reserveRows(r *http.Request, p *payment.Participant) ([]reserveDTO, error) {
+func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {
 		codes = append(codes, string(code))

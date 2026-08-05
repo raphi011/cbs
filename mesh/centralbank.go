@@ -49,13 +49,15 @@ import (
 // SettleCycle and SettleReturn are on that interface and on no other, so a
 // bank handler or a clearing-house handler cannot NAME either. That is what
 // these interfaces narrow, and the whole of what they narrow — it is not a ban
-// on those handlers moving money. GetParticipant is on both of the other two and
-// returns a value carrying live ledger and deposit handles bound to whichever
-// bank it names (Network.bind), and a member bank's ledger is exactly where a
-// return's customer legs go, so posting in one is reachable from either of
-// those handlers through a method each legitimately holds. The recorder in
-// books_test.go is what watches for that, here as everywhere else in this
-// package; see the note on bankOps in ops.go for the whole of the hole.
+// on those handlers moving money. It used to be less of one than it is: a
+// method on both of the other two interfaces (GetParticipant) returned a value
+// carrying live ledger and deposit handles bound to whichever bank it named,
+// and a member bank's ledger is exactly where a return's customer legs go.
+// Task 17 narrowed that return to a roster entry, so no handler is handed a
+// book any more. What remains is that any handler holding a posting method can
+// name any book, because these interfaces narrow by method and not by book. The
+// recorder in books_test.go is what watches for that, here as everywhere else
+// in this package; see the note on bankOps in ops.go.
 //
 // The two methods behind this interface reach the same distance, and that is
 // new. This note used to record the opposite — that settlement posted in this

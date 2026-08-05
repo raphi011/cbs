@@ -101,7 +101,7 @@ type SchemeContext struct {
 // applies to every scheme rather than only the ones whose Validate happens to
 // call this helper.
 func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
-	part, err := sc.Network.participantTx(ctx, sc.Tx, p.Debtor.Participant)
+	part, err := sc.Network.bankTx(ctx, sc.Tx, p.Debtor.Participant)
 	if err != nil {
 		return ErrParticipantNotFound
 	}

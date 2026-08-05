@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/payment"
@@ -209,11 +210,19 @@ type state struct {
 	// The payment layer's state. These maps are NOT nested per book: the
 	// entities are network-scoped — a payment belongs to no single bank — so
 	// they are sequenced under ledger.NetworkBook and keyed by their ID alone.
-	participants map[payment.ParticipantID]payment.Participant
-	payments     map[payment.PaymentID]payment.Payment
-	mandates     map[payment.MandateID]payment.Mandate
-	cycles       map[payment.CycleID]payment.ClearingCycle
-	settlements  map[payment.SettlementID]payment.Settlement
+	banks       map[payment.ParticipantID]payment.Bank
+	payments    map[payment.PaymentID]payment.Payment
+	mandates    map[payment.MandateID]payment.Mandate
+	cycles      map[payment.CycleID]payment.ClearingCycle
+	settlements map[payment.SettlementID]payment.Settlement
+
+	// The other two rows admission writes, keyed by BIC because that is what
+	// their owners are told. They sit beside banks above and not inside it:
+	// one is the central bank's record and one is the clearing house's, and at
+	// Task 18 each moves into that institution's own store while banks stays
+	// with the bank.
+	settlementMembers map[iso20022.BIC]payment.SettlementMember
+	rosterEntries     map[iso20022.BIC]payment.RosterEntry
 
 	// settlementAdvices is the ONE payment-layer table that is not
 	// network-scoped: an advice is a member bank's own record of a reserve
@@ -313,25 +322,27 @@ type adviceKey struct {
 type rowKind string
 
 const (
-	kindLedger         rowKind = "ledger"
-	kindSubledger      rowKind = "subledger"
-	kindAccount        rowKind = "account"
-	kindTransaction    rowKind = "transaction"
-	kindDepositAccount rowKind = "deposit_account"
-	kindHold           rowKind = "hold"
-	kindSnapshot       rowKind = "snapshot"
-	kindOverdraftTerms rowKind = "overdraft_terms"
-	kindProduct        rowKind = "products"
-	kindProductVersion rowKind = "product_versions"
-	kindParticipant    rowKind = "participant"
-	kindPayment        rowKind = "payment"
-	kindMandate        rowKind = "mandate"
-	kindCycle          rowKind = "cycle"
-	kindSettlement     rowKind = "settlement"
-	kindAdvice         rowKind = "settlement_advice"
-	kindFacility       rowKind = "facility"
-	kindInstallment    rowKind = "installment"
-	kindFacilityTerms  rowKind = "facility_terms"
+	kindLedger           rowKind = "ledger"
+	kindSubledger        rowKind = "subledger"
+	kindAccount          rowKind = "account"
+	kindTransaction      rowKind = "transaction"
+	kindDepositAccount   rowKind = "deposit_account"
+	kindHold             rowKind = "hold"
+	kindSnapshot         rowKind = "snapshot"
+	kindOverdraftTerms   rowKind = "overdraft_terms"
+	kindProduct          rowKind = "products"
+	kindProductVersion   rowKind = "product_versions"
+	kindBank             rowKind = "bank"
+	kindSettlementMember rowKind = "settlement_member"
+	kindRosterEntry      rowKind = "roster_entry"
+	kindPayment          rowKind = "payment"
+	kindMandate          rowKind = "mandate"
+	kindCycle            rowKind = "cycle"
+	kindSettlement       rowKind = "settlement"
+	kindAdvice           rowKind = "settlement_advice"
+	kindFacility         rowKind = "facility"
+	kindInstallment      rowKind = "installment"
+	kindFacilityTerms    rowKind = "facility_terms"
 )
 
 // rowKey identifies one row for sequence purposes: its book, its table and its
@@ -363,7 +374,9 @@ func newState() *state {
 		overdraftTerms:    make(map[ledger.BookID]map[termsKey]deposit.OverdraftTerms),
 		products:          make(map[ledger.BookID]map[product.ID]product.Product),
 		productVersions:   make(map[ledger.BookID]map[versionKey]product.Version),
-		participants:      make(map[payment.ParticipantID]payment.Participant),
+		banks:             make(map[payment.ParticipantID]payment.Bank),
+		settlementMembers: make(map[iso20022.BIC]payment.SettlementMember),
+		rosterEntries:     make(map[iso20022.BIC]payment.RosterEntry),
 		payments:          make(map[payment.PaymentID]payment.Payment),
 		mandates:          make(map[payment.MandateID]payment.Mandate),
 		cycles:            make(map[payment.CycleID]payment.ClearingCycle),
@@ -404,7 +417,9 @@ func (s *state) clone() *state {
 		overdraftTerms:    cloneNested(s.overdraftTerms),
 		products:          cloneNested(s.products),
 		productVersions:   cloneNested(s.productVersions),
-		participants:      maps.Clone(s.participants),
+		banks:             maps.Clone(s.banks),
+		settlementMembers: maps.Clone(s.settlementMembers),
+		rosterEntries:     maps.Clone(s.rosterEntries),
 		payments:          maps.Clone(s.payments),
 		mandates:          maps.Clone(s.mandates),
 		cycles:            maps.Clone(s.cycles),

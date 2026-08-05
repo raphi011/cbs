@@ -527,52 +527,91 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 -- sequenced under ledger.NetworkBook rather than under any member's book.
 --
 -- Note the exact claim, because the looser one this header used to make is
--- false twice over. It said these tables "carry no book_id column". participants
--- carries one (:547) and settlement_advices carries one (:837) — the difference
--- is that only settlement_advices has the book in its KEY, which is what makes
--- it the one member-scoped table in this section. participants.book_id is data:
--- which book that bank owns. See the comment on settlement_advices, which states
--- this correctly and which this header contradicted for 230 lines.
+-- false twice over. It said these tables "carry no book_id column". banks
+-- carries one and settlement_advices carries one — the difference is that only
+-- settlement_advices has the book in its KEY, which is what makes it the one
+-- member-scoped table in this section. banks.book_id is data: which book that
+-- bank owns. See the comment on settlement_advices, which states this correctly
+-- and which this header contradicted for 230 lines.
+
+-- ---------------------------------------------------------------------------
+-- Admission writes three rows, one per institution
+-- ---------------------------------------------------------------------------
+--
+-- banks is the bank's own record of itself. settlement_members is the central
+-- bank's record of an account it opened. roster_entries is the clearing house's
+-- record of where to send a message. Each has exactly one writer.
+--
+-- They were one row until admission became a conversation, and the reason they
+-- had to come apart is what the settlement agent used to do: it read the
+-- account it was to post to off the CLEARING HOUSE's row. That is a read across
+-- an institutional boundary on the settlement path, so a settlement agent given
+-- a database of its own would have had nothing to settle from. Splitting the
+-- row is what gives each institution a record it could hold alone.
+--
+-- The two rows that are not the bank's are keyed by BIC. Neither institution
+-- allocates or is ever told a bank id — what a message carries is a BIC — so a
+-- bank id in either of them would be an identifier its owner has no way to have
+-- learnt and no way to check.
 
 -- product_id is the catalogue entry this bank opens customer accounts from —
 -- the Basic product AddParticipant creates for every member. It is data, not a
 -- handle like the Ledger and Deposit fields the store deliberately drops, so it
--- has to be stored: a participant read back without it prices its accounts from
+-- has to be stored: a bank read back without it prices its accounts from
 -- a product id of "", which surfaces as "product not found" several layers away
 -- from the store that lost it.
-CREATE TABLE participants (
+CREATE TABLE banks (
     id                 TEXT PRIMARY KEY,
     name               TEXT NOT NULL,
     bic                TEXT NOT NULL,
     book_id            TEXT NOT NULL,
     customer_subledger TEXT NOT NULL,
     product_id         TEXT NOT NULL,
+    status             TEXT NOT NULL,
     created_at         TIMESTAMPTZ,
     seq                BIGSERIAL NOT NULL
 );
 
-COMMENT ON COLUMN participants.bic IS
+COMMENT ON COLUMN banks.bic IS
     'ISO 9362 business identifier code. NOT NULL because a bank the mesh '
-    'cannot address is not a member: routing is by BICFI, so a participant '
+    'cannot address is not a member: routing is by BICFI, so a bank '
     'without one is unreachable rather than merely undescribed. No CHECK on '
     'its shape — the structural rule lives in iso20022.BIC, and a constraint '
     'here would fire in Postgres and not in store/mem, which store/storetest '
     'exists to forbid. There is also no UNIQUE: two banks sharing a BIC is a '
     'domain error, and nothing serializes two concurrent admissions, so the '
-    'same reasoning that kept a UNIQUE off deposit identifiers applies here.';
+    'same reasoning that kept a UNIQUE off deposit identifiers applies here. '
+    'It is also the key the other two institutions hold this bank by — see '
+    'settlement_members and roster_entries, where it is the primary key.';
 
--- A participant's internal plumbing accounts, one set per asset it operates in.
+COMMENT ON COLUMN banks.status IS
+    'How far through admission this bank is: Founded, or Member. '
+    'A Founded bank has a licence, a book and a chart of accounts and no place '
+    'in a scheme — it can open customer accounts and it can neither pay nor be '
+    'paid, which is a true state and not a broken one, because a bank exists '
+    'before it joins a scheme. It is also what an interrupted admission leaves '
+    'behind, which is what makes re-driving one safe. '
+    'There is no third value, and specifically no Applied between them: it '
+    'would record that a request is out and nothing would read it. What "the '
+    'request is out" is worth knowing for is a stuck admission, and finding '
+    'those means walking both ends against each other rather than reading a '
+    'column on one of them. '
+    'No CHECK constraint, for the reason accounts.asset carries none: the set '
+    'lives in Go (payment.BankStatus) and a constraint here would refuse in '
+    'Postgres what store/mem accepts.';
+
+-- A bank's internal plumbing accounts, one set per asset it operates in.
 --
--- These are a child row rather than a column apiece on the participant because
+-- These are a child row rather than a column apiece on the bank because
 -- each of those accounts is denominated in exactly one asset: a bank clearing
 -- both a euro and a dollar scheme needs two suspense accounts and two reserve
--- accounts, not two currencies inside one. Keying by (participant, asset) makes
+-- accounts, not two currencies inside one. Keying by (bank, asset) makes
 -- adding a scheme in a new asset a data change rather than a schema change.
 --
 -- It also makes adding a KIND of account cheap, which has already happened:
 -- returns_receivable joined this row when the return path needed somewhere to
 -- book a clawback a biller's closed account could not fund. One column here is
--- one account per asset, automatically; the same account hung off participants
+-- one account per asset, automatically; the same account hung off banks
 -- would have needed one column per asset the bank could ever operate in.
 --
 -- The set is fixed when the bank joins the network, which is the reason the
@@ -580,8 +619,8 @@ COMMENT ON COLUMN participants.bic IS
 -- did not join with has no suspense, reserve or settlement account here, so
 -- registering one afterwards produced customer accounts that could never
 -- settle. What a bank operates in is these rows; what an asset *is* is code.
-CREATE TABLE participant_assets (
-    participant_id     TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
+CREATE TABLE bank_assets (
+    bank_id            TEXT NOT NULL REFERENCES banks (id) ON DELETE CASCADE,
     asset              TEXT NOT NULL,
     suspense           TEXT NOT NULL,
     reserve            TEXT NOT NULL,
@@ -595,9 +634,111 @@ CREATE TABLE participant_assets (
     -- this is money owed TO the bank by somebody it has identified
     -- perfectly well. See the COMMENT ON COLUMN below for the full case.
     returns_receivable TEXT NOT NULL,
+    -- The bank's account in ANOTHER INSTITUTION'S book, and the one column in
+    -- this table naming an id its owner did not allocate. See the COMMENT ON
+    -- COLUMN below.
     settlement         TEXT NOT NULL,
     seq                BIGSERIAL NOT NULL,
-    PRIMARY KEY (participant_id, asset)
+    PRIMARY KEY (bank_id, asset)
+);
+
+COMMENT ON COLUMN bank_assets.settlement IS
+    'This bank''s reserve account at the central bank: an account in ANOTHER '
+    'institution''s book, which is why it is the one column in this table '
+    'naming an id this table''s owner did not allocate. Every other account '
+    'here was created in the bank''s own book and numbered by it. '
+    'It is legitimate as the account holder''s record of its own account '
+    'number — a customer knows their IBAN without holding the bank''s ledger — '
+    'and it is not the record a settlement agent reads: that one is '
+    'settlement_members, which the central bank writes and owns. Both exist, '
+    'and the readers have not all moved yet; funding a reserve still quotes '
+    'this one, which is the account holder asking for a credit to its own '
+    'account and is the honest reader to leave behind.';
+
+-- settlement_members is the CENTRAL BANK's own record of a member, keyed by the
+-- only identifier it is ever told.
+--
+-- Not by a bank id: the settlement agent holds no roster and allocates no ids,
+-- and what an account-opening request carries is a BIC. A bank id here would be
+-- a foreign key into somebody else's database as soon as the stores split, and
+-- a value this institution could not have obtained even now.
+--
+-- What it holds is a name to address a statement to and one account per asset,
+-- and nothing about how the member runs — not its book, not its subledgers,
+-- not its product. A central bank knows which account it holds for whom. It
+-- does not know what its members do with the money.
+CREATE TABLE settlement_members (
+    bic       TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    opened_at TIMESTAMPTZ,
+    seq       BIGSERIAL NOT NULL
+);
+
+-- One settlement account per asset, in the central bank's own book.
+--
+-- A child table for the reason bank_assets is one: an account is denominated in
+-- exactly one asset, so a member clearing in two currencies holds two accounts
+-- rather than one account with two balances. The account ids here are the
+-- central bank's own, allocated in its own book — the difference from
+-- bank_assets.settlement, which is the same account remembered by the customer.
+CREATE TABLE settlement_member_accounts (
+    bic     TEXT NOT NULL REFERENCES settlement_members (bic) ON DELETE CASCADE,
+    asset   TEXT NOT NULL,
+    account TEXT NOT NULL,
+    seq     BIGSERIAL NOT NULL,
+    PRIMARY KEY (bic, asset)
+);
+
+-- roster_entries is the CLEARING HOUSE's record of a member: where to send a
+-- message addressed to it.
+--
+-- It carries NO account identifier of any kind — no account, no subledger, no
+-- product, no book. A clearing house holding one would be holding the means to
+-- reach into a bank's ledger, and under one shared store nothing but a test
+-- would notice it doing so. That is not hypothetical: the row this table
+-- replaced carried the central bank's account ids, and four readers in three
+-- institutions resolved their postings through it.
+--
+-- Keyed by BIC, like settlement_members and for the same reason: a clearing
+-- house routes what a message addresses, and a message addresses a BIC.
+CREATE TABLE roster_entries (
+    bic           TEXT PRIMARY KEY,
+    name          TEXT NOT NULL,
+    admission_ref TEXT NOT NULL,
+    admitted_at   TIMESTAMPTZ,
+    seq           BIGSERIAL NOT NULL
+);
+
+COMMENT ON COLUMN roster_entries.admission_ref IS
+    'The process id every message of one admission echoes, and the clearing '
+    'house''s only way to tell two admissions apart. The acknowledgement that '
+    'causes this row carries no back-reference to the request, so there is '
+    'nothing else to correlate on. '
+    'It is what makes a refusal implementable at all: the address is reserved '
+    'before anything is sent, so the only requests that can arrive on a BIC '
+    'already in this table are the same bank asking for a second asset — one '
+    'currency per request, so a two-currency bank really does ask twice — and '
+    'an operator re-driving an interrupted admission. A refusal keyed on the '
+    'BIC alone would refuse exactly those two and never fire on the impostor '
+    'it exists for. '
+    'NOT NULL and empty for the rows today''s atomic admission writes: that '
+    'call composes no messages and has no process id to echo, and "" is the '
+    'honest record of an admission that was never a conversation.';
+
+-- The assets a member clears in, one row each.
+--
+-- A SET and not a map, which is the whole difference between this child table
+-- and the other two: it has no third column, because the clearing house holds
+-- no account for any asset. It knows which schemes a member is in so that it
+-- can refuse to clear one it is not in, and that is all it knows.
+--
+-- The order is the acknowledgement's, preserved by seq, because it is the
+-- servicer's list of what it opened rather than a set this institution chose.
+CREATE TABLE roster_entry_assets (
+    bic   TEXT NOT NULL REFERENCES roster_entries (bic) ON DELETE CASCADE,
+    asset TEXT NOT NULL,
+    seq   BIGSERIAL NOT NULL,
+    PRIMARY KEY (bic, asset)
 );
 
 -- debtor/creditor _identifier_scheme and _identifier_value are the PartyRef's
@@ -760,18 +901,18 @@ COMMENT ON COLUMN payments.debtor_name IS
 COMMENT ON COLUMN payments.creditor_agent IS
     'The BIC of the bank holding this party''s account, and — unlike the two '
     'name columns beside it — NOT what the instruction said. Both agent '
-    'columns are DERIVED at submission from the participants row for the '
+    'columns are DERIVED at submission from the banks row for the '
     'party this payment already names (payment.SubmitPaymentTx), and whatever '
     'a caller supplied is discarded. The reason is what this element DOES: it '
     'goes out as CdtrAgt/DbtrAgt and the clearing house ROUTES on it without '
     'reading anything, so a payer allowed to assert it would be a payer '
     'choosing which bank received the payment. Real SEPA is the same shape — '
     'IBAN-only since 2016, the originating bank derives the routing. It is '
-    'therefore, TODAY, a redundant copy of what participants.bic holds for '
+    'therefore, TODAY, a redundant copy of what banks.bic holds for '
     'creditor_participant — no operation in this system changes a BIC once a '
     'bank is admitted, so the two cannot yet disagree. It is stored anyway, '
     'and the reason is what the row is: a record of the message that WAS '
-    'SENT, not a view onto the roster as it stands now. PutParticipant is an '
+    'SENT, not a view onto the roster as it stands now. PutBank is an '
     'upsert (see store/storetest), so the day a BIC can be corrected is the '
     'day a join would silently rewrite the address on every payment already '
     'settled. There is no foreign key for the same reason. The parallel '
@@ -853,10 +994,10 @@ CREATE TABLE settlement_positions (
 -- told about — a cut-off's net settlement or a single return — and it is the
 -- first payment-layer table keyed by book.
 --
--- Every other table in this section — participants, payments, mandates, cycles,
+-- Every other table in this section — banks, payments, mandates, cycles,
 -- settlements — is network-scoped: those rows belong to no single bank, so they
 -- are keyed by their id alone. Note the exact claim, because a looser one is
--- false: participants DOES carry a book_id column (:547), but as DATA — which
+-- false: banks DOES carry a book_id column, but as DATA — which
 -- book that bank owns — and not as part of its key. This is the first
 -- payment-layer table where the book is part of the identity, and that
 -- difference is the whole of sub-project 8. A cycle is the clearing house's; a
@@ -1018,7 +1159,7 @@ COMMENT ON COLUMN deposit_accounts.asset IS
     'every listing into a join. Unconstrained, for the reason given on '
     'accounts.asset.';
 
-COMMENT ON COLUMN participant_assets.asset IS
+COMMENT ON COLUMN bank_assets.asset IS
     'One row per asset this bank operates in, holding every plumbing account '
     'that asset needs — the ones in this bank''s own book, plus its settlement '
     'account in the central bank''s. Deliberately not counted here: the set has '
@@ -1026,7 +1167,7 @@ COMMENT ON COLUMN participant_assets.asset IS
     'stale while a description of what the row is for does not. Unconstrained, '
     'for the reason given on accounts.asset.';
 
-COMMENT ON COLUMN participant_assets.returns_receivable IS
+COMMENT ON COLUMN bank_assets.returns_receivable IS
     'The GL account for a claim on a biller: opened when this bank is forced '
     'to honour a direct-debit refund it cannot fund out of the biller''s own '
     'account. It is an ASSET, and the contrast with unclaimed, immediately '

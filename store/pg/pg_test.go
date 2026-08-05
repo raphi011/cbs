@@ -412,7 +412,7 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 	// is the assertion that would fail on a divergence: with two "Member
 	// Reserves" subledgers each bank's reserves would be real, and invisible to
 	// the other's settlement.
-	participants, err := net.ListParticipants(ctx)
+	participants, err := net.ListBanks(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "participants", len(participants), len(names))
 
