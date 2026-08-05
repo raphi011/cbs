@@ -446,7 +446,9 @@ from (6) — the second leg, and what turns the
 payment Returned
 \`\`\`
 
-The clearing house **holds** that \`pacs.004\` between steps 2 and 6 rather than relaying it straight through: a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing. On an \`RJCT\` the held message is dropped and only the answer goes out.
+The clearing house **holds** that \`pacs.004\` between steps 2 and 6 rather than relaying it straight through: a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing. On an \`RJCT\` the held message is dropped and only the answer goes out. The returning bank then **unwinds its own leg** by [[reversal|reversing]] the posting, so its customer is back where the return found them.
+
+And then the return can be **asked again**. The commonest \`RJCT\` on this path is \`AM04\` — the other bank was short of reserves at that moment — and a shortfall somebody can cover is not a payer who has lost their refund right. The reversed leg's transaction id stays written on the payment, because the retry's idempotency key is derived from it; what it stops meaning is *this bank's leg stands*. That answer is in the ledger, on the transaction. Reading the id alone let a retried return run its whole conversation — reserves reversed, the other bank's customer clawed back, \`ACSC\` on the wire — around a refund that no longer existed.
 
 Because the settlement agent is final at step 3 and each bank books afterwards, a return has an [[unreconciled-position|unreconciled position]] exactly as a cut-off does — and the bank's own advice row for it is keyed by a **payment** id where a cut-off's is keyed by a cycle id.
 
@@ -454,7 +456,7 @@ Which leg lands where never changes: the **clawback** is always at the creditor'
 
 **Both** SEPA schemes allow returns here: \`SCT.AllowsReturn()\` and \`SDD.AllowsReturn()\` each report \`true\`, and \`PostReturnLegTx\` refuses only a scheme that reports \`false\`. That is not a shortcut — a credit transfer return is a real R-transaction too, sent by the *beneficiary's* bank when it cannot apply the funds (a closed account, a name that does not match). Which bank sends it is what direction decides: always the bank that **received** the original instruction, so the payee's bank on a push and the payer's on a pull.
 
-What a credit transfer has no equivalent of is the debtor's **refund** — the 8-week, no-questions-asked claim on a settled collection. A payer who simply changes their mind about a credit transfer must ask for a *recall*, which the beneficiary can refuse; that is a \`camt.056\`, and this system does not implement it. Two simplifications inside the return itself: it settles immediately rather than being batched into a later R-cycle, and no return window is enforced — \`PostReturnLegTx\` asks only whether the scheme allows returns and whether the payment is \`Settled\`. What it *does* ask about the money depends on direction, and on one rule: **a bank can refuse a leg only if it posts it before it sends.**
+What a credit transfer has no equivalent of is the debtor's **refund** — the 8-week, no-questions-asked claim on a settled collection. A payer who simply changes their mind about a credit transfer must ask for a *recall*, which the beneficiary can refuse; that is a \`camt.056\`, and this system does not implement it. Two simplifications inside the return itself: it settles immediately rather than being batched into a later R-cycle, and no return window is enforced — \`PostReturnLegTx\` asks whether the scheme allows returns and whether the payment is \`Settled\`, and nothing asks how long ago it settled. What it *does* ask about the money depends on direction, and on one rule: **a bank can refuse a leg only if it posts it before it sends.**
 
 | | the returning bank posts, before it sends | the other bank posts, after finality |
 |---|---|---|
@@ -546,13 +548,21 @@ The debtor leg is reversed if the payment is [[payment-lifecycle|rejected]] befo
     title: "Creditor leg",
     body: `The **creditor leg** is the ledger entry that delivers funds into the payee's account. It is posted by the **payee's own bank**, once reserves have actually moved between banks at the [[central-bank-reserves|central bank]] and the clearing house has told that bank so.
 
+Two postings put that bank back to flat, and they are **two separate [[unit-of-work|units of work]], booked from two different institutions' messages**. The reserve mirror comes **first**, because the central bank tells a member its reserve moved before it tells the clearing house the cycle settled:
+
 \`\`\`
-Bank B — creditor leg (Bob receives €300 from Alice):
+Bank B — reserve mirror, from the camt.053:
+  Debit  Reserve at CB (Asset)         300  ← Bank B's reserve asset rises
+  Credit Clearing Suspense (Liability) 300  ← still owed to the payee
+\`\`\`
+
+\`\`\`
+Bank B — creditor leg, from the pacs.002 (Bob gets €300):
   Debit  Clearing Suspense (Liability) 300  ← suspense cleared
   Credit Bob Deposit (Liability)       300  ← Bob's balance rises
-  Debit  Reserve at CB (Asset)         300  ← Bank B's reserve asset rises
-  Credit Clearing Suspense (Liability) 300  ← and suspense nets to zero
 \`\`\`
+
+Written as one four-entry posting it says two wrong things at once. It claims **one** institution's message moved both, when the whole [[nostro-reconciliation|nostro/vostro check]] is that two different senders did — a bank checking one sender against itself has reconciled nothing. And it erases the [[unreconciled-position|unreconciled position]], which *is* the interval between these two postings: the reserves have moved and the payee has not been paid.
 
 The creditor leg is the moment of **finality** for the payee — funds are now permanently in their account. Until the creditor leg posts, Bob can see the payment as pending (value-dated) but the funds are not yet available. See [[payment-lifecycle]] for the full state machine and [[debtor-leg]] for the payer's side.`,
   },
@@ -574,6 +584,8 @@ Settlement phase:
   Central bank credits Bank B reserves: +net
   Banks clear their clearing suspense accounts
 \`\`\`
+
+A payment with **one bank at both ends** has nothing to clear, and this system refuses it rather than carrying it. Both customers bank at the same institution, so no interbank obligation comes into existence: there is no position to net, no reserves to move and no statement that could tell a bank about a book it already holds. A real bank recognises the beneficiary as its own and moves the money between two of its own deposit accounts — a **book transfer**, which never reaches a scheme. Here that submission is refused at the door with a \`422\`, which is a statement about the route and not about the payment: the transfer is an ordinary product, and this system does not offer it yet.
 
 The gap between the two phases is the **settlement window** — during it, counterparty risk exists, and the money sits in each bank's [[clearing-suspense]] account. The [[payment-lifecycle]] reflects this: a payment moves Accepted → Cleared before it can reach Settled.
 
