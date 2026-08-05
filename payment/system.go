@@ -489,40 +489,60 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //   - AdmitMemberTx reads the roster entry, compares its admission reference and
 //     writes. Two DIFFERENT admissions of one address at once both read nothing
 //     and both write, and the entry ends up naming whichever committed last.
+//     60 runs in 60.
+//
 //   - OpenSettlementAccountTx reads the member row to decide whether it has
 //     already opened an account for (BIC, asset). Two requests for one member in
 //     two assets at once both read the same row, and each writes a map holding
 //     only its own account — so the central bank opens two reserve accounts in
 //     its own book and records one, leaving a liability account nothing points
-//     at.
+//     at. 60 runs in 60.
+//
 //   - RecordMembershipTx reads the bank row to decide whether it is still
-//     Founded, and writes it. This one did NOT diverge when it was probed
-//     without the sequence — 0 runs in 60 — and it is here anyway, because the
-//     reason it held was nothing either act said. PutBank is an upsert that also
-//     replaces the bank's per-asset child rows, so concurrent writers deadlock,
-//     store/pg retries the whole callback, and the retry re-reads a bank that is
-//     Member by then. That is a property of the STATEMENT SHAPE store/pg happens
-//     to use, one layer below a domain refusal, and a rewrite of PutBank could
-//     take it away without touching anything this file can see.
+//     Founded, and writes it. Both recordings are accepted and the second writes
+//     its own settlement account numbers over the first's, while both callers
+//     are told they recorded a membership. 60 runs in 60.
+//
+// # Every one of those numbers needs a connection pool with two connections in it
+//
+// This is worth more than the numbers, because the next person to measure it
+// will get the wrong answer the way the first attempt here did.
+//
+// pgxpool opens connections on demand and keeps them, so a store that has just
+// been built and used once has exactly ONE idle connection. Two racers started
+// against it are not concurrent at all: the first takes the connection and
+// commits while the second is still opening a TCP connection, and the second
+// then reads what the first wrote. Measured that way, RecordMembershipTx
+// diverges 0 times in 60 and looks like the act that does not need this call.
+// Hold four reads open at once first, so the pool really has two connections,
+// and the same probe gives 60 in 60. AdmitMemberTx's clash is the same story
+// less completely — between 41 and 55 of 60 across four cold samples, and 60 of
+// 60 warm. Only OpenSettlementAccountTx's lost update shows 60 in 60 either way,
+// because both racers do enough work to still be in flight together.
+//
+// An earlier version of this comment credited store/pg's deadlock retry for
+// RecordMembershipTx holding — PutBank's upsert plus its per-asset child rows,
+// losers deadlocking, Store.Update running the callback again against a bank
+// that is Member by then. That does not happen. The callback ran exactly ONCE
+// in all 240 Postgres runs measured across the four configurations, and the
+// cold-pool loser simply ran its SELECT after the winner's COMMIT. The retry in
+// store/pg (pg.go's 40P01/40001 arm) is real and was never reached.
 //
 // One more question rides along with the second: centralBankChartTx, which
 // OpenSettlementAccountTx calls, resolves the central bank's chart of accounts
 // find-or-create BY NAME, with no unique constraint behind it. Two callers that
 // both find no Central Bank ledger both create one, and the members underneath
-// them disagree about which subledger holds reserves. store/pg's schema is where
-// the absent constraint is argued, and it used to close this by pointing at
-// AddParticipantTx's first statement. That call still draws an id; what reached
-// the find-or-create without one is this act, which is a caller that did not
-// exist when the argument was written. Both places now point here.
+// them disagree about which subledger holds reserves — 60 runs in 60. store/pg's
+// schema is where the absent constraint is argued, and it used to close this by
+// pointing at AddParticipantTx's first statement. That call still draws an id;
+// what reached the find-or-create without one is this act, which is a caller
+// that did not exist when the argument was written. Both places now point here.
 //
 // store/mem serializes every Update on one process-wide mutex, so all of it is
-// atomic there whatever the caller does. store/pg runs READ COMMITTED, where two
-// transactions both read "not there" and both write. Measured on this branch
-// before this call existed, sixty runs each: 50 in 60 admitted two different
-// admissions to one address, 60 in 60 lost one of two settlement accounts, and
-// 60 in 60 built the central bank a second chart of accounts. Every one of them
-// was 0 in 60 on store/mem. A domain refusal that holds on one store and not the
-// other is not a refusal.
+// atomic there whatever the caller does — 0 in 60 on every case above and below,
+// warm pool or cold, which is the whole difference. store/pg runs READ
+// COMMITTED, where two transactions both read "not there" and both write. A
+// domain refusal that holds on one store and not the other is not a refusal.
 //
 // # Why an id allocation is the lock
 //
@@ -943,8 +963,11 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 //
 // A bank that is already a Member is refused rather than overwritten — see
 // ErrBankNotFounded. That refusal is decided from a read and made binding by the
-// id this act draws before it, like the other two that decide from a read; see
-// admissionSequenceTx, which records what it is holding this one up against.
+// id this act draws before it: without it, two recordings of one bank on
+// store/pg are both accepted 60 runs in 60, and the second writes its own
+// settlement account numbers over the first's. See admissionSequenceTx, which
+// records the measurement and the reason it looks like 0 in 60 if you take it
+// on a connection pool that has only just been built.
 //
 // # An account for an asset this bank does not operate in is not recorded
 //

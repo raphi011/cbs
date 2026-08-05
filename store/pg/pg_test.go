@@ -517,9 +517,10 @@ func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
 // They are the same shape as the fifth — a read the domain decides from, made
 // binding by an id allocated in front of it — and not as the first three, which
 // are closed by a row lock, a partial unique index and a conditional UPDATE
-// respectively. The third of those goes out of its way to BYPASS an id
-// allocation, because the path that has one would have hidden the bug it is
-// about.
+// respectively. Two of those three are driven through a store primitive
+// precisely to BYPASS an id allocation, because the realistic path allocates one
+// and would have hidden the bug: see TestConcurrentPutTransactionWithOneIdempotencyKey
+// and TestConcurrentMarkReversedOnlyOneWins, which say so about themselves.
 //
 // Every admission before the split went through AddParticipantTx, which
 // allocates the bank's id before anything else, so the rows admission writes
@@ -547,22 +548,34 @@ func TestConcurrentAdmissionsOfOneBICAdmitOne(t *testing.T) {
 	// which is the only case AdmitMemberTx refuses, and the case that must not
 	// depend on which store is underneath.
 	//
-	// # Both numbers below are measured, and one of them is not what it looks like
+	// # What makes this guard sensitive is the CONNECTION POOL, not the racers
 	//
-	// The width was going to be eight "because two racers can win by luck", and
-	// that turned out to be false. Detection of a missing sequence, sixty runs
-	// per configuration with the call deleted: two racers 55 of 60, eight racers
-	// 53 of 60. Widening does nothing, and may cost a little — the race is
-	// decided by whether a second transaction reaches the read before the first
+	// Two explanations were written here before either was measured properly,
+	// and the second correction is the one worth keeping.
+	//
+	// The width was going to be eight "because two racers can win by luck".
+	// False: with the sequence deleted, two racers detected it 55 of 60 and
+	// eight detected it 53 of 60. Widening does nothing, because the race turns
+	// on whether the second transaction reaches the read before the first
 	// commits, and more contenders do not make that likelier.
 	//
-	// What does is running it again. One round detects about nine times in ten,
-	// so a single-round guard misses this regression about one run in ten; five
-	// rounds on five addresses detected it 60 of 60, and 0 of 60 with the call
-	// in place, on both stores. The rounds are the guard and the width is not,
-	// which is the opposite of what the first version of this comment claimed.
-	// The width stays at eight because it costs nothing and a wider race is a
-	// closer model of what an operator console can do to one address.
+	// Rounds were credited next. They do work — five rounds detect 60 of 60 —
+	// but not by re-rolling one unreliable die. Detection PER ROUND, sixty runs:
+	// round 1, 41 of 60; rounds 2, 3, 4 and 5, sixty of sixty each. The first
+	// round is unreliable because pgxpool has ONE idle connection when a store
+	// has just been built, so the first racer takes it and commits while the
+	// second is still opening a socket. By round 2 the pool holds two and the
+	// racers are genuinely concurrent. Warm the pool by hand and ONE round
+	// detects 60 of 60.
+	//
+	// The rule that generalises is: never measure a store race on a cold pool.
+	// The rounds stay because they warm it without this test having to know how
+	// pgxpool grows, and because five rounds of eight cost about a tenth of a
+	// second. The width stays at eight as a preference — it models an operator
+	// console hitting one address — and not as sensitivity, which it does not
+	// provide.
+	//
+	// With the sequence in place: 0 of 60, on both stores.
 	for _, bic := range []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX", "SOLEFRPPXXX", "BANKESMMXXX"} {
 		refs := make([]string, 8)
 		for i := range refs {
@@ -588,10 +601,11 @@ func TestConcurrentAdmissionsOfOneBICAdmitOne(t *testing.T) {
 		// Asserted per applicant, and BEFORE the winner count below, which is
 		// fatal. Counting the rows cannot do this job and a previous version of
 		// this test tried: the roster is keyed by BIC, so it holds exactly one
-		// row whether one writer won or five did — measured at 0 of 60 runs with
-		// a row count other than one, on a store with no sequence at all. What a
-		// lost race produces is an applicant told it was admitted while the entry
-		// names somebody else's admission, and that is what this reads.
+		// row whether one of these eight writers won or all eight did —
+		// measured at 0 of 60 runs with a row count other than one, on a store
+		// with no sequence at all. What a lost race produces is an applicant
+		// told it was admitted while the entry names somebody else's admission,
+		// and that is what this reads.
 		var entry payment.RosterEntry
 		assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
 			var err error

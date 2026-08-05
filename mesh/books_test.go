@@ -1308,7 +1308,15 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // An actor that DID reach into a bank's ledger over this window is not
 // invisible to these assertions, and that is measured rather than assumed: a
 // clearing-house half that listed the returning bank's ledgers before
-// forwarding the answer comes out [bank_3] and fails the second assertion below.
+// forwarding the answer comes out holding that BANK's book and fails the second
+// assertion below.
+//
+// It used to name the book — "comes out [bank_3]" — and that had gone stale
+// twice over: the harness's second bank is numbered differently every time an
+// allocation moves in the network's shared id counter, most recently when
+// admission became four acts. A book id here is a fact about the seed's
+// arithmetic and not about what this test measures, which is WHOSE book was
+// reached.
 //
 // The two banks have moved to TestEachBankBooksItsOwnReturnAndNoOtherBooks,
 // which is where the assertion that they touch nothing turned into an assertion
