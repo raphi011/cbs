@@ -1,32 +1,35 @@
-# Handoff — sub-project 8 Task 16, on `spec/db-per-entity`, NOT merged
+# Handoff — sub-project 8 Task 16, on `spec/db-per-entity`, ready to merge
 
-`spec/db-per-entity` is at `4ac2bcc`, 14 commits ahead of `main` (`cd5056e`).
-41 files, +4108/−844.
+`spec/db-per-entity` is at `f2db0e1`, 25 commits ahead of `main` (`b52761e`).
+50 files, +5311/−891.
 
-**This branch is not ready to merge, and the two reasons are not leftovers.**
-Task 16f — the documentation sweep — was never started, and no whole-branch
-review has run. On Task 15 the whole-branch review is what found the Critical
-money bug that per-task review structurally cannot see. Both are below under
-_What is left_.
+**The two things that blocked this branch on 2026-08-03 are both closed**
+(2026-08-05). Task 16f — the documentation sweep — landed at `41c52d1`/`5ebdeac`,
+and the whole-branch review ran. It earned its keep: **two Critical money
+defects**, neither visible to any per-task review, both reproduced by probe on
+`store/mem` *and* `store/pg`, both reachable through the HTTP API. They are at
+_What the whole-branch review found_ below, with the reasoning behind the fix
+each got, because in both cases the alternative was tempting and wrong.
 
-Everything else in this file was verified against the code at `4ac2bcc`, not
-against a plan.
+Everything in this file was verified against the code at `f2db0e1`, not against
+a plan.
 
-## Verification, run by the controller at `4ac2bcc`
+## Verification, run by the controller at `f2db0e1`
 
 Not by a subagent. All five green:
 
 ```bash
 gofmt -l . && go vet ./... && go build ./...          # clean
-go test ./...                                          # store/mem, all packages ok
+go test ./... -count=1                                 # store/mem, all packages ok
 TEST_DATABASE_URL="postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable" go test ./... -count=1
 go test ./mesh/ ./api/ ./cmd/... -race -count=1
 cd web && rm -rf .next && npm run typecheck && npm run lint && npm run test   # 179 passed
 ```
 
-The Postgres run took 20–32s per package against 1–2s on `store/mem`, which is
-how you can tell it did not skip. **`make test-pg` uses Docker and does not work
-on this machine** — use the explicit `TEST_DATABASE_URL`.
+The Postgres run took 23–39s on the seven store-touching packages against
+2.5–5s on `store/mem`, which is how you can tell it did not skip. **`make
+test-pg` uses Docker and does not work on this machine** — use the explicit
+`TEST_DATABASE_URL`.
 
 ## Read this first
 
@@ -118,7 +121,7 @@ lost audit trail — `EventPaymentReturned` still lands, from `PostReturnLegTx`'
 `Returned` branch, and each member still writes a `SettlementAdvice` row from its
 camt.053.
 
-## The crossing count: four closed, one open
+## The crossings: closed by Tasks 14, 15 and 16; two still standing
 
 | # | crossing | state |
 |---|---|---|
@@ -128,59 +131,82 @@ camt.053.
 | 4 | `ReturnPaymentTx` posts in three books | **CLOSED** |
 | 5 | `AddParticipantTx` writes into `CentralBankBook` | open — Task 17 |
 
-## What is left, and why both block merge
+## What the whole-branch review found
 
-### 1. Task 16f — the documentation sweep. Unstarted.
+It found what per-task review cannot see: both defects were made by one task's
+value and read wrongly by another's. Both were reproduced by probe, on both
+stores, before anything was changed. **The reviewer built probes and ran them
+rather than reading** — the same method that found Task 15's Critical, and the
+second time in two sub-projects it has been the only thing that worked.
 
-The brief is at
-`.superpowers/sdd/2026-08-03-task-16-return-becomes-a-conversation/task-16f-brief.md`
-(git-ignored; regenerate with the plan's `task-brief` script if it is gone).
+Clean under probe, for the record, so the next reviewer knows what is already
+covered: money conservation in both directions across every account in every
+book; the return of a payment that settled into `Unclaimed`; a payer who closed
+their account after settlement; the forced clawback into `Returns Receivable`;
+the push-side refusal; redelivery of all five return-path messages; and a
+late RJCT against a completed return.
 
-Three domain facts no layer currently carries:
+### C1 — a return retried after an RJCT unwind never repaid the payer
 
-- a return is settled by the settlement agent and **booked by each bank
-  locally**, so a return has an unreconciled position exactly as a cut-off does;
-- **the creditor's bank carries the refund risk on a direct debit**, which is why
-  it vets its creditors and why `Returns Receivable` exists on one side only;
-- a bank can **refuse** a return it would have to fund only when it is the
-  returning bank; otherwise the refusal comes too late to matter.
+`ReverseReturnLegTx` left the leg's transaction id on the payment and argued:
+*"there is no reader for whom a stale id here decides anything."* There was one.
+`PostReturnLegTx`'s `p.ReturnRefundTx == ""` case read a **`Reversed`**
+transaction's id as "already posted" and took the idempotent-redelivery arm —
+while the rest of the conversation ran to completion. Measured: the biller
+clawed back 250000, the payer repaid **nothing**, 250000 stranded in the
+returning bank's clearing suspense for ever, the row reading `Returned` and the
+network having answered ACSC. AM04 is exactly the retriable RJCT, and re-calling
+`Mesh.Return` is this branch's own documented route out of the failed-send seam.
 
-Layers: `README.md` (authoritative) → `web/src/components/hint-content.ts` → quiz
-chapters 9, 11, 12, 15, 16 → `0001_init.sql`'s comments.
+**Fixed by fixing the reader, not the writer** (`66b044c`). `PostReturnLegTx`
+now asks the ledger whether the leg *stands* (`legStandsTx`) rather than whether
+a field is non-empty, and the retry's posting derives its idempotency key from
+the reversed attempt (`returnLegKey`) so the ledger does not refuse the repost.
+No new column.
 
-**Known already-outstanding items for that sweep**, found during 16b and 16c and
-deliberately deferred:
+Refusing a second `Return` outright was considered and rejected: it trades a
+money bug for a payer who can never be repaid, and returns are retriable in the
+scheme. **The rejected option was the smaller diff. That is not a reason.**
 
-- `README.md` and `hint-content.ts` list a bank's internal accounts and **do not
-  yet mention `Returns Receivable`**. Tasks 16c and 16e touched both files for
-  other reasons, so they are *partially* swept — which is worse than untouched,
-  because two layers now agree about the advice key and disagree about the chart
-  of accounts.
-- **Chapter 9 is at 22 questions, the maximum `diversity.test.ts` allows.** A new
-  question there means replacing one.
-- Open all five chapters, including ones this change does not obviously touch.
-  Chapter 10 contradicted Task 15's headline concept and scored a false statement
-  correct, having never been opened by any task in that sub-project.
+Re-review probed both legs — the push side independently, forcing AM04 by
+draining the payee bank's settlement account through a second customer — and
+measured the payer repaid, the counterparty clawed back, both clearing suspenses
+back to zero. Reverting the reader reproduces the Critical; removing `replacing`
+from `returnLegKey` reddens both tests, so both halves are load-bearing.
 
-And two mechanical traps: a `[[wiki-link]]` to a key missing from
-`hint-content.ts` throws at runtime and takes **every** route down while
-`next build` stays green (`npm run test` catches it in hint bodies *and* quiz
-explanations); and **no test in this repository can catch a web rendering
-regression** — take a screenshot and look at it.
+### C2 — an on-us return silently lost half the reserve reversal
 
-### 2. The whole-branch review. Not run.
+`SettleReturnTx` always emits two statements, one per side. With one bank on both
+sides they are two statements for the same `(Book, Reference, Asset)` differing
+only in sign, and `PostSettlementAdviceTx` dedupes the second away. Measured: the
+bank's reserve mirror 250000 below the central bank's record of it, and its
+clearing suspense permanently at −250000. **I1** was the same root — `mayRefuse`
+was true for *both* legs when one bank is both parties, so an on-us pull refused
+its own customer's unconditional eight-week refund, inverting the branch's
+headline rule.
 
-Dispatch it on the most capable model over `git merge-base main HEAD`..`HEAD`.
-Point it at the deferred-minor list below. On Task 15 this review found a
-Critical money bug — a return clawing back from an account that never received
-the money — created by one task and left unhandled by another, and it was found
-by a reviewer that **built a probe and ran it rather than reading**.
+**Fixed by refusing an on-us payment where it enters the mesh** (`b13127d`):
+`mesh.ErrOnUsPayment` in `Mesh.Submit`, 422 at the API. An on-us payment never
+reaches a clearing house in life — both customers bank at the same institution,
+so there are no reserves to move, nothing to net and no `camt.053` to send.
+Special-casing `SettleReturnTx` was rejected: it treats the symptom of a payment
+that should never have been submitted to clearing.
+
+`mayRefuse` became a property of the **leg** regardless of that boundary —
+`Push && returner` (`f6250b4`) — so the rule is stated rather than emergent, and
+does not depend on the boundary check holding. Re-review probed all four
+combinations plus on-us and confirmed the push-side clawback refusal, which the
+whole design rests on, still fires.
+
+**What this leaves the system without: two customers of the same bank cannot pay
+each other at all.** That is now an openly recorded hole rather than a silently
+diverging one. See _Follow-up work this branch created_.
 
 ## What each task did, with its review history
 
 Every task was implemented by a fresh subagent, reviewed, and fixed until its
-review came back clean. Seven fix rounds in total; **every single one of them was
-at least partly about prose asserting something the code does not do.**
+review came back clean. Eight fix rounds in total; **seven of the eight were at
+least partly about prose asserting something the code does not do.**
 
 | task | commits | rounds |
 |---|---|---|
@@ -189,9 +215,19 @@ at least partly about prose asserting something the code does not do.**
 | 16c advice keyed by reference | `2284c3e`, `389cbf2` | 1 |
 | 16d the domain splits into three acts | `54e8920`, `349fc96`, `58e5d43`, `0344f78` | 2 |
 | 16e the mesh conversation | `f074043`, `d274779`, `4ac2bcc` | 1 |
+| 16f the documentation sweep | `41c52d1`, `5ebdeac` | 1 |
+| final fix wave (C1, C2, I1, M1, M3) | `66b044c`, `b13127d`, `f6250b4`, `f2db0e1` | — |
 
 `d95d318` is a plan correction, not a task — see _Decisions taken during
 execution_.
+
+16f's one fix round is worth its own line, because it is the lesson repeating
+inside the task that exists to stop it: the sweep **added** a chapter 9 question
+to teach the return's finality, and that question scored as correct *"each bank
+posts its own reserve mirror and its own customer leg"* after finality. Six other
+layers had the ordering right. The returning bank posts its customer leg before
+the pacs.004 exists; after finality exactly one bank has a leg left to post. A
+question written to carry the branch's headline fact stated its inverse.
 
 ## Decisions taken during execution, and why
 
@@ -264,18 +300,23 @@ sentence is now where the error is raised.
   `advise` returns on the first failing send — the same defect Task 15 recorded
   for the settlement path, now reachable from a second flow. Unreachable only
   because this transport cannot lose a message.
-- **An on-us payment** (one bank on both sides) makes `mayRefuse` true for *both*
-  legs, so an on-us pull's clawback is refusable — the opposite of "forced on a
-  pull". Untested; nothing in the repository constructs an on-us payment.
 - **A push clawback refusal now reaches `ReasonFor` as AM04 about the returning
   bank's own customer**, which a push return could never produce before. The
   mapping is right; a mesh test now exercises it.
+- **A redelivered pacs.004 after the return has completed dead-letters rather
+  than being a no-op**, because `p.Status != Settled` fires ahead of the
+  already-posted arm. Money-safe — nothing moves — but it contradicts
+  `PostReturnLegTx`'s own stated design, and `PostCreditorLegTx` handles the same
+  shape the other way. Unreachable in this transport. Measured unchanged by C1's
+  fix, which touches that switch.
 - **`api/mesh_test.go` hardcodes seed-allocated `dep_` ids** and had to be
   updated when Task 16b added a fourth account per bank. It will shift again on
   the next account. Those tests should read ids from the seed rather than assert
   them.
-- **`TestParticipantHasAccountsPerAsset`** does not pin `ReturnsReceivable`'s
-  type alongside `Unclaimed`'s.
+- **`seed` reaches `payment.SubmitPaymentTx` directly** and so bypasses the on-us
+  refusal at `Mesh.Submit`. It builds only cross-bank payments today, so nothing
+  is wrong — but `Mesh.Submit`'s doc claim to be the one door every submission
+  comes through is true of the mesh and not of the tree.
 - **No golden file has ever been schema-validated here.** `pacs004.xml` grew
   `OrgnlTxRef` and nothing checks its position in the sequence, because
   `TestGoldenFilesValidateAgainstTheSchema` skips every subtest —
@@ -283,6 +324,34 @@ sentence is now where the error is raised.
   pass.**
 - **The mid-flight rollback at the settlement seam remains unwitnessed**, carried
   from Task 15.
+
+## Follow-up work this branch created or uncovered
+
+Neither of these is Task 17's, and neither should be picked up inside another
+task. Both are money that stops.
+
+### 1. An on-us payment has nowhere to go
+
+Refusing on-us at `Mesh.Submit` closed C2 and I1 honestly, but it means two
+customers of the same bank cannot pay each other **at all**. The right shape is
+that on-us is not a clearing payment but a **book transfer**: the bank
+recognises the counterparty as its own at submission and posts both legs in its
+own book, one unit of work, no message, no reserves. That is a real product and
+its own task.
+
+### 2. A cycle that nets to zero strands every payment in it, for ever
+
+Found by the fix-wave re-reviewer while checking a claim in the fix report — and
+it **disproves** that claim, so do not read the fix report's third concern as
+settled. The on-us refusal closed only the on-us route to this. Without any
+on-us payment: two offsetting cross-bank credit transfers in one cycle net both
+members to zero, `csm.settlementLegs` emits nothing, and **both payments strand
+at `Cleared` for ever** — both payers debited, neither payee credited, 250000
+stuck in each bank's clearing suspense.
+
+Pre-existing, outside this branch's diff and outside every finding, so it was
+correctly left alone here. It is the most serious thing in this file that nobody
+owns.
 
 ## The process lesson this task cost the most
 
@@ -320,6 +389,29 @@ refused first, so the test passed against a settlement agent with no id guard at
 all. The fixture now funds the creditor's bank and asserts the refusal was *not*
 `ErrInsufficientBalance`. The trap is written into the test's own doc.
 
+### And the one the whole-branch review taught, which is now twice in two sub-projects
+
+**Reading a diff cannot find these. Both Criticals were found by a reviewer that
+built a probe and ran it, and both were confirmed fixed the same way.**
+
+Two sharper forms of it, both earned here:
+
+- **A comment that argues there is no reader is a claim about every call site,
+  and nothing checks it.** C1 is exactly one such sentence — *"there is no reader
+  for whom a stale id here decides anything"* — and the reader was thirty lines
+  away in the same file. When a doc comment's argument is *"nobody reads this in
+  state X"*, that is not documentation, it is an unverified whole-codebase
+  assertion. Either find the readers and name them, or do not lean on it.
+- **"Untested; nothing in the repository constructs one" is a description of the
+  test suite, not of the code.** I1 sat in the ledger under exactly that wording,
+  deferred as a minor. The reviewer constructed one in a single test and it was
+  reachable through the HTTP API. A defect deferred because no test builds the
+  input is deferred on the weakest possible ground.
+
+A third, about severity: **the reviewer ruled C2's sibling M1 "Minor — but fix
+before merge"**, because it was the only known-false claim left in the layer the
+branch had just rewritten. Severity and merge-blocking are separate questions.
+
 ## What the next task is
 
 **Task 17 — admission becomes a conversation.** `AddParticipantTx` writes into
@@ -347,4 +439,9 @@ moving hard-coded ids in `api/mesh_test.go`. Task 17 rewrites that loop entirely
   at 22.**
 - There is **one migration**. Edit `0001_init.sql` in place.
 - **Run the verification yourself before merging.** A subagent reporting it green
-  is a claim, not evidence.
+  is a claim, not evidence. The Postgres run is checkable without trusting
+  anyone: 20–39s on the store-touching packages against 1–5s on `store/mem`. A
+  fast run skipped, and a skip is not a pass.
+- **Budget for the whole-branch review, and require probes.** It has now found a
+  Critical on two consecutive sub-projects, both invisible to a clean per-task
+  history, both found by running code rather than reading it.
