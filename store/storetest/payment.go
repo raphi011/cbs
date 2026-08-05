@@ -415,6 +415,79 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 	})
 
+	// RosterEntryAssetsAreAnOrderedList pins the two properties of Assets that
+	// its Go type has and a set does not: the caller's ORDER survives, and a
+	// REPEATED asset is stored rather than refused.
+	//
+	// The second is the one this case was written for. store/pg keyed this child
+	// table by (bic, asset), so it refused with SQLSTATE 23505 a slice store/mem
+	// stored verbatim — the single divergence between the two stores that this
+	// suite exists to make impossible. Nothing could reach it: the only writer
+	// today sorts the keys of a map. The writer Task 17d adds builds the list
+	// from an acmt.010's AccountForAction1, which is unbounded, so a servicer
+	// listing one BIC's euro account twice arrives as a repeat.
+	//
+	// What a store must NOT do is decide about it. Refusing a duplicate is a
+	// judgement about the message that carried it, and it belongs to the
+	// institution reading the message; a store that refused would make that
+	// judgement in one store and not the other, which is how this started.
+	//
+	// The order is asserted with a fixture that is NOT alphabetical, on purpose.
+	// The other roster case uses EUR, USD, which a store that sorted its child
+	// rows would pass by accident.
+	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
+		s := openPayment(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			e := rosterEntry("AURODEFFXXX", "Aurora Bank", early)
+			e.Assets = []ledger.AssetCode{"USD", "EUR", "USD"}
+			return tx.PutRosterEntry(ctx, e)
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster assets as written", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "USD", "EUR", "USD")
+
+			// And through the listing, which is a second query in store/pg and
+			// could order differently from the single read above.
+			listed, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 {
+				t.Fatalf("ListRosterEntries returned %d entries, want 1", len(listed))
+			}
+			assertOrder(t, "roster assets in listings", ids(listed[0].Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "USD", "EUR", "USD")
+			return nil
+		})
+
+		// An upsert replaces the list wholesale, duplicates and all, so a
+		// shorter list does not leave the tail of the longer one behind.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			e := rosterEntry("AURODEFFXXX", "Aurora Bank", early)
+			e.Assets = []ledger.AssetCode{"GBP"}
+			return tx.PutRosterEntry(ctx, e)
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster assets after an upsert", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "GBP")
+			return nil
+		})
+	})
+
 	t.Run("GetOnMissingPaymentRowsReturnsSentinels", func(t *testing.T) {
 		s := openPayment(t, newStore)
 

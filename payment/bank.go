@@ -63,15 +63,16 @@ const (
 // The first four are accounts in this bank's own book. The fifth is an account
 // in ANOTHER institution's book, and it is here as the account holder's record
 // of its own account number — the way a customer knows their IBAN without
-// holding the bank's ledger. What it is not, any more, is the only record of
-// that account: the central bank now keeps its own SettlementMember row, which
-// is the one a settlement agent asks.
+// holding the bank's ledger. What it is no longer is the ONLY record of that
+// account: the central bank now keeps a SettlementMember row of its own.
 //
-// Both records exist and the readers have not moved yet. SettleCycleTx,
-// SettleReturnTx and ReserveBalance still resolve the account through this
-// field, and Task 17c and Task 17e are what point them at the central bank's
-// own row instead. DepositTx is the one reader that stays here afterwards,
-// because it is the account holder quoting its own account number.
+// Both records exist and no reader has moved. SettleCycleTx, SettleReturnTx,
+// PostSettlementAdviceTx and ReserveBalance all still resolve the account
+// through this field, so every settlement in this system is still a settlement
+// agent reading a bank's row. Task 17c and Task 17e are what point them at the
+// central bank's own row instead. DepositTx is the one reader that stays here
+// afterwards, because it is the account holder quoting its own account
+// number.
 type BankAccounts struct {
 	Suspense ledger.AccountID
 	Reserve  ledger.AccountID
@@ -215,9 +216,12 @@ type Bank struct {
 	//
 	// They are the reason this row is a bank's own and is handed to nobody
 	// else. A value of this type carries the ability to read and write the
-	// named bank's ledger, so a lookup that returned one to another institution
-	// would hand that ability over with it — which is what mesh/ops.go's
-	// GetBank did until this row was split out of it.
+	// named bank's ledger, so a lookup that returns one to another institution
+	// hands that ability over with it — which is what mesh/ops.go's
+	// GetParticipant did until this row was split out of it. Network.GetBank
+	// still returns one and still binds them, deliberately: its callers are the
+	// bank itself and the operator console, neither of which is another
+	// institution.
 	//
 	// json:"-" for a second reason: the participant.added audit payload is a
 	// snapshot of the stored row, and a handle is neither data nor meaningful

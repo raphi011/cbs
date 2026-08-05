@@ -60,14 +60,20 @@ type Tx interface {
 	GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error)
 	ListSettlementMembers(ctx context.Context) ([]SettlementMember, error)
 
-	// ListRosterEntries and ListSettlementMembers have no production caller
-	// today; GetRosterEntry does — Network.GetRosterEntry, which is what the
-	// mesh's handlers now ask instead of being handed a whole bank. The two
-	// listings are declared with their siblings for the reason
-	// ListSettlementAdvices below was: the rows are written now, and adding a
-	// listing later would be a second occasion to get the ordering contract
-	// wrong in two stores independently. storetest holds mem and pg to one
-	// answer for them in the meantime.
+	// Which of these has a production caller, exactly, because the alternative
+	// is a reader guessing from the placement. GetRosterEntry has one:
+	// Network.GetRosterEntry, which is what the mesh's handlers now ask instead
+	// of being handed a whole bank. The other four — ListRosterEntries,
+	// GetSettlementMember, ListSettlementMembers, and the settlement member's
+	// listing in every form — have none; the only code that calls them is
+	// storetest. PutSettlementMember and PutRosterEntry are called by
+	// AddParticipantTx.
+	//
+	// They are declared now for the reason ListSettlementAdvices below was: the
+	// rows are written now, and adding a reader later would be a second occasion
+	// to get the ordering and not-found contracts wrong in two stores
+	// independently. The settlement agent's readers arrive at Task 17c and Task
+	// 17e — see SettlementMember, which names them.
 	PutRosterEntry(ctx context.Context, e RosterEntry) error
 	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)

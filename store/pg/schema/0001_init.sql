@@ -727,18 +727,35 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
 
 -- The assets a member clears in, one row each.
 --
--- A SET and not a map, which is the whole difference between this child table
--- and the other two: it has no third column, because the clearing house holds
--- no account for any asset. It knows which schemes a member is in so that it
--- can refuse to clear one it is not in, and that is all it knows.
+-- It carries no account, which is the whole difference between this child table
+-- and the other two: the clearing house holds no account for any asset. It
+-- knows which schemes a member is in so that it can refuse to clear one it is
+-- not in, and that is all it knows.
 --
--- The order is the acknowledgement's, preserved by seq, because it is the
--- servicer's list of what it opened rather than a set this institution chose.
+-- Keyed by POSITION and not by asset, which is the same decision cycle_payments
+-- made for ClearingCycle.PaymentIDs and is made here for the same two reasons.
+-- RosterEntry.Assets is an ordered slice, so the position is data rather than a
+-- surrogate; and a slice can repeat a value, so a key on (bic, asset) would let
+-- store/pg REFUSE a row store/mem accepts. That divergence is the one thing the
+-- two stores may never do, and this table had it: the writer that exists today
+-- sorts the keys of a map and cannot repeat, but the writer Task 17d adds
+-- builds this list from an acmt.010's unbounded AccountForAction1, which is
+-- exactly where a repeat arrives. storetest's RosterEntryAssetsAreAnOrderedList
+-- is what holds both stores to the same answer.
+--
+-- Whether a repeated asset is a message worth refusing is a question about the
+-- message and belongs to the institution reading it, not to the store.
+--
+-- Whose order the position preserves depends on who wrote the row. The writer
+-- that exists today sorts, because it builds the list from the keys of a map
+-- and map iteration is random; the writer Task 17d adds takes the order off the
+-- acknowledgement, which is the servicer's list of what it opened. This column
+-- is what lets the second be true without a schema change.
 CREATE TABLE roster_entry_assets (
-    bic   TEXT NOT NULL REFERENCES roster_entries (bic) ON DELETE CASCADE,
-    asset TEXT NOT NULL,
-    seq   BIGSERIAL NOT NULL,
-    PRIMARY KEY (bic, asset)
+    bic      TEXT NOT NULL REFERENCES roster_entries (bic) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    asset    TEXT NOT NULL,
+    PRIMARY KEY (bic, position)
 );
 
 -- debtor/creditor _identifier_scheme and _identifier_value are the PartyRef's

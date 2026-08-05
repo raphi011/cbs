@@ -2174,7 +2174,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 
 	// A second customer at Alice's own bank, funded, addressable, and party to
 	// nothing. Same bank on purpose: the participant matching is the easy half,
-	// and an implementation that compared only Bank would pass a
+	// and an implementation that compared only PartyRef.Participant would pass a
 	// cross-bank version of this test.
 	carla := openCustomer(t, ctx, a, "Carla", "SE89-BANKA-0009")
 	fundAccount(t, ctx, sys, a, carla, 100000)

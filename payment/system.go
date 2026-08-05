@@ -586,6 +586,10 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 	}); err != nil {
 		return nil, err
 	}
+	// Sorted, and the sort is this writer's rather than the row's contract:
+	// accounts is a map, Go randomises its iteration, and an unsorted slice here
+	// would make two identical admissions store two different orders. Task 17d's
+	// writer takes the order off an acmt.010 and does not sort.
 	if err := tx.PutRosterEntry(ctx, RosterEntry{
 		BIC:        bic,
 		Name:       name,

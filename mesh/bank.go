@@ -604,6 +604,12 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		// Whose payer is this? A bank that acted on a misrouted rejection would
 		// reverse a debit in somebody else's ledger, so the answer decides
 		// everything below.
+		//
+		// It asks for a roster entry and uses the BIC on it, which is the whole
+		// of what this comparison needs. The id-to-BIC step inside it reads the
+		// bank's own row — a crossing Task 18 closes and this one does not; see
+		// payment.Network.GetRosterEntry, on its ParticipantID argument. It
+		// applies to the submitter lookup below too.
 		debtor, err := b.ops.GetRosterEntry(ctx, p.Debtor.Participant)
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot tell whose payment %s is: %w", b.bic, p.ID, err)

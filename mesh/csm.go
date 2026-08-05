@@ -500,8 +500,9 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 // back. Sending the informational one first and returning on its error left the
 // refund unattempted, and that is reachable: the send is answered with
 // ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window, and
-// GetRosterEntry fails on a store error. A payer whose money is in a suspense against a
-// payment this network records as Rejected has nobody left to notice.
+// GetRosterEntry fails on a store error. A payer whose money is in a suspense
+// against a payment this network records as Rejected has nobody left to
+// notice.
 //
 // So the refund message is attempted first and both are attempted regardless,
 // with the failures joined. Two banks that cannot be addressed produce two
@@ -516,6 +517,12 @@ func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.Original
 	submitterID := submitterOf(scheme, p.Debtor, p.Creditor).Participant
 
 	var errs []error
+	// Both lookups below ask the ROSTER, which is this institution's own row,
+	// and take the BIC off it. Each one turns a ParticipantID into a BIC by
+	// reading the bank's row first, and that step is a crossing Task 18 closes
+	// and this one does not — see payment.Network.GetRosterEntry, on its
+	// ParticipantID argument.
+	//
 	// The payer's bank, when it is holding money against a payment that has just
 	// been rejected and is not the bank waiting for the answer. Only a pull
 	// reaches this — on a push the two are one participant and one message.
@@ -855,6 +862,11 @@ func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, 
 		if net == 0 {
 			continue
 		}
+		// A cycle's positions are keyed by participant and a leg is addressed by
+		// BIC, so this is the id-to-BIC step, and it reads the bank's row to
+		// make it — the crossing payment.Network.GetRosterEntry's ParticipantID
+		// argument records, left open for Task 18. The spec names this one
+		// twice: the same turn happens inside SettleCycleTx.
 		p, err := c.ops.GetRosterEntry(ctx, pid)
 		if err != nil {
 			return nil, fmt.Errorf("mesh: %s closed %s and cannot name the bank behind %s: %w", c.bic, closed.ID, pid, err)
@@ -997,6 +1009,9 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 			recipients = append(recipients, creditor)
 		}
 		for _, recipient := range recipients {
+			// The roster's own row, reached through the bank's — see
+			// payment.Network.GetRosterEntry on its ParticipantID argument for
+			// the crossing that costs and who closes it.
 			member, err := c.ops.GetRosterEntry(ctx, recipient)
 			if err != nil {
 				return fmt.Errorf("mesh: %s cannot address a bank %s settled for: %w", c.bic, p.ID, err)
@@ -1090,6 +1105,9 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 			return fmt.Errorf("mesh: %s was told about the return of %s and holds no %q scheme to say who asked: %w",
 				c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 		}
+		// Same id-to-BIC step as everywhere else on this actor, and the same
+		// note applies: payment.Network.GetRosterEntry, on its ParticipantID
+		// argument.
 		returner, err := c.ops.GetRosterEntry(ctx, returnerOf(scheme, p.Debtor, p.Creditor).Participant)
 		if err != nil {
 			return fmt.Errorf("mesh: %s cannot address the bank that returned %s: %w", c.bic, p.ID, err)

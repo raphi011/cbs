@@ -335,9 +335,11 @@ func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMem
 
 // PutRosterEntry stores the clearing house's routing row for one member.
 //
-// The assets are a child table like the other two rows', but they are a SET and
-// not a map: the clearing house holds no account per asset, which is what the
-// absence of a third column on that table says.
+// The assets are a child table like the other two rows', but they are an
+// ordered LIST rather than a map: the clearing house holds no account per
+// asset, so there is nothing to key them by. They are written with an explicit
+// position, which is what lets a caller's order survive and what keeps a
+// repeated asset from being a row this store refuses and store/mem accepts.
 func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 	if err := t.write(); err != nil {
 		return err
@@ -357,14 +359,16 @@ func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 	if _, err := t.tx.Exec(ctx, "DELETE FROM roster_entry_assets WHERE bic = $1", string(e.BIC)); err != nil {
 		return fmt.Errorf("pg: put roster entry %s: %w", e.BIC, err)
 	}
-	// NOT sorted, and this is the one child table here that is not. The slice's
-	// order is the acknowledgement's, `seq` preserves it, and the reader below
-	// reads it back by seq — so sorting would silently reorder data the caller
-	// gave in an order of its own.
-	for _, asset := range e.Assets {
+	// NOT sorted, and this is the one child table here that is not. The other
+	// two are maps, whose iteration order is random and therefore has to be
+	// imposed; this is a slice the caller ordered, and the position column is
+	// what carries that order back. Sorting here would silently reorder data,
+	// and de-duplicating would silently drop it — both are decisions for
+	// whoever reads the message the list came from.
+	for i, asset := range e.Assets {
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO roster_entry_assets (bic, asset) VALUES ($1, $2)`,
-			string(e.BIC), string(asset)); err != nil {
+			INSERT INTO roster_entry_assets (bic, position, asset) VALUES ($1, $2, $3)`,
+			string(e.BIC), i, string(asset)); err != nil {
 			return fmt.Errorf("pg: put roster entry %s asset %s: %w", e.BIC, asset, err)
 		}
 	}
@@ -372,8 +376,8 @@ func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 }
 
 // rosterEntryAssets reads the assets of one roster entry, or of every entry
-// when bic is empty. Ordered by seq within a BIC, which is the order the caller
-// wrote — see PutRosterEntry.
+// when bic is empty. Ordered by position within a BIC, which is the order the
+// caller wrote — see PutRosterEntry.
 func (t *tx) rosterEntryAssets(ctx context.Context, bic iso20022.BIC) (map[iso20022.BIC][]ledger.AssetCode, error) {
 	query := "SELECT bic, asset FROM roster_entry_assets"
 	args := []any{}
@@ -381,7 +385,7 @@ func (t *tx) rosterEntryAssets(ctx context.Context, bic iso20022.BIC) (map[iso20
 		query += " WHERE bic = $1"
 		args = append(args, string(bic))
 	}
-	query += " ORDER BY bic, seq"
+	query += " ORDER BY bic, position"
 
 	rows, err := t.tx.Query(ctx, query, args...)
 	if err != nil {

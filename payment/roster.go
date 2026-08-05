@@ -12,11 +12,28 @@ import (
 // and it exists as a row of its own before then because that is the only way
 // the settlement agent stops borrowing the clearing house's records.
 //
-// It is what the settlement agent used not to have. Every reserve movement in
-// this system resolved its account through the roster's Bank row — through
-// another institution's record — so a settlement agent given its own database
-// would have had nothing to settle from. That is the deeper half of dissolving
-// the participant row, and it is why this is a row rather than a lookup.
+// It is what the settlement agent has never had. Every reserve movement in this
+// system resolves its account through the BANK's row — SettleCycleTx,
+// SettleReturnTx, PostSettlementAdviceTx and ReserveBalance all read
+// Bank.Assets[asset].Settlement — so a settlement agent given its own database
+// today would have nothing to settle from. That is the deeper half of
+// dissolving the participant row, and it is why this is a row rather than a
+// lookup.
+//
+// # Nothing reads it yet, and that is deliberate rather than forgotten
+//
+// This task writes the row and moves no reader: AddParticipantTx writes it in
+// the same unit of work that opens the accounts it names, and the four readers
+// above still resolve through the bank's row. Task 17c is what points
+// SettleCycleTx and SettleReturnTx here and Task 17e ReserveBalance, at which
+// point the settlement agent is asking its own records for the first time.
+// DepositTx never moves: that one is the account holder quoting its own account
+// number, which is a legitimate thing for a bank to know.
+//
+// The row is written first because the alternative is worse. A later task that
+// both introduced the row and re-pointed the readers would have to backfill
+// every existing member in the same change, and the split — which is what this
+// task is for — would be invisible until then.
 //
 // # It is keyed by BIC and by nothing else
 //
@@ -73,10 +90,22 @@ type RosterEntry struct {
 	BIC  iso20022.BIC
 	Name string
 
-	// Assets is the set of assets this member clears in, in the order the
-	// acknowledgement listed them. A slice and not a map because there is
-	// nothing to key: the clearing house holds no account per asset, which is
-	// the difference between this row and SettlementMember above.
+	// Assets is the assets this member clears in. A slice and not a map because
+	// there is nothing to key it by: the clearing house holds no account per
+	// asset, which is the difference between this row and SettlementMember
+	// above.
+	//
+	// Being a slice, it is ORDERED and it can REPEAT, and both stores must
+	// answer the same way about both — store/pg keys the child table by
+	// position for exactly that reason, and storetest's
+	// RosterEntryAssetsAreAnOrderedList holds them to it.
+	//
+	// Whose order it is depends on who wrote it. Today's only writer is
+	// AddParticipantTx, which sorts the keys of the bank's account map: map
+	// iteration is random, and a row whose child rows came out in a different
+	// order on every identical write would be a store answering differently
+	// each time. Task 17d writes it from an acmt.010 instead, and that order is
+	// the servicer's list of what it opened.
 	Assets []ledger.AssetCode
 
 	// AdmissionRef is the acmt Refs/PrcId that every message of ONE admission

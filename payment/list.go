@@ -82,7 +82,18 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // closes it is a payment that carries BICs rather than ids, which is that
 // task's to do because it is the task where a payment row stops being one row
 // the whole network shares. It is written down here rather than laundered
-// behind a method name.
+// behind a method name, and each of the seven call sites in mesh points back at
+// this paragraph — the call site is where the next reader will be standing.
+//
+// # Two rows read, and one error it can return that GetParticipant could not
+//
+// A bank whose row exists and whose roster entry does not comes back
+// ErrRosterEntryNotFound, where the method this replaced returned the bank. No
+// caller can reach it today: the one writer of either row writes both in one
+// unit of work. It is stated because "this task changes no behaviour" is
+// stronger than what is true — and because the state it describes is exactly
+// what Task 17d makes legitimate, when a founded bank waits for an admission
+// that has not come back.
 func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
