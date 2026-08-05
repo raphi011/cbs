@@ -415,6 +415,34 @@ entity, each already the shape of the store it moves into at Task 18:
 own row instead of `p.Assets[].Settlement`. Routing and `ListParticipants` read
 the roster entry.
 
+##### The roster carries no name, and the schema is why (2026-08-06)
+
+Left as written above, per this file's convention for pre-ruling wording. The
+`RosterEntry` row says "BIC → name". Task 17d found that it cannot.
+
+`acmt.010` identifies the account owner with `OrganisationIdentification29` — a
+BIC, and no legal name, country or address. (The *request* carries
+`Organisation33`, which has `FullLglNm`; the acknowledgement does not, and the
+acknowledgement is what the clearing house writes its row from.) So a roster row
+carrying a name is a row asserting something no message delivered, and the
+implementer's first version bought it with a `csm.applicants` map holding the
+name across the relay.
+
+That is the wrong trade twice over. It contradicts **the clearing house holds
+nothing across the relay**, which is this section's deliberate counterpoint to
+Task 16's `csm.held` — and `csm.held` is carried on this branch as a *known
+defect*, because it does not survive a restart. And the name had **no production
+reader**: every `GetRosterEntry` caller in `mesh/bank.go` and `mesh/csm.go` takes
+a BIC off the entry and never touches the name, so the hold existed to fill a
+field that existed to be filled by the hold — the field-nothing-reads shape this
+sub-project has now refused three times.
+
+`RosterEntry` is `{BIC, Assets, AdmissionRef, AdmittedAt}`. The name was in the
+enumeration above, not in the principle beside it: **routing, and nothing
+else.** An operator console wanting a member's name reads the bank's own row or
+the settlement agent's, and it is outside the entity boundary by construction —
+which the paragraph under *The rows* already says.
+
 **The identifier between institutions is the BIC, and only the BIC.** The bank's
 own id is its own; neither of the other two rows carries it. The operator console
 enumerates banks by holding every store, which is what it already does and what
