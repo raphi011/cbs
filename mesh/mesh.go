@@ -308,13 +308,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	clearing := unhandled("clearing house")
 	settlement := unhandled("central bank")
 	if net != nil {
-		m.csm = &csm{
-			m:          m,
-			ops:        net,
-			bic:        cfg.ClearingHouseBIC,
-			held:       map[payment.PaymentID]heldReturn{},
-			applicants: map[iso20022.BIC]string{},
-		}
+		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC, held: map[payment.PaymentID]heldReturn{}}
 		clearing = m.csm.handle
 		settlement = (&centralBank{m: m, ops: net, bic: cfg.CentralBankBIC}).handle
 	}

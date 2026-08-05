@@ -291,6 +291,12 @@ type bankOps interface {
 // method for it, because the message names both agents itself (OrgnlTxRef) and
 // the recipient is whichever of them the message did not come from. What the
 // hop DID need is state, and state is not an interface: see csm.held.
+//
+// Task 17's two are the first here whose subject is a MEMBER rather than a
+// payment, and admission needs no state at all to go with them: every field of
+// the row this actor writes is on the acknowledgement it writes it from. See
+// csm.relayAdmission, which sets out why that is true here and is not true of
+// the return.
 type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)

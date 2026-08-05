@@ -1554,7 +1554,7 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	sys := testNetwork(t)
 
 	ack := AdmissionAcknowledgement{
-		Name: "Aurora Bank", BIC: "AURODEFFXXX",
+		BIC:      "AURODEFFXXX",
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
@@ -1564,7 +1564,6 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	})
 
 	clash := ack
-	clash.Name = "Impostor Bank"
 	clash.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}
 	clash.Ref = "adm-2"
 	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -1575,17 +1574,20 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 		t.Fatalf("admitting a second bank on a taken BIC: %v, want ErrBICAlreadyAdmitted", err)
 	}
 	// And the roster still says what it said. A refusal that overwrote the entry
-	// and then reported failure would leave routing pointing at the impostor.
+	// and then reported failure would leave routing pointing at the impostor —
+	// which is what the ADMISSION REFERENCE on it is for, and the only field that
+	// could show it: the row records an address and the admission that put it
+	// there, and the impostor quoted the same address.
 	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
 		e, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
 		if err != nil {
 			return err
 		}
-		if e.Name != "Aurora Bank" {
-			t.Errorf("the roster entry now names %q; the refusal overwrote it", e.Name)
-		}
 		if e.AdmissionRef != "adm-1" {
 			t.Errorf("the roster entry now cites admission %q; the refusal overwrote it", e.AdmissionRef)
+		}
+		if !slices.Equal(e.Assets, []ledger.AssetCode{testAsset}) {
+			t.Errorf("the roster entry clears in %v; the refusal took the impostor's assets", e.Assets)
 		}
 		return nil
 	}))
@@ -1622,7 +1624,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 
 	// The acknowledgement is Aurora's; Verde tries to record it as its own.
 	ack := AdmissionAcknowledgement{
-		Name: "Aurora Bank", BIC: aurora.BIC,
+		BIC:      aurora.BIC,
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}

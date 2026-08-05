@@ -80,12 +80,13 @@ func TestAdmissionIsAConversation(t *testing.T) {
 	if len(entry.Assets) != 1 || entry.Assets[0] != "EUR" {
 		t.Errorf("the roster entry clears in %v, want [EUR]", entry.Assets)
 	}
-	// The NAME on that entry is the one thing the acknowledgement cannot carry —
-	// acmt.010 identifies the owner by BIC and has no legal name on it — so this
-	// is what says the clearing house kept it from the application it relayed.
-	// See csm.applicants.
-	if entry.Name != "Nordhaven Bank" {
-		t.Errorf("the roster entry names %q; the clearing house has to keep the name from the request", entry.Name)
+	// And it records WHICH admission put it there, which is the field the
+	// clearing house's refusal of a second institution reads and the only thing
+	// on this row besides the address and the assets. See payment.RosterEntry on
+	// why a member's legal name is not among them: the acmt.010 this row is
+	// written from names nobody.
+	if entry.AdmissionRef == "" {
+		t.Error("the roster entry cites no admission; nothing else correlates this conversation")
 	}
 }
 
@@ -347,11 +348,16 @@ func TestAdmissionRefusesAnAddressAnotherBankAnswersTo(t *testing.T) {
 	} else if !errors.Is(err, ErrAddressTaken) {
 		t.Fatalf("admitting on a member's BIC: %v, want ErrAddressTaken", err)
 	}
-	// The member is untouched: same name, still a member, still routable.
-	if e, err := h.getRosterEntry(h.debtorBIC); err != nil {
+	// The member is untouched: still routable, still a member, and still the
+	// institution the settlement agent opened an account for. The last of those
+	// is where a name lives — the settlement agent learns one from the acmt.007
+	// and the clearing house learns none from the acmt.010 — so it is the row
+	// that can say WHICH institution holds the address.
+	if _, err := h.getRosterEntry(h.debtorBIC); err != nil {
 		t.Fatalf("the incumbent is no longer in the roster: %v", err)
-	} else if e.Name == "Impostor Bank" {
-		t.Error("the refused admission overwrote the incumbent's roster entry")
+	}
+	if got := h.getSettlementMember(t, h.debtorBIC); got.Name == "Impostor Bank" {
+		t.Error("the refused admission took the incumbent's settlement account")
 	}
 	if got := h.getBank(t, h.debtorPID); got.Status != payment.BankMember {
 		t.Errorf("the incumbent is %q after the refusal, want %q", got.Status, payment.BankMember)
@@ -607,7 +613,14 @@ func TestTheClearingHouseRefusesASecondInstitutionOnAnAdmittedAddress(t *testing
 		// Routing points where it pointed, and the settlement agent opened
 		// nothing: the refusal is BEFORE the relay, so the account the impostor
 		// asked for was never even requested.
-		if got, err := h.getRosterEntry(joinerBIC); err != nil || got.Name != entry.Name {
+		//
+		// The ADMISSION REFERENCE is what shows the first of those. It is the
+		// incumbent's row or the impostor's, and the two differ in nothing else —
+		// same address, same asset — which is exactly why the refusal is keyed on
+		// it. The settlement agent's row still names the incumbent, which is the
+		// second: that institution DOES learn a name, from the acmt.007's
+		// Org/FullLglNm, and the impostor's request never reached it.
+		if got, err := h.getRosterEntry(joinerBIC); err != nil || got.AdmissionRef != entry.AdmissionRef {
 			t.Errorf("the roster entry is now %+v (%v), want the incumbent's %+v", got, err, entry)
 		}
 		if got := h.getSettlementMember(t, joinerBIC); got.Name != member.Name {

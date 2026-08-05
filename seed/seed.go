@@ -221,7 +221,7 @@ func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode
 			payment.AdmissionRequest{Name: name, BIC: bic, Asset: asset, Ref: ref}))
 	}
 
-	ack := payment.AdmissionAcknowledgement{Name: name, BIC: bic, Accounts: member.Accounts, Ref: ref}
+	ack := payment.AdmissionAcknowledgement{BIC: bic, Accounts: member.Accounts, Ref: ref}
 	must(b.net.AdmitMember(b.ctx, ack))
 	return must(b.net.RecordMembership(b.ctx, bank.ID, ack))
 }

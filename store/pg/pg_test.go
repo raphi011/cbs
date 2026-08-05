@@ -583,9 +583,8 @@ func TestConcurrentAdmissionsOfOneBICAdmitOne(t *testing.T) {
 		}
 		errs := runConcurrently(len(refs), func(i int) error {
 			ack := payment.AdmissionAcknowledgement{
-				Name: fmt.Sprintf("Applicant %d", i),
-				BIC:  bic,
-				Ref:  refs[i],
+				BIC: bic,
+				Ref: refs[i],
 				Accounts: map[ledger.AssetCode]ledger.AccountID{
 					"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
 				},

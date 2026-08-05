@@ -342,12 +342,19 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// refusal is what reads it. What this case exists to keep out is an
 	// identifier that would let this institution reach into another's ledger; a
 	// process id reaches nothing.
+	//
+	// Name is NOT in the table, and it used to be. The acmt.010 this row is
+	// written from identifies the account owner with an
+	// OrganisationIdentification29, which has a BIC and no name element at all —
+	// so a name here could only be filled by the clearing house remembering the
+	// application across the relay, and nothing read it. This case is what makes
+	// putting it back a failure rather than a quiet regression, which is the
+	// whole point of an allowed-field table over a hand-read struct.
 	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
 		allowed := map[string]bool{
 			"BIC":          true,
-			"Name":         true,
 			"Assets":       true,
 			"AdmissionRef": true,
 			"AdmittedAt":   true,
@@ -370,10 +377,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		}
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
 				return err
 			}
-			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
+			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", early.Add(time.Hour)))
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
@@ -381,7 +388,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "roster name", got.Name, "Aurora Bank")
 			assertEqual(t, "roster admission reference", got.AdmissionRef, "adm-AURODEFFXXX")
 			assertEqual(t, "roster admitted at", got.AdmittedAt.Equal(early), true)
 			assertOrder(t, "roster assets", ids(got.Assets, func(a ledger.AssetCode) string {
@@ -434,9 +440,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// outright — payment.ReadAdmissionAcknowledgement will not read an
 	// acknowledgement naming two accounts in one currency — so the repeat cannot
 	// arrive from the wire either.
+	//
 	// What is asserted here is the STORE's contract with the Go type it is
-	// handed: Assets is a slice, a slice can repeat, and a store must hold what
-	// a caller passes it whether or not any caller passes that.
+	// handed: Assets is a slice, a slice can repeat, and a store must hold what a
+	// caller passes it whether or not any caller passes that.
 	//
 	// What a store must NOT do is decide about it. Refusing a duplicate is a
 	// judgement about the message that carried it, and it belongs to the
@@ -450,7 +457,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		s := openPayment(t, newStore)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			e := rosterEntry("AURODEFFXXX", "Aurora Bank", early)
+			e := rosterEntry("AURODEFFXXX", early)
 			e.Assets = []ledger.AssetCode{"USD", "EUR", "USD"}
 			return tx.PutRosterEntry(ctx, e)
 		})
@@ -482,7 +489,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// An upsert replaces the list wholesale, duplicates and all, so a
 		// shorter list does not leave the tail of the longer one behind.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			e := rosterEntry("AURODEFFXXX", "Aurora Bank", early)
+			e := rosterEntry("AURODEFFXXX", early)
 			e.Assets = []ledger.AssetCode{"GBP"}
 			return tx.PutRosterEntry(ctx, e)
 		})
@@ -1171,7 +1178,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
 				return err
 			}
-			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
 				return err
 			}
 			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
@@ -1272,11 +1279,11 @@ func settlementMember(bic iso20022.BIC, name string, openedAt time.Time) payment
 }
 
 // rosterEntry is the clearing house's row for one bank: where to send a message
-// addressed to it, and which admission put it there.
-func rosterEntry(bic iso20022.BIC, name string, admittedAt time.Time) payment.RosterEntry {
+// addressed to it, and which admission put it there. It takes no name, because
+// the row has none — see RosterEntryCarriesNoAccountIdentifiers.
+func rosterEntry(bic iso20022.BIC, admittedAt time.Time) payment.RosterEntry {
 	return payment.RosterEntry{
 		BIC:          bic,
-		Name:         name,
 		Assets:       []ledger.AssetCode{"EUR", "USD"},
 		AdmissionRef: "adm-" + string(bic),
 		AdmittedAt:   admittedAt,

@@ -887,16 +887,15 @@ func TestReadAdmissionRequestRefusesWhatWouldKeyARowByNothing(t *testing.T) {
 // conversions, and it carries the whole account set rather than the one asset
 // that was asked for.
 //
-// The NAME does not survive, and cannot: acmt.010 identifies the account owner
-// with an OrganisationIdentification29 — a BIC, an LEI, generic identifiers —
-// and has no legal name anywhere on it. That is asserted rather than worked
-// around, because an institution that needs the member's name has to know it
-// cannot read it here. mesh's clearing house keeps it from the request instead
-// (csm.applicants).
+// There is no NAME on either side, and there cannot be: acmt.010 identifies the
+// account owner with an OrganisationIdentification29 — a BIC, an LEI, generic
+// identifiers — and has no legal name, country or address anywhere on it. The Go
+// type has no Name field for exactly that reason, and this test's fixture is the
+// evidence that everything the message is FOR still round-trips without one: an
+// address, a set of accounts and the admission they belong to.
 func TestAnAdmissionAcknowledgementSurvivesTheRoundTrip(t *testing.T) {
 	in := AdmissionAcknowledgement{
-		Name: "Nordhaven Bank",
-		BIC:  "NORDSESSXXX",
+		BIC: "NORDSESSXXX",
 		Accounts: map[ledger.AssetCode]ledger.AccountID{
 			"USD": "acc_usd",
 			"EUR": "acc_eur",
@@ -925,9 +924,6 @@ func TestAnAdmissionAcknowledgementSurvivesTheRoundTrip(t *testing.T) {
 	back, err := ReadAdmissionAcknowledgement(doc)
 	if err != nil {
 		t.Fatalf("ReadAdmissionAcknowledgement: %v", err)
-	}
-	if back.Name != "" {
-		t.Errorf("the acknowledgement carried the name %q back; acmt.010 has no element for one", back.Name)
 	}
 	if back.BIC != in.BIC || back.Ref != in.Ref {
 		t.Errorf("the acknowledgement came back for %q under %q, want %q under %q", back.BIC, back.Ref, in.BIC, in.Ref)

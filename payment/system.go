@@ -464,17 +464,19 @@ type AdmissionRequest struct {
 // house whether an acknowledgement arriving on a BIC it already routes to is the
 // same admission going on or a different bank on a taken address.
 //
-// Name is NOT on the wire, and that is the schema's doing rather than an
-// omission here. An acmt.010 identifies the account owner with an
-// OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
-// carries no legal name anywhere; the REQUEST names the applicant
-// (Organisation33) and the answer does not. So ReadAdmissionAcknowledgement
-// leaves this empty, and the institution that needs a name has to have kept it
-// from the request it relayed: AdmitMemberTx names a roster entry it creates,
-// and mesh's clearing house supplies it (see csm.applicants).
-// RecordMembershipTx never reads it, because a bank knows its own name.
+// It names NO ONE, and that is the schema rather than an omission here. An
+// acmt.010 identifies the account owner with an OrganisationIdentification29 —
+// a BIC, an LEI, generic identifiers — and carries no legal name, no country
+// and no address; the REQUEST names the applicant with an Organisation33 and
+// the answer does not. So this type has a BIC and no name, which is what the
+// message can be read into, and both of its readers get on without one:
+// AdmitMemberTx writes routing, and RecordMembershipTx is a bank writing its own
+// row, which knows its own name.
+//
+// It carried a Name briefly, filled by the clearing house from the application
+// it had relayed, so that AdmitMemberTx could put one on the roster entry. Both
+// are gone. See RosterEntry, which has the whole of that reversal.
 type AdmissionAcknowledgement struct {
-	Name     string
 	BIC      iso20022.BIC
 	Accounts map[ledger.AssetCode]ledger.AccountID
 	Ref      string
@@ -586,17 +588,23 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //
 // One counter serves every prefix within a book (see store/pg's NextID), so this
 // advances the same counter that numbers banks, payments, mandates and cycles.
-// A euro-only admission now draws five network ids: the bank's, the
-// participant.added event's, and one here per act that decides from a read — one
-// per settlement account asked for, one for the roster entry, one for the
-// recording. Measured on the seed, whose four banks are bank_1, bank_6, bank_11
-// and bank_16; they were bank_1, bank_3, bank_5 and bank_7 before this call
-// existed, because the audit event was already interleaving with them.
+// What a euro-only admission draws from it is: the bank's own id, one here per
+// act that decides from a read — one per settlement account asked for, one for
+// the roster entry, one for the recording — and one per audit event, of which an
+// admission appends four, one per act.
 //
-// So the gaps are not new, they are wider — which is what the counter has always
-// meant, since it interleaves every prefix in the book and doubles as a creation
-// order. It is why api's mesh tests resolve the ids they use from the seed's
-// IBANs instead of naming them.
+// So the gaps between consecutive banks are wide, and they widen again whenever
+// an act is added or an act starts writing to the log. That is what the counter
+// has always meant, since it interleaves every prefix in the book and doubles as
+// a creation order, and it is why api's mesh tests resolve the ids they use from
+// the seed's IBANs instead of naming them.
+//
+// A number is deliberately not quoted here. This paragraph used to name the
+// seed's four banks — and did so twice, each time correctly when it was written
+// and wrongly by the next task, because every one of the changes above moves
+// them. What a reader wants is the list of things that draw an id, which is
+// above and which stays true; what the seed's banks are numbered on any given
+// day is a `ListBanks` away.
 //
 // Every one of these calls is now load-bearing rather than redundant. While one
 // transaction composed the four acts, FoundBankTx's own allocation had already
@@ -866,9 +874,11 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // The name on the row is the one it was first opened under. An account servicer
 // names an account after the member it opened it for, and a second request that
 // renamed the row would leave the accounts under it named two different things.
-// AdmitMemberTx keeps the name it first wrote too, so the three institutions'
-// records cannot end up disagreeing about who a BIC belongs to; the argument for
-// making them agree is there.
+//
+// This is the ONLY institution besides the bank itself that holds a member's
+// legal name, and it holds one because a message gave it one: an acmt.007 names
+// the applicant in Org/FullLglNm. The clearing house holds none, because the
+// acmt.010 its row is written from names nobody — see RosterEntry.
 //
 // # What it refuses, and what it does not
 //
@@ -986,25 +996,15 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 // makes the refusal binding rather than a race two callers can both win. See
 // admissionSequenceTx.
 //
-// An extension does not rename the entry, and neither does an extension of the
-// settlement agent's row (see OpenSettlementAccountTx, which takes the same
-// decision for the reason its accounts are already named). The two acts agree
-// on purpose: a member's name reaches an institution once, in the message that
-// created its record there, and every later message of that admission is the
-// same bank saying the same thing. On the paths the domain allows, the name is
-// identical anyway — a second currency and a re-drive both repeat it — so the
-// rule only decides a case something upstream has already refused, and the two
-// records must not answer it differently.
+// # It writes an ADDRESS and not a description
 //
-// # The name is the caller's to supply, because the acknowledgement has none
-//
-// in.Name does not come off the wire. An acmt.010 identifies the account owner
-// by BIC and carries no legal name anywhere (see AdmissionAcknowledgement), so
-// the institution driving this act has to have kept the name from the request it
-// relayed — mesh.csm does, in csm.applicants. An entry created from an
-// acknowledgement whose Name is empty is a routable member with a blank name,
-// which is what a clearing house that had forgotten the application would
-// legitimately know about it.
+// Everything on the entry comes off the acknowledgement, and there is nothing on
+// the acknowledgement this act declines to use. That was not true while the row
+// carried a NAME: acmt.010 identifies the account owner by BIC and carries no
+// legal name, so the name had to be kept by the institution driving this act and
+// handed in beside the message. Both the field and the keeping are gone — see
+// RosterEntry, which records the whole of that reversal — and what is left is a
+// row a clearing house can write from one message and nothing else.
 //
 // # It appends one audit event
 //
@@ -1015,7 +1015,7 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
 	// Before the read the refusal is decided from. See admissionSequenceTx:
 	// without it two different admissions of one address are both accepted on
-	// store/pg and the entry names whichever committed last, which is the
+	// store/pg and the entry records whichever committed last, which is the
 	// impostor half the time.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return RosterEntry{}, err
@@ -1028,7 +1028,7 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 				ErrBICAlreadyAdmitted, in.BIC, entry.AdmissionRef, in.Ref)
 		}
 	case errors.Is(err, ErrRosterEntryNotFound):
-		entry = RosterEntry{BIC: in.BIC, Name: in.Name, AdmissionRef: in.Ref, AdmittedAt: s.now()}
+		entry = RosterEntry{BIC: in.BIC, AdmissionRef: in.Ref, AdmittedAt: s.now()}
 	default:
 		return RosterEntry{}, err
 	}

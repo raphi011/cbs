@@ -717,9 +717,20 @@ CREATE TABLE settlement_member_accounts (
 --
 -- Keyed by BIC, like settlement_members and for the same reason: a clearing
 -- house routes what a message addresses, and a message addresses a BIC.
+--
+-- It carries no NAME either, and that is the newer half of the same principle.
+-- The row had one until the message that writes it was read:
+-- AccountRequestAcknowledgementV03 identifies the account owner with an
+-- OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and has no
+-- legal name, country or address anywhere on it. So a name here could only be
+-- filled by the clearing house remembering the application across the relay,
+-- and nothing read it: every reader of this row in mesh takes the BIC and
+-- touches nothing else, and the operator console lists banks from their own
+-- rows. A member's legal name lives where a message delivered one — on the
+-- bank's row, and on settlement_members, which learns it from the acmt.007's
+-- Org/FullLglNm and names the reserve account after it.
 CREATE TABLE roster_entries (
     bic           TEXT PRIMARY KEY,
-    name          TEXT NOT NULL,
     admission_ref TEXT NOT NULL,
     admitted_at   TIMESTAMPTZ,
     seq           BIGSERIAL NOT NULL

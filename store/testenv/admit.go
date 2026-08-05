@@ -74,7 +74,7 @@ func Admit(ctx context.Context, net *payment.Network, name string, bic iso20022.
 	// the last is the one the other two acts read — which is true of the real
 	// conversation too: a bank's second acknowledgement lists both accounts.
 	ack := payment.AdmissionAcknowledgement{
-		Name: name, BIC: bic, Accounts: member.Accounts, Ref: admissionRef(bic),
+		BIC: bic, Accounts: member.Accounts, Ref: admissionRef(bic),
 	}
 	if _, err := net.AdmitMember(ctx, ack); err != nil {
 		return nil, err

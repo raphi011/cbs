@@ -2313,15 +2313,18 @@ func ReadAdmissionRequest(doc *iso20022.Acmt007) (AdmissionRequest, error) {
 // the same one AdmitMemberTx makes about the assets it appends to a roster
 // entry.
 //
-// # It cannot carry the member's NAME, and that is the schema's doing
+// # It names NOBODY, and that is the schema's doing
 //
 // acmt.010 identifies the account owner with an OrganisationIdentification29 —
-// a BIC, an LEI and generic identifiers — and there is no legal name anywhere
-// on the message. The request names the applicant (Organisation33) and the
-// acknowledgement does not. So ack.Name is written by nothing here and read
-// back by nothing in ReadAdmissionAcknowledgement, and an institution that needs
-// the name has to have kept it from the request. mesh's clearing house is the
-// one that does; see csm.applicants.
+// a BIC, an LEI and generic identifiers — and there is no legal name, no country
+// and no address anywhere on the message. The request names the applicant with
+// an Organisation33 and the acknowledgement does not.
+//
+// So nothing downstream of this message can learn a member's NAME from it, and
+// nothing downstream needs to. The clearing house writes routing; the joining
+// bank writes its own row and knows its own name. AdmissionAcknowledgement has
+// no Name field for the same reason — it briefly did, and RosterEntry records
+// why both went.
 func AdmissionAcknowledgementMessage(ack AdmissionAcknowledgement, mc MessageContext) (iso20022.Envelope, error) {
 	if err := ack.BIC.Validate(); err != nil {
 		return iso20022.Envelope{}, fmt.Errorf("payment: the account owner's address: %w", err)
@@ -2388,12 +2391,12 @@ func AdmissionAcknowledgementMessage(ack AdmissionAcknowledgement, mc MessageCon
 // saying it holds two reserves in one asset for one member, which no reader here
 // has a rule for.
 //
-// # Name comes back EMPTY, always
+// # It cannot answer "whose bank is this", and nothing asks it to
 //
-// There is no legal name on an acmt.010 — see AdmissionAcknowledgementMessage.
-// AdmitMemberTx names a roster entry it creates, so the institution that calls
-// it has to supply the name from the request it relayed;
-// RecordMembershipTx does not read the name at all, because a bank knows its own.
+// There is no legal name on an acmt.010 — see AdmissionAcknowledgementMessage —
+// so what this reader produces is an ADDRESS, a set of accounts and an admission
+// reference. Both acts driven from it get on with exactly that: AdmitMemberTx
+// writes routing, and RecordMembershipTx is a bank writing its own row.
 func ReadAdmissionAcknowledgement(doc *iso20022.Acmt010) (AdmissionAcknowledgement, error) {
 	ack := doc.AcctReqAck
 	bic := ack.OrgId.AnyBIC

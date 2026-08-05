@@ -326,10 +326,9 @@
 // relays the pacs.004 ONWARD to the other bank, routed by the agents OrgnlTxRef
 // carries. It holds that message until it has an ACSC, because a bank that
 // posted its customer leg against a return the settlement agent then refused
-// would have moved money for nothing. That is the larger of the two things any
-// actor in this package keeps between messages — the other is the applicant's
-// name across an admission, see Admission below — both are in memory, and
-// csm.relayReturn records what a restart costs.
+// would have moved money for nothing. That is the only state any actor in this
+// package keeps between messages, it is in memory, and csm.relayReturn records
+// what a restart costs.
 //
 // A bank in this system used to SEND a return and never receive one, which was
 // the shared store showing through: the settlement agent posted the far bank's
@@ -415,13 +414,18 @@
 // same bank asking again and never fire on the impostor it exists for. See
 // payment.ErrBICAlreadyAdmitted.
 //
-// Nothing is held across the relay except the applicant's legal NAME, and that
-// one exception is the schema's doing. Everything the routing entry needs is on
-// the acknowledgement — the address, the accounts, the admission reference — but
-// an acmt.010 identifies the account owner with an OrganisationIdentification29,
-// which carries a BIC and no name at all. So the clearing house keeps the name
-// from the application it relayed and nothing else; see csm.applicants, beside
-// csm.held, which keeps a whole message for the return.
+// It holds NOTHING across the relay, and that is the deliberate counterpoint to
+// the return, where csm.held keeps the whole pacs.004 until the reserves have
+// moved. The difference is what the two answers carry. A pacs.002 about a return
+// says settled or not, so the message it releases has to have been kept; an
+// acmt.010 carries the applicant's address, every account the servicer opened
+// and the admission's process id, which is every field of the routing entry —
+// so there is nothing about the request left to remember.
+//
+// The roster entry carried a member's legal NAME for one round, and an acmt.010
+// names nobody: OrganisationIdentification29 has a BIC and no name element. The
+// field went rather than the property, because nothing read it — routing is an
+// address. See payment.RosterEntry.
 //
 // It writes the routing entry BEFORE it forwards the acknowledgement, so a bank
 // told it is a member is one this institution can already route to. That is the

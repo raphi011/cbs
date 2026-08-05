@@ -68,13 +68,18 @@ type Tx interface {
 	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
 	// and ReserveBalance all resolve their account through it. PutRosterEntry
 	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and
-	// by Network.GetRosterEntry, which is what the mesh's handlers ask instead
-	// of being handed a whole bank.
+	// by Network.GetRosterEntry and GetRosterEntryByBIC, which is what the mesh's
+	// handlers ask instead of being handed a whole bank — the second of those
+	// being the admission relay's refusal, which starts from the BIC an acmt.007
+	// carries and so reads no bank row on the way.
 	//
-	// The two listings are called by nothing but storetest. They are declared
+	// ListSettlementMembers is called by nothing but storetest. It is declared
 	// for the reason ListSettlementAdvices below is: the rows exist, and adding
 	// a listing later would be a second occasion to get the ordering contract
-	// wrong in two stores independently.
+	// wrong in two stores independently. ListRosterEntries has had a caller
+	// since admission became a conversation — mesh.Mesh.joinRoster, which asks
+	// WHO IS A MEMBER rather than which banks exist, so that a founded and
+	// unadmitted bank gets no actor at startup.
 	PutRosterEntry(ctx context.Context, e RosterEntry) error
 	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)

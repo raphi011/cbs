@@ -45,10 +45,17 @@ import (
 //
 // # One account per asset, and no more of the bank than that
 //
-// It carries the name for a statement's addressee and one account per asset,
-// and nothing about how the bank runs: not its book, not its subledgers, not
-// its product. A central bank knows which account it holds for whom. It does
-// not know what its members do with the money.
+// It carries a name and one account per asset, and nothing about how the bank
+// runs: not its book, not its subledgers, not its product. A central bank knows
+// which account it holds for whom. It does not know what its members do with the
+// money.
+//
+// The NAME is here and not on the clearing house's row, and the difference is
+// which message each institution writes its row from. An acmt.007 names the
+// applicant in Org/FullLglNm, so this institution is told one and uses it: the
+// reserve account it opens is called "Reserve: <name> (<asset>)", which is what
+// an account servicer names an account after. An acmt.010 names nobody, so the
+// clearing house is told none — see RosterEntry.
 type SettlementMember struct {
 	// BIC is the key. See the note above on why it is the only one this
 	// institution could have.
@@ -88,15 +95,31 @@ type SettlementMember struct {
 // AdmitMemberTx, the clearing house's act, writes this row from an
 // acknowledgement it did not originate.
 //
-// The acknowledgement is an acmt.010 that arrived from another institution:
-// mesh.csm.receiveAdmissionStatus reads one and runs the act. One field of this
-// row cannot come off it — the NAME, because acmt.010 identifies the account
-// owner by BIC and carries no legal name anywhere — so the clearing house keeps
-// that from the application it relayed. See mesh.csm's applicants field, and
-// AdmissionAcknowledgement, which says the same thing on the value's side.
+// # It carried a NAME, and the message that writes it has none
+//
+// The row had a Name until the acmt.010 that produces it was read.
+// AccountRequestAcknowledgementV03 identifies the account owner with an
+// OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
+// carries no legal name, no country and no address anywhere; the REQUEST names
+// the applicant with an Organisation33 and the answer does not. So a name on
+// this row would be a field asserting something no message delivered, and the
+// only way to fill it was for the clearing house to remember the application
+// across the relay.
+//
+// It is gone rather than propped up, and the deciding fact is that nothing read
+// it. Every reader of this row in mesh — the debtor lookup, the submitter
+// lookup, the settlement fan-out's recipient, the returner — takes the BIC and
+// touches nothing else, and ListParticipants reads bank rows. A field whose only
+// writer existed to fill it and whose only reader was that writer is the shape
+// this sub-project has refused twice.
+//
+// What it costs is exactly nothing that routing needs, which is the principle
+// this row is built on rather than the enumeration it was built from. A bank's
+// legal name lives where it was told to somebody: on the bank's own row, and on
+// the settlement agent's SettlementMember, which learns it from the acmt.007's
+// Org/FullLglNm and names the account it opens after it.
 type RosterEntry struct {
-	BIC  iso20022.BIC
-	Name string
+	BIC iso20022.BIC
 
 	// Assets is the assets this member clears in. A slice and not a map because
 	// there is nothing to key it by: the clearing house holds no account per
@@ -122,16 +145,20 @@ type RosterEntry struct {
 	// carries no back-reference to the request that caused it.
 	//
 	// Its reader is the clearing house's refusal, and the refusal cannot be
-	// written without it. Mesh.Admit reserves the address at the mesh before
+	// written without it. Mesh.Admit claims the address at the mesh before
 	// anything is written or sent, so an impostor never gets a message onto the
-	// wire; the only requests that can reach this institution on a BIC already
-	// in its roster are the SAME bank asking for a second asset — the schema
-	// carries one currency per acmt.007, so a two-currency bank really does ask
-	// twice — and an operator re-driving an interrupted admission. A refusal
-	// keyed on "is this BIC in the roster" would refuse exactly those two and
-	// never fire on the impostor it exists for. Keyed on this field it separates
-	// them: same admission, relay; different admission, acmt.011 before
-	// relaying.
+	// wire; what CAN arrive on a BIC already in this roster is the same bank
+	// asking again — its second currency, since the schema carries one per
+	// acmt.007, or an operator re-driving an interrupted admission. A refusal
+	// keyed on "is this BIC in the roster" would refuse exactly those and never
+	// fire on the impostor it exists for. Keyed on this field it separates them:
+	// same admission, extend; different admission, refuse.
+	//
+	// This act meets the second acknowledgement of a two-currency admission every
+	// time, which is what makes the extension arm ordinary rather than defensive.
+	// The clearing house's refusal of a REQUEST is keyed on the same field and
+	// meets that case only in a transport that can delay or reorder — see
+	// mesh.csm's relayAdmission, which measures why.
 	//
 	// AdmitMemberTx is what writes it and what reads it to refuse, and
 	// mesh.Mesh.Admit is what mints the value: one process id per admission,

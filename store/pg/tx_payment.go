@@ -345,13 +345,12 @@ func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 		return err
 	}
 	_, err := t.tx.Exec(ctx, `
-		INSERT INTO roster_entries (bic, name, admission_ref, admitted_at)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO roster_entries (bic, admission_ref, admitted_at)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (bic) DO UPDATE SET
-			name          = EXCLUDED.name,
 			admission_ref = EXCLUDED.admission_ref,
 			admitted_at   = EXCLUDED.admitted_at`,
-		string(e.BIC), e.Name, e.AdmissionRef, nullTime(e.AdmittedAt))
+		string(e.BIC), e.AdmissionRef, nullTime(e.AdmittedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put roster entry %s: %w", e.BIC, err)
 	}
@@ -412,7 +411,7 @@ func scanRosterEntry(row pgx.Row) (payment.RosterEntry, error) {
 		e          payment.RosterEntry
 		admittedAt *time.Time
 	)
-	if err := row.Scan(&e.BIC, &e.Name, &e.AdmissionRef, &admittedAt); err != nil {
+	if err := row.Scan(&e.BIC, &e.AdmissionRef, &admittedAt); err != nil {
 		return payment.RosterEntry{}, err
 	}
 	e.AdmittedAt = readTime(admittedAt)
@@ -421,7 +420,7 @@ func scanRosterEntry(row pgx.Row) (payment.RosterEntry, error) {
 
 func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error) {
 	e, err := scanRosterEntry(t.tx.QueryRow(ctx,
-		"SELECT bic, name, admission_ref, admitted_at FROM roster_entries WHERE bic = $1", string(bic)))
+		"SELECT bic, admission_ref, admitted_at FROM roster_entries WHERE bic = $1", string(bic)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return payment.RosterEntry{}, payment.ErrRosterEntryNotFound
 	}
@@ -438,7 +437,7 @@ func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.Rost
 
 func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error) {
 	rows, err := t.tx.Query(ctx,
-		"SELECT bic, name, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
+		"SELECT bic, admission_ref, admitted_at FROM roster_entries ORDER BY admitted_at ASC NULLS FIRST, seq")
 	if err != nil {
 		return nil, fmt.Errorf("pg: list roster entries: %w", err)
 	}
