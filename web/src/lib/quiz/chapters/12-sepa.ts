@@ -55,7 +55,7 @@ export const chapter: Chapter = {
       ],
       answer: 3,
       explanation:
-        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. Those two are the *instructions*; the system also implements `pacs.002` (the status a receiver answers with), `pacs.004` (a return) and `pacs.009` (the settlement instruction the clearing house sends the central bank). Neither distractor is one of them: `pain.001` is a customer instructing their own bank, not an interbank message, and the `camt` reporting family is not implemented at all.",
+        "[[scheme-direction-pull]] — SDD is a pull scheme whose interbank message is **pacs.003**. The SCT counterpart (a push) uses `pacs.008`. Those two are the *instructions*; the system also implements `pacs.002` (the status a receiver answers with), `pacs.004` (a return), `pacs.009` (the settlement instruction the clearing house sends the central bank) and `camt.053` (the statement of a member's reserve account, which is what that bank books its mirror leg from — after a cut-off and after a return alike). Neither distractor is one of the six: `pain.001` is a customer instructing their own bank rather than an interbank message, and `camt.054` — the advice of an individual credit — is one of the `camt` messages this system does *not* implement.",
     },
     {
       kind: "mc",
@@ -177,7 +177,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "The [[payment-lifecycle]] has a 'Returned' terminal state, reachable *only* after settlement via a SEPA R-transaction. A return is not an undo of the lifecycle — it posts new compensating entries that restore both balances while leaving the original entries intact in the ledger. 'Rejected' is only reachable before settlement.",
+        "The [[payment-lifecycle]] has a 'Returned' terminal state, reachable *only* after settlement via a SEPA R-transaction. A return is not an undo of the lifecycle — it posts new compensating entries and leaves the original ones intact in the ledger. It is also not one act: the returning bank posts the leg it owns and sends a `pacs.004`, the central bank reverses the reserves between the two banks and is [[settlement-finality|final]] there, and the other bank posts the leg *it* owns when the clearing house relays the message on. The row turns Returned when the second of the two customer legs lands. 'Rejected' is only reachable before settlement.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
     {
@@ -222,7 +222,7 @@ export const chapter: Chapter = {
         "When a SEPA return is processed, the original settled ledger entries are deleted from both banks' books to restore the pre-settlement state.",
       answer: false,
       explanation:
-        "Ledgers are immutable — entries are never deleted. [[allows-return]] — a return works like a [[reversal]] across banks: new **compensating transactions** are posted that exactly offset the original flow, leaving net balances at zero. Both the original and compensating entries remain permanently in the ledger history.",
+        "Ledgers are immutable — entries are never deleted. [[allows-return]] — a return works like a [[reversal]] across banks: new **compensating transactions** are posted that offset the original flow. Both the original and compensating entries remain permanently in the ledger history. Note the one thing 'restore the pre-settlement state' would still be wrong about even if entries *could* be deleted: a compensating leg does not always land on the account the original one did. A payer who has closed their account since is refunded into their bank's [[unclaimed-balances|Unclaimed Balances]], and a biller whose account has closed leaves the clawback in its bank's [[returns-receivable|Returns Receivable]]. The books balance; the customers are not always where they started.",
     },
     {
       kind: "multi",
@@ -317,7 +317,7 @@ export const chapter: Chapter = {
       unit: { asset: "USD", in: "major" },
       tolerance: 0,
       explanation:
-        "[[allows-return]] — a return fully unwinds the original settlement. The creditor received $200 when the [[creditor-leg]] posted at settlement; the return posts new compensating entries that exactly reverse that credit, reducing the creditor's balance by **$200**. The original entries remain in the ledger — only new offsetting entries are added.",
+        "[[allows-return]] — the creditor received $200 when the [[creditor-leg]] posted at settlement, and the clawback takes exactly that back out, reducing the balance by **$200**. The original entries remain in the ledger; only new offsetting entries are added. On a *direct debit* this clawback is the leg the creditor's bank posts **after** the reserves have already moved, so it is forced rather than optional — the biller goes overdrawn if it cannot cover it, since the ledger does not refuse a liability going negative, and if the account has closed the bank funds it out of its own [[returns-receivable|Returns Receivable]] instead. The amount comes out either way; what differs is whose balance sheet absorbs it.",
     },
     {
       kind: "truefalse",
@@ -329,6 +329,24 @@ export const chapter: Chapter = {
       answer: false,
       explanation:
         "No bank reads another bank's register to build a payment — that crossing is what closed, and it's what this question asks about. The [[counterparty-details|payee's name]] is asserted on the instruction instead: the payer types it, and the submitting bank stores it in `Payment.CreditorDetails` exactly as received, refusing to submit at all if it is missing (`ErrCounterpartyNotNamed`). The submitting bank fills in only its OWN side from its own register — it is the authority on its own customer, never on the other bank's. The payee's **bank** is a different matter and is not taken from the instruction either: the BIC that goes out as `CdtrAgt` is *derived* from the roster, because the clearing house routes on that element and a payer who could type it could choose which bank got paid. Name from the payer, routing from the network — which is how SEPA has worked since it went IBAN-only in 2016. (A separate, pre-submission lookup, `GET /directory`, does resolve a name across the network for the payer to see — but that name is never wired into the payment; what gets stored is what was typed.)",
+      explore: { label: "View payments", href: "/clearing-house/payments" },
+    },
+    {
+      kind: "mc",
+      id: "ch12-q22",
+      difficulty: "challenge",
+      concept: "returns-receivable",
+      prompt:
+        "A biller collects €500 by SEPA Direct Debit. It settles. The payer then exercises the 8-week refund right — and by the time the return reaches the biller's bank, the biller has wound up and closed its account. Who is out of pocket, and how is it recorded?",
+      options: [
+        "The payer, who cannot be refunded because the money cannot be recovered",
+        "The payer's bank, which absorbs it and books the loss to expense",
+        "The biller's bank, which funds the refund itself and books a Returns Receivable — an asset, a claim on the biller",
+        "Nobody — the return is refused, because a bank cannot post to a closed account",
+      ],
+      answer: 2,
+      explanation:
+        "The debtor's 8-week refund right is **unconditional**, so nobody gets to ask whether the biller can still afford it. The payer's bank — the *returning* bank on a pull — posts the refund and sends the `pacs.004` before anything else happens, so the payer is made whole first. By the time the biller's bank hears, the central bank has already reversed the reserves: it cannot refuse (option D), because there is nothing left to refuse. It takes the money out of the biller's account if it can — an overdrawn biller is a debt it collects from a customer it still has — and where the account is **closed** there is nowhere on the account to put the debit, so it funds the clawback itself and books [[returns-receivable|Returns Receivable]]: an [[account-type-asset|asset]], money owed **to** the bank by a party it can name. That is the exact mirror of [[unclaimed-balances|Unclaimed Balances]], which is money the bank owes to a party it cannot. **This is why a creditor's bank vets its creditors** and can demand collateral or an indemnity: it stands behind its biller's collections whether or not the biller is still there.",
       explore: { label: "View payments", href: "/clearing-house/payments" },
     },
   ],

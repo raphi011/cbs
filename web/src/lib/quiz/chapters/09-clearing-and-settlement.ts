@@ -103,18 +103,18 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch9-q7",
       difficulty: "core",
-      concept: "net-positions",
+      concept: "settlement-finality",
       prompt:
-        "What are nostro/vostro accounts used for in the context of interbank settlement?",
+        "A single settled payment is sent back as a return. The central bank reverses the reserves between the two banks and states both accounts. What do the two member banks then have to do, and what is their position until they do?",
       options: [
-        "Holding customer deposits at partner banks",
-        "Post-settlement reconciliation — confirming what each bank expected to receive matches what actually arrived",
-        "Earning interest on excess reserves at the central bank",
-        "Storing failed payment instructions for retry",
+        "Nothing — a return is one payment, so the settlement agent posts every leg of it in one transaction",
+        "Each books its own reserve mirror and its own customer leg, locally, and until it does it carries an unreconciled position exactly as it would after a cut-off",
+        "They confirm the reversal back to the central bank, which is only final once both have acknowledged it",
+        "They wait for the next clearing cycle, where the return is netted with everything else",
       ],
       answer: 1,
       explanation:
-        "Nostro/vostro accounts are mirror accounts that two banks maintain with each other. After [[clearing-vs-settlement|settlement]] completes, each bank checks that what it expected to receive matches what actually arrived — any discrepancy is investigated and resolved. These accounts are a post-settlement reconciliation tool, not the mechanism that computes [[net-positions]].",
+        "A return is a cut-off's shape, one payment wide. [[settlement-finality|The reserve reversal is final]] the moment the central bank commits it, and nothing either member does next unwinds it — including failing to book. Each bank is then *told*, by a `camt.053`, and books its own reserve mirror in a [[unit-of-work|unit of work]] of its own; each also posts its own customer leg, in its own book, because no institution may write in another's. Until a bank has, its [[clearing-suspense|clearing suspense]] has not returned to zero and there is no settlement-advice row against the reference — the [[unreconciled-position|unreconciled position]], reached by a second route. Option D describes the real SEPA R-cycle rather than this model, which settles a return immediately.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {

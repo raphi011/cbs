@@ -563,11 +563,17 @@ COMMENT ON COLUMN participants.bic IS
 
 -- A participant's internal plumbing accounts, one set per asset it operates in.
 --
--- These are a child table rather than three columns on participants because
+-- These are a child row rather than a column apiece on the participant because
 -- each of those accounts is denominated in exactly one asset: a bank clearing
 -- both a euro and a dollar scheme needs two suspense accounts and two reserve
 -- accounts, not two currencies inside one. Keying by (participant, asset) makes
 -- adding a scheme in a new asset a data change rather than a schema change.
+--
+-- It also makes adding a KIND of account cheap, which has already happened:
+-- returns_receivable joined this row when the return path needed somewhere to
+-- book a clawback a biller's closed account could not fund. One column here is
+-- one account per asset, automatically; the same account hung off participants
+-- would have needed one column per asset the bank could ever operate in.
 --
 -- The set is fixed when the bank joins the network, which is the reason the
 -- asset registry that used to sit beside this table is gone: an asset a bank
@@ -860,10 +866,27 @@ CREATE TABLE settlement_positions (
 -- arrives, and a balance discarded on receipt is one nobody can go back for.
 --
 -- reference is the account servicer's own reference for the entry that moved
--- this bank's reserve — a cycle id on the cut-off path payment.SettleCycleTx
--- builds today, a payment id on the return path sub-project 8's Task 16d adds.
--- There is no `kind` column beside it to say which: ids are unique across the
--- whole store, and Task 19's reconciliation reads one shape, not two.
+-- this bank's reserve, and it arrives by two routes: a cycle id when a cut-off
+-- settled (payment.SettleCycleTx), a payment id when a single settled payment
+-- was returned (payment.SettleReturnTx). Both are statements of the same kind
+-- about the same account, which is why one column takes both.
+--
+-- There is no `kind` column beside it to say which, and that is a decision
+-- rather than an omission. Ids are unique across the store, so nothing is
+-- ambiguous; a member can resolve NEITHER kind — a cycle is the clearing
+-- house's row and a payment the network's, and after the split neither is in
+-- this bank's database at all — so knowing which it is buys the member nothing
+-- it could act on; and the reconciliation that will read these rows asks one
+-- question, "did this bank book what it was told", which is one shape and not
+-- two. A discriminator nothing branches on is a field that can only drift out
+-- of step with the id beside it.
+--
+-- The consequence worth stating for a reader who arrived from the cut-off path:
+-- a RETURN leaves an unreconciled position exactly as a cut-off does. The
+-- settlement agent is final when it commits the reserve reversal, each bank is
+-- then told and books its own mirror leg, and until it has, that bank's
+-- clearing suspense has not returned to zero and there is no row here against
+-- the payment id.
 --
 -- No foreign key to anything. A member bank HAS no cycles — after the split the
 -- cycles table is not in its database at all — and a payment id is the same
@@ -977,9 +1000,12 @@ COMMENT ON COLUMN deposit_accounts.asset IS
     'accounts.asset.';
 
 COMMENT ON COLUMN participant_assets.asset IS
-    'One row per asset this bank operates in, holding the four plumbing '
-    'accounts that asset needs. Unconstrained, for the reason given on '
-    'accounts.asset.';
+    'One row per asset this bank operates in, holding every plumbing account '
+    'that asset needs — the ones in this bank''s own book, plus its settlement '
+    'account in the central bank''s. Deliberately not counted here: the set has '
+    'already grown once (returns_receivable), and a count in a comment goes '
+    'stale while a description of what the row is for does not. Unconstrained, '
+    'for the reason given on accounts.asset.';
 
 COMMENT ON COLUMN participant_assets.returns_receivable IS
     'The GL account for a claim on a biller: opened when this bank is forced '

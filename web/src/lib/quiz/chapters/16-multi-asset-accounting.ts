@@ -74,10 +74,11 @@ export const chapter: Chapter = {
         "It holds two reserve accounts at the central bank, one per asset",
         "It holds one suspense account that tracks euro and dollars separately inside it",
         "Its euro net position and its dollar net position are netted against each other before settlement",
+        "It holds two unclaimed-balances accounts and two returns-receivable accounts, one of each per asset",
       ],
-      answers: [0, 1],
+      answers: [0, 1, 4],
       explanation:
-        "[[participant-assets|Internal accounts exist once per asset]] the bank operates in. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not give a smaller number — it gives a meaningless one. There is no rate in the system to net them with, and there should not be.",
+        "[[participant-assets|Internal accounts exist once per asset]] the bank operates in, and that is *every* one of them — suspense, reserve, [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and the bank's settlement account in the central bank's own book. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not give a smaller number — it gives a meaningless one. There is no rate in the system to net them with, and there should not be. They are a child row keyed by `(participant, asset)` rather than a column apiece on the participant, which is what made adding returns receivable cheap when the return path needed it: one column there is one account per asset automatically, where a column on `participants` would have needed one per asset the bank could ever operate in.",
       explore: { href: "/central-bank", label: "Central-bank reserves" },
     },
     {

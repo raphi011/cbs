@@ -59,6 +59,32 @@
 // direction only decides whether that bank is the one submitting or the one
 // answering.
 //
+// A RETURN is the same shape a third time, and it is the one where the split
+// decides who may say no:
+//
+//   - PostReturnLegTx is a BANK posting the customer leg it owns. The clawback
+//     is always the CREDITOR's bank's, out of the account its creditor leg
+//     actually credited; the refund is always the DEBTOR's bank's, into the
+//     payer's account. Which of the two the RETURNING bank holds is what the
+//     scheme's direction decides (ReturnerOf), and that is the whole of what it
+//     decides.
+//   - SettleReturnTx is the SETTLEMENT AGENT's half: the reserve reversal
+//     between the two members' settlement accounts, in the central bank's own
+//     book, plus a statement for each. It reads no payment row, because a
+//     settlement agent holds none — everything it acts on came off the pacs.004
+//     (ReadReturn).
+//   - ReverseReturnLegTx unwinds the leg the RETURNING bank posted, when the
+//     settlement agent refuses the return it sent. It takes only a payment that
+//     is still Settled, so it can never unwind half of a return that finished.
+//
+// The rule the ordering buys is that a BANK CAN REFUSE A LEG ONLY IF IT POSTS
+// IT BEFORE IT SENDS. The returning bank posts first, so its refusal costs
+// nothing and is an error to its caller rather than a message. The other bank
+// posts after the reserves have moved and cannot refuse, which is why
+// ParticipantAccounts.ReturnsReceivable exists on one side and not the other:
+// the bank that must force a posting is the one that first hears about the
+// return when it is already final.
+//
 // # Schemes
 //
 // The Scheme interface abstracts over payment schemes. Two are implemented:

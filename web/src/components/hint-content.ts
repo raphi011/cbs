@@ -425,20 +425,43 @@ SDD mandate check — run by the CREDITOR's bank, at submission:
     title: "Allows return",
     body: `**Allows return** flags whether a settled payment can be unwound by an **R-transaction** (return, recall, or refund). This is a scheme property — not all schemes permit it.
 
-SEPA Direct Debit [[allows-return|allows returns]] because the debtor did not initiate the collection and may dispute it. A return posts compensating entries that move funds back from creditor to debtor across the central bank, fully restoring both customers' balances — one leg in each bank's own book, plus the reserve reversal between them.
+SEPA Direct Debit [[allows-return|allows returns]] because the debtor did not initiate the collection and may dispute it. A return posts compensating entries that move funds back from creditor to debtor across the central bank — one customer leg in each bank's own book, plus the reserve reversal between them, in **three units of work at three institutions** joined by messages. Nothing is deleted; the original entries stay exactly as posted.
 
 \`\`\`
-Return flow (mirrors the original in reverse):
-  Creditor account debited      ← funds leave payee
-  Clearing suspense at Bank B   ← back into suspense
-  Central bank: B pays A        ← reserves reverse
-  Clearing suspense at Bank A   ← arrives at payer bank
-  Debtor account credited       ← funds back to payer
+1. the returning bank posts its own leg
+      ← the last moment anyone can say no
+2. --pacs.004--> CSM --pacs.004--> central bank
+3. the central bank reverses the reserves
+      ← FINAL here
+4. --camt.053--> BOTH banks
+      ← sent BEFORE the answer, and that matters
+5. --pacs.002--> CSM --pacs.002--> the returner
+6. the CSM releases the held pacs.004 to the
+   other bank
+
+each bank then takes its own inbox in order:
+it books its reserve mirror from (4), and the
+other bank goes on to post its customer leg
+from (6) — the second leg, and what turns the
+payment Returned
 \`\`\`
+
+The clearing house **holds** that \`pacs.004\` between steps 2 and 6 rather than relaying it straight through: a bank that posted its leg against a return the settlement agent then refused would have moved a customer's money for nothing. On an \`RJCT\` the held message is dropped and only the answer goes out.
+
+Because the settlement agent is final at step 3 and each bank books afterwards, a return has an [[unreconciled-position|unreconciled position]] exactly as a cut-off does — and the bank's own advice row for it is keyed by a **payment** id where a cut-off's is keyed by a cycle id.
+
+Which leg lands where never changes: the **clawback** is always at the creditor's bank, the **refund** always at the debtor's. Both customers are put back where they were when both accounts can still take the posting; where one cannot, the money goes to that bank's [[unclaimed-balances|Unclaimed Balances]] or comes out of its [[returns-receivable|Returns Receivable]] rather than stranding.
 
 **Both** SEPA schemes allow returns here: \`SCT.AllowsReturn()\` and \`SDD.AllowsReturn()\` each report \`true\`, and \`PostReturnLegTx\` refuses only a scheme that reports \`false\`. That is not a shortcut — a credit transfer return is a real R-transaction too, sent by the *beneficiary's* bank when it cannot apply the funds (a closed account, a name that does not match). Which bank sends it is what direction decides: always the bank that **received** the original instruction, so the payee's bank on a push and the payer's on a pull.
 
-What a credit transfer has no equivalent of is the debtor's **refund** — the 8-week, no-questions-asked claim on a settled collection. A payer who simply changes their mind about a credit transfer must ask for a *recall*, which the beneficiary can refuse; that is a \`camt.056\`, and this system does not implement it. Two simplifications inside the return itself: it settles immediately rather than being batched into a later R-cycle, and no return window is enforced — \`PostReturnLegTx\` asks only whether the scheme allows returns and whether the payment is \`Settled\`. What it *does* ask about the money depends on direction, and on one rule: **a bank can refuse a leg only if it posts it before it sends.** The returning bank posts first, so on a credit transfer the payee's bank can refuse a clawback it cannot fund and no \`pacs.004\` is ever built; on a collection the creditor's bank hears about the return only after the reserves have moved, so it forces the clawback — the payer's 8-week right is unconditional, and the creditor's bank carries the credit risk. That is why creditor banks vet their creditors.`,
+What a credit transfer has no equivalent of is the debtor's **refund** — the 8-week, no-questions-asked claim on a settled collection. A payer who simply changes their mind about a credit transfer must ask for a *recall*, which the beneficiary can refuse; that is a \`camt.056\`, and this system does not implement it. Two simplifications inside the return itself: it settles immediately rather than being batched into a later R-cycle, and no return window is enforced — \`PostReturnLegTx\` asks only whether the scheme allows returns and whether the payment is \`Settled\`. What it *does* ask about the money depends on direction, and on one rule: **a bank can refuse a leg only if it posts it before it sends.**
+
+| | the returning bank posts, before it sends | the other bank posts, after finality |
+|---|---|---|
+| **push** (SCT) | the **clawback** — refusable, so no \`pacs.004\` exists | the **refund** — always postable |
+| **pull** (SDD) | the **refund** — always postable | the **clawback** — forced; [[returns-receivable|Returns Receivable]] |
+
+So on a credit transfer the payee's bank can refuse a clawback it cannot fund, as an error to the caller and no message at all; on a collection the creditor's bank hears about the return only after the reserves have moved, so it forces the clawback — the payer's 8-week right is unconditional, and the creditor's bank carries the credit risk. That is why creditor banks vet their creditors.`,
   },
   "settlement-delay": {
     title: "Settlement delay",
@@ -499,7 +522,7 @@ Every arrow is drawn by a **named institution**, and no two adjacent ones by the
 - **Accepted → Cleared:** the cut-off. [[netting|Net positions]] computed across all payments in the cycle. No money moves.
 - **Cleared → Settled:** three institutions, and the arrow is the *third* one's. The clearing house asks — closing a cycle sends a \`pacs.009\` — and the **central bank** discharges the net positions in its own book, which is where the money becomes [[settlement-finality|final]]. The payment row moves to Settled later still, when the **payee's own bank** posts the [[creditor-leg]] on being told, per payment, that the cycle settled. The gap between those two moments is the [[unreconciled-position|unreconciled position]]. A net payer who cannot cover is refused before anything posts at all: the cycle stays Closed with no settlement against it, and every payment in it stays Cleared.
 - **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
-- **Returned:** after settlement; an R-transaction fully unwinds the flow (available on [[allows-return|return-enabled]] schemes only). It is sent by the bank that *received* the original instruction; the central bank reverses the reserves, and each bank posts the customer leg in its own book.
+- **Returned:** after settlement; an R-transaction unwinds the flow (available on [[allows-return|return-enabled]] schemes only), and it is **three acts at three institutions**. It is sent by the bank that *received* the original instruction, and that bank posts the leg it owns **before** it sends — which is the only reason it can still refuse. The central bank then reverses the reserves and is final. The other bank posts the leg it owns **after** that, on the \`pacs.004\` the clearing house releases to it, and cannot refuse: there is nothing left to refuse. The status turns Returned when the second customer leg lands.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
   },
@@ -673,7 +696,9 @@ Each bank posts its own legs, locally, afterwards  ← catching up
 
 The answer is final either way. A net payer that cannot cover its position is refused **before anything is posted** — \`RJCT\`/\`AM04\`, the same code a debtor's bank sends about a customer's empty account — and the cycle stays Closed with no settlement against it and every payment exactly where the cut-off left it.
 
-The interval between the commit and a member's booking is the [[unreconciled-position|unreconciled position]].`,
+The interval between the commit and a member's booking is the [[unreconciled-position|unreconciled position]].
+
+**A [[allows-return|return]] is the same shape, one payment wide.** None of the above is about cut-offs in particular — it is about an institution being final and the members catching up. The central bank reverses the reserves in its own book and is final there, states both members' accounts in a \`camt.053\`, and each bank books its own reserve mirror afterwards. What differs is only the reference the statement carries: a cycle id at a cut-off, a payment id here.`,
   },
   "unreconciled-position": {
     title: "Unreconciled position",
@@ -693,7 +718,9 @@ So the position is the **absence** of a row against a suspense that has not clea
 
 (An earlier version of this note said a failed posting left the row at *Advised*. It cannot. That status exists in the type, but nothing on the settlement path commits it.)
 
-It is the first payment-layer table **keyed by** book rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read — reading it is how a reconciliation would tell those two absences apart.`,
+It is the first payment-layer table **keyed by** book rather than network-wide, because the row belongs to one member: a cycle is the clearing house's and a settlement is the central bank's. The closing balance the statement carried is stored and not yet read — reading it is how a reconciliation would tell those two absences apart.
+
+**A [[allows-return|return]] leaves one of these too.** It is settled by the central bank and booked by each bank locally, so the same interval opens for it, and the same absence records it. The row's \`reference\` holds a **payment** id on that path where a cut-off's holds a cycle id, and there is deliberately no column beside it saying which: ids are unique across the store, a member cannot resolve either one, and a reconciliation reads one shape rather than two.`,
   },
   "nostro-reconciliation": {
     title: "Two advices, one balance",
@@ -730,7 +757,35 @@ The payment still reaches **Settled**, because it did: the reserves moved and th
 
 **Which account it landed in is recorded on the payment**, because a [[allows-return|return]] has to claw the money back from wherever it actually went. This used to be described as "not a fact about the payment", and a return proved otherwise: it debited the payee's closed account for money never credited to it, and left the unclaimed liability standing. It cannot be worked out afterwards either — an account open at the cut-off and closed later looks exactly like one closed at the cut-off — so the destination is written down when the leg posts.
 
-**Having somewhere for it to go is what made the check affordable.** While the creditor leg was posted inside the settlement agent's one unit of work, refusing a credit would have taken the whole cut-off down for one retail customer — so nothing checked, and the money stranded. One payment at one bank fails on its own now.`,
+**Having somewhere for it to go is what made the check affordable.** While the creditor leg was posted inside the settlement agent's one unit of work, refusing a credit would have taken the whole cut-off down for one retail customer — so nothing checked, and the money stranded. One payment at one bank fails on its own now.
+
+**The same account catches the same case on the [[allows-return|return]] path.** A payer who has closed their account since the payment settled is refunded into their own bank's Unclaimed Balances instead — affordable for the same reason, because the return stopped being one unit of work over three institutions and the payer's bank got an act of its own to decide in. The diversion happens on a **closed** account and on nothing else: a store failure is not a statement about the account, and money must not be routed on a failure nobody can classify. The mirror case — money the bank has to take *back* and cannot — is [[returns-receivable|Returns Receivable]], and it is an asset rather than a liability.`,
+  },
+  "returns-receivable": {
+    title: "Returns receivable",
+    body: `**Returns Receivable (\<asset\>)** is where a bank books a [[allows-return|return]] it has been forced to honour and could not fund out of its customer's account. It is an **[[account-type-asset|asset]]**, and that is the whole point — it is the mirror image of [[unclaimed-balances|Unclaimed Balances]].
+
+| | Unclaimed Balances | Returns Receivable |
+|---|---|---|
+| Class | [[account-type-liability|Liability]] | [[account-type-asset|Asset]] |
+| Direction | the bank **owes** this | the bank **is owed** this |
+| Counterparty | a payee it cannot identify | a biller it has identified perfectly well |
+
+Same kind of event — a credit reversed after the bank has already paid out — landing on opposite sides of the balance sheet according to whether the bank knows who owes whom. Every participant gets one per [[asset|asset]] it operates in, created when it joins the network.
+
+It is reached in exactly one case: the clawback is **forced** *and* the biller's account is **closed**.
+
+\`\`\`
+Forced clawback; the biller's account is Closed:
+  Debit  Returns Receivable (Asset)     3000
+  Credit Clearing Suspense (Liability)  3000
+\`\`\`
+
+A biller who has *spent* the money but still has an account simply goes overdrawn — the ledger does not refuse a Liability going negative, and an overdrawn biller is a debt the bank collects from a customer it still has. A closed account is the one case with nowhere on the account to put the debit.
+
+**This is the credit risk a creditor's bank takes on when it onboards a biller.** The debtor's eight-week SEPA refund right is unconditional: nobody asks the biller whether it can afford the reversal. So the creditor's bank stands behind its customer's collections whether or not that customer is still solvent — which is why real creditor banks vet their creditors, demand collateral or an indemnity, and price the relationship accordingly. Nothing in this system spreads that risk, so this account is where it accumulates.
+
+Why it exists on **one side and not the other**: a bank can refuse a leg only if it posts it before it sends, and the bank forced to post is the one that hears about the return after it is already final. On a collection that is the creditor's bank. It is not a rule about direct debits — it falls out of the ordering.`,
   },
   "account-addressing": {
     title: "Account addressing",
@@ -861,7 +916,7 @@ PostCreditorLeg:
   COMMIT   ← all of it, or none of it
 \`\`\`
 
-What a unit of work may **not** span is more than one institution. Settling a [[clearing-vs-settlement|clearing cycle]] used to be one scope holding the central bank's reserves and every member's creditor leg at once; it is three institutions' scopes now, joined by messages, and the interval between them is a real unreconciled position rather than something a transaction can hide.
+What a unit of work may **not** span is more than one institution. Settling a [[clearing-vs-settlement|clearing cycle]] used to be one scope holding the central bank's reserves and every member's creditor leg at once. Now it is the central bank's own scope for the reserves, plus one of that member's own for every leg a member books afterwards — joined by messages, with the interval between them a real [[unreconciled-position|unreconciled position]] rather than something a transaction can hide. A [[allows-return|return]] is the same rule applied to one payment: the returning bank's leg, the reserve reversal and the other bank's leg are three scopes at three institutions.
 
 Nesting one unit of work inside another is refused rather than allowed: the inner scope would be a *separate* transaction that commits even when the outer one rolls back. Methods come in pairs for this reason — the plain one opens a unit of work, the \`…Tx\` one joins the caller's.`,
   },
@@ -1027,15 +1082,19 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], unclaimed balances, settlement — exist **once per [[asset]] it operates in**.
+    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its settlement account in the central bank's own book — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
 \`\`\`
 Bank A
-├── EUR: suspense, reserve, unclaimed, settlement
-└── USD: suspense, reserve, unclaimed, settlement
+├── EUR: suspense, reserve, unclaimed,
+│        returns receivable, settlement
+└── USD: suspense, reserve, unclaimed,
+         returns receivable, settlement
 \`\`\`
+
+They are a child row keyed \`(participant, asset)\` rather than a column apiece on the participant, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
 
 [[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.
 
