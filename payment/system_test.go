@@ -1288,6 +1288,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		for name, id := range map[string]ledger.AccountID{
 			"suspense": accts.Suspense, "reserve": accts.Reserve,
 			"unclaimed": accts.Unclaimed, "settlement": accts.Settlement,
+			"returns receivable": accts.ReturnsReceivable,
 		} {
 			if id == "" {
 				t.Errorf("%s account for %s is empty", name, asset)
@@ -1314,6 +1315,17 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		// as an asset of the bank's would say the bank had earned it, and would
 		// put the credit leg of every diverted settlement on the wrong side.
 		assertEqual(t, "unclaimed account type", unclaimed.Type, ledger.Liability)
+
+		// Returns Receivable is the CONTRAST, and it is asserted beside its
+		// opposite rather than only in TestABankJoinsWithAReturnsReceivableAccount,
+		// because the contrast is the teaching claim: two pooled accounts with no
+		// customer's name on either, one money the bank OWES and one money the
+		// bank is OWED. Both balance either way round, and getting it backwards
+		// would say the opposite in every report the account appears in. Asserted
+		// per asset here, where the dedicated test covers euro only.
+		receivable, err := p.Ledger.GetAccount(ctx, accts.ReturnsReceivable)
+		assertNoError(t, err)
+		assertEqual(t, "returns receivable account type", receivable.Type, ledger.Asset)
 	}
 
 	// And they survive the store, rather than only the value AddParticipant
@@ -3393,6 +3405,69 @@ func TestAForcedClawbackOverdrawsAnOpenBillerRatherThanBookingAReceivable(t *tes
 	assertEqual(t, "bank B returns receivable", bookBalance(t, b.Ledger, accountsOf(t, b).ReturnsReceivable), 0)
 	assertEqual(t, "bank B suspense after the forced clawback",
 		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 25000)
+}
+
+// TestAPullRefundIsHonouredWhenOneBankIsBothParties holds the return's one rule
+// where the two banks collapse into one.
+//
+// # Why this is tested here and not through the mesh
+//
+// A payment with the same institution at both ends never reaches a clearing
+// house — Mesh.Submit refuses one, because nothing leaves the bank and there is
+// no interbank obligation to clear. So this arrangement is not buildable through
+// the transport, and the guard that would be measured there is a different
+// guard. This one is the DOMAIN's, and the domain is where it has to be right:
+// PostReturnLegTx decides refusability from the payment it is handed, and a rule
+// that holds only because a caller elsewhere never builds the counter-example is
+// a rule nobody is keeping. It is the argument ReadReturn's id guard and
+// SettleReturnTx's own copy of it already make.
+//
+// # What it measures
+//
+// Refusability is a property of the LEG. The clawback may be refused when the
+// scheme is a push AND this bank is the returner; the refund never may. Asked as
+// "is this bank the returner" alone — which is what it used to ask — one bank
+// that is both parties answers yes to BOTH legs, so the clawback becomes
+// refusable on a PULL and the returning bank turns down its own customer's
+// unconditional eight-week refund. The bank would be telling the payer it cannot
+// have its money back because the biller, also its customer, has spent it.
+//
+// The biller here has spent the money, so the clawback is exactly the posting a
+// refusal would stop. It goes through, the biller goes overdrawn, and the payer
+// is repaid out of the same bank's clearing suspense.
+func TestAPullRefundIsHonouredWhenOneBankIsBothParties(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+	// A second customer of ALICE's bank. Both parties to the collection are then
+	// bank A's, which is the whole fixture.
+	biller := openCustomer(t, ctx, a, "Biller", "SE89-BANKA-0002").ID
+	pay := settledCollection(t, sys, a, alice, a, biller, 25000)
+
+	// Spent OUT of the bank, to a customer of the other one, so the biller is
+	// empty and bank A really is short: a transfer between two of its own
+	// accounts would have left the money where the clawback could still reach
+	// it.
+	spendTheCredit(t, sys, a, biller, b, bob, 25000)
+	assertEqual(t, "the biller after spending it", customerBalance(t, a, biller), 0)
+
+	// The clawback, which on a pull is forced. Bank A is the returner AND the
+	// creditor's bank here, so this is the call the old rule refused.
+	got, err := sys.PostReturnLeg(ctx, a.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+	assertEqual(t, "the biller after the forced clawback", customerBalance(t, a, biller), -25000)
+
+	// And then the refund, which is the same bank's other leg. Two calls, not
+	// one, because a bank posts one leg at a time; the second is what carries the
+	// payment to Returned.
+	got, err = sys.PostReturnLeg(ctx, a.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+	assertEqual(t, "the payment after both legs", got.Status, Returned)
+	assertEqual(t, "the payer after the refund", customerBalance(t, a, alice), 100000)
+	// Flat, because both legs of an on-us return pass through one suspense and
+	// cancel. Nothing was ever owed to another bank.
+	assertEqual(t, "bank A suspense after both legs",
+		bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
 }
 
 // settledCollection runs one direct debit all the way to Settled: a mandate,
