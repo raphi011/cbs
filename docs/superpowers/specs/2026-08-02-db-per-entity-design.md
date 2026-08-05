@@ -464,6 +464,48 @@ Scheme membership is contractual in life and is not messaged at all. What the
 falls out of its acknowledgement, which is why the clearing house writes that row
 from a message it did not originate.
 
+##### The schema carries one currency per request, and that decides the refusal (2026-08-05)
+
+Left as written above, per this file's convention for pre-ruling wording. Task
+17a read the three XSDs rather than trusting the plan's predicted structs, and
+the schema contradicted them in thirteen places. One of the thirteen changes
+this section's design.
+
+`acmt.007`'s `Acct/Ccy` is `minOccurs="1" maxOccurs="1"`: **one currency per
+request.** A bank clearing a euro and a dollar scheme sends two `acmt.007`s, not
+one naming two currencies. The acknowledgement is the asymmetric half —
+`AccountForAction1` is unbounded — so one `acmt.010` lists every account the
+servicer holds for that BIC. That is the standard's own shape: eBAM opens one
+account per request, and a bank with accounts in two currencies really does ask
+twice.
+
+The consequence is not the extra message. It is that **`Refs/PrcId` — mandatory
+on all three messages — is the conversation's only correlator**, because the
+acknowledgement carries no back-reference to the request at all (the rejection
+does, at `RjctdReqId`; the acknowledgement does not). One process id per
+admission, echoed by every message in it.
+
+**That is what makes the pre-relay refusal above implementable.** `Mesh.Admit`
+reserves the address at the mesh before anything is written or sent, so an
+impostor never gets a message onto the wire; the only requests that can reach
+the clearing house on a BIC already in its roster are **the same bank's second
+asset** and **an operator re-driving an interrupted admission**. A refusal keyed
+on "is this BIC in the roster" would therefore refuse exactly the two cases it
+must allow, and never fire on the one it exists for. Keyed on the admission's
+process id it separates them: same admission, relay; different admission,
+`acmt.011` before relaying.
+
+So `RosterEntry` carries the admission reference beside its routing fields. Its
+reader is the clearing house's refusal, which is what keeps it from being the
+field-nothing-reads this sub-project has twice refused. The alternative was to
+tell two institutions apart by the legal name on the message, which is a weaker
+claim than this system makes anywhere else.
+
+`AdmitMemberTx` writes-or-extends the roster entry rather than refusing every
+second acknowledgement, and `ErrBICAlreadyAdmitted` means *a different
+admission* on a taken BIC. A single-asset admission still puts four messages on
+the wire, which is what the flow above describes.
+
 #### `DepositTx` is re-routed and not fixed
 
 The sixth crossing has to be touched, because the field it reads disappears. It
