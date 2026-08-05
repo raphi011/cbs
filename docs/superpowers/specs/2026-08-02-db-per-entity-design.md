@@ -467,15 +467,33 @@ from a message it did not originate.
 #### `DepositTx` is re-routed and not fixed
 
 The sixth crossing has to be touched, because the field it reads disappears. It
-resolves the settlement account from the **central bank's own member row**
-instead.
+reads the **bank's own** record of its settlement account instead — the reference
+the bank learned from the acknowledgement, which a real account holder knows the
+way it knows its own IBAN.
 
-**That is not better than reading the roster; it is differently wrong.** A bank
-reading the settlement agent's records is the same crossing with a new address,
-and the re-route must not be written up as a fix. What Task 17 adds is the
-measurement — a recorder test pinning that funding reaches two books today — so
-the crossing fails loudly at the split rather than quietly, which is the
-discipline every other crossing here has had.
+**That leaves the read legitimate and the crossing exactly where it always was:
+the posting.** `DepositTx` writes an entry in `CentralBankBook`, and no
+re-routing of a lookup changes that. The re-route must not be written up as a
+fix, and the paragraph that describes it must name the posting as what remains.
+What Task 17 adds is the measurement — a recorder test pinning that funding
+reaches two books today — so the crossing fails loudly at the split rather than
+quietly, which is the discipline every other crossing here has had.
+
+**Which entity reads which record is decided by whose question it is**, and the
+three readers of the settlement account split three ways:
+
+| reader | reads | why |
+|---|---|---|
+| `SettleCycleTx`, `SettleReturnTx` | the central bank's `SettlementMember` | the settlement agent asking about its own book. This is the read the new row exists for |
+| `DepositTx` | the bank's own `Assets[asset].Settlement` | an account holder quoting its own account number |
+| `ReserveBalance` | the central bank's `SettlementMember` | the operator console asking the central bank about its own book, from outside the boundary by construction |
+
+`SettleCycleTx` still has to turn a cycle's net positions — keyed by
+participant — into BICs before it can ask, and it does that through the roster.
+**That is a second crossing inside the first and Task 17 does not close it**: the
+pacs.009's legs already carry BICs, so closing it means the settlement agent
+settling from the message rather than from the cycle row, which is the gap
+`mesh.centralBank`'s own doc already records as sub-project 8's and Task 18's.
 
 #### The measurements
 
