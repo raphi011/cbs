@@ -81,9 +81,10 @@
 // IT BEFORE IT SENDS. The returning bank posts first, so its refusal costs
 // nothing and is an error to its caller rather than a message. The other bank
 // posts after the reserves have moved and cannot refuse, which is why
-// ParticipantAccounts.ReturnsReceivable exists on one side and not the other:
-// the bank that must force a posting is the one that first hears about the
-// return when it is already final.
+// ParticipantAccounts.ReturnsReceivable is reached on one side and not the
+// other: every participant is opened one per asset, and the bank that must
+// force a posting into it is the one that first hears about the return when it
+// is already final.
 //
 // # Schemes
 //

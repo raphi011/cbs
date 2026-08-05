@@ -338,10 +338,15 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 //
 // The camt.053 goes to BOTH banks before the pacs.002 goes to the clearing
 // house, for centralBank.advise's existing reason and for a second one this
-// flow adds. The other bank's refund DRAWS on the clearing suspense its own
-// mirror leg credits, and what makes it draw is the pacs.004 the clearing house
-// relays out of the handler of this answer — so the statement has to be in that
-// bank's inbox first. That is not luck: Mesh.send pushes synchronously on the
+// flow adds. On a PUSH the other bank's refund DRAWS on the clearing suspense
+// its own mirror leg credits, and what makes it draw is the pacs.004 the
+// clearing house relays out of the handler of this answer — so the statement
+// has to be in that bank's inbox first. On a PULL the relayed leg is the
+// clawback, which CREDITS that bank's suspense while its mirror leg debits it
+// (SettleReturnTx makes the creditor's bank the payer of the reversal in both
+// directions), so nothing there is drawn on and the order costs that direction
+// nothing. One order goes out either way, and it is the one the push needs.
+// That is not luck: Mesh.send pushes synchronously on the
 // sender's goroutine, so a statement pushed before the answer is queued before
 // the message the answer provokes can exist. See
 // TestTheMessagesAReturnPutsOnTheWire, which states the chain and asserts the
