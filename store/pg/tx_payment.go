@@ -60,8 +60,8 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	}
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO banks
-			(id, name, bic, book_id, customer_subledger, product_id, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(id, name, bic, book_id, customer_subledger, product_id, status, admission_ref, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
 			bic                = EXCLUDED.bic,
@@ -69,9 +69,10 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 			customer_subledger = EXCLUDED.customer_subledger,
 			product_id         = EXCLUDED.product_id,
 			status             = EXCLUDED.status,
+			admission_ref      = EXCLUDED.admission_ref,
 			created_at         = EXCLUDED.created_at`,
 		string(b.ID), b.Name, string(b.BIC), string(b.BookID), string(b.CustomerSubledger),
-		string(b.ProductID), string(b.Status), nullTime(b.CreatedAt))
+		string(b.ProductID), string(b.Status), b.AdmissionRef, nullTime(b.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("pg: put bank %s: %w", b.ID, err)
 	}
@@ -98,14 +99,15 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	return nil
 }
 
-const bankColumns = `id, name, bic, book_id, customer_subledger, product_id, status, created_at`
+const bankColumns = `id, name, bic, book_id, customer_subledger, product_id, status, admission_ref, created_at`
 
 func scanBank(row pgx.Row) (payment.Bank, error) {
 	var (
 		b         payment.Bank
 		createdAt *time.Time
 	)
-	err := row.Scan(&b.ID, &b.Name, &b.BIC, &b.BookID, &b.CustomerSubledger, &b.ProductID, &b.Status, &createdAt)
+	err := row.Scan(&b.ID, &b.Name, &b.BIC, &b.BookID, &b.CustomerSubledger, &b.ProductID,
+		&b.Status, &b.AdmissionRef, &createdAt)
 	if err != nil {
 		return payment.Bank{}, err
 	}

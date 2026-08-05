@@ -970,6 +970,32 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 	return member, nil
 }
 
+// checkAdmittedAccounts refuses an acknowledgement carrying an account this
+// system cannot file.
+//
+// Both acts driven from an acknowledgement run it, which is the doubling step 3
+// of this task's brief asks for: ReadAdmissionAcknowledgement makes the same
+// refusal on the way in from the wire, and a reader's guard that is the only
+// line is not defence in depth. The BIC's guard has been doubled since 17c
+// (the reader validates it and both acts key rows by it); this is the currency's.
+//
+// It is one function and not two lines in each act because the two acts would
+// otherwise refuse different things: the clearing house would write a member
+// clearing in the empty asset, and the bank would silently skip the account —
+// same message, two answers, and only one of them visible.
+func checkAdmittedAccounts(in AdmissionAcknowledgement) error {
+	for asset, account := range in.Accounts {
+		if asset == "" {
+			return fmt.Errorf("%w: %s", ErrAdmittedAccountUnusable, in.BIC)
+		}
+		if account == "" {
+			return fmt.Errorf("%w: the %s account for %s has no identifier",
+				ErrAdmittedAccountUnusable, asset, in.BIC)
+		}
+	}
+	return nil
+}
+
 // AdmitMemberTx is the clearing house's own act: writing down where to send a
 // message addressed to this member.
 //
@@ -996,6 +1022,9 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 // makes the refusal binding rather than a race two callers can both win. See
 // admissionSequenceTx.
 //
+// An account naming no asset, or no account, is refused before any of that. See
+// checkAdmittedAccounts.
+//
 // # It writes an ADDRESS and not a description
 //
 // Everything on the entry comes off the acknowledgement, and there is nothing on
@@ -1018,6 +1047,9 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 	// store/pg and the entry records whichever committed last, which is the
 	// impostor half the time.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
+		return RosterEntry{}, err
+	}
+	if err := checkAdmittedAccounts(in); err != nil {
 		return RosterEntry{}, err
 	}
 	entry, err := tx.GetRosterEntry(ctx, in.BIC)
@@ -1070,7 +1102,7 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // This is ErrStatementNotForThisBank's argument one flow over, and the check is
 // the same one: the message names an address, and it must be this bank's.
 //
-// # It records or extends, and the address is the whole of the check
+// # It records or extends, and refuses only a different admission
 //
 // A bank that is already a Member is EXTENDED rather than refused, and this used
 // to be the other way round: the act took only a Founded bank, and a second
@@ -1082,24 +1114,41 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // it. DepositTx in dollars then failed against a reserve the operator console
 // cheerfully reported, because the console reads the central bank's row.
 //
-// The symmetric fix — "already a Member under the SAME admission" — was
-// considered and is not what this does. AdmitMemberTx can make that distinction
-// because a roster entry is a claim on an ADDRESS and two institutions can
-// contend for one, so the clearing house has to be able to tell them apart and
-// RosterEntry.AdmissionRef is what lets it. A bank has no contender: this row is
-// the bank's own record of ITSELF, and the acknowledgement has already been
-// checked to name this bank's own BIC. Adding an admission reference here to
-// re-decide a question the BIC has already decided would be the
-// field-nothing-new-reads this sub-project has refused twice. So the address is
-// the check, and there is no state guard beside it.
+// So the state guard went, and for one round nothing replaced it. That was
+// wrong, and the argument for it was worse than the omission: it said a bank has
+// no contender, because the acknowledgement has already been checked to name
+// this bank's own BIC. The BIC answers WHICH BANK. It does not answer WHICH
+// ADMISSION, and two admissions can quote one BIC — which is the entire premise
+// of RosterEntry.AdmissionRef three hundred lines up.
 //
-// What that gives up is a state machine that refuses to go from Member to
-// Member. What it buys is that the acts are idempotent in the way messages
-// require: a redelivered acknowledgement writes the same row, a second asset's
-// acknowledgement adds a reference, and neither is a failure. The id drawn
-// before the read still matters for the same reason it does in the other two
-// acts — two recordings of one bank racing on store/pg would otherwise both read
-// the row and both write it, and the loser's account numbers would be lost. See
+// Measured: an acknowledgement naming this bank's own BIC, quoting an admission
+// reference this bank had never heard of, and carrying an invented account,
+// moved a Member bank's euro settlement reference off the central bank's real
+// account and onto the forged one. The bank's row then disagreed with the
+// settlement agent's about which account it holds, and DepositTx reads the
+// bank's.
+//
+// What refuses it is Bank.AdmissionRef: the reference this bank itself accepted,
+// compared against the one on the message. It is not the clearing house's guard
+// duplicated. That one decides between two INSTITUTIONS contending for an
+// address, from a row this institution does not own and which Task 18 moves to
+// another database; this one is a bank comparing a message against its own
+// memory, and it needs nobody else's store to make it. Today the only thing
+// stopping a forged acknowledgement reaching this act is AdmitMemberTx one
+// institution earlier — which is exactly the guard the split takes away.
+//
+// A bank that is still Founded accepts whatever reference arrives and records
+// it, because it has accepted none. That is what makes an operator re-driving an
+// interrupted admission work: Mesh.Admit mints a new process id, and a bank with
+// nothing recorded has nothing to disagree with.
+//
+// What record-or-extend buys, and what the guard does not take back, is that the
+// act is idempotent in the way messages require: a redelivered acknowledgement
+// writes the same row, and a second asset's acknowledgement — same admission,
+// same reference — adds a reference the bank did not have. The id drawn before
+// the read still matters for the reason it does in the other two acts: two
+// recordings of one bank racing on store/pg would otherwise both read the row and
+// both write it, and the loser's account numbers would be lost. See
 // admissionSequenceTx.
 //
 // # An account for an asset this bank does not operate in is not recorded
@@ -1110,6 +1159,10 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // accounts for its asset, and there is no such set — and it is not an error
 // either, because the servicer is answering about its own book rather than
 // about this bank's. What the bank records is what it can use.
+//
+// An account naming NO asset, or no account, is a different thing and is
+// refused whole. See checkAdmittedAccounts, which both acts driven from an
+// acknowledgement run.
 //
 // # It appends one audit event
 //
@@ -1133,6 +1186,16 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantI
 		return nil, fmt.Errorf("%w: %s is addressed by %s and this acknowledgement is for %s",
 			ErrNotThisBanksAdmission, by, bank.BIC, in.BIC)
 	}
+	// And WHICH ADMISSION, which the BIC above does not answer. A bank that has
+	// recorded one accepts no acknowledgement from another; a bank that has
+	// recorded none accepts the first that names it.
+	if bank.AdmissionRef != "" && bank.AdmissionRef != in.Ref {
+		return nil, fmt.Errorf("%w: %s recorded its membership under %q and this acknowledgement quotes %q",
+			ErrBankAlreadyAdmitted, by, bank.AdmissionRef, in.Ref)
+	}
+	if err := checkAdmittedAccounts(in); err != nil {
+		return nil, err
+	}
 
 	for asset, account := range in.Accounts {
 		accts, held := bank.Assets[asset]
@@ -1143,6 +1206,7 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantI
 		bank.Assets[asset] = accts
 	}
 	bank.Status = BankMember
+	bank.AdmissionRef = in.Ref
 	if err := tx.PutBank(ctx, *bank); err != nil {
 		return nil, err
 	}
@@ -1683,8 +1747,9 @@ type settlementLeg struct {
 // other side. A member the central bank holds NO account for at all is
 // ErrSettlementMemberNotFound — a founded bank that was never admitted, which
 // is a state the domain can be in since founding and joining became two commits
-// with a message between them, and which is not a statement about the asset. See settlementAccountTx, and ReserveBalance, which makes the
-// same distinction for the same reason.
+// with a message between them, and which is not a statement about the asset.
+// See settlementAccountTx, and ReserveBalance, which makes the same distinction
+// for the same reason.
 //
 // # The bank's row is read twice: one crossing, and one check that belongs here
 //

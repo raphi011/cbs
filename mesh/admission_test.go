@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -12,8 +13,10 @@ import (
 
 // Admission, as a conversation between three institutions.
 //
-// It is the fourth flow this package carries and the only one that BRINGS AN
-// ACTOR INTO EXISTENCE. Everything else here starts from a mesh that already has
+// It is the one flow this package carries that BRINGS AN ACTOR INTO EXISTENCE.
+// Package mesh's doc has the whole list — a push, a pull, a cut-off, a return
+// and this — and counting them is what keeps going stale, so it is described
+// there and nowhere numbered. Everything else here starts from a mesh that already has
 // the parties in it; this one starts from a bank nothing could address a moment
 // earlier, and the first message on the wire is sent by that bank.
 //
@@ -219,6 +222,94 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 	}
 }
 
+// TestAMemberRefusesAnAcknowledgementOfAnotherAdmission is the guard the bank's
+// own record of its admission exists for, and it is measured rather than
+// reasoned about.
+//
+// # What it stops
+//
+// RecordMembershipTx records-or-extends: it has to, because one acmt.007 asks
+// for one currency and a bank joining in two assets is answered twice. For one
+// round it did that with no guard at all beside the BIC, and the argument was
+// that a bank has no contender because the acknowledgement already names its own
+// address. The BIC answers WHICH BANK. It does not answer WHICH ADMISSION.
+//
+// This is what that cost, before payment.Bank.AdmissionRef existed: an
+// acknowledgement naming a member's own BIC, quoting an admission it had never
+// heard of and carrying an invented account, moved that bank's euro settlement
+// reference off the central bank's real account and onto the forged one —
+//
+//	before:            status="Member" EUR="200.100.003"
+//	after forged ack:  status="Member" EUR="acc_bogus"
+//	central bank still holds map[EUR:200.100.003]
+//
+// leaving the bank's own row disagreeing with the settlement agent's about which
+// account it holds. payment.DepositTx reads the bank's.
+//
+// # Why the clearing house's refusal is not enough
+//
+// It is the only thing that stops such a message reaching this bank in the
+// shipped system, and it is made from the ROSTER — a row this institution does
+// not own and which Task 18 moves to another database. A guard that lives only
+// there is a guard the split removes. This one is a bank comparing a message
+// against its own memory of what it accepted, and it needs nobody else's store.
+//
+// So the message is INJECTED, straight into the bank's inbox, which is what the
+// clearing house's refusal being one hop earlier looks like from here — and what
+// any transport that could deliver to a bank directly would look like.
+func TestAMemberRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	h.drain(t)
+	before := h.getBank(t, joiner.ID)
+	if before.Status != payment.BankMember || before.Assets["EUR"].Settlement == "" {
+		t.Fatalf("the bank is %q with settlement %q; this test measures a member",
+			before.Status, before.Assets["EUR"].Settlement)
+	}
+
+	// An acknowledgement for this bank's own address, under an admission it has
+	// never heard of, naming an account the settlement agent never opened.
+	env, err := payment.AdmissionAcknowledgementMessage(payment.AdmissionAcknowledgement{
+		BIC:      joinerBIC,
+		Ref:      "a-completely-different-admission",
+		Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "acc_bogus"},
+	}, payment.MessageContext{From: h.cfg.CentralBankBIC, To: joinerBIC, MsgID: "forged-1", Now: testTime})
+	if err != nil {
+		t.Fatalf("composing the acknowledgement: %v", err)
+	}
+	if err := h.mesh.send(h.cfg.ClearingHouseBIC, joinerBIC, env); err != nil {
+		t.Fatalf("sending it: %v", err)
+	}
+
+	// A dead letter, because the bank is the LAST hop of an admission and has
+	// nobody to answer. That is the refusal being visible rather than silent.
+	err = h.drainErr(t)
+	if err == nil {
+		t.Fatal("the bank accepted an acknowledgement of another admission")
+	}
+	if !strings.Contains(err.Error(), "recorded its membership under another admission") {
+		t.Errorf("the refusal reads %v; it must name the admission mismatch", err)
+	}
+
+	after := h.getBank(t, joiner.ID)
+	if after.Assets["EUR"].Settlement != before.Assets["EUR"].Settlement {
+		t.Errorf("the bank's settlement reference moved to %q; it was %q, and the central bank still holds %q",
+			after.Assets["EUR"].Settlement, before.Assets["EUR"].Settlement,
+			h.getSettlementMember(t, joinerBIC).Accounts["EUR"])
+	}
+	// And the two records still agree, which is the property the overwrite broke
+	// and the one DepositTx depends on.
+	if got := h.getSettlementMember(t, joinerBIC); got.Accounts["EUR"] != after.Assets["EUR"].Settlement {
+		t.Errorf("the bank thinks its settlement account is %q; the central bank holds %q",
+			after.Assets["EUR"].Settlement, got.Accounts["EUR"])
+	}
+}
+
 // TestARefusedAdmissionLeavesAFoundedBank is the orphan defect, inverted. What
 // used to be left behind was a roster row for a bank that could neither pay nor
 // be paid, with no way back. What is left behind now is a bank that exists and
@@ -290,7 +381,10 @@ func TestARefusedAdmissionLeavesAFoundedBank(t *testing.T) {
 		t.Errorf("a founded bank cannot open a customer account: %v", err)
 	}
 	// And re-driving it works, which is what makes the state recoverable rather
-	// than merely honest. This time with an asset that exists.
+	// than merely honest. Through the mesh's own door this time, which is the
+	// only one there is: the bank was founded in euro and the asset nobody
+	// issues never touched its chart of accounts — it existed only in the message
+	// injected above, which is what the paragraph on this test's own doc explains.
 	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
 		t.Fatalf("re-driving a refused admission: %v", err)
 	}

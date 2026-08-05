@@ -154,7 +154,7 @@
 //
 // This is a learning model, not a production payment processor:
 //
-//   - Only the message definitions the four flows need, and translate.go
+//   - Only the message definitions this system's flows need, and translate.go
 //     renders and reads every one of them: the payment family (pacs.008,
 //     pacs.003, pacs.002, pacs.004, pacs.009), the statement a settlement agent
 //     sends its members (camt.053), and the account-management family an

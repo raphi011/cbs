@@ -204,6 +204,44 @@ type Bank struct {
 	// dropped a column.
 	Status BankStatus
 
+	// AdmissionRef is the acmt Refs/PrcId of the admission this bank recorded a
+	// membership under: what it accepted, not what anybody else says about it.
+	//
+	// # It is the only thing that can refuse a second admission's acknowledgement
+	//
+	// RecordMembershipTx records-or-extends, because one acmt.007 asks for one
+	// currency and a bank joining in two assets is answered twice. What that
+	// gives up, without this field, is any way to tell the second answer of THIS
+	// admission from an acknowledgement belonging to another one — and the two
+	// are not the same message at all: the first adds a settlement reference the
+	// bank did not have, and the second overwrites one it did.
+	//
+	// It was measured rather than reasoned about. Without this field, an
+	// acknowledgement naming this bank's own BIC, quoting an admission reference
+	// it had never heard of and carrying an invented account, moved a Member
+	// bank's euro settlement reference from the central bank's real account to
+	// the forged one — leaving the bank's own row disagreeing with the settlement
+	// agent's about which account it holds, and DepositTx reads the bank's.
+	//
+	// The argument this replaces said a bank has no contender, because the
+	// acknowledgement has already been checked to name this bank's own BIC. That
+	// check answers WHICH BANK and not WHICH ADMISSION, and RosterEntry.AdmissionRef
+	// exists three hundred lines up precisely because two admissions can quote
+	// one BIC.
+	//
+	// # It is not a duplicate of the roster's
+	//
+	// The clearing house's is a registry's: it decides between two institutions
+	// contending for an address, in a row that belongs to a different institution
+	// and, from Task 18, a different database. This one is the bank's own record
+	// of what it itself accepted, and comparing against it needs nobody else's
+	// store. That the two agree in a healthy system is a consequence rather than
+	// the mechanism, which is what makes this a guard the split does not remove.
+	//
+	// Empty on a Founded bank, because nothing has been accepted yet.
+	// RecordMembershipTx is the only writer.
+	AdmissionRef string
+
 	// Assets holds one set of internal accounts per asset the bank operates in,
 	// keyed by asset code.
 	//

@@ -379,22 +379,35 @@ func TestOverlappingAccountSetsDoNotDeadlock(t *testing.T) {
 	assertEqual(t, "cash balance after both postings", balance, ledger.Amount(9_800))
 }
 
-// The fourth race, and the one the schema deliberately does NOT solve with a
-// constraint: the central bank's chart of accounts is resolved by find-or-create
-// *by name*, so two concurrent AddParticipant calls could each observe "no
-// Central Bank ledger" and each create one — after which the two participants
-// would disagree about which subledger holds member reserves.
+// TestConcurrentAdmissionsAgreeOnOneCentralBank is the fourth race, and the one
+// the schema deliberately does NOT solve with a constraint: the central bank's
+// chart of accounts is resolved by find-or-create *by name*, so two concurrent
+// admissions could each observe "no Central Bank ledger" and each create one —
+// after which the two members would disagree about which subledger holds
+// reserves.
 //
-// It cannot happen, because the first statement AddParticipantTx puts to the
-// store is NextID(NetworkBook, "bank") — the first thing the bank's own act
-// does, and admission's first act — whose INSERT … ON CONFLICT DO UPDATE takes
-// a row lock on id_sequences. The second call blocks there until the first
-// commits and then sees everything it wrote. The gap-free counter serializes the
-// whole operation, not merely the number it hands out.
+// # What serializes it, and what stopped serializing it
 //
-// This test is what makes that argument checkable rather than a claim in a
-// comment. It fails loudly if the ordering inside AddParticipantTx ever changes.
-func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
+// Each act's OWN first statement, and that is the change this test's name used
+// to hide. It was TestConcurrentAddParticipantsAgreeOnOneCentralBank, and it
+// argued that one transaction's first statement — NextID(NetworkBook, "bank"),
+// the bank's own act — locked a row on id_sequences that held until that
+// transaction ended, serializing every later statement of the admission with it.
+//
+// An admission is not one transaction any more. It is four, at three
+// institutions, with messages between them, and the loop below drives four
+// separate Updates per bank (store/testenv.Admit). So there is no single first
+// statement, and what reaches the find-or-create is
+// payment.OpenSettlementAccountTx on its own — which draws its own id first,
+// through payment.admissionSequenceTx, for exactly this reason. That function
+// records what the act does without it: 60 runs in 60 building the central bank
+// a second chart of accounts.
+//
+// This test is what makes the argument checkable rather than a claim in a
+// comment, and store/pg/schema/0001_init.sql's note on the absent UNIQUE
+// constraint points at it as the checkable half. It fails loudly if any act that
+// reaches the find-or-create stops drawing a network-scoped id before it.
+func TestConcurrentAdmissionsAgreeOnOneCentralBank(t *testing.T) {
 	s := newStore(t)
 	ctx := context.Background()
 	net := payment.NewNetwork(s.Payment(), frozen)
@@ -457,9 +470,10 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 // It cannot happen now, because SubmitPaymentTx's first store statement is
 // NextID(NetworkBook, "pay"), whose INSERT … ON CONFLICT DO UPDATE takes a row
 // lock on id_sequences. Every other caller blocks there and then sees what the
-// winner committed. It is AddParticipantTx's argument, one operation over, and
-// this test is what makes it checkable rather than a claim in a comment: it
-// fails loudly if the two statements are ever swapped back.
+// winner committed. It is the admission acts' argument, one operation over —
+// see payment.admissionSequenceTx — and this test is what makes it checkable
+// rather than a claim in a comment: it fails loudly if the two statements are
+// ever swapped back.
 //
 // storetest's ConcurrentReadThenWriteOnOneKeyAgrees is the generic half — it
 // holds BOTH stores to one answer for this shape, which a pg-only test cannot.

@@ -40,8 +40,8 @@ import (
 // Task 13 was the last new flow to add to them in that shape, and Tasks 15 and
 // 17 are what have added since — by moving a posting from one institution to
 // another, by narrowing a return, and finally by giving each of the three
-// interfaces its own act of an ADMISSION, which is the fourth flow and the only
-// one whose subject is a member rather than a payment. Either way every method
+// interfaces its own act of an ADMISSION, which is the one flow whose subject is
+// a member rather than a payment. Either way every method
 // below is one some handler in this package calls today and there are no
 // others.
 //

@@ -214,14 +214,20 @@ var reasonTable = []reasonMapping{
 	// of the error itself, because RjctnRsn is where a reason goes on that
 	// message and it is prose.
 	//
-	// ErrNotThisBanksAdmission would belong in the block above even if acmt.011
-	// did carry codes. It is a bank refusing an acknowledgement that is not its
-	// business, which is a defect in the ROUTING rather than a judgement the
-	// sender can act on — ErrStatementNotForThisBank's classification, for
-	// ErrStatementNotForThisBank's reason. Nothing answers it: the bank is the
-	// last hop of an admission and has nobody to tell, so it becomes a dead
-	// letter.
+	// The bank's three are never answered at all, whatever the code set: it is
+	// the LAST hop of an admission and has nobody to tell, so each becomes a dead
+	// letter. ErrNotThisBanksAdmission and ErrBankAlreadyAdmitted are a message
+	// that is not this bank's business — the first about which bank, the second
+	// about which admission — which is a defect in the ROUTING rather than a
+	// judgement the sender can act on, and they take
+	// ErrStatementNotForThisBank's classification for its reason.
+	// ErrAdmittedAccountUnusable is the one of the three a sender COULD act on,
+	// and it is answered by nobody for the same structural reason; the
+	// counterparty that can be told is the applicant, and the applicant is this
+	// bank.
 	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
+	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
+	{ErrAdmittedAccountUnusable, "ErrAdmittedAccountUnusable", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
 }
 

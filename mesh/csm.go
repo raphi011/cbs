@@ -28,7 +28,7 @@ import (
 //
 // # It also sits between the banks and the settlement agent
 //
-// Task 12 gave it a third job and a second counterparty. Reaching a cut-off nets
+// Task 12 gave it a second counterparty. Reaching a cut-off nets
 // the batch and then INSTRUCTS the central bank to discharge the positions, in a
 // pacs.009, because moving reserves is not something a clearing house may do.
 // The answer to that instruction comes back here rather than to any bank, and
@@ -38,7 +38,7 @@ import (
 //
 // # And it carries returns, HOLDING one end of the conversation
 //
-// Task 13 gave it a fourth job and this note called it the one where this actor
+// Task 13 gave it the return, and this note called it the one where this actor
 // does least: a pacs.004 handed straight to the central bank, the answer passed
 // back to the bank that asked, nothing cleared and nothing netted. The first
 // two clauses are still true and the "does least" is not. A return is a
@@ -54,7 +54,7 @@ import (
 //
 // # And it admits, which is the one flow where it DECIDES rather than carries
 //
-// Task 17 gave it a fifth job and its first subject that is not a payment. An
+// Task 17 gave it its first subject that is not a payment. An
 // application for a settlement account is relayed to the settlement agent and
 // the acknowledgement comes back, and out of that answer this actor writes its
 // OWN row: the routing entry, which is what makes a bank reachable at all. It is

@@ -133,6 +133,40 @@ var (
 	// institution that owns routing.
 	ErrBICAlreadyAdmitted = errors.New("payment: this BIC is already admitted under another admission")
 
+	// ErrBankAlreadyAdmitted is a bank recording an acknowledgement that belongs
+	// to an admission other than the one it recorded a membership under.
+	//
+	// It is ErrBICAlreadyAdmitted one institution over and about a different row,
+	// and the pair is deliberate rather than duplication. The clearing house
+	// refuses a second INSTITUTION contending for an address, from the roster;
+	// this is a BANK refusing a message about itself, from its own memory of what
+	// it accepted (Bank.AdmissionRef). They are separate because the rows are
+	// separate — Task 18 puts them in different databases — so a guard that
+	// existed only at the clearing house would be a guard the split removes.
+	//
+	// What it stops is measured, not supposed: an acknowledgement naming a
+	// member's own BIC and quoting an admission it never heard of moved that
+	// bank's settlement reference onto an invented account, leaving its row
+	// disagreeing with the settlement agent's about which account it holds.
+	//
+	// A bank that has recorded NO membership refuses nothing, which is what lets
+	// an operator re-drive an interrupted admission under a new process id.
+	ErrBankAlreadyAdmitted = errors.New("payment: this bank recorded its membership under another admission")
+
+	// ErrAdmittedAccountUnusable is an acknowledgement carrying an account this
+	// system cannot file: one naming no asset, or no account.
+	//
+	// The asset is what decides which of a bank's internal account sets a
+	// settlement reference belongs to and which schemes a member clears in, so an
+	// account with none would be filed under the empty asset by both readers — a
+	// reserve nothing settles through and a reference nothing quotes.
+	//
+	// ReadAdmissionAcknowledgement refuses both on the way in from the wire. This
+	// is the same refusal in the acts, so that the reader's is defence in depth
+	// rather than the only line — the rule Task 16e arrived at for ReadReturn and
+	// SettleReturnTx after an implementer found the hole outside its brief.
+	ErrAdmittedAccountUnusable = errors.New("payment: this acknowledgement carries an account that names no asset")
+
 	// ErrNotThisBanksAdmission is a bank recording an acknowledgement addressed
 	// to another bank's BIC.
 	//

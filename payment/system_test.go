@@ -1606,6 +1606,138 @@ func TestAdmittingABICTwiceIsRefused(t *testing.T) {
 	}
 }
 
+// TestABankRefusesAnAcknowledgementOfAnotherAdmission is the guard
+// Bank.AdmissionRef exists for, made about the act rather than about the mesh.
+//
+// mesh's TestAMemberRefusesAnAcknowledgementOfAnotherAdmission drives the same
+// refusal through a message and is where the measurement that provoked it is
+// written down. This one is the domain's half: the act is separately callable —
+// that is the whole point of splitting admission into four — so what it refuses
+// has to be true of the act and not only of the one caller that exists today.
+//
+// The two arms are the point. A bank that has recorded NOTHING accepts the first
+// acknowledgement that names it, whatever reference it quotes, which is what
+// lets an operator re-drive an interrupted admission under a new process id. A
+// bank that HAS recorded one accepts no other, which is what stops a second
+// admission moving a member's settlement reference.
+func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	var bank *Bank
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+		return err
+	})
+	if bank.AdmissionRef != "" {
+		t.Fatalf("a founded bank cites admission %q; it has accepted none", bank.AdmissionRef)
+	}
+
+	ack := AdmissionAcknowledgement{
+		BIC:      testBIC,
+		Ref:      "adm-1",
+		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
+	}
+	// A bank with nothing recorded takes the first that names it.
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, ack)
+		return err
+	})
+	recorded := mustGetBank(t, ctx, sys, bank.ID)
+	assertEqual(t, "the admission the bank recorded", recorded.AdmissionRef, "adm-1")
+	assertEqual(t, "settlement reference", string(recorded.Assets[testAsset].Settlement), "200.100.001")
+
+	// The same admission again, with a second asset: extended, not refused. This
+	// is a two-currency bank's second acknowledgement, which one acmt.007 per
+	// currency makes ordinary.
+	second := ack
+	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, second)
+		return err
+	})
+
+	// A DIFFERENT admission, naming this bank's own address and an account the
+	// settlement agent never opened. Refused, and nothing moves.
+	forged := ack
+	forged.Ref = "adm-someone-else"
+	forged.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "acc_bogus"}
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, forged)
+		return err
+	})
+	if !errors.Is(err, ErrBankAlreadyAdmitted) {
+		t.Fatalf("recording an acknowledgement of another admission: %v, want ErrBankAlreadyAdmitted", err)
+	}
+	after := mustGetBank(t, ctx, sys, bank.ID)
+	assertEqual(t, "settlement reference after the refusal", string(after.Assets[testAsset].Settlement), "200.100.001")
+	assertEqual(t, "the admission after the refusal", after.AdmissionRef, "adm-1")
+}
+
+// TestAnAcknowledgementNamingNoAssetIsRefusedByBothActs is the doubling of the
+// currency guard.
+//
+// ReadAdmissionAcknowledgement refuses an account with no currency on the way in
+// from the wire, and for one round that was the ONLY refusal — which makes the
+// reader's guard the only line rather than defence in depth, and these acts are
+// separately callable. It is the rule Task 16e arrived at for ReadReturn and
+// SettleReturnTx after an implementer found the hole outside its brief.
+//
+// The two acts would otherwise refuse different things, which is why the check
+// is one function they share: the clearing house would write a member clearing
+// in the empty asset, and the bank would silently skip the account. Same
+// message, two answers, and only one of them visible.
+func TestAnAcknowledgementNamingNoAssetIsRefusedByBothActs(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	var bank *Bank
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+		return err
+	})
+
+	for _, tc := range []struct {
+		what     string
+		accounts map[ledger.AssetCode]ledger.AccountID
+	}{
+		{"an account naming no asset", map[ledger.AssetCode]ledger.AccountID{"": "200.100.001"}},
+		{"an asset naming no account", map[ledger.AssetCode]ledger.AccountID{testAsset: ""}},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			in := AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-1", Accounts: tc.accounts}
+
+			err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+				_, err := sys.AdmitMemberTx(ctx, tx, in)
+				return err
+			})
+			if !errors.Is(err, ErrAdmittedAccountUnusable) {
+				t.Errorf("the clearing house admitted %s: %v, want ErrAdmittedAccountUnusable", tc.what, err)
+			}
+			err = sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+				_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, in)
+				return err
+			})
+			if !errors.Is(err, ErrAdmittedAccountUnusable) {
+				t.Errorf("the bank recorded %s: %v, want ErrAdmittedAccountUnusable", tc.what, err)
+			}
+		})
+	}
+
+	// Neither act wrote anything: the bank is still Founded and the roster is
+	// still empty. A refusal that half-applied would be worse than one that let
+	// the message through.
+	if got := mustGetBank(t, ctx, sys, bank.ID); got.Status != BankFounded {
+		t.Errorf("the bank is %q after two refused acknowledgements, want %q", got.Status, BankFounded)
+	}
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetRosterEntry(ctx, testBIC); !errors.Is(err, ErrRosterEntryNotFound) {
+			t.Errorf("a refused acknowledgement put %s in the roster: %v", testBIC, err)
+		}
+		return nil
+	}))
+}
+
 // TestABankCannotRecordAnotherBanksMembership is ErrStatementNotForThisBank's
 // shape, one flow over. The actor passes its own id and the domain refuses the
 // one that is not its business, because nothing in the signature can.

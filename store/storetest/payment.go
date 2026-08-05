@@ -82,6 +82,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// query and not the other — the reason the BIC is asserted twice above.
 		assertEqual(t, "status", string(got.Status), "Member")
 		assertEqual(t, "status in listings", string(listed[0].Status), "Member")
+		// The admission this bank recorded a membership under, asserted for the
+		// same reason and in both queries. It is what RecordMembershipTx compares
+		// an arriving acknowledgement against, so a store that drops it leaves
+		// every member accepting an acknowledgement from any admission at all —
+		// which was measured to move a bank's settlement reference onto an
+		// invented account. See payment.Bank.AdmissionRef.
+		assertEqual(t, "admission reference", got.AdmissionRef, "adm-bank_1")
+		assertEqual(t, "admission reference in listings", listed[0].AdmissionRef, "adm-bank_1")
 
 		assertEqual(t, "Ledger is not persisted", got.Ledger == nil, true)
 		assertEqual(t, "Deposit is not persisted", got.Deposit == nil, true)
@@ -1260,6 +1268,7 @@ func bankRow(id payment.ParticipantID, name string, createdAt time.Time) payment
 		CustomerSubledger: "100",
 		ProductID:         "prd_basic",
 		Status:            payment.BankMember,
+		AdmissionRef:      "adm-" + string(id),
 		Assets: map[ledger.AssetCode]payment.BankAccounts{
 			"EUR": {Suspense: "200.200.001", Reserve: "100.200.001", Settlement: "200.100.001"},
 		},

@@ -265,9 +265,13 @@ type Mesh struct {
 // roster, which is a store read, and a constructor that did I/O could not be
 // called before the store was ready. Start reads the roster, which is why
 // cmd/server seeds first and starts the mesh second; Admit covers the banks that
-// join after that, which is every bank a human admits over HTTP — and it
-// registers each one's actor itself, before the bank exists in the store at
-// all.
+// join after that, which is every bank a human admits over HTTP.
+//
+// Admit claims the ADDRESS before it writes anything and registers the actor
+// once the bank's own unit of work has committed. The two are not the same step
+// and this sentence used to run them together: the claim is what makes a clash
+// cost nothing, and the actor is what makes the bank reachable. See Mesh.Admit
+// and Mesh.reserved.
 //
 // net may be nil. A mesh with no network has no roster and therefore no member
 // banks; that is what the transport's own tests use, and it is the reason this
@@ -699,9 +703,11 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // ordering that left a bank in the roster that could neither pay nor be paid.
 // That ordering is gone. Mesh.Admit claims the address BEFORE anything is
 // written and turns the claim into this registration afterwards, so there is no
-// longer a moment at which a committed bank can be refused an address. This is
-// the step Admit ends with, and its two callers besides that are the mesh's own
-// tests, which use it to plant an actor without a conversation.
+// longer a moment at which a committed bank can be refused an address. This runs
+// in the middle of Admit — after the bank's unit of work commits and before the
+// first acmt.007 is sent, since a bank that cannot be reached is one whose
+// application nobody could answer. Its other callers are the mesh's own tests,
+// which use it to plant an actor without a conversation.
 //
 // The registration and the index entry are ONE critical section, and the
 // reservation an admission made is cleared inside it. Both matter: a gap before
@@ -1332,12 +1338,41 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 //
 // # It mints a new process id every time, including on a re-drive
 //
-// Refs/PrcId is the conversation's only correlator and the bank's own row does
-// not carry one, so there is nothing to reuse. That is safe exactly because a
-// re-drive is only allowed when the roster has NO entry for the address: the
-// clearing house's refusal compares the request's reference with the one on the
-// entry it already holds, and there is none. A re-drive of a bank that IS in the
-// roster is refused above, one institution earlier and for a different reason.
+// Refs/PrcId is the conversation's only correlator, and a re-drive gets a fresh
+// one rather than reusing what the interrupted attempt quoted. That is safe
+// exactly because a re-drive is only allowed when the roster has NO entry for
+// the address: the clearing house's refusal compares the request's reference
+// with the one on the entry it already holds, and there is none. The bank's own
+// row is in the same position — payment.Bank.AdmissionRef is empty until an
+// acknowledgement is recorded, so a bank that never got one has nothing to
+// disagree with.
+//
+// # A PARTLY admitted bank cannot be re-driven, and that is a gap with an owner
+//
+// The two conditions above are the same condition seen twice, and there is a
+// state that fails both: a bank that recorded a membership in one asset and
+// whose second asset's acknowledgement never arrived. It is a Member, so its row
+// carries a reference; it is in the roster, so this call refuses the address
+// outright — and a fresh admission would be refused by the clearing house and by
+// the bank alike, correctly, since it really is a different admission.
+//
+// So there is no door. The bank clears in one asset and holds a settlement
+// account at the central bank in a second that it does not know the number of,
+// which is the inconsistency RecordMembershipTx's own doc describes: a deposit
+// in that asset fails while the operator console reports the reserve, because
+// the console reads the central bank's row.
+//
+// It is reachable only from a dead letter — every message of an admission is
+// carried exactly once and in order by this transport, so the acknowledgement
+// goes missing only if a handler could not act on it — and it is Task 19's, with
+// the rest of this system's half-finished conversations. That task's
+// reconciliation is what has to FIND it: the shape to look for is a bank whose
+// assets and the settlement agent's accounts for its BIC do not match. Closing
+// it needs a way to re-drive one asset of an existing admission, which means
+// quoting the reference the bank already recorded rather than minting one, and
+// that is a decision about the flow rather than about this function.
+// csm.relayReturn and centralBank.advise record their own version of the same
+// class of gap.
 func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
 	if m.net == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
@@ -1567,8 +1602,8 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 	return m.csm.reject(ctx, id, code, text)
 }
 
-// Return sends a settled payment back: the R-transaction, and the last of this
-// system's four flows.
+// Return sends a settled payment back: the R-transaction, and the last thing
+// that can happen to a payment.
 //
 // It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
 // goroutine, sending only after the returning bank's half has run — because a

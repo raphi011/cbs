@@ -54,7 +54,7 @@ CREATE TABLE books (
 -- so a second concurrent caller blocks there until the first commits and then
 -- sees the Central Bank ledger the first created. The counter serializes the
 -- whole operation, not just the number it hands out. store/pg's
--- TestConcurrentAddParticipantsAgreeOnOneCentralBank pins it.
+-- TestConcurrentAdmissionsAgreeOnOneCentralBank pins it.
 --
 -- This paragraph used to name AddParticipantTx's first statement as the thing
 -- doing that, and to warn that the find-or-create would become racy again "if
@@ -584,6 +584,7 @@ CREATE TABLE banks (
     customer_subledger TEXT NOT NULL,
     product_id         TEXT NOT NULL,
     status             TEXT NOT NULL,
+    admission_ref      TEXT NOT NULL,
     created_at         TIMESTAMPTZ,
     seq                BIGSERIAL NOT NULL
 );
@@ -615,6 +616,26 @@ COMMENT ON COLUMN banks.status IS
     'No CHECK constraint, for the reason accounts.asset carries none: the set '
     'lives in Go (payment.BankStatus) and a constraint here would refuse in '
     'Postgres what store/mem accepts.';
+
+COMMENT ON COLUMN banks.admission_ref IS
+    'The acmt Refs/PrcId of the admission this bank recorded a membership '
+    'under: what it accepted, and not what any other institution says about '
+    'it. NOT NULL and empty while the bank is Founded, because it has accepted '
+    'nothing yet. '
+    'It is the only thing that can refuse an acknowledgement belonging to '
+    'another admission. One acmt.007 asks for one currency, so a bank joining '
+    'in two assets is answered twice and RecordMembershipTx has to record or '
+    'extend rather than refuse a second answer — which without this column '
+    'leaves it unable to tell the second answer of THIS admission from an '
+    'acknowledgement of a different one. Measured: a message naming a member''s '
+    'own BIC and quoting an admission it had never heard of moved that bank''s '
+    'settlement reference onto an invented account, leaving this row '
+    'disagreeing with settlement_members about which account the bank holds. '
+    'It is NOT roster_entries.admission_ref duplicated. That one decides '
+    'between two institutions contending for an address, in a row this '
+    'institution does not own and which moves to another database when the '
+    'stores split; this is a bank comparing a message against its own memory, '
+    'and needs nobody else''s table to do it.';
 
 -- A bank's internal plumbing accounts, one set per asset it operates in.
 --

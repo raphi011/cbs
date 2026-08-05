@@ -98,10 +98,11 @@ func main() {
 	}
 
 	// The mesh starts AFTER the seed, and the order is load-bearing. Start reads
-	// the participant roster once and gives every bank in it an actor, so a mesh
-	// started over an unseeded store would have no member banks at all and every
-	// seeded bank would be unreachable. Banks admitted later — POST /members —
-	// register themselves through api's handler; see mesh.AddBank.
+	// the CLEARING HOUSE's roster once and gives every bank in it an actor, so a
+	// mesh started over an unseeded store would have no member banks at all and
+	// every seeded bank would be unreachable. Banks admitted later — POST
+	// /members — come in through the mesh's own door, which founds them,
+	// registers them and applies to the scheme for them; see mesh.Mesh.Admit.
 	msh, err := mesh.New(net, meshConfig, log)
 	if err != nil {
 		log.Error("building the mesh", "error", err)

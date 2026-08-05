@@ -26,6 +26,15 @@
 // that has been founded and not admitted has a row of its own and no actor. The
 // two institutions have no store row at all and are named in Config.
 //
+// # The flows, listed once
+//
+// A push, a pull, a cut-off, a return and an admission — the five sections
+// below, in that order. They are listed here and counted nowhere, because the
+// count is what goes stale: three separate files called admission "the fourth
+// flow" while a fourth called it the clearing house's "fifth job" and a fifth
+// still said this system had four, all of them true when written and none of
+// them together. What each flow IS does not change when another arrives.
+//
 // # Bytes, not structs
 //
 // send takes an iso20022.Envelope, marshals it, and enqueues the BYTES. Nothing
