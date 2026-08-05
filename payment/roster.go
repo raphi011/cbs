@@ -88,11 +88,12 @@ type SettlementMember struct {
 // AdmitMemberTx, the clearing house's act, writes this row from an
 // acknowledgement it did not originate.
 //
-// The acknowledgement is a value rather than a message today, built by
-// AddParticipantTx from what the settlement agent's act returned, in the same
-// unit of work as everything else. Task 17d is what makes it an acmt.010 that
-// arrived from another institution. The row is the same either way and so is
-// its writer; what changes is where the writer's argument came from.
+// The acknowledgement is an acmt.010 that arrived from another institution:
+// mesh.csm.receiveAdmissionStatus reads one and runs the act. One field of this
+// row cannot come off it — the NAME, because acmt.010 identifies the account
+// owner by BIC and carries no legal name anywhere — so the clearing house keeps
+// that from the application it relayed. See mesh.csm's applicants field, and
+// AdmissionAcknowledgement, which says the same thing on the value's side.
 type RosterEntry struct {
 	BIC  iso20022.BIC
 	Name string
@@ -132,13 +133,17 @@ type RosterEntry struct {
 	// them: same admission, relay; different admission, acmt.011 before
 	// relaying.
 	//
-	// AdmitMemberTx is what writes it and what reads it to refuse; Task 17d is
-	// what puts a message behind it. AddParticipantTx composes no messages and
-	// has no process id to echo, so the rows an admission driven through it
-	// carry "" — which is honest rather than a placeholder: those admissions
-	// were not conversations. Two of them on one address therefore quote the
-	// same empty reference and the second extends the first's entry, which is
-	// what that call has always done with a repeated BIC.
+	// AdmitMemberTx is what writes it and what reads it to refuse, and
+	// mesh.Mesh.Admit is what mints the value: one process id per admission,
+	// echoed by every message of it.
+	//
+	// It can still be empty, and that is honest rather than a placeholder: a
+	// caller that composes no messages has no process id to quote. Nothing in a
+	// running system is such a caller any more — the seed and the test suites
+	// are, and each of them derives a reference from the BIC instead (see
+	// store/testenv.Admit). Two admissions quoting one reference extend a single
+	// entry rather than refusing, which is why a fixture whose banks settle has
+	// to give each of them an address of its own.
 	AdmissionRef string
 
 	// AdmittedAt is when the scheme admitted this bank, which is when this row

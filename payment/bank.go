@@ -30,12 +30,12 @@ const (
 	// It is a legitimate state and not a broken one — a bank exists before it
 	// joins a scheme — and it is what an interrupted admission leaves behind.
 	//
-	// FoundBankTx is what writes it: founding is its own act now, and a bank that
-	// stops there is a working bank that cannot pay. What no caller can yet
-	// OBSERVE it through is AddParticipant, which calls all four acts in one unit
-	// of work, so every bank it hands back has already recorded its membership and
-	// is a Member. Task 17d is where founding and joining become separate
-	// commits with a message between them.
+	// FoundBankTx is what writes it, and mesh.Mesh.Admit is what hands one back:
+	// its synchronous half founds the bank and applies to the scheme, and what
+	// the scheme thinks arrives later, at two other institutions, as a message.
+	// So a caller sees this state on every admission and not only on an
+	// interrupted one — which is the whole difference between founding and
+	// joining being one commit and being two.
 	BankFounded BankStatus = "Founded"
 
 	// BankMember is a bank the scheme has admitted: the settlement agent holds an

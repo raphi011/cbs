@@ -1405,6 +1405,98 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook, ledger.NetworkBook})
 }
 
+// TestWhichBooksAdmissionReaches is the counterpart the sub-project's Tasks
+// table asks for, and the one measurement in this file whose subject is not a
+// payment.
+//
+// One call used to reach three books: the bank's own, the central bank's and the
+// network's, all inside a single unit of work at a caller that was no
+// institution at all. Three institutions reach three sets now, and the point is
+// not that the total is the same — it is that no actor is in more than one
+// bank's book, and that the two institutions that used to be reached INTO now
+// reach their own.
+//
+// # The measured want-lists, and where the plan for this task was wrong
+//
+// The plan predicted:
+//
+//	the joining bank    [its own book, NetworkBook]
+//	the central bank    [CentralBankBook]
+//	the clearing house  [NetworkBook]
+//
+// Two of the three are what the recorder says. The CENTRAL BANK's is not: it is
+// [CentralBankBook, NetworkBook], and the reason is the note above the tests in
+// this file. A network-scoped write reaches this recorder through the id it
+// ALLOCATED and the audit event it APPENDED, never through the row itself — and
+// OpenSettlementAccountTx does both: it draws an id before the read its
+// idempotency is decided from (payment.admissionSequenceTx) and appends
+// settlement_account.opened afterwards. Neither is optional. Drop the id and the
+// act's idempotency stops holding on store/pg; drop the event and the settlement
+// account exists in no immutable record.
+//
+// So the correction is the plan's and not the domain's, exactly as Task 16's
+// return measurement was — that one predicted [CentralBankBook, NetworkBook] and
+// measured [CentralBankBook], for the mirror-image reason. Both times the
+// question is the same one: does this act write a row of the network's, or not.
+//
+// # What each set says
+//
+// The JOINING BANK reaches its own book and NetworkBook. Its own, because
+// founding builds a chart of accounts, four internal accounts per asset and a
+// product; NetworkBook, because the bank's id and two audit events are drawn
+// there. That is Mesh.Admit's synchronous half plus the handler that records the
+// acknowledgement, and the two are the same actor.
+//
+// The CENTRAL BANK reaches CentralBankBook and NetworkBook, and never a bank's.
+// It opens a Liability in its own book and writes its own member row; the
+// settlement reference it produces reaches the bank as a MESSAGE, which is the
+// whole of what changed.
+//
+// The CLEARING HOUSE reaches NetworkBook alone. It writes one roster row and
+// posts nothing, which is what it does on every other flow in this package.
+//
+// # And no institution reaches another bank's book
+//
+// Asserted separately, because that is the invariant the sub-project is for and
+// the set equalities above do not state it in a form that survives a third bank
+// in the fixture.
+func TestWhichBooksAdmissionReaches(t *testing.T) {
+	h := newMeshHarness(t)
+
+	// After the fixture's own two admissions, so what is measured is one
+	// admission and not three.
+	h.rec.reset()
+	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, euroOnly)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	h.drain(t)
+	if got := h.getBank(t, joiner.ID); got.Status != payment.BankMember {
+		t.Fatalf("the bank is %q; this test measures an admission that finished", got.Status)
+	}
+
+	assertBooksTouched(t, "the joining bank, founding itself and recording what it was told",
+		h.booksTouchedBy(joinerBIC), []ledger.BookID{joiner.BookID, ledger.NetworkBook})
+	assertBooksTouched(t, "the central bank, opening a settlement account in its own book",
+		h.booksTouchedBy(h.cfg.CentralBankBIC), []ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
+	assertBooksTouched(t, "the clearing house, writing a routing entry",
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{ledger.NetworkBook})
+
+	// No institution went near a bank's book but that bank itself. The two
+	// incumbents are in the fixture and are not party to this admission at all,
+	// so their books are the sharpest form of the claim.
+	for _, who := range []iso20022.BIC{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, joinerBIC} {
+		for _, book := range []ledger.BookID{h.debtorBook, h.creditorBook} {
+			if slices.Contains(h.booksTouchedBy(who), book) {
+				t.Errorf("%s reached %s during an admission it is not a party to", who, book)
+			}
+		}
+	}
+	if slices.Contains(h.booksTouchedBy(joinerBIC), payment.CentralBankBook) {
+		t.Error("the joining bank reached the central bank's book; the settlement account is opened for it, not by it")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The guard on the guard
 // ---------------------------------------------------------------------------

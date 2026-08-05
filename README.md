@@ -1244,8 +1244,10 @@ All four layers write to the same log, told apart by **scope**:
 | --- | --- | --- |
 | `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
 | `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
-| `payment` | the network's | participant added; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+| `payment` | the network's | the four acts of an admission — participant added, settlement account opened, member admitted, membership recorded; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
 | `lending` | one bank's | facility opened, disbursed, drawn, accrued, charged, repaid, arrears changed, closed |
+
+Admission is four events rather than one because it is four units of work at three institutions: the bank founds itself, the settlement agent opens it an account in its own book, the clearing house writes its routing entry, and the bank records what it was told. `participant.added` is the FOUNDING alone — its payload is a bank whose settlement account numbers are still empty, because at the moment it is written no settlement agent has opened one — and `membership.recorded` is where those numbers enter the log at all. The two the other institutions write are keyed by the bank's **BIC**, because that is the only identifier either of them has ever been told.
 
 An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes no `cycle.settled`. It writes no `payment.settled` either, but for a different reason and not because the two share a transaction: `payment.settled` is the **payee's bank's**, appended by `PostCreditorLegTx` in that bank's own unit of work, and a cut-off that never settled produces no advice for any bank to act on.
 

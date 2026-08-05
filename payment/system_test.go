@@ -24,7 +24,7 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 
 // testAsset is the asset these tests operate in. SEPA is a euro scheme, so a
 // test bank that clears SEPA is a euro bank; euroOnly is the joining set that
-// says so at AddParticipant.
+// says so when the bank is founded.
 const testAsset ledger.AssetCode = "EUR"
 
 var euroOnly = []ledger.AssetCode{testAsset}
@@ -150,9 +150,9 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Bank, alice, bob deposit.A
 	t.Helper()
 	ctx := context.Background()
 
-	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
+	a, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
-	b, err = sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
+	b, err = testenv.Admit(ctx, sys, "Bank B", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	aliceAcct := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -162,12 +162,16 @@ func setupTwoBanks(t *testing.T, sys *Network) (a, b *Bank, alice, bob deposit.A
 	return a, b, aliceAcct.ID, bobAcct.ID
 }
 
-// addParticipant adds a euro-only participant bank, failing the test on
-// error. It is setupTwoBanks' AddParticipant call, factored out for tests
-// that want more than two banks or want to name them themselves.
+// addParticipant admits a euro-only bank, failing the test on error. It is
+// setupTwoBanks' admission, factored out for tests that want more than two
+// banks or want to name them themselves.
+//
+// It goes through testenv.Admit, which runs the four acts in order with no mesh
+// to carry the messages between them. The conversation itself is tested in
+// mesh; what these tests need is a bank that is a Member.
 func addParticipant(t *testing.T, ctx context.Context, sys *Network, name string) *Bank {
 	t.Helper()
-	p, err := sys.AddParticipant(ctx, name, testBIC, euroOnly)
+	p, err := testenv.Admit(ctx, sys, name, testBIC, euroOnly)
 	assertNoError(t, err)
 	return p
 }
@@ -1031,11 +1035,11 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*Network, CycleID) {
 	// Three addresses, because the central bank holds one reserve account per
 	// ADDRESS: on one BIC these three would be one member, and the underfunded
 	// one this fixture exists for would be covered by the other two's money.
-	a, err := sys.AddParticipant(ctx, "Bank A", testBICs[0], euroOnly) // net receiver
+	a, err := testenv.Admit(ctx, sys, "Bank A", testBICs[0], euroOnly) // net receiver
 	assertNoError(t, err)
-	b, err := sys.AddParticipant(ctx, "Bank B", testBICs[1], euroOnly) // solvent net payer
+	b, err := testenv.Admit(ctx, sys, "Bank B", testBICs[1], euroOnly) // solvent net payer
 	assertNoError(t, err)
-	c, err := sys.AddParticipant(ctx, "Bank C", testBICs[2], euroOnly) // underfunded net payer
+	c, err := testenv.Admit(ctx, sys, "Bank C", testBICs[2], euroOnly) // underfunded net payer
 	assertNoError(t, err)
 
 	alice := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
@@ -1102,7 +1106,7 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 		// order it compares would be four copies of the same id — deterministic
 		// whatever the code does.
 		for i, name := range []string{"Bank A", "Bank B", "Bank C", "Bank D"} {
-			p, err := sys.AddParticipant(ctx, name, testBICs[i], euroOnly)
+			p, err := testenv.Admit(ctx, sys, name, testBICs[i], euroOnly)
 			assertNoError(t, err)
 			acct := openCustomer(t, ctx, p, "Customer at "+name, fmt.Sprintf("SE89-BANK%d-0001", i))
 			assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, 100000, "opening"))
@@ -1306,7 +1310,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Alpha", testBIC, []ledger.AssetCode{"EUR", "USD"})
+	p, err := testenv.Admit(ctx, sys, "Alpha", testBIC, []ledger.AssetCode{"EUR", "USD"})
 	assertNoError(t, err)
 
 	for _, asset := range []ledger.AssetCode{"EUR", "USD"} {
@@ -1355,7 +1359,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		assertEqual(t, "returns receivable account type", receivable.Type, ledger.Asset)
 	}
 
-	// And they survive the store, rather than only the value AddParticipant
+	// And they survive the store, rather than only the value the last act
 	// returned.
 	reloaded, err := sys.GetBank(ctx, p.ID)
 	assertNoError(t, err)
@@ -1370,7 +1374,7 @@ func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	p, err := testenv.Admit(ctx, sys, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	accts, err := p.AccountsFor(testAsset)
@@ -1388,17 +1392,22 @@ func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Admission, one act at a time
 //
-// AddParticipant is a composition of these four now, so every test above is
-// already a check that they add up to what the atomic call did. These are the
-// tests for the parts of each act that the composition cannot exercise: what one
-// institution's work leaves untouched, and what each act refuses.
+// Every test above admits a bank through testenv.Admit, which calls all four in
+// order, so all of them are already a check that the four compose to a working
+// member. These are the tests for the parts of each act that a composition
+// cannot exercise: what one institution's work leaves untouched, and what each
+// act refuses.
 // ---------------------------------------------------------------------------
 
 // mustUpdate runs fn in one unit of work and fails the test if it does not
-// commit. It is for the acts below, which are Tx-only: there is deliberately no
-// AddParticipant-shaped wrapper opening a unit of work per act, because the
-// point of the split is that each act is one institution's work and the caller
-// composing them decides how many commits that is.
+// commit. It is for the Tx forms of the acts below.
+//
+// Each act has a wrapper of its own on Network — FoundBank,
+// OpenSettlementAccount, AdmitMember, RecordMembership — because a message
+// handler holds no transaction, and there is deliberately no wrapper over all
+// FOUR: what composes them is a conversation between three institutions, and a
+// single unit of work spanning them is exactly what an admission across a store
+// boundary cannot be.
 func mustUpdate(t *testing.T, ctx context.Context, sys *Network, fn func(context.Context, Tx) error) {
 	t.Helper()
 	assertNoError(t, sys.Store().Update(ctx, fn))
@@ -1649,7 +1658,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 func TestAccountsForUnknownAssetFails(t *testing.T) {
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(context.Background(), "Alpha", testBIC, nil) // defaults to EUR
+	p, err := testenv.Admit(context.Background(), sys, "Alpha", testBIC, nil) // defaults to EUR
 	assertNoError(t, err)
 	assertEqual(t, "assets a bank joins with by default", len(p.Assets), 1)
 
@@ -1711,9 +1720,9 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	alpha, err := testenv.Admit(ctx, sys, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
+	beta, err := testenv.Admit(ctx, sys, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// The payer's leg has to be flawless for this test to be about the payee's.
@@ -1749,9 +1758,9 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	alpha, err := testenv.Admit(ctx, sys, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
+	beta, err := testenv.Admit(ctx, sys, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// Both accounts are addressable, so the only thing wrong with this payment
@@ -1789,9 +1798,9 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	alpha, err := testenv.Admit(ctx, sys, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
+	beta, err := testenv.Admit(ctx, sys, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// Both ends in BTC: a mandate's two accounts have to agree (see
@@ -1829,9 +1838,9 @@ func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	alpha, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	alpha, err := testenv.Admit(ctx, sys, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := sys.AddParticipant(ctx, "Beta", testBIC, euroOnly)
+	beta, err := testenv.Admit(ctx, sys, "Beta", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
@@ -1954,7 +1963,7 @@ func TestParticipantRunEndOfDay_DrivesBothLayers(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	bank, err := net.AddParticipant(ctx, "Aurora Bank", testBIC, euroOnly)
+	bank, err := testenv.Admit(ctx, net, "Aurora Bank", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	// An overdrawn current account with a priced overdraft.
@@ -2013,7 +2022,7 @@ func TestParticipantRunEndOfDay_QuietBank(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	bank, err := net.AddParticipant(ctx, "Quiet Bank", testBIC, euroOnly)
+	bank, err := testenv.Admit(ctx, net, "Quiet Bank", testBIC, euroOnly)
 	assertNoError(t, err)
 	assertNoError(t, bank.RunEndOfDay(ctx, fixedTime))
 }
@@ -2547,9 +2556,9 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*Network, Initiat
 	t.Helper()
 	ctx := context.Background()
 	sys := testNetwork(t)
-	a, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
+	a, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
-	b, err := sys.AddParticipant(ctx, "Bank B", testBIC2, euroOnly)
+	b, err := testenv.Admit(ctx, sys, "Bank B", testBIC2, euroOnly)
 	assertNoError(t, err)
 	payer := openCustomer(t, ctx, a, "Alice", "SE89-BANKA-0001")
 	payee := openCustomer(t, ctx, b, "Biller", "SE89-BANKB-0001")
@@ -3449,7 +3458,7 @@ func TestASettlementAgentRefusesAReturnItsCreditorBankCannotCover(t *testing.T) 
 	// A third member, holding no reserves at all: it has taken part in no
 	// cut-off. A bank that had paid its reserves out since the payment settled
 	// is the same position arrived at the long way round.
-	c, err := sys.AddParticipant(ctx, "Bank C", "BANKFRPPXXX", euroOnly)
+	c, err := testenv.Admit(ctx, sys, "Bank C", "BANKFRPPXXX", euroOnly)
 	assertNoError(t, err)
 
 	_, err = sys.SettleReturn(ctx, ReturnInstruction{
@@ -4026,7 +4035,7 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 	assertEqual(t, "bob after the second unwind", customerBalance(t, b, bob), 30000)
 
 	// A bank that is neither side of the payment has no leg to unwind.
-	c, err := sys.AddParticipant(ctx, "Bank C", "BANKFRPPXXX", euroOnly)
+	c, err := testenv.Admit(ctx, sys, "Bank C", "BANKFRPPXXX", euroOnly)
 	assertNoError(t, err)
 	assertError(t, sys.ReverseReturnLeg(ctx, c.ID, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
 }

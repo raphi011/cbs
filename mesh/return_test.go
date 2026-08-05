@@ -1116,8 +1116,8 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 // TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns the invariant
 // on csm.held into a measurement.
 //
-// That field is the only state any actor in this package keeps between messages,
-// and it is unlocked. What makes that safe is not the field: it is that
+// That field is the larger of the two things any actor in this package keeps
+// between messages — csm.applicants is the other — and it is unlocked. What makes that safe is not the field: it is that
 // relayReturn and receiveReturnStatus are reached only from handle, which runs
 // on the clearing house's own goroutine and nobody else's. The three methods on
 // this type that run on a CALLER's goroutine — closeCycle, settle and reject,

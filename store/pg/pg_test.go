@@ -405,7 +405,7 @@ func TestConcurrentAddParticipantsAgreeOnOneCentralBank(t *testing.T) {
 	names := []string{"Aurora Bank", "Banca Verde", "Nordkredit"}
 	bics := []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX"}
 	errs := runConcurrently(len(names), func(i int) error {
-		_, err := net.AddParticipant(ctx, names[i], bics[i], nil)
+		_, err := testenv.Admit(ctx, net, names[i], bics[i], nil)
 		return err
 	})
 	for _, err := range errs {
@@ -469,9 +469,9 @@ func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
 	ctx := context.Background()
 	net := payment.NewNetwork(s.Payment(), frozen)
 
-	debtorBank, err := net.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
+	debtorBank, err := testenv.Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
 	assertNoError(t, err)
-	creditorBank, err := net.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
+	creditorBank, err := testenv.Admit(ctx, net, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
 	assertNoError(t, err)
 
 	alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,

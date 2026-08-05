@@ -831,7 +831,7 @@ Events recorded, grouped by the layer (**scope**) that produced them:
 
 - **ledger** — ledger/subledger/account creation, transaction posting, [[reversal]]
 - **deposit** — account opened/frozen/closed, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[snapshot|end-of-day snapshot]]
-- **payment** — participant added, [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
+- **payment** — the four acts of an admission (participant added, settlement account opened, member admitted, membership recorded), [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
 
 Each event is written **inside the transaction of the operation it describes**, so an operation that rolls back leaves no record claiming it happened. The log is unbounded, so the API pages it: **limit** (default 100, max 1000) and **before**, an exclusive cursor on the event's sequence number.
 

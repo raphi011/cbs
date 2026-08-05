@@ -20,9 +20,11 @@
 // to touch inside a handler, and what makes "which institution did this" a
 // question with an answer.
 //
-// The banks come from the participant roster, so the mesh's shape is the
-// system's shape rather than a list kept in step by hand. The two institutions
-// have no store row and are named in Config.
+// The banks come from the CLEARING HOUSE's roster, so the mesh's shape is the
+// system's shape rather than a list kept in step by hand — and it is the roster
+// and not the bank rows, because the roster is what says who is a MEMBER. A bank
+// that has been founded and not admitted has a row of its own and no actor. The
+// two institutions have no store row at all and are named in Config.
 //
 // # Bytes, not structs
 //
@@ -324,9 +326,10 @@
 // relays the pacs.004 ONWARD to the other bank, routed by the agents OrgnlTxRef
 // carries. It holds that message until it has an ACSC, because a bank that
 // posted its customer leg against a return the settlement agent then refused
-// would have moved money for nothing. That is the only state any actor in this
-// package keeps between messages, it is in memory, and csm.relayReturn records
-// what a restart costs.
+// would have moved money for nothing. That is the larger of the two things any
+// actor in this package keeps between messages — the other is the applicant's
+// name across an admission, see Admission below — both are in memory, and
+// csm.relayReturn records what a restart costs.
 //
 // A bank in this system used to SEND a return and never receive one, which was
 // the shared store showing through: the settlement agent posted the far bank's
@@ -350,6 +353,104 @@
 // posted (bank.receiveReturnStatus). A REDELIVERED return reaches the settlement
 // agent, where its own ledger refuses the reserve reversal a second time, and is
 // dead-lettered for the same reason the bank's own guard exists.
+//
+// # Admission
+//
+// A bank joining the scheme, and the only flow here that BRINGS AN ACTOR INTO
+// EXISTENCE. Every other one starts from a mesh that already holds its parties;
+// this one starts from a bank that nothing could address a moment earlier, and
+// its first message is sent by that bank.
+//
+//	joining bank  --acmt.007-->  clearing house  --acmt.007-->  central bank
+//	joining bank  <--acmt.010--  clearing house  <--acmt.010--  central bank
+//
+// Four messages, and a chain rather than a fan-out: each is sent from the
+// handler of the one before it, so unlike a cut-off or a return there is nothing
+// undetermined about the order. On a refusal the acmt.011 comes back the same
+// way and the bank stays Founded.
+//
+// # It is the return's topology, and one currency at a time
+//
+// The bank composes the request, the clearing house relays it, the settlement
+// agent acts in its own book and answers, and the clearing house writes its own
+// row from the answer and forwards it. That shape is Task 16's pacs.004, reused
+// rather than reinvented.
+//
+// It is FOUR messages per ASSET. acmt.007's Acct/Ccy is minOccurs="1"
+// maxOccurs="1" — one currency per request — so a bank joining in two assets
+// sends two applications and is answered twice; the acknowledgement is the
+// asymmetric half, because AccountForAction1 is unbounded and each answer lists
+// every account the servicer holds for that address. The consequence is not the
+// extra message: it is that Refs/PrcId, the process id, is the conversation's
+// ONLY correlator, since an acknowledgement carries no back-reference to the
+// request that caused it. Mesh.Admit mints one per admission and every message
+// echoes it.
+//
+// # The JOINING BANK founds itself, synchronously, before anything is sent
+//
+// Mesh.Admit's synchronous half is Mesh.Submit's: the bank's own unit of work,
+// on the caller's goroutine, marked as the bank's, committed before a message
+// exists. What it returns is a FOUNDED bank — a licence, a book, a chart of
+// accounts and a product, able to open customer accounts and unable to pay or be
+// paid — and what the scheme thinks arrives later, at two other actors, as a
+// message.
+//
+// Founded and not a member is a legitimate state and not half of one, which is
+// what makes the orphan-participant defect go away rather than move. That defect
+// was an ORDERING: the participant row was written and the mesh was asked for
+// the address afterwards, so the irreversible step ran first and the refusable
+// step second. Admit claims the address before the unit of work runs and gives
+// it back if the unit of work fails, because an in-memory rollback is reliable
+// and a rollback of a committed transaction is not. An interrupted admission
+// therefore leaves a bank that exists and has not joined, and calling Admit again
+// re-drives it: nothing is founded twice.
+//
+// # The CLEARING HOUSE refuses, relays, and holds almost nothing
+//
+// Two authorities used to claim one address and one of them has been narrowed.
+// The mesh's actor map refuses a taken BIC and that refusal is now a statement
+// about CONNECTIVITY; the roster's is the statement about MEMBERSHIP, made by
+// the institution that owns routing, and it is keyed on the ADMISSION rather
+// than on the address — a refusal keyed on the address alone would refuse the
+// same bank asking again and never fire on the impostor it exists for. See
+// payment.ErrBICAlreadyAdmitted.
+//
+// Nothing is held across the relay except the applicant's legal NAME, and that
+// one exception is the schema's doing. Everything the routing entry needs is on
+// the acknowledgement — the address, the accounts, the admission reference — but
+// an acmt.010 identifies the account owner with an OrganisationIdentification29,
+// which carries a BIC and no name at all. So the clearing house keeps the name
+// from the application it relayed and nothing else; see csm.applicants, beside
+// csm.held, which keeps a whole message for the return.
+//
+// It writes the routing entry BEFORE it forwards the acknowledgement, so a bank
+// told it is a member is one this institution can already route to. That is the
+// settlement path's statement-before-answer rule in a new place.
+//
+// # The CENTRAL BANK opens the account and answers acmt.011, not pacs.002
+//
+// One account per request, in its own book, plus its own member row keyed by
+// BIC — the only identifier it has, since it holds no roster and has never been
+// told this system's bank ids. It is idempotent per (BIC, asset), so a
+// re-driven admission is not given a second account that the first one's balance
+// is already sitting in.
+//
+// A refusal is an acmt.011 and not a pacs.002, because a status report is about
+// a payment transaction and this is not one. The reason travels as PROSE:
+// References6 makes RjctnRsn a repeated Max350Text where a payment rejection
+// carries an external code, which is the standard's decision and not this
+// system's, and it is why payment's reasonTable gives the admission sentinels
+// the empty code.
+//
+// # This is not how a real RTGS account is opened
+//
+// acmt is eBAM, designed for a corporate opening an account at its bank. A
+// bank's account at its central bank is reference data — in TARGET it is CRDM
+// static data and reda messages — and scheme membership is contractual and
+// travels on no message at all. What travels here is the settlement-account
+// request; the routing entry falls out of its acknowledgement, which is why the
+// clearing house writes a row from a message it did not originate and is not
+// addressed on. iso20022.Acmt007 records the whole of that framing.
 //
 // # Unbounded queues, and what that costs
 //

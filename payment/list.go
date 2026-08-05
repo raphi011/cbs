@@ -3,6 +3,8 @@ package payment
 import (
 	"context"
 	"sort"
+
+	"github.com/raphi011/cbs/iso20022"
 )
 
 // ---------------------------------------------------------------------------
@@ -102,10 +104,11 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 // is now a state the domain can produce rather than a stated impossibility: a
 // bank founded by FoundBankTx and not yet admitted has a row and no entry, which
 // is a founded bank waiting for an admission — legitimate, and the whole point
-// of splitting founding from joining. No PRODUCTION caller reaches it: every
-// path that founds a bank goes on to admit it in the same unit of work (see
-// AddParticipantTx), and the tests that call FoundBankTx on its own are how the
-// state is measured at all. Task 17d is where the two stop being one call.
+// of splitting founding from joining. It is REACHED in production, which it was
+// not while one call did both: mesh.Mesh.Admit founds a bank and the scheme
+// answers later, so between the two commits this is what the clearing house's
+// own row says about that address. GetRosterEntryByBIC below is what asks
+// without a bank row in the way.
 func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -120,6 +123,52 @@ func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterE
 		return RosterEntry{}, err
 	}
 	return out, nil
+}
+
+// GetRosterEntryByBIC returns what the clearing house holds about the member at
+// one ADDRESS, asked by the only identifier a message carries.
+//
+// It is GetRosterEntry with the crossing taken out, and the difference is which
+// question is being asked. GetRosterEntry starts from a ParticipantID — what a
+// payment names its parties by — so it has to read the bank's own row to learn
+// its address before it can read the roster, and that read is a clearing house
+// reaching into a bank's database under Task 18's stores. This one starts from
+// the BIC, which is the clearing house's own key, so it reads the roster and
+// nothing else.
+//
+// Its caller is the admission relay: an acmt.007 names its applicant by BIC and
+// by nothing else, and the clearing house's refusal of a second institution on a
+// taken address is decided from what this returns. A BIC in no roster is
+// ErrRosterEntryNotFound, which on that path is the ORDINARY answer — it is what
+// an address nobody has been admitted on looks like.
+func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
+	var out RosterEntry
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetRosterEntry(ctx, bic)
+		return err
+	})
+	if err != nil {
+		return RosterEntry{}, err
+	}
+	return out, nil
+}
+
+// ListRosterEntries returns every member the clearing house routes to, oldest
+// admission first.
+//
+// It is what says WHO IS A MEMBER, which is a different question from who has a
+// bank row: a bank founded and not yet admitted has a row and no entry here.
+// mesh.Mesh.joinRoster is the caller, and asking this rather than ListBanks is
+// what stops a founded, unadmitted bank being given an actor at startup.
+func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) {
+	var out []RosterEntry
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListRosterEntries(ctx)
+		return err
+	})
+	return out, err
 }
 
 // ListPayments returns all payments, oldest first.

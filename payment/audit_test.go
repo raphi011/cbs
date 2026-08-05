@@ -8,6 +8,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // paymentAudit reads the network's own audit trail, optionally narrowed to one
@@ -72,9 +73,19 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 		payments = []PaymentID{p1.ID, p2.ID}
 	})
 
+	// Four events per admission, because an admission is four units of work at
+	// three institutions and each writes its own. They are interleaved per bank
+	// rather than grouped, because the acts run in order for one bank before the
+	// next bank is admitted. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
 	want := strings.Join([]string{
-		ledger.EventParticipantAdded, // Bank A
+		ledger.EventParticipantAdded, // Bank A founds itself
+		ledger.EventSettlementAccountOpened,
+		ledger.EventMemberAdmitted,
+		ledger.EventMembershipRecorded,
 		ledger.EventParticipantAdded, // Bank B
+		ledger.EventSettlementAccountOpened,
+		ledger.EventMemberAdmitted,
+		ledger.EventMembershipRecorded,
 		ledger.EventCycleOpened,
 		ledger.EventPaymentInitiated, // payment 1
 		ledger.EventPaymentAccepted,
@@ -99,7 +110,12 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 				ledger.EventPaymentSettled,
 			}, " "))
 	}
-	assertEqual(t, "trail for "+string(a.ID), eventTypes(paymentAudit(t, sys, string(a.ID))), ledger.EventParticipantAdded)
+	// The bank's OWN two, keyed by its own id: it founded itself, and later it
+	// recorded what the scheme told it. The other two acts of its admission are
+	// keyed by its BIC, because the institutions that wrote them know it by no
+	// other name — see TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+	assertEqual(t, "trail for "+string(a.ID), eventTypes(paymentAudit(t, sys, string(a.ID))),
+		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 	assertEqual(t, "trail for the cycle", eventTypes(paymentAudit(t, sys, string(st.CycleID))),
 		strings.Join([]string{ledger.EventCycleOpened, ledger.EventCycleClosed, ledger.EventCycleSettled}, " "))
 
@@ -292,27 +308,98 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 		}, " "))
 }
 
-// TestParticipantAuditPayloadDropsLiveHandles pins that the participant.added
-// payload is the stored row. Ledger and Deposit are handles over the store, not
-// data — serializing them would put an empty object in an immutable log and
-// suggest the row has columns it does not have.
+// TestParticipantAuditPayloadDropsLiveHandles pins that the payload of both
+// events about a BANK is the stored row. Ledger and Deposit are handles over the
+// store, not data — serializing them would put an empty object in an immutable
+// log and suggest the row has columns it does not have.
+//
+// Both, because there are two of them now and they carry the same type: the bank
+// founds itself and later records what the scheme told it. A check on one of the
+// two would leave the other free to leak a handle.
 func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := sys.AddParticipant(ctx, "Bank A", testBIC, euroOnly)
+	p, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	events := paymentAudit(t, sys, string(p.ID))
-	assertEqual(t, "participant events", len(events), 1)
+	assertEqual(t, "events about the bank's own row", eventTypes(events),
+		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 
-	payload := string(events[0].Payload)
-	for _, field := range []string{`"Ledger"`, `"Deposit"`} {
-		if strings.Contains(payload, field) {
-			t.Fatalf("participant.added payload carries %s: %s", field, payload)
+	for _, e := range events {
+		payload := string(e.Payload)
+		for _, field := range []string{`"Ledger"`, `"Deposit"`} {
+			if strings.Contains(payload, field) {
+				t.Fatalf("%s payload carries %s: %s", e.Type, field, payload)
+			}
+		}
+		if !strings.Contains(payload, `"BookID"`) {
+			t.Fatalf("%s payload is missing BookID: %s", e.Type, payload)
 		}
 	}
-	if !strings.Contains(payload, `"BookID"`) {
-		t.Fatalf("participant.added payload is missing BookID: %s", payload)
+}
+
+// TestEachActOfAnAdmissionLeavesItsOwnAuditEvent is carried requirement 2, made
+// falsifiable.
+//
+// # What it is for
+//
+// The audit log is this system's only immutable record, and admission stopped
+// being one unit of work. participant.added is written by the bank founding
+// ITSELF, so its payload is a Founded bank with no settlement account numbers on
+// it — honest about what founding did and silent about everything after. Without
+// the other three, the settlement account numbers an admission produces would
+// exist in no immutable record at all: the bank's row carries the current value
+// and a row is not a log.
+//
+// # What each event has to be about
+//
+// The two BIC-keyed events are the other institutions' own records, and they are
+// keyed by the BIC because that is the only identifier those institutions have —
+// neither of them has ever been told this system's bank ids. The two id-keyed
+// events are the bank's own row, before and after.
+//
+// The settlement account numbers are asserted on the events that must carry
+// them, rather than only counting types: an event whose payload had lost the
+// accounts would be a log entry that recorded the act and not its result, and a
+// count would pass over it.
+func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	p, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
+	assertNoError(t, err)
+
+	assertEqual(t, "the whole admission's trail", eventTypes(paymentAudit(t, sys, "")),
+		strings.Join([]string{
+			ledger.EventParticipantAdded,
+			ledger.EventSettlementAccountOpened,
+			ledger.EventMemberAdmitted,
+			ledger.EventMembershipRecorded,
+		}, " "))
+
+	// The two the other institutions wrote are keyed by the address, which is
+	// the whole of what they know this bank by.
+	assertEqual(t, "the trail under the bank's address", eventTypes(paymentAudit(t, sys, string(testBIC))),
+		ledger.EventSettlementAccountOpened+" "+ledger.EventMemberAdmitted)
+
+	// And the settlement account number is in the log, twice: once as the
+	// account the servicer opened, once as the reference the bank was told.
+	settlement := string(p.Assets["EUR"].Settlement)
+	if settlement == "" {
+		t.Fatal("the admitted bank has no settlement reference; this test is measuring the wrong thing")
+	}
+	for _, e := range paymentAudit(t, sys, "") {
+		switch e.Type {
+		case ledger.EventSettlementAccountOpened, ledger.EventMembershipRecorded:
+			if !strings.Contains(string(e.Payload), settlement) {
+				t.Errorf("%s does not name the settlement account %s: %s", e.Type, settlement, e.Payload)
+			}
+		case ledger.EventParticipantAdded:
+			if strings.Contains(string(e.Payload), settlement) {
+				t.Errorf("%s names a settlement account; founding happens before one exists: %s", e.Type, e.Payload)
+			}
+		}
 	}
 }

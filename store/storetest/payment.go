@@ -430,6 +430,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// payment.AdmitMemberTx at Task 17c, taking the assets from a map keyed by
 	// asset and appending only the ones the entry does not already hold, so a
 	// message that repeats a currency collapses before this table is reached.
+	// The reader that message goes through has since landed too and refuses one
+	// outright — payment.ReadAdmissionAcknowledgement will not read an
+	// acknowledgement naming two accounts in one currency — so the repeat cannot
+	// arrive from the wire either.
 	// What is asserted here is the STORE's contract with the Go type it is
 	// handed: Assets is a slice, a slice can repeat, and a store must hold what
 	// a caller passes it whether or not any caller passes that.

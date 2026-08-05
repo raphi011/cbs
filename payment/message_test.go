@@ -27,6 +27,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // messageNow is the instant the message tests build their headers at.
@@ -52,9 +53,9 @@ func addressedBanks(t *testing.T) (sys *Network, aurora, verde *Bank, alice, bru
 	ctx := context.Background()
 	sys = testNetwork(t)
 
-	aurora, err := sys.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", euroOnly)
+	aurora, err := testenv.Admit(ctx, sys, "Aurora Bank", "AURODEFFXXX", euroOnly)
 	assertNoError(t, err)
-	verde, err = sys.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", euroOnly)
+	verde, err = testenv.Admit(ctx, sys, "Banca Verde", "VERDITMMXXX", euroOnly)
 	assertNoError(t, err)
 
 	alice = openCustomer(t, ctx, aurora, "Aurora Customer", "DE89370400440532013000")
@@ -1036,7 +1037,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
 	// A third bank opens an account holding the creditor's IBAN. Uniqueness is
 	// enforced per bank, which is the widest scope a register can see, so this
 	// is reachable rather than hypothetical.
-	nord, err := n.AddParticipant(ctx, "Nord Bank", "NORDSESSXXX", euroOnly)
+	nord, err := testenv.Admit(ctx, n, "Nord Bank", "NORDSESSXXX", euroOnly)
 	assertNoError(t, err)
 	openCustomer(t, ctx, nord, "Impostor", p.Creditor.Identifier.Value)
 
@@ -1362,9 +1363,9 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
-	aurora, err := n.AddParticipant(ctx, "Aurora Bank", "AURODEFFXXX", euroOnly)
+	aurora, err := testenv.Admit(ctx, n, "Aurora Bank", "AURODEFFXXX", euroOnly)
 	assertNoError(t, err)
-	verde, err := n.AddParticipant(ctx, "Banca Verde", "VERDITMMXXX", euroOnly)
+	verde, err := testenv.Admit(ctx, n, "Banca Verde", "VERDITMMXXX", euroOnly)
 	assertNoError(t, err)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")

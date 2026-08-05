@@ -82,12 +82,12 @@ type centralBank struct {
 // handle dispatches on the message that arrived. See bank.handle, which has the
 // same shape and the same reason for taking the sender as an argument.
 //
-// Two arms, and they are the two ways reserves move: a cut-off's positions
-// being discharged, and one settled payment being sent back. A pacs.008 or a
-// pacs.003 arriving here would be a customer payment sent to the settlement
-// agent, which no actor in this mesh does and which this actor could not act
-// on; it becomes a dead letter rather than a shrug, for the reason bank.handle's
-// default gives.
+// Three arms. Two of them are the two ways reserves MOVE — a cut-off's positions
+// being discharged, and one settled payment being sent back — and the third is
+// the one that creates the account they move across. A pacs.008 or a pacs.003
+// arriving here would be a customer payment sent to the settlement agent, which
+// no actor in this mesh does and which this actor could not act on; it becomes a
+// dead letter rather than a shrug, for the reason bank.handle's default gives.
 func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -98,6 +98,8 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 		return cb.receiveSettlement(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs004:
 		return cb.receiveReturn(ctx, from, env.AppHdr, doc)
+	case *iso20022.Acmt007:
+		return cb.receiveAdmission(ctx, from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", cb.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -470,6 +472,111 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 		return err
 	}
 	return cb.answer(from, orig, returnedEndToEnd(first), string(id), iso20022.TransactionStatusSettlementCompleted, nil)
+}
+
+// receiveAdmission is the central bank opening a settlement account for a bank
+// applying to the scheme: the third thing this actor does, and the only one that
+// moves no money at all.
+//
+// It has receiveReturn's shape — read the message, run the domain act in one
+// unit of work, answer — and the same reason for it: what it acts on came off
+// the message, because a settlement agent holds no roster and has never been
+// told this system's bank ids. What an acmt.007 tells it is a BIC, a legal name
+// and ONE currency, and the BIC is what it keys its own member row by. See
+// payment.ReadAdmissionRequest, which is where the address is validated, and
+// payment.OpenSettlementAccountTx, which names that reader as the thing that
+// has to run before it.
+//
+// # It answers acmt.011 and NOT pacs.002
+//
+// A status report is about a payment transaction, and this is not one: no
+// payment exists, no cycle exists, and OrgnlTxId would have nothing to quote.
+// The account-management family carries its own refusal and this actor uses it.
+// The consequence is that the reason travels as PROSE rather than as a code —
+// References6 makes RjctnRsn a repeated Max350Text — which is the standard's
+// decision and not this system's, and it is why payment's reasonTable gives the
+// admission sentinels the empty code. See payment.AdmissionRejectionMessage.
+//
+// # One request, one currency, one answer that names every account
+//
+// The asymmetry is the schema's. Acct/Ccy is minOccurs="1" maxOccurs="1", so a
+// bank joining in two assets sends two requests; AccountForAction1 is unbounded,
+// so the answer to each lists the member's WHOLE account set as this act has
+// just left it. That is what lets one acknowledgement serve both readers on the
+// far side of the relay — the clearing house learns which assets the member
+// clears in, and the bank learns every account number it has been given.
+//
+// It answers per request rather than once per admission, and it could not do
+// otherwise: nothing on an acmt.007 says how many of them an admission is made
+// of, so this actor cannot know when the last one has arrived. What that costs
+// is that a two-asset bank is told twice; what it buys is that neither answer
+// waits on a message that may never come.
+//
+// # The process id is echoed, and this is the hop that copies it
+//
+// Refs/PrcId is the conversation's only correlator — the acknowledgement carries
+// no back-reference to the request at all — so the answer's process id is the
+// request's, read off the acmt.007 by the reader and put back by the builder.
+// This handler is where the two are held at once, which is why
+// payment.AdmissionRequest's own doc names it as what carries the reference
+// forward.
+func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso20022.Acmt007) error {
+	in, err := payment.ReadAdmissionRequest(doc)
+	if err != nil {
+		return cb.refuseAdmission(from, doc, fmt.Errorf(
+			"mesh: %s could not read the admission request %s sent it: %w", cb.bic, from, err))
+	}
+	member, err := cb.ops.OpenSettlementAccount(ctx, in)
+	if err != nil {
+		return cb.refuseAdmission(from, doc, err)
+	}
+	env, err := payment.AdmissionAcknowledgementMessage(payment.AdmissionAcknowledgement{
+		BIC:      in.BIC,
+		Accounts: member.Accounts,
+		Ref:      in.Ref,
+	}, payment.MessageContext{
+		From:  cb.bic,
+		To:    from,
+		MsgID: cb.m.nextMsgID(cb.bic),
+		Now:   cb.m.now(),
+	})
+	if err != nil {
+		return fmt.Errorf("mesh: %s opened %s's settlement account and could not say so: %w", cb.bic, in.BIC, err)
+	}
+	return cb.m.send(cb.bic, from, env)
+}
+
+// refuseAdmission answers an acmt.007 this actor will not act on, back to
+// whoever handed it over.
+//
+// It reads the two elements the ANSWER needs straight off the document rather
+// than taking them from the reader's output, because the commonest reason to be
+// here is that the reader refused. What an acmt.011 must name is the applicant
+// (OrgId/AnyBIC) and the admission (Refs/PrcId), plus the request it refuses
+// (Refs/RjctdReqId) — and a message missing either of the first two is one this
+// actor cannot address or correlate, so it becomes a dead letter instead. That
+// is answerUnreadable's shape for a family with no FF01 in it.
+//
+// The cause is NOT returned once it has been answered, for bank.answer's reason:
+// a refusal the applicant was told about is completed work.
+func (cb *centralBank) refuseAdmission(to iso20022.BIC, doc *iso20022.Acmt007, cause error) error {
+	req := doc.AcctOpngReq
+	env, err := payment.AdmissionRejectionMessage(
+		payment.AdmissionRequest{BIC: req.Org.OrgId.AnyBIC, Ref: req.Refs.PrcId.Id},
+		req.Refs.MsgId,
+		cause.Error(),
+		payment.MessageContext{
+			From:  cb.bic,
+			To:    to,
+			MsgID: cb.m.nextMsgID(cb.bic),
+			Now:   cb.m.now(),
+		})
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("mesh: %s could not build its acmt.011 for %s: %w", cb.bic, to, err),
+			cause)
+	}
+	return cb.m.send(cb.bic, to, env)
 }
 
 // returnedEndToEnd is the payer's own reference for a returned payment, as the

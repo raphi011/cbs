@@ -12,47 +12,39 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// handleAddParticipant admits a bank: its participant row, its chart of
-// accounts, its reserve account at the central bank — and its ACTOR.
+// handleAddParticipant founds a bank and applies to the scheme for it.
 //
-// The last of those is what the mesh added. A bank with no actor is not a slow
-// bank, it is an unreachable one: its customers' instructions are refused by
-// Mesh.Submit because there is nobody to hand them to, and every pacs.008
-// addressed to it comes back RC01 from the clearing house because its BIC is in
-// no routing table. The mesh reads the roster once, at startup, so a bank
-// admitted while the process is running has to be registered here or it never is.
+// # The orphan is gone, and what replaced it is a bank that has not joined yet
 //
-// # The two steps are not one, and cannot be
+// This used to be two steps that could not be one: the participant row was
+// written, and the mesh was then asked for the address. The address is the only
+// thing in the whole operation that can clash, so the irreversible step ran
+// first and the refusable step second — and a refusal left a bank in the roster
+// that could neither pay nor be paid, with no way back. The four paragraphs that
+// used to stand here documented that consequence at length and did not say that
+// reversing the two would remove it.
 //
-// Admission is a unit of work in the store; registering an actor is a map entry
-// and a goroutine, and no transaction spans the two. So a mesh that refuses —
-// which it does for a BIC another bank already answers to — leaves a bank in the
-// roster with no actor, and there is no rolling that back from here.
+// mesh.Mesh.Admit reverses them. The address is claimed at the mesh before
+// anything is written and released again if the write fails, so a clash now
+// costs nothing at all: no row, no actor, and an error the operator can act on.
 //
-// It is reported rather than hidden, and the response says which half happened,
-// because the alternative is worse in both directions: a 201 would hand back a
-// bank that cannot pay or be paid, and a silent retry-later would be a promise
-// nothing in this process keeps. The operator's fix is to admit the bank on an
-// address of its own — which is the real-world fix too, since a BIC identifies
-// an institution and two banks cannot share one.
+// What the caller gets back is a FOUNDED bank. Its book, its chart of accounts
+// and its default product exist and it can open customer accounts; it cannot pay
+// or be paid, because no settlement agent holds an account for it and no clearing
+// house routes to it yet. Whether the scheme accepts arrives later, at two other
+// institutions, as a message — the same shape POST /payments has, and for the
+// same reason.
 //
-// The message says the ROW exists, and it says the mesh has no actor for THIS
-// bank rather than that the address is unused. Both matter, and the second one
-// was wrong until Server.Reset started reconciling the mesh: an actor for
-// another bank was still running under that BIC, so an operator told their new
-// bank was unroutable could watch the old one route perfectly well. What is true
-// in every branch that can reach here — a clashing BIC, or a mesh on its way
-// down — is that the bank now in the roster has no actor of its own.
+// An interrupted admission therefore leaves a founded bank rather than an orphan,
+// and calling this again on the same name and BIC RE-DRIVES it: nothing is
+// founded twice and the application goes out again. See mesh.Mesh.Admit.
 //
-// # The REMEDY is branch-specific, so it is attached to the branch
+// # What is left for Task 17e
 //
-// Two failures reach here and only one of them has an answer. A clashing address
-// is fixed by admitting the bank on one of its own, which is the real-world fix
-// as much as this system's. A mesh that is stopping is not: the same request
-// retried on any BIC fails the same way and leaves a second orphaned row behind
-// it, so telling that operator to pick another address would be sending them to
-// do harm. mesh.ErrAddressTaken is what tells the two apart — the reason it is a
-// sentinel rather than a message.
+// The status code and the response body. This still answers 201 Created with a
+// participant DTO that does not carry the bank's status, which is the answer the
+// atomic call gave and is no longer the whole truth. The DTO, the status code
+// and the web types are 17e's, together and in one change.
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -60,30 +52,25 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An empty (or absent) Assets means the network's default joining set —
-	// see AddParticipant. That is a default for which assets a bank joins
-	// with, not for the asset of any account, which is always named by its
-	// caller.
+	// payment applies that itself, at founding. That is a default for which
+	// assets a bank joins with, not for the asset of any account, which is
+	// always named by its caller.
 	assets := make([]ledger.AssetCode, len(req.Assets))
 	for i, a := range req.Assets {
 		assets[i] = ledger.AssetCode(a)
 	}
 	// BIC is required, but its shape is a business rule (iso20022.BIC.Validate,
-	// run inside AddParticipant) rather than a decoding failure, so a malformed
-	// or missing value is left to surface as the 422 writeError already maps
-	// iso20022.ErrBICFormat to, not a 400 raised here.
-	p, err := s.network().AddParticipant(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
+	// run by Admit before it claims the address) rather than a decoding failure,
+	// so a malformed or missing value is left to surface as the 422 writeError
+	// already maps iso20022.ErrBICFormat to, not a 400 raised here.
+	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.mesh.AddBank(p); err != nil {
-		s.log.Error("a bank was admitted that the mesh cannot route to",
-			"participant", p.ID, "bic", p.BIC, "error", err)
-		msg := "this bank is in the roster and the mesh gave it no actor of its own, so it can neither pay nor be paid"
 		if errors.Is(err, mesh.ErrAddressTaken) {
-			msg += "; admit it on a BIC no other bank answers to"
+			writeUnprocessable(w, "another institution already answers to this BIC, and nothing was written; "+
+				"admit this bank on an address of its own: "+err.Error())
+			return
 		}
-		writeUnprocessable(w, msg+": "+err.Error())
+		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toParticipantDTO(p))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/payment"
@@ -92,6 +93,15 @@ import (
 // property; receiveReturn is the second, for a related reason — see its own
 // doc. It is still the only role in which this bank posts without any customer
 // of its own being involved: what moves is its own position at the central bank.
+//
+// # A seventh role, played once, before this actor was addressable
+//
+// A bank's own ADMISSION. Mesh.Admit founds the bank, registers this actor and
+// sends the first acmt.007 on its behalf, so the flow that brings this type into
+// existence is the one flow it does not begin inside a handler. What it does
+// have a handler for is the answer: receiveAdmission records the settlement
+// account numbers the scheme opened, and receiveAdmissionRejection learns that
+// it did not. Neither answers anything, for receiveStatement's reason.
 type bank struct {
 	m   *Mesh
 	ops bankOps
@@ -137,11 +147,17 @@ type bank struct {
 // bank that is not that leg's owner (payment.ErrNotAPartyToThisReturn). See
 // receiveReturn, and the return flow in the package doc.
 //
-// What is left for the default is the pacs.009: a settlement instruction is
-// addressed to the settlement agent, names net positions between members and the
-// central bank, and is the one message definition this system emits that a
-// member bank has nothing to do with. Nobody sends one here — the clearing house
-// addresses them to the central bank — which is why
+// The two acmt arms are the answers to this bank's OWN admission, and the
+// acmt.007 is deliberately not among them: a bank composes an application and is
+// never sent one. Nothing routes one here — the clearing house relays them to
+// the settlement agent — so it falls to the default like any other message
+// addressed to the wrong institution.
+//
+// What is left for the default besides that is the pacs.009: a settlement
+// instruction is addressed to the settlement agent, names net positions between
+// members and the central bank, and is the one message definition this system
+// emits that a member bank has nothing to do with. Nobody sends one here — the
+// clearing house addresses them to the central bank — which is why
 // TestAMessageAnActorHasNoHandlerForIsADeadLetter has to inject one.
 func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
@@ -159,6 +175,10 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveStatus(ctx, doc)
 	case *iso20022.Camt053:
 		return b.receiveStatement(ctx, from, doc)
+	case *iso20022.Acmt010:
+		return b.receiveAdmission(ctx, from, doc)
+	case *iso20022.Acmt011:
+		return b.receiveAdmissionRejection(from, doc)
 	default:
 		return fmt.Errorf("mesh: %s has no handler for %s", b.bic, env.AppHdr.MsgDefIdr)
 	}
@@ -834,6 +854,78 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 	if _, err := b.ops.PostSettlementAdvice(ctx, b.pid, moves[0]); err != nil {
 		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].Reference, err)
 	}
+	return nil
+}
+
+// receiveAdmission is the joining bank learning that it is a member, and writing
+// down the settlement account numbers it has just been told.
+//
+// It is the last hop of the only flow in this system that BRINGS AN ACTOR INTO
+// EXISTENCE, and the only one whose first message was sent by a party nothing
+// could address a moment earlier. Mesh.Admit founded this bank, registered it
+// and sent the acmt.007; everything since has happened at two other institutions.
+//
+// # It answers nothing, and that is receiveStatement's reason again
+//
+// An acknowledgement is not an instruction: the account has been opened and the
+// routing entry written before this message exists, so a bank answering "no"
+// would be refusing something that has happened. A failure is an ERROR, which
+// this transport turns into a dead letter, and the state it leaves is a real
+// one rather than a corruption — a bank the scheme has admitted that has not
+// recorded its own membership, which is what an operator re-drives.
+//
+// # The settlement account numbers arrive HERE and nowhere else
+//
+// They are the central bank's own account ids, and this is the account holder's
+// note of them — the way a customer knows their IBAN without holding the bank's
+// ledger. payment.DepositTx is what reads them back, and that read is legitimate
+// for exactly this reason. See payment.RecordMembershipTx.
+//
+// # Which bank it is, is this actor's own id and not the message's
+//
+// b.pid, as everywhere else in this type. Nothing in the signature of the domain
+// act stops a caller naming somebody else's bank, so the domain checks that the
+// address on the message is this bank's own
+// (payment.ErrNotThisBanksAdmission) — ErrStatementNotForThisBank's argument one
+// flow over.
+//
+// A SECOND acknowledgement of one admission is ordinary rather than exceptional:
+// one acmt.007 asks for one currency, so a bank joining in two assets is
+// answered twice and the second answer is what tells it its second settlement
+// account. The domain records or extends and refuses neither.
+func (b *bank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso20022.Acmt010) error {
+	ack, err := payment.ReadAdmissionAcknowledgement(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the admission acknowledgement %s sent it: %w", b.bic, from, err)
+	}
+	if _, err := b.ops.RecordMembership(ctx, b.pid, ack); err != nil {
+		return fmt.Errorf("mesh: %s could not record its own admission: %w", b.bic, err)
+	}
+	return nil
+}
+
+// receiveAdmissionRejection is the joining bank being told its application was
+// refused.
+//
+// There is nothing to write. The bank stays Founded — which is a working bank
+// that can open customer accounts and cannot pay or be paid — and that is
+// already what it is, because nothing about a bank changes when it applies. The
+// state an operator re-drives is exactly the state this message leaves.
+//
+// So the refusal is LOGGED and nothing else, for the reason
+// receiveReturnStatus logs a refused return's code: the reason is the one thing
+// that arrives on the wire and is nowhere in the store. It is prose rather than
+// a code, because References6 makes RjctnRsn a Max350Text and an
+// account-management refusal is free text where a payment rejection is a code
+// set (see iso20022.AccountRejectionReferences).
+//
+// It is emphatically not a dead letter. A dead letter is for what nobody could
+// be told, and this bank has been told.
+func (b *bank) receiveAdmissionRejection(from iso20022.BIC, doc *iso20022.Acmt011) error {
+	b.m.log.Error("mesh: admission refused",
+		"bank", b.bic, "from", from,
+		"admission", doc.AcctReqRjctn.Refs.PrcId.Id,
+		"reason", strings.Join(doc.AcctReqRjctn.Refs.RjctnRsn, "; "))
 	return nil
 }
 

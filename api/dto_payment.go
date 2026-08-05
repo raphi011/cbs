@@ -71,8 +71,8 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 
 // createParticipantRequest carries the participant's name and, optionally,
 // the set of assets it joins with. An absent or empty Assets defaults to
-// ["EUR"] — AddParticipant applies that default itself, so an empty slice is
-// forwarded unchanged rather than special-cased here.
+// ["EUR"] — payment applies that default itself, when the bank is founded, so
+// an empty slice is forwarded unchanged rather than special-cased here.
 //
 // This is the one deliberate default anywhere in the asset dimension: it
 // preserves existing behaviour for callers that do not care which assets a
@@ -81,9 +81,10 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 type createParticipantRequest struct {
 	Name string `json:"name"`
 	// BIC is required: a bank the mesh cannot address is not a member. It is
-	// validated by AddParticipant itself (iso20022.BIC.Validate), which is
-	// what turns a malformed value into a 422 rather than a 400 — the field is
-	// present and well-typed, and what is wrong with it is a business rule.
+	// validated by mesh.Mesh.Admit, before it claims the address
+	// (iso20022.BIC.Validate), which is what turns a malformed value into a 422
+	// rather than a 400 — the field is present and well-typed, and what is
+	// wrong with it is a business rule.
 	BIC    string   `json:"bic"`
 	Assets []string `json:"assets"`
 }

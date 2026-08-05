@@ -52,6 +52,20 @@ import (
 // It still clears nothing and nets nothing: a return in this system is final the
 // moment the settlement agent posts it, and no cycle is touched.
 //
+// # And it admits, which is the one flow where it DECIDES rather than carries
+//
+// Task 17 gave it a fifth job and its first subject that is not a payment. An
+// application for a settlement account is relayed to the settlement agent and
+// the acknowledgement comes back, and out of that answer this actor writes its
+// OWN row: the routing entry, which is what makes a bank reachable at all. It is
+// the only row this institution owns, and the only place in this package where a
+// clearing house writes something from a message it did not originate.
+//
+// It is also where the domain's refusal of a duplicate address is made — before
+// the relay, so a second institution never gets an account opened for it — and
+// that refusal is keyed on the ADMISSION rather than on the address. See
+// relayAdmission, and payment.ErrBICAlreadyAdmitted.
+//
 // It holds a csmOps: nothing about clearing moves money, and that is what makes
 // clearing and settlement different jobs. What that still does NOT amount to is
 // a compile-time ban on posting. It used to be one method short of a way in —
@@ -70,10 +84,11 @@ type csm struct {
 	// held is the returns this actor has relayed to the settlement agent and has
 	// not yet heard about, keyed by the payment each names.
 	//
-	// It is the only state any actor in this package keeps between messages, and
-	// it is deliberate rather than convenient: see relayReturn for why the
-	// message cannot be relayed onward before finality, and for what is lost if
-	// this map is.
+	// It is the larger of the two things any actor in this package keeps between
+	// messages, and it is deliberate rather than convenient: see relayReturn for
+	// why the message cannot be relayed onward before finality, and for what is
+	// lost if this map is. csm.applicants is the other, and it keeps one string
+	// where this keeps a whole message.
 	//
 	// No lock. Only relayReturn and receiveReturnStatus touch it and both are
 	// reached only from handle, which runs on this actor's own goroutine and
@@ -82,6 +97,47 @@ type csm struct {
 	// type that DO run on a caller's goroutine (closeCycle, settle, reject) are
 	// the ones that must never read it, and none does.
 	held map[payment.PaymentID]heldReturn
+
+	// applicants is the legal NAME of each bank whose admission request this
+	// actor has relayed and not yet seen answered, keyed by the address it
+	// applied on.
+	//
+	// # It exists because the acknowledgement cannot name the bank
+	//
+	// The design this implements said the clearing house would hold nothing
+	// across an admission, on the grounds that the acknowledgement "names the
+	// bank, its assets and its accounts". Two of those three are on it. The
+	// acmt.010 identifies the account owner with an OrganisationIdentification29
+	// — a BIC, an LEI, generic identifiers — and carries no legal name anywhere;
+	// the REQUEST names the applicant, with an Organisation33, and the answer
+	// does not. So an institution that writes a row carrying a member's name has
+	// to have kept it from the application, and this one does: payment.RosterEntry
+	// has a Name and payment.AdmitMemberTx names an entry it creates.
+	//
+	// Everything ROUTING needs really is on the acknowledgement — the address,
+	// the assets, the admission reference — which is why this is one string per
+	// admission in flight rather than the whole message csm.held keeps.
+	//
+	// # What losing it costs, and why it is bounded
+	//
+	// A restart between the relay and the answer leaves the acknowledgement with
+	// no name to write, and the roster entry is created with an empty one: a
+	// routable member the clearing house cannot put a name to. That is a
+	// cosmetic loss where csm.held's is a customer's money, and it is the same
+	// durability gap for the same reason — this map is the clearing house's
+	// record of a conversation it is in the middle of, and the row that would
+	// survive a restart belongs to a store this institution does not have yet.
+	//
+	// An entry is dropped when the FIRST acknowledgement of its admission is
+	// acted on, and a two-asset admission's second acknowledgement therefore
+	// arrives with no name. That is correct rather than tolerated: AdmitMemberTx
+	// names an entry only when it CREATES one and an extension never renames, so
+	// the name is needed exactly once and is gone once it has been used. See
+	// receiveAdmissionStatus.
+	//
+	// No lock, for csm.held's reason: only relayAdmission and
+	// receiveAdmissionStatus touch it and both run on this actor's own goroutine.
+	applicants map[iso20022.BIC]string
 }
 
 // heldReturn is one pacs.004 in flight: the document itself, and who sent it.
@@ -114,6 +170,12 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return c.relayDirectDebit(from, env, doc)
 	case *iso20022.Pacs004:
 		return c.relayReturn(from, env, doc)
+	case *iso20022.Acmt007:
+		return c.relayAdmission(ctx, from, env, doc)
+	case *iso20022.Acmt010:
+		return c.receiveAdmissionStatus(ctx, from, env, doc)
+	case *iso20022.Acmt011:
+		return c.relayAdmissionRejection(from, env, doc)
 	case *iso20022.Pacs002:
 		// Three kinds of status arrive here, and it takes two questions to tell
 		// them apart.
@@ -332,6 +394,225 @@ func (c *csm) releaseReturn(held heldReturn, id payment.PaymentID) error {
 		// return one message rather than two.
 		Document: held.doc,
 	})
+}
+
+// relayAdmission hands a bank's application for a settlement account on to the
+// SETTLEMENT AGENT — or refuses it, which is the one thing this actor decides in
+// the whole flow.
+//
+// # The destination is the message definition's, exactly as a return's is
+//
+// Not a bank, and no element is read to route by. An account at the settlement
+// agent is the settlement agent's to open, so a bank asking for one has one
+// possible destination whoever it is. The bank addresses this actor and nothing
+// else, which is the shape every flow here has.
+//
+// # It HOLDS almost nothing, and the contrast with csm.held is the point
+//
+// A reader who knows the return will expect a hold, because that flow keeps the
+// whole pacs.004 until the settlement agent has said the reserves moved. There
+// is nothing of that kind here: the acknowledgement carries the applicant's
+// address, every account the servicer opened and the admission's process id, so
+// the routing entry can be written from the answer alone and nothing about the
+// request has to survive to make it.
+//
+// What does have to survive is one string, and it is the schema's doing: an
+// acmt.010 identifies the account owner by BIC and carries no legal name, so
+// the NAME on the roster entry can only come from the application. See
+// csm.applicants, which is where the correction to "it holds nothing" is
+// recorded in full.
+//
+// # The refusal lives here, one institution before the account is opened
+//
+// The roster is the DOMAIN's truth about who holds an address and the mesh's
+// actor map is the TRANSPORT's, and this is where the domain's answer is given.
+// It is keyed on the ADMISSION and not on the address, and that distinction is
+// the whole of why it works: Mesh.Admit claims the address at the mesh before
+// anything is written or sent, so an impostor never gets a message onto the
+// wire, and what CAN arrive on a BIC already in the roster is the same bank
+// asking again. A refusal keyed on "is this BIC in the roster" would refuse that
+// and never fire on the case it exists for. See payment.ErrBICAlreadyAdmitted
+// and payment.RosterEntry's AdmissionRef.
+//
+// Which requests reach this actor on an address already in the roster is worth
+// being exact about, because the obvious answer is wrong for this transport. A
+// two-asset bank's SECOND acmt.007 is not one of them: Mesh.Admit pushes both
+// applications onto this actor's queue before the settlement agent has answered
+// either, and a queue is popped in order, so both are relayed while the roster
+// still holds nothing. That is a property of a lossless in-process queue and not
+// of the design — reorder or delay one message and the second request meets the
+// entry the first produced — which is why the refusal has to be keyed on the
+// reference here as well as at payment.AdmitMemberTx, where the second
+// acknowledgement really does meet the entry every time. What reaches it today
+// is an operator re-driving, and any request a real counterparty composed.
+// TestTheClearingHouseRefusesASecondInstitutionOnAnAdmittedAddress injects one
+// of each and is what holds both arms.
+//
+// It refuses BEFORE it relays, so a refused applicant gets no account opened for
+// it in another institution's book — which the settlement agent could not undo,
+// and could not have refused either: an account servicer asked twice for one
+// address by two institutions cannot tell them apart.
+//
+// # It does not reuse relay, and the reason is the same one the answer has
+//
+// csm.relay turns an unroutable destination into RC01 in a pacs.002, which is a
+// status report about a payment transaction; this is not one. So the envelope is
+// built here, as releaseReturn's is, and a destination this mesh cannot reach
+// becomes an acmt.011 like every other refusal on this path. Nothing in this
+// system can provoke it — the settlement agent is one of the two configured
+// actors and always has an inbox — which is why it is an arm and not a flow.
+func (c *csm) relayAdmission(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Acmt007) error {
+	in, err := payment.ReadAdmissionRequest(doc)
+	if err != nil {
+		// Unreadable, and unanswerable for the same reason: what this actor would
+		// address and correlate a refusal by are the elements this reader refuses
+		// on. See centralBank.refuseAdmission, which makes the same distinction
+		// one hop on.
+		return fmt.Errorf("mesh: %s could not read the admission request %s sent it: %w", c.bic, from, err)
+	}
+	entry, err := c.ops.GetRosterEntryByBIC(ctx, in.BIC)
+	switch {
+	case err == nil && entry.AdmissionRef != in.Ref:
+		return c.refuseAdmission(from, doc, in, fmt.Errorf("%w: %s is admitted under %q and this request quotes %q",
+			payment.ErrBICAlreadyAdmitted, in.BIC, entry.AdmissionRef, in.Ref))
+	case err != nil && !errors.Is(err, payment.ErrRosterEntryNotFound):
+		return fmt.Errorf("mesh: %s cannot tell whether %s is already admitted: %w", c.bic, in.BIC, err)
+	}
+
+	// Remembered before the relay, because the relay is what commits this actor
+	// to writing a roster entry when the answer comes back. Overwritten rather
+	// than kept per admission: an address has one applicant at a time, which is
+	// what the refusal above and Mesh.Admit's reservation between them guarantee.
+	c.applicants[in.BIC] = in.Name
+
+	to := c.m.cfg.CentralBankBIC
+	relayed := iso20022.Envelope{
+		AppHdr: iso20022.AppHdr{
+			Fr:        iso20022.NewAgent(c.bic),
+			To:        iso20022.NewAgent(to),
+			BizMsgIdr: c.m.nextMsgID(c.bic),
+			MsgDefIdr: env.AppHdr.MsgDefIdr,
+			CreDt:     iso20022.ISODateTime{Time: c.m.now()},
+		},
+		// Unchanged, for relay's reason: the document is what the applicant said
+		// and is not this actor's to rewrite. Its Refs/MsgId therefore stays the
+		// bank's, which is what the settlement agent quotes back as RjctdReqId
+		// when it refuses.
+		Document: doc,
+	}
+	if err := c.m.send(c.bic, to, relayed); err != nil {
+		if errors.Is(err, ErrUnknownBIC) {
+			return c.refuseAdmission(from, doc, in, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// receiveAdmissionStatus is the clearing house writing its own routing entry
+// from the settlement agent's acknowledgement, and then forwarding it to the
+// bank the message is about.
+//
+// # The entry is written BEFORE the acknowledgement is forwarded
+//
+// A bank told it is a member is one this clearing house can already route to.
+// The other order leaves an interval in which the bank has recorded its
+// membership and a payment addressed to it comes back RC01 — the answer this
+// actor gives for a BIC in no routing table — which is the settlement path's
+// statement-before-answer rule in a new place and load-bearing for the same
+// reason: what is sent second is what makes somebody else act on the first.
+//
+// # The name comes from the application and not from the message
+//
+// An acmt.010 names the owner by BIC and carries no legal name (see
+// csm.applicants), so the name is taken out of what this actor kept when it
+// relayed the request. It is dropped once used, and a second acknowledgement of
+// the same admission therefore arrives with none — which is correct, because
+// AdmitMemberTx names an entry only when it CREATES one and an extension never
+// renames.
+//
+// # A refused acknowledgement stops here
+//
+// payment.ErrBICAlreadyAdmitted is unreachable from this arm — the refusal is
+// made against the REQUEST, one message earlier, so nothing that gets this far
+// can be a second institution's — and any other failure of the act is this
+// system disagreeing with itself. Either way there is nobody to tell: the bank
+// is waiting for an acknowledgement it will not now get, and the settlement
+// agent has already opened the account. It becomes a dead letter, and the
+// admission is one an operator re-drives.
+func (c *csm) receiveAdmissionStatus(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Acmt010) error {
+	ack, err := payment.ReadAdmissionAcknowledgement(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the admission acknowledgement %s sent it: %w", c.bic, from, err)
+	}
+	ack.Name = c.applicants[ack.BIC]
+	if _, err := c.ops.AdmitMember(ctx, ack); err != nil {
+		return fmt.Errorf("mesh: %s cannot route to %s: %w", c.bic, ack.BIC, err)
+	}
+	delete(c.applicants, ack.BIC)
+	return c.forwardAdmission(env, doc, ack.BIC)
+}
+
+// relayAdmissionRejection carries the settlement agent's refusal back to the
+// bank that applied.
+//
+// The recipient is on the message: an acmt.011 names the applicant in OrgId,
+// which is the same element the acknowledgement names it in, so this hop reads
+// no store — releaseReturn's property, arrived at the same way.
+//
+// A refusal this actor made ITSELF does not come through here. That one is
+// answered straight to the sender inside relayAdmission, because the sender is
+// the applicant and there is nothing to carry.
+func (c *csm) relayAdmissionRejection(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Acmt011) error {
+	to := doc.AcctReqRjctn.OrgId.AnyBIC
+	if to == "" {
+		return fmt.Errorf("mesh: %s got a refused admission from %s naming no applicant", c.bic, from)
+	}
+	return c.forwardAdmission(env, doc, to)
+}
+
+// forwardAdmission passes an admission message on to the bank it is about, with
+// the header replaced and the document unchanged.
+//
+// It is csm.relay's body for the account-management family, and it is separate
+// for the reason relayAdmission gives: relay answers an unroutable destination
+// with a pacs.002, and a status report is about a payment transaction. Here an
+// unroutable destination is a bank the settlement agent has answered about and
+// this mesh cannot reach, which is nobody's to be told — so it is a dead letter.
+func (c *csm) forwardAdmission(env iso20022.Envelope, doc iso20022.Document, to iso20022.BIC) error {
+	return c.m.send(c.bic, to, iso20022.Envelope{
+		AppHdr: iso20022.AppHdr{
+			Fr:        iso20022.NewAgent(c.bic),
+			To:        iso20022.NewAgent(to),
+			BizMsgIdr: c.m.nextMsgID(c.bic),
+			MsgDefIdr: env.AppHdr.MsgDefIdr,
+			CreDt:     iso20022.ISODateTime{Time: c.m.now()},
+		},
+		Document: doc,
+	})
+}
+
+// refuseAdmission answers an application this clearing house will not relay,
+// back to the bank that sent it.
+//
+// The acmt.011 is built rather than relayed, because this actor DECIDED the
+// refusal: the settlement agent has not seen the request and must not appear to
+// have refused it. That is the same distinction csm.forwardDecision makes on the
+// return path, made here by which function builds the message rather than by a
+// field, because this family has no originator element to set.
+func (c *csm) refuseAdmission(to iso20022.BIC, doc *iso20022.Acmt007, in payment.AdmissionRequest, cause error) error {
+	env, err := payment.AdmissionRejectionMessage(in, doc.AcctOpngReq.Refs.MsgId, cause.Error(), payment.MessageContext{
+		From:  c.bic,
+		To:    to,
+		MsgID: c.m.nextMsgID(c.bic),
+		Now:   c.m.now(),
+	})
+	if err != nil {
+		return errors.Join(fmt.Errorf("mesh: %s could not build its acmt.011 for %s: %w", c.bic, to, err), cause)
+	}
+	// The cause is not returned once it has been answered, for bank.answer's
+	// reason: a refusal the applicant was told about is completed work.
+	return c.m.send(c.bic, to, env)
 }
 
 // refuseBulk is this system's one-payment-per-message limit, stated to the

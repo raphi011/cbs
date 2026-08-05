@@ -133,16 +133,6 @@ var (
 	// institution that owns routing.
 	ErrBICAlreadyAdmitted = errors.New("payment: this BIC is already admitted under another admission")
 
-	// ErrBankNotFounded is a bank recording a membership from a state it cannot
-	// record one from.
-	//
-	// A bank records what it was told exactly once, on the way from Founded to
-	// Member. A bank that has already recorded one has already written the
-	// account numbers it holds, and a second acknowledgement would overwrite
-	// them with whatever arrived — which is what a bank must not do with a
-	// message it cannot check.
-	ErrBankNotFounded = errors.New("payment: this bank is not awaiting an admission")
-
 	// ErrNotThisBanksAdmission is a bank recording an acknowledgement addressed
 	// to another bank's BIC.
 	//

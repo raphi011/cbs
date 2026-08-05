@@ -352,7 +352,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 
 	admit := func(name, bic string, want int) map[string]any {
 		t.Helper()
-		return doJSON(t, cb(h), "POST", "/members", `{"bic":"`+bic+`","name":"`+name+`"}`, want)
+		return admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, want)
 	}
 	admit("Bank A", "BNKADEFFXXX", http.StatusCreated)
 	admit("Bank B", "BNKBDEFFXXX", http.StatusCreated)
@@ -394,25 +394,33 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 
 	// And the refusal that is still reachable — a third bank on an address one
-	// of these already answers to — says what is actually true of it.
+	// of these already answers to — says what is actually true of it, which is
+	// the OPPOSITE of what it used to say.
+	//
+	// It used to report a half-happened admission: the row exists, the mesh gave
+	// it no actor, admit it somewhere else. Nothing is half-happened now. The
+	// address is claimed before anything is written, so a clash costs one error
+	// and no row, and the message says so. The remedy survives the reversal —
+	// pick an address of your own — because it is the real-world fix as much as
+	// this system's.
+	before := len(participants(t, h))
 	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A yet again"}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("admitting a third bank on Bank A's BIC = %d, want 422", rec.Code)
 	}
 	msg := rec.Body.String()
-	if !strings.Contains(msg, "no actor of its own") || !strings.Contains(msg, "two actors for BNKADEFFXXX") {
-		t.Errorf("the refusal reads %q; it must say the row exists and name the clash", msg)
+	if !strings.Contains(msg, "nothing was written") {
+		t.Errorf("the refusal reads %q; the whole of what changed is that nothing was written", msg)
 	}
-	// And on THIS branch the remedy applies, which is the other half of the
-	// split: a clashing address is fixed by choosing another one.
-	// TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy is the branch where
-	// that advice would send the operator to make a second orphan.
-	if !strings.Contains(msg, "admit it on a BIC no other bank answers to") {
+	if !strings.Contains(msg, "admit this bank on an address of its own") {
 		t.Errorf("the refusal reads %q; a clashing address has a remedy and it is missing", msg)
 	}
+	if after := len(participants(t, h)); after != before {
+		t.Errorf("a refused admission wrote %d bank row(s); the address is claimed before the row is", after-before)
+	}
 	// The bank that owns the address is untouched by the refusal, which is the
-	// half the old message got wrong: it called the ADMITTED bank unroutable
-	// while the clash's owner went on working.
+	// half the old message got wrong twice over: it called the ADMITTED bank
+	// unroutable while the clash's owner went on working.
 	var after []paymentDTO
 	getJSON(t, bank(h, a), "/payments", &after)
 	if len(after) != 1 {
@@ -420,15 +428,23 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 }
 
-// Admission during a shutdown is refused WITHOUT the remedy, and that is the
-// point of telling the two refusals apart.
+// Admission during a shutdown is refused WITHOUT the remedy, and the two
+// refusals are still worth telling apart — for a reason that has changed under
+// them.
 //
-// Both branches leave the same thing behind — a participant row whose bank has
-// no actor — so the invariant half of the message is true in both. The advice is
-// not. "Admit it on a BIC no other bank answers to" is the fix for a clash and
-// is actively harmful here: the operator who follows it gets the same 422 and a
-// second orphaned row, because what refused them was the mesh going down and not
-// the address they chose.
+// It used to be about advice. Both branches left a participant row whose bank
+// had no actor, so the invariant half of the message was true in both and only
+// the advice differed: "admit it on a BIC no other bank answers to" is the fix
+// for a clash and was actively harmful here, because the operator who followed
+// it got the same refusal and a second orphaned row.
+//
+// Neither branch leaves anything behind now. The address is claimed before the
+// bank is written, so a shutdown refuses before there is anything to orphan —
+// which is what this asserts, and which is what makes the advice's absence a
+// matter of accuracy rather than of harm. It is a 500 rather than a 422 because
+// it is not a statement about the request: the same request would have worked a
+// moment earlier and will work again on a mesh that is running. A clash is the
+// caller's to fix and says 422; a mesh going down is not.
 func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -439,16 +455,30 @@ func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
 	}
 
 	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("admitting a bank into a stopped mesh = %d, want 422 (body: %s)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("admitting a bank into a stopped mesh = %d, want 500 (body: %s)", rec.Code, rec.Body.String())
 	}
 	msg := rec.Body.String()
-	if !strings.Contains(msg, "no actor of its own") {
-		t.Errorf("the refusal reads %q; the half that is true in every branch is missing", msg)
+	if !strings.Contains(msg, "stopping") {
+		t.Errorf("the refusal reads %q; it must name the mesh going down as what refused", msg)
 	}
-	if strings.Contains(msg, "admit it on a BIC") {
+	if strings.Contains(msg, "address of its own") {
 		t.Errorf("the refusal reads %q; that advice is for a clashing address and there is none here", msg)
 	}
+	// And nothing was written, which is the half that used to be false in both
+	// branches: an admission the mesh refuses never reaches the store.
+	if n := len(participants(t, h)); n != 0 {
+		t.Errorf("a refused admission left %d bank row(s) behind", n)
+	}
+}
+
+// participants is every bank this system holds, read through the clearing
+// house's own listing.
+func participants(t *testing.T, h *Server) []participantDTO {
+	t.Helper()
+	var out []participantDTO
+	getJSON(t, csm(h), "/members", &out)
+	return out
 }
 
 // The reseeded banks are rejoined, not just recreated.

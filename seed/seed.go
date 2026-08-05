@@ -185,6 +185,47 @@ func check(err error) {
 	}
 }
 
+// admit puts one bank through the four acts of an admission, one unit of work
+// each, with nothing carrying a message between them.
+//
+// It is a STAND-IN for the conversation and says so rather than pretending
+// otherwise. Admission is three institutions and four commits with an acmt.007,
+// an acmt.010 and an acmt.011 between them (mesh.Mesh.Admit), and the seed has
+// no mesh: Populate takes a network and builds into its store. What this does is
+// call each institution's act in turn — the bank founds itself, the settlement
+// agent opens one account per asset, the clearing house writes the routing entry
+// from the answer, the bank records what it was told — which is exactly the
+// order the messages would produce and none of the isolation they would impose.
+//
+// Task 17e is what deletes it: Populate takes a mesh, the four calls below
+// become one Admit and one Drain, and the seeded dataset starts exercising the
+// mesh's own doors instead of going round them.
+//
+// The admission reference is derived from the BIC rather than left empty. There
+// is no process id because there is no process, and a value that is unique per
+// admission is still what the clearing house's refusal compares — an empty one
+// on every bank would make two banks on one address look like one admission. The
+// seed gives every bank an address of its own, so nothing here depends on that;
+// it is a reference that says what it is.
+func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
+	bank := must(b.net.FoundBank(b.ctx, name, bic, assets))
+	ref := "seed-" + string(bic)
+
+	// One request per asset, because one acmt.007 asks for one currency. Each
+	// answer carries the servicer's whole account set for the address, so the
+	// last is the one the other two acts read — which is true of the real
+	// conversation too: a bank's second acknowledgement lists both accounts.
+	var member payment.SettlementMember
+	for _, asset := range assets {
+		member = must(b.net.OpenSettlementAccount(b.ctx,
+			payment.AdmissionRequest{Name: name, BIC: bic, Asset: asset, Ref: ref}))
+	}
+
+	ack := payment.AdmissionAcknowledgement{Name: name, BIC: bic, Accounts: member.Accounts, Ref: ref}
+	must(b.net.AdmitMember(b.ctx, ack))
+	return must(b.net.RecordMembership(b.ctx, bank.ID, ack))
+}
+
 // seedAsset is the asset the whole sample scenario is denominated in.
 //
 // The scenario is a SEPA one, and SEPA is a euro scheme, so every account it
@@ -196,8 +237,8 @@ const seedAsset ledger.AssetCode = "EUR"
 // products prices a bank's catalogue: the Basic Current Account its onboarding
 // created, and a Premium one an account can be migrated to.
 //
-// Basic is the product AddParticipant already made — every bank gets one,
-// because a bank with no product cannot open an account — and its first
+// Basic is the product founding already made — every bank gets one, because a
+// bank with no product cannot open an account — and its first
 // published version is interest-free, which is what a bank that has not yet
 // decided a price has. This adds the two versions that give it one:
 //
@@ -529,14 +570,15 @@ func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	// Each bank joins the network as a euro bank: AddParticipant registers EUR
-	// in its book and in the central bank's, and opens its suspense, reserve
-	// and settlement accounts in it.
+	// Each bank joins the network as a euro bank: founding opens its suspense
+	// and reserve accounts in its own book, and the admission that follows opens
+	// its settlement account in the central bank's and puts it in the roster.
+	// See builder.admit, which stands in for the conversation the mesh carries.
 	euro := []ledger.AssetCode{seedAsset}
-	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank", "AURODEFFXXX", euro))
-	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", "VERDITMMXXX", euro))
-	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", "NORDSESSXXX", euro))
-	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", "SOLEFRPPXXX", euro))
+	aurora := b.admit("Aurora Bank", "AURODEFFXXX", euro)
+	verde := b.admit("Banca Verde", "VERDITMMXXX", euro)
+	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", euro)
+	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", euro)
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a

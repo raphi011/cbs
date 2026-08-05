@@ -59,11 +59,13 @@ CREATE TABLE books (
 -- This paragraph used to name AddParticipantTx's first statement as the thing
 -- doing that, and to warn that the find-or-create would become racy again "if
 -- AddParticipantTx ever stops drawing a network-scoped ID first". What happened
--- was not the case it warned about. AddParticipantTx still draws one; Task 17c
+-- was not the case it warned about, and then it was worse than it. Task 17c
 -- split admission into four acts, and payment.OpenSettlementAccountTx — a NEW
 -- caller of the find-or-create, driven on its own by an institution doing its
 -- own unit of work — reached it without one. Measured at 60 runs in 60 building
--- the central bank a second chart of accounts.
+-- the central bank a second chart of accounts. Task 17d then deleted
+-- AddParticipantTx outright: nothing composes the four acts in one transaction
+-- any more, so there is no first statement of anything left to point at.
 --
 -- So the lock is no longer any one call's first statement. It is
 -- payment.admissionSequenceTx, which every admission act that decides from a
@@ -241,7 +243,7 @@ CREATE TABLE deposit_accounts (
 -- First, there is no UNIQUE (book_id, scheme, value). "One bank issues an
 -- address once" is a real domain rule and deposit.Register enforces it by
 -- reading before it writes — but nothing serializes two concurrent adds the way
--- NextID's row lock serializes AddParticipantTx, so under READ COMMITTED a
+-- NextID's row lock serializes an admission's acts, so under READ COMMITTED a
 -- constraint here would fire in Postgres and not in store/mem. That is the one
 -- divergence this package must never introduce; see the note on UNIQUE
 -- (book_id, name) above, which is the same argument. The primary key is
@@ -568,7 +570,8 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 -- learnt and no way to check.
 
 -- product_id is the catalogue entry this bank opens customer accounts from —
--- the Basic product AddParticipant creates for every member. It is data, not a
+-- the Basic product founding creates for every bank, before any scheme has
+-- heard of it (payment.FoundBankTx). It is data, not a
 -- handle like the Ledger and Deposit fields the store deliberately drops, so it
 -- has to be stored: a bank read back without it prices its accounts from
 -- a product id of "", which surfaces as "product not found" several layers away
@@ -734,9 +737,14 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
     'an operator re-driving an interrupted admission. A refusal keyed on the '
     'BIC alone would refuse exactly those two and never fire on the impostor '
     'it exists for. '
-    'NOT NULL and empty for the rows today''s atomic admission writes: that '
-    'call composes no messages and has no process id to echo, and "" is the '
-    'honest record of an admission that was never a conversation.';
+    'NOT NULL, and every row a running system writes now carries a real one: '
+    'mesh.Mesh.Admit mints one process id per admission and every message of '
+    'it echoes that value. It can still be empty, and that is honest rather '
+    'than a placeholder — a caller that composes no messages has no process id '
+    'to quote, which is what the seed and the test suites do (see '
+    'store/testenv.Admit). Two such admissions on one address would quote the '
+    'same reference and extend one entry rather than refusing, which is why a '
+    'fixture whose banks settle gives each of them an address of its own.';
 
 -- The assets a member clears in, one row each.
 --
@@ -761,9 +769,11 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
 -- AdmitMemberTx — and it cannot produce one from either end: it takes the
 -- assets from a map keyed by asset, and it appends only the ones the entry does
 -- not already hold. A message repeating a currency collapses in that map before
--- this table is reached. The key is still position, because a store's contract
--- is with the TYPE it is handed: PutRosterEntry must store whatever slice a
--- caller passes, and store/mem does.
+-- this table is reached, and the reader between the wire and that writer refuses
+-- one outright: payment.ReadAdmissionAcknowledgement will not read an
+-- acknowledgement naming two accounts in one currency. The key is still
+-- position, because a store's contract is with the TYPE it is handed:
+-- PutRosterEntry must store whatever slice a caller passes, and store/mem does.
 --
 -- Whether a repeated asset is a message worth refusing is a question about the
 -- message and belongs to the institution reading it, not to the store.
@@ -976,8 +986,8 @@ COMMENT ON COLUMN payments.debtor_agent IS
 -- single client reference. The order is now the other way round: NextID runs
 -- first, its INSERT … ON CONFLICT DO UPDATE takes a row lock on id_sequences,
 -- and the second submission blocks there until the first commits and its
--- payment row is visible to the read. Same serialization AddParticipantTx
--- relies on, for the same reason.
+-- payment row is visible to the read. Same serialization the admission acts
+-- rely on, for the same reason — see payment.admissionSequenceTx.
 --
 -- So this index stays non-unique, and the conformance argument above stands as
 -- written: PutPayment is a store operation and mem's does not look at any other

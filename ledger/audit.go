@@ -74,18 +74,50 @@ const (
 
 	// ScopePayment. These are network-scoped: they describe entities that
 	// belong to no single bank, so they are recorded under NetworkBook.
+	//
+	// The first four are an admission, one event per act, because an admission
+	// is four units of work at three institutions and the log is this system's
+	// only immutable record of what each of them did. One event for the whole
+	// thing would have to be written by somebody, and there is nobody: the bank
+	// founds itself, the settlement agent opens an account in its own book, the
+	// clearing house writes a routing entry, and the bank records what it was
+	// told — three institutions, four commits, and a message between each pair.
+	// See payment's FoundBankTx, OpenSettlementAccountTx, AdmitMemberTx and
+	// RecordMembershipTx.
+	//
+	// EventParticipantAdded is the FOUNDING and nothing after it. Its payload is
+	// a Founded bank whose settlement account numbers are empty, because at the
+	// moment it is written no settlement agent has opened one — which is what
+	// makes the other three worth having rather than derivable.
 	EventParticipantAdded = "participant.added"
-	EventMandateCreated   = "mandate.created"
-	EventMandateRevoked   = "mandate.revoked"
-	EventPaymentInitiated = "payment.initiated"
-	EventPaymentAccepted  = "payment.accepted"
-	EventPaymentRejected  = "payment.rejected"
-	EventPaymentCleared   = "payment.cleared"
-	EventPaymentSettled   = "payment.settled"
-	EventPaymentReturned  = "payment.returned"
-	EventCycleOpened      = "cycle.opened"
-	EventCycleClosed      = "cycle.closed"
-	EventCycleSettled     = "cycle.settled"
+	// EventSettlementAccountOpened is the settlement agent's act, keyed by the
+	// member's BIC: the identifier between institutions, and the only one this
+	// institution has. Its payload is the SettlementMember row, which carries
+	// every account the agent holds for that BIC and not only the one this act
+	// opened — one acmt.007 asks for one currency, so a bank in two schemes is
+	// admitted twice and the second event supersedes the first.
+	EventSettlementAccountOpened = "settlement_account.opened"
+	// EventMemberAdmitted is the clearing house's act, keyed by BIC for the same
+	// reason. Its payload is the RosterEntry: the address, the assets and the
+	// admission the entry was written under.
+	EventMemberAdmitted = "member.admitted"
+	// EventMembershipRecorded is the bank's second act, keyed by the bank's own
+	// id because this is the bank's own row. Its payload is the bank as it now
+	// stands — a Member, with the settlement account numbers it has just been
+	// told. It is the pair to EventParticipantAdded and the reason that one can
+	// stay silent about everything the founding did not know.
+	EventMembershipRecorded = "membership.recorded"
+	EventMandateCreated     = "mandate.created"
+	EventMandateRevoked     = "mandate.revoked"
+	EventPaymentInitiated   = "payment.initiated"
+	EventPaymentAccepted    = "payment.accepted"
+	EventPaymentRejected    = "payment.rejected"
+	EventPaymentCleared     = "payment.cleared"
+	EventPaymentSettled     = "payment.settled"
+	EventPaymentReturned    = "payment.returned"
+	EventCycleOpened        = "cycle.opened"
+	EventCycleClosed        = "cycle.closed"
+	EventCycleSettled       = "cycle.settled"
 
 	// ScopeLending
 	EventFacilityOpened    = "facility.opened"
