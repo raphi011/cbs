@@ -1019,6 +1019,100 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 	}
 }
 
+// TestAReturnRetriedAfterAnUnwindRepaysThePayer is the second half of the
+// unwind, and the half the unwind exists for.
+//
+// TestARefusedReturnUnwindsTheReturningBanksLeg stops where the RJCT does: the
+// leg is Reversed, the money is back where the refused return found it, and the
+// payment is Settled. That is a system that has correctly done nothing. But AM04
+// is a SHORTFALL — the counterparty's bank was short of reserves at that moment,
+// and somebody can cover it — so the return is asked again, and this is the only
+// test in this repository that asks it. The payer's eight-week refund right does
+// not expire because the biller's bank was briefly empty.
+//
+// # It asserts on the MONEY, and that is the whole point
+//
+// A return that runs its conversation to completion and sets Returned looks
+// identical from the status, the pacs.002 and the message tap whether or not the
+// payer was actually repaid. So the assertions here are three balances and a
+// suspense:
+//
+//   - the PAYER is up by the amount. That is what a return is.
+//   - the BILLER is down by it. On a pull the biller's bank is FORCED into the
+//     clawback after finality, so an empty biller goes overdrawn rather than
+//     stopping the return — see payment.PostReturnLegTx.
+//   - the returning bank's CLEARING SUSPENSE is back to zero. It is the account
+//     that would hold the difference if exactly one of the two halves happened,
+//     and an amount stranded there is stranded for ever: nothing in this system
+//     sweeps it.
+//
+// The measured defect it pins: a retry whose leg id was left on the payment by
+// the unwind was read as "this bank has already posted", so PostReturnLegTx
+// answered the redelivery arm without posting. The conversation then ran to
+// completion around a refund that did not exist — the biller clawed back, the
+// payer repaid nothing, 250000 stranded in the returning bank's suspense, and an
+// ACSC on the wire saying it had all worked.
+func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+	p := h.settledCollection(t)
+	// The biller spends what it collected, which empties its BANK's settlement
+	// account at the central bank. That is the condition the settlement agent
+	// answers AM04 to: the reserves it is asked to reverse are not there.
+	h.spendTheCredit(t)
+
+	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
+	h.drain(t)
+
+	unwound := h.payment(t, p.ID)
+	if unwound.Status != payment.Settled {
+		t.Fatalf("the refused return left the payment at %v, want Settled — this test retries from there", unwound.Status)
+	}
+	if unwound.ReturnRefundTx == "" {
+		t.Fatal("the returning bank posted no refund at all; this test is about retrying one that was unwound")
+	}
+	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-refund"); got.Status != ledger.Reversed {
+		t.Fatalf("the first refund is %v, want Reversed — this test retries a return whose leg no longer stands", got.Status)
+	}
+
+	// What makes the retry askable: the biller pays cash in over the counter,
+	// which is how a bank's reserves are replenished in this system (see
+	// payment.Deposit). Nothing about the payment changes.
+	if err := h.net.Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
+		t.Fatalf("funding the biller's bank so the return can be retried: %v", err)
+	}
+
+	payerBefore := h.balance(t, h.debtorPID, h.debtorAcct.ID)
+	billerBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)
+
+	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
+	h.drain(t)
+
+	if got := h.payment(t, p.ID); got.Status != payment.Returned {
+		t.Errorf("the retried return left the payment at %v, want Returned", got.Status)
+	}
+	if got, want := h.balance(t, h.debtorPID, h.debtorAcct.ID), payerBefore+harnessAmount; got != want {
+		t.Errorf("the payer holds %d after the retried return, want %d — a return that completes repays the payer", got, want)
+	}
+	if got, want := h.balance(t, h.creditorPID, h.creditorAcct.ID), billerBefore-harnessAmount; got != want {
+		t.Errorf("the biller holds %d after the retried return, want %d — the clawback is forced after finality", got, want)
+	}
+	if got := h.suspense(t, h.debtorPID); got != 0 {
+		t.Errorf("the returning bank's clearing suspense holds %d after the retried return, want 0 — an amount left there is stranded for ever", got)
+	}
+
+	// The retry is a SECOND posting and not a revival of the reversed one: the
+	// ledger has no way to un-reverse a transaction, so a return that repaid the
+	// payer must have a standing leg of its own.
+	retried := h.payment(t, p.ID)
+	if retried.ReturnRefundTx == unwound.ReturnRefundTx {
+		t.Errorf("the payment still names %s as its refund, which is Reversed; a retry posts a new leg", retried.ReturnRefundTx)
+	}
+	if got := h.posting(t, h.debtorPID, retried.ReturnRefundTx); got.Status != ledger.Posted {
+		t.Errorf("the refund the returned payment names is %v, want Posted", got.Status)
+	}
+}
+
 // TestTheClearingHousesOtherCallersLeaveTheHeldReturnsAlone turns the invariant
 // on csm.held into a measurement.
 //

@@ -56,6 +56,13 @@ const (
 	debtorUSDIBAN   = "DE21301204000000015228"
 	creditorUSDIBAN = "IT40S0542811101000000123457"
 
+	// onUsIBAN addresses a SECOND customer of the payer's own bank, which is the
+	// one arrangement in which a payment has the same institution at both ends.
+	// It is opened only by the test that needs it, because a fixture that carried
+	// a spare account at one bank would quietly change what "the payer's bank"
+	// means everywhere else.
+	onUsIBAN = "DE02120300000000202051"
+
 	// unknownIBAN is well-formed and belongs to no account in this network. It
 	// is the address TestCreditTransferToAnUnknownAccountComesBackAsAC01 sends
 	// to, and it has to be well-formed: an IBAN that failed the schema's own
@@ -712,6 +719,28 @@ func (h *meshHarness) postingByKey(t *testing.T, id payment.ParticipantID, key s
 	txn, err := p.Ledger.GetTransactionByIdempotencyKey(ctx, key)
 	if err != nil {
 		t.Fatalf("no posting under %q in %s's book: %v", key, id, err)
+	}
+	return txn
+}
+
+// posting is one transaction out of one bank's book, found by the id the
+// payment itself names.
+//
+// postingByKey's counterpart, for the reads whose subject is an id a payment
+// carries rather than a key the domain composed. A retried return leg is posted
+// under a key derived from the attempt it replaces, so its key is not something
+// a test can spell — but the payment names the transaction, and whether THAT
+// transaction still stands is the whole question. See payment.PostReturnLegTx.
+func (h *meshHarness) posting(t *testing.T, id payment.ParticipantID, txID ledger.TransactionID) ledger.Transaction {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetParticipant(ctx, id)
+	if err != nil {
+		t.Fatalf("GetParticipant %s: %v", id, err)
+	}
+	txn, err := p.Ledger.GetTransaction(ctx, txID)
+	if err != nil {
+		t.Fatalf("no posting %s in %s's book: %v", txID, id, err)
 	}
 	return txn
 }
