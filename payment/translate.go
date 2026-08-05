@@ -1873,6 +1873,16 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 				BookgDt:     iso20022.DateAndDateTime{Dt: &day},
 				ValDt:       iso20022.DateAndDateTime{Dt: &day},
 				AcctSvcrRef: st.Reference,
+				// What kind of movement this is, and the schema's one mandatory
+				// child of an entry. See iso20022.BankTransactionCode for why the
+				// proprietary arm rather than a domain code, and for why there is
+				// one code here rather than one per flow.
+				BkTxCd: iso20022.BankTransactionCode{
+					Prtry: iso20022.ProprietaryBankTransactionCode{
+						Cd:   iso20022.BankTransactionCodeSettlement,
+						Issr: iso20022.BankTransactionCodeIssuer,
+					},
+				},
 				// Named after the reference and nothing more, for the reason the
 				// paragraph above gives: a cycle id and a payment id are equally
 				// opaque to the member reading this, and the sender saying which

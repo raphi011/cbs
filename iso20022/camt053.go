@@ -182,15 +182,33 @@ type BalanceTypeCode struct {
 // so the only way it can tell which cut-off a reserve movement belongs to is for
 // the central bank to say. See payment.ReadStatement.
 //
-// The field order is the schema's sequence order and must not be changed.
+// The field order is the schema's sequence order and must not be changed. That
+// sentence was here before anything checked it, and it was wrong: AddtlNtryInf
+// is the LAST element of ReportEntry10, after NtryDtls, and this struct emitted
+// it immediately after AcctSvcrRef. Every camt.053 this system produced was
+// invalid on that alone, from the day the message landed until the day somebody
+// downloaded the schemas. See BkTxCd below for the second half of the same
+// story, and testdata/README.md for why neither was caught.
 type StatementEntry struct {
-	Amt          ActiveCurrencyAndAmount `xml:"Amt"`
-	CdtDbtInd    CreditDebitCode         `xml:"CdtDbtInd"`
-	Sts          EntryStatusChoice       `xml:"Sts"`
-	BookgDt      DateAndDateTime         `xml:"BookgDt"`
-	ValDt        DateAndDateTime         `xml:"ValDt"`
-	AcctSvcrRef  string                  `xml:"AcctSvcrRef,omitempty"`
-	AddtlNtryInf string                  `xml:"AddtlNtryInf,omitempty"`
+	Amt         ActiveCurrencyAndAmount `xml:"Amt"`
+	CdtDbtInd   CreditDebitCode         `xml:"CdtDbtInd"`
+	Sts         EntryStatusChoice       `xml:"Sts"`
+	BookgDt     DateAndDateTime         `xml:"BookgDt"`
+	ValDt       DateAndDateTime         `xml:"ValDt"`
+	AcctSvcrRef string                  `xml:"AcctSvcrRef,omitempty"`
+
+	// BkTxCd is what KIND of movement this is, and it is the one element of
+	// ReportEntry10 the schema makes mandatory — every other child of an entry
+	// is minOccurs="0". This struct did not have it at all.
+	//
+	// A reconciling account holder needs it for a reason the rest of the entry
+	// does not cover: Amt and CdtDbtInd say how much moved and which way, and
+	// nothing else says whether this was a settlement, a fee, an interest
+	// posting or a correction. A bank that books every entry the same way is
+	// reconciling an amount rather than a movement.
+	BkTxCd BankTransactionCode `xml:"BkTxCd"`
+
+	AddtlNtryInf string `xml:"AddtlNtryInf,omitempty"`
 }
 
 func (e StatementEntry) validate() error {
@@ -209,8 +227,64 @@ func (e StatementEntry) validate() error {
 	if err := e.ValDt.validate(); err != nil {
 		return fmt.Errorf("Ntry/ValDt: %w", err)
 	}
+	return e.BkTxCd.validate()
+}
+
+// BankTransactionCode says what kind of movement an entry is. The standard
+// offers two arms and makes both optional, so one of them satisfies the schema
+// and the choice between them is a claim about what this repository knows.
+//
+// # Why the proprietary arm, and not the domain code
+//
+// Domn takes ExternalBankTransactionDomain1Code — PMNT, RCDT, ESCT and the rest
+// — which is an EXTERNAL code list. It is published as its own spreadsheet and
+// it is not in camt.053.001.08.xsd, so nothing available to this repository can
+// check a value written into it: xmllint would accept any four characters, and
+// a wrong code would look exactly like a right one for ever.
+//
+// This package already carries an unpaid debt of that shape — see the package
+// doc on the IBAN-only and euro-only claims, which are recorded as uncited
+// precisely because nobody looked them up. Adding a third by guessing a domain
+// code would be worse, because unlike those two it would be a guess made AFTER
+// the file that says guessing is how the other two went wrong.
+//
+// So the proprietary arm, whose Cd is Max35Text and whose meaning is the
+// issuer's. Issr names this system as that issuer, which is what stops the
+// value being mistaken for a standard one. A repository that obtains the
+// external code list should revisit this; the reason recorded here is
+// availability, not principle.
+type BankTransactionCode struct {
+	Prtry ProprietaryBankTransactionCode `xml:"Prtry"`
+}
+
+func (c BankTransactionCode) validate() error {
+	if c.Prtry.Cd == "" {
+		return fmt.Errorf("%w: Ntry/BkTxCd/Prtry/Cd", ErrMissingElement)
+	}
 	return nil
 }
+
+// ProprietaryBankTransactionCode is a code the issuer defines and the issuer
+// that defined it.
+type ProprietaryBankTransactionCode struct {
+	Cd   string `xml:"Cd"`
+	Issr string `xml:"Issr,omitempty"`
+}
+
+// The one proprietary transaction code this system issues, and its issuer.
+//
+// ONE code, because every entry this system states is the same kind of
+// movement: central-bank reserves discharging an interbank obligation. A
+// cut-off produces one and a return produces one, and StatementMessage
+// deliberately does not tell a member which — the reference is opaque to the
+// bank reading it either way, so a code that distinguished them would be
+// telling that bank something it has no row to resolve. If this system ever
+// states a fee, an interest posting or a correction, that is when a second code
+// is earned.
+const (
+	BankTransactionCodeSettlement = "SETTLEMENT"
+	BankTransactionCodeIssuer     = "CBS"
+)
 
 // EntryStatusChoice is booked or pending. Only the code arm is carried, for
 // BalanceTypeChoice's reason.

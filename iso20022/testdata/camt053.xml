@@ -60,6 +60,12 @@
             <Dt>2026-08-01</Dt>
           </ValDt>
           <AcctSvcrRef>cyc_1</AcctSvcrRef>
+          <BkTxCd>
+            <Prtry>
+              <Cd>SETTLEMENT</Cd>
+              <Issr>CBS</Issr>
+            </Prtry>
+          </BkTxCd>
           <AddtlNtryInf>Settlement of cyc_1</AddtlNtryInf>
         </Ntry>
       </Stmt>

@@ -9,3 +9,13 @@
 
 # The book editions (book/how-money-moves.{epub,pdf}) are intentionally checked
 # in so they can be linked and downloaded directly. Rebuild with book/build.sh.
+
+# The ISO 20022 message schemas the golden-file check validates against.
+#
+# iso20022/testdata/README.md says this directory "is not committed: the schemas
+# are redistributed under ISO's terms and are not this repository's to vendor",
+# and until now nothing enforced it. A developer who downloads them and runs
+# `git add -A` — which is what every plan in docs/superpowers/plans tells them to
+# do — vendors them by accident, and the rule is broken by the workflow the
+# repository itself prescribes.
+iso20022/testdata/xsd/

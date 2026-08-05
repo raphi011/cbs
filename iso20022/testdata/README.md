@@ -36,9 +36,38 @@ using the file names the test expects:
     testdata/xsd/pacs.002.001.10.xsd
     testdata/xsd/pacs.004.001.09.xsd
     testdata/xsd/pacs.009.001.08.xsd
+    testdata/xsd/camt.053.001.08.xsd
+
+The list above must match the `files` map in `xmllint_test.go`, and it did not:
+`camt.053.001.08.xsd` was missing here from the day the statement landed, so
+anybody following these instructions downloaded six schemas for seven checks.
+Under `ISO20022_REQUIRE_SCHEMAS` that is a failure rather than a silent skip,
+which is the whole reason that switch exists — but the instructions were still
+wrong. **A message added to that map is a line added here.**
 
 The directory is not committed: the schemas are redistributed under ISO's terms
-and are not this repository's to vendor. The test skips when they are absent.
+and are not this repository's to vendor. The test skips when they are absent, and
+`.gitignore` is what keeps a `git add -A` from vendoring them anyway.
+
+**They are not scriptable to fetch.** `iso20022.org`'s catalogue pages do not
+answer a non-browser client, and the schema downloads sit behind an acceptance
+of ISO's terms — which is the point of them rather than an obstacle to route
+around. Download them in a browser.
+
+**What happened the first time this check actually ran (2026-08-05).** It failed,
+and not on the golden file: `camt053.xml` was rejected on two counts, both of
+them in `camt053.go` and therefore in **every camt.053 this system had ever
+emitted**. `AddtlNtryInf` was in the wrong position — it is the last element of
+`ReportEntry10`, and the struct emitted it six elements early, under a comment
+saying the field order was the schema's — and `BkTxCd`, the one child of an entry
+the schema makes mandatory, was missing entirely. Both shipped with Task 15 and
+survived a per-task review, a documentation sweep and a whole-branch review with
+probes.
+
+Nothing in the repository could have caught either. That is the argument for
+this file, made by the thing it warns about: `ISO20022_REQUIRE_SCHEMAS` exists so
+that a skip becomes a failure, and until somebody downloaded the schemas there
+was nothing for it to be required against.
 
 **A skip is not a pass.** Once you have the schemas, run the check as a
 *required* one:
