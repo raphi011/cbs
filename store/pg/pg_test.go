@@ -514,17 +514,24 @@ func TestConcurrentSubmissionsOfOneReferenceAcceptOne(t *testing.T) {
 // The sixth race and the seventh, and they were live in the commit that split
 // admission into acts.
 //
-// Every other race here is about a call that allocates an id first.
-// AddParticipantTx does, and every admission before the split went through it —
-// so the two rows admission writes were decided under a lock nobody had to think
-// about. The acts are separately callable and Task 17d calls them from a message
-// handler with no id to allocate, and each of them reads one key and then writes
-// it. Measured before payment.admissionSequenceTx existed, over sixty runs of the
-// two cases below: 50 of 60 admitted two different admissions to one address, and
-// 60 of 60 lost one of two settlement accounts. Both were 0 of 60 on store/mem,
-// whose single mutex makes any read-then-write atomic — the exact divergence
-// storetest's ConcurrentReadThenWriteOnOneKeyAgrees exists to describe, on two
-// calls storetest cannot see.
+// They are the same shape as the fifth — a read the domain decides from, made
+// binding by an id allocated in front of it — and not as the first three, which
+// are closed by a row lock, a partial unique index and a conditional UPDATE
+// respectively. The third of those goes out of its way to BYPASS an id
+// allocation, because the path that has one would have hidden the bug it is
+// about.
+//
+// Every admission before the split went through AddParticipantTx, which
+// allocates the bank's id before anything else, so the rows admission writes
+// were decided under a lock nobody had to think about. The acts are separately
+// callable — an institution doing its own unit of work is the whole point of
+// them — and each of them reads one key and then writes it. Measured before
+// payment.admissionSequenceTx existed, over sixty runs of the two cases below:
+// 50 of 60 admitted two different admissions to one address, and 60 of 60 lost
+// one of two settlement accounts. Both were 0 of 60 on store/mem, whose single
+// mutex makes any read-then-write atomic — the exact divergence storetest's
+// ConcurrentReadThenWriteOnOneKeyAgrees exists to describe, on two calls
+// storetest cannot see.
 //
 // These are pg-only for that suite's own stated reason: a concurrency case can
 // only show a divergence where transactions really run at once, and store/mem's
@@ -536,39 +543,69 @@ func TestConcurrentAdmissionsOfOneBICAdmitOne(t *testing.T) {
 	ctx := context.Background()
 	net := payment.NewNetwork(s.Payment(), frozen)
 
-	// Two acknowledgements, one address, two DIFFERENT admissions — which is the
-	// only case AdmitMemberTx refuses, and the case that must not depend on
-	// which store is underneath.
-	// Eight, for the reason the duplicate-reference race above uses eight: with
-	// two racers a run can win by luck often enough to be a flaky guard, and the
-	// probe that found this measured 50 losses in 60 rather than 60.
-	errs := runConcurrently(8, func(i int) error {
-		ack := payment.AdmissionAcknowledgement{
-			Name: fmt.Sprintf("Applicant %d", i),
-			BIC:  "AURODEFFXXX",
-			Ref:  fmt.Sprintf("adm-%d", i),
-			Accounts: map[ledger.AssetCode]ledger.AccountID{
-				"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
-			},
+	// Several applicants, one address, a DIFFERENT admission reference each —
+	// which is the only case AdmitMemberTx refuses, and the case that must not
+	// depend on which store is underneath.
+	//
+	// # Both numbers below are measured, and one of them is not what it looks like
+	//
+	// The width was going to be eight "because two racers can win by luck", and
+	// that turned out to be false. Detection of a missing sequence, sixty runs
+	// per configuration with the call deleted: two racers 55 of 60, eight racers
+	// 53 of 60. Widening does nothing, and may cost a little — the race is
+	// decided by whether a second transaction reaches the read before the first
+	// commits, and more contenders do not make that likelier.
+	//
+	// What does is running it again. One round detects about nine times in ten,
+	// so a single-round guard misses this regression about one run in ten; five
+	// rounds on five addresses detected it 60 of 60, and 0 of 60 with the call
+	// in place, on both stores. The rounds are the guard and the width is not,
+	// which is the opposite of what the first version of this comment claimed.
+	// The width stays at eight because it costs nothing and a wider race is a
+	// closer model of what an operator console can do to one address.
+	for _, bic := range []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX", "SOLEFRPPXXX", "BANKESMMXXX"} {
+		refs := make([]string, 8)
+		for i := range refs {
+			refs[i] = fmt.Sprintf("adm-%s-%d", bic[:4], i)
 		}
-		return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-			_, err := net.AdmitMemberTx(ctx, tx, ack)
-			return err
+		errs := runConcurrently(len(refs), func(i int) error {
+			ack := payment.AdmissionAcknowledgement{
+				Name: fmt.Sprintf("Applicant %d", i),
+				BIC:  bic,
+				Ref:  refs[i],
+				Accounts: map[ledger.AssetCode]ledger.AccountID{
+					"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
+				},
+			}
+			return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+				_, err := net.AdmitMemberTx(ctx, tx, ack)
+				return err
+			})
 		})
-	})
-	assertOneWinner(t, "AdmitMemberTx", errs, payment.ErrBICAlreadyAdmitted)
 
-	// And the roster routes to the admission that won, whole. A lost race here
-	// does not fail loudly: it leaves an entry naming whichever transaction
-	// committed last, which is the impostor half the time.
-	assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		rows, err := tx.ListRosterEntries(ctx)
-		if err != nil {
+		// The roster must route to the admission it accepted, and to no other.
+		//
+		// Asserted per applicant, and BEFORE the winner count below, which is
+		// fatal. Counting the rows cannot do this job and a previous version of
+		// this test tried: the roster is keyed by BIC, so it holds exactly one
+		// row whether one writer won or five did — measured at 0 of 60 runs with
+		// a row count other than one, on a store with no sequence at all. What a
+		// lost race produces is an applicant told it was admitted while the entry
+		// names somebody else's admission, and that is what this reads.
+		var entry payment.RosterEntry
+		assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+			var err error
+			entry, err = tx.GetRosterEntry(ctx, bic)
 			return err
+		}))
+		for i, err := range errs {
+			if err == nil && entry.AdmissionRef != refs[i] {
+				t.Errorf("admission %q was accepted on %s and the roster routes to %q instead",
+					refs[i], bic, entry.AdmissionRef)
+			}
 		}
-		assertEqual(t, "roster entries", len(rows), 1)
-		return nil
-	}))
+		assertOneWinner(t, "AdmitMemberTx", errs, payment.ErrBICAlreadyAdmitted)
+	}
 }
 
 // TestConcurrentSettlementAccountOpeningsKeepEveryAsset is the lost update the

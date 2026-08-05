@@ -186,6 +186,14 @@ var reasonTable = []reasonMapping{
 	// "rejected, unspecified" would hide a defect behind a plausible message.
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
 
+	// A return the settlement agent has already settled. It is the redelivery
+	// case ErrInvalidStateTransition covers on every other path, arriving from
+	// the one actor that has no payment row to read a status off — so it is a
+	// separate sentinel and it gets the same empty code for the same reason:
+	// answering RJCT would tell the returning bank that a return which in fact
+	// completed was refused. Dead-letter it.
+	{ErrReturnAlreadySettled, "ErrReturnAlreadySettled", ""},
+
 	// --- The admission refusals, which are answered off this code set ---
 	//
 	// These three are empty for a different reason from the block above, and the
@@ -212,14 +220,6 @@ var reasonTable = []reasonMapping{
 	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
 	{ErrBankNotFounded, "ErrBankNotFounded", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
-
-	// A return the settlement agent has already settled. It is the redelivery
-	// case ErrInvalidStateTransition covers on every other path, arriving from
-	// the one actor that has no payment row to read a status off — so it is a
-	// separate sentinel and it gets the same empty code for the same reason:
-	// answering RJCT would tell the returning bank that a return which in fact
-	// completed was refused. Dead-letter it.
-	{ErrReturnAlreadySettled, "ErrReturnAlreadySettled", ""},
 }
 
 // borrowedReasons classifies the errors an actor's half produces that this

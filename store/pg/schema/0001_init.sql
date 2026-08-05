@@ -49,16 +49,29 @@ CREATE TABLE books (
 -- store/mem accepts it. A constraint here would make store/pg reject writes
 -- store/mem accepts, which is the one thing this package must never do.
 --
--- Second, the race is already closed, one layer up. AddParticipantTx's very
--- first statement is NextID(NetworkBook, "bank"), which takes a row lock on
--- id_sequences; a second concurrent AddParticipant therefore blocks there until
--- the first commits, and then sees the Central Bank ledger the first created.
--- The gap-free counter serializes the whole operation, not just the number.
--- store/pg's TestConcurrentAddParticipantsAgreeOnOneCentralBank pins that.
+-- Second, the race is closed one layer up, by an ID allocation taken before the
+-- find-or-create runs. NextID(NetworkBook, …) takes a row lock on id_sequences,
+-- so a second concurrent caller blocks there until the first commits and then
+-- sees the Central Bank ledger the first created. The counter serializes the
+-- whole operation, not just the number it hands out. store/pg's
+-- TestConcurrentAddParticipantsAgreeOnOneCentralBank pins it.
 --
--- The consequence to watch: if AddParticipantTx ever stops drawing a
--- network-scoped ID first, the find-or-create becomes racy again and will need
--- its own lock, because there is no constraint behind it.
+-- This paragraph used to name AddParticipantTx's first statement as the thing
+-- doing that, and to warn that the find-or-create would become racy again "if
+-- AddParticipantTx ever stops drawing a network-scoped ID first". What happened
+-- was not the case it warned about. AddParticipantTx still draws one; Task 17c
+-- split admission into four acts, and payment.OpenSettlementAccountTx — a NEW
+-- caller of the find-or-create, driven on its own by an institution doing its
+-- own unit of work — reached it without one. Measured at 60 runs in 60 building
+-- the central bank a second chart of accounts.
+--
+-- So the lock is no longer any one call's first statement. It is
+-- payment.admissionSequenceTx, which every admission act that decides from a
+-- read takes before it reads, and which that function documents. The warning
+-- this paragraph replaces is worth keeping in its general form: there is no
+-- constraint behind the find-or-create, so any NEW caller of it must draw a
+-- network-scoped ID first, and a reader who does not know that will not learn
+-- it from this table.
 
 -- Also not here: a CHECK on the text columns.
 --

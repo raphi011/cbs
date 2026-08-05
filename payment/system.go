@@ -481,8 +481,10 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //
 // # Without it the refusals hold on one store and not the other
 //
-// Two of the acts below decide by reading one key and then writing it, and a
-// third question rides along with them:
+// Every act that decides something from a read calls this first, which is all of
+// them except FoundBankTx — that one allocates the bank's own id before it
+// touches anything, which is the same lock under a different name. What each of
+// them decides, and what it did without this:
 //
 //   - AdmitMemberTx reads the roster entry, compares its admission reference and
 //     writes. Two DIFFERENT admissions of one address at once both read nothing
@@ -493,22 +495,33 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //     only its own account — so the central bank opens two reserve accounts in
 //     its own book and records one, leaving a liability account nothing points
 //     at.
-//   - centralBankChartTx, which OpenSettlementAccountTx calls, resolves the
-//     central bank's chart of accounts find-or-create BY NAME. store/pg's schema
-//     records that there is deliberately no unique constraint behind it and that
-//     the race is closed one layer up, by AddParticipantTx drawing a
-//     network-scoped id first — and names the consequence to watch: "if
-//     AddParticipantTx ever stops drawing a network-scoped ID first, the
-//     find-or-create becomes racy again and will need its own lock". Splitting
-//     that call into acts is exactly that, for every caller that drives an act
-//     on its own.
+//   - RecordMembershipTx reads the bank row to decide whether it is still
+//     Founded, and writes it. This one did NOT diverge when it was probed
+//     without the sequence — 0 runs in 60 — and it is here anyway, because the
+//     reason it held was nothing either act said. PutBank is an upsert that also
+//     replaces the bank's per-asset child rows, so concurrent writers deadlock,
+//     store/pg retries the whole callback, and the retry re-reads a bank that is
+//     Member by then. That is a property of the STATEMENT SHAPE store/pg happens
+//     to use, one layer below a domain refusal, and a rewrite of PutBank could
+//     take it away without touching anything this file can see.
 //
-// store/mem serializes every Update on one process-wide mutex, so all three are
+// One more question rides along with the second: centralBankChartTx, which
+// OpenSettlementAccountTx calls, resolves the central bank's chart of accounts
+// find-or-create BY NAME, with no unique constraint behind it. Two callers that
+// both find no Central Bank ledger both create one, and the members underneath
+// them disagree about which subledger holds reserves. store/pg's schema is where
+// the absent constraint is argued, and it used to close this by pointing at
+// AddParticipantTx's first statement. That call still draws an id; what reached
+// the find-or-create without one is this act, which is a caller that did not
+// exist when the argument was written. Both places now point here.
+//
+// store/mem serializes every Update on one process-wide mutex, so all of it is
 // atomic there whatever the caller does. store/pg runs READ COMMITTED, where two
 // transactions both read "not there" and both write. Measured on this branch
-// before this call existed: 50 runs in 60 admitted two different admissions to
-// one address, and 60 in 60 lost one of two settlement accounts, against 0 in 60
-// for each on store/mem. A domain refusal that holds on one store and not the
+// before this call existed, sixty runs each: 50 in 60 admitted two different
+// admissions to one address, 60 in 60 lost one of two settlement accounts, and
+// 60 in 60 built the central bank a second chart of accounts. Every one of them
+// was 0 in 60 on store/mem. A domain refusal that holds on one store and not the
 // other is not a refusal.
 //
 // # Why an id allocation is the lock
@@ -530,12 +543,12 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //
 // One counter serves every prefix within a book (see store/pg's NextID), so this
 // advances the same counter that numbers banks, payments, mandates and cycles.
-// A euro-only admission now draws four network ids: the bank's, one here per
-// settlement account asked for, one here for the roster entry, and the
-// participant.added event's, which appendAuditTx has always drawn. Measured on
-// the seed, whose four banks are bank_1, bank_5, bank_9 and bank_13; they were
-// bank_1, bank_3, bank_5 and bank_7 before this call existed, because the audit
-// event was already interleaving with them.
+// A euro-only admission now draws five network ids: the bank's, the
+// participant.added event's, and one here per act that decides from a read — one
+// per settlement account asked for, one for the roster entry, one for the
+// recording. Measured on the seed, whose four banks are bank_1, bank_6, bank_11
+// and bank_16; they were bank_1, bank_3, bank_5 and bank_7 before this call
+// existed, because the audit event was already interleaving with them.
 //
 // So the gaps are not new, they are wider — which is what the counter has always
 // meant, since it interleaves every prefix in the book and doubles as a creation
@@ -929,7 +942,9 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // the same one: the message names an address, and it must be this bank's.
 //
 // A bank that is already a Member is refused rather than overwritten — see
-// ErrBankNotFounded.
+// ErrBankNotFounded. That refusal is decided from a read and made binding by the
+// id this act draws before it, like the other two that decide from a read; see
+// admissionSequenceTx, which records what it is holding this one up against.
 //
 // # An account for an asset this bank does not operate in is not recorded
 //
@@ -940,6 +955,11 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // either, because the servicer is answering about its own book rather than
 // about this bank's. What the bank records is what it can use.
 func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantID, in AdmissionAcknowledgement) (*Bank, error) {
+	// Before the read the Founded check is decided from. See
+	// admissionSequenceTx.
+	if err := s.admissionSequenceTx(ctx, tx); err != nil {
+		return nil, err
+	}
 	bank, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return nil, err
@@ -1564,9 +1584,15 @@ type settlementLeg struct {
 // NetPositions map directly would produce a different stored transaction on
 // every run.
 //
-// A member the central bank holds no account for in the asset fails here, before
-// anything is posted, with ErrParticipantAssetNotFound; so does a member whose
-// own row says it does not operate in it.
+// Three failures land here, before anything is posted, and they are not one
+// failure with three causes. A member whose own row says it does not operate in
+// the cycle's asset is ErrParticipantAssetNotFound. A member the central bank
+// holds an account for, but not in this asset, is the same sentinel from the
+// other side. A member the central bank holds NO account for at all is
+// ErrSettlementMemberNotFound — a founded bank that was never admitted, which
+// this task makes a state the domain can be in, and which is not a statement
+// about the asset. See settlementAccountTx, and ReserveBalance, which makes the
+// same distinction for the same reason.
 //
 // # The bank's row is read twice: one crossing, and one check that belongs here
 //

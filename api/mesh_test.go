@@ -191,8 +191,8 @@ var testMeshConfig = mesh.Config{
 // The ids used to be written down here — bank_1 and dep_22 for Alice — on the
 // grounds that the store's id sequences start from nothing and the seed builds
 // the same things in the same order every time. Both halves are still true and
-// the numbers are not: admission draws two more network ids than it did (see
-// payment.admissionSequenceTx), so Banca Verde moved from bank_3 to bank_5 and
+// the numbers are not: admission draws three more network ids than it did (see
+// payment.admissionSequenceTx), so Banca Verde moved from bank_3 to bank_6 and
 // every id after it moved with it. The next task to add an allocation will move
 // them again. An IBAN is the seed's own stable name for a customer, so it is
 // what these tests ask by.
