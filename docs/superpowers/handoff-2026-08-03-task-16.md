@@ -341,10 +341,10 @@ its own task.
 
 ### 2. A cycle that nets to zero strands every payment in it, for ever
 
-Found by the fix-wave re-reviewer while checking a claim in the fix report — and
-it **disproves** that claim, so do not read the fix report's third concern as
-settled. The on-us refusal closed only the on-us route to this. Without any
-on-us payment: two offsetting cross-bank credit transfers in one cycle net both
+Found by the fix-wave re-reviewer while checking the fixer's claim that this
+strand was "closed by consequence" of the on-us refusal. **It is not.** The
+refusal closed only the on-us route to it. Without any on-us payment at all:
+two offsetting cross-bank credit transfers in one cycle net both
 members to zero, `csm.settlementLegs` emits nothing, and **both payments strand
 at `Cleared` for ever** — both payers debited, neither payee credited, 250000
 stuck in each bank's clearing suspense.
