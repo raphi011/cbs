@@ -61,13 +61,13 @@ type Tx interface {
 	ListSettlementMembers(ctx context.Context) ([]SettlementMember, error)
 
 	// Which of these has a production caller, exactly, because the alternative
-	// is a reader guessing from the placement. GetRosterEntry has one:
-	// Network.GetRosterEntry, which is what the mesh's handlers now ask instead
-	// of being handed a whole bank. The other four — ListRosterEntries,
-	// GetSettlementMember, ListSettlementMembers, and the settlement member's
-	// listing in every form — have none; the only code that calls them is
-	// storetest. PutSettlementMember and PutRosterEntry are called by
-	// AddParticipantTx.
+	// is a reader guessing from the placement.
+	//
+	// PutSettlementMember and PutRosterEntry are called by AddParticipantTx.
+	// GetRosterEntry is called by Network.GetRosterEntry, which is what the
+	// mesh's handlers ask instead of being handed a whole bank.
+	// GetSettlementMember, ListSettlementMembers and ListRosterEntries are
+	// called by nothing but storetest.
 	//
 	// They are declared now for the reason ListSettlementAdvices below was: the
 	// rows are written now, and adding a reader later would be a second occasion

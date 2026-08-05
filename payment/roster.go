@@ -81,11 +81,16 @@ type SettlementMember struct {
 // RosterEntryCarriesNoAccountIdentifiers is what keeps that true: a field added
 // here fails that case by name.
 //
-// The clearing house writes this row from an acknowledgement it did not
-// originate — the acmt.010 the settlement agent sends back — because scheme
-// membership follows the settlement account rather than the other way round. A
-// bank the central bank will not open an account for is not a bank this
-// clearing house can route a settlement instruction for.
+// Scheme membership follows the settlement account rather than the other way
+// round: a bank the central bank will not open an account for is not a bank
+// this clearing house can route a settlement instruction for. That is why the
+// row Task 17d has the clearing house write is written from an acknowledgement
+// it did not originate — the acmt.010 the settlement agent sends back.
+//
+// Today it is written by AddParticipantTx, in the same unit of work that opens
+// the accounts, because admission is still one call rather than a conversation.
+// The row is the same either way; what changes at 17d is who writes it and what
+// they write it from.
 type RosterEntry struct {
 	BIC  iso20022.BIC
 	Name string

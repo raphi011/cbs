@@ -42,9 +42,17 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // GetBank returns the member bank with the given ID, with its Ledger and
 // Deposit handles bound. Returns ErrParticipantNotFound if no such bank exists.
 //
-// What it hands back is a BANK'S OWN record, live handles and all, so it is a
-// method for that bank and for the operator console — not for a counterparty
-// asking who somebody is. That question is GetRosterEntry's, below.
+// What it hands back is a bank's own record, live handles and all, so a caller
+// that is not that bank gets the ability to read and write its books. Two of
+// the five callers in api are exactly that — the directory's name lookup and
+// the mandate listing's asset lookup, both of which read another bank's deposit
+// register through the handle this binds. That is crossing 2
+// (ResolveIdentifierTx), open and Task 18's; see Bank.Ledger, which lists the
+// callers.
+//
+// GetRosterEntry below is the answer to the narrower question — "who is this
+// bank, so I can address it" — and it is what the mesh asks. It exists because
+// that question was being answered with this method.
 func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
 	var out *Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {

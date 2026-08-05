@@ -53,8 +53,10 @@ import (
 // method on both of the other two interfaces (GetParticipant) returned a value
 // carrying live ledger and deposit handles bound to whichever bank it named,
 // and a member bank's ledger is exactly where a return's customer legs go.
-// Task 17 narrowed that return to a roster entry, so no handler is handed a
-// book any more. What remains is that any handler holding a posting method can
+// Task 17 narrowed that return to a roster entry, so no handler in THIS package
+// is handed a book any more — which is a claim about these three interfaces and
+// not about the system: api still hands a bound bank to the directory lookup,
+// and that crossing is Task 18's (see payment.Network.GetBank). What remains is that any handler holding a posting method can
 // name any book, because these interfaces narrow by method and not by book. The
 // recorder in books_test.go is what watches for that, here as everywhere else
 // in this package; see the note on bankOps in ops.go.

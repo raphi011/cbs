@@ -214,14 +214,27 @@ type Bank struct {
 	// out (see Network.bind). Treat them as derived, exactly like a database
 	// row's association objects.
 	//
-	// They are the reason this row is a bank's own and is handed to nobody
-	// else. A value of this type carries the ability to read and write the
-	// named bank's ledger, so a lookup that returns one to another institution
-	// hands that ability over with it — which is what mesh/ops.go's
-	// GetParticipant did until this row was split out of it. Network.GetBank
-	// still returns one and still binds them, deliberately: its callers are the
-	// bank itself and the operator console, neither of which is another
-	// institution.
+	// They are the reason this row is a bank's own, and the reason handing one
+	// over is a crossing rather than a lookup: a value of this type carries the
+	// ability to read and write the named bank's ledger, so whoever holds it can
+	// reach that bank's book through a method they legitimately have.
+	//
+	// mesh/ops.go's GetParticipant handed one to a counterparty's handler on
+	// every status and every settlement fan-out, and Task 17 closed that: the
+	// mesh asks for a RosterEntry now and no method on any of its three
+	// interfaces returns a handle.
+	//
+	// Network.GetBank still returns one, still bound, and NOT all of its callers
+	// are the bank itself. Five call it: api/server.go (the bound bank, its own
+	// row), api/handlers_participant.go (the operator console's reserve
+	// listing), api/handlers_directory.go and api/handlers_payment.go's
+	// mandateAssets, which are one bank reading ANOTHER bank's deposit register
+	// — the payee's name behind a resolved IBAN, and the asset of a mandate's
+	// debtor account. That is crossing 2 in the spec's table
+	// (ResolveIdentifierTx), it is open, it is Task 18's, and
+	// mesh/books_test.go measures it under "The receiving bank reaches every
+	// bank's book, by design of the directory". This task did not close it and
+	// this comment must not read as though it had.
 	//
 	// json:"-" for a second reason: the participant.added audit payload is a
 	// snapshot of the stored row, and a handle is neither data nor meaningful
