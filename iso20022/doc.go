@@ -4,10 +4,10 @@
 //
 // That sentence used to say "the SEPA interbank messages", and it stopped being
 // true. SEPA is a scheme, and the account-management messages a bank's admission
-// depends on carry no payment between banks and were built against no European
-// Payments Council guideline — which is the scoped form of the claim, and
-// "Which messages the scheme actually profiles" below is where the scoping and
-// its reason live. The reversal itself is recorded after the message list.
+// depends on carry no payment between banks and were built here from the ISO
+// schema alone, with no European Payments Council guideline consulted for any
+// part of the family. Which messages the scheme does profile has a section of
+// its own below; the reversal is recorded after the message list.
 //
 // It imports nothing from the rest of this repository — not ledger, not
 // deposit, not payment. That is deliberate and load-bearing: the package's
