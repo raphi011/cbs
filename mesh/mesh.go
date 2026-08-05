@@ -30,6 +30,31 @@ var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 // orphaned row. See api's handleAddParticipant.
 var ErrAddressTaken = errors.New("mesh: another actor already answers to this BIC")
 
+// ErrOnUsPayment is a submission whose payer and payee bank at the SAME
+// institution.
+//
+// It is a statement about the ROUTE and not about the payment. Two customers of
+// one bank paying each other is an ordinary thing to want; what it is not is a
+// CLEARING payment. Nothing leaves the bank, so there is no interbank obligation
+// for a clearing house to net, no reserves for a settlement agent to move, and
+// no camt.053 that could tell a bank about a book it already holds. A real bank
+// recognises the beneficiary as its own and books the transfer between two of
+// its own deposit accounts; it never reaches a scheme at all.
+//
+// Submitted to clearing anyway, it produced three separate wrong answers, each
+// in a different institution — a cycle that settled nothing and stranded at
+// Cleared, a reserve mirror moved by an amount the central bank's own record did
+// not move, and a returning bank refusing its own customer's unconditional
+// refund because it was the returner on both legs. See Mesh.Submit, where it is
+// refused, and payment.PostReturnLegTx, which states the return's rule so that
+// it does not depend on this refusal holding.
+//
+// A sentinel and not just a message because the layer above has a remedy for
+// it: api answers 422 and the caller asks its bank for a book transfer instead.
+// Building that transfer is a task of its own and this system does not have it
+// yet, which is what the refusal honestly says.
+var ErrOnUsPayment = errors.New("mesh: both parties bank at the same institution, which is a book transfer and not a clearing payment")
+
 // Config names the two institutions. Member banks are discovered from the
 // participant roster; the central bank and the clearing house have no store
 // row, so their identities are configured.
@@ -1102,10 +1127,41 @@ func (m *Mesh) takeDeadLetters() error {
 // has one. A mesh built over no network has no participant roster and therefore
 // no bank actors, so every submission to it was already an error; this makes
 // that a precondition instead of an outcome.
+//
+// # And which payments there is no bank to hand it to at all
+//
+// An ON-US payment — one bank at both ends — is refused before any of that. It
+// is not a clearing payment: nothing leaves the institution, so no reserves
+// move, no position nets and no settlement agent has anything to settle. See
+// ErrOnUsPayment. That refusal is this system declining a ROUTE and not the
+// payment; a book transfer between two customers of one bank is a real product
+// and a task of its own.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := m.net.Scheme(req.Scheme)
 	if !ok {
 		return payment.Payment{}, fmt.Errorf("mesh: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
+	}
+	// A payment that never leaves one bank is not a payment this mesh carries.
+	//
+	// Both customers bank at the same institution, so the movement is between two
+	// of that bank's own deposit accounts: no interbank obligation exists, so
+	// there is nothing to clear and nothing to settle, and a real bank books it
+	// internally without a scheme ever hearing about it. See ErrOnUsPayment for
+	// the three things this system did instead when one was submitted anyway.
+	//
+	// Refused HERE, at the one door every submission comes through — api's two
+	// handlers and this package's own tests all reach the mesh this way — and
+	// before the submitting bank's half runs. Submit is synchronous, so a guard
+	// placed any later would have to unwind a committed debtor leg rather than
+	// decline it.
+	//
+	// It is asked of the two PARTIES and not of the submitter. Which bank submits
+	// flips with the scheme's direction, and on-us is precisely the case where
+	// both answers are the same institution; a guard that read the submitter
+	// would be comparing a bank with itself.
+	if req.Debtor.Participant != "" && req.Debtor.Participant == req.Creditor.Participant {
+		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
+			req.Debtor.Participant, ErrOnUsPayment)
 	}
 	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
 
