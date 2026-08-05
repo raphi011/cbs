@@ -30,6 +30,31 @@ var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 // orphaned row. See api's handleAddParticipant.
 var ErrAddressTaken = errors.New("mesh: another actor already answers to this BIC")
 
+// ErrOnUsPayment is a submission whose payer and payee bank at the SAME
+// institution.
+//
+// It is a statement about the ROUTE and not about the payment. Two customers of
+// one bank paying each other is an ordinary thing to want; what it is not is a
+// CLEARING payment. Nothing leaves the bank, so there is no interbank obligation
+// for a clearing house to net, no reserves for a settlement agent to move, and
+// no camt.053 that could tell a bank about a book it already holds. A real bank
+// recognises the beneficiary as its own and books the transfer between two of
+// its own deposit accounts; it never reaches a scheme at all.
+//
+// Submitted to clearing anyway, it produced three separate wrong answers, each
+// in a different institution — a cycle that settled nothing and stranded at
+// Cleared, a reserve mirror moved by an amount the central bank's own record did
+// not move, and a returning bank refusing its own customer's unconditional
+// refund because it was the returner on both legs. See Mesh.Submit, where it is
+// refused, and payment.PostReturnLegTx, which states the return's rule so that
+// it does not depend on this refusal holding.
+//
+// A sentinel and not just a message because the layer above has a remedy for
+// it: api answers 422 and the caller asks its bank for a book transfer instead.
+// Building that transfer is a task of its own and this system does not have it
+// yet, which is what the refusal honestly says.
+var ErrOnUsPayment = errors.New("mesh: both parties bank at the same institution, which is a book transfer and not a clearing payment")
+
 // Config names the two institutions. Member banks are discovered from the
 // participant roster; the central bank and the clearing house have no store
 // row, so their identities are configured.
@@ -246,7 +271,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	clearing := unhandled("clearing house")
 	settlement := unhandled("central bank")
 	if net != nil {
-		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC}
+		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC, held: map[payment.PaymentID]heldReturn{}}
 		clearing = m.csm.handle
 		settlement = (&centralBank{m: m, ops: net, bic: cfg.CentralBankBIC}).handle
 	}
@@ -1102,10 +1127,41 @@ func (m *Mesh) takeDeadLetters() error {
 // has one. A mesh built over no network has no participant roster and therefore
 // no bank actors, so every submission to it was already an error; this makes
 // that a precondition instead of an outcome.
+//
+// # And which payments there is no bank to hand it to at all
+//
+// An ON-US payment — one bank at both ends — is refused before any of that. It
+// is not a clearing payment: nothing leaves the institution, so no reserves
+// move, no position nets and no settlement agent has anything to settle. See
+// ErrOnUsPayment. That refusal is this system declining a ROUTE and not the
+// payment; a book transfer between two customers of one bank is a real product
+// and a task of its own.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := m.net.Scheme(req.Scheme)
 	if !ok {
 		return payment.Payment{}, fmt.Errorf("mesh: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
+	}
+	// A payment that never leaves one bank is not a payment this mesh carries.
+	//
+	// Both customers bank at the same institution, so the movement is between two
+	// of that bank's own deposit accounts: no interbank obligation exists, so
+	// there is nothing to clear and nothing to settle, and a real bank books it
+	// internally without a scheme ever hearing about it. See ErrOnUsPayment for
+	// the three things this system did instead when one was submitted anyway.
+	//
+	// Refused HERE, at the one door every submission comes through — api's two
+	// handlers and this package's own tests all reach the mesh this way — and
+	// before the submitting bank's half runs. Submit is synchronous, so a guard
+	// placed any later would have to unwind a committed debtor leg rather than
+	// decline it.
+	//
+	// It is asked of the two PARTIES and not of the submitter. Which bank submits
+	// flips with the scheme's direction, and on-us is precisely the case where
+	// both answers are the same institution; a guard that read the submitter
+	// would be comparing a bank with itself.
+	if req.Debtor.Participant != "" && req.Debtor.Participant == req.Creditor.Participant {
+		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
+			req.Debtor.Participant, ErrOnUsPayment)
 	}
 	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
 
@@ -1223,6 +1279,8 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 // goroutine, sending only after the returning bank's half has run — because a
 // return arrives from outside the mesh in the same way both of those do. An
 // operator (or api's POST /payments/{payid}/return) asks for it; no inbox is involved.
+// Since Task 16e "after the returning bank's half has run" means after that bank
+// has POSTED, not merely after it has checked; see bank.returnPayment.
 //
 // # Which bank is handed the instruction
 //
@@ -1236,14 +1294,27 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 //
 // # It answers with an error and nothing else
 //
-// Not with a payment, deliberately. The returning bank's half posts nothing and
-// decides nothing beyond whether there is a settled payment to return at all,
-// so the Payment it would hand back is the one the caller could already read —
-// unchanged, still Settled. What the caller actually wants to know happens
-// later, at the settlement agent, and arrives as a message. Submit returns an
-// Initiated payment because it CREATED one; there is no such value here, and
-// inventing one by re-reading the row after the send would be a race dressed up
-// as a result.
+// Not with a payment, and the reason has changed under it. This used to say the
+// returning bank's half posts nothing and decides nothing beyond whether there
+// is a settled payment to return. That half posts now — its own customer leg,
+// before the message exists — and it can refuse there, which is why an error is
+// the whole of what a caller needs: on a push a payee who has spent the money
+// comes back AM04 and nothing was sent.
+//
+// What survives is the reason a PAYMENT would be no use. The row the caller
+// could read is still Settled — one leg is posted, and a return is not finished
+// until the other bank posts, which happens at another actor after this call has
+// returned — so handing it back would say less than the caller already knows.
+// Submit returns an Initiated payment because it CREATED one; there is no such
+// value here, and inventing one by re-reading the row after the send would be a
+// race dressed up as a result.
+//
+// It follows that a send that fails after the leg is posted comes back as an
+// error alone rather than with the payment beside it, which is where this
+// differs from bank.submit. The half-happened state is real and is recorded on
+// the payment row — this bank's leg id, with the status still Settled — and
+// nothing above this reads a Payment it could be carried in. See
+// bank.returnPayment.
 //
 // Like Mesh.Submit it reads the network, so it exists only on a mesh that has
 // one — and like Submit it DEREFERENCES rather than checking: a mesh with no
@@ -1295,26 +1366,18 @@ func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payme
 	return debtor
 }
 
-// returnerOf is the party whose bank sends a settled payment back.
+// returnerOf is the party whose bank sends a settled payment back: submitterOf's
+// counterpart in both senses, the other party and the other role.
 //
-// It is submitterOf's counterpart in both senses: the other party, and the
-// other role. A return is sent by the bank that RECEIVED the instruction —
-// the payee's bank on a push, the payer's bank on a pull — which is the SEPA
-// rule book's own division. The beneficiary bank returns a credit transfer it
-// cannot apply; the debtor bank returns a collection its customer disputes.
-//
-// Written as its own rule rather than as "not the submitter", because the two
-// are answers to different questions and the reason each is what it is has
-// nothing to do with the other: a submitter is chosen by who is instructing,
-// and a returner by who is holding a payment they cannot keep. That they come
-// out opposite in both directions is a fact about these two flows, not a
-// derivation. And a party who is both — a payment from a bank to itself — would
-// make a negation ambiguous, while these two rules stay total.
+// The rule itself is payment.ReturnerOf, and that is where its reasoning lives.
+// It moved out of this file when the domain acquired a second use for it —
+// payment.PostReturnLegTx decides whether a bank may REFUSE its leg by asking
+// whether that bank is the returner — and two copies would have been free to
+// disagree about who the returner is. This stays as a delegation so that the
+// call sites in this package, which read as mesh-local rules beside
+// submitterOf, do not have to.
 func returnerOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
-	if scheme.Direction() == payment.Pull {
-		return debtor
-	}
-	return creditor
+	return payment.ReturnerOf(scheme, debtor, creditor)
 }
 
 // returnMsgDef is the pacs.004's message name, which two actors here dispatch a
@@ -1343,27 +1406,6 @@ var returnMsgDef = iso20022.Pacs004{}.MessageDefinitionIdentifier()
 func isAbout(doc *iso20022.Pacs002, msgDef string) bool {
 	orig, _ := payment.ReadStatus(doc)
 	return orig.MsgDefIdr == msgDef
-}
-
-// codeAndText is a reason code and the free text beside it, joined for a ledger
-// description.
-//
-// Both, because they say different things — the code is what makes a reversal
-// or a return machine-actionable in a statement or an exception queue, and the
-// text is the part no code can say. The word for "neither was given" is the
-// caller's, because the two code sets it serves are answering different
-// questions: see rejectionText and returnReason.
-func codeAndText(code, text, none string) string {
-	switch {
-	case code == "" && text == "":
-		return none
-	case text == "":
-		return code
-	case code == "":
-		return text
-	default:
-		return code + ": " + text
-	}
 }
 
 // notProvided is what a message says where a reference is genuinely unavailable.

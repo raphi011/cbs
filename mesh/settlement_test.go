@@ -60,7 +60,7 @@ func TestANetPayerWhoCannotCoverIsRejectedOnTheInstruction(t *testing.T) {
 // Cleared, the payer debited into their own bank's clearing suspense and the
 // payee unpaid — and no transition out of that for ANY object: CloseCycleTx
 // wants an open cycle, RejectAtCSMTx an Initiated or Accepted payment,
-// ReturnPaymentTx a settled one. SettleCycle's only non-seed caller is the
+// PostReturnLegTx a settled one. SettleCycle's only non-seed caller is the
 // pacs.009 handler, and the only sender of a pacs.009 was a cut-off, which
 // needs an open cycle. Terminal, with every payer's money stranded.
 //
@@ -273,7 +273,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 		{"the payer's bank", h.debtorPID, -harnessAmount},
 		{"the payee's bank", h.creditorPID, harnessAmount},
 	} {
-		advice := h.advice(t, member.pid, cyc.ID)
+		advice := h.advice(t, member.pid, string(cyc.ID))
 		if advice.Status != payment.AdvicePosted || advice.MirrorTx == "" {
 			t.Errorf("%s holds an advice that is %v with mirror %q, want Posted with a transaction",
 				member.name, advice.Status, advice.MirrorTx)
@@ -298,7 +298,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 // such method: an advice is a member's own row and nothing in this system reads
 // another institution's yet. The unit of work is opened on a bare context, so the
 // recorder attributes the read to no actor and it cannot spoil a per-actor set.
-func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payment.CycleID) payment.SettlementAdvice {
+func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
 	p, err := h.net.GetParticipant(ctx, id)
@@ -307,10 +307,10 @@ func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, cycle payme
 	}
 	var out payment.SettlementAdvice
 	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		out, err = tx.GetSettlementAdvice(ctx, p.BookID, cycle, "EUR")
+		out, err = tx.GetSettlementAdvice(ctx, p.BookID, reference, "EUR")
 		return err
 	}); err != nil {
-		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, cycle, err)
+		t.Fatalf("GetSettlementAdvice for %s in %s: %v", id, reference, err)
 	}
 	return out
 }

@@ -186,7 +186,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1],
       explanation:
-        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `ReturnPaymentTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
+        "SDD is [[scheme-direction-pull]] — the payee's bank initiates, and its submission posts nothing. It [[requires-mandate]] (a signed authorization), which SCT does not: a payer instructing their own bank *is* the authorization. The return option is the trap — [[allows-return]] reports **true for both schemes** here (`payment/scheme.go` sets it on `SCT` and `SDD` alike, and `PostReturnLegTx` refuses only a scheme that reports false), and that matches SEPA: a credit transfer return is a real R-transaction, sent by the beneficiary's bank when it cannot apply the funds. What SDD alone gives the *debtor* is the dispute — the 8-week refund — and this model puts no window on it. Both schemes use net settlement, not individual (gross) settlement.",
       explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
     {
@@ -334,6 +334,18 @@ export const chapter: Chapter = {
       answer: 2,
       explanation:
         "[[account-status|Closed]] is the one status that refuses a credit, so the payee's bank posts its [[creditor-leg]] to its **[[unclaimed-balances|Unclaimed Balances]]** account instead — a liability, because the bank still owes the money to whoever eventually claims it. The payment still reaches Settled, because it did: the reserves moved and the payee's bank has been paid. It is *not* clearing suspense (option D): that account means \"a leg in flight\", and pooling unapplicable credits there would make one balance answer two questions. What made the check affordable was having somewhere for the money to go, plus the fact that a creditor leg is now the payee's bank's own unit of work — so one payment at one bank fails without taking the cut-off down with it.",
+    },
+    {
+      kind: "truefalse",
+      id: "ch11-q22",
+      difficulty: "challenge",
+      concept: "allows-return",
+      prompt:
+        "A settled credit transfer is being returned and the payee has already spent the money. Their bank cannot fund the clawback, so it refuses — and no pacs.004 is ever sent. If the same thing happened on a settled direct debit, the biller's bank could refuse in the same way.",
+      answer: false,
+      explanation:
+        "It could not, and the difference is an **ordering** rather than a rule about schemes: [[allows-return|a bank can refuse a leg only if it posts it before it sends]]. The bank that sends the return posts the leg it owns first, so its refusal costs nothing — nothing is posted, no message is built, and the caller is told directly rather than by a `pacs.002`. On a credit transfer that bank is the payee's, holding the clawback, so a spent payee stops the return dead. On a direct debit the returning bank is the *payer's*, and the leg it holds is the refund — always postable. The biller's bank hears about the return only when the clearing house relays the message to it, which is **after** the central bank has already reversed the reserves, so there is nothing left for it to refuse: it forces the clawback, and a biller with a closed account leaves the shortfall in that bank's [[returns-receivable|Returns Receivable]]. That is the credit risk a creditor's bank takes on with every biller it onboards.",
+      explore: { label: "Browse payment schemes", href: "/clearing-house/schemes" },
     },
   ],
 };

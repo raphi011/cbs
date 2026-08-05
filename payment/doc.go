@@ -59,6 +59,33 @@
 // direction only decides whether that bank is the one submitting or the one
 // answering.
 //
+// A RETURN is the same shape a third time, and it is the one where the split
+// decides who may say no:
+//
+//   - PostReturnLegTx is a BANK posting the customer leg it owns. The clawback
+//     is always the CREDITOR's bank's, out of the account its creditor leg
+//     actually credited; the refund is always the DEBTOR's bank's, into the
+//     payer's account. Which of the two the RETURNING bank holds is what the
+//     scheme's direction decides (ReturnerOf), and that is the whole of what it
+//     decides.
+//   - SettleReturnTx is the SETTLEMENT AGENT's half: the reserve reversal
+//     between the two members' settlement accounts, in the central bank's own
+//     book, plus a statement for each. It reads no payment row, because a
+//     settlement agent holds none — everything it acts on came off the pacs.004
+//     (ReadReturn).
+//   - ReverseReturnLegTx unwinds the leg the RETURNING bank posted, when the
+//     settlement agent refuses the return it sent. It takes only a payment that
+//     is still Settled, so it can never unwind half of a return that finished.
+//
+// The rule the ordering buys is that a BANK CAN REFUSE A LEG ONLY IF IT POSTS
+// IT BEFORE IT SENDS. The returning bank posts first, so its refusal costs
+// nothing and is an error to its caller rather than a message. The other bank
+// posts after the reserves have moved and cannot refuse, which is why
+// ParticipantAccounts.ReturnsReceivable is reached on one side and not the
+// other: every participant is opened one per asset, and the bank that must
+// force a posting into it is the one that first hears about the return when it
+// is already final.
+//
 // # Schemes
 //
 // The Scheme interface abstracts over payment schemes. Two are implemented:
@@ -94,12 +121,16 @@
 // This is a learning model, not a production payment processor:
 //
 //   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
-//     pacs.004 and pacs.009 are implemented — translate.go renders all five
-//     and reads all but pacs.004: ReturnMessage has no reading counterpart
-//     here, because mesh/centralbank.go reads an arriving return's fields
-//     itself and calls ReturnPayment with them. Package mesh is what carries
-//     them between the institutions as marshalled bytes, so they are parsed on
-//     arrival rather than passed as structs. What is absent is
+//     pacs.004 and pacs.009 are implemented — translate.go now renders and
+//     reads all five. ReadReturn is the newest of the five readers and is now
+//     wired: mesh/centralbank.go turns an arriving pacs.004 into a
+//     ReturnInstruction and hands it to SettleReturnTx, which reads no payment
+//     row at all, and mesh/bank.go reads the relayed copy the same way to post
+//     its own customer leg. That pair is what it exists to mean — a settlement
+//     agent resolving accounts from OrgnlTxRef instead of from a payment row it
+//     may no longer hold. Package mesh is what carries messages between the
+//     institutions as marshalled bytes, so they are parsed on arrival rather
+//     than passed as structs. What is absent is
 //     pain.001/pain.008 customer initiation (an instruction arrives over this
 //     repository's REST API instead), the camt reporting family — including
 //     camt.054 and the admi.002 a real receiver answers an unreadable file
@@ -152,6 +183,13 @@
 //     interval between the central bank's commit and a member's is the
 //     unreconciled position, and it is modelled rather than hidden — see
 //     SettleCycle.
+//     A RETURN's window used to span the members too, and that exception is
+//     gone: ReturnPaymentTx composed every institution's act inside one
+//     Store.Update, and Task 16e deleted it once mesh could carry the
+//     conversation instead. What is left is SettleReturnTx — the reserve
+//     reversal, in the central bank's own book, reading no payment at all — with
+//     each customer leg its own bank's act (PostReturnLegTx) and each reserve
+//     mirror booked from a camt.053, exactly as at a cut-off.
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried

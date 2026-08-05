@@ -308,16 +308,34 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "unreconciled-position",
       prompt:
-        "`settlement_advices` is a member bank's record of a cut-off it was told about. Its `cycle_id` column has no foreign key to `cycles`. Why is that deliberate?",
+        "`settlement_advices` is a member bank's record of a reserve movement it was told about. Its `reference` column has no foreign key to anything. Why is that deliberate?",
       options: [
         "Because a foreign key would be too slow on a table this large",
         "Because the cycle may not have been created yet when the advice arrives",
-        "Because a member bank has no cycles — the cycle row is the clearing house's, and after the split it is not in the bank's database at all",
-        "Because `cycle_id` is nullable, and a foreign key cannot reference a nullable column",
+        "Because the reference names a cycle or a payment row in an institution the member does not share a database with, in either direction",
+        "Because `reference` is nullable, and a foreign key cannot reference a nullable column",
       ],
       answer: 2,
       explanation:
-        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, cycle_id, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same cut-off write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
+        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) `reference` holds a cycle id on the cut-off path and a payment id when a single settled payment is returned, and a member bank can no more resolve one than the other. A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same movement write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
+    },
+    {
+      kind: "mc",
+      id: "ch15-q22",
+      difficulty: "challenge",
+      concept: "unreconciled-position",
+      prompt:
+        "A member bank's `settlement_advices.reference` holds a cycle id when the movement came from a cut-off and a payment id when it came from a single returned payment. There is deliberately no `kind` column beside it saying which. Why not?",
+      options: [
+        "Because the bank would have to keep it in step by hand, and the two kinds of id are indistinguishable anyway",
+        "Because ids are unique across the store, a member can resolve neither kind anyway, and a reconciliation reads one shape rather than two — so the column would be a field nothing reads",
+        "Because adding it would break the conformance suite, which the in-memory store cannot satisfy",
+        "Because the kind is already implied by the sign of the movement column",
+      ],
+      answer: 1,
+      explanation:
+        "The row means *this bank booked this movement*, and every reader of it wants the same thing whichever route the movement arrived by: whether the [[clearing-suspense|suspense]] has cleared against something the bank was told. A member cannot look a cycle up and cannot look the payment up either — both belong to institutions it does not share a database with — so knowing which one it is buys nothing it could act on. The reconciliation that will eventually read these rows ([[unreconciled-position|the absence of one against a suspense that has not cleared]]) reads one shape, and a discriminator nothing branches on is a column that can only ever drift out of step with the id beside it. Option A gets the conclusion right for the wrong reason and is false where it matters: the two ids are perfectly distinguishable — they carry different prefixes — and the column is unnecessary because nothing would *branch* on the answer, not because the answer is unavailable.",
+      explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
   ],
 };

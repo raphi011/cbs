@@ -103,7 +103,7 @@ export const chapter: Chapter = {
       ],
       answer: 0,
       explanation:
-        "Customer A's deposit (an [[account-type-liability]]) is debited — the bank owes A less. Customer B's deposit is credited — the bank owes B more. No cash leaves the building; total liabilities are unchanged because one liability fell while another rose by the same amount.",
+        "Customer A's deposit (an [[account-type-liability]]) is debited — the bank owes A less. Customer B's deposit is credited — the bank owes B more. No cash leaves the building; total liabilities are unchanged because one liability fell while another rose by the same amount. That is what makes this a **book transfer** and not a [[clearing-vs-settlement|clearing]] payment: nothing crosses between banks, so there is no position to net and no reserves to move. This system refuses such a payment at submission rather than sending it to a clearing house — the transfer above is a real product it does not offer yet.",
     },
     {
       kind: "mc",

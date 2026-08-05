@@ -152,19 +152,33 @@ func TestARolledBackSubmitSendsNothing(t *testing.T) {
 
 // A message type an actor has no handler for is a dead letter and not a shrug.
 //
-// pacs.004 is a return, and after Task 13 a bank still has no arm for one — it
-// SENDS returns and is never sent one. The settlement agent executes a return,
-// including the refund into the payer's bank's own book, because the three
-// compensating postings are one unit of work and the middle one moves reserves.
-// In a real network the debtor's bank would receive this message and post its
-// own leg; here there is nothing for it to do with one, and swallowing it would
-// make a half this system does not have look like one it does.
+// It used to be a pacs.004 sent to a bank, because a bank SENT returns and was
+// never sent one: the settlement agent made every posting a return needed,
+// including the refund into the payer's bank's own book. Task 16e gave that bank
+// the arm — the pacs.004 travels to it after finality and it posts its own leg —
+// so the message that was the example is now the one flow this test cannot use.
+//
+// A pacs.009 takes its place, and it is the same kind of thing rather than a
+// substitute chosen for convenience. A settlement instruction is addressed to
+// the SETTLEMENT AGENT and to nobody else: it names net positions between
+// members and the central bank, and a member bank has nothing it could do with
+// one. So one arriving at a bank is a bug in whoever sent it, and swallowing it
+// would make a half this system does not have look like one it does.
+//
+// Every message definition this system's actors emit now has an arm at a member
+// bank except this one, which is why it is the last example available. A future
+// task that gives banks a pacs.009 arm has to find another — or conclude that
+// this assertion has run out of subject and say so.
 func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	h := newMeshHarness(t)
-	env, err := h.net.ReturnMessage(h.submitCreditTransfer(t), iso20022.ReturnReasonNotSpecifiedAgentGenerated, "no reason",
-		payment.MessageContext{From: h.cfg.ClearingHouseBIC, To: h.debtorBIC, MsgID: "rtn-1", Now: testTime})
+	env, err := payment.SettlementMessage(
+		[]payment.SettlementLeg{{
+			From: h.debtorBIC, To: h.cfg.CentralBankBIC,
+			Amount: harnessAmount, Asset: "EUR", Reference: "cyc_never",
+		}},
+		payment.MessageContext{From: h.cfg.ClearingHouseBIC, To: h.debtorBIC, MsgID: "stl-1", Now: testTime})
 	if err != nil {
-		t.Fatalf("ReturnMessage: %v", err)
+		t.Fatalf("SettlementMessage: %v", err)
 	}
 	if err := h.mesh.send(h.cfg.ClearingHouseBIC, h.debtorBIC, env); err != nil {
 		t.Fatalf("send: %v", err)
@@ -174,7 +188,7 @@ func TestAMessageAnActorHasNoHandlerForIsADeadLetter(t *testing.T) {
 	if err == nil {
 		t.Fatal("Drain was clean; the bank swallowed a message it has no handler for")
 	}
-	if !strings.Contains(err.Error(), "pacs.004") {
+	if !strings.Contains(err.Error(), "pacs.009") {
 		t.Errorf("dead letter %q does not name the message the bank could not handle", err)
 	}
 }
@@ -491,5 +505,108 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	}
 	if got := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); got != relayedBefore {
 		t.Fatalf("the payer's bank was sent %d pacs.003s, want the original %d", got, relayedBefore)
+	}
+}
+
+// TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse is the boundary this
+// mesh did not have, and the thing it refuses is not an error in the message.
+//
+// # Why an on-us payment is not a clearing payment
+//
+// Both customers bank at the same institution, so paying one from the other is
+// that bank moving money between two of its own deposit accounts. Nothing leaves
+// it. No reserves move, because a reserve is what one bank owes another through
+// the central bank and this bank owes itself nothing; there is nothing for a
+// clearing house to net, nothing for a settlement agent to settle, and no
+// camt.053 that could tell a bank about its own book. A real scheme never sees
+// one: the payer's bank recognises the beneficiary as its own and books the
+// transfer internally.
+//
+// This system did see them, and each of the three institutions did something
+// incoherent with the result. The clearing house netted a position of zero and
+// dropped the payment out of the settlement instruction, so a cycle holding
+// nothing but an on-us payment stranded at Cleared for ever. The settlement
+// agent's return path sent the SAME bank two camt.053s about the SAME account
+// under the same reference, differing only in sign, and the second was swallowed
+// by the advice row the first wrote — so that bank's reserve mirror moved by the
+// full amount while the central bank's record of it did not, and its clearing
+// suspense went permanently negative. The returning bank was both parties, so it
+// held both legs and refused its own customer's unconditional refund.
+//
+// Every one of those is a symptom of a payment that should never have been
+// submitted to clearing, which is why the refusal is here — at the one door
+// every submission comes through — and not three patches further in.
+//
+// # What it does NOT refuse
+//
+// A book transfer between two customers of one bank is a real product and this
+// system does not offer it yet. The refusal says so: it is a statement about the
+// wrong ROUTE, not about the payment being illegitimate, so a caller reading it
+// knows to ask its bank rather than to give up.
+func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
+	// Both directions, because the submitting bank differs — a push is submitted
+	// by the payer's bank and a collection by the payee's — and on-us is the one
+	// arrangement in which those are the same institution. A guard that read the
+	// submitter rather than the two parties would pass one of these.
+	for _, tc := range []struct {
+		name   string
+		scheme payment.SchemeID
+	}{
+		{"a credit transfer", payment.SchemeSEPACT},
+		{"a collection", payment.SchemeSEPADD},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMeshHarness(t)
+			ctx := context.Background()
+			// A second customer at the PAYER's bank, so both parties are that
+			// bank's.
+			other := h.openCustomer(t, h.debtor, "Carla", "EUR", 0, onUsIBAN)
+			otherRef := payment.PartyRef{Participant: h.debtorPID, Account: other.ID, Identifier: other.Identifiers[0]}
+			// A mandate, so that a collection is refused for being on-us and not
+			// for being unauthorised. Without it SDD.ValidateMandate would refuse
+			// first and this test would pass on a mesh with no boundary at all.
+			mandate, err := h.net.CreateMandate(ctx, h.debtorRef(), otherRef, 0)
+			if err != nil {
+				t.Fatalf("CreateMandate: %v", err)
+			}
+
+			before := h.messagesSeen()
+			_, err = h.mesh.Submit(ctx, payment.InitiatePaymentRequest{
+				Scheme:          tc.scheme,
+				MandateID:       mandate.ID,
+				Debtor:          h.debtorRef(),
+				Creditor:        otherRef,
+				Amount:          harnessAmount,
+				Description:     "one bank, both customers",
+				CreditorDetails: payment.PartyDetails{Name: other.Name},
+				DebtorDetails:   payment.PartyDetails{Name: h.debtorAcct.Name},
+			})
+			if !errors.Is(err, ErrOnUsPayment) {
+				t.Fatalf("Submit = %v, want it refused as an on-us payment", err)
+			}
+			// The refusal names the bank, because a caller holding several
+			// participants has to be told which one is both ends.
+			if !strings.Contains(err.Error(), string(h.debtorPID)) {
+				t.Errorf("the refusal reads %q and does not name the bank that is both parties", err)
+			}
+
+			// Refused BEFORE anything happened, not unwound afterwards: no
+			// payment row, no debit, no message. The submitting bank's half runs
+			// synchronously inside Submit, so a guard placed after it would have
+			// left a row behind.
+			payments, err := h.net.ListPayments(ctx)
+			if err != nil {
+				t.Fatalf("ListPayments: %v", err)
+			}
+			if len(payments) != 0 {
+				t.Errorf("the refused on-us submission left %d payments behind, want none", len(payments))
+			}
+			if got := h.balance(t, h.debtorPID, h.debtorAcct.ID); got != harnessFunding {
+				t.Errorf("the payer holds %d after the refused submission, want the %d they started with", got, harnessFunding)
+			}
+			if got := len(h.messagesFrom(before)); got != 0 {
+				t.Errorf("the refused on-us submission put %d messages on the wire, want none", got)
+			}
+		})
 	}
 }

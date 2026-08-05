@@ -528,7 +528,7 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (book_id, facility_id
 --
 -- Note the exact claim, because the looser one this header used to make is
 -- false twice over. It said these tables "carry no book_id column". participants
--- carries one (:547) and settlement_advices carries one (:822) — the difference
+-- carries one (:547) and settlement_advices carries one (:837) — the difference
 -- is that only settlement_advices has the book in its KEY, which is what makes
 -- it the one member-scoped table in this section. participants.book_id is data:
 -- which book that bank owns. See the comment on settlement_advices, which states
@@ -563,11 +563,17 @@ COMMENT ON COLUMN participants.bic IS
 
 -- A participant's internal plumbing accounts, one set per asset it operates in.
 --
--- These are a child table rather than three columns on participants because
+-- These are a child row rather than a column apiece on the participant because
 -- each of those accounts is denominated in exactly one asset: a bank clearing
 -- both a euro and a dollar scheme needs two suspense accounts and two reserve
 -- accounts, not two currencies inside one. Keying by (participant, asset) makes
 -- adding a scheme in a new asset a data change rather than a schema change.
+--
+-- It also makes adding a KIND of account cheap, which has already happened:
+-- returns_receivable joined this row when the return path needed somewhere to
+-- book a clawback a biller's closed account could not fund. One column here is
+-- one account per asset, automatically; the same account hung off participants
+-- would have needed one column per asset the bank could ever operate in.
 --
 -- The set is fixed when the bank joins the network, which is the reason the
 -- asset registry that used to sit beside this table is gone: an asset a bank
@@ -575,16 +581,22 @@ COMMENT ON COLUMN participants.bic IS
 -- registering one afterwards produced customer accounts that could never
 -- settle. What a bank operates in is these rows; what an asset *is* is code.
 CREATE TABLE participant_assets (
-    participant_id TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
-    asset          TEXT NOT NULL,
-    suspense       TEXT NOT NULL,
-    reserve        TEXT NOT NULL,
+    participant_id     TEXT NOT NULL REFERENCES participants (id) ON DELETE CASCADE,
+    asset              TEXT NOT NULL,
+    suspense           TEXT NOT NULL,
+    reserve            TEXT NOT NULL,
     -- Where a credit goes when the payee's account will not take it. A
     -- liability, because the bank still owes the money — to whoever eventually
     -- claims it — exactly as it owes a deposit.
-    unclaimed      TEXT NOT NULL,
-    settlement     TEXT NOT NULL,
-    seq            BIGSERIAL NOT NULL,
+    unclaimed          TEXT NOT NULL,
+    -- A claim on a biller, opened when this bank honours a refund it cannot
+    -- fund out of the biller's account. An ASSET, unlike unclaimed above it:
+    -- unclaimed is money the bank owes to somebody it has not identified,
+    -- this is money owed TO the bank by somebody it has identified
+    -- perfectly well. See the COMMENT ON COLUMN below for the full case.
+    returns_receivable TEXT NOT NULL,
+    settlement         TEXT NOT NULL,
+    seq                BIGSERIAL NOT NULL,
     PRIMARY KEY (participant_id, asset)
 );
 
@@ -643,8 +655,64 @@ CREATE TABLE payments (
     debtor_leg_tx              TEXT NOT NULL,
     creditor_leg_tx            TEXT NOT NULL,
     creditor_leg_account       TEXT NOT NULL DEFAULT '',
+    return_clawback_tx         TEXT NOT NULL DEFAULT '',
+    return_refund_tx           TEXT NOT NULL DEFAULT '',
     seq                        BIGSERIAL NOT NULL
 );
+
+COMMENT ON COLUMN payments.return_clawback_tx IS
+    'The transaction that took the money back at the CREDITOR''s bank. Written '
+    'by payment.PostReturnLegTx, empty until that bank posts its leg. It does '
+    'NOT say which account moved, and must not be read as though '
+    'creditor_leg_account answered that: the debit lands on that account in '
+    'the ordinary case, and on the bank''s own returns-receivable account when '
+    'the account creditor_leg_account names has CLOSED since — a posting into '
+    'a closed account strands, so the bank funds the refund itself and books a '
+    'claim on the biller instead. Which of the two it was is in the '
+    'transaction''s own entries and nowhere else. '
+    'A non-empty value says that bank ATTEMPTED this leg. It does NOT say the '
+    'leg still stands, and reading it as though it did is a return that repays '
+    'nobody. When the settlement agent refuses a return, the bank that had '
+    'already posted unwinds by REVERSING its transaction: the id stays here and '
+    'the transaction is marked reversed, because this column records what the '
+    'bank did and the ledger records whether it holds. It is deliberately not '
+    'cleared — the retry''s idempotency key is derived from it, which is what '
+    'lets a bank post the leg again without colliding with the attempt it is '
+    'replacing, and without a column or a counter to say which attempt this is. '
+    'So anything deciding whether this bank still owes the posting must read '
+    'the transaction''s status. See payment.ReverseReturnLegTx and '
+    'payment.PostReturnLegTx.';
+
+COMMENT ON COLUMN payments.return_refund_tx IS
+    'The transaction that gave the money back at the DEBTOR''s bank, into the '
+    'payer''s account or — when that account will no longer take a credit — '
+    'into that bank''s unclaimed balances, which is the same reading caveat '
+    'the column above carries. Written by '
+    'payment.PostReturnLegTx, empty until that bank posts its leg — and, like '
+    'the column above and for the same reasons, a non-empty value says an '
+    'attempt was MADE and not that it still stands. A refused return leaves a '
+    'reversed transaction with its id still written here. '
+    'Together with return_clawback_tx it is how a return knows which of its '
+    'two legs is the SECOND, and therefore which one takes the payment to '
+    'Returned: the leg that finds the other side''s id already written is the '
+    'one arriving last. That reading takes a written id at face value, and it '
+    'is safe only because a leg can be unwound only while the payment is still '
+    'settled — which is to say only while the OTHER side is unposted. A bank '
+    'cannot check the other id anyway: the two legs are in two books, and no '
+    'bank reads the other''s. Neither column can be that marker on its own, because '
+    'which leg goes first flips with the scheme''s direction — the returning '
+    'bank posts before it sends, and the returning bank is the payee''s on a '
+    'push and the payer''s on a pull. Both are DEFAULT '''' rather than NULL, '
+    'for creditor_leg_account''s reason: a leg that has not been posted has '
+    'no transaction, and an absent id and an empty one are the same fact. No '
+    'foreign key to transactions, and here the reason is stronger than the '
+    'one the agent columns give — these two ids are in DIFFERENT BOOKS, and '
+    'under the store split they will be in different databases, so a '
+    'constraint across them could not be written at all. That split is also '
+    'what ends this pair: one payment is one row that both banks read today, '
+    'and when it becomes two rows in two stores neither bank can see the '
+    'other''s leg, so the counterparty''s id stops being available to read at '
+    'all. What replaces it is that task''s to decide.';
 
 COMMENT ON COLUMN payments.creditor_leg_account IS
     'The account in the CREDITOR BANK''s book that the creditor leg actually '
@@ -781,8 +849,9 @@ CREATE TABLE settlement_positions (
     PRIMARY KEY (settlement_id, participant_id)
 );
 
--- settlement_advices is a MEMBER BANK's record of a cut-off it was told about,
--- and it is the first payment-layer table keyed by book.
+-- settlement_advices is a MEMBER BANK's record of a reserve movement it was
+-- told about — a cut-off's net settlement or a single return — and it is the
+-- first payment-layer table keyed by book.
 --
 -- Every other table in this section — participants, payments, mandates, cycles,
 -- settlements — is network-scoped: those rows belong to no single bank, so they
@@ -795,13 +864,13 @@ CREATE TABLE settlement_positions (
 -- split it moves into that member's own database and the other two do not
 -- follow it.
 --
--- Two banks advised of one cut-off write two rows independently. That is not
+-- Two banks advised of one movement write two rows independently. That is not
 -- redundancy: settlement is final at the central bank and participants catch up
 -- afterwards, so "this bank has booked it and that one has not" is a state the
 -- system must be able to be in — and it shows as one row present and the other
 -- ABSENT.
 --
--- What a row MEANS is that this bank booked this cut-off. No committed row says
+-- What a row MEANS is that this bank booked this movement. No committed row says
 -- status 0 (payment.AdviceAdvised) today: payment.PostSettlementAdviceTx writes
 -- the row and posts the mirror leg in ONE unit of work, so a failed posting rolls
 -- the row back with it and a successful one leaves status 1. That is deliberate —
@@ -815,12 +884,37 @@ CREATE TABLE settlement_positions (
 -- reads it yet; Task 19 is the reconciliation that does. It is stored because it
 -- arrives, and a balance discarded on receipt is one nobody can go back for.
 --
--- No foreign key to cycles. A member bank HAS no cycles — after the split the
--- cycles table is not in its database at all — so a constraint here would encode
--- exactly the sharing this sub-project removes.
+-- reference is the account servicer's own reference for the entry that moved
+-- this bank's reserve, and it arrives by two routes: a cycle id when a cut-off
+-- settled (payment.SettleCycleTx), a payment id when a single settled payment
+-- was returned (payment.SettleReturnTx). Both are statements of the same kind
+-- about the same account, which is why one column takes both.
+--
+-- There is no `kind` column beside it to say which, and that is a decision
+-- rather than an omission. Ids are unique across the store, so nothing is
+-- ambiguous; a member can resolve NEITHER kind — a cycle is the clearing
+-- house's row and a payment the network's, and after the split neither is in
+-- this bank's database at all — so knowing which it is buys the member nothing
+-- it could act on; and the reconciliation that will read these rows asks one
+-- question, "did this bank book what it was told", which is one shape and not
+-- two. A discriminator nothing branches on is a field that can only drift out
+-- of step with the id beside it.
+--
+-- The consequence worth stating for a reader who arrived from the cut-off path:
+-- a RETURN leaves an unreconciled position exactly as a cut-off does. The
+-- settlement agent is final when it commits the reserve reversal, each bank is
+-- then told and books its own mirror leg, and until it has, that bank's
+-- clearing suspense has not returned to zero and there is no row here against
+-- the payment id.
+--
+-- No foreign key to anything. A member bank HAS no cycles — after the split the
+-- cycles table is not in its database at all — and a payment id is the same
+-- shape of foreign fact in the other direction: the reference names a row in an
+-- institution the member does not share a database with, in either direction.
+-- A constraint here would encode exactly the sharing this sub-project removes.
 CREATE TABLE settlement_advices (
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
-    cycle_id        TEXT NOT NULL,
+    reference       TEXT NOT NULL,
     asset           TEXT NOT NULL,
     movement        BIGINT NOT NULL,
     closing_balance BIGINT NOT NULL,
@@ -832,7 +926,7 @@ CREATE TABLE settlement_advices (
     advised_at      TIMESTAMPTZ,
     posted_at       TIMESTAMPTZ,
     seq             BIGSERIAL NOT NULL,
-    PRIMARY KEY (book_id, cycle_id, asset)
+    PRIMARY KEY (book_id, reference, asset)
 );
 
 COMMENT ON COLUMN settlement_advices.movement IS
@@ -925,9 +1019,27 @@ COMMENT ON COLUMN deposit_accounts.asset IS
     'accounts.asset.';
 
 COMMENT ON COLUMN participant_assets.asset IS
-    'One row per asset this bank operates in, holding the three plumbing '
-    'accounts that asset needs. Unconstrained, for the reason given on '
-    'accounts.asset.';
+    'One row per asset this bank operates in, holding every plumbing account '
+    'that asset needs — the ones in this bank''s own book, plus its settlement '
+    'account in the central bank''s. Deliberately not counted here: the set has '
+    'already grown once (returns_receivable), and a count in a comment goes '
+    'stale while a description of what the row is for does not. Unconstrained, '
+    'for the reason given on accounts.asset.';
+
+COMMENT ON COLUMN participant_assets.returns_receivable IS
+    'The GL account for a claim on a biller: opened when this bank is forced '
+    'to honour a direct-debit refund it cannot fund out of the biller''s own '
+    'account. It is an ASSET, and the contrast with unclaimed, immediately '
+    'above it, is the point, not an accident. Unclaimed is money this bank '
+    'OWES to a payee it has not identified — a customer it cannot name. This '
+    'is money OWED TO this bank by a biller it has identified perfectly well, '
+    'whose account simply could not cover the clawback the payer''s '
+    'eight-week right made unconditional. Same kind of event — a credit '
+    'reversed after the bank already paid out — landing on opposite sides of '
+    'the balance sheet depending on whether the bank knows who owes it money '
+    'or owes money to someone unknown. Booking it as a liability, like '
+    'unclaimed, would still balance and would say the exact opposite of what '
+    'happened.';
 
 COMMENT ON COLUMN facilities.asset IS
     'The asset this facility is denominated in, duplicated from the GL '

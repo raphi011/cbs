@@ -352,6 +352,82 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 	}))
 }
 
+// returnPayment runs all three institutions' halves of an R-transaction in one
+// unit of work, leaving the payment Returned, both customers put back where they
+// were and both banks' clearing suspense at zero:
+//
+//   - the RETURNING bank's own customer leg, posted before it would have sent
+//     the pacs.004 — the clawback if that bank is the creditor's, the refund if
+//     it is the payer's. Which bank that is is the scheme's direction and
+//     nothing else (payment.ReturnerOf), and it is the only one of the four that
+//     could still have said no;
+//   - the settlement agent reversing the reserves between the two settlement
+//     accounts, and stating both;
+//   - each member booking its reserve mirror from the statement it would have
+//     been sent, exactly as at a cut-off;
+//   - the OTHER bank's customer leg, which is what takes the payment to
+//     Returned.
+//
+// It is settle's argument applied to the return, and it became necessary at the
+// same point and for the same reason: payment.ReturnPaymentTx used to be one
+// call that did all four, and Task 16e deleted it because no institution may
+// post in another's book. The seed can, because the seed is not an institution.
+// See settle for the whole of that argument, and for what the fixture gives up
+// by running the four halves together.
+//
+// The instruction handed to SettleReturnTx is built from the PAYMENT ROW here,
+// which is the one thing the mesh does differently rather than merely faster: in
+// the mesh both agents come off the pacs.004's OrgnlTxRef, because a settlement
+// agent under sub-project 8 holds no payment rows. The values are identical —
+// payment.ReturnMessage writes these same two fields and payment.ReadReturn
+// reads them back — and the way they were obtained is the whole difference.
+func (b *builder) returnPayment(id payment.PaymentID, reason string) {
+	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := tx.GetPayment(ctx, id)
+		if err != nil {
+			return err
+		}
+		scheme, ok := b.net.Scheme(p.Scheme)
+		if !ok {
+			return fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound)
+		}
+		returner := payment.ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
+		other := p.Debtor.Participant
+		if other == returner {
+			other = p.Creditor.Participant
+		}
+		if _, err := b.net.PostReturnLegTx(ctx, tx, returner, id, reason); err != nil {
+			return err
+		}
+		statements, err := b.net.SettleReturnTx(ctx, tx, payment.ReturnInstruction{
+			PaymentID:     p.ID,
+			EndToEndID:    p.EndToEndID,
+			DebtorAgent:   p.DebtorDetails.Agent,
+			CreditorAgent: p.CreditorDetails.Agent,
+			Amount:        p.Amount,
+			Asset:         scheme.Asset(),
+			Reason:        reason,
+		})
+		if err != nil {
+			return err
+		}
+		for _, st := range statements {
+			if _, err := b.net.PostSettlementAdviceTx(ctx, tx, st.Member, payment.AdvisedMovement{
+				Account:        st.Account,
+				Asset:          st.Asset,
+				Movement:       st.Movement,
+				ClosingBalance: st.ClosingBalance,
+				Reference:      st.Reference,
+				ValueDate:      st.ValueDate,
+			}); err != nil {
+				return err
+			}
+		}
+		_, err = b.net.PostReturnLegTx(ctx, tx, other, id, reason)
+		return err
+	}))
+}
+
 // settle runs all three institutions' halves of a cut-off in one unit of work,
 // leaving the cycle Settled, every payment Settled and every bank's clearing
 // suspense back at zero:
@@ -386,7 +462,7 @@ func (b *builder) settle(id payment.CycleID) {
 				Asset:          st.Asset,
 				Movement:       st.Movement,
 				ClosingBalance: st.ClosingBalance,
-				CycleID:        st.CycleID,
+				Reference:      st.Reference,
 				ValueDate:      st.ValueDate,
 			}); err != nil {
 				return err
@@ -552,7 +628,7 @@ func (b *builder) build() {
 	b.settle(sdd1.ID)
 
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
-	must(b.net.ReturnPayment(b.ctx, returned.ID, "Debtor dispute — unauthorised collection"))
+	b.returnPayment(returned.ID, "Debtor dispute — unauthorised collection")
 
 	b.clock.advance(24 * time.Hour)
 

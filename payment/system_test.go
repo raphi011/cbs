@@ -219,6 +219,73 @@ func runCycle(t *testing.T, sys *Network, scheme SchemeID, submit func()) Settle
 	return st
 }
 
+// returnWholePayment is every institution's half of an R-transaction, played in
+// order and each in its OWN unit of work: the returning bank's customer leg, the
+// settlement agent's reserve reversal, both members' reserve mirrors, and the
+// other bank's customer leg.
+//
+// It is the test's stand-in for the four hops the mesh carries, and it replaces
+// ReturnPaymentTx, which used to be one call that did all of this and which Task
+// 16e deleted — no institution may post in another's book, and that function
+// was three institutions in one unit of work. What these tests are about is
+// where the money ends up, which is unchanged; each of them says so at the
+// accounts rather than through the call, which is why moving the composition
+// into the fixture leaves their assertions alone.
+//
+// Separate units of work, unlike seed's builder.returnPayment, and the
+// difference is what each is for: the seed builds a fixed scenario and wants the
+// whole return or none of it, while these tests are about the domain calls and
+// one of them (TestReturnBeforeSettleIsRefused, in
+// TestPaymentStateMachineRefusesIllegalTransitions) asserts that the FIRST half
+// refuses on its own.
+//
+// The instruction is built from the payment row, as seed's is, because this
+// package has no messages. See payment.ReadReturn for where the mesh gets the
+// same values from instead.
+func returnWholePayment(ctx context.Context, sys *Network, id PaymentID, reason string) (Payment, error) {
+	p, err := sys.GetPayment(ctx, id)
+	if err != nil {
+		return Payment{}, err
+	}
+	scheme, ok := sys.Scheme(p.Scheme)
+	if !ok || !scheme.AllowsReturn() {
+		return Payment{}, ErrSchemeUnsupportedReturn
+	}
+	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
+	other := p.Debtor.Participant
+	if other == returner {
+		other = p.Creditor.Participant
+	}
+	if _, err := sys.PostReturnLeg(ctx, returner, id, reason); err != nil {
+		return Payment{}, err
+	}
+	statements, err := sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     p.ID,
+		EndToEndID:    p.EndToEndID,
+		DebtorAgent:   p.DebtorDetails.Agent,
+		CreditorAgent: p.CreditorDetails.Agent,
+		Amount:        p.Amount,
+		Asset:         scheme.Asset(),
+		Reason:        reason,
+	})
+	if err != nil {
+		return Payment{}, err
+	}
+	for _, st := range statements {
+		if _, err := sys.PostSettlementAdvice(ctx, st.Member, AdvisedMovement{
+			Account:        st.Account,
+			Asset:          st.Asset,
+			Movement:       st.Movement,
+			ClosingBalance: st.ClosingBalance,
+			Reference:      st.Reference,
+			ValueDate:      st.ValueDate,
+		}); err != nil {
+			return Payment{}, err
+		}
+	}
+	return sys.PostReturnLeg(ctx, other, id, reason)
+}
+
 // bookTheAdvices is every member's half of a cut-off: each books the mirror leg
 // the statement it was sent advises.
 //
@@ -234,7 +301,7 @@ func bookTheAdvices(t *testing.T, sys *Network, statements []SettlementStatement
 			Asset:          st.Asset,
 			Movement:       st.Movement,
 			ClosingBalance: st.ClosingBalance,
-			CycleID:        st.CycleID,
+			Reference:      st.Reference,
 			ValueDate:      st.ValueDate,
 		})
 		assertNoError(t, err)
@@ -350,7 +417,7 @@ func TestSCT_HappyPath(t *testing.T) {
 }
 
 // TestASettlementIntoAClosedAccountGoesToUnclaimedBalances is the fix for the
-// ruling SettleCycleTx and ReturnPaymentTx both recorded and neither could make.
+// ruling SettleCycleTx and the return both recorded and neither could make.
 //
 // A payee who empties and closes their account between their bank's acceptance
 // and the cut-off used to be credited INTO the closed account: Close requires a
@@ -481,7 +548,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 // the other end of the diversion above, and it was a money bug.
 //
 // The diversion made "the payee's bank was paid" and "the payee was paid" two
-// different facts for the first time. ReturnPaymentTx did not know that, and
+// different facts for the first time. The return did not know that, and
 // there was nothing on the payment for it to know it FROM: it debited the payee's
 // GL account, which for a diverted payment had never been credited. Measured
 // before Payment.CreditorLegAccount existed:
@@ -532,7 +599,7 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 	assertEqual(t, "bank B reserve after settlement", bookBalance(t, b.Ledger, accountsOf(t, b).Reserve), 30000)
 	assertEqual(t, "bob after settlement", customerBalance(t, b, bob), 0)
 
-	returned, err := sys.ReturnPayment(ctx, pay.ID, "creditor account is closed")
+	returned, err := returnWholePayment(ctx, sys, pay.ID, "creditor account is closed")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 
@@ -754,12 +821,12 @@ func TestSDD_Return(t *testing.T) {
 	})
 	assertEqual(t, "alice after collection", customerBalance(t, a, alice), 75000)
 
-	returned, err := sys.ReturnPayment(ctx, pay.ID, "insufficient funds at debtor")
+	returned, err := returnWholePayment(ctx, sys, pay.ID, "insufficient funds at debtor")
 	assertNoError(t, err)
 	assertEqual(t, "status", returned.Status, Returned)
 	// A return is not a rejection: it carries no StatusReason. pacs.004 draws
 	// its reason from iso20022.ReturnReason instead — a different external
-	// code set — and ReturnPaymentTx does not set RejectCode, only the free
+	// code set — and PostReturnLegTx does not set RejectCode, only the free
 	// text. See the RejectCode doc comment on payment.Payment.
 	assertEqual(t, "return sets no reject code", string(returned.RejectCode), "")
 
@@ -1090,7 +1157,7 @@ func TestStateMachineGuards(t *testing.T) {
 
 	t.Run("return before settle", func(t *testing.T) {
 		p, cyc := mkPayment()
-		_, err := sys.ReturnPayment(ctx, p.ID, "too early")
+		_, err := returnWholePayment(ctx, sys, p.ID, "too early")
 		assertError(t, err, ErrInvalidStateTransition)
 		_, _ = sys.CloseCycle(ctx, cyc)
 		_, _, _ = sys.SettleCycle(ctx, cyc)
@@ -1221,6 +1288,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		for name, id := range map[string]ledger.AccountID{
 			"suspense": accts.Suspense, "reserve": accts.Reserve,
 			"unclaimed": accts.Unclaimed, "settlement": accts.Settlement,
+			"returns receivable": accts.ReturnsReceivable,
 		} {
 			if id == "" {
 				t.Errorf("%s account for %s is empty", name, asset)
@@ -1247,6 +1315,17 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 		// as an asset of the bank's would say the bank had earned it, and would
 		// put the credit leg of every diverted settlement on the wrong side.
 		assertEqual(t, "unclaimed account type", unclaimed.Type, ledger.Liability)
+
+		// Returns Receivable is the CONTRAST, and it is asserted beside its
+		// opposite rather than only in TestABankJoinsWithAReturnsReceivableAccount,
+		// because the contrast is the teaching claim: two pooled accounts with no
+		// customer's name on either, one money the bank OWES and one money the
+		// bank is OWED. Both balance either way round, and getting it backwards
+		// would say the opposite in every report the account appears in. Asserted
+		// per asset here, where the dedicated test covers euro only.
+		receivable, err := p.Ledger.GetAccount(ctx, accts.ReturnsReceivable)
+		assertNoError(t, err)
+		assertEqual(t, "returns receivable account type", receivable.Type, ledger.Asset)
 	}
 
 	// And they survive the store, rather than only the value AddParticipant
@@ -1254,6 +1333,29 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 	reloaded, err := sys.GetParticipant(ctx, p.ID)
 	assertNoError(t, err)
 	assertEqual(t, "assets after a reload", len(reloaded.Assets), 2)
+}
+
+// TestABankJoinsWithAReturnsReceivableAccount pins the account's CLASS as much
+// as its existence. It is an Asset — a claim on a biller the bank paid out for
+// — and not a liability like Unclaimed Balances, which is money the bank OWES.
+// Getting that backwards would balance and mean the opposite.
+func TestABankJoinsWithAReturnsReceivableAccount(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	p, err := sys.AddParticipant(ctx, "Alpha", testBIC, euroOnly)
+	assertNoError(t, err)
+
+	accts, err := p.AccountsFor(testAsset)
+	assertNoError(t, err)
+	if accts.ReturnsReceivable == "" {
+		t.Fatal("returns receivable account is empty")
+	}
+
+	acct, err := p.Ledger.GetAccount(ctx, accts.ReturnsReceivable)
+	assertNoError(t, err)
+	assertEqual(t, "returns receivable account type", acct.Type, ledger.Asset)
+	assertEqual(t, "returns receivable account name", acct.Name, "Returns Receivable (EUR)")
 }
 
 func TestAccountsForUnknownAssetFails(t *testing.T) {
@@ -2950,4 +3052,749 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	assertEqual(t, "debtor leg after the redelivery", again.DebtorLegTx, answered.DebtorLegTx)
 	assertEqual(t, "suspense after the redelivery",
 		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
+}
+
+// ---------------------------------------------------------------------------
+// The return, as three acts
+// ---------------------------------------------------------------------------
+
+// TestSettlingAReturnReadsNoPayment is the crossing this task closes.
+//
+// The settlement agent is handed an INSTRUCTION and moves reserves. If it can
+// still do that by reading a payment row, nothing has been split: under
+// sub-project 8 the central bank holds no payment rows at all, so a return it
+// can only execute by looking one up is a return it cannot execute.
+//
+// The instruction below is built by hand, out of the fields a pacs.004's
+// OrgnlTxRef actually carries — the two agents' BICs, the amount and its
+// currency — and not out of the settled payment. What the payment is used for
+// here is the assertion, not the input: it must come out of this untouched.
+func TestSettlingAReturnReadsNoPayment(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+	assertEqual(t, "bank A reserve at the central bank after the cut-off", reserveAt(t, sys, a), 70000)
+	assertEqual(t, "bank B reserve at the central bank after the cut-off", reserveAt(t, sys, b), 30000)
+
+	in := ReturnInstruction{
+		PaymentID:     pay.ID,
+		EndToEndID:    pay.EndToEndID,
+		DebtorAgent:   a.BIC,
+		CreditorAgent: b.BIC,
+		Amount:        30000,
+		Asset:         testAsset,
+		Reason:        "AC04: account closed",
+	}
+	statements, err := sys.SettleReturn(ctx, in)
+	assertNoError(t, err)
+
+	// The reserves are where they were before the cut-off moved them.
+	assertEqual(t, "bank A reserve after the return settled", reserveAt(t, sys, a), 100000)
+	assertEqual(t, "bank B reserve after the return settled", reserveAt(t, sys, b), 0)
+
+	// Two statements, one per member, in the order the postings are made: the
+	// creditor's bank pays the reserves back and the debtor's bank receives
+	// them. Fixed rather than incidental, for SettleCycleTx's reason — a
+	// caller sends these as messages, and a set whose order came out of map
+	// iteration would put a different pair on the wire each run.
+	if len(statements) != 2 {
+		t.Fatalf("a return produced %d statements, want 2 — one per member", len(statements))
+	}
+	assertEqual(t, "the first statement's member", statements[0].Member, b.ID)
+	assertEqual(t, "the creditor bank's movement", statements[0].Movement, -30000)
+	assertEqual(t, "the creditor bank's closing balance", statements[0].ClosingBalance, 0)
+	assertEqual(t, "the creditor bank's agent", statements[0].Agent, b.BIC)
+	assertEqual(t, "the second statement's member", statements[1].Member, a.ID)
+	assertEqual(t, "the debtor bank's movement", statements[1].Movement, 30000)
+	assertEqual(t, "the debtor bank's closing balance", statements[1].ClosingBalance, 100000)
+	for _, st := range statements {
+		assertEqual(t, "the entry reference", st.Reference, string(pay.ID))
+		assertEqual(t, "the statement reference", st.StatementRef, string(pay.ID)+":rtr")
+		assertEqual(t, "the asset", st.Asset, testAsset)
+	}
+
+	// And the payment row is exactly as the cut-off left it: the settlement
+	// agent moved reserves and wrote nothing about the payment, because it has
+	// no payment to write about.
+	after, err := sys.GetPayment(ctx, pay.ID)
+	assertNoError(t, err)
+	assertEqual(t, "the payment's status after its reserves were reversed", after.Status, Settled)
+	assertEqual(t, "the clawback leg the settlement agent must not have posted", after.ReturnClawbackTx, "")
+	assertEqual(t, "the refund leg the settlement agent must not have posted", after.ReturnRefundTx, "")
+
+	// A redelivered instruction is refused rather than settled twice. The
+	// refusal comes from the ledger's idempotency key — there is no row here
+	// recording that this return was settled, because the settlement agent
+	// holds no payment rows to record it on.
+	_, err = sys.SettleReturn(ctx, in)
+	assertError(t, err, ErrReturnAlreadySettled)
+	assertEqual(t, "bank A reserve after the redelivery", reserveAt(t, sys, a), 100000)
+	assertEqual(t, "bank B reserve after the redelivery", reserveAt(t, sys, b), 0)
+}
+
+// TestASettlementAgentRefusesAReturnItsCreditorBankCannotCover is the one
+// decision the settlement agent makes on this path, and it is the same one
+// SettleCycleTx makes at a cut-off: it will not take a member's reserve below
+// zero to move somebody else's money.
+//
+// It has to be checked here explicitly, because nothing else will. A member's
+// settlement account in the central bank's book is a ledger.Liability — the
+// central bank owes the member its reserve — and Book.checkSufficientBalance
+// guards only Asset and Expense accounts.
+func TestASettlementAgentRefusesAReturnItsCreditorBankCannotCover(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, _, _, _ := setupTwoBanks(t, sys)
+
+	// A third member, holding no reserves at all: it has taken part in no
+	// cut-off. A bank that had paid its reserves out since the payment settled
+	// is the same position arrived at the long way round.
+	c, err := sys.AddParticipant(ctx, "Bank C", "BANKFRPPXXX", euroOnly)
+	assertNoError(t, err)
+
+	_, err = sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     "pay_absent",
+		DebtorAgent:   a.BIC,
+		CreditorAgent: c.BIC,
+		Amount:        1000,
+		Asset:         testAsset,
+		Reason:        "AC04: account closed",
+	})
+	assertError(t, err, ledger.ErrInsufficientBalance)
+
+	// Nothing moved, on either side of the transaction it refused to post.
+	assertEqual(t, "bank A reserve after the refusal", reserveAt(t, sys, a), 100000)
+	assertEqual(t, "bank C reserve after the refusal", reserveAt(t, sys, c), 0)
+}
+
+// TestASettlementAgentRefusesAReturnThatNamesNoPayment is the same guard
+// ReadReturn makes on the message, made a second time where the money is.
+//
+// The key on the reserve reversal is "<payment>:return-settle", and it is the
+// ONLY record this actor keeps that it settled a return — it holds no payment
+// rows. So an empty payment id is not a cosmetic defect in an instruction: it
+// moves reserves between two real banks under ":return-settle", and every later
+// nameless return then comes back ErrReturnAlreadySettled having settled
+// nothing. The first one costs money and the rest are silently wrong.
+//
+// mesh's settlement agent cannot reach this, because payment.ReadReturn refuses
+// the message before an instruction exists. That is exactly why the check is
+// ALSO here: ReadReturn is a reader, and a ReturnInstruction built any other way
+// — a future caller, a test, another transport — would reopen the hole. It is
+// ReverseReturnLegTx's own argument, which this package already made once: the
+// domain is where a check on the money belongs, and not in the handler that
+// happens to be the only caller today.
+//
+// There is no sentinel, which is deliberate: this is a judgement about the
+// sender's INSTRUCTION rather than a statement about this system's state, so
+// ReasonFor's fallback to MS03 is the right answer on the wire and not a hazard
+// — the discrimination reasonTable's empty codes exist to make. It is the shape
+// cycleOf already uses for a settlement instruction that names no cycle. What
+// the test therefore asserts is that SOMETHING refused and that it was not the
+// funding check.
+func TestASettlementAgentRefusesAReturnThatNamesNoPayment(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, _, _ := setupTwoBanks(t, sys)
+
+	// Bank A is the CREDITOR's bank here and holds the reserves, so the funding
+	// check this actor makes cannot be what refuses the instruction. Written that
+	// way round deliberately: with the short bank on that side the test passes
+	// against a settlement agent that has no id guard at all, which is the shape
+	// of a test that proves nothing.
+	_, err := sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     "",
+		DebtorAgent:   b.BIC,
+		CreditorAgent: a.BIC,
+		Amount:        1000,
+		Asset:         testAsset,
+		Reason:        "AC04: account closed",
+	})
+	if err == nil {
+		t.Fatal("settled a return naming no payment; the reserve reversal would be keyed by nothing")
+	}
+	if errors.Is(err, ledger.ErrInsufficientBalance) {
+		t.Fatalf("refused for want of reserves (%v); this fixture funds the creditor's bank so that the id is what refuses", err)
+	}
+	// Nothing moved, which is the half that matters: an instruction refused
+	// after the posting would already have cost the creditor's bank the money.
+	assertEqual(t, "bank A reserve after the refusal", reserveAt(t, sys, a), 100000)
+	assertEqual(t, "bank B reserve after the refusal", reserveAt(t, sys, b), 0)
+	// And no transaction stands under the key an empty id would have produced.
+	_, err = sys.CentralBank().GetTransactionByIdempotencyKey(ctx, ":return-settle")
+	assertError(t, err, ledger.ErrTransactionNotFound)
+}
+
+// reserveAt is a bank's reserve balance as the CENTRAL BANK holds it, which is
+// the only side of the mirror a settlement agent's act moves.
+func reserveAt(t *testing.T, sys *Network, p *Participant) ledger.Amount {
+	t.Helper()
+	bal, err := sys.ReserveBalance(context.Background(), p.ID, testAsset)
+	assertNoError(t, err)
+	return bal
+}
+
+// spendTheCredit empties a payee's account the way a payee actually empties
+// one: an outgoing credit transfer, cleared and settled through its own
+// cut-off.
+//
+// It is a whole extra cycle for what a test wants in one line, and there is no
+// shorter honest way — the deposit register exposes no withdrawal, and a
+// direct posting against the customer's GL account would leave this bank's
+// reserve mirror claiming money that is no longer in any account. What the
+// tests below turn on is precisely that the money is GONE while the account
+// itself is untouched, so a fixture that faked the balance would be testing
+// its own arithmetic.
+func spendTheCredit(t *testing.T, sys *Network, from *Participant, fromAcct deposit.AccountID,
+	to *Participant, toAcct deposit.AccountID, amount ledger.Amount,
+) {
+	t.Helper()
+	ctx := context.Background()
+	runCycle(t, sys, SchemeSEPACT, func() {
+		_, err := initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: amount,
+			Debtor:          PartyRef{Participant: from.ID, Account: fromAcct},
+			Creditor:        PartyRef{Participant: to.ID, Account: toAcct},
+			CreditorDetails: PartyDetails{Agent: to.BIC, Name: "the payee"},
+		})
+		assertNoError(t, err)
+	})
+}
+
+// TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent is the push half of
+// the return's one rule, and the reason the returning bank POSTS its leg before
+// it sends rather than checking and then sending.
+//
+// On a credit transfer the returning bank is the payee's bank, which is also
+// the creditor's bank, so the leg it holds is the clawback — and no bank
+// force-takes money from a customer who has already spent it. A beneficiary
+// bank that cannot fund the clawback refuses there and then, to its own caller,
+// and no pacs.004 is ever composed. That is the shape MD01 already has here:
+// refused at the bank that holds the account, as an error and not as a message.
+//
+// A check that is not a posting could be outrun by the customer between the
+// check and the answer. Posting is what makes the refusal bind, which is why
+// the assertion below is that NOTHING moved rather than merely that an error
+// came back.
+func TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+	assertEqual(t, "bob after the credit transfer arrived", customerBalance(t, b, bob), 30000)
+
+	spendTheCredit(t, sys, b, bob, a, alice, 30000)
+	assertEqual(t, "bob after spending it", customerBalance(t, b, bob), 0)
+
+	// Bob's bank is the returner here, so this is the call that would have
+	// produced the pacs.004.
+	_, err := sys.PostReturnLeg(ctx, b.ID, pay.ID, "AC04: account closed")
+	assertError(t, err, deposit.ErrInsufficientAvailable)
+
+	// And nothing at all was written. Bob is not overdrawn, the clearing
+	// suspense that would have held the clawback is flat, and no receivable was
+	// opened — the receivable is the PULL side's answer and must not leak into
+	// this one.
+	assertEqual(t, "bob after the refused return", customerBalance(t, b, bob), 0)
+	assertEqual(t, "bank B suspense after the refused return",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+	assertEqual(t, "bank B returns receivable after the refused return",
+		bookBalance(t, b.Ledger, accountsOf(t, b).ReturnsReceivable), 0)
+
+	after, err := sys.GetPayment(ctx, pay.ID)
+	assertNoError(t, err)
+	assertEqual(t, "the payment's status after the refused return", after.Status, Settled)
+	assertEqual(t, "the clawback leg after the refused return", after.ReturnClawbackTx, "")
+}
+
+// TestAPullRefundIsHonouredEvenWhenTheBillerCannotFundIt is the other half of
+// the same rule, and it comes out the opposite way for a reason that is
+// structural rather than stipulated.
+//
+// On a direct debit the returning bank is the PAYER's bank, so the leg the
+// creditor's bank holds is the clawback and it hears about the return only
+// after the reserves have already moved. The payer's eight-week refund right is
+// unconditional, so that bank honours the refund whether or not the biller can
+// pay and carries the shortfall itself. That is why creditor banks vet their
+// creditors, and why Returns Receivable is an Asset: the bank is owed this, by
+// somebody it has identified perfectly well.
+//
+// The biller here has BOTH spent the money and closed the account, and both
+// halves are load-bearing. Spending it alone is the overdraft case below — the
+// bank simply lets the account go negative, which is what an overdraft is.
+// Closing it is what leaves the bank with nowhere to put the debit: a credit or
+// debit into a closed account strands, since Close requires a zero balance,
+// Closed is terminal and no later posting can reach it.
+func TestAPullRefundIsHonouredEvenWhenTheBillerCannotFundIt(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, biller := setupTwoBanks(t, sys)
+	pay := settledCollection(t, sys, a, alice, b, biller, 25000)
+
+	spendTheCredit(t, sys, b, biller, a, alice, 25000)
+	assertNoError(t, b.Deposit.Close(ctx, biller))
+
+	got, err := sys.PostReturnLeg(ctx, b.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+
+	// The refund is funded out of a claim on the biller, and the money is in
+	// this bank's clearing suspense on its way back to the payer's bank.
+	assertEqual(t, "bank B returns receivable", bookBalance(t, b.Ledger, accountsOf(t, b).ReturnsReceivable), 25000)
+	assertEqual(t, "bank B suspense after the forced clawback",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 25000)
+	// The closed account is not touched, which is the whole point of the
+	// receivable: a debit posted into it would strand exactly as a credit does.
+	assertEqual(t, "the biller's closed account", customerBalance(t, b, biller), 0)
+
+	// One leg of two, so the payment has not reached Returned: the payer's bank
+	// has not been paid yet.
+	assertEqual(t, "the payment's status after the first leg", got.Status, Settled)
+	if got.ReturnClawbackTx == "" {
+		t.Fatal("the clawback posted and left no transaction id on the payment; " +
+			"the other leg has no way to know it is the second")
+	}
+	assertEqual(t, "the refund leg, which is the other bank's", got.ReturnRefundTx, "")
+}
+
+// TestAForcedClawbackOverdrawsAnOpenBillerRatherThanBookingAReceivable is the
+// case next door, and it is here to hold Returns Receivable to the one thing it
+// is for.
+//
+// A biller who has spent the money but still HAS an account is simply overdrawn
+// by it. The ledger will not stop that — a deposit is a ledger.Liability and
+// checkSufficientBalance guards only Asset and Expense accounts — and it should
+// not: an overdrawn biller is a debt the bank collects from a customer it is
+// still in a relationship with, which is what an overdraft already is. Booking
+// a receivable here instead would take the debt off the account it belongs to
+// and leave the customer's own balance saying the money was never taken back.
+func TestAForcedClawbackOverdrawsAnOpenBillerRatherThanBookingAReceivable(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, biller := setupTwoBanks(t, sys)
+	pay := settledCollection(t, sys, a, alice, b, biller, 25000)
+
+	spendTheCredit(t, sys, b, biller, a, alice, 25000)
+
+	_, err := sys.PostReturnLeg(ctx, b.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+
+	assertEqual(t, "the biller's overdrawn account", customerBalance(t, b, biller), -25000)
+	assertEqual(t, "bank B returns receivable", bookBalance(t, b.Ledger, accountsOf(t, b).ReturnsReceivable), 0)
+	assertEqual(t, "bank B suspense after the forced clawback",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 25000)
+}
+
+// TestAPullRefundIsHonouredWhenOneBankIsBothParties holds the return's one rule
+// where the two banks collapse into one.
+//
+// # Why this is tested here and not through the mesh
+//
+// A payment with the same institution at both ends never reaches a clearing
+// house — Mesh.Submit refuses one, because nothing leaves the bank and there is
+// no interbank obligation to clear. So this arrangement is not buildable through
+// the transport, and the guard that would be measured there is a different
+// guard. This one is the DOMAIN's, and the domain is where it has to be right:
+// PostReturnLegTx decides refusability from the payment it is handed, and a rule
+// that holds only because a caller elsewhere never builds the counter-example is
+// a rule nobody is keeping. It is the argument ReadReturn's id guard and
+// SettleReturnTx's own copy of it already make.
+//
+// # What it measures
+//
+// Refusability is a property of the LEG. The clawback may be refused when the
+// scheme is a push AND this bank is the returner; the refund never may. Asked as
+// "is this bank the returner" alone — which is what it used to ask — one bank
+// that is both parties answers yes to BOTH legs, so the clawback becomes
+// refusable on a PULL and the returning bank turns down its own customer's
+// unconditional eight-week refund. The bank would be telling the payer it cannot
+// have its money back because the biller, also its customer, has spent it.
+//
+// The biller here has spent the money, so the clawback is exactly the posting a
+// refusal would stop. It goes through, the biller goes overdrawn, and the payer
+// is repaid out of the same bank's clearing suspense.
+func TestAPullRefundIsHonouredWhenOneBankIsBothParties(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+	// A second customer of ALICE's bank. Both parties to the collection are then
+	// bank A's, which is the whole fixture.
+	biller := openCustomer(t, ctx, a, "Biller", "SE89-BANKA-0002").ID
+	pay := settledCollection(t, sys, a, alice, a, biller, 25000)
+
+	// Spent OUT of the bank, to a customer of the other one, so the biller is
+	// empty and bank A really is short: a transfer between two of its own
+	// accounts would have left the money where the clawback could still reach
+	// it.
+	spendTheCredit(t, sys, a, biller, b, bob, 25000)
+	assertEqual(t, "the biller after spending it", customerBalance(t, a, biller), 0)
+
+	// The clawback, which on a pull is forced. Bank A is the returner AND the
+	// creditor's bank here, so this is the call the old rule refused.
+	got, err := sys.PostReturnLeg(ctx, a.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+	assertEqual(t, "the biller after the forced clawback", customerBalance(t, a, biller), -25000)
+
+	// And then the refund, which is the same bank's other leg. Two calls, not
+	// one, because a bank posts one leg at a time; the second is what carries the
+	// payment to Returned.
+	got, err = sys.PostReturnLeg(ctx, a.ID, pay.ID, "MD06: refund requested by the payer")
+	assertNoError(t, err)
+	assertEqual(t, "the payment after both legs", got.Status, Returned)
+	assertEqual(t, "the payer after the refund", customerBalance(t, a, alice), 100000)
+	// Flat, because both legs of an on-us return pass through one suspense and
+	// cancel. Nothing was ever owed to another bank.
+	assertEqual(t, "bank A suspense after both legs",
+		bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
+}
+
+// settledCollection runs one direct debit all the way to Settled: a mandate,
+// a cut-off, and the biller's own bank paying the biller out of its suspense.
+func settledCollection(t *testing.T, sys *Network, debtorBank *Participant, debtorAcct deposit.AccountID,
+	creditorBank *Participant, creditorAcct deposit.AccountID, amount ledger.Amount,
+) Payment {
+	t.Helper()
+	ctx := context.Background()
+	debtor := PartyRef{Participant: debtorBank.ID, Account: debtorAcct}
+	creditor := PartyRef{Participant: creditorBank.ID, Account: creditorAcct}
+	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPADD, func() {
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPADD, Amount: amount, MandateID: m.ID,
+			Debtor:        debtor,
+			Creditor:      creditor,
+			DebtorDetails: PartyDetails{Agent: debtorBank.BIC, Name: "the payer"},
+		})
+		assertNoError(t, err)
+	})
+	assertEqual(t, "the biller after the collection", customerBalance(t, creditorBank, creditorAcct), amount)
+	return pay
+}
+
+// returnTheWholeWay plays every institution in a return, in the order the
+// messages travel: the returning bank posts its own leg and sends, the
+// settlement agent reverses the reserves and states each member's account, both
+// members book their reserve mirrors, and the other bank posts the leg it was
+// sent. It returns the payment as that last leg left it.
+//
+// It is this package's stand-in for the mesh, exactly as bookTheAdvices and
+// payTheCreditors are for a cut-off, and for the same reason: there are no
+// actors here, so a test that wants the end state has to play them. Which bank
+// goes first is ReturnerOf's answer and not the caller's — that is the rule the
+// whole flow turns on.
+func returnTheWholeWay(t *testing.T, sys *Network, p Payment, reason string) Payment {
+	t.Helper()
+	ctx := context.Background()
+	scheme, ok := sys.Scheme(p.Scheme)
+	if !ok {
+		t.Fatalf("payment %s is under unregistered scheme %s", p.ID, p.Scheme)
+	}
+	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
+	other := p.Debtor.Participant
+	if other == returner {
+		other = p.Creditor.Participant
+	}
+
+	_, err := sys.PostReturnLeg(ctx, returner, p.ID, reason)
+	assertNoError(t, err)
+
+	debtorBank, err := sys.GetParticipant(ctx, p.Debtor.Participant)
+	assertNoError(t, err)
+	creditorBank, err := sys.GetParticipant(ctx, p.Creditor.Participant)
+	assertNoError(t, err)
+	statements, err := sys.SettleReturn(ctx, ReturnInstruction{
+		PaymentID:     p.ID,
+		EndToEndID:    p.EndToEndID,
+		DebtorAgent:   debtorBank.BIC,
+		CreditorAgent: creditorBank.BIC,
+		Amount:        p.Amount,
+		Asset:         scheme.Asset(),
+		Reason:        reason,
+	})
+	assertNoError(t, err)
+	bookTheAdvices(t, sys, statements)
+
+	out, err := sys.PostReturnLeg(ctx, other, p.ID, reason)
+	assertNoError(t, err)
+	return out
+}
+
+// TestARefundIntoAClosedPayersAccountGoesToUnclaimedBalances closes a gap that
+// was a recorded RULING for two tasks rather than a defect nobody had noticed.
+//
+// The old ReturnPaymentTx's doc measured it: a payer who empties and closes their
+// account after a payment settles, whose payment is then returned, ended with
+// the money in an account whose status is Closed — the withdrawal check answers
+// "closed", the credit check answers "closed", and closing again is an invalid
+// transition. It could not be fixed by REFUSING, which was the only option the
+// note could weigh: refusing the return leaves the disputed money with the
+// payee permanently, so one stranding is traded for another.
+//
+// What was missing was not an account — the payer's bank has had unclaimed
+// balances since Task 15 — but a unit of work small enough to divert in. While
+// a return was three postings in three institutions committed together, the
+// payer's bank had no act of its own to make the decision in. It has one now,
+// and this is the same fix PostCreditorLegTx made on the creditor side.
+//
+// The payment still reaches Returned, because it did: the reserves came back
+// and the payer's BANK has been repaid. Whether the CUSTOMER has been repaid is
+// between the bank and its customer, which is what an unclaimed balance says.
+func TestARefundIntoAClosedPayersAccountGoesToUnclaimedBalances(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+
+	// Alice moves the rest of her money out and closes the account — after the
+	// cut-off, so nothing about the settled payment can be re-derived from her
+	// account's status.
+	spendTheCredit(t, sys, a, alice, b, bob, 70000)
+	assertNoError(t, a.Deposit.Close(ctx, alice))
+
+	returned := returnTheWholeWay(t, sys, pay, "AC04: account closed")
+	assertEqual(t, "the payment's status", returned.Status, Returned)
+
+	// The refund is at the payer's bank, and it is in the one account there
+	// that can hold money for somebody the bank cannot pay.
+	assertEqual(t, "bank A unclaimed balances", bookBalance(t, a.Ledger, accountsOf(t, a).Unclaimed), 30000)
+	assertEqual(t, "alice's closed account", customerBalance(t, a, alice), 0)
+	// Bob was clawed back, so this is a return that completed rather than one
+	// that stopped at the diversion.
+	assertEqual(t, "bob after the clawback", customerBalance(t, b, bob), 70000)
+
+	// Both suspenses are flat again, which is the reconciliation on this path:
+	// each bank has booked both of its halves — its reserve mirror from the
+	// statement and its customer leg from the return.
+	assertEqual(t, "bank A suspense", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
+	assertEqual(t, "bank B suspense", bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+	assertReserveMirror(t, sys, a)
+	assertReserveMirror(t, sys, b)
+}
+
+// TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances is the guard
+// on the guard above, and it is the same hazard
+// TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances pins one leg
+// over.
+//
+// Only a CLOSED account may send a refund somewhere other than the payer. A
+// guard written as "divert unless the read succeeded" would put a customer's
+// money in their bank's unclaimed balances because a database connection
+// dropped, mark the payment Returned and commit — and the only record of why
+// would be a description string. The account was resolved once already, when
+// this bank posted the payer's own debit; a read that cannot answer now is a
+// fault in the reading and not news about the account, so the leg fails and can
+// simply be posted again.
+//
+// The clawback subtest is the same discrimination on the other side, where the
+// choice is between a customer's account and a receivable rather than between a
+// customer's account and unclaimed balances. It is a pull, because that is the
+// direction whose clawback is forced: on a push a store failure and a refusal
+// come out the same way — nothing is posted — so there is nothing to tell
+// apart.
+func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.T) {
+	dropped := errors.New("connection reset by peer")
+
+	t.Run("the refund", func(t *testing.T) {
+		ctx := context.Background()
+		sys := testNetwork(t)
+		a, b, alice, bob := setupTwoBanks(t, sys)
+
+		var pay Payment
+		runCycle(t, sys, SchemeSEPACT, func() {
+			var err error
+			pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+				Scheme: SchemeSEPACT, Amount: 30000,
+				Debtor:          PartyRef{Participant: a.ID, Account: alice},
+				Creditor:        PartyRef{Participant: b.ID, Account: bob},
+				CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+			})
+			assertNoError(t, err)
+		})
+		// The clawback first, over the sound store: this is the payer's bank's
+		// own unit of work, and the failure under test is its alone.
+		_, err := sys.PostReturnLeg(ctx, b.ID, pay.ID, "AC04: account closed")
+		assertNoError(t, err)
+
+		broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+			func() time.Time { return fixedTime })
+		if _, err := broken.PostReturnLeg(ctx, a.ID, pay.ID, "AC04: account closed"); err == nil {
+			t.Error("a refund over a store that could not read the payer's account succeeded; " +
+				"a read that cannot answer is not permission to put the money somewhere else")
+		}
+
+		assertEqual(t, "bank A unclaimed balances after a failed read",
+			bookBalance(t, a.Ledger, accountsOf(t, a).Unclaimed), 0)
+		assertEqual(t, "alice after a failed read", customerBalance(t, a, alice), 70000)
+		after, err := sys.GetPayment(ctx, pay.ID)
+		assertNoError(t, err)
+		assertEqual(t, "the payment's status after a failed refund", after.Status, Settled)
+		assertEqual(t, "the refund leg after a failed refund", after.ReturnRefundTx, "")
+	})
+
+	t.Run("the forced clawback", func(t *testing.T) {
+		ctx := context.Background()
+		sys := testNetwork(t)
+		a, b, alice, biller := setupTwoBanks(t, sys)
+		pay := settledCollection(t, sys, a, alice, b, biller, 25000)
+
+		broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
+			func() time.Time { return fixedTime })
+		if _, err := broken.PostReturnLeg(ctx, b.ID, pay.ID, "MD06: refund requested by the payer"); err == nil {
+			t.Error("a forced clawback over a store that could not read the biller's account succeeded; " +
+				"forcing is a decision about a customer's account and cannot be made without reading it")
+		}
+
+		assertEqual(t, "bank B returns receivable after a failed read",
+			bookBalance(t, b.Ledger, accountsOf(t, b).ReturnsReceivable), 0)
+		assertEqual(t, "the biller after a failed read", customerBalance(t, b, biller), 25000)
+		assertEqual(t, "bank B suspense after a failed read",
+			bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+	})
+}
+
+// TestARejectedReturnUnwindsTheReturningBanksOwnLeg is the other end of the
+// ordering that makes a refusal bind.
+//
+// The returning bank posts before it sends, so when the settlement agent
+// answers RJCT that posting is already standing against a return that will not
+// happen. Nothing else in the flow can undo it: the reserves never moved, and
+// the other bank never heard about the return at all.
+//
+// It is a ledger reversal rather than a hand-written counter-posting, so the
+// original stays in the book marked Reversed and the two are linked — a
+// customer's statement shows a debit and its reversal, which is what happened,
+// rather than two unexplained entries.
+func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+
+	posted, err := sys.PostReturnLeg(ctx, b.ID, pay.ID, "AC04: account closed")
+	assertNoError(t, err)
+	assertEqual(t, "bob after the clawback", customerBalance(t, b, bob), 0)
+	assertEqual(t, "bank B suspense holding the clawback",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 30000)
+
+	assertNoError(t, sys.ReverseReturnLeg(ctx, b.ID, pay.ID, "AM04: the settlement agent could not cover it"))
+	assertEqual(t, "bob after the unwind", customerBalance(t, b, bob), 30000)
+	assertEqual(t, "bank B suspense after the unwind",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
+
+	// The original is in the book and marked, rather than deleted.
+	original, err := b.Ledger.GetTransaction(ctx, posted.ReturnClawbackTx)
+	assertNoError(t, err)
+	assertEqual(t, "the clawback's status after the unwind", original.Status, ledger.Reversed)
+
+	// Unwinding twice does not pay Bob twice.
+	assertError(t, sys.ReverseReturnLeg(ctx, b.ID, pay.ID, "AM04: told again"), ledger.ErrTransactionAlreadyReversed)
+	assertEqual(t, "bob after the second unwind", customerBalance(t, b, bob), 30000)
+
+	// A bank that is neither side of the payment has no leg to unwind.
+	c, err := sys.AddParticipant(ctx, "Bank C", "BANKFRPPXXX", euroOnly)
+	assertNoError(t, err)
+	assertError(t, sys.ReverseReturnLeg(ctx, c.ID, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
+}
+
+// TestACompletedReturnCannotBeUnwound is the guard on the unwind, and the case
+// it refuses is the one that would cost real money.
+//
+// ReverseReturnLegTx exists for an RJCT: the returning bank posted before it
+// sent, the network refused, and that posting has to come back. Which is a
+// statement about a return that STOPPED. A return that finished has two customer
+// legs standing in two banks' books, and undoing either one of them alone leaves
+// the other — reverse the clawback on a completed push and the payee is made
+// whole while the payer keeps the refund, with the amount out of the returning
+// bank's own suspense and the payment row still saying Returned.
+//
+// Nothing calls it on a completed return, and the caller it does have is exactly
+// why the check belongs here: mesh's bank.receiveReturnStatus acts on a MESSAGE
+// rather than on a status it checked, so a late or duplicated RJCT is the shape
+// that would otherwise arrive. Next to the money, and not in the handler.
+//
+// ErrInvalidStateTransition rather than a new sentinel: it is the same statement
+// this package makes everywhere else about an operation a payment's status does
+// not permit, and payment's reasonTable already classifies it as a defect in
+// this system rather than a judgement to answer a counterparty with.
+func TestACompletedReturnCannotBeUnwound(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	var pay Payment
+	runCycle(t, sys, SchemeSEPACT, func() {
+		var err error
+		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
+			Scheme: SchemeSEPACT, Amount: 30000,
+			Debtor:          PartyRef{Participant: a.ID, Account: alice},
+			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
+		})
+		assertNoError(t, err)
+	})
+	returned := returnTheWholeWay(t, sys, pay, "AC04: account closed")
+	assertEqual(t, "the payment's status", returned.Status, Returned)
+	assertEqual(t, "alice refunded", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "bob clawed back", customerBalance(t, b, bob), 0)
+
+	// Both banks are refused, because either one alone would break the pair.
+	for _, by := range []ParticipantID{b.ID, a.ID} {
+		assertError(t, sys.ReverseReturnLeg(ctx, by, pay.ID, "AM04: told too late"), ErrInvalidStateTransition)
+	}
+
+	// And no half of it happened: the money is where the completed return left
+	// it, and neither bank is carrying the amount in its suspense.
+	assertEqual(t, "alice after the refused unwinds", customerBalance(t, a, alice), 100000)
+	assertEqual(t, "bob after the refused unwinds", customerBalance(t, b, bob), 0)
+	assertEqual(t, "bank A suspense after the refused unwinds",
+		bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 0)
+	assertEqual(t, "bank B suspense after the refused unwinds",
+		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
 }

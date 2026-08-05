@@ -315,5 +315,23 @@ export const chapter: Chapter = {
         "Three ledgers move, and they move one after another rather than in lockstep: (1) the **central bank** debits Bank A's reserve liability and credits Bank B's, in its own unit of work, and is [[settlement-finality|final]] there; (2) **Bank A**, told by `camt.053`, closes its [[clearing-suspense]] with a debit and records the outgoing reserves with a credit to its reserve asset; (3) **Bank B**, told by its own `camt.053` and then by a `pacs.002` per payment, debits (raises) its reserve asset and credits Bob's deposit. The entries are the same; the timing is not, and the gap between (1) and the rest is the [[unreconciled-position|unreconciled position]]. Alice's deposit was debited at *initiation* — not at settlement.",
       explore: { label: "View central bank reserves", href: "/central-bank" },
     },
+    {
+      kind: "mc",
+      id: "ch10-q21",
+      difficulty: "challenge",
+      concept: "allows-return",
+      prompt:
+        "A settled direct debit is returned. The payer's bank posts the refund and sends the pacs.004 — but the biller's bank has since spent its reserves, so the settlement agent answers RJCT/AM04 and the payer's bank reverses the refund it had already posted. The biller then pays cash in, and the payer asks for the return again. What must the payer's bank do this time?",
+      options: [
+        "Nothing — its transaction id is already on the payment, so the leg counts as posted and the return can carry on from where it stopped",
+        "Post a NEW refund, because reversing the first one means no leg stands — and post it under a different idempotency key, derived from the reversed attempt",
+        "Refuse — a return that has been rejected once is terminal, and the payer must be told the money cannot be recovered",
+        "Re-post the original refund under the same idempotency key, which the ledger accepts because the first one was reversed",
+      ],
+      answer: 1,
+      explanation:
+        "[[allows-return|A return]] refused for `AM04` is refused for a **shortfall**, and a shortfall somebody can cover is not a payer who has lost their refund right — so the return is asked again. What the retry must not do is trust the transaction id left on the payment. The unwind [[reversal|reverses]] the posting and leaves the id in place, because that id is what the retry's key is derived from; the id therefore says *this bank attempted the leg*, never *this bank's leg stands*. Only the transaction's own status answers that. Doing nothing is the defect this rule exists to stop: read as \"already posted\", the retry posts nothing while the conversation runs to completion around it — the reserves reverse, the biller is clawed back, `ACSC` goes back on the wire, and the payer is never repaid. Re-posting under the ORIGINAL key cannot happen either: a ledger refuses a repeated [[idempotency-key|idempotency key]] whatever became of the first posting, which is exactly why the key has to change.",
+      explore: { label: "View payments", href: "/clearing-house/payments" },
+    },
   ],
 };

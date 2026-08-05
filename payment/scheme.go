@@ -111,6 +111,44 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 	return part.Deposit.CheckWithdrawalTx(ctx, sc.Tx, p.Debtor.Account, p.Amount)
 }
 
+// ReturnerOf is the party whose bank sends a settled payment back.
+//
+// A return is sent by the bank that RECEIVED the instruction — the payee's bank
+// on a push, the payer's bank on a pull — which is the SEPA rule book's own
+// division. The beneficiary bank returns a credit transfer it cannot apply; the
+// debtor bank returns a collection its customer disputes.
+//
+// Written as its own rule rather than as "not the submitter", because the two
+// are answers to different questions and the reason each is what it is has
+// nothing to do with the other: a submitter is chosen by who is instructing, and
+// a returner by who is holding a payment they cannot keep. That they come out
+// opposite in both directions is a fact about these two flows, not a derivation.
+// And a party who is both — a payment from a bank to itself — would make a
+// negation ambiguous, while these two rules stay total.
+//
+// It takes the two refs rather than a Payment, which is how mesh.submitterOf —
+// its counterpart in both senses, the other party and the other role — is
+// written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
+// request, and a request is not yet a payment.
+//
+// # Why it lives here and not in mesh
+//
+// It used to be mesh.returnerOf and nothing else, because picking which actor's
+// goroutine sends the pacs.004 was the only use for it. PostReturnLegTx is a
+// second use, in the domain: which leg a bank posts follows from which side of
+// the payment it is on, and whether that bank may REFUSE the leg follows from
+// whether it is the returner. Two copies of a rule that both the mesh's
+// actor-selection and the domain's refusal test consult would be free to drift,
+// and a mesh that sent a return from one bank while the domain let the other
+// refuse is a payment nobody can finish. mesh.returnerOf is a one-line
+// delegation now.
+func ReturnerOf(scheme Scheme, debtor, creditor PartyRef) PartyRef {
+	if scheme.Direction() == Pull {
+		return debtor
+	}
+	return creditor
+}
+
 // ---------------------------------------------------------------------------
 // SEPA Credit Transfer (SCT)
 // ---------------------------------------------------------------------------

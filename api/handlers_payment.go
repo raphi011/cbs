@@ -343,19 +343,31 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 // The returning bank is not named in the request and is not this operator: a
 // return is sent by the bank that RECEIVED the original instruction — the
 // payee's bank on a push, the payer's on a pull — and Mesh.Return works that out
-// from the payment's own scheme. What that bank does is build a pacs.004 and
-// send it; the three compensating postings are the settlement agent's, four hops
-// away, because the middle one moves central-bank reserves.
+// from the payment's own scheme. That bank posts its OWN customer leg and then
+// builds and sends a pacs.004; the reserve reversal is the settlement agent's,
+// because it moves central-bank money, and the other bank's customer leg is that
+// bank's, posted from the same message once the return is final.
+//
+// # A refusal here can be about this operator's own beneficiary
+//
+// That is new, and it is the one thing a caller of this route has to be ready
+// for beyond "no such payment". On a PUSH the returning bank holds the CLAWBACK,
+// so a payee who has already spent the money stops the return dead: nothing is
+// posted, no message is sent, and what comes back is AM04 — a beneficiary who
+// cannot repay. writeError maps it like any other domain refusal. On a pull the
+// returning bank holds the refund, which is unconditional, so this cannot arise.
 //
 // # It answers with an identifier and no payment
 //
 // Deliberately, and it is the one response on this surface that carries no
-// resource. Mesh.Return returns no payment either, for the reason its doc gives:
-// the returning bank's half posts nothing and decides nothing beyond whether
-// there is a settled payment to return, so the only Payment there is to hand
-// back is the one the caller could already read — still Settled — and re-reading
-// the row after the send would be a race dressed up as a result. Ask again with
-// the identifier; that is what 202 means here.
+// resource. Mesh.Return returns no payment either. The reason its doc used to
+// give — that the returning bank's half posts nothing — stopped being true when
+// that bank got a leg of its own; what survives is the reason that matters here,
+// which is that the Payment there is to hand back is one the caller could
+// already read. It is still Settled: the return is not finished until the OTHER
+// bank posts, four hops away. Re-reading the row after the send would be a race
+// dressed up as a result. Ask again with the identifier; that is what 202
+// means here.
 //
 // The reason code is MS03 for handleRejectPayment's reason: this API gives a
 // caller no way to name one, and the free text they did give travels beside it.

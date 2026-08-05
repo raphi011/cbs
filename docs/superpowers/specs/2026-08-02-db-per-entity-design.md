@@ -71,13 +71,17 @@ rewritten again when the split lands.
 The handoff lists three domain problems. There are five; two were found while
 reading the code for this spec.
 
-| crossing | today | after |
-|---|---|---|
-| `partyTx` (`translate.go:562`) reads the counterparty's register for a name | the submitting bank reaches the other bank's book, on the happy path, every time | counterparty **BIC, name and address** travel on `InitiatePaymentRequest` — the payer types them, as they do in life |
-| `ResolveIdentifierTx` (`system.go:1944`) sweeps every member | the receiving bank reaches every bank's book | the receiving bank resolves in **its own register only**, answering AC01. The sweep was always "the honest shape at four banks" |
-| `SettleCycleTx` (`system.go:795`) posts in every book | one `Store.Update` holding every member's accounts | the central bank posts **only its own netting transaction** and is final. Each bank posts its mirror leg and its creditor legs locally, on advice |
-| `ReturnPaymentTx` (`system.go:1723`) posts in three books | one `Store.Update` | the central bank reverses reserves from the pacs.004; each bank posts its own compensating leg locally |
-| `AddParticipantTx` (`system.go:367`) writes into `CentralBankBook` | one `Store.Update`, "so a bank can never exist without the accounts it needs" | admission is a conversation: the central bank opens the settlement account, the clearing house adds the routing entry, the bank's chart is created in its own store |
+The "today" column is as this spec was written; the state column records what has
+since happened, per crossing, with the task that did it. Three of the five are
+closed.
+
+| crossing | today | after | state |
+|---|---|---|---|
+| `partyTx` (`translate.go:562`) reads the counterparty's register for a name | the submitting bank reaches the other bank's book, on the happy path, every time | counterparty **BIC, name and address** travel on `InitiatePaymentRequest` — the payer types them, as they do in life | **closed — Task 14.** `partyTx` no longer exists; the agent is derived from the roster rather than asserted, which the "after" column had not anticipated |
+| `ResolveIdentifierTx` (`system.go:1944`) sweeps every member | the receiving bank reaches every bank's book | the receiving bank resolves in **its own register only**, answering AC01. The sweep was always "the honest shape at four banks" | **open — Task 18** |
+| `SettleCycleTx` (`system.go:795`) posts in every book | one `Store.Update` holding every member's accounts | the central bank posts **only its own netting transaction** and is final. Each bank posts its mirror leg and its creditor legs locally, on advice | **closed — Task 15.** As designed, plus `PostSettlementAdviceTx` and `PostCreditorLegTx` as the members' own acts |
+| `ReturnPaymentTx` (`system.go:1723`) posts in three books | one `Store.Update` | the central bank reverses reserves from the pacs.004; each bank posts its own compensating leg locally | **closed — Task 16.** `ReturnPaymentTx` was deleted; it is `SettleReturnTx` (reserves only, reading no payment row), `PostReturnLegTx` (each bank's own customer leg) and `ReverseReturnLegTx`. The clearing house **holds** the pacs.004 until the return is final, which the design had not anticipated |
+| `AddParticipantTx` (`system.go:367`) writes into `CentralBankBook` | one `Store.Update`, "so a bank can never exist without the accounts it needs" | admission is a conversation: the central bank opens the settlement account, the clearing house adds the routing entry, the bank's chart is created in its own store | **open — Task 17** |
 
 The two that were not in the handoff are **admission** and the reason the return
 cannot survive isolation unchanged, below.
@@ -172,6 +176,12 @@ sub-project"; it belongs to Task 15 specifically, and it is a consequence of the
 split rather than an independent feature.
 
 ## The return
+
+> Written before Task 16 and kept as the design record. Every present-tense
+> claim about `ReturnPaymentTx` below describes the code as it stood then; that
+> function was deleted at Task 16e and the crossing is marked closed in the table
+> above. What was decided here is what shipped — see "Task 16's shape" below,
+> which is the part that became the plan.
 
 The central bank has no payment rows, so it cannot look up whose settlement
 accounts to move. `iso20022/pacs004.go:163` records that **`OrgnlTxRef` is
@@ -306,7 +316,7 @@ is measured by the existing recorder before the safety net is removed.
 |---|---|---|
 | 14 | **The message carries the parties.** Counterparty BIC/name/address on `InitiatePaymentRequest`; the receiving bank resolves in its own register only | `TestWhichBooksEachBankActuallyReaches`: the **submitting** bank only. `TestWhichBooksEachBankActuallyReaches`: payer's bank `[debtor, creditor, Network]` → `[debtor, Network]`; `TestWhichBooksEachBankReachesInAPull`: submitting payee's bank → `[creditor, Network]`. The **receiver's** set does not move here — see below |
 | 15 | **Settlement becomes a conversation.** Central bank posts only its own netting transaction; banks post mirror and creditor legs locally on advice; settlement-position row; unclaimed balances; `CheckCreditTx` at settlement | `TestWhichBooksTheCentralBankReachesWhenItSettles`: `allBooks()` → `[CentralBankBook, Network]`. **The loud failure the handoff predicted** |
-| 16 | **Return becomes a conversation.** `OrgnlTxRef` on pacs.004; central bank reverses reserves from the message; banks post their own compensating legs; the direction-dependent clawback rule and `Returns Receivable` | `TestWhichBooksAReturnReaches`: `allBooks()` → `[CentralBankBook, Network]` |
+| 16 | **Return becomes a conversation.** `OrgnlTxRef` on pacs.004; central bank reverses reserves from the message; banks post their own compensating legs; the direction-dependent clawback rule and `Returns Receivable` | `TestWhichBooksAReturnReaches`: `allBooks()` → **`[CentralBankBook]`**. This prediction said `[CentralBankBook, Network]` and was wrong: `SettleReturnTx` writes no row and appends no audit event, so the settlement agent never allocates a network id. The trail is not lost — `EventPaymentReturned` lands from `PostReturnLegTx`, and each member writes its own `SettlementAdvice` row from its camt.053 |
 | 17 | **Admission becomes a conversation.** Central bank opens the settlement account, clearing house adds the routing entry, the bank's chart is created locally | `TestWritingAParticipantTouchesNoBankBook` gains a counterpart; the orphan-participant defect carried into `main` must be confronted rather than carried again |
 | 18 | **Split the stores.** Three shapes × `mem` × `pg`; three storetest suites; N+2 instances; per-entity payment rows; the roster moves to the clearing house; seed, `api` and `cmd/server` rewiring; foreign-`BookID` refusal | the recorder stops being the only enforcement; a crossing becomes an error |
 | 19 | **camt.053 and reconciliation.** The statement, the closing-balance check, break detection | breaks become detectable in-system rather than only by the test suite |

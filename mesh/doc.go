@@ -168,6 +168,15 @@
 // money. Asserted by mesh's TestTheMessagesACutOffPutsOnTheWire; see
 // centralBank.advise.
 //
+// A RETURN has the identical requirement one hop longer, and the same order
+// satisfies it. The bank receiving the reserves back is a net receiver of a
+// batch of one, and the leg that draws on the suspense its statement credits is
+// its own customer leg — posted from the pacs.004 the clearing house relays out
+// of the handler of the settlement agent's answer. So the statement must again
+// be pushed before the answer, and TestTheMessagesAReturnPutsOnTheWire asserts
+// the same pair. Both tests record the same trap: swapping the two leaves a
+// race the central bank usually wins, so only a swap PLUS a delay inverts it.
+//
 // # What an undelivered statement suppresses, and why Task 19 is scoped from here
 //
 // centralBank.advise returns on the FIRST send it cannot make, and the cost is
@@ -182,12 +191,23 @@
 //     advised — is left holding an instruction it believes outstanding on a
 //     payment the domain has already marked Settled.
 //
+// A RETURN reaches the same three, because a return advises the same way, and
+// the third costs more there. The clearing house's answer is what releases the
+// pacs.004 it is holding for the OTHER bank, so an answer never sent is a
+// customer leg never posted: the reserves are final, one bank has moved its
+// customer's money and the other never will, and the payment stays Settled for
+// ever with half a return standing in one book. On the cut-off path the third
+// item leaves banks with stale expectations; on this one it reaches an account.
+// Same defect, second route to it, recorded rather than fixed here for the
+// reason below.
+//
 // None of it is reachable here, for the reason "What this mesh is not" gives
 // below: delivery is exactly-once and in order, and a send to a live actor
 // always succeeds. It becomes reachable in any transport that can lose a
-// message. The settlement is FINAL in all three cases — the reserves moved and
-// the cycle is Settled — so nothing may be unsaid, and there is deliberately no
-// retry here rather than untested machinery for an unreachable failure. What is
+// message. The settlement is FINAL in all these cases — the reserves moved and
+// the cycle or the return is discharged — so nothing may be unsaid, and there is
+// deliberately no retry here rather than untested machinery for an unreachable
+// failure. What is
 // missing is the ability to NOTICE, and that is what Task 19's reconciliation is
 // for: an absent advice row against a clearing suspense that has not returned to
 // zero, and a cycle Settled whose banks were never told, are the two shapes it
@@ -258,56 +278,77 @@
 // The R-transaction: a payment that has already settled, sent back. It is the
 // only flow here that starts at the bank which ANSWERED rather than the one
 // that submitted, and the only one in which a message a BANK composed is
-// carried past the clearing house — the document travels unchanged to the
-// settlement agent with only the header replaced, as csm.relay always does.
-// Task 12's settlement instruction reaches the central bank too, but that one
-// is the clearing house's own message about its own cut-off.
+// carried past the clearing house — the document travels unchanged, with only
+// the header replaced, as csm.relay always does. Task 12's settlement
+// instruction reaches the central bank too, but that one is the clearing house's
+// own message about its own cut-off.
 //
 //	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  central bank
+//	                             both banks      <--camt.053--  central bank
 //	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank
+//	payer's bank  <--pacs.004--  clearing house
+//
+// Seven messages, and they used to be four. The three that are new are the two
+// statements and the relayed return, and each of them exists because a posting
+// moved off the settlement agent and onto the bank whose book it is in.
 //
 // The bank that RECEIVED the original instruction asks for it, which is the
 // SEPA rule book's own division: the beneficiary bank returns a credit transfer
 // it cannot apply, and the debtor bank returns a collection its customer
 // disputes. So it is the payee's bank on a push and the payer's on a pull —
-// exactly the opposite end from the one that submitted, in both directions. Its
-// half MOVES NOTHING; the message is the whole of it.
+// exactly the opposite end from the one that submitted, in both directions.
 //
-// The CENTRAL BANK executes it, and that is this flow's one real decision.
-// ReturnPaymentTx posts three compensating transactions in a single unit of
-// work — the payer refunded, the payee clawed back, and the reserve movement
-// between the two banks reversed — and the third is central-bank money, which
-// no member bank and no clearing house may move. Splitting them would mean a
-// payer refunded against a payee who was not debited. payment/doc.go records
-// the consequence: returns settle immediately in this system rather than being
-// netted in a later R-cycle, so a return IS a settlement act and belongs where
-// settlement does.
+// Its half MOVES MONEY, and this paragraph used to say it moved nothing. The
+// returning bank posts the leg it owns BEFORE it composes the message — the
+// clawback if it is the creditor's bank, the refund if it is the payer's — and
+// that ordering is the whole of the return's one rule: A BANK CAN REFUSE A LEG
+// ONLY IF IT POSTS IT BEFORE IT SENDS. On a push it holds the clawback, so a
+// payee who has spent the money stops the return dead, as an error to the caller
+// and no message at all. On a pull it holds the refund, which is unconditional,
+// so it cannot refuse and the forced leg is the other bank's.
 //
-// The CLEARING HOUSE carries it, and takes it into no cycle. It is in the path
-// because a member bank in this mesh addresses the clearing house and nothing
-// else — the routing table lives in one actor — and the destination follows
-// from the message definition rather than from anything inside the message: a
-// pacs.004 names no parties at all. Carrying a return costs it no store read
-// going out, and the answer coming back costs it three of the reads the
-// settlement fan-out already made — the payment, its scheme, the participant —
-// to address the bank that asked.
+// The CENTRAL BANK reverses the reserve movement between the two banks'
+// settlement accounts, which is central-bank money and which no member bank and
+// no clearing house may move. payment/doc.go records the consequence: returns
+// settle immediately in this system rather than being netted in a later
+// R-cycle, so a return IS a settlement act and belongs where settlement does.
+// It reads the parties off the MESSAGE (payment.ReadReturn) and not off a
+// payment row, because a settlement agent holds none. It then states both
+// accounts in a camt.053 apiece, exactly as at a cut-off, and each bank books
+// its own reserve mirror.
 //
-// A bank in this system SENDS a return and never receives one, which is the
-// shared store showing through. In a real network the pacs.004 travels to the
-// debtor's bank, which credits its own customer; here the settlement agent
-// posts that leg too, inside the atomic three. So a pacs.004 arriving at a bank
-// is a dead letter, and TestAMessageAnActorHasNoHandlerForIsADeadLetter is what
-// says so.
+// The CLEARING HOUSE carries it, and now holds it. Going out it takes it into
+// no cycle and reads no store: a return's first destination follows from the
+// message definition. Coming back it addresses the answer to the bank that
+// asked — three reads, the same three the settlement fan-out makes — and then
+// relays the pacs.004 ONWARD to the other bank, routed by the agents OrgnlTxRef
+// carries. It holds that message until it has an ACSC, because a bank that
+// posted its customer leg against a return the settlement agent then refused
+// would have moved money for nothing. That is the only state any actor in this
+// package keeps between messages, it is in memory, and csm.relayReturn records
+// what a restart costs.
 //
-// The two refusals are split by whether anyone could be TOLD. A payment that
-// has not settled cannot be returned, and the returning bank refuses that
-// before the message exists — because ErrInvalidStateTransition is classified
-// as never reaching a counterparty, so a pacs.004 sent for one would be
-// dead-lettered by the settlement agent and the operator who asked would hear
-// nothing at all. Everything the settlement agent can answer, it answers: a
-// message carrying more than one return, or a count that disagrees with what
-// arrived, comes back RJCT to the bank that sent it. A REDELIVERED return
-// reaches the settlement agent, where the payment is already Returned, and is
+// A bank in this system used to SEND a return and never receive one, which was
+// the shared store showing through: the settlement agent posted the far bank's
+// leg itself. It receives one now, and posts its own leg from it
+// (bank.receiveReturn), which is what a real network does. That handler answers
+// nothing, for the reason bank.receiveStatement answers nothing: the return is
+// already final by the time the message arrives.
+//
+// The refusals are split by whether anyone could be TOLD, and there are now
+// three kinds. A payment that has not settled cannot be returned, and the
+// returning bank refuses that before the message exists — because
+// ErrInvalidStateTransition is classified as never reaching a counterparty, so
+// a pacs.004 sent for one would be dead-lettered by the settlement agent and the
+// operator who asked would hear nothing at all. A push clawback the returning
+// bank cannot fund is refused the same way, to the same caller, and is the one
+// refusal in this system a beneficiary bank makes about its own customer.
+// Everything the settlement agent can answer, it answers: a message carrying
+// more than one return, a count that disagrees with what arrived, a message it
+// cannot read, or a creditor's bank whose reserves cannot cover the reversal,
+// all come back RJCT to the bank that sent it — and that bank UNWINDS the leg it
+// posted (bank.receiveReturnStatus). A REDELIVERED return reaches the settlement
+// agent, where its own ledger refuses the reserve reversal a second time, and is
 // dead-lettered for the same reason the bank's own guard exists.
 //
 // # Unbounded queues, and what that costs

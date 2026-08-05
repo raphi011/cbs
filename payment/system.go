@@ -237,6 +237,38 @@ func (s *Network) participantTx(ctx context.Context, tx Tx, id ParticipantID) (*
 	return s.bind(rec), nil
 }
 
+// participantByBICTx finds the member a BIC addresses and binds its live
+// handles. It is participantTx over the identifier a MESSAGE carries rather
+// than the one this system numbers its members by.
+//
+// A sweep over the roster, because the roster is the only index there is: BIC
+// carries no uniqueness constraint (see the participants.bic column comment,
+// which records why), so there is nothing to look up by. At four members that
+// is honest; a real settlement agent's directory is a service with an index,
+// exactly as ResolveIdentifier's is.
+//
+// The FIRST match wins, and that is a limit worth naming rather than
+// discovering: two members registered under one BIC are indistinguishable to a
+// message, and this returns whichever the store lists first. It is not
+// ErrIdentifierAmbiguous's situation — that one refuses, because an ambiguous
+// ADDRESS would route a customer's payment to a bank on the strength of listing
+// order — because a duplicate BIC in the roster is a registration this system
+// should never have accepted, and refusing every return in the network on
+// account of it would be a worse answer than picking. What removes the limit is
+// a unique index on the column, which is a schema decision nobody has taken.
+func (s *Network) participantByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Participant, error) {
+	members, err := tx.ListParticipants(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range members {
+		if m.BIC == bic {
+			return s.bind(m), nil
+		}
+	}
+	return nil, fmt.Errorf("%w: no member is addressed by %s", ErrParticipantNotFound, bic)
+}
+
 // centralBankChartTx returns the central bank's reserve and capital
 // subledgers, creating the chart of accounts if this is the first time the
 // store has been used.
@@ -457,15 +489,26 @@ func (s *Network) AddParticipantTx(ctx context.Context, tx Tx, name string, bic 
 		if err != nil {
 			return nil, err
 		}
+		// An Asset, and the contrast with Unclaimed Balances above is the
+		// point. Unclaimed is money the bank OWES to somebody it has not
+		// identified; this is money OWED TO the bank by somebody it has
+		// identified perfectly well — a biller whose account could not fund a
+		// refund the bank was obliged to honour anyway. Same event, opposite
+		// sides of the balance sheet.
+		returnsReceivable, err := bank.CreateAccountTx(ctx, tx, interbank.ID, "Returns Receivable ("+string(asset)+")", ledger.Asset, asset)
+		if err != nil {
+			return nil, err
+		}
 		cbReserve, err := s.centralBank.CreateAccountTx(ctx, tx, reserveSubledger, "Reserve: "+name+" ("+string(asset)+")", ledger.Liability, asset)
 		if err != nil {
 			return nil, err
 		}
 		accounts[asset] = ParticipantAccounts{
-			Suspense:   suspense.ID,
-			Reserve:    reserve.ID,
-			Unclaimed:  unclaimed.ID,
-			Settlement: cbReserve.ID,
+			Suspense:          suspense.ID,
+			Reserve:           reserve.ID,
+			Unclaimed:         unclaimed.ID,
+			ReturnsReceivable: returnsReceivable.ID,
+			Settlement:        cbReserve.ID,
 		}
 	}
 
@@ -954,7 +997,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 				Agent:          leg.participant.BIC,
 				Account:        leg.accounts.Settlement,
 				Asset:          asset,
-				CycleID:        c.ID,
+				Reference:      string(c.ID),
 				Movement:       leg.net,
 				ClosingBalance: closing,
 				ValueDate:      s.now(),
@@ -981,7 +1024,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	// allocated one. It travels as Stmt/Id — the account servicer's reference for
 	// the statement — so a member can quote it back at the central bank.
 	for i := range statements {
-		statements[i].SettlementID = st.ID
+		statements[i].StatementRef = string(st.ID)
 	}
 
 	c.Status = CycleSettled
@@ -1120,9 +1163,10 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, by ParticipantID, m 
 //
 // # Booking twice is not reachable
 //
-// The idempotency key is the same "<cycle>:reserve:<participant>" the central
-// bank used to post under, so a redelivered statement posts nothing; and the
-// advice row is checked first, so it does not even try.
+// The idempotency key is derived from the statement's own reference —
+// "<reference>:reserve:<participant>" — so a redelivered statement's posting
+// request lands on the same key in THIS bank's own ledger, and the ledger
+// refuses it; and the advice row is checked first, so it does not even try.
 func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by ParticipantID, m AdvisedMovement) (SettlementAdvice, error) {
 	p, err := s.participantTx(ctx, tx, by)
 	if err != nil {
@@ -1136,7 +1180,7 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		return SettlementAdvice{}, fmt.Errorf("%w: %s is not %s's reserve account", ErrStatementNotForThisBank, m.Account, by)
 	}
 
-	switch existing, err := tx.GetSettlementAdvice(ctx, p.BookID, m.CycleID, m.Asset); {
+	switch existing, err := tx.GetSettlementAdvice(ctx, p.BookID, m.Reference, m.Asset); {
 	case err == nil && existing.Status == AdvicePosted:
 		return existing, nil
 	case err != nil && !errors.Is(err, ErrSettlementAdviceNotFound):
@@ -1146,7 +1190,7 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 	now := s.now()
 	advice := SettlementAdvice{
 		Book:           p.BookID,
-		CycleID:        m.CycleID,
+		Reference:      m.Reference,
 		Asset:          m.Asset,
 		Movement:       m.Movement,
 		ClosingBalance: m.ClosingBalance,
@@ -1194,9 +1238,20 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 		// statement for a position of zero. This arm is a guard on a caller.
 		return advice, nil
 	}
+	// The description says "settlement of <reference>" and stops there, because
+	// that is the whole of what this bank knows. The reference is a cycle id on
+	// the cut-off path and a payment id on the return path, and a member bank
+	// holds neither kind of row — see SettlementAdvice, which records that there
+	// is deliberately no field saying which it is. This used to read "Net
+	// settlement of cycle …", which was true of every statement that existed
+	// when it was written and became a false claim the moment a return could
+	// produce one. No customer reads it — the leg is Suspense against Reserve in
+	// the bank's own book — but it is what an operator reconciling that bank's
+	// suspense has to go on, and a reconciliation told to look for a cycle that
+	// does not exist is worse off than one told nothing.
 	posted, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		IdempotencyKey: string(m.CycleID) + ":reserve:" + string(p.ID),
-		Description:    "Net settlement of cycle " + string(m.CycleID),
+		IdempotencyKey: m.Reference + ":reserve:" + string(p.ID),
+		Description:    "Settlement of " + m.Reference,
 		Entries:        entries,
 	})
 	if err != nil {
@@ -1250,7 +1305,7 @@ func (s *Network) PostCreditorLeg(ctx context.Context, by ParticipantID, id Paym
 //
 // It has to be, and the first version of this was not: a return of a diverted
 // payment debited the payee's closed account to minus the amount and left the
-// unclaimed liability standing, because ReturnPaymentTx had nothing to read.
+// unclaimed liability standing, because the return had nothing to read.
 // CreditorLegAccount is written HERE, in both arms, because the account the
 // credit went to is a fact about a moment that no later reading recovers. See
 // Payment.CreditorLegAccount for why re-deriving it is unsafe, and
@@ -1340,7 +1395,7 @@ func (s *Network) PostCreditorLegTx(ctx context.Context, tx Tx, by ParticipantID
 	p.CreditorLegTx = posted.ID
 	// Recorded in BOTH arms, not only the diverting one. A return has to claw
 	// the money back from where it actually went, and it cannot ask this
-	// question again later: see Payment.CreditorLegAccount and ReturnPaymentTx.
+	// question again later: see Payment.CreditorLegAccount and clawbackTx.
 	p.CreditorLegAccount = target
 	if err := transition(&p, Settled); err != nil {
 		return Payment{}, err
@@ -2145,77 +2200,340 @@ func (s *Network) ReverseDebtorLegTx(ctx context.Context, tx Tx, p Payment, reas
 	return err
 }
 
-// ReturnPayment returns a settled payment (a SEPA R-transaction). It posts
-// compensating transactions that move the funds back from the creditor to the
-// debtor across the central bank, undoing the original flow.
-func (s *Network) ReturnPayment(ctx context.Context, id PaymentID, reason string) (Payment, error) {
-	var out Payment
+// ---------------------------------------------------------------------------
+// The return, as three acts
+// ---------------------------------------------------------------------------
+
+// SettleReturn is SettleReturnTx in its own unit of work, which is what a
+// settlement agent acting on a pacs.004 it has just been handed needs: the
+// message is the whole of the input, and there is nothing else to commit
+// with it.
+func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]SettlementStatement, error) {
+	var out []SettlementStatement
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.ReturnPaymentTx(ctx, tx, id, reason)
+		out, err = s.SettleReturnTx(ctx, tx, in)
 		return err
 	})
 	return out, err
 }
 
-// ReturnPaymentTx is ReturnPayment within a caller-supplied unit of work. All
-// three compensating postings — debtor's bank, creditor's bank, central bank —
-// commit together or not at all.
+// SettleReturnTx is the settlement agent's whole part in a return: one
+// transaction in its own book, moving the reserves back, and one statement per
+// member telling each what happened to its account.
 //
-// # A KNOWN GAP: the refund is not checked against a creditable account
+// # It reads no payment, and that is the point
 //
-// creditorSideTx and DepositTx both call Deposit.CheckCreditTx before money
-// lands in a customer's account, and both give the same reason: Close requires
-// a zero balance, no withdrawal can reach a closed account afterwards, and
-// Closed is terminal, so a credit into one strands for ever. This function
-// credits debtorGL below with no such check.
+// Everything it needs is on the instruction, because everything it needs is on
+// the message: the two agents' BICs, the amount, the asset. A settlement agent
+// under sub-project 8 holds no payment rows at all — it never saw the payment
+// clear — so a return it could only execute by looking one up is a return it
+// could not execute. That is why iso20022.OriginalTransactionReference had to
+// exist before this function could: the pacs.004 this system used to send named
+// no parties, and there was nothing else for a bank without a payment row to
+// resolve accounts from. See ReadReturn, which is what turns the message into
+// the argument here.
 //
-// It is reachable and it was measured rather than reasoned about. A payer whose
-// account is emptied and closed after a payment settles, whose payment is then
-// returned, ends with 250,000 in an account whose status is Closed: the
-// withdrawal check answers "account is closed", the credit check answers
-// "account is closed", and closing again is an invalid status transition.
+// The BICs are swept over the roster rather than indexed — see
+// participantByBICTx, which records what that costs.
 //
-// It is NOT fixed by REFUSING, which was the only option this note used to
-// weigh: refusing the return answers RJCT to the returning bank and leaves the
-// disputed money with the payee permanently, since Settled is the only status
-// ReturnPaymentTx accepts and there is no second attempt that would ever differ.
-// One stranding is traded for another.
+// # The one decision it makes
 //
-// # The settlement half of this gap is now closed, and this one is not
+// Can the CREDITOR's bank cover the reversal out of the reserves it holds here?
+// That is SettleCycleTx's net-payer check on a batch of one, and it is checked
+// explicitly for the same reason: a member's settlement account in this book is
+// a ledger.Liability — the central bank owes the member its reserve — and
+// Book.checkSufficientBalance guards only Asset and Expense accounts, so
+// nothing else in the system will refuse it. Refusing to take a member's
+// reserve below zero is the central bank declining to extend uncollateralised
+// intraday credit, which is the decision a settlement agent exists to make.
+// ledger.ErrInsufficientBalance rather than a new sentinel, so that ReasonFor's
+// borrowedReasons keeps mapping it to AM04.
 //
-// This note used to cover SettleCycleTx too, which credited the payee with no
-// check for the same reason. Both halves wanted the same thing — somewhere for
-// unreachable money to go, an unclaimed-balances account at the receiving bank —
-// which the system did not have. It has one now
-// (ParticipantAccounts.Unclaimed), and PostCreditorLegTx uses it: a payee whose
-// account is closed at the cut-off is credited to their bank's unclaimed
-// balances and the batch settles. That is what
-// TestASettlementIntoAClosedAccountGoesToUnclaimedBalances pins.
+// It is the creditor's bank that is checked in BOTH directions, because the
+// clawback is always at the creditor's bank: which of the two banks is the
+// RETURNER flips with the scheme's direction and which of them is paying the
+// reserves back does not. See ReturnerOf and PostReturnLegTx.
 //
-// The same move is available here — the payer's bank has an unclaimed-balances
-// account too, and the refund could go to it — and this function does not make
-// it. That is a gap in the RETURN path and no longer a missing account.
+// # A redelivery is caught in the ledger
 //
-// # A SECOND gap, which the diversion opened and which IS closed
+// There is no row here saying "this return has been settled", because there is
+// no payment row to write it on. What there is is the idempotency key on the
+// reserve reversal, which is derived from the payment's own id, so a second
+// instruction naming the same payment is refused by this bank's own ledger. See
+// ErrReturnAlreadySettled.
 //
-// The note above is about the DEBTOR side, and there was a creditor-side one
-// too, created by the very fix it credits. Once PostCreditorLegTx could send a
-// settled payment's money somewhere other than the payee, this function's claw
-// back — which debited the payee's GL account unconditionally — was debiting an
-// account that had never been credited. Measured: the payee's closed account at
-// minus the amount, the unclaimed liability still standing, and the reserves paid
-// back out of the creditor bank all the same. Two liabilities that net to zero,
-// so the book balanced and no ledger guard fired.
+// # Which is why the payment id is required, and required HERE
 //
-// It is closed by reading Payment.CreditorLegAccount rather than by re-deriving
-// anything: the account is a fact recorded when the credit was made. Note what
-// is NOT claimed — the payee is not made whole here, because a payee whose
-// account was closed at the cut-off never had this money in the first place;
-// what the return does is give it back to the payer, who is entitled to it, out
-// of the account that is actually holding it. See
-// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability.
-func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reason string) (Payment, error) {
+// The key is the only record this actor keeps of anything, so an instruction
+// with no payment id is not a cosmetic defect: the reversal would move reserves
+// between two real banks under ":return-settle", and every later nameless
+// return would come back ErrReturnAlreadySettled having settled nothing. The
+// first costs money and the rest are silently wrong.
+//
+// ReadReturn refuses such a message before an instruction exists, and that is
+// the guard mesh actually hits. This one is not a second copy of it: ReadReturn
+// is a READER, and a ReturnInstruction built any other way — a future caller, a
+// test, a second transport — would reopen the hole with nothing in the way. It
+// is the argument ReverseReturnLegTx's doc already makes about its own Settled
+// check: a guard on the money belongs next to the money, not in whichever
+// handler happens to be the only caller today.
+func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
+	// Before anything is read, because this is a check on the KEY the posting
+	// below will carry rather than on any account. See the note above.
+	//
+	// A plain error and not a sentinel: it is a judgement about the INSTRUCTION,
+	// so ReasonFor's fallback turning it into MS03 on the wire is the right
+	// answer rather than a hazard, and it is the same shape cycleOf uses for a
+	// settlement instruction that names no cycle. ledger.ValidateText would not
+	// catch it — that one refuses control characters and invalid UTF-8, and the
+	// empty string is neither.
+	if in.PaymentID == "" {
+		return nil, fmt.Errorf("payment: a return instruction naming no payment cannot be settled; its reserve reversal would be keyed by nothing")
+	}
+	debtor, err := s.participantByBICTx(ctx, tx, in.DebtorAgent)
+	if err != nil {
+		return nil, err
+	}
+	creditor, err := s.participantByBICTx(ctx, tx, in.CreditorAgent)
+	if err != nil {
+		return nil, err
+	}
+	debtorAccts, err := debtor.AccountsFor(in.Asset)
+	if err != nil {
+		return nil, err
+	}
+	creditorAccts, err := creditor.AccountsFor(in.Asset)
+	if err != nil {
+		return nil, err
+	}
+
+	// The redelivery check comes BEFORE the funding check, and the order is not
+	// cosmetic. A return that has already settled has already taken the
+	// reserves out of the creditor's bank, so on the second delivery that bank
+	// is very often short by exactly this amount — and answering AM04 would
+	// tell the returning bank its counterparty could not fund a return that in
+	// fact completed. Asked in this order, "you have already sent me this" is
+	// what comes back, which is the answer to dead-letter.
+	key := string(in.PaymentID) + ":return-settle"
+	switch _, err := tx.GetTransactionByIdempotencyKey(ctx, CentralBankBook, key); {
+	case err == nil:
+		return nil, fmt.Errorf("%w: %s", ErrReturnAlreadySettled, in.PaymentID)
+	case !errors.Is(err, ledger.ErrTransactionNotFound):
+		return nil, err
+	}
+
+	held, err := s.centralBank.BookBalanceTx(ctx, tx, creditorAccts.Settlement)
+	if err != nil {
+		return nil, err
+	}
+	if held < in.Amount {
+		return nil, fmt.Errorf("%w: %s is short %d in %s",
+			ledger.ErrInsufficientBalance, creditor.ID, in.Amount-held, in.Asset)
+	}
+
+	// The key is checked twice, and the second one is the ledger's. The read
+	// above is what makes the ANSWER right; this is what makes the refusal
+	// binding, because two deliveries in flight at once both pass a read and
+	// only one may post. It is the same pairing PostSettlementAdviceTx makes
+	// between its advice row and its idempotency key.
+	if _, err := s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		IdempotencyKey: key,
+		Description:    "Return settlement for payment " + string(in.PaymentID),
+		Entries: []ledger.Entry{
+			{AccountID: creditorAccts.Settlement, Amount: in.Amount, Direction: ledger.Debit},
+			{AccountID: debtorAccts.Settlement, Amount: in.Amount, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		if errors.Is(err, ledger.ErrDuplicateIdempotencyKey) {
+			return nil, fmt.Errorf("%w: %s", ErrReturnAlreadySettled, in.PaymentID)
+		}
+		return nil, err
+	}
+
+	// What each member is TOLD. The balances are read AFTER the posting and
+	// inside the same unit of work, which is what makes them CLOSING balances.
+	// SettleCycleTx's reason, unchanged: reading them before the posting would
+	// produce opening balances labelled CLBD, and the balance is the only thing
+	// a member can check its own posting against.
+	//
+	// The order is the posting's own: the creditor's bank pays the reserves
+	// back, the debtor's bank receives them. Fixed rather than incidental,
+	// because a caller turns these into messages and a pair whose order came out
+	// of map iteration would put a different sequence on the wire each run.
+	//
+	// StatementRef is "<payment>:rtr" and is deliberately not any row's key:
+	// there is no settlement row on this path to lend it one, and a member has
+	// no way to check it against anything it holds either way. See
+	// SettlementStatement and AdvisedMovement, which both say so.
+	now := s.now()
+	statements := make([]SettlementStatement, 0, 2)
+	for _, side := range []struct {
+		member   *Participant
+		account  ledger.AccountID
+		movement ledger.Amount
+	}{
+		{creditor, creditorAccts.Settlement, -in.Amount},
+		{debtor, debtorAccts.Settlement, in.Amount},
+	} {
+		closing, err := s.centralBank.BookBalanceTx(ctx, tx, side.account)
+		if err != nil {
+			return nil, err
+		}
+		statements = append(statements, SettlementStatement{
+			Member:         side.member.ID,
+			Agent:          side.member.BIC,
+			Account:        side.account,
+			Asset:          in.Asset,
+			Reference:      string(in.PaymentID),
+			StatementRef:   string(in.PaymentID) + ":rtr",
+			Movement:       side.movement,
+			ClosingBalance: closing,
+			ValueDate:      now,
+		})
+	}
+	return statements, nil
+}
+
+// PostReturnLeg is PostReturnLegTx in its own unit of work, which is what a
+// bank acting on a return needs: one message names one payment, and there is
+// nothing else to commit with it.
+func (s *Network) PostReturnLeg(ctx context.Context, by ParticipantID, id PaymentID, reason string) (Payment, error) {
+	var out Payment
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.PostReturnLegTx(ctx, tx, by, id, reason)
+		return err
+	})
+	return out, err
+}
+
+// PostReturnLegTx is a bank posting its own customer leg of a return, in its
+// own book.
+//
+// # Two legs, and which bank owns each never changes
+//
+// The CLAWBACK is always at the CREDITOR's bank, out of the account the
+// creditor leg actually credited (Payment.CreditorLegAccount). The REFUND is
+// always at the DEBTOR's bank, into the payer's account. So which leg this call
+// posts follows from which side `by` is on, and neither the caller nor the
+// message chooses: a bank on neither side is ErrNotAPartyToThisReturn.
+//
+// What flips with the scheme's direction is only which of the two the RETURNING
+// bank is holding — the payee's bank on a push, the payer's bank on a pull —
+// and that decides one thing: whether the CLAWBACK may be refused.
+//
+// # A bank can refuse a leg only if it posts it before it sends
+//
+// The returning bank posts first and sends afterwards, so its refusal costs
+// nothing: no pacs.004 is composed, no reserves move, and the caller is told.
+// On a PUSH that bank holds the clawback, so a payee who has spent the money
+// stops the return dead — no bank force-takes money back off a customer, and
+// the beneficiary bank's answer is a local error rather than a message. See
+// TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent.
+//
+// That makes refusability a property of the LEG and not of the actor: the
+// clawback is refusable when the scheme is a push AND this bank is the returner,
+// and the refund never is. Both conjuncts, because a bank that is both parties
+// is the returner on both legs, and "is this bank the returner" would then make
+// the refund refusable too — the returning bank turning down its own customer's
+// eight-week right. See the mayRefuse computation below and
+// TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse.
+//
+// The other bank posts AFTER finality and cannot refuse, because there is
+// nothing left to refuse: the reserves have moved. On a PULL that is the
+// creditor's bank holding the clawback, and the payer's eight-week refund right
+// is unconditional, so it forces the posting and carries the shortfall itself.
+// That is why creditor banks vet their creditors.
+//
+// A check that is not a posting would be outrun by the customer between the
+// check and the credit, which is why this refuses by NOT POSTING rather than by
+// reporting.
+//
+// # Where a forced clawback lands
+//
+// Against an open account, on the account: the biller goes overdrawn, which the
+// ledger does not refuse — a deposit is a ledger.Liability and
+// checkSufficientBalance guards only Asset and Expense — and should not, since
+// an overdrawn biller is a debt the bank collects from a customer it still has.
+// Against a CLOSED one there is nowhere on the account to put it: a posting into
+// a closed account strands, for CloseTx's reason. That is the case
+// ParticipantAccounts.ReturnsReceivable exists for, and its only reachable one.
+// A store failure is neither, and returns: see the refund below for why that
+// discrimination is not optional.
+//
+// When the holding account is the bank's own unclaimed balances there is no
+// customer to check and the money is demonstrably there, so no check is made at
+// all — the bank is releasing an obligation it took on, not taking money off
+// anybody.
+//
+// # The refund closes a gap that was a ruling for two tasks
+//
+// ReturnPaymentTx's doc — deleted with the function at Task 16e — recorded at
+// length that a refund into a payer's closed account stranded for ever, and that
+// refusing would only trade one stranding for another. It could not be fixed
+// while a return was one unit of work over three institutions. It is fixed here
+// the same way PostCreditorLegTx fixed the settlement-side twin: divert to this
+// bank's unclaimed balances.
+//
+// The diversion happens on deposit.ErrAccountClosed and on NOTHING else, and
+// the check runs BEFORE the payer's GL account is resolved so that a store
+// failure reaches this discrimination rather than being collapsed on the way.
+// glAccountTx turns every failure of its read into ErrAccountNotInParticipant,
+// so a guard written the other way round could not tell a dropped connection
+// from a closed account — and money must not be routed on a failure nobody can
+// tell apart. That is the defect the first review round on Task 15 found on the
+// creditor side. See
+// TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances.
+//
+// # The SECOND leg is what sets Returned
+//
+// One row takes one transition, and the transition is about the last customer
+// leg, which is PostCreditorLegTx's shape reused. The second leg is recognised
+// by finding the OTHER side's transaction id already on the payment; each leg
+// writes its own as it posts. Neither id can be the marker on its own, because
+// which leg goes first flips with the direction.
+//
+// This works because one payment is one row that both banks read. Under Task
+// 18's store split it is two rows in two stores and neither bank can see the
+// other's, so the second leg will have to be recognised from the message a bank
+// receives against the status its own row is already at. That is a real limit
+// of this task and not an oversight; see Payment.ReturnClawbackTx.
+//
+// A bank that is BOTH sides — a payment from one bank to itself — holds both
+// legs and would post them one call at a time, clawback first, because the guard
+// is written as "my leg, not standing" rather than as a choice between two
+// parties. No such payment reaches this function any more: Mesh.Submit refuses
+// one, because two customers of one bank paying each other is a book transfer
+// and not a clearing payment. The ordering is kept rather than turned into a
+// refusal here, for the reason ReadReturn's id guard and SettleReturnTx's are
+// both kept — a guard at the boundary is one caller's, and this is the domain.
+//
+// The same guard makes a redelivered first leg a no-op, which is what
+// PostCreditorLegTx does with a redelivered advice and for the same reason: the
+// ledger's idempotency key would refuse the second posting anyway, and
+// reporting a failure to a handler that did nothing wrong is worse than
+// answering with the payment.
+//
+// # A leg that was UNWOUND is not a leg that was posted
+//
+// The guard is "not standing" and not "not set", and that is the difference
+// between a retried return that repays the payer and one that does not. An RJCT
+// leaves this bank's leg Reversed in its own book with the id still on the
+// payment (ReverseReturnLegTx says why), so a return asked again arrives here
+// with the field non-empty and nothing standing behind it. Read as "already
+// posted", the retry answered success without posting, the pacs.004 went out
+// anyway, the reserves reversed, the other bank clawed its customer back — and
+// the payer got nothing while the amount sat in the returning bank's clearing
+// suspense for ever.
+//
+// So the ledger is consulted (legStandsTx), and the retry is posted under a key
+// derived from the attempt it replaces (returnLegKey), because the first
+// attempt's key is spent. AM04 is the retriable refusal — a bank short of
+// reserves at one moment is not a payer who has lost their refund right — and
+// asking again is this system's documented route out of it. See
+// TestAReturnRetriedAfterAnUnwindRepaysThePayer.
+func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, by ParticipantID, id PaymentID, reason string) (Payment, error) {
 	if err := ledger.ValidateText("reason", reason); err != nil {
 		return Payment{}, err
 	}
@@ -2230,102 +2548,357 @@ func (s *Network) ReturnPaymentTx(ctx context.Context, tx Tx, id PaymentID, reas
 	if p.Status != Settled {
 		return Payment{}, ErrInvalidStateTransition
 	}
+	bank, err := s.participantTx(ctx, tx, by)
+	if err != nil {
+		return Payment{}, err
+	}
+	accts, err := bank.AccountsFor(scheme.Asset())
+	if err != nil {
+		return Payment{}, err
+	}
 
-	debtor, err := s.participantTx(ctx, tx, p.Debtor.Participant)
-	if err != nil {
-		return Payment{}, err
-	}
-	creditor, err := s.participantTx(ctx, tx, p.Creditor.Participant)
-	if err != nil {
-		return Payment{}, err
-	}
-	// A return runs the original flow backwards, so it moves through the same
-	// accounts: the scheme's asset on both sides.
-	asset := scheme.Asset()
-	debtorAccts, err := debtor.AccountsFor(asset)
-	if err != nil {
-		return Payment{}, err
-	}
-	creditorAccts, err := creditor.AccountsFor(asset)
-	if err != nil {
-		return Payment{}, err
-	}
-	debtorGL, err := debtor.glAccountTx(ctx, tx, p.Debtor.Account)
-	if err != nil {
-		return Payment{}, err
-	}
-	// Where the money actually is at the creditor's bank, READ OFF THE PAYMENT
-	// rather than resolved again. Usually the payee's GL account; the bank's
-	// unclaimed-balances account when the creditor leg could not reach the payee
-	// and diverted. Only PostCreditorLegTx can know which, and only at the
-	// moment it posted — see Payment.CreditorLegAccount.
+	// Whether the CLAWBACK may be refused, as a property of the LEG rather than
+	// of the actor.
 	//
-	// A Settled payment always carries it: reaching Settled is what
-	// PostCreditorLegTx does, and it sets this in both arms. There is no
-	// fallback to the payee's GL account for an empty one, and that is the
-	// point — the GL account is exactly the wrong guess in the case this field
-	// exists for. An empty value would be a store that lost the column, and the
-	// posting below fails on an unknown account rather than moving money.
-	creditorHolding := p.CreditorLegAccount
-
-	// Debtor's bank refunds the payer, funded by reserves coming back in.
-	if _, err := debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		IdempotencyKey: string(p.ID) + ":return-debit",
-		Description:    "Return of payment " + string(p.ID) + ": " + reason,
-		Entries: []ledger.Entry{
-			{AccountID: debtorAccts.Reserve, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: debtorGL, Amount: p.Amount, Direction: ledger.Credit},
-		},
-	}); err != nil {
-		return Payment{}, err
-	}
-
-	// Creditor's bank claws the funds back from wherever its creditor leg put
-	// them, paying out reserves. Both destinations are that bank's own
-	// liabilities, so the direction is the same either way and the entry does
-	// not branch: debiting a liability discharges it.
+	// Refusing costs nothing only for the bank that posts BEFORE it sends, which
+	// is the returner and nobody else — and only on a PUSH is the returner the
+	// bank holding the clawback. On a pull the returner holds the REFUND, which
+	// is the payer's unconditional eight-week right and is never refusable, and
+	// the clawback is then the other bank's, posted after finality with nothing
+	// left to refuse. So the clawback is refusable on exactly one combination of
+	// direction and role, and it takes both conjuncts to say so.
 	//
-	// What it MEANS does differ, and it is worth saying which. Against the
-	// payee's account it is the bank taking money back off a customer who was
-	// paid. Against unclaimed balances there is no customer to take it from —
-	// the payee never received this money and their account is closed — so it
-	// releases the obligation the bank took on when it could not pay them out.
-	// The bank owed "whoever eventually claims it"; the payer has claimed it,
-	// and is entitled to, because the funds are sitting right here.
-	if _, err := creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		IdempotencyKey: string(p.ID) + ":return-credit",
-		Description:    "Return of payment " + string(p.ID) + ": " + reason,
-		Entries: []ledger.Entry{
-			{AccountID: creditorHolding, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: creditorAccts.Reserve, Amount: p.Amount, Direction: ledger.Credit},
-		},
-	}); err != nil {
-		return Payment{}, err
+	// Asking only "is this bank the returner" was true of BOTH legs when one
+	// bank is both parties, which made the returning bank refuse its own
+	// customer's refund on a pull — the exact inversion of the rule above. That
+	// arrangement is now refused where a payment enters the mesh (see
+	// Mesh.Submit), and this is stated correctly anyway: a rule that holds
+	// because a caller elsewhere never builds the counter-example is a rule
+	// nobody is keeping.
+	//
+	// Written through ReturnerOf rather than as "the creditor's bank on a push"
+	// so that who the returner is stays stated once. The two are the same bank;
+	// two spellings would be free to disagree.
+	mayRefuse := scheme.Direction() == Push && ReturnerOf(scheme, p.Debtor, p.Creditor).Participant == by
+
+	// Has this bank's leg posted, AND does that posting still STAND?
+	//
+	// The id on the payment answers the first question and not the second, and
+	// the difference is a return that repays nobody. ReverseReturnLegTx leaves
+	// the id in place deliberately — it records what this bank DID — so after an
+	// RJCT the field is non-empty and names a Reversed transaction. Read as
+	// "already posted", a retry fell through to the redelivery arm below and
+	// answered success without posting, while the rest of the conversation ran
+	// to completion around a leg that did not exist.
+	//
+	// So the LEDGER is asked, which is where "it no longer stands" is recorded.
+	// Only ever about THIS bank's own leg: the other side's id names a
+	// transaction in the other bank's book, and reaching into it is what
+	// TestEachBankBooksItsOwnReturnAndNoOtherBooks forbids.
+	var clawbackStands, refundStands bool
+	if by == p.Creditor.Participant {
+		if clawbackStands, err = s.legStandsTx(ctx, tx, bank, p.ReturnClawbackTx); err != nil {
+			return Payment{}, err
+		}
+	}
+	if by == p.Debtor.Participant {
+		if refundStands, err = s.legStandsTx(ctx, tx, bank, p.ReturnRefundTx); err != nil {
+			return Payment{}, err
+		}
 	}
 
-	// Central bank reverses the reserve movement.
-	if _, err := s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		IdempotencyKey: string(p.ID) + ":return-settle",
-		Description:    "Return settlement for payment " + string(p.ID),
-		Entries: []ledger.Entry{
-			{AccountID: creditorAccts.Settlement, Amount: p.Amount, Direction: ledger.Debit},
-			{AccountID: debtorAccts.Settlement, Amount: p.Amount, Direction: ledger.Credit},
-		},
-	}); err != nil {
-		return Payment{}, err
+	var posted ledger.Transaction
+	switch {
+	case by == p.Creditor.Participant && !clawbackStands:
+		posted, err = s.clawbackTx(ctx, tx, bank, accts, p, reason, mayRefuse, p.ReturnClawbackTx)
+		if err != nil {
+			return Payment{}, err
+		}
+		p.ReturnClawbackTx = posted.ID
+	case by == p.Debtor.Participant && !refundStands:
+		posted, err = s.refundTx(ctx, tx, bank, accts, p, reason, p.ReturnRefundTx)
+		if err != nil {
+			return Payment{}, err
+		}
+		p.ReturnRefundTx = posted.ID
+	case by == p.Creditor.Participant || by == p.Debtor.Participant:
+		return p, nil
+	default:
+		return Payment{}, fmt.Errorf("%w: %s is neither %s's payer nor its payee", ErrNotAPartyToThisReturn, by, id)
 	}
 
-	if err := transition(&p, Returned); err != nil {
-		return Payment{}, err
-	}
 	p.RejectReason = reason
+	if p.ReturnClawbackTx != "" && p.ReturnRefundTx != "" {
+		if err := transition(&p, Returned); err != nil {
+			return Payment{}, err
+		}
+	}
 	if err := tx.PutPayment(ctx, p); err != nil {
 		return Payment{}, err
 	}
-	if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentReturned, string(p.ID), p); err != nil {
-		return Payment{}, err
+	if p.Status == Returned {
+		if err := s.appendAuditTx(ctx, tx, ledger.EventPaymentReturned, string(p.ID), p); err != nil {
+			return Payment{}, err
+		}
 	}
 	return p, nil
+}
+
+// clawbackTx is the creditor bank's leg: the money comes out of wherever its
+// creditor leg put it and into its clearing suspense, on its way back across
+// the network.
+//
+// Both destinations the creditor leg had are that bank's own liabilities, so
+// the direction does not branch — debiting a liability discharges it — but what
+// it MEANS does. Against the payee's account it is the bank taking money back
+// off a customer who was paid. Against unclaimed balances there is no customer
+// to take it from: the payee never received this money, and the bank is
+// releasing the obligation it took on when it could not pay them, to the only
+// other party with a claim on it.
+//
+// Against Returns Receivable it is neither, and that is a third thing: the bank
+// pays the refund out of its own pocket and books a claim on the biller. See
+// PostReturnLegTx for when each is reached.
+//
+// `replacing` is the id of this bank's own previous attempt at this leg, if it
+// has one and it was unwound. See returnLegKey.
+func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Participant, accts ParticipantAccounts,
+	p Payment, reason string, mayRefuse bool, replacing ledger.TransactionID,
+) (ledger.Transaction, error) {
+	// Where the money actually is, READ OFF THE PAYMENT rather than resolved
+	// again. Only PostCreditorLegTx can know which account it credited, and only
+	// at the moment it posted — see Payment.CreditorLegAccount. A Settled
+	// payment always carries it, and there is deliberately no fallback to the
+	// payee's GL account: that is exactly the wrong guess in the case the field
+	// exists for.
+	from, description := p.CreditorLegAccount, "Return of payment "+string(p.ID)+": "+reason
+	if from != accts.Unclaimed {
+		err := creditor.Deposit.CheckWithdrawalTx(ctx, tx, p.Creditor.Account, p.Amount)
+		switch {
+		case err == nil:
+		case mayRefuse:
+			// The push side. Nothing is posted and no message is built, which
+			// is the whole of the refusal.
+			return ledger.Transaction{}, err
+		case errors.Is(err, deposit.ErrAccountClosed):
+			// The account cannot be posted to at all, so the bank funds the
+			// refund itself and books what it is owed. The description says so
+			// for the same reason the refund's diversion does: the money is in a
+			// pooled account with nobody's name on it, and the entry is the only
+			// place the reason can be read months later.
+			from, description = accts.ReturnsReceivable, "Returns receivable: "+description
+		case errors.Is(err, deposit.ErrInsufficientAvailable),
+			errors.Is(err, deposit.ErrAccountDormant),
+			errors.Is(err, deposit.ErrAccountFrozen):
+			// The account can still be posted to, so it is: the biller goes
+			// overdrawn. A freeze is a block on the CUSTOMER's withdrawals and
+			// not on the bank honouring a scheme obligation, and a dormant
+			// account is one nobody has touched, not one that has gone.
+		default:
+			// A store failure. It is not a statement about the account, and the
+			// two arms above are choices about where a customer's money goes,
+			// so this must not reach either of them.
+			return ledger.Transaction{}, err
+		}
+	}
+	return creditor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		IdempotencyKey: returnLegKey(p.ID, "return-claw", replacing),
+		Description:    description,
+		Entries: []ledger.Entry{
+			{AccountID: from, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Credit},
+		},
+	})
+}
+
+// refundTx is the debtor bank's leg: the payer is paid back out of this bank's
+// clearing suspense, which the reserves coming back from the central bank fill.
+//
+// See PostReturnLegTx for why the creditable check runs before the payer's GL
+// account is resolved, and why deposit.ErrAccountClosed is the only error that
+// may send the money somewhere other than the payer.
+//
+// `replacing` is the id of this bank's own previous attempt at this leg, if it
+// has one and it was unwound. See returnLegKey.
+func (s *Network) refundTx(ctx context.Context, tx Tx, debtor *Participant, accts ParticipantAccounts,
+	p Payment, reason string, replacing ledger.TransactionID,
+) (ledger.Transaction, error) {
+	description := "Return of payment " + string(p.ID) + ": " + reason
+	to := accts.Unclaimed
+	err := debtor.Deposit.CheckCreditTx(ctx, tx, p.Debtor.Account)
+	switch {
+	case err == nil:
+		// The payer's own account, resolved only once the register has said it
+		// can take the credit.
+		if to, err = debtor.glAccountTx(ctx, tx, p.Debtor.Account); err != nil {
+			return ledger.Transaction{}, err
+		}
+	case errors.Is(err, deposit.ErrAccountClosed):
+		description = "Unclaimed: " + description
+	default:
+		return ledger.Transaction{}, err
+	}
+	return debtor.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		IdempotencyKey: returnLegKey(p.ID, "return-refund", replacing),
+		Description:    description,
+		Entries: []ledger.Entry{
+			{AccountID: accts.Suspense, Amount: p.Amount, Direction: ledger.Debit},
+			{AccountID: to, Amount: p.Amount, Direction: ledger.Credit},
+		},
+	})
+}
+
+// legStandsTx reports whether a return leg id names a posting that is still
+// standing in this bank's own book.
+//
+// It is the question PostReturnLegTx's switch means when it looks at
+// Payment.ReturnClawbackTx or Payment.ReturnRefundTx, and the field alone
+// cannot answer it: the id OUTLIVES the posting. ReverseReturnLegTx leaves it
+// there on purpose and marks the transaction Reversed, so the ledger is the only
+// place the difference is recorded.
+//
+// An empty id is "never posted" and needs no read. A transaction the payment
+// names and the book does not have is an ERROR and not a false: a payment
+// pointing at nothing is a broken row, and answering "post it again" to one
+// would post a leg keyed off an id nobody can resolve. Money is not routed on a
+// read this system cannot make sense of — the same discrimination clawbackTx
+// makes between a closed account and a dropped connection.
+func (s *Network) legStandsTx(ctx context.Context, tx Tx, bank *Participant, leg ledger.TransactionID) (bool, error) {
+	if leg == "" {
+		return false, nil
+	}
+	txn, err := tx.GetTransaction(ctx, bank.BookID, leg)
+	if err != nil {
+		return false, err
+	}
+	return txn.Status != ledger.Reversed, nil
+}
+
+// returnLegKey is the idempotency key one bank's return leg posts under.
+//
+// The first attempt is keyed by the payment and the leg — "<payment>:return-claw"
+// in the creditor's bank's book, "<payment>:return-refund" in the debtor's —
+// which is what makes a REDELIVERY of the same instruction refuse itself in the
+// ledger.
+//
+// A RETRY after an unwind is a different posting and must not collide with the
+// attempt it replaces: the ledger refuses a second posting under one key, which
+// is exactly what would leave a retried return owing its customer money. It must
+// not be keyless either, or two deliveries of one retry would pay twice. So the
+// key is extended by the id of the reversed attempt, which is already on the
+// payment and is unique to that attempt. No column and no counter: a second
+// unwind leaves the SECOND attempt's id in the field, so a third attempt keys
+// off that, and the chain continues for as long as the scheme lets a bank ask
+// again.
+func returnLegKey(id PaymentID, leg string, replacing ledger.TransactionID) string {
+	key := string(id) + ":" + leg
+	if replacing != "" {
+		key += ":" + string(replacing)
+	}
+	return key
+}
+
+// ReverseReturnLeg is ReverseReturnLegTx in its own unit of work.
+func (s *Network) ReverseReturnLeg(ctx context.Context, by ParticipantID, id PaymentID, reason string) error {
+	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		return s.ReverseReturnLegTx(ctx, tx, by, id, reason)
+	})
+}
+
+// ReverseReturnLegTx unwinds a return leg this bank posted and that the network
+// then refused.
+//
+// It exists because of the ordering the return runs in: the returning bank
+// posts its own leg BEFORE it sends the pacs.004, so by the time the settlement
+// agent's answer arrives that bank has already moved its customer's money. An
+// RJCT — the settlement agent could not cover the reversal, the message named a
+// payment it could not resolve — leaves that posting standing against a return
+// that will not happen, and the customer looking at a balance nobody can
+// explain.
+//
+// Equal and opposite, through ledger reversal rather than a hand-written
+// counter-posting, so the original stays in the book marked Reversed and the
+// two are linked. Reversing twice answers ledger.ErrTransactionAlreadyReversed
+// rather than paying anybody twice — ReverseDebtorLegTx's guarantee, from the
+// same mechanism.
+//
+// A bank with no leg posted is a no-op rather than an error, which is what
+// ReverseDebtorLegTx does with an unposted debtor leg: the caller is a handler
+// reacting to a status it did not choose, and "there was nothing to undo" is
+// the answer, not a failure.
+//
+// # A COMPLETED return is refused, and that guard is not defensiveness
+//
+// This undoes ONE leg, and one leg is only ever the whole of a return while the
+// return has stopped. Once both banks have posted there are two legs standing in
+// two books, and reversing either alone leaves the other: reverse the clawback
+// on a completed push and the payee is made whole while the payer keeps the
+// refund, with the amount out of the returning bank's own suspense and the row
+// still saying Returned. Nothing in the ledger would notice — both postings are
+// individually balanced.
+//
+// So it refuses anything that is not still Settled. The caller this guard exists
+// for is mesh's bank.receiveReturnStatus, which acts on a MESSAGE: a status
+// arriving late, or twice, is exactly the shape that would otherwise unwind half
+// of a return that finished, and a handler cannot be relied on to have checked a
+// status it was not sent. There it surfaces as a dead letter, which is the
+// truthful outcome for an RJCT about a return this network completed. ErrInvalidStateTransition rather than a new sentinel —
+// it is this package's word for an operation a payment's status does not permit,
+// and reasonTable already classifies it as a defect here rather than a judgement
+// to answer a counterparty with.
+//
+// # The transaction id is left on the payment, and it means something narrower
+//
+// It is not cleared. It records what this bank DID, and it did post; the ledger
+// is where the fact that it no longer stands is recorded, on the transaction
+// itself. Leaving it is also what makes a RETRY postable at all — returnLegKey
+// derives the retry's idempotency key from the reversed attempt's id, so the
+// field is the only record of which attempt this is.
+//
+// What that costs is a field whose meaning is "this bank has an attempt at this
+// leg", NOT "this bank's leg stands". An earlier version of this paragraph said
+// there was no reader for whom a stale id decides anything. There was:
+// PostReturnLegTx's switch asked "is the id empty?" to decide whether to post,
+// so a return asked again after an unwind fell through to the idempotent-
+// redelivery arm and answered success having posted nothing — while the rest of
+// the conversation ran to completion, the other bank clawed its customer back,
+// and the payer was never repaid. That reader now asks the LEDGER (legStandsTx),
+// which is the only place that can answer it.
+//
+// A reader that has this id and wants to know whether the leg holds must do the
+// same. The one place that does NOT is PostReturnLegTx's transition to Returned,
+// which reads both ids and can read only one book: it relies on a leg being
+// reversible only while the OTHER side is still unposted, which the Settled
+// guard above is what makes true.
+func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, by ParticipantID, id PaymentID, reason string) error {
+	if err := ledger.ValidateText("reason", reason); err != nil {
+		return err
+	}
+	p, err := tx.GetPayment(ctx, id)
+	if err != nil {
+		return err
+	}
+	if p.Status != Settled {
+		return ErrInvalidStateTransition
+	}
+	var leg ledger.TransactionID
+	switch by {
+	case p.Creditor.Participant:
+		leg = p.ReturnClawbackTx
+	case p.Debtor.Participant:
+		leg = p.ReturnRefundTx
+	default:
+		return fmt.Errorf("%w: %s is neither %s's payer nor its payee", ErrNotAPartyToThisReturn, by, id)
+	}
+	if leg == "" {
+		return nil
+	}
+	bank, err := s.participantTx(ctx, tx, by)
+	if err != nil {
+		return err
+	}
+	_, err = bank.Ledger.ReverseTransactionTx(ctx, tx, leg, "Rejected return of payment "+string(p.ID)+": "+reason)
+	return err
 }
 
 // ---------------------------------------------------------------------------

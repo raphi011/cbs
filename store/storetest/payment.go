@@ -103,8 +103,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			return tx.PutParticipant(ctx, payment.Participant{
 				ID: "alpha", Name: "Alpha", BookID: "alpha", CreatedAt: early,
 				Assets: map[ledger.AssetCode]payment.ParticipantAccounts{
-					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", Settlement: "200.res.001"},
-					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", Settlement: "200.res.002"},
+					"EUR": {Suspense: "200.ib.001", Reserve: "100.ib.001", ReturnsReceivable: "200.ib.003", Settlement: "200.res.001"},
+					"USD": {Suspense: "200.ib.002", Reserve: "100.ib.002", ReturnsReceivable: "200.ib.004", Settlement: "200.res.002"},
 				},
 			})
 		})
@@ -119,6 +119,15 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			if got.Assets["USD"].Reserve != "100.ib.002" {
 				t.Errorf("USD reserve = %q, want 100.ib.002", got.Assets["USD"].Reserve)
+			}
+			// returns_receivable is the newest of the four plumbing accounts, and
+			// the one most recently at risk of being silently dropped by an
+			// INSERT column list that forgot it.
+			if got.Assets["EUR"].ReturnsReceivable != "200.ib.003" {
+				t.Errorf("EUR returns receivable = %q, want 200.ib.003", got.Assets["EUR"].ReturnsReceivable)
+			}
+			if got.Assets["USD"].ReturnsReceivable != "200.ib.004" {
+				t.Errorf("USD returns receivable = %q, want 200.ib.004", got.Assets["USD"].ReturnsReceivable)
 			}
 			// A listing must carry them too, not just a single Get — the
 			// listing is the path SettleCycle resolves every member through.
@@ -720,12 +729,20 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore))
 	})
 
+	t.Run("AdvicesAreKeyedByReferenceNotByCycle", func(t *testing.T) {
+		advicesAreKeyedByReferenceNotByCycle(t, openPayment(t, newStore))
+	})
+
 	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
 		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
 	})
 
 	t.Run("PaymentRecordsWhereTheCreditorLegLanded", func(t *testing.T) {
 		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore))
+	})
+
+	t.Run("PaymentRecordsBothReturnLegs", func(t *testing.T) {
+		paymentRecordsBothReturnLegs(t, openPayment(t, newStore))
 	})
 
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
@@ -961,7 +978,7 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 // in both of the states it has, and that the empty one is a value rather than a
 // missing field.
 //
-// This is a MONEY column, not a trace. payment.ReturnPaymentTx claws the funds
+// This is a MONEY column, not a trace. payment.PostReturnLegTx claws the funds
 // back from the account named here, and the account is not the payee's whenever
 // the creditor leg diverted to unclaimed balances. A store that dropped it would
 // send a return to the payee's GL account — which for a diverted payment was
@@ -1041,6 +1058,96 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 	}
 }
 
+// paymentRecordsBothReturnLegs pins that payment.Payment's two return-leg
+// transaction ids survive a round trip through both stores, and that a payment
+// carrying only ONE of them round-trips as one rather than as two or none.
+//
+// The half-returned state is the one that matters, and it is not a corner case:
+// it is what every return looks like between the two banks' acts. The returning
+// bank posts its leg and sends; the other bank posts hours later. In between,
+// exactly one of these columns is set, and it is the ONLY thing that tells the
+// second bank it is the second — payment.PostReturnLegTx reads the other side's
+// id to decide whether this leg takes the payment to Returned. A store that
+// dropped either column, or that turned an unset one into anything other than
+// the empty value, would make both banks think they were first: two clawbacks
+// and no refund, or a payment stuck at Settled with the money in two suspenses.
+//
+// Both are stored in Postgres as ” under a NOT NULL DEFAULT ”, for
+// creditor_leg_account's reason: a leg that has not been posted has no
+// transaction, and an absent id and an empty one are the same fact here.
+func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+
+	// A return that has completed: both banks have posted.
+	returned := samplePayment("pay_returned", "e2e-returned", early)
+	returned.Status = payment.Returned
+	returned.CreditorLegAccount = "acc_bob"
+	returned.ReturnClawbackTx = "txn_claw"
+	returned.ReturnRefundTx = "txn_refund"
+
+	// A push in flight: the payee's bank has clawed back and sent, and the
+	// payer's bank has not been told yet.
+	halfway := samplePayment("pay_halfway", "e2e-halfway", early)
+	halfway.Status = payment.Settled
+	halfway.CreditorLegAccount = "acc_bob"
+	halfway.ReturnClawbackTx = "txn_claw_only"
+
+	// And a settled payment nobody has returned.
+	settled := samplePayment("pay_settled", "e2e-settled", early)
+	settled.Status = payment.Settled
+	settled.CreditorLegAccount = "acc_bob"
+
+	all := []payment.Payment{returned, halfway, settled}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, p := range all {
+			if err := tx.PutPayment(ctx, p); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("PutPayment: %v", err)
+	}
+
+	got := map[payment.PaymentID]payment.Payment{}
+	var listed []payment.Payment
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		for _, want := range all {
+			p, err := tx.GetPayment(ctx, want.ID)
+			if err != nil {
+				return err
+			}
+			got[want.ID] = p
+		}
+		var err error
+		listed, err = tx.ListPayments(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("GetPayment: %v", err)
+	}
+
+	check := func(where string, p, want payment.Payment) {
+		if p.ReturnClawbackTx != want.ReturnClawbackTx {
+			t.Errorf("%s %s its clawback leg as %q, want %q", want.ID, where, p.ReturnClawbackTx, want.ReturnClawbackTx)
+		}
+		if p.ReturnRefundTx != want.ReturnRefundTx {
+			t.Errorf("%s %s its refund leg as %q, want %q", want.ID, where, p.ReturnRefundTx, want.ReturnRefundTx)
+		}
+	}
+	for _, want := range all {
+		check("round-tripped", got[want.ID], want)
+	}
+
+	// And through the LISTING, which is a different query in store/pg.
+	byID := map[payment.PaymentID]payment.Payment{}
+	for _, p := range listed {
+		byID[p.ID] = p
+	}
+	for _, want := range all {
+		check("listed", byID[want.ID], want)
+	}
+}
+
 // settlementAdviceIsScopedToTheBankThatWasAdvised pins that an advice belongs to
 // ONE bank's book and that two banks advised of the same cycle do not collide.
 //
@@ -1052,12 +1159,12 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.Store) {
 	ctx := context.Background()
 	one := payment.SettlementAdvice{
-		Book: "bank_2", CycleID: "cyc_1", Asset: "EUR",
+		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
 		Movement: -250000, ClosingBalance: 750000,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
 	two := payment.SettlementAdvice{
-		Book: "bank_3", CycleID: "cyc_1", Asset: "EUR",
+		Book: "bank_3", Reference: "cyc_1", Asset: "EUR",
 		Movement: 250000, ClosingBalance: 250000,
 		Status: payment.AdvicePosted, MirrorTx: "txn_9",
 		AdvisedAt: early, PostedAt: early,
@@ -1113,15 +1220,15 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// key would pass on distinct timestamps and fail here.
 	later := early.Add(time.Hour)
 	for _, a := range []payment.SettlementAdvice{
-		{Book: "bank_2", CycleID: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
+		{Book: "bank_2", Reference: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
-		{Book: "bank_2", CycleID: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
+		{Book: "bank_2", Reference: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
 	} {
 		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutSettlementAdvice(ctx, a.Book, a)
 		}); err != nil {
-			t.Fatalf("PutSettlementAdvice %s: %v", a.CycleID, err)
+			t.Fatalf("PutSettlementAdvice %s: %v", a.Reference, err)
 		}
 	}
 	var ordered []payment.SettlementAdvice
@@ -1134,7 +1241,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	}
 	var got []string
 	for _, a := range ordered {
-		got = append(got, string(a.CycleID))
+		got = append(got, a.Reference)
 	}
 	want := []string{"cyc_1", "cyc_4", "cyc_3"}
 	if len(got) != len(want) {
@@ -1171,7 +1278,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// an advice whose field disagrees with the argument is the only thing that can
 	// tell whether it still does.
 	misfiled := payment.SettlementAdvice{
-		Book: "bank_9", CycleID: "cyc_2", Asset: "EUR",
+		Book: "bank_9", Reference: "cyc_2", Asset: "EUR",
 		Movement: 100, ClosingBalance: 100,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
@@ -1196,6 +1303,59 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 		return nil
 	}); err != nil {
 		t.Fatalf("reading the misfiled advice: %v", err)
+	}
+}
+
+// advicesAreKeyedByReferenceNotByCycle pins that a bank's record of having
+// booked a reserve movement is the same row whether the movement discharged a
+// cut-off or a single return: the two put here differ only in what their
+// Reference names — a cycle id and a payment id — and neither collides with
+// the other, in the same book and the same asset.
+func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
+	ctx := context.Background()
+	cutOff := payment.SettlementAdvice{
+		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
+		Movement: -250000, ClosingBalance: 750000,
+		Status: payment.AdviceAdvised, AdvisedAt: early,
+	}
+	rtn := payment.SettlementAdvice{
+		Book: "bank_2", Reference: "pay_9", Asset: "EUR",
+		Movement: 5000, ClosingBalance: 755000,
+		Status: payment.AdvicePosted, MirrorTx: "txn_5",
+		AdvisedAt: early, PostedAt: early,
+	}
+	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if err := tx.PutSettlementAdvice(ctx, cutOff.Book, cutOff); err != nil {
+			return err
+		}
+		return tx.PutSettlementAdvice(ctx, rtn.Book, rtn)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice: %v", err)
+	}
+
+	var gotCutOff, gotReturn payment.SettlementAdvice
+	var listed []payment.SettlementAdvice
+	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		if gotCutOff, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+			return err
+		}
+		if gotReturn, err = tx.GetSettlementAdvice(ctx, "bank_2", "pay_9", "EUR"); err != nil {
+			return err
+		}
+		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		return err
+	}); err != nil {
+		t.Fatalf("reading advices: %v", err)
+	}
+	if gotCutOff != cutOff {
+		t.Errorf("the cycle-referenced advice round-tripped as %+v, want %+v", gotCutOff, cutOff)
+	}
+	if gotReturn != rtn {
+		t.Errorf("the payment-referenced advice round-tripped as %+v, want %+v", gotReturn, rtn)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("bank_2 lists %d advices, want 2 — one referencing a cycle and one a payment", len(listed))
 	}
 }
 

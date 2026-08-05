@@ -81,10 +81,10 @@ func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
 	for _, asset := range slices.Sorted(maps.Keys(p.Assets)) {
 		accts := p.Assets[asset]
 		if _, err := t.tx.Exec(ctx, `
-			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, settlement)
-			VALUES ($1, $2, $3, $4, $5, $6)`,
+			INSERT INTO participant_assets (participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 			string(p.ID), string(asset),
-			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.Settlement)); err != nil {
+			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable), string(accts.Settlement)); err != nil {
 			return fmt.Errorf("pg: put participant %s asset %s: %w", p.ID, asset, err)
 		}
 	}
@@ -115,7 +115,7 @@ func scanParticipant(row pgx.Row) (payment.Participant, error) {
 // have to be de-duplicated on the way back — the same shape the cycle and
 // settlement readers use, and not worth it for a child table this small.
 func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.ParticipantAccounts, error) {
-	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, settlement FROM participant_assets"
+	query := "SELECT participant_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement FROM participant_assets"
 	args := []any{}
 	if id != "" {
 		query += " WHERE participant_id = $1"
@@ -136,7 +136,7 @@ func (t *tx) participantAssets(ctx context.Context, id payment.ParticipantID) (m
 			asset ledger.AssetCode
 			accts payment.ParticipantAccounts
 		)
-		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.Settlement); err != nil {
+		if err := rows.Scan(&pid, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable, &accts.Settlement); err != nil {
 			return nil, fmt.Errorf("pg: participant assets: %w", err)
 		}
 		if out[pid] == nil {
@@ -206,7 +206,8 @@ const paymentColumns = `id, scheme,
 	debtor_agent, debtor_name, creditor_agent, creditor_name,
 	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code, cycle_id,
 	booking_date, value_date, description, metadata, created_at,
-	debtor_leg_tx, creditor_leg_tx, creditor_leg_account`
+	debtor_leg_tx, creditor_leg_tx, creditor_leg_account,
+	return_clawback_tx, return_refund_tx`
 
 func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	if err := t.write(); err != nil {
@@ -218,7 +219,7 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	}
 	_, err = t.tx.Exec(ctx, `
 		INSERT INTO payments (`+paymentColumns+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
 		ON CONFLICT (id) DO UPDATE SET
 			scheme                     = EXCLUDED.scheme,
 			debtor_participant         = EXCLUDED.debtor_participant,
@@ -247,14 +248,17 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 			created_at                 = EXCLUDED.created_at,
 			debtor_leg_tx              = EXCLUDED.debtor_leg_tx,
 			creditor_leg_tx            = EXCLUDED.creditor_leg_tx,
-			creditor_leg_account       = EXCLUDED.creditor_leg_account`,
+			creditor_leg_account       = EXCLUDED.creditor_leg_account,
+			return_clawback_tx         = EXCLUDED.return_clawback_tx,
+			return_refund_tx           = EXCLUDED.return_refund_tx`,
 		string(p.ID), string(p.Scheme),
 		string(p.Debtor.Participant), string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
 		string(p.Creditor.Participant), string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
 		string(p.DebtorDetails.Agent), p.DebtorDetails.Name, string(p.CreditorDetails.Agent), p.CreditorDetails.Name,
 		p.Amount, string(p.MandateID), p.EndToEndID, int16(p.Status), p.RejectReason, string(p.RejectCode), string(p.CycleID),
 		nullTime(p.BookingDate), nullTime(p.ValueDate), p.Description, metadata, nullTime(p.CreatedAt),
-		string(p.DebtorLegTx), string(p.CreditorLegTx), string(p.CreditorLegAccount))
+		string(p.DebtorLegTx), string(p.CreditorLegTx), string(p.CreditorLegAccount),
+		string(p.ReturnClawbackTx), string(p.ReturnRefundTx))
 	if err != nil {
 		return fmt.Errorf("pg: put payment %s: %w", p.ID, err)
 	}
@@ -274,7 +278,8 @@ func scanPayment(row pgx.Row) (payment.Payment, error) {
 		&p.DebtorDetails.Agent, &p.DebtorDetails.Name, &p.CreditorDetails.Agent, &p.CreditorDetails.Name,
 		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.RejectCode, &p.CycleID,
 		&booking, &value, &p.Description, &metadata, &createdAt,
-		&p.DebtorLegTx, &p.CreditorLegTx, &p.CreditorLegAccount)
+		&p.DebtorLegTx, &p.CreditorLegTx, &p.CreditorLegAccount,
+		&p.ReturnClawbackTx, &p.ReturnRefundTx)
 	if err != nil {
 		return payment.Payment{}, err
 	}
@@ -647,7 +652,7 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 // methods in this file that take a BookID — and the only ones that have to
 // ensureBook, because settlement_advices.book_id is a real foreign key.
 
-const settlementAdviceColumns = `book_id, cycle_id, asset, movement, closing_balance,
+const settlementAdviceColumns = `book_id, reference, asset, movement, closing_balance,
 	status, mirror_tx, advised_at, posted_at`
 
 func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
@@ -660,17 +665,17 @@ func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a paym
 	_, err := t.tx.Exec(ctx, `
 		INSERT INTO settlement_advices (`+settlementAdviceColumns+`)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-		ON CONFLICT (book_id, cycle_id, asset) DO UPDATE SET
+		ON CONFLICT (book_id, reference, asset) DO UPDATE SET
 			movement        = EXCLUDED.movement,
 			closing_balance = EXCLUDED.closing_balance,
 			status          = EXCLUDED.status,
 			mirror_tx       = EXCLUDED.mirror_tx,
 			advised_at      = EXCLUDED.advised_at,
 			posted_at       = EXCLUDED.posted_at`,
-		string(book), string(a.CycleID), string(a.Asset), a.Movement, a.ClosingBalance,
+		string(book), a.Reference, string(a.Asset), a.Movement, a.ClosingBalance,
 		int16(a.Status), string(a.MirrorTx), nullTime(a.AdvisedAt), nullTime(a.PostedAt))
 	if err != nil {
-		return fmt.Errorf("pg: put settlement advice %s/%s/%s: %w", book, a.CycleID, a.Asset, err)
+		return fmt.Errorf("pg: put settlement advice %s/%s/%s: %w", book, a.Reference, a.Asset, err)
 	}
 	return nil
 }
@@ -681,7 +686,7 @@ func scanSettlementAdvice(row pgx.Row) (payment.SettlementAdvice, error) {
 		status          int16
 		advised, posted *time.Time
 	)
-	err := row.Scan(&a.Book, &a.CycleID, &a.Asset, &a.Movement, &a.ClosingBalance,
+	err := row.Scan(&a.Book, &a.Reference, &a.Asset, &a.Movement, &a.ClosingBalance,
 		&status, &a.MirrorTx, &advised, &posted)
 	if err != nil {
 		return payment.SettlementAdvice{}, err
@@ -692,15 +697,15 @@ func scanSettlementAdvice(row pgx.Row) (payment.SettlementAdvice, error) {
 	return a, nil
 }
 
-func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle payment.CycleID, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
+func (t *tx) GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (payment.SettlementAdvice, error) {
 	a, err := scanSettlementAdvice(t.tx.QueryRow(ctx,
-		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 AND cycle_id = $2 AND asset = $3",
-		string(book), string(cycle), string(asset)))
+		"SELECT "+settlementAdviceColumns+" FROM settlement_advices WHERE book_id = $1 AND reference = $2 AND asset = $3",
+		string(book), reference, string(asset)))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return payment.SettlementAdvice{}, payment.ErrSettlementAdviceNotFound
 	}
 	if err != nil {
-		return payment.SettlementAdvice{}, fmt.Errorf("pg: get settlement advice %s/%s/%s: %w", book, cycle, asset, err)
+		return payment.SettlementAdvice{}, fmt.Errorf("pg: get settlement advice %s/%s/%s: %w", book, reference, asset, err)
 	}
 	return a, nil
 }

@@ -288,8 +288,9 @@ type Payment struct {
 	// produced inside this system without a code would be one the mesh could
 	// not put in a pacs.002.
 	//
-	// A RETURN (Status == Returned, set by ReturnPaymentTx) is not a
-	// rejection and does not set RejectCode: pacs.004 draws its reason from a
+	// A RETURN (Status == Returned, set by PostReturnLegTx when the SECOND of
+	// the two banks posts its leg) is not a rejection and does not set
+	// RejectCode: pacs.004 draws its reason from a
 	// different external code set, iso20022.ReturnReason, not this one, and
 	// giving a return a StatusReason here would misrepresent which set it
 	// actually carries on the wire. RejectReason is reused as the return's
@@ -320,7 +321,7 @@ type Payment struct {
 	// # Why it is STORED and not derived
 	//
 	// Because the fact it records is about a MOMENT, and the account it names
-	// cannot be worked out from any later reading of the world. ReturnPaymentTx
+	// cannot be worked out from any later reading of the world. PostReturnLegTx
 	// has to claw the money back from wherever it landed, and the only other way
 	// to find out is to re-ask whether the payee's account is creditable — which
 	// answers a question about NOW, not about the cut-off. A payee who was open
@@ -334,6 +335,40 @@ type Payment struct {
 	// flag would be a record of one special case; this is a record of what
 	// happened, and it stays true if a later scheme grows a third destination.
 	CreditorLegAccount ledger.AccountID
+
+	// ReturnClawbackTx and ReturnRefundTx are the two customer legs of a
+	// return, each in its own bank's book: the clawback at the creditor's bank,
+	// the refund at the debtor's bank. Empty until that bank posts its leg.
+	//
+	// Neither names the account it moved, and neither can be read as though it
+	// did. The clawback comes out of CreditorLegAccount in the ordinary case
+	// and out of that bank's ReturnsReceivable when the account CreditorLegAccount
+	// names has closed since — the bank funds the refund itself and books what
+	// it is owed. The refund goes into the payer's account, or into that bank's
+	// unclaimed balances when the payer's account has closed since. Both
+	// substitutions are decided at the moment of posting, by clawbackTx and
+	// refundTx, and the entries of the transactions these ids name are where
+	// they are recorded. There is no CreditorLegAccount equivalent for the
+	// return, and the reason there does not need to be is that nothing in this
+	// system claws a clawback back.
+	//
+	// They are how PostReturnLegTx knows it is the SECOND leg, and therefore
+	// the one that takes the payment to Returned: the leg that finds the other
+	// side's id already written is the one arriving last. Which of the two goes
+	// first flips with the scheme's direction — the returning bank posts before
+	// it sends — so neither field can be the marker on its own.
+	//
+	// # What this cannot survive
+	//
+	// It works because one payment is one row that both banks can see. Under
+	// sub-project 8's store split it is two rows in two stores, and neither
+	// bank can read the other's, so the counterparty's transaction id stops
+	// being available to read at all. What replaces it is Task 18's to decide —
+	// the material a bank will have is the return message it received and the
+	// status its own row is already at. This note exists so that task inherits
+	// the problem rather than discovering it.
+	ReturnClawbackTx ledger.TransactionID
+	ReturnRefundTx   ledger.TransactionID
 }
 
 // Mandate is a debtor's standing authorization for a specific creditor to
@@ -407,19 +442,32 @@ const (
 	AdvicePosted
 )
 
-// SettlementAdvice is a member bank's own record of a cut-off it was told about:
-// what its reserve moved by, what the central bank says it was left at, and
-// whether this bank has booked it yet.
+// SettlementAdvice is a member bank's own record of a reserve movement it was
+// told about — a cut-off's net settlement or a single return — and whether this
+// bank has booked it yet: what its reserve moved by and what the central bank
+// says it was left at.
 //
 // # It belongs to the BANK and not to the network
 //
 // Book is part of its identity, which is the whole point. A cycle is the
 // clearing house's and a settlement is the central bank's; this is the member's,
 // and under sub-project 8 it lives in that member's own store. Two banks advised
-// of the same cut-off write two rows independently, so "one bank has booked this
-// cut-off and the other has not" is expressible — as one row present and the
-// other ABSENT, rather than as two rows at different statuses. See AdviceAdvised
-// for why the difference matters and what it cost to get wrong.
+// of the same movement write two rows independently, so "one bank has booked
+// this and the other has not" is expressible — as one row present and the other
+// ABSENT, rather than as two rows at different statuses. See AdviceAdvised for
+// why the difference matters and what it cost to get wrong.
+//
+// # Reference is opaque, and that is the point
+//
+// It is the AcctSvcrRef a statement carried, kept verbatim: a cycle id on the
+// path SettleCycleTx builds today, a payment id on the return path sub-project
+// 8's Task 16d adds. A member bank holds no cycles and no other institution's
+// payment ids, so it cannot tell the two apart and has no reason to — Reference
+// exists to be quoted back at the central bank and to be this row's own key, not
+// to be resolved to anything this bank holds. There is deliberately no field
+// saying which kind a row is: ids are unique across the store, and Task 19's
+// reconciliation walks one shape, not two. See AdvisedMovement's doc and
+// StatementMessage's.
 //
 // # ClosingBalance is stored and nothing checks it yet
 //
@@ -429,9 +477,9 @@ const (
 // stored now because it arrives now, and a statement's balance discarded on
 // receipt is a balance nobody can ever go back for.
 type SettlementAdvice struct {
-	Book    ledger.BookID
-	CycleID CycleID
-	Asset   ledger.AssetCode
+	Book      ledger.BookID
+	Reference string
+	Asset     ledger.AssetCode
 
 	// Movement is SIGNED: positive means this bank's reserve went up.
 	Movement       ledger.Amount
@@ -460,13 +508,21 @@ type SettlementAdvice struct {
 // Movement is SIGNED — positive means the member's reserve went up — and the
 // message it becomes is not: ActiveCurrencyAndAmount cannot be negative, so the
 // direction travels as CdtDbtInd. See StatementMessage.
+//
+// Reference travels as AcctSvcrRef and StatementRef as Stmt/Id — the account
+// servicer's own reference for the entry and for the statement it sits in.
+// SettleCycleTx sets Reference to the cycle's id and StatementRef to the
+// settlement row's, as string(SettlementID); the return path Task 16d adds sets
+// Reference to a payment id and StatementRef to a value that is NOT a row's key
+// (see AdvisedMovement's doc), which is why StatementRef is a plain string and
+// not a typed SettlementID.
 type SettlementStatement struct {
 	Member       ParticipantID
 	Agent        iso20022.BIC
 	Account      ledger.AccountID
 	Asset        ledger.AssetCode
-	CycleID      CycleID
-	SettlementID SettlementID
+	Reference    string
+	StatementRef string
 
 	Movement       ledger.Amount
 	ClosingBalance ledger.Amount

@@ -8,6 +8,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 )
@@ -141,7 +142,15 @@ func errorStatus(err error) int {
 		// A malformed BIC is well-formed JSON naming a field that is not a
 		// structurally valid ISO 9362 code — the same category as an
 		// unaddressable account, not a decoding failure.
-		errors.Is(err, iso20022.ErrBICFormat):
+		errors.Is(err, iso20022.ErrBICFormat),
+		// An on-us payment is well formed, names two real accounts and is a
+		// perfectly legitimate thing to want; what refuses it is that this route
+		// does not carry it. Both parties bank at one institution, so nothing
+		// clears — see mesh.ErrOnUsPayment. The same category as an unaddressable
+		// account, and the reason it is mapped here rather than in the handler
+		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
+		// and a rule written twice is a rule that can differ by route.
+		errors.Is(err, mesh.ErrOnUsPayment):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),

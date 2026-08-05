@@ -26,10 +26,15 @@ import (
 //     it has, and the interval between is the unreconciled position.
 //   - Unclaimed (Liability): where a credit goes when the payee's account will
 //     not take it. Money the bank owes somebody it has not yet identified.
+//   - ReturnsReceivable (Asset): a claim on a biller, opened when this bank
+//     honours a refund it cannot fund out of the biller's account. The
+//     opposite class from Unclaimed, on purpose: that one is owed BY the bank
+//     to somebody it hasn't identified, this is owed TO the bank by somebody
+//     it has.
 //   - Settlement: this participant's reserve account in the central-bank
 //     ledger — the central bank's "vostro" view of the bank.
 //
-// The first three are the bank's own; the fourth is the central bank's row for
+// The first four are the bank's own; the fifth is the central bank's row for
 // it, and is named here because settlement needs both ends.
 type ParticipantAccounts struct {
 	Suspense ledger.AccountID
@@ -42,9 +47,27 @@ type ParticipantAccounts struct {
 	// it does not vanish and does not sit in the payee's closed account: it is
 	// held as a liability to whoever eventually claims it, and the bank has a
 	// process for finding them. This system had nowhere for it to go, which is
-	// why the gap at ReturnPaymentTx and SettleCycleTx was a ruling rather than a
-	// line of code.
+	// why the gap at the return and at the cut-off was a ruling rather than a
+	// line of code. Both are closed now: PostCreditorLegTx diverts a credit the
+	// payee cannot take, and PostReturnLegTx diverts a refund the payer cannot
+	// take.
 	Unclaimed ledger.AccountID
+
+	// ReturnsReceivable is a claim on a biller: money the bank paid out to
+	// honour a refund (a SEPA direct debit's unconditional eight-week right,
+	// today) when the biller's account could not fund it. An Asset — the bank
+	// is owed this, by someone it has identified perfectly well — and the
+	// mirror image of Unclaimed, which is owed BY the bank to someone it has
+	// not identified.
+	//
+	// PostReturnLegTx is what posts to it, and only on a pull, and only when the
+	// biller's account is CLOSED. A biller who has spent the money but still has
+	// an account is simply overdrawn by it — the ledger does not refuse a
+	// Liability going negative, and an overdrawn biller is a debt the bank
+	// collects from a customer it still has. A closed account is the case with
+	// nowhere on the account to put the debit, and it is the only one this
+	// account is reached for.
+	ReturnsReceivable ledger.AccountID
 
 	Settlement ledger.AccountID
 }
@@ -79,8 +102,13 @@ type ParticipantAccounts struct {
 //     account cannot receive it. The bank still owes the money — to whoever
 //     eventually claims it — so it is a liability like a deposit, and holding
 //     it here is what lets one payment fail without stranding it.
+//   - Returns Receivable (Asset): a claim on a biller, opened when this bank
+//     honours a refund it cannot fund out of the biller's account. The
+//     opposite class from Unclaimed Balances above, on purpose: that one is
+//     money the bank owes to somebody it hasn't identified, this is money
+//     owed TO the bank by somebody it has.
 //
-// The last three, plus the bank's reserve account in the central-bank ledger,
+// The last four, plus the bank's reserve account in the central-bank ledger,
 // exist once per asset the bank operates in — see Assets.
 type Participant struct {
 	ID   ParticipantID

@@ -79,7 +79,7 @@ type Tx interface {
 	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what holds
 	// mem and pg to one answer in the meantime.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
-	GetSettlementAdvice(ctx context.Context, book ledger.BookID, cycle CycleID, asset ledger.AssetCode) (SettlementAdvice, error)
+	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
 }
 
@@ -124,8 +124,10 @@ type Tx interface {
 //     (UpdateRollsBackAllThreeLayersTogether.)
 //
 //   - GetSettlementAdvice -> ErrSettlementAdviceNotFound. The key is
-//     (book, cycle, asset), all three: two banks advised of one cut-off hold two
-//     rows, and a bank operating in two assets settles each separately.
+//     (book, reference, asset), all three: two banks advised of one movement
+//     hold two rows, a bank operating in two assets settles each separately, and
+//     a bank holding one advice keyed by a cycle id and another by a payment id
+//     in the same asset does not collide (AdvicesAreKeyedByReferenceNotByCycle).
 //     ListSettlementAdvices is scoped to ONE book and ordered by AdvisedAt then
 //     seq, like every other listing here.
 //     (SettlementAdviceIsScopedToTheBankThatWasAdvised.)

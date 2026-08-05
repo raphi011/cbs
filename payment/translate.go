@@ -135,15 +135,17 @@ var reasonTable = []reasonMapping{
 	// There is no counterparty in the conversation to tell.
 	{ErrSettlementAdviceNotFound, "ErrSettlementAdviceNotFound", ""},
 
-	// Both of these mean a message arrived at the wrong bank — a settled-payment
+	// All three mean a message arrived at the wrong bank — a settled-payment
 	// advice for somebody else's customer, a reserve statement about somebody
-	// else's account. That is a defect in the ROUTING, and the sender is the
-	// clearing house or the settlement agent rather than a counterparty with an
-	// instruction outstanding. There is no code for "you sent me your own
-	// mistake", and MS03 would report the receiving bank's correct refusal as a
-	// judgement about a payment.
+	// else's account, a return naming a payment this bank is neither side of.
+	// That is a defect in the ROUTING, and the sender is the clearing house or
+	// the settlement agent rather than a counterparty with an instruction
+	// outstanding. There is no code for "you sent me your own mistake", and MS03
+	// would report the receiving bank's correct refusal as a judgement about a
+	// payment.
 	{ErrNotThisBanksPayment, "ErrNotThisBanksPayment", ""},
 	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
+	{ErrNotAPartyToThisReturn, "ErrNotAPartyToThisReturn", ""},
 
 	// Cycle lifecycle errors reach only the operator who drove the cycle into
 	// the wrong state; no counterparty ever sees one.
@@ -154,6 +156,14 @@ var reasonTable = []reasonMapping{
 	// somewhere its own state machine forbids. Telling the counterparty
 	// "rejected, unspecified" would hide a defect behind a plausible message.
 	{ErrInvalidStateTransition, "ErrInvalidStateTransition", ""},
+
+	// A return the settlement agent has already settled. It is the redelivery
+	// case ErrInvalidStateTransition covers on every other path, arriving from
+	// the one actor that has no payment row to read a status off — so it is a
+	// separate sentinel and it gets the same empty code for the same reason:
+	// answering RJCT would tell the returning bank that a return which in fact
+	// completed was refused. Dead-letter it.
+	{ErrReturnAlreadySettled, "ErrReturnAlreadySettled", ""},
 }
 
 // borrowedReasons classifies the errors an actor's half produces that this
@@ -169,10 +179,17 @@ var reasonTable = []reasonMapping{
 // rather than one because they are two distinct error values that no unwrapping
 // relates: neither wraps the other.
 //
-//   - deposit.ErrInsufficientAvailable is the direct debit's whole point.
-//     Scheme.Validate is a funds check run by the DEBTOR's bank, and the deposit
-//     layer is the authority for it, so a collection against an empty account
-//     comes back as deposit's error and not as anything this package names.
+//   - deposit.ErrInsufficientAvailable, from two halves rather than one. It is
+//     the direct debit's whole point: Scheme.Validate is a funds check run by
+//     the DEBTOR's bank, and the deposit layer is the authority for it, so a
+//     collection against an empty account comes back as deposit's error and not
+//     as anything this package names. Since Task 16d it also comes from
+//     PostReturnLegTx, where the RETURNING bank on a push checks its own payee
+//     before it composes the pacs.004 — a clawback it cannot fund is refused
+//     locally, so this reaches the operator who asked for the return rather than
+//     a counterparty. The mapping is the same and the sentence a reader takes
+//     from it is not: on a push return, AM04 can now be about the asking bank's
+//     OWN customer, which no push flow could produce before.
 //   - ledger.ErrInsufficientBalance is the same refusal one layer down and one
 //     institution over: a net payer whose RESERVE cannot cover its position at
 //     settlement. It used to come from the ledger itself, because SettleCycleTx
@@ -189,9 +206,13 @@ var reasonTable = []reasonMapping{
 // whether to re-present or unwind.
 //
 // A new member belongs here only if the error reaches ReasonFor at all, which
-// means a half that some mesh handler calls really returns it. The push flow
-// never produced one: its receiving half checks that the payee's account can
-// take a credit, and every way that fails is already a payment sentinel.
+// means a half that some mesh handler calls really returns it. This paragraph
+// used to add that the push flow never produced one, on the grounds that its
+// receiving half only checks whether the payee's account can take a CREDIT and
+// every way that fails is already a payment sentinel. That half is unchanged and
+// the conclusion no longer follows: a push RETURN checks whether the same
+// account can fund a WITHDRAWAL, and it is the first place in a push flow where
+// deposit's funds sentinel is produced.
 var borrowedReasons = []reasonMapping{
 	{deposit.ErrInsufficientAvailable, "deposit.ErrInsufficientAvailable", iso20022.StatusReasonInsufficientFunds},
 	{ledger.ErrInsufficientBalance, "ledger.ErrInsufficientBalance", iso20022.StatusReasonInsufficientFunds},
@@ -336,6 +357,15 @@ func agentOf(b iso20022.BIC) iso20022.BranchAndFinancialInstitution {
 	return iso20022.BranchAndFinancialInstitution{
 		FinInstnId: iso20022.FinancialInstitutionIdentification{BICFI: b},
 	}
+}
+
+// agentRef is agentOf as a pointer, for the elements — OrgnlTxRef's DbtrAgt
+// and CdtrAgt — where the schema makes the agent optional and so the field is
+// *BranchAndFinancialInstitution rather than the value every mandatory Dbtr/
+// Cdtr on this package's other messages uses.
+func agentRef(b iso20022.BIC) *iso20022.BranchAndFinancialInstitution {
+	a := agentOf(b)
+	return &a
 }
 
 // amountOf converts a ledger amount to the standard's decimal representation.
@@ -966,10 +996,15 @@ func groupStatusOf(sts []TransactionStatusReport) iso20022.GroupStatus {
 // still makes ReturnMessage a method rather than a function is narrower than
 // "no I/O": the amount's scale comes from the scheme's asset and only the
 // Network holds the scheme registry, which is an in-memory map, not a store —
-// there is nothing here to cancel. A pacs.004 names no parties: it refers to
-// the original payment by identifier and carries amounts, so nothing in it
-// needs a BIC or an account holder's name looked up, which is also why it is
-// the one outbound builder with no messageParty in its signature at all.
+// there is nothing here to cancel. A pacs.004 names no ACCOUNT HOLDERS: it
+// refers to the original payment by identifier and carries amounts, so
+// nothing in it needs a customer's name looked up, which is also why it is
+// the one outbound builder with no messageParty in its signature at all. It
+// does name a party — RtrRsnInf.Orgtr, the bank that decided to send the
+// money back, see mc.orgtr() — and now two AGENTS too, see OrgnlTxRef below,
+// both of which come off the payment's own DebtorDetails/CreditorDetails,
+// which SubmitPaymentTx already resolved, so this needs no lookup of its own
+// either.
 func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text string, mc MessageContext) (iso20022.Envelope, error) {
 	asset, err := s.assetOf(p)
 	if err != nil {
@@ -988,7 +1023,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 		OrgnlEndToEndId: p.EndToEndID,
 		OrgnlTxId:       string(p.ID),
 		// The two amounts are equal because this system's returns are whole —
-		// ReturnPayment takes no amount. They are two elements because the
+		// nothing in the domain takes a partial amount. They are two elements because the
 		// standard is shaped for partial returns; see iso20022.ReturnTransaction.
 		OrgnlIntrBkSttlmAmt: amt,
 		RtrdIntrBkSttlmAmt:  amt,
@@ -997,6 +1032,15 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 			Orgtr:    mc.orgtr(),
 			Rsn:      iso20022.ReturnReasonChoice{Cd: &reason},
 			AddtlInf: text,
+		},
+		// The settlement agent that must reverse this return's two reserve
+		// legs holds no payment row under sub-project 8 — see
+		// iso20022.OriginalTransactionReference. Both agents are already on
+		// the payment: DebtorDetails/CreditorDetails were resolved once, at
+		// submission, and are not looked up again here.
+		OrgnlTxRef: &iso20022.OriginalTransactionReference{
+			DbtrAgt: agentRef(p.DebtorDetails.Agent),
+			CdtrAgt: agentRef(p.CreditorDetails.Agent),
 		},
 	}}
 
@@ -1521,10 +1565,162 @@ func ReadSettlement(doc *iso20022.Pacs009) ([]SettlementLeg, error) {
 	return legs, nil
 }
 
+// ReturnInstruction is one payment being returned, as a settlement agent needs
+// it: which two agents move reserves, how much, and why.
+//
+// DebtorAgent and CreditorAgent come off OrgnlTxRef, not off a payment row —
+// see iso20022.OriginalTransactionReference for why a settlement agent under
+// sub-project 8 has no row to read them from instead.
+type ReturnInstruction struct {
+	PaymentID     PaymentID
+	EndToEndID    string
+	DebtorAgent   iso20022.BIC
+	CreditorAgent iso20022.BIC
+	Amount        ledger.Amount
+	Asset         ledger.AssetCode
+	Reason        string
+}
+
+// CodeAndText is a reason code and the free text beside it, joined for a
+// ledger description.
+//
+// Both, because they say different things — the code is what makes a
+// rejection or a return machine-actionable in a statement or an exception
+// queue, and the text is the part no code can say. The word for "neither was
+// given" is the caller's, because CodeAndText serves two callers answering
+// different questions: mesh.rejectionText, over iso20022.StatusReason, and
+// ReturnReason below, over iso20022.ReturnReason — the sibling external code
+// set pacs004.go keeps as a separate type precisely so that a rejection
+// reason cannot be used as a return reason with nothing to notice. It lives
+// here rather than in mesh because ReturnReason does, and mesh already
+// imports payment; mesh.rejectionText calls through to this rather than
+// keeping its own copy of the same four lines.
+func CodeAndText(code, text, none string) string {
+	switch {
+	case code == "" && text == "":
+		return none
+	case text == "":
+		return code
+	case code == "":
+		return text
+	default:
+		return code + ": " + text
+	}
+}
+
+// ReturnReason is what a return is described as where a CUSTOMER's money
+// moves: the reason the returning bank gave, code and text.
+//
+// It moved here from mesh/centralbank.go, where it used to live beside
+// mesh.rejectionText (mesh/bank.go, which reads the sibling StatusReason code
+// set for a rejection), because ReadReturn needs this exact reading a second
+// time — for ReturnInstruction.Reason above — and mesh cannot be imported
+// from this package (mesh already imports payment). mesh.receiveReturn now
+// calls straight through to this instead of keeping its own copy;
+// TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers still passes
+// unchanged, because it asserts through the mesh, not against this function
+// directly.
+//
+// The two CUSTOMER legs, and not the reserve reversal between the two banks.
+// PostReturnLegTx writes this into the payer's refund and into the payee's
+// clawback; SettleReturnTx describes the reversal as the settlement it is,
+// because a bank's own position moving carries no customer's reason.
+//
+// Both arms of the choice are read, because both are legal — iso20022's
+// ReturnReasonChoice requires exactly one of a code and a proprietary text,
+// and refuses a return that has neither, so what arrives is one or the
+// other. The nil case is a caller's guard rather than a message: RtrRsnInf is
+// mandatory in a pacs.004 that has been through Unmarshal.
+func ReturnReason(info *iso20022.ReturnReasonInformation) string {
+	if info == nil {
+		return "returned"
+	}
+	var code string
+	switch {
+	case info.Rsn.Cd != nil:
+		code = string(*info.Rsn.Cd)
+	case info.Rsn.Prtry != nil:
+		code = *info.Rsn.Prtry
+	}
+	return CodeAndText(code, info.AddtlInf, "returned")
+}
+
+// ReadReturn reads a received pacs.004 as the instructions it carries.
+//
+// The scale comes from ledger.LookupAsset on the transaction's OWN currency,
+// never from a constant — ReadSettlement's reason, one message over: nothing
+// here may assume every return in a bulk shares one asset just because this
+// system's returns happen to be EUR-only today.
+//
+// A transaction that names no PAYMENT is refused first, and that one is about
+// money rather than about resolution. OrgnlTxId is optional in the schema —
+// iso20022.ReturnTransaction.validate accepts a transaction referring back by
+// OrgnlEndToEndId alone — and SettleReturnTx derives the idempotency key of the
+// reserve reversal from it, so an empty one would move reserves under
+// ":return-settle" and make every later nameless return look like a redelivery
+// of the first. This is the last point at which nothing has happened yet.
+//
+// A transaction whose OrgnlTxRef is absent, names only one agent, or names an
+// agent with no BICFI, is refused rather than half-read.
+// iso20022.ReturnTransaction.validate makes OrgnlTxRef optional — a hard
+// requirement would make a return built before this task, or a counterparty
+// that has not adopted it, unreadable — so a document that has been through
+// Unmarshal can still reach here with nothing to resolve accounts from. This
+// function does not assume validate ran at all: it checks both agents'
+// presence AND their BICFI itself, rather than trusting either the pointer or
+// the value validate would otherwise have guaranteed. ReadSettlement's
+// argument applies unchanged: a settlement instruction that cannot be
+// resolved to accounts must not be half-acted-on, so this refuses the whole
+// message rather than returning some instructions and silently dropping
+// others.
+func ReadReturn(doc *iso20022.Pacs004) ([]ReturnInstruction, error) {
+	body := doc.PmtRtr
+	if err := checkNbOfTxs("TxInf", body.TxInf, body.GrpHdr.NbOfTxs); err != nil {
+		return nil, err
+	}
+	ins := make([]ReturnInstruction, 0, len(body.TxInf))
+	for i, tx := range body.TxInf {
+		if tx.OrgnlTxId == "" {
+			return nil, fmt.Errorf(
+				"payment: TxInf[%d]: OrgnlTxId is absent; this return names no payment and its reserve reversal would be keyed by nothing",
+				i)
+		}
+		ref := tx.OrgnlTxRef
+		if ref == nil || ref.DbtrAgt == nil || ref.CdtrAgt == nil ||
+			ref.DbtrAgt.FinInstnId.BICFI == "" || ref.CdtrAgt.FinInstnId.BICFI == "" {
+			return nil, fmt.Errorf(
+				"payment: TxInf[%d]: OrgnlTxRef names no agents; a settlement agent with no payment row cannot resolve this return",
+				i)
+		}
+		amount, asset, err := amountIn(tx.RtrdIntrBkSttlmAmt)
+		if err != nil {
+			return nil, fmt.Errorf("TxInf[%d]: %w", i, err)
+		}
+		ins = append(ins, ReturnInstruction{
+			PaymentID:     PaymentID(tx.OrgnlTxId),
+			EndToEndID:    tx.OrgnlEndToEndId,
+			DebtorAgent:   ref.DbtrAgt.FinInstnId.BICFI,
+			CreditorAgent: ref.CdtrAgt.FinInstnId.BICFI,
+			Amount:        amount,
+			Asset:         asset,
+			// RtrdIntrBkSttlmAmt, not OrgnlIntrBkSttlmAmt: the two are equal in
+			// this system's own returns, which are always whole, but a
+			// settlement agent moves the amount actually coming back, and only
+			// RtrdIntrBkSttlmAmt says that under the standard's own partial-
+			// return shape — see the comment on ReturnMessage's construction of
+			// the two, and iso20022.ReturnTransaction.
+			Reason: ReturnReason(tx.RtrRsnInf),
+		})
+	}
+	return ins, nil
+}
+
 // checkNbOfTxs holds a sender to its own count. It is onlyTransaction's first
-// half, split out for the one message this system reads in bulk: a settlement
-// instruction is many legs by nature, so the count matters there and the
-// one-transaction limit does not apply.
+// half, split out for the messages this system reads in bulk — a settlement
+// instruction is many legs by nature, and ReadReturn's pacs.004 is shaped for
+// several returns per file even though this system's own mesh only ever
+// sends one — so the count matters for both and the one-transaction limit
+// does not apply to either.
 func checkNbOfTxs[T any](element string, txs []T, nbOfTxs string) error {
 	declared, err := strconv.Atoi(nbOfTxs)
 	if err != nil {
@@ -1628,17 +1824,19 @@ func SettlementMessage(legs []SettlementLeg, mc MessageContext) (iso20022.Envelo
 // ReadStatement's job, and losing it there would make a member post its mirror
 // leg backwards.
 //
-// # The cycle rides on AcctSvcrRef
+// # The reference rides on AcctSvcrRef
 //
-// A member bank has no cycles — it never sees a batch — so the only way it can
-// tell which cut-off a reserve movement discharged is for the central bank to
-// say. AcctSvcrRef is the servicer's own reference for the entry, which is
-// exactly what a cycle id is from the central bank's side.
+// A member bank has no cycles — it never sees a batch — and no other
+// institution's payment ids either, so the only way it can tell what a reserve
+// movement discharged is for the central bank to say. AcctSvcrRef is the
+// servicer's own reference for the entry, which is exactly what a cycle id is
+// from the central bank's side on the cut-off path, and what a payment id is on
+// the return path — both equally opaque to the member reading them.
 func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envelope, error) {
 	if st.Account == "" {
 		return iso20022.Envelope{}, fmt.Errorf("%w: Stmt/Acct/Id/Othr/Id", iso20022.ErrMissingElement)
 	}
-	if st.CycleID == "" {
+	if st.Reference == "" {
 		return iso20022.Envelope{}, fmt.Errorf("%w: Ntry/AcctSvcrRef", iso20022.ErrMissingElement)
 	}
 	entryAmt, entryInd, err := signedAmountOf(st.Movement, st.Asset)
@@ -1657,7 +1855,7 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
 		},
 		Stmt: []iso20022.AccountStatement{{
-			Id:      string(st.SettlementID),
+			Id:      st.StatementRef,
 			CreDtTm: iso20022.ISODateTime{Time: mc.Now},
 			Acct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{
 				Othr: &iso20022.GenericAccountIdentification{Id: string(st.Account)},
@@ -1669,13 +1867,21 @@ func StatementMessage(st SettlementStatement, mc MessageContext) (iso20022.Envel
 				Dt:        iso20022.DateAndDateTime{Dt: &day},
 			}},
 			Ntry: []iso20022.StatementEntry{{
-				Amt:          entryAmt,
-				CdtDbtInd:    entryInd,
-				Sts:          iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
-				BookgDt:      iso20022.DateAndDateTime{Dt: &day},
-				ValDt:        iso20022.DateAndDateTime{Dt: &day},
-				AcctSvcrRef:  string(st.CycleID),
-				AddtlNtryInf: "Settlement of clearing cycle " + string(st.CycleID),
+				Amt:         entryAmt,
+				CdtDbtInd:   entryInd,
+				Sts:         iso20022.EntryStatusChoice{Cd: iso20022.EntryStatusBooked},
+				BookgDt:     iso20022.DateAndDateTime{Dt: &day},
+				ValDt:       iso20022.DateAndDateTime{Dt: &day},
+				AcctSvcrRef: st.Reference,
+				// Named after the reference and nothing more, for the reason the
+				// paragraph above gives: a cycle id and a payment id are equally
+				// opaque to the member reading this, and the sender saying which
+				// kind it sent would be telling that bank something it has no row
+				// to resolve. It used to read "Settlement of clearing cycle …",
+				// which was accurate while the cut-off was the only thing that
+				// settled and became a false statement on the wire the moment a
+				// return could produce a statement too.
+				AddtlNtryInf: "Settlement of " + st.Reference,
 			}},
 		}},
 	}}
@@ -1707,27 +1913,37 @@ func signedAmountOf(amt ledger.Amount, asset ledger.AssetCode) (iso20022.ActiveC
 }
 
 // AdvisedMovement is what a member bank can see in a statement about its own
-// reserve account: the movement, the balance it was left at, and the cut-off
-// that caused it.
+// reserve account: the movement, the balance it was left at, and the reference
+// that names what caused it.
 //
 // It is a DIFFERENT type from SettlementStatement, deliberately. That one is
 // what the sender knew; this is what the receiver can learn, and they are not the
 // same set of facts. ParticipantID never reaches the wire at all — nothing in the
 // message carries it, because a member bank has no use for the central bank's
-// internal name for itself. SettlementID is on the wire, in Stmt/Id, but
-// ReadStatement does not surface it here: it identifies the central bank's OWN
-// settlement row, a member has nothing to do with it and no way to check it
-// against anything it holds, and carrying it through would let a caller mistake
-// the sender's bookkeeping key for something the receiver can act on.
-// Collapsing the two types would put fields on the receiving side that are
-// either always empty or copied from the wire with nothing to verify them
-// against, and invite a caller to trust them either way.
+// internal name for itself. StatementRef is on the wire, in Stmt/Id, but
+// ReadStatement does not surface it here: it is the account servicer's own
+// reference for the STATEMENT, not for the movement — the settlement row's id on
+// the cut-off path, and on the return path (sub-project 8's Task 16d) a value
+// that is not any row's key at all, see SettlementStatement's doc. A member has
+// nothing to do with either and no way to check it against anything it holds,
+// and carrying it through would let a caller mistake the sender's own reference
+// for something the receiver can act on. Collapsing the two types would put
+// fields on the receiving side that are either always empty or copied from the
+// wire with nothing to verify them against, and invite a caller to trust them
+// either way.
+//
+// Reference is the one identifier that DOES cross: it is AcctSvcrRef, read back
+// exactly as StatementMessage wrote it, and it is exactly as opaque to this bank
+// as StatementRef is — a cycle id or a payment id, and a member bank holds
+// neither. See SettlementAdvice's doc for why that opacity is fine: Reference
+// exists to be quoted back and to key this bank's own advice row, not to be
+// resolved to anything.
 type AdvisedMovement struct {
 	Account        ledger.AccountID
 	Asset          ledger.AssetCode
 	Movement       ledger.Amount
 	ClosingBalance ledger.Amount
-	CycleID        CycleID
+	Reference      string
 
 	// ValueDate is CARRIED AND UNREAD, and that is recorded rather than left to
 	// be discovered.
@@ -1800,7 +2016,7 @@ func ReadStatement(doc *iso20022.Camt053) ([]AdvisedMovement, error) {
 			Asset:          asset,
 			Movement:       movement,
 			ClosingBalance: closing,
-			CycleID:        CycleID(entry.AcctSvcrRef),
+			Reference:      entry.AcctSvcrRef,
 			ValueDate:      day,
 		})
 	}

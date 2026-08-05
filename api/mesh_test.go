@@ -34,7 +34,7 @@ import (
 // banks that can address each other, an open cut-off window for its scheme, and
 // a payer with money. seed.Populate is the dataset the running system serves, so
 // these tests exercise the same ids a reader will see in the app — bank_1 is
-// Aurora Bank and dep_21 is Alice's account in it.
+// Aurora Bank and dep_22 is Alice's account in it.
 //
 // The mesh is started AFTER the seed, which is the order cmd/server uses and for
 // the same reason: mesh.Start reads the participant roster once, so a mesh
@@ -187,7 +187,7 @@ var testMeshConfig = mesh.Config{
 // transfer the seeded network can carry the whole way.
 //
 // The ids are the seed's own and are deterministic — the store's id sequences
-// start from nothing, so bank_1/dep_21 is Alice on every run and after every
+// start from nothing, so bank_1/dep_22 is Alice on every run and after every
 // reset. The IBANs are quoted because SEPA credit transfer is addressed BY iban
 // (payment.Scheme.AddressedBy): without them the payee's bank has no address to
 // resolve and answers AC01.
@@ -197,8 +197,8 @@ var testMeshConfig = mesh.Config{
 func validSubmission() string {
 	return `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"bank_1","account":"dep_21","identifier":{"scheme":"IBAN","value":"SE89-AURORA-1001"}},
-		"creditor":{"participant":"bank_3","account":"dep_24","identifier":{"scheme":"IBAN","value":"IT60-VERDE-2002"}},
+		"debtor":{"participant":"bank_1","account":"dep_22","identifier":{"scheme":"IBAN","value":"SE89-AURORA-1001"}},
+		"creditor":{"participant":"bank_3","account":"dep_25","identifier":{"scheme":"IBAN","value":"IT60-VERDE-2002"}},
 		"amount":1000,
 		"description":"mesh handoff",
 		"creditorName":"Bella Bruno"
@@ -593,17 +593,19 @@ func TestRejectingThroughTheAPIRefundsThePayerOnlyAfterTheMessageArrives(t *test
 // A return goes round the mesh, and the reason code it carries is how that is
 // visible from here.
 //
-// The distinction this pins is not "did the money come back" — the network's own
-// ReturnPayment would do that too, synchronously, which is what this handler used
-// to call. It is WHO did it and WITH WHAT. Mesh.Return hands the instruction to
-// the bank that RECEIVED the original — the payee's bank on a push — which posts
-// nothing and sends a pacs.004; the three compensating postings happen four hops
-// later at the settlement agent, and the reason travels on the wire as a code and
-// a text. The refund's own description in the payer's ledger is where both
-// surface, and it is the one thing a synchronous call could not produce.
+// The distinction this pins is not "did the money come back" — a synchronous
+// domain call would do that too, which is what this handler used to make. It is
+// WHO did it and WITH WHAT. Mesh.Return hands the instruction to the bank that
+// RECEIVED the original — the payee's bank on a push — which posts its own
+// clawback and sends a pacs.004; the refund asserted below is a DIFFERENT bank's
+// posting, made from that same message after the settlement agent has reversed
+// the reserves, and the reason travels the whole way as a code and a text. The
+// refund's own description in the payer's ledger is where both surface, and it
+// is the one thing a synchronous call could not produce.
 //
 // The payment is a SETTLED one out of the seeded dataset, because finality is a
-// return's precondition: ReturnPaymentTx refuses anything else.
+// return's precondition: PostReturnLegTx refuses anything else, and the
+// returning bank checks it again before any message exists.
 func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 
@@ -625,8 +627,9 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 		t.Fatalf("return = %d (body: %s)", rec.Code, rec.Body.String())
 	}
 	// An identifier and nothing else. There is no intermediate resource to
-	// describe: the returning bank posted nothing and decided nothing beyond
-	// whether there was a settled payment to send back.
+	// describe: the returning bank has posted its own leg, but the payment is
+	// still Settled — the return is not finished until the other bank posts, and
+	// that happens after this response is written.
 	if id := decodePaymentID(t, rec); id != settled.ID {
 		t.Errorf("the return answered with %q, want %q", id, settled.ID)
 	}
@@ -645,11 +648,11 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	}
 	// The refund in the payer's own ledger, found by the key the domain gives it,
 	// carries the code the pacs.004 travelled under beside the operator's text.
-	// A handler that called the network's ReturnPayment directly would describe
-	// it with the text alone: there would have been no message to put a code on.
+	// A handler that called the domain directly would describe it with the text
+	// alone: there would have been no message to put a code on.
 	var txns []transactionDTO
 	getJSON(t, bank(srv, string(settled.Debtor.Participant)), "/transactions", &txns)
-	want := settled.ID + ":return-debit"
+	want := settled.ID + ":return-refund"
 	for _, tx := range txns {
 		if tx.IdempotencyKey != want {
 			continue
@@ -665,6 +668,6 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 // aliceBalance is the seeded payer's book balance, read through her own bank.
 func aliceBalance(t *testing.T, s *Server) int64 {
 	t.Helper()
-	bal := doJSON(t, bank(s, "bank_1"), "GET", "/deposit-accounts/dep_21/balance", "", http.StatusOK)
+	bal := doJSON(t, bank(s, "bank_1"), "GET", "/deposit-accounts/dep_22/balance", "", http.StatusOK)
 	return int64(bal["book"].(float64))
 }
