@@ -3,10 +3,83 @@ package iso20022
 import (
 	"encoding/xml"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 )
+
+// bicLexicalSpace pulls the pattern facet out of a named simpleType.
+//
+// It is a regexp over XSD text rather than a parse, which is enough for the one
+// question TestAnyBICAndBICFIShareOneLexicalSpace asks and is why that test can
+// exist at all: an XSD parser would be a dependency, and this package has none
+// beyond the standard library.
+func bicLexicalSpace(schema, typeName string) string {
+	re := regexp.MustCompile(`(?s)<xs:simpleType name="` + typeName +
+		`">.*?<xs:pattern value="([^"]+)"`)
+	m := re.FindStringSubmatch(schema)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// TestAnyBICAndBICFIShareOneLexicalSpace checks the claim
+// OrganisationIdentification's doc makes about the standard: that
+// AnyBICDec2014Identifier and BICFIDec2014Identifier constrain their values
+// identically, so one Go BIC type may serve both elements.
+//
+// The claim was carried as unchecked prose for as long as the type existed,
+// under a justification that said a test could only skip on a machine without
+// the schemas. That was wrong, and skipUnlessRequired is why: the same mechanism
+// the golden schema check uses turns a missing schema directory into a failure
+// under ISO20022_REQUIRE_SCHEMAS and a skip otherwise. `make test-schemas` does
+// not run this test — it filters on TestGoldenFilesValidateAgainstTheSchema —
+// but a full `ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/` does.
+//
+// A schema that declares neither type is not evidence either way and is passed
+// over; the compared count is asserted non-zero so that an empty directory
+// cannot make this pass by examining nothing.
+func TestAnyBICAndBICFIShareOneLexicalSpace(t *testing.T) {
+	schemas, err := filepath.Glob(filepath.Join("testdata", "xsd", "*.xsd"))
+	if err != nil {
+		t.Fatalf("globbing testdata/xsd: %v", err)
+	}
+	if len(schemas) == 0 {
+		skipUnlessRequired(t, "no schemas in testdata/xsd; see testdata/README.md")
+	}
+
+	compared := 0
+	for _, path := range schemas {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		anyBIC := bicLexicalSpace(string(body), "AnyBICDec2014Identifier")
+		bicfi := bicLexicalSpace(string(body), "BICFIDec2014Identifier")
+		if anyBIC == "" && bicfi == "" {
+			continue
+		}
+		if anyBIC == "" || bicfi == "" {
+			t.Errorf("%s declares only one of the two BIC types (AnyBIC %q, BICFI %q); "+
+				"the claim that they share a lexical space is not checkable there",
+				filepath.Base(path), anyBIC, bicfi)
+			continue
+		}
+		if anyBIC != bicfi {
+			t.Errorf("%s: AnyBICDec2014Identifier pattern %q differs from BICFIDec2014Identifier's %q; "+
+				"one Go BIC type can no longer serve both elements",
+				filepath.Base(path), anyBIC, bicfi)
+		}
+		compared++
+	}
+	if compared == 0 {
+		t.Fatal("no schema declared both BIC types, so this test compared nothing")
+	}
+}
 
 func TestBICValidate(t *testing.T) {
 	tests := []struct {

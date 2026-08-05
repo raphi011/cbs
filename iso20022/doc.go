@@ -3,10 +3,11 @@
 // other, rather than a Go struct standing in for one.
 //
 // That sentence used to say "the SEPA interbank messages", and it stopped being
-// true. SEPA is a scheme, and admission — a bank joining one — travels on the
-// acmt family, which the European Payments Council profiles no part of and which
-// carries no payment between banks. See "Which messages the scheme actually
-// profiles" below, and the reversal recorded after the message list.
+// true. SEPA is a scheme, and the account-management messages a bank's admission
+// depends on carry no payment between banks and were built against no European
+// Payments Council guideline — which is the scoped form of the claim, and
+// "Which messages the scheme actually profiles" below is where the scoping and
+// its reason live. The reversal itself is recorded after the message list.
 //
 // It imports nothing from the rest of this repository — not ledger, not
 // deposit, not payment. That is deliberate and load-bearing: the package's
@@ -33,10 +34,10 @@
 // scheme narrows it until only one thing can be meant. Which messages those are
 // is the next section, and it is a shorter list than this one implies.
 //
-// Two narrowings inside that subset are THIS PACKAGE's and not the scheme's, and
-// the difference is worth keeping visible, because a claim about the standard
-// travels further than a claim about the code — the README, the hint content
-// and the quiz all copy from here:
+// Some narrowings are THIS PACKAGE's and not the scheme's, and the difference is
+// worth keeping visible, because a claim about the standard travels further than
+// a claim about the code — the README, the hint content and the quiz all copy
+// from here. The ones that touch a message the EPC profiles are:
 //
 //   - Settlement method. The guidelines allow CLRG, INGA and INDA for a credit
 //     transfer (SCT Inter-PSP IG idx 1.9) and restrict a direct debit not at
@@ -48,6 +49,13 @@
 //     2025 SCT IG adds an extended option. This package models the unstructured
 //     arm only, which the scheme does limit to one occurrence of Max140Text.
 //     See RemittanceInformation.
+//   - Organisation identification. AnyBIC is minOccurs="0" wherever
+//     OrganisationIdentification29 appears, and this package requires it. On
+//     pacs.002 that is a status naming its originator, which is EPC-mandatory
+//     as an element but not as a BIC; on the acmt family, which no scheme
+//     profiles, it is the applicant's only identifier. One Go type makes both
+//     refusals, so the narrowing spans the profiled subset and the rest alike.
+//     See OrganisationIdentification.
 //
 // Three of the claims above carry their index into the Implementation
 // Guidelines — the charge bearer, the settlement method and remittance
@@ -78,10 +86,11 @@
 // bearer is always SLEV" is the scheme narrowing the standard. "An acmt.007
 // names its applicant by AnyBIC" is the standard. "An acmt.007 without that BIC
 // is refused here" is neither — it is this package narrowing the standard on its
-// own account. The narrowings of that third kind on the unprofiled messages are
-// each recorded on the type that makes them, because there is no rule book to
-// point at: see AccountOwner, PostalAddress and
-// AccountRequestAcknowledgement.
+// own account. Each narrowing of that third kind is recorded on the type that
+// makes it, because on these messages there is no rule book to point at: see
+// AccountOwner, PostalAddress, AccountRequestAcknowledgement and
+// OrganisationIdentification. The last of those also refuses inside the profiled
+// subset, on pacs.002, which is why it is listed above as well as here.
 //
 // # The envelope
 //
@@ -102,9 +111,11 @@
 //
 // Most are the interbank counterpart of an operation the payment package
 // already performs — an instruction, a collection, its status, its return, the
-// settlement leg that discharges a cycle. One reports on an account after the
-// fact. Three carry a bank's admission to the scheme, which is the operation
-// that has to happen before any of the others can:
+// settlement leg that discharges a cycle. Another reports on an account after
+// the fact. The account-management family carries the settlement-account
+// request and its answer: NOT a bank's admission to the scheme, which is
+// contractual and travels on no message at all, but the account without which
+// an admitted bank could not settle. See Acmt007:
 //
 //   - pacs.008.001.08 FIToFICstmrCdtTrf — a SEPA Credit Transfer.
 //   - pacs.003.001.08 FIToFICstmrDrctDbt — a SEPA Direct Debit collection.
@@ -160,13 +171,19 @@
 //
 // This file's first sentence used to say the package implements the SEPA
 // interbank messages of the ISO 20022 standard, and the acmt family reversed it.
-// Admission is not a payment between banks, and the EPC profiles no part of the
-// family — so the framing this package is built on, that the standard is a
-// superset and a scheme narrows it, has nothing to say about three of the
-// messages here. Leaving the sentence would have implied a scheme behind them
-// that does not exist. "Which messages the scheme actually profiles" above is
-// what replaces it, and it is the section to read before quoting anything in
-// this package as a fact about SEPA.
+// What travels on that family is not a payment between banks, and no EPC
+// Implementation Guideline was consulted for any part of it.
+//
+// The sub-project's design document puts that second half flatly — "the EPC
+// profiles no part of it" — and this file states the weaker thing it can source,
+// for the reason "Which messages the scheme actually profiles" gives: nobody
+// here has verified a negative about a body of guidelines nobody here has read
+// in full. Either wording carries the same consequence. The framing this package
+// is built on, that the standard is a superset and a scheme narrows it, has
+// nothing to say about the messages admission adds, and leaving the old sentence
+// would have implied a scheme behind them that nothing here can point at. That
+// section above is what replaces it, and it is what to read before quoting
+// anything in this package as a fact about SEPA.
 //
 // # Two things encoding/xml cannot do
 //

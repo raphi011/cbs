@@ -137,8 +137,8 @@ func (a PostalAddress) validate(element string) error {
 // The children of AccountOpeningRequestV03 with no minOccurs attribute, and
 // therefore mandatory, are Refs, Acct, AcctSvcrId and Org. The field order below
 // is the schema's sequence order, in which Acct comes BEFORE the servicer and
-// the owner. Neither the order nor the completeness of that list is asserted by this
-// comment: TestGoldenFilesValidateAgainstTheSchema runs xmllint over
+// the owner. Neither the order nor the completeness of that list is asserted by
+// this comment: TestGoldenFilesValidateAgainstTheSchema runs xmllint over
 // testdata/acmt007.xml against acmt.007.001.03.xsd, and that is what checks it.
 //
 // Deliberately omitted, and legal in the standard: Fr (the header already says
@@ -184,12 +184,16 @@ func (r AccountOpeningRequest) validate() error {
 //
 // MsgId and PrcId are separate elements and separate facts. MsgId names this
 // document; PrcId names the account-opening PROCESS, and it is the same value on
-// the request, the acknowledgement and the rejection — References4, References5
-// and References6 all make it mandatory. That is what correlates a conversation
-// whose three messages are written by three institutions, and it is why this
-// package does not carry acmt.010's optional AckdMsgId: a back-reference to the
-// request's message id would be a second way to answer a question PrcId already
-// answers on every message in the family.
+// every message of one admission — References4, References5 and References6 all
+// make it mandatory. That matters more here than one request and one answer
+// would need it to: because RequestedAccount holds a single currency, a bank
+// operating in several assets sends several requests, and PrcId is what says
+// they are one admission rather than several.
+//
+// It is also why this package does not carry acmt.010's optional AckdMsgId. A
+// back-reference to one request's message id would answer a narrower question
+// than PrcId already answers on every message in the family, and would have to
+// be a list to answer even that much.
 //
 // This type is NOT shared with the acknowledgement or the rejection. The three
 // schemas define three different reference types — References4, References5 and
@@ -227,9 +231,10 @@ func (r AccountRequestReferences) validate() error {
 //
 // Everything else CustomerAccount4 offers — a proposed identifier, a name, a
 // status, a type, figures about expected turnover and notification thresholds,
-// statement frequencies and restrictions — is optional and absent. The applicant proposing its own account
-// identifier would be the strangest of them: the servicer's book is the
-// servicer's, and the identifier comes back in the acknowledgement.
+// statement frequencies and restrictions — is optional and absent. The
+// applicant proposing its own account identifier would be the strangest of
+// them: the servicer's book is the servicer's, and the identifier comes back in
+// the acknowledgement.
 type RequestedAccount struct {
 	Ccy string `xml:"Ccy"`
 }
@@ -318,8 +323,8 @@ func (d Acmt010) validate() error { return d.AcctReqAck.validate() }
 //
 // That order is not the rejection's, and the two must not be read as the same
 // shape: AccountRequestRejectionV03 sequences AcctSvcrId, then AcctId, then
-// OrgId. Nothing in Go says so; testdata/acmt010.xml and testdata/acmt011.xml under
-// TestGoldenFilesValidateAgainstTheSchema are what check it.
+// OrgId. Nothing in Go says so; testdata/acmt010.xml and testdata/acmt011.xml
+// under TestGoldenFilesValidateAgainstTheSchema are what check it.
 //
 // validate refuses an acknowledgement with no account, which the schema permits.
 // That narrowing is this system's: the clearing house writes its routing entry —

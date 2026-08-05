@@ -107,12 +107,15 @@ func (i IBAN) Validate() error {
 // identifiers, and neither route needs one.
 //
 // AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
-// for character the same as BICFIDec2014Identifier's. That was read out of every
-// XSD in testdata/xsd when the acmt family landed, and nothing re-checks it: the
-// schemas are not committed, so a test asserting it could only skip on a machine
-// without them, which is the outcome ISO20022_REQUIRE_SCHEMAS exists to stop
-// counting as a pass. The BIC type is therefore the right one here and not
-// merely a convenient one. What differs is the ROLE: BICFI addresses an
+// for character the same as BICFIDec2014Identifier's.
+// TestAnyBICAndBICFIShareOneLexicalSpace is what checks that, over every XSD in
+// testdata/xsd. It skips on a machine with no schemas and fails there under
+// ISO20022_REQUIRE_SCHEMAS, the same way the golden schema check does — so the
+// claim is checked wherever it can be, rather than asserted everywhere and
+// checked nowhere, which is what this paragraph used to do.
+//
+// The BIC type is therefore the right one here and not merely a convenient one.
+// What differs is the ROLE: BICFI addresses an
 // agent that is party to the payment, AnyBIC identifies any organisation at
 // all, which is why the standard keeps two element names for one lexical space.
 //
