@@ -93,21 +93,37 @@ func (i IBAN) Validate() error {
 	return nil
 }
 
-// OrganisationIdentification is OrganisationIdentification29, the OrgId arm of
-// Party38Choice: how a party that is an ORGANISATION rather than a person is
-// identified.
+// OrganisationIdentification is OrganisationIdentification29: how a party that
+// is an ORGANISATION rather than a person is identified.
+//
+// It reaches this package's messages by two different routes, and the type is
+// the same because the schema type is. In pacs.002 it is the OrgId arm of
+// Party38Choice under StsRsnInf/Orgtr, where the EPC guidelines restrict the
+// originator of a status to a BIC or a name and nothing else. In the acmt family
+// it is an element in its own right — Org/OrgId on the request, OrgId on the
+// acknowledgement and the rejection — and it is how the applicant bank is named.
 //
 // Only AnyBIC is carried. The standard also allows an LEI and a list of generic
-// identifiers; neither is needed by the one element in this package that
-// reaches OrgId — pacs.002's StsRsnInf/Orgtr, where the EPC guidelines restrict
-// the originator of a status to a BIC or a name and nothing else.
+// identifiers, and neither route needs one.
 //
 // AnyBIC's schema type is AnyBICDec2014Identifier, whose pattern is character
-// for character the same as BICFIDec2014Identifier's — verified in all three of
-// this package's message schemas. The BIC type is therefore the right one here
-// and not merely a convenient one. What differs is the ROLE: BICFI addresses an
+// for character the same as BICFIDec2014Identifier's. That was read out of every
+// XSD in testdata/xsd when the acmt family landed, and nothing re-checks it: the
+// schemas are not committed, so a test asserting it could only skip on a machine
+// without them, which is the outcome ISO20022_REQUIRE_SCHEMAS exists to stop
+// counting as a pass. The BIC type is therefore the right one here and not
+// merely a convenient one. What differs is the ROLE: BICFI addresses an
 // agent that is party to the payment, AnyBIC identifies any organisation at
 // all, which is why the standard keeps two element names for one lexical space.
+//
+// # validate requires the BIC, and no schema does
+//
+// AnyBIC is minOccurs="0" wherever OrganisationIdentification29 appears, so this
+// is a narrowing and the callers are what justify it. pacs.002's originator must
+// be identified, or the status names nobody. The acmt family's applicant must be
+// identified by BIC specifically: it is what the settlement agent keys its member
+// record by, what the clearing house keys its routing entry by, and what the
+// acknowledgement is addressed back on. See AccountOwner.
 type OrganisationIdentification struct {
 	AnyBIC BIC `xml:"AnyBIC"`
 }

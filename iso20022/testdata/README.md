@@ -26,6 +26,16 @@ an implementation guideline, and the cross-check against `pacs.009.001.08.xsd`
 is the same `TestGoldenFilesValidateAgainstTheSchema` when that schema is
 present.
 
+`acmt007.xml`, `acmt010.xml` and `acmt011.xml` are the same kind of file for the
+same reason: the EPC profiles no part of the account-management family, so their
+shapes come from `acmt.007.001.03.xsd`, `acmt.010.001.03.xsd` and
+`acmt.011.001.03.xsd` and from nothing else. They are one admission told in three
+messages — Aurora Bank asking its settlement agent for accounts, the agent
+naming two it opened, and the agent refusing a third for an asset it does not
+operate in — which is why all three carry the same `PrcId` and their own
+`MsgId`. See `Acmt007` for why this use of the family is not how a central-bank
+account is really opened.
+
 **To enable the schema check**, download the message schemas from
 <https://www.iso20022.org/iso-20022-message-definitions> into `testdata/xsd/`
 using the file names the test expects:
@@ -37,6 +47,9 @@ using the file names the test expects:
     testdata/xsd/pacs.004.001.09.xsd
     testdata/xsd/pacs.009.001.08.xsd
     testdata/xsd/camt.053.001.08.xsd
+    testdata/xsd/acmt.007.001.03.xsd
+    testdata/xsd/acmt.010.001.03.xsd
+    testdata/xsd/acmt.011.001.03.xsd
 
 The list above must match the `files` map in `xmllint_test.go`, and it did not:
 `camt.053.001.08.xsd` was missing here from the day the statement landed, so
@@ -102,6 +115,10 @@ receive until this message existed.
 | Central bank (as `To` / instructed agent) | `CBSEDEFFXXX` |
 | Aurora Bank (as `Dbtr`, the debiting settlement member) | `AURODEFFXXX` |
 | Banca Verde (as `Cdtr`, the crediting settlement member) | `VERDITMMXXX` |
+
+The three `acmt` files use that same settlement-layer cast, because admission is
+a settlement-layer conversation: `AURODEFFXXX` applies, `CSMXFRPPXXX` relays, and
+`CBSEDEFFXXX` is the account servicer that answers.
 
 `CSMXFRPPXXX` and `AURODEFFXXX` are deliberately not `CSMBFRPPXXX` and
 `AURTSESSXXX`: they are this system's settlement-layer identities, distinct
