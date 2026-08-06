@@ -14,8 +14,13 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// Entity keys for the two institutions. A bank's key is its participant id,
-// which is why these two are spelled out and the banks are not.
+// Entity keys for the two institutions. A bank's key is its address, which is
+// also its participant id and the name of its database, so these two are spelled
+// out and the banks are not.
+//
+// They are the two institutions' database file names without the suffix, and
+// that is not a coincidence to be tidied away: one process, one directory, one
+// name per institution. See store/sqlite.Set.
 const (
 	centralBankKey   = "central-bank"
 	clearingHouseKey = "clearing-house"
@@ -31,10 +36,29 @@ type entity struct {
 }
 
 // plan builds the listener table: the two institutions, then one listener per
-// BANK in registration order, from base+2 upward — every bank the network has
-// founded, which is what ListBanks answers, and not only the ones the scheme has
-// admitted. The paragraph below is why: a listener is provisioning, and a bank
-// whose admission has not finished still has a book and customers to serve.
+// BANK from base+2 upward — every bank that HAS A DATABASE, and not only the
+// ones the scheme has admitted. The paragraph below is why: a listener is
+// provisioning, and a bank whose admission has not finished still has a book and
+// customers to serve.
+//
+// The bank list comes from the store set rather than from a ListBanks at the
+// clearing house, which is where it came from until the store split and which
+// was a crossing: a clearing house holds a roster and no bank rows at all. The
+// set answers the same question more honestly — the set of banks is the set of
+// databases — and it keeps the founded-but-unadmitted bank the roster omits. See
+// payment.Stores.Banks.
+//
+// The ORDER is by address rather than by registration, because a directory has
+// no registration order. Ports therefore move if a bank is founded whose address
+// sorts before an existing one. That is a fixture-level fact rather than an
+// operational one — the seeded scenario is built in one order every time — and
+// it is the price of the set of banks being a fact about the file system instead
+// of a list somebody keeps.
+//
+// Each bank's NAME comes from that bank's own row, in that bank's own database.
+// It is the one thing here that costs a read per bank, and it is the composition
+// root doing it rather than any institution: nothing in the domain asks another
+// bank what it is called.
 //
 // Ports are static. A bank founded at runtime through POST /members gets a store
 // row, a chart of accounts and a product — and no listener until the process
@@ -45,8 +69,8 @@ type entity struct {
 // thing. Its settlement account is not part of that call either: the central
 // bank opens that one when the bank's application reaches it, so the listener is
 // the second thing such a bank waits for rather than the only one.
-func plan(ctx context.Context, net *payment.Network, base int) ([]entity, error) {
-	parts, err := net.ListBanks(ctx)
+func plan(ctx context.Context, stores payment.Stores, nets *payment.Networks, base int) ([]entity, error) {
+	bics, err := stores.Banks(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -54,12 +78,21 @@ func plan(ctx context.Context, net *payment.Network, base int) ([]entity, error)
 		{key: centralBankKey, name: "Central bank", addr: addrFor(base)},
 		{key: clearingHouseKey, name: "Clearing house", addr: addrFor(base + 1)},
 	}
-	for i, p := range parts {
+	for i, bic := range bics {
+		pid := payment.ParticipantID(bic)
+		net, err := nets.Bank(ctx, pid)
+		if err != nil {
+			return nil, err
+		}
+		bank, err := net.GetBank(ctx, pid)
+		if err != nil {
+			return nil, fmt.Errorf("planning a listener for %s: %w", bic, err)
+		}
 		out = append(out, entity{
-			key:  string(p.ID),
-			name: p.Name,
+			key:  string(bic),
+			name: bank.Name,
 			addr: addrFor(base + 2 + i),
-			pid:  p.ID,
+			pid:  pid,
 		})
 	}
 	return out, nil
@@ -67,15 +100,16 @@ func plan(ctx context.Context, net *payment.Network, base int) ([]entity, error)
 
 func addrFor(port int) string { return ":" + strconv.Itoa(port) }
 
-// handlerFor picks the surface an entity serves.
-func handlerFor(srv *api.Server, e entity) http.Handler {
+// handlerFor picks the surface an entity serves. A bank's needs a context and
+// can fail, because binding it opens that bank's own database.
+func handlerFor(ctx context.Context, srv *api.Server, e entity) (http.Handler, error) {
 	switch e.key {
 	case centralBankKey:
-		return srv.CentralBankRoutes()
+		return srv.CentralBankRoutes(), nil
 	case clearingHouseKey:
-		return srv.ClearingHouseRoutes()
+		return srv.ClearingHouseRoutes(), nil
 	default:
-		return srv.BankRoutes(e.pid)
+		return srv.BankRoutes(ctx, e.pid)
 	}
 }
 
@@ -87,7 +121,7 @@ func handlerFor(srv *api.Server, e entity) http.Handler {
 // rather than survivable: a network missing one of its banks is not a degraded
 // system but a wrong one, and a payment routed to the missing member would fail
 // somewhere far from the cause.
-func serve(entities []entity, srv *api.Server, log *slog.Logger) (func(context.Context) error, error) {
+func serve(ctx context.Context, entities []entity, srv *api.Server, log *slog.Logger) (func(context.Context) error, error) {
 	type bound struct {
 		e  entity
 		ln net.Listener
@@ -102,6 +136,13 @@ func serve(entities []entity, srv *api.Server, log *slog.Logger) (func(context.C
 	}
 
 	for _, e := range entities {
+		// The surface is bound BEFORE the socket, so a bank whose database will
+		// not open costs no listener rather than an open one serving nothing.
+		h, err := handlerFor(ctx, srv, e)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("binding the surface for %s: %w", e.key, err)
+		}
 		ln, err := net.Listen("tcp", e.addr)
 		if err != nil {
 			closeAll()
@@ -111,7 +152,7 @@ func serve(entities []entity, srv *api.Server, log *slog.Logger) (func(context.C
 			e:  e,
 			ln: ln,
 			hs: &http.Server{
-				Handler:           handlerFor(srv, e),
+				Handler:           h,
 				ReadHeaderTimeout: 10 * time.Second,
 			},
 		})

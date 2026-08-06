@@ -202,7 +202,7 @@ func (s *Server) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "asset is required: a bank holds one pot of vault cash per asset and nothing else in this request says which")
 		return
 	}
-	in, err := s.mesh.Lodge(r.Context(), p.ID, ledger.AssetCode(req.Asset), ledger.Amount(req.Amount))
+	in, err := s.mesh.Lodge(r.Context(), p.BIC, ledger.AssetCode(req.Asset), ledger.Amount(req.Amount))
 	if err != nil {
 		// A lodgement that committed and could not be SENT hands the instruction
 		// back beside the error, as Mesh.Submit does with its payment: this bank's

@@ -1,9 +1,12 @@
 package payment
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/raphi011/cbs/iso20022"
 )
 
 // Identity is which institution a Network acts as.
@@ -113,21 +116,23 @@ func (i Identity) String() string {
 	}
 }
 
-// Networks mints one Network per institution over a shared store and clock.
+// Networks mints one Network per institution, each over that institution's own
+// store.
 //
 // It is the composition root's handle and the ONLY thing that holds more than
 // one institution's view: cmd/server builds one, api takes one and binds each
 // listener to the single Network its surface belongs to, and the mesh takes one
 // and gives each actor its own. Nothing downstream of those two holds a second.
 //
-// Today all N+2 Networks it mints share the one Store it was built with, so this
-// type is pure wiring. That is the point of it landing here rather than in Task
-// 18d: when each entity gets a store of its own, the store it opens is a
-// property of the entity being asked for, which is a change INSIDE this type and
-// nowhere above it.
+// It was pure wiring at Task 18b — all N+2 Networks it minted shared the one
+// Store it was built with — and the note where this paragraph is said that when
+// each entity got a store of its own, the store would become a property of the
+// entity being asked for and the change would be INSIDE this type. That is what
+// happened, and it cost exactly one thing above it: Bank takes a context and
+// returns an error, because opening a database can fail. See Stores.
 type Networks struct {
-	store Store
-	clock func() time.Time
+	stores Stores
+	clock  func() time.Time
 
 	// schemes is SHARED by every network this mints, and that is a decision
 	// rather than an optimisation.
@@ -164,35 +169,57 @@ func newSchemeRegistry() *schemeRegistry {
 	return &schemeRegistry{m: make(map[SchemeID]Scheme)}
 }
 
-// NewNetworks builds the factory. It performs no I/O, for NewNetwork's reason.
-func NewNetworks(store Store, clock func() time.Time) *Networks {
-	return &Networks{store: store, clock: clock, schemes: newSchemeRegistry()}
+// NewNetworks builds the factory. It performs no I/O, for NewNetwork's reason —
+// and, since Task 18d, for a second one: opening a bank's database is Stores'
+// job and it happens when a bank is asked for, not when the factory is built.
+func NewNetworks(stores Stores, clock func() time.Time) *Networks {
+	return &Networks{stores: stores, clock: clock, schemes: newSchemeRegistry()}
 }
 
-// Bank returns the given member bank's own view of the system.
+// Bank returns the given member bank's own view of the system, over that bank's
+// own database.
 //
-// A fresh Network per call, because one is cheap — no I/O, a scheme map and four
-// stateless views — and because a cache keyed by ParticipantID would have to
-// answer what happens when that bank is deleted by a Reset. Callers hold the
-// result for the lifetime of an actor or a listener, which is where the cost
-// would be if there were one.
-func (n *Networks) Bank(pid ParticipantID) *Network {
-	return newNetwork(n.store, n.clock, AsBank(pid), n.schemes)
+// # Why this one takes a context and returns an error and the other two do not
+//
+// Because it opens something. The clearing house's store and the central bank's
+// exist before any bank does — they are configuration, not data — and Stores can
+// hand either back without doing anything. A bank's database is named by that
+// bank's BIC and may not have been opened yet in this process, so the first ask
+// for it is I/O and I/O fails.
+//
+// Nothing here checks that the bank is a MEMBER, and nothing should: membership
+// is the clearing house's roster, and a founding bank is deliberately not in it
+// yet while it writes its own first rows. See Stores.
+//
+// A fresh Network per call, because one is cheap — a scheme map and four
+// stateless views over a store Stores has already cached — and because a cache
+// keyed by ParticipantID would have to answer what happens when that bank is
+// deleted by a Reset. Callers hold the result for the lifetime of an actor or a
+// listener, which is where the cost would be if there were one.
+func (n *Networks) Bank(ctx context.Context, pid ParticipantID) (*Network, error) {
+	store, err := n.stores.Bank(ctx, iso20022.BIC(pid))
+	if err != nil {
+		return nil, fmt.Errorf("payment: opening member bank %s's store: %w", pid, err)
+	}
+	return newNetwork(store, n.clock, AsBank(pid), n.schemes), nil
 }
 
-// ClearingHouse returns the CSM's view.
+// ClearingHouse returns the CSM's view, over the clearing house's database.
 func (n *Networks) ClearingHouse() *Network {
-	return newNetwork(n.store, n.clock, AsClearingHouse(), n.schemes)
+	return newNetwork(n.stores.ClearingHouse(), n.clock, AsClearingHouse(), n.schemes)
 }
 
 // CentralBank returns the settlement agent's view, which is the only one holding
-// the central bank's book.
+// the central bank's book, over the central bank's database.
 func (n *Networks) CentralBank() *Network {
-	return newNetwork(n.store, n.clock, AsCentralBank(), n.schemes)
+	return newNetwork(n.stores.CentralBank(), n.clock, AsCentralBank(), n.schemes)
 }
 
-// Store is the store every network this mints shares, so a caller can open its
-// own unit of work — or reset the whole system — without first choosing an
-// institution to do it as. api's Reset is the caller: clearing the database is
-// nobody's act in the domain.
-func (n *Networks) Store() Store { return n.store }
+// Stores is the set of databases these networks are minted over, so a caller
+// that has to reach all of them at once — clearing the system is the only such
+// caller, and it is nobody's act in the domain — can do it without first
+// choosing an institution to do it as.
+//
+// It replaces Store, which handed back the ONE store every network shared. There
+// is no such store: that is the task.
+func (n *Networks) Stores() Stores { return n.stores }

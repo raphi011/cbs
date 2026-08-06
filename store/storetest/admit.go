@@ -62,14 +62,23 @@ import (
 // is — which is what the four MESSAGES say too, and the closest this stand-in
 // gets to being honest about the conversation it is standing in for.
 //
-// Founding is the exception and it is named rather than smoothed over: it runs
-// before the joining bank has any handle of its own, so it goes through the
-// clearing house's, exactly as mesh.Mesh.Admit does. That is a crossing, it is
-// on Task 18d's list, and Mesh.clearingHouse carries the argument.
+// Founding used to be the exception, and it is not one any more. It ran through
+// the CLEARING HOUSE's network — because a bank with a counter-derived id had no
+// handle of its own until the id existed — and that was a crossing carried here
+// and on mesh.Mesh.Admit with "same fate at 18c" against it. The fate arrived: a
+// bank's id is its BIC, so the applicant's own network can be minted from the
+// address the caller already passed in, and every one of the four acts below is
+// now performed by the institution whose act it is.
 func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso20022.BIC,
 	assets []ledger.AssetCode) (*payment.Bank, error) {
 
-	bank, err := nets.ClearingHouse().FoundBank(ctx, name, bic, assets)
+	// The APPLICANT's own network, over the applicant's own database, which
+	// asking for it is what creates. See payment.Stores.
+	applicant, err := nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		return nil, err
+	}
+	bank, err := applicant.FoundBank(ctx, name, bic, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +106,7 @@ func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso2002
 	if _, err := nets.ClearingHouse().AdmitMember(ctx, ack); err != nil {
 		return nil, err
 	}
-	return nets.Bank(bank.ID).RecordMembership(ctx, ack)
+	return applicant.RecordMembership(ctx, ack)
 }
 
 // admissionRef is the process id this stand-in quotes. See Admit.

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/raphi011/cbs/payment"
@@ -35,9 +36,16 @@ func (s *Server) ClearingHouseRoutes() http.Handler {
 }
 
 // BankRoutes is one member bank's surface, bound to its identity.
-func (s *Server) BankRoutes(pid payment.ParticipantID) http.Handler {
-	b := s.forBank(pid)
-	return b.withMiddleware(b.bankRouter().mux)
+//
+// It takes a context and can fail where the two institutions' cannot, because it
+// opens that bank's own database — the two institutions' were opened before any
+// bank existed. See payment.Stores.
+func (s *Server) BankRoutes(ctx context.Context, pid payment.ParticipantID) (http.Handler, error) {
+	b, err := s.forBank(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+	return b.withMiddleware(b.bankRouter().mux), nil
 }
 
 func (s *Server) centralBankRouter() *router {

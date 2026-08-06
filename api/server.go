@@ -293,7 +293,7 @@ func (s *Server) Reset(ctx context.Context) error {
 	if err := s.mesh.ForgetBanks(ctx); err != nil {
 		return fmt.Errorf("api: the mesh still holds banks the reset is about to delete: %w", err)
 	}
-	if err := s.nets.Store().Reset(ctx); err != nil {
+	if err := s.nets.Stores().Reset(ctx); err != nil {
 		return err
 	}
 	// Last, and it is what gives the reseeded banks their actors: each one is
@@ -312,17 +312,22 @@ func (s *Server) Reset(ctx context.Context) error {
 // Task 18a closed reappearing one layer above where the recorder can see it,
 // because api is not an actor and nothing here records a book.
 //
-// Minting the bank's network needs no I/O and no store read: a bank IS its own
-// book (payment.AsBank), so the participant is the whole of the identity. That
-// is what makes pulling this forward from Task 18d a wiring change rather than
-// a split — there is still one store behind all of them.
+// Minting the bank's network needs no store READ: a bank IS its own book
+// (payment.AsBank), so the participant is the whole of the identity. What it
+// does need is the bank's own database, which is why this takes a context and
+// can fail — that is the difference between the wiring change this was at Task
+// 18b and the split it is now.
 //
 // The two values are set together and cannot disagree. boundPID is what the
 // handlers name in URLs and DTOs; the network is what the domain acts through.
-func (s *Server) forBank(pid payment.ParticipantID) *Server {
-	b := s.as(s.nets.Bank(pid))
+func (s *Server) forBank(ctx context.Context, pid payment.ParticipantID) (*Server, error) {
+	net, err := s.nets.Bank(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+	b := s.as(net)
 	b.boundPID = pid
-	return b
+	return b, nil
 }
 
 // boundBIC is this listener's bank as an ADDRESS: the identifier a payment names

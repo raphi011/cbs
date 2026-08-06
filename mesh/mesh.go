@@ -291,19 +291,19 @@ type Mesh struct {
 	// committed its row, which is the defect this exists to remove, reintroduced
 	// one lock apart.
 	reserved map[iso20022.BIC]bool
-	// banks is the member banks by participant, which is how Submit finds the
-	// actor that plays a payer's own bank.
+	// banks is the member banks by ADDRESS, which is how Submit finds the actor
+	// that plays a payer's own bank.
 	//
-	// Keyed by ParticipantID and not by BIC, on the argument that a request said
-	// which PARTICIPANT held the payer's account and turning that into a BIC to
-	// find an actor would be a store read answering a question the roster already
-	// answered at startup. Task 18 made the two one value (see payment.PartyRef),
-	// so the argument is spent and the key is a BIC wearing the other type — which
-	// is why the two lookups that arrive from submitterOf/returnerOf convert.
-	// Re-keying it is the store split's, along with claimAddress's sweep for the
-	// pid behind an address and Lodge's participant argument; all three are the
-	// same edit and none of them belongs in the middle of this one.
-	banks    map[payment.ParticipantID]*bank
+	// It was keyed by ParticipantID until the store split, on the argument that a
+	// request said which PARTICIPANT held the payer's account and turning that
+	// into a BIC to find an actor would be a store read answering a question the
+	// roster already answered at startup. Task 18 made the two one value (see
+	// payment.AsBank), so the argument was spent and the key was a BIC wearing
+	// the other type: two lookups converted on the way in, claimAddress swept the
+	// whole map to find the id behind an address, and Lodge took a participant
+	// where its caller held an address. All three of those are gone with the
+	// re-key, and none of them was replaced by anything.
+	banks    map[iso20022.BIC]*bank
 	inFlight int
 	// quiet is closed when inFlight reaches zero and replaced when it leaves
 	// zero. A channel rather than a sync.Cond because Drain must also wake on
@@ -370,7 +370,7 @@ func New(nets *payment.Networks, cfg Config, log *slog.Logger) (*Mesh, error) {
 		tap:      cfg.Observe,
 		actors:   make(map[iso20022.BIC]*actor),
 		reserved: make(map[iso20022.BIC]bool),
-		banks:    make(map[payment.ParticipantID]*bank),
+		banks:    make(map[iso20022.BIC]*bank),
 		busy:     make(map[iso20022.BIC]string),
 		quiet:    quiet,
 	}
@@ -570,15 +570,22 @@ func (m *Mesh) Start(ctx context.Context) error {
 // licence, a book and customers, and no scheme has admitted it — and the way in
 // is Mesh.Admit.
 //
-// It reads BOTH the roster and the bank rows, and the second read is a crossing
-// rather than a convenience: Mesh.banks is keyed by ParticipantID, because that
-// is what a payment instruction names, and only a bank's own row knows which id
-// belongs to which address. Task 18 is where a payment carries BICs and this
-// read goes; see payment.Network.GetRosterEntry, which records the same crossing
-// pointing the other way.
+// It reads the roster and NOTHING ELSE, which is the store split's doing. It
+// used to read the bank rows as well — through the clearing house's network, in
+// the clearing house's database — because Mesh.banks was keyed by ParticipantID
+// and only a bank's own row knew which id belonged to which address. That was a
+// crossing and it is named as one on the field. Both halves of it are gone: the
+// id IS the address, so there is nothing to look up, and the clearing house's
+// schema has no banks table to look it up in.
 //
-// Both reads happen OUTSIDE m.mu, because they are store I/O and nothing else
-// may be blocked on the mesh while they run. The whole roster is then registered
+// What is lost with the second read is the bank's NAME, which the actor carried
+// for the operator console. A roster entry does not have one — an acmt.010 names
+// nobody, see payment.RosterEntry — so the actor registered here is named by its
+// address. The name lives on the bank's own row, in the bank's own database,
+// which is where an operator asking about a bank now reads it.
+//
+// The read happens OUTSIDE m.mu, because it is store I/O and nothing else
+// may be blocked on the mesh while it runs. The whole roster is then registered
 // in one batch, so a bank the mesh cannot route to leaves the mesh as it found
 // it — see addActors on why all-or-none is the roster's shape and not a
 // convenience.
@@ -619,23 +626,20 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 	if len(entries) == 0 {
 		return nil
 	}
-	members := make(map[iso20022.BIC]bool, len(entries))
-	for _, e := range entries {
-		members[e.BIC] = true
-	}
-	ps, err := m.clearingHouse.ListBanks(ctx)
-	if err != nil {
-		return fmt.Errorf("mesh: reading the banks behind the roster: %w", err)
-	}
 	specs := make([]actorSpec, 0, len(entries))
-	banks := make(map[payment.ParticipantID]*bank, len(entries))
-	for _, p := range ps {
-		if !members[p.BIC] {
-			continue
+	banks := make(map[iso20022.BIC]*bank, len(entries))
+	for _, e := range entries {
+		// Each member's own database, opened here. This is the one place in the
+		// mesh where a roster read turns into N database opens, and it is the
+		// shape the split gives startup: the roster says who is a member and the
+		// set of databases is what those members ARE.
+		ops, err := m.nets.Bank(ctx, payment.ParticipantID(e.BIC))
+		if err != nil {
+			return fmt.Errorf("mesh: opening member %s's store: %w", e.BIC, err)
 		}
-		b := &bank{m: m, ops: m.nets.Bank(p.ID), bic: p.BIC}
-		banks[p.ID] = b
-		specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
+		b := &bank{m: m, ops: ops, bic: e.BIC}
+		banks[e.BIC] = b
+		specs = append(specs, actorSpec{bic: e.BIC, name: string(e.BIC), handle: b.handle})
 	}
 	if len(specs) > 0 {
 		if err := m.addActors(specs...); err != nil {
@@ -766,9 +770,9 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 	for _, a := range gone {
 		delete(m.actors, a.bic)
 	}
-	for pid, b := range m.banks {
-		if _, still := m.actors[b.bic]; !still {
-			delete(m.banks, pid)
+	for bic := range m.banks {
+		if _, still := m.actors[bic]; !still {
+			delete(m.banks, bic)
 		}
 	}
 	m.mu.Unlock()
@@ -808,14 +812,22 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // committed. joinRoster still has the first of those windows and says so; it
 // cannot use this, because a batch registered and indexed under one lock would
 // hold m.mu across a whole roster.
-func (m *Mesh) AddBank(p *payment.Bank) error {
+//
+// It takes a context because it opens the bank's database — every act this
+// actor will perform runs against it — and the open happens BEFORE the lock, for
+// the reason every other store read in this file is outside one.
+func (m *Mesh) AddBank(ctx context.Context, p *payment.Bank) error {
 	if m.nets == nil {
 		return errors.New("mesh: no network, so there are no member banks to give actors to")
 	}
 	if err := p.BIC.Validate(); err != nil {
 		return fmt.Errorf("mesh: actor %q: %w", p.Name, err)
 	}
-	b := &bank{m: m, ops: m.nets.Bank(p.ID), bic: p.BIC}
+	ops, err := m.nets.Bank(ctx, p.ID)
+	if err != nil {
+		return fmt.Errorf("mesh: opening %s's store: %w", p.BIC, err)
+	}
+	b := &bank{m: m, ops: ops, bic: p.BIC}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -827,7 +839,7 @@ func (m *Mesh) AddBank(p *payment.Bank) error {
 	if err := m.addActorsLocked(actorSpec{bic: p.BIC, name: p.Name, handle: b.handle}); err != nil {
 		return err
 	}
-	m.banks[p.ID] = b
+	m.banks[p.BIC] = b
 	return nil
 }
 
@@ -1442,13 +1454,13 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	submitter := submitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
 
 	m.mu.Lock()
-	b, ok := m.banks[payment.ParticipantID(submitter)]
+	b, ok := m.banks[submitter]
 	m.mu.Unlock()
 	if !ok {
 		// The mesh has no actor to play this bank, so nothing it submitted could
 		// ever be answered. Refusing here is better than accepting a payment that
 		// would sit Initiated for ever.
-		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", submitter)
+		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for %s", submitter)
 	}
 	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction
 	// a customer actually hands in.
@@ -1622,21 +1634,38 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 		return nil, err
 	}
 
+	// The APPLICANT's own network, over the applicant's own database. Founding
+	// used to run through the clearing house's, and that was a crossing named on
+	// Mesh.clearingHouse: a bank's row is the bank's, and the clearing house's
+	// schema has no table to write it to. What made it look necessary was the id
+	// — a counter-derived id had to come from somewhere, and the database it
+	// would name is the one place that cannot supply it. There is no counter: a
+	// joining bank arrives knowing its BIC, its BIC is its id, and asking the
+	// store set for that bank is what creates the database. See payment.Stores.
+	applicant, err := m.nets.Bank(ctx, payment.ParticipantID(bic))
+	if err != nil {
+		if !redriving {
+			// A re-drive made no reservation, so there is none to give back.
+			m.releaseAddress(bic)
+		}
+		return nil, fmt.Errorf("mesh: opening %s's store: %w", bic, err)
+	}
+
 	var bank *payment.Bank
-	if redriving != "" {
+	if redriving {
 		// A bank this mesh founded that the roster has no entry for. Its row is
 		// read OUTSIDE the lock, for joinRoster's reason, and nothing is founded.
-		if bank, err = m.clearingHouse.GetBank(ctx, redriving); err != nil {
-			return nil, fmt.Errorf("mesh: %s is re-driving the admission of %s and cannot read it: %w", bic, redriving, err)
+		if bank, err = applicant.GetBank(ctx, payment.ParticipantID(bic)); err != nil {
+			return nil, fmt.Errorf("mesh: %s is re-driving its own interrupted admission and cannot read its row: %w", bic, err)
 		}
 	} else {
-		if bank, err = m.clearingHouse.FoundBank(ctx, name, bic, assets); err != nil {
+		if bank, err = applicant.FoundBank(ctx, name, bic, assets); err != nil {
 			// The reservation goes back before the caller is told, so a refused
 			// unit of work leaves the address exactly as free as it found it.
 			m.releaseAddress(bic)
 			return nil, err
 		}
-		if err := m.AddBank(bank); err != nil {
+		if err := m.AddBank(ctx, bank); err != nil {
 			// Unreachable while the reservation holds — nothing else can have
 			// taken the address — but a bank that is committed and unreachable is
 			// the orphan again, so it is reported rather than assumed away.
@@ -1666,14 +1695,20 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 	return bank, nil
 }
 
-// claimAddress takes a BIC for an admission that is about to run, or names the
-// bank whose interrupted admission is being re-driven.
+// claimAddress takes a BIC for an admission that is about to run, or reports
+// that the bank at that address is re-driving an interrupted one.
 //
-// Three answers and one lock. A free address is RESERVED and the empty id comes
-// back. An address a bank of this mesh already answers to comes back as that
-// bank's id, no reservation is made, and the caller founds nothing — the roster
-// has already been asked and holds no entry for it, so this is a re-drive.
+// Three answers and one lock. A free address is RESERVED and redriving is false.
+// An address a bank of this mesh already answers to comes back redriving, no
+// reservation is made, and the caller founds nothing — the roster has already
+// been asked and holds no entry for it, so this is a re-drive.
 // Anything else is ErrAddressTaken.
+//
+// It used to hand back the re-driving bank's ParticipantID, found by sweeping
+// the bank index for the address. There is nothing to sweep for: the id IS the
+// address since Task 18, so the only thing the sweep could return was the
+// argument, and the caller reads that bank's row out of the database named by
+// the very BIC it passed in.
 //
 // "Anything else" is worth spelling out because two of its three cases have
 // nothing to do with banks: an address one of the two INSTITUTIONS answers to,
@@ -1692,25 +1727,23 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 // their own retry: two re-drives of one address would each send a set of
 // requests. The domain is what serialises that, not this lock — see
 // payment.AdmitMemberTx, which draws an id before it decides.
-func (m *Mesh) claimAddress(bic iso20022.BIC) (payment.ParticipantID, error) {
+func (m *Mesh) claimAddress(bic iso20022.BIC) (redriving bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stopping || m.stopped {
-		return "", errors.New("mesh: stopping; a bank admitted now would have no goroutine to read its inbox")
+		return false, errors.New("mesh: stopping; a bank admitted now would have no goroutine to read its inbox")
 	}
 	if m.reserved[bic] {
-		return "", fmt.Errorf("%w: %s", ErrAdmissionInFlight, bic)
+		return false, fmt.Errorf("%w: %s", ErrAdmissionInFlight, bic)
 	}
 	if _, taken := m.actors[bic]; taken {
-		for pid, b := range m.banks {
-			if b.bic == bic {
-				return pid, nil
-			}
+		if _, ours := m.banks[bic]; ours {
+			return true, nil
 		}
-		return "", fmt.Errorf("%w: %s", ErrAddressTaken, bic)
+		return false, fmt.Errorf("%w: %s", ErrAddressTaken, bic)
 	}
 	m.reserved[bic] = true
-	return "", nil
+	return false, nil
 }
 
 // releaseAddress gives a reservation back. See Mesh.reserved.
@@ -1895,12 +1928,12 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 	returner := returnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 
 	m.mu.Lock()
-	b, ok := m.banks[payment.ParticipantID(returner)]
+	b, ok := m.banks[returner]
 	m.mu.Unlock()
 	if !ok {
 		// Same refusal Submit makes, for the same reason: a return this mesh
 		// has no actor to send would be one nobody could ever act on.
-		return fmt.Errorf("mesh: no bank actor for participant %s", returner)
+		return fmt.Errorf("mesh: no bank actor for %s", returner)
 	}
 	return b.returnPayment(ctx, id, reason, text)
 }
@@ -1915,12 +1948,17 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 // camt.025 arrives at bank.receiveLodgementReceipt after a Drain, exactly as an
 // admission's acknowledgement does.
 //
-// # Why the caller names the participant and the asset
+// # Why the caller names the bank and the asset
 //
 // A lodgement is one institution's decision about its own liquidity, so there is
 // no routing question to answer and no scheme to consult: the acting bank IS the
 // subject. That is the whole difference from Submit, which has to work out which
 // of two banks submits before it can pick an actor.
+//
+// The bank is named by its ADDRESS, which is what the caller holds — api's
+// listener is bound to one, and the operator console shows one. It took a
+// ParticipantID while the bank index was keyed by that type; the two are one
+// value now, so this is the type the argument always meant.
 //
 // The ASSET is named because a bank operating in two of them holds two reserve
 // accounts and two vaults, and nothing about "move cash onto reserve" says which.
@@ -1933,14 +1971,14 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 // so its lodgement would post a leg against a message that never left. Refused
 // before the bank's half runs, which is the ordering every door in this file
 // keeps.
-func (m *Mesh) Lodge(ctx context.Context, id payment.ParticipantID, asset ledger.AssetCode,
+func (m *Mesh) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode,
 	amount ledger.Amount) (payment.LodgementInstruction, error) {
 
 	m.mu.Lock()
-	b, ok := m.banks[id]
+	b, ok := m.banks[bic]
 	m.mu.Unlock()
 	if !ok {
-		return payment.LodgementInstruction{}, fmt.Errorf("mesh: no bank actor for participant %s", id)
+		return payment.LodgementInstruction{}, fmt.Errorf("mesh: no bank actor for %s", bic)
 	}
 	return b.lodge(ctx, asset, amount)
 }

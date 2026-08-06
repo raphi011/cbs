@@ -6,17 +6,23 @@
 // sample dataset at runtime via POST /admin/reset. This is a learning and
 // prototyping tool, not a production service.
 //
-// # Which store
+// # Which stores
 //
-// Without DATABASE_URL (or -database) the server runs on an ephemeral SQLite
-// database: zero setup, and every restart starts from the seeded scenario again.
-// With one, -database is a FILE PATH and the data outlives the process.
+// Without DATABASE_URL (or -database) the server runs on ephemeral SQLite
+// databases: zero setup, and every restart starts from the seeded scenario
+// again. With one, -database is a DIRECTORY and the data outlives the process.
 //
-// The flag keeps its name and its meaning barely changes, but what it takes
-// does: it used to be a Postgres DSN, and the store behind it used to be
-// store/mem when it was empty. Neither the server nor the developer needs a
-// database server now — nothing in `make dev`, `make run` or `go test ./...`
-// ever did, and now nothing anywhere does.
+// A DIRECTORY, because there is no longer one database to name. Each institution
+// holds its own — the clearing house's, the central bank's, and one per member
+// bank named by that bank's BIC — so the flag names the place they live rather
+// than the file. The set of banks is the set of files in it, which is why a
+// restart needs no counter and no registry: see store/sqlite.Set. Before Task
+// 18d this was a file path, and before store/sqlite it was a Postgres DSN with a
+// credential in it that the log line had to redact.
+//
+// Neither the server nor the developer needs a database server — nothing in
+// `make dev`, `make run` or `go test ./...` ever did, and now nothing anywhere
+// does.
 //
 // Seeding is idempotent, so the same wiring serves both: Populate creates the
 // scenario against an empty store and returns without touching a populated one,
@@ -62,39 +68,26 @@ var meshConfig = mesh.Config{
 // Sizing it against one handler would be sizing it against the optimistic case.
 const meshShutdown = 30 * time.Second
 
-// store is the store, narrowed to what this command needs.
-//
-// There is no shared store.Store type: the three layers each declare their own
-// Store interface, and Go allows a type only one Update method, so one concrete
-// store presents the narrower views as adapters. Payment() is the widest of the
-// three — payment.Tx embeds deposit.Tx, which embeds ledger.Tx — so handing the
-// network that one view is enough for all three layers to address the same data
-// inside the same unit of work.
-type store interface {
-	Payment() payment.Store
-	Close() error
-}
-
 func main() {
 	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per bank")
-	database := flag.String("database", os.Getenv("DATABASE_URL"), "SQLite file path; empty uses an ephemeral in-memory database")
+	database := flag.String("database", os.Getenv("DATABASE_URL"), "directory holding one SQLite database per institution; empty uses ephemeral in-memory ones")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
 	data := seed.New()
-	st, err := openStore(context.Background(), *database, data.Now, log)
+	stores, err := openStores(context.Background(), *database, data.Now, log)
 	if err != nil {
-		log.Error("opening the store", "error", err)
+		log.Error("opening the stores", "error", err)
 		os.Exit(1)
 	}
 	defer func() {
-		if err := st.Close(); err != nil {
-			log.Error("closing the store", "error", err)
+		if err := stores.Close(); err != nil {
+			log.Error("closing the stores", "error", err)
 		}
 	}()
 
-	nets := payment.NewNetworks(st.Payment(), data.Now)
+	nets := payment.NewNetworks(stores, data.Now)
 
 	// The mesh starts BEFORE the seed, and the order is load-bearing — it is the
 	// reverse of the order this process used until admission became a
@@ -127,13 +120,13 @@ func main() {
 
 	srv := api.NewServer(nets, msh, data.Populate, log)
 
-	entities, err := plan(context.Background(), nets.ClearingHouse(), *basePort)
+	entities, err := plan(context.Background(), stores, nets, *basePort)
 	if err != nil {
 		log.Error("planning the listeners", "error", err)
 		os.Exit(1)
 	}
 
-	shutdown, err := serve(entities, srv, log)
+	shutdown, err := serve(context.Background(), entities, srv, log)
 	if err != nil {
 		log.Error("starting the listeners", "error", err)
 		os.Exit(1)
@@ -178,9 +171,9 @@ func main() {
 	}
 }
 
-// openStore opens the database at path, or an ephemeral one when path is empty.
-// Open applies the embedded migrations either way, so a fresh file is usable
-// straight away.
+// openStores opens every institution's database under dir, or an ephemeral set
+// when dir is empty. OpenSet applies each shape's embedded migrations either
+// way, so a fresh directory is usable straight away.
 //
 // There is nothing to redact from the log line any more, and that is why the
 // function that used to do it is gone. A Postgres DSN routinely arrived from the
@@ -188,17 +181,17 @@ func main() {
 // was opened was the easiest place in this process to leak one; a filesystem
 // path carries no secret, so the guard has nothing left to guard and saying so
 // is better than keeping a function nothing needs.
-func openStore(ctx context.Context, path string, clock func() time.Time, log *slog.Logger) (store, error) {
-	st, err := sqlite.Open(ctx, path, clock)
+func openStores(ctx context.Context, dir string, clock func() time.Time, log *slog.Logger) (*sqlite.Set, error) {
+	set, err := sqlite.OpenSet(ctx, dir, clock)
 	if err != nil {
 		return nil, err
 	}
-	if path == "" {
-		log.Info("using an ephemeral in-memory database; state resets on restart")
+	if dir == "" {
+		log.Info("using ephemeral in-memory databases, one per institution; state resets on restart")
 	} else {
-		log.Info("using the database file", "path", path)
+		log.Info("using the database directory", "path", dir)
 	}
-	return st, nil
+	return set, nil
 }
 
 // defaultBasePort reads the PORT environment variable (the common convention

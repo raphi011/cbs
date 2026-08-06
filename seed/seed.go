@@ -204,15 +204,21 @@ type catalogue struct{ basic, premium product.ID }
 // They are spelled out rather than cached because payment.Networks mints on
 // demand and the seed builds one scenario once; a field per bank would be a
 // second index over the banks this builder is in the middle of creating.
-// bank is one member bank's own view, keyed by its ADDRESS.
+// bank is one member bank's own view, over that bank's own database, keyed by
+// its ADDRESS.
 //
 // It took a payment.ParticipantID, which is the same value under the other type
 // (see payment.AsBank), and it takes the BIC because that is what every caller
 // here now holds: the seed reads a submitter, a receiver, a returner and a
 // statement's member off agents and off the central bank's own records, all of
 // which are BICs. Converting once here beats converting at eleven call sites.
+//
+// It panics on a failure to open the bank's store, which is must's rule and not
+// a new one: every bank this builder names is one it founded itself, moments
+// ago, in this process, so a database that will not open is a programming bug
+// rather than a runtime condition.
 func (b *builder) bank(bic iso20022.BIC) *payment.Network {
-	return b.nets.Bank(payment.ParticipantID(bic))
+	return must(b.nets.Bank(b.ctx, payment.ParticipantID(bic)))
 }
 func (b *builder) csm() *payment.Network { return b.nets.ClearingHouse() }
 func (b *builder) cb() *payment.Network  { return b.nets.CentralBank() }
@@ -227,6 +233,15 @@ func must[T any](v T, err error) T {
 		panic(seedErr{err})
 	}
 	return v
+}
+
+// must2 is must for a call returning two values and an error. SettleCycle is the
+// only one, and a second generic beats spelling its error handling out.
+func must2[A, B any](a A, b B, err error) (A, B) {
+	if err != nil {
+		panic(seedErr{err})
+	}
+	return a, b
 }
 
 // check panics on a non-nil error from a call that returns only an error.
@@ -276,7 +291,10 @@ func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode
 	founded := must(b.mesh.Admit(b.ctx, name, bic, assets))
 	check(b.mesh.Drain(b.ctx))
 
-	bank := must(b.csm().GetBank(b.ctx, founded.ID))
+	// The bank's own row, out of the bank's own database. It was read through
+	// the clearing house's network while there was one store; the clearing
+	// house's schema has no banks table.
+	bank := must(b.bank(founded.BIC).GetBank(b.ctx, founded.ID))
 	if bank.Status != payment.BankMember {
 		check(fmt.Errorf("%s is %q after its admission conversation, want %q",
 			bank.BIC, bank.Status, payment.BankMember))
@@ -447,13 +465,13 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 // means a failure in the central bank's half surfaces as this seed failing rather
 // than as a dead letter discovered later.
 func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
-	must(b.mesh.Lodge(b.ctx, p.ID, "EUR", amount))
+	must(b.mesh.Lodge(b.ctx, p.BIC, "EUR", amount))
 	check(b.mesh.Drain(b.ctx))
 }
 
 // initiate runs all three halves of an initiation — the submitting bank's, the
-// receiving bank's and the clearing house's — in one unit of work, leaving the
-// payment Accepted in its scheme's open cycle.
+// receiving bank's and the clearing house's — leaving the payment Accepted in
+// its scheme's open cycle.
 //
 // The seed is one process building a scenario, so it plays every actor; the
 // mesh is what makes them separate. Composing the three halves here rather
@@ -467,59 +485,60 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 // runs before any actor exists, so there is nothing to send a message to and
 // nobody to answer one — and its whole job is to leave a FIXED scenario, which a
 // conversation carried out at startup could not promise.
+//
+// # It is THREE units of work now, and it has to be
+//
+// The three halves shared one Tx until the store split, and the doc here said
+// what that bought: the whole initiation or none of it, which in the mesh is
+// exactly what the three actors do not have. There is no Tx to share. A unit of
+// work is one database's, each institution has its own, and a statement that
+// spanned two of them is the thing this task removed — so what the seed gives up
+// is not a convenience but an impossibility.
+//
+// What that costs is the fixture's atomicity: a failure in the second half now
+// leaves the first half's writes committed in the submitting bank's database.
+// Nothing recovers from it and nothing tries to. The seed builds a hardcoded
+// scenario and panics on any error, so a half-built one is a programming bug
+// that fails startup — which is what it was before, one level of tidiness down.
 func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
-	var out payment.Payment
 	// The SUBMITTING bank, which the scheme's direction decides: the payer's
-	// bank pushes and the payee's bank pulls. The seed knows the request's
-	// scheme before it opens the unit of work, so this is settled here.
+	// bank pushes and the payee's bank pulls.
 	submitter := req.DebtorDetails.Agent
 	if scheme, ok := b.csm().Scheme(req.Scheme); ok && scheme.Direction() == payment.Pull {
 		submitter = req.CreditorDetails.Agent
 	}
-	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := b.bank(submitter).SubmitPaymentTx(ctx, tx, req)
-		if err != nil {
-			return err
-		}
-		// The RECEIVING bank answers, and it is the other one. Naming it is what
-		// picks the network AcceptInboundTx resolves the address in — its own
-		// register and no other, since Task 18a — and the seed is playing that
-		// bank as well as the submitting one.
-		receiver := p.CreditorDetails.Agent
-		if receiver == submitter {
-			receiver = p.DebtorDetails.Agent
-		}
-		if err := b.bank(receiver).AcceptInboundTx(ctx, tx, p.ID); err != nil {
-			return err
-		}
-		out, err = b.csm().AcceptAtCSMTx(ctx, tx, p.ID)
-		return err
-	}))
-	return out
+	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
+	// The RECEIVING bank answers, and it is the other one. Naming it is what
+	// picks the network AcceptInbound resolves the address in — its own register
+	// and no other, since Task 18a — and the seed is playing that bank as well as
+	// the submitting one.
+	receiver := p.CreditorDetails.Agent
+	if receiver == submitter {
+		receiver = p.DebtorDetails.Agent
+	}
+	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID))
+	return must(b.csm().AcceptAtCSM(b.ctx, p.ID))
 }
 
 // reject runs both halves of a rejection — the clearing house's transition and
-// the payer's bank's reversal of its own leg — in one unit of work, leaving the
-// payment Rejected with the payer's money back in their account.
+// the payer's bank's reversal of its own leg — leaving the payment Rejected with
+// the payer's money back in their account.
 //
 // Split for the same reason initiate is: there is no method that plays both
-// actors. Sharing the Tx keeps the seed's outcome the one it has always built —
-// the whole rejection or none of it — which in the mesh is exactly what the two
-// actors do not share. See RejectAtCSMTx on what that opens.
+// actors. The two used to share a Tx, which made the seed's rejection whole or
+// nothing where the mesh's is two units of work with an interval between them —
+// the seam RejectAtCSMTx documents. They cannot share one now: two institutions,
+// two databases. So the fixture has the mesh's shape here as well, and what it
+// still promises is the OUTCOME rather than the process.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
-	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		rejected, err := b.csm().RejectAtCSMTx(ctx, tx, id, code, reason)
-		if err != nil {
-			return err
-		}
-		// The payer's bank gives the money back, in its own book.
-		return b.bank(rejected.DebtorDetails.Agent).ReverseDebtorLegTx(ctx, tx, rejected, reason)
-	}))
+	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
+	// The payer's bank gives the money back, in its own book.
+	check(b.bank(rejected.DebtorDetails.Agent).ReverseDebtorLeg(b.ctx, rejected, reason))
 }
 
-// returnPayment runs all three institutions' halves of an R-transaction in one
-// unit of work, leaving the payment Returned, both customers put back where they
-// were and both banks' clearing suspense at zero:
+// returnPayment runs all three institutions' halves of an R-transaction, leaving
+// the payment Returned, both customers put back where they were and both banks'
+// clearing suspense at zero:
 //
 //   - the RETURNING bank's own customer leg, posted before it would have sent
 //     the pacs.004 — the clawback if that bank is the creditor's, the refund if
@@ -540,62 +559,61 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 // See settle for the whole of that argument, and for what the fixture gives up
 // by running the four halves together.
 //
-// The instruction handed to SettleReturnTx is built from the PAYMENT ROW here,
-// which is the one thing the mesh does differently rather than merely faster: in
-// the mesh both agents come off the pacs.004's OrgnlTxRef, because a settlement
-// agent under sub-project 8 holds no payment rows. The values are identical —
+// The instruction handed to SettleReturn is built from the CLEARING HOUSE's
+// payment row here, which is the one thing the mesh does differently rather than
+// merely faster: in the mesh both agents come off the pacs.004's OrgnlTxRef,
+// because a settlement agent holds no payment rows. The values are identical —
 // payment.ReturnMessage writes these same two fields and payment.ReadReturn
 // reads them back — and the way they were obtained is the whole difference.
+//
+// The four halves are four units of work, one per database. See initiate.
 func (b *builder) returnPayment(id payment.PaymentID, reason string) {
-	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := tx.GetPayment(ctx, id)
-		if err != nil {
-			return err
-		}
-		scheme, ok := b.csm().Scheme(p.Scheme)
-		if !ok {
-			return fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound)
-		}
-		returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-		other := p.DebtorDetails.Agent
-		if other == returner {
-			other = p.CreditorDetails.Agent
-		}
-		if _, err := b.bank(returner).PostReturnLegTx(ctx, tx, id, reason); err != nil {
-			return err
-		}
-		statements, err := b.cb().SettleReturnTx(ctx, tx, payment.ReturnInstruction{
-			PaymentID:     p.ID,
-			EndToEndID:    p.EndToEndID,
-			DebtorAgent:   p.DebtorDetails.Agent,
-			CreditorAgent: p.CreditorDetails.Agent,
-			Amount:        p.Amount,
-			Asset:         scheme.Asset(),
-			Reason:        reason,
-		})
-		if err != nil {
-			return err
-		}
-		for _, st := range statements {
-			if _, err := b.bank(st.Agent).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
-				Account:        st.Account,
-				Asset:          st.Asset,
-				Movement:       st.Movement,
-				ClosingBalance: st.ClosingBalance,
-				Reference:      st.Reference,
-				ValueDate:      st.ValueDate,
-			}); err != nil {
-				return err
-			}
-		}
-		_, err = b.bank(other).PostReturnLegTx(ctx, tx, id, reason)
-		return err
+	p := must(b.csm().GetPayment(b.ctx, id))
+	scheme, ok := b.csm().Scheme(p.Scheme)
+	if !ok {
+		check(fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound))
+	}
+	returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	other := p.DebtorDetails.Agent
+	if other == returner {
+		other = p.CreditorDetails.Agent
+	}
+	must(b.bank(returner).PostReturnLeg(b.ctx, id, reason))
+	statements := must(b.cb().SettleReturn(b.ctx, payment.ReturnInstruction{
+		PaymentID:     p.ID,
+		EndToEndID:    p.EndToEndID,
+		DebtorAgent:   p.DebtorDetails.Agent,
+		CreditorAgent: p.CreditorDetails.Agent,
+		Amount:        p.Amount,
+		Asset:         scheme.Asset(),
+		Reason:        reason,
 	}))
+	b.advise(statements)
+	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
 }
 
-// settle runs all three institutions' halves of a cut-off in one unit of work,
-// leaving the cycle Settled, every payment Settled and every bank's clearing
-// suspense back at zero:
+// advise books each member's mirror leg from the statement the settlement agent
+// produced, in that member's own book and in a unit of work of its own.
+//
+// It is shared by returnPayment and settle because the two produce the same
+// statements and do the same thing with them, and it became worth extracting
+// when the loop stopped being three lines inside somebody else's Tx.
+func (b *builder) advise(statements []payment.SettlementStatement) {
+	for _, st := range statements {
+		must(b.bank(st.Agent).PostSettlementAdvice(b.ctx, payment.AdvisedMovement{
+			Account:        st.Account,
+			Asset:          st.Asset,
+			Movement:       st.Movement,
+			ClosingBalance: st.ClosingBalance,
+			Reference:      st.Reference,
+			ValueDate:      st.ValueDate,
+		}))
+	}
+}
+
+// settle runs all three institutions' halves of a cut-off, leaving the cycle
+// Settled, every payment Settled and every bank's clearing suspense back at
+// zero:
 //
 //   - the settlement agent's netting transaction, in the central bank's book;
 //   - each member's booking of the camt.053 it would have been sent, which is
@@ -612,47 +630,25 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 // conversation carried out at startup could not promise a fixed outcome.
 //
 // What the seed gives up by doing so is exactly what the mesh exists to model:
-// here the three halves commit or roll back together, and in the mesh they are
-// three units of work with an unreconciled interval between them. The fixture is
-// the outcome, not the process.
+// the halves used to commit or roll back together, and in the mesh they are
+// several units of work with an unreconciled interval between them. Since the
+// store split they are several here too — one database each, and no statement
+// spans two. The fixture is the outcome, not the process, and that is now the
+// only thing it could be.
 func (b *builder) settle(id payment.CycleID) {
-	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		_, statements, err := b.cb().SettleCycleTx(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		for _, st := range statements {
-			if _, err := b.bank(st.Agent).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
-				Account:        st.Account,
-				Asset:          st.Asset,
-				Movement:       st.Movement,
-				ClosingBalance: st.ClosingBalance,
-				Reference:      st.Reference,
-				ValueDate:      st.ValueDate,
-			}); err != nil {
-				return err
-			}
-		}
-		// The cycle is re-read for its payment list, which the settlement does
-		// not carry: a settlement agent answers about net positions per MEMBER
-		// and holds no way to enumerate the batch. That is why the fan-out is
-		// the clearing house's in the mesh, and why the seed has to ask the
-		// cycle row here rather than the statements above.
-		cycle, err := tx.GetCycle(ctx, id)
-		if err != nil {
-			return err
-		}
-		for _, pid := range cycle.PaymentIDs {
-			p, err := tx.GetPayment(ctx, pid)
-			if err != nil {
-				return err
-			}
-			if _, err := b.bank(p.CreditorDetails.Agent).PostCreditorLegTx(ctx, tx, pid); err != nil {
-				return err
-			}
-		}
-		return nil
-	}))
+	_, statements := must2(b.cb().SettleCycle(b.ctx, id))
+	b.advise(statements)
+
+	// The cycle is re-read for its payment list, which the settlement does not
+	// carry: a settlement agent answers about net positions per MEMBER and holds
+	// no way to enumerate the batch. That is why the fan-out is the clearing
+	// house's in the mesh, and why the seed asks the CLEARING HOUSE's cycle row
+	// here rather than the statements above.
+	cycle := must(b.csm().GetCycle(b.ctx, id))
+	for _, pid := range cycle.PaymentIDs {
+		p := must(b.csm().GetPayment(b.ctx, pid))
+		must(b.bank(p.CreditorDetails.Agent).PostCreditorLeg(b.ctx, pid))
+	}
 }
 
 // initSCT submits a credit transfer. It is the SUBMITTING (debtor's) bank, so

@@ -26,14 +26,104 @@ type Store interface {
 	Close() error
 }
 
+// Stores is the SET of databases one process holds: one per member bank, the
+// clearing house's, and the central bank's. It is what Networks is built over,
+// and it is the whole of what Task 18d adds to the wiring.
+//
+// # Why the set is an interface and not a map
+//
+// Because a bank's database is opened, and opening can fail. A map would have to
+// be complete before the first act, which is the thing this system cannot
+// promise: banks are founded while the process runs, and the set of them is the
+// set of databases rather than a list somebody keeps. Bank therefore takes a
+// context and returns an error, and those two additions are the whole reason
+// Networks.Bank grew both.
+//
+// # Asking for a bank is what makes it exist
+//
+// There is no Provision and nothing mints an id. A bank's database is named by
+// its BIC — see AsBank — so a joining bank arrives already knowing the name of
+// the file it is about to write, and Bank opens it or creates it. That is not a
+// hole in the admission rules: WHO IS A MEMBER is the clearing house's roster
+// and nothing else, and an unadmitted database is a file nobody routes to. The
+// alternative — a set that refuses to open a database for a bank the roster does
+// not name — would make founding impossible, since a founding bank is
+// deliberately not in the roster yet.
+//
+// # It is one process's set, not the system's
+//
+// Nothing about this type says the databases are on one machine or reachable
+// from one another. The point of the split is that no statement can span two of
+// them; holding the handles in one value is what a composition root does, and
+// api hands each listener exactly one institution's view out of it, exactly as
+// it hands out ports.
+type Stores interface {
+	// Bank returns the store holding one member bank's database, opening it on
+	// the first ask and returning the same handle thereafter. Two calls for one
+	// BIC must return stores that see each other's rows — otherwise a bank would
+	// forget what it wrote between two acts.
+	Bank(ctx context.Context, bic iso20022.BIC) (Store, error)
+
+	// Banks is every member bank this set holds a database for, ascending by
+	// address so that two calls agree and a restart plans the same listeners.
+	//
+	// It is what replaces the clearing house's ListBanks at the composition
+	// root, and it answers a different question in the one case that matters.
+	// ListBanks said "every bank whose row the network holds" and this says
+	// "every bank whose database exists", which INCLUDES the founded and
+	// unadmitted bank the roster deliberately omits — a bank with a licence, a
+	// book and customers that no scheme has admitted. cmd/server's listener plan
+	// is the caller and that bank is exactly the one it must not drop: a founded
+	// bank still has an operator, and the way in for it is Mesh.Admit.
+	//
+	// Nothing in the domain calls it and nothing should. An institution asking
+	// which OTHER institutions exist is the crossing this whole task removes;
+	// this is the process asking which databases it has, which is a question
+	// about deployment.
+	Banks(ctx context.Context) ([]iso20022.BIC, error)
+
+	// ClearingHouse and CentralBank are the two institutions that are
+	// configuration rather than data: there is exactly one of each, it exists
+	// before any bank does, and neither can fail to be there. That is why
+	// neither takes a context or returns an error where Bank does both.
+	ClearingHouse() Store
+	CentralBank() Store
+
+	// Reset empties every store in the set, so the system behaves like a freshly
+	// migrated one.
+	//
+	// It is on the SET rather than on a Store because clearing the system is
+	// nobody's act in the domain — no institution can empty another's database,
+	// and that is the whole point — while api's POST /admin/reset is one request
+	// that has to empty all of them. See api.Server.Reset, its only caller
+	// outside tests.
+	Reset(ctx context.Context) error
+
+	// Close closes every store in the set. It is idempotent, for the reason
+	// Store.Close is: a test closes what it hands to a suite that closes it too.
+	Close() error
+}
+
 // Tx embeds deposit.Tx — and, through it, ledger.Tx — plus lending.Tx, so one
 // concrete transaction spans every layer a participant drives. That is what
 // lets Bank.RunEndOfDay accrue an overdraft and a loan in a single unit
 // of work: two batches, one commit, so a failure halfway cannot leave a bank
 // with a day of interest on its loans and none on its overdrafts.
 //
-// Network-scoped entities — banks, payments, mandates, cycles, settlements —
-// belong to no single bank and are stored under ledger.NetworkBook.
+// It is ONE interface over three schemas, and that is the shape Task 18c left
+// behind rather than an oversight. Go has no way to give the clearing house a Tx
+// without PutBank on it, so every institution's store implements every method
+// and two thirds of them have no table underneath. A method reached on the wrong
+// institution's store is refused by a named sentinel — store/sqlite's
+// ErrNotInThisShape — rather than by a driver string, because a crossing is
+// something a caller has to be able to handle and a test has to be able to
+// assert.
+//
+// What used to stand here said the network-scoped entities — banks, payments,
+// mandates, cycles, settlements — belonged to no single bank and lived under
+// ledger.NetworkBook. There is no network left for anything to belong to. Each
+// of those rows has exactly one owner, each owner has a database, and each row
+// is keyed and sequenced under that owner's book. See Network.book.
 type Tx interface {
 	deposit.Tx
 	lending.Tx

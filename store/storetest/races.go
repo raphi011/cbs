@@ -8,11 +8,22 @@
 // of exactly that class shipped into a branch and were found by hand, one probe
 // each, which is why this file exists.
 //
-// # Two entry points, and the split is a property of the store
+// # Four entry points, and the split is a property of what each race NEEDS
 //
-// RunRaces races whole units of work against each other. Any store can run it,
-// because each racer's transaction opens, runs and commits without waiting on
-// another.
+// Three of them race whole units of work against each other. Any store can run
+// them, because each racer's transaction opens, runs and commits without waiting
+// on another. They are three rather than one because a race belongs to whichever
+// institution's database it happens in, and after Task 18d that is a real
+// division rather than a way of reading the code:
+//
+//   - RunClearingHouseRaces and RunCentralBankRaces each take ONE institution's
+//     store, because every statement in them is that institution's. They are
+//     what "a store race" now means.
+//   - RunSystemRaces takes the whole SET, because its two cases drive an
+//     admission and a submission — acts that touch three databases and could not
+//     be expressed against one. Nothing in it names a table or a dialect; what it
+//     needs is N+2 stores that cannot see each other, which is the domain's
+//     payment.Stores and not an implementation.
 //
 // RunConcurrentTxRaces needs several units of work OPEN at the same instant: it
 // holds every racer at a barrier after BEGIN and before its first statement, so
@@ -58,12 +69,21 @@ import (
 // and an assertion that happens to depend on ordering has to say so.
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
-// RunRaces runs the races that need only concurrent units of work. Every store
-// implementation runs it.
+// RunSystemRaces runs the two races that span institutions: an admission and a
+// submission, each driven through payment's own acts across the whole set of
+// stores.
 //
-// newStore must return a store with no state in it; the suite calls it once per
-// subtest.
-func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
+// newStores must return a set with no state in any of its databases; the suite
+// calls it once per subtest.
+//
+// These two used to sit beside the other two in one RunRaces, and the split is
+// Task 18d's doing rather than a tidy-up. An admission is four units of work at
+// three institutions and a submission reaches the payer's bank and the clearing
+// house, so neither has ONE store to be a race in. What they still are is a
+// store question — whether the orderings the domain arranged survive the store
+// underneath — which is why they stay in this package and take an interface the
+// domain declares.
+func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 	t.Helper()
 
 	// The central bank's chart of accounts is resolved by find-or-create *by
@@ -106,9 +126,9 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// and this case is what will notice if the replacement no longer orders the
 	// find-or-create.
 	t.Run("ConcurrentAdmissionsAgreeOnOneCentralBank", func(t *testing.T) {
-		s := newStore(t)
 		ctx := context.Background()
-		nets := payment.NewNetworks(s.Payment(), frozen)
+		stores := newStores(t)
+		nets := payment.NewNetworks(stores, frozen)
 
 		// One address each. The central bank keys its own member record by BIC,
 		// so three banks on one BIC would be one member holding one reserve
@@ -134,23 +154,32 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		assertNoError(t, err)
 		assertEqual(t, "central bank subledgers", len(subledgers), 2)
 
-		// Every participant's reserve account must sit in the SAME subledger.
-		// This is the assertion that would fail on a divergence: with two
-		// "Member Reserves" subledgers each bank's reserves would be real, and
-		// invisible to the other's settlement.
-		participants, err := nets.ClearingHouse().ListBanks(ctx)
-		assertNoError(t, err)
-		assertEqual(t, "participants", len(participants), len(names))
+		// Every member's reserve account must sit in the SAME subledger. This is
+		// the assertion that would fail on a divergence: with two "Member
+		// Reserves" subledgers each bank's reserves would be real, and invisible
+		// to the other's settlement.
+		//
+		// The account numbers come off the CENTRAL BANK's own member rows, which
+		// is the institution that opened them. They used to come off each bank's
+		// row, read through a ListBanks at the clearing house — a crossing twice
+		// over, and one the clearing house's schema no longer has a table for.
+		var members []payment.SettlementMember
+		assertNoError(t, stores.CentralBank().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+			var err error
+			members, err = tx.ListSettlementMembers(ctx)
+			return err
+		}))
+		assertEqual(t, "settlement members", len(members), len(names))
 
 		var reserves ledger.SubledgerID
-		for _, p := range participants {
-			acct, err := cb.GetAccount(ctx, p.Assets["EUR"].Settlement)
+		for _, m := range members {
+			acct, err := cb.GetAccount(ctx, m.Accounts["EUR"])
 			assertNoError(t, err)
 			if reserves == "" {
 				reserves = acct.SubledgerID
 				continue
 			}
-			assertEqual(t, "reserve subledger for "+p.Name, acct.SubledgerID, reserves)
+			assertEqual(t, "reserve subledger for "+m.Name, acct.SubledgerID, reserves)
 		}
 	})
 
@@ -186,16 +215,16 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// stated once, at the store interface, for a rule the acts have not made
 	// yet.
 	t.Run("ConcurrentSubmissionsOfOneReferenceAcceptOne", func(t *testing.T) {
-		s := newStore(t)
 		ctx := context.Background()
-		nets := payment.NewNetworks(s.Payment(), frozen)
+		nets := payment.NewNetworks(newStores(t), frozen)
 
 		debtorBank, err := Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
 		assertNoError(t, err)
 		creditorBank, err := Admit(ctx, nets, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
 		assertNoError(t, err)
 		// The payer's bank, and the race below is eight of its own submissions.
-		debtorNet := nets.Bank(debtorBank.ID)
+		debtorNet, err := nets.Bank(ctx, debtorBank.ID)
+		assertNoError(t, err)
 
 		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,
 			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-ALICE-0001"})
@@ -229,10 +258,26 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		assertNoError(t, err)
 		assertEqual(t, "Alice's balance after eight submissions of one reference", balance.Book, opening-amount)
 
-		payments, err := nets.ClearingHouse().ListPayments(ctx)
+		// In the PAYER'S BANK's own database, which is where a submission writes.
+		// It was the clearing house's while there was one store and one payment
+		// row; there are three databases now and a submission has not reached the
+		// clearing house — that takes a pacs.008, and this case sends none.
+		payments, err := debtorNet.ListPayments(ctx)
 		assertNoError(t, err)
 		assertEqual(t, "payment rows", len(payments), 1)
 	})
+}
+
+// RunClearingHouseRaces runs the races that happen entirely in the CLEARING
+// HOUSE's database.
+//
+// newStore must return that institution's store with no state in it; the suite
+// calls it once per subtest. It takes a payment.Store rather than the wider
+// Store because the clearing house has no book of accounts to reach — its schema
+// creates no ledger tables at all — so a wider handle would be a promise this
+// institution cannot keep.
+func RunClearingHouseRaces(t *testing.T, newStore func(*testing.T) payment.Store) {
+	t.Helper()
 
 	// Two admissions of one address, and they were live in the commit that split
 	// admission into acts.
@@ -262,7 +307,10 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentAdmissionsOfOneBICAdmitOne", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		csm := payment.NewNetworks(s.Payment(), frozen).ClearingHouse()
+		// One institution, one store, so NewNetwork rather than the factory: a
+		// Networks over a single store is not a thing that can exist any more,
+		// and this case never needed a second institution.
+		csm := payment.NewNetwork(s, frozen, payment.AsClearingHouse())
 
 		// Several applicants, one address, a DIFFERENT admission reference each
 		// — which is the only case AdmitMemberTx refuses, and the case that must
@@ -309,7 +357,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 						"EUR": ledger.AccountID(fmt.Sprintf("200.100.00%d", i)),
 					},
 				}
-				return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+				return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 					_, err := csm.AdmitMemberTx(ctx, tx, ack)
 					return err
 				})
@@ -327,7 +375,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 			// produces is an applicant told it was admitted while the entry
 			// names somebody else's admission, and that is what this reads.
 			var entry payment.RosterEntry
-			assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+			assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 				var err error
 				entry, err = tx.GetRosterEntry(ctx, bic)
 				return err
@@ -341,6 +389,19 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 			assertOneWinner(t, "AdmitMemberTx", errs, payment.ErrBICAlreadyAdmitted)
 		}
 	})
+
+}
+
+// RunCentralBankRaces runs the races that happen entirely in the CENTRAL BANK's
+// database.
+//
+// newStore must return that institution's store with no state in it; the suite
+// calls it once per subtest. See RunClearingHouseRaces on why the argument is a
+// payment.Store — here the reason is the other way round: the settlement agent
+// HAS a book, and the case below reaches it through payment.Tx, which embeds
+// ledger.Tx.
+func RunCentralBankRaces(t *testing.T, newStore func(*testing.T) payment.Store) {
+	t.Helper()
 
 	// The lost update the same ordering closes, on the settlement agent's own
 	// row.
@@ -357,11 +418,11 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentSettlementAccountOpeningsKeepEveryAsset", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		cb := payment.NewNetworks(s.Payment(), frozen).CentralBank()
+		cb := payment.NewNetwork(s, frozen, payment.AsCentralBank())
 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {
-			return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+			return s.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 				_, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
 					Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: assets[i], Ref: "adm-aurora",
 				})
@@ -374,7 +435,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 
 		// Both requests are legitimate and both must survive: one acmt.007 names
 		// one currency, so this is how a two-currency bank is admitted.
-		assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 			member, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
 			if err != nil {
 				return err
@@ -392,7 +453,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		// what catches the lost update from the other side: the row can name two
 		// accounts while the book holds three.
 		reserves := 0
-		assertNoError(t, s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		assertNoError(t, s.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 			accounts, err := tx.ListAccounts(ctx, payment.CentralBankBook)
 			if err != nil {
 				return err
