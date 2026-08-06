@@ -648,7 +648,7 @@ The reserve account is the ultimate destination of all [[net-positions|net settl
   },
   "central-bank-reserves": {
     title: "Central-bank reserves",
-    body: `The **central bank** holds one **reserve liability** per participant **per [[asset]]** — what it owes each member bank, in each kind of money it issues. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
+    body: `The **central bank** holds one **reserve liability** per **admitted member** **per [[asset]]** — what it owes each member bank, in each kind of money it issues. It opens each one itself, in its own book, when it answers that bank's [[bank-admission|application to join]]; a [[bank-founding|founded]] bank has none. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
 
 \`\`\`
 Central-bank ledger:
@@ -755,7 +755,7 @@ This is the classic **nostro/vostro** check — the bank's reserve asset against
   },
   "unclaimed-balances": {
     title: "Unclaimed balances",
-    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every participant gets one per [[asset]] it operates in, created when it joins the network.
+    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every bank gets one per [[asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it.
 
 The case it exists for: a payee closes their account between their bank's acceptance of the payment and the cut-off. [[account-status|Closed]] is the one status that refuses a credit, and crediting it anyway leaves money no withdrawal can reach and no second close can clear.
 
@@ -783,7 +783,7 @@ The payment still reaches **Settled**, because it did: the reserves moved and th
 | Direction | the bank **owes** this | the bank **is owed** this |
 | Counterparty | a payee it cannot identify | a biller it has identified perfectly well |
 
-Same kind of event — a credit reversed after the bank has already paid out — landing on opposite sides of the balance sheet according to whether the bank knows who owes whom. Every participant gets one per [[asset|asset]] it operates in, created when it joins the network.
+Same kind of event — a credit reversed after the bank has already paid out — landing on opposite sides of the balance sheet according to whether the bank knows who owes whom. Every bank gets one per [[asset|asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it.
 
 It is reached in exactly one case: the clawback is **forced** *and* the biller's account is **closed**.
 

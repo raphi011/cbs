@@ -20,10 +20,14 @@ import (
 // so it can open customer accounts straight away. What it cannot do is take a
 // cash deposit, since funding raises a reserve and no settlement agent holds an
 // account for it yet — 422, naming the membership. It is in no routing
-// directory either, so nothing it takes part in can settle; mesh/doc.go records
-// what that does and does not stop, measured, because "no clearing house routes
-// to it" is not a check anybody makes. The DTO says which of the two states it
-// is in: Founded here, and Member once the scheme has answered.
+// directory either, and the cost of that is wider than this bank: nothing STOPS
+// a payment being addressed to it, and a cut-off carrying one cannot be
+// instructed at all, so EVERY member in that cycle is left with its payments
+// Cleared, its payees unpaid and its payers' money in suspense until this bank
+// is admitted. mesh/doc.go measures it and records that no test pins it; "no
+// clearing house routes to it" is not a check anybody makes. The DTO says which
+// of the two states this bank is in: Founded here, and Member once the scheme
+// has answered.
 //
 // Whether the scheme accepts is not this call's to report. It is decided at two
 // other institutions and arrives as a message, so the honest status code is 202
