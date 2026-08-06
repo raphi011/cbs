@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -789,6 +790,65 @@ func TestTheClearingHouseRefusesASecondInstitutionOnAnAdmittedAddress(t *testing
 	})
 }
 
+// TestTheClearingHouseRefusesAnApplicationOnAnotherBanksAddress is the
+// comparison the relay did not make: an acmt.007 names its applicant in the
+// DOCUMENT and its sender in the HEADER, and nothing required them to agree.
+//
+// payment.RecordMembershipTx makes exactly this comparison one hop later, and
+// the two are not the same check made twice: that one is a bank refusing a
+// message about somebody else, made from its own id, and this one is a clearing
+// house refusing an applicant who is not the sender. Without it a bank could
+// apply on an address it does not hold, and what it would get is a settlement
+// account opened in the central bank's book for that address and a routing entry
+// written from the answer — neither of which the impostor ever touches, and
+// neither of which the settlement agent could have refused, because an account
+// servicer asked about one address cannot tell who asked.
+//
+// The refusal is answered to the SENDER, which is the one message on this path
+// addressed to somebody other than the applicant. The applicant never asked for
+// anything.
+func TestTheClearingHouseRefusesAnApplicationOnAnotherBanksAddress(t *testing.T) {
+	h := newMeshHarness(t)
+
+	mark := h.messagesSeen()
+	env, err := payment.AdmissionMessage(
+		payment.AdmissionRequest{Name: "Nordhaven Bank", BIC: joinerBIC, Asset: "EUR", Ref: "not-my-address"},
+		h.cfg.CentralBankBIC,
+		payment.MessageContext{
+			From: h.debtorBIC, To: h.cfg.ClearingHouseBIC, MsgID: "on-behalf-of", Now: testTime,
+		})
+	if err != nil {
+		t.Fatalf("composing the application: %v", err)
+	}
+	if err := h.mesh.send(h.debtorBIC, h.cfg.ClearingHouseBIC, env); err != nil {
+		t.Fatalf("sending the application: %v", err)
+	}
+	h.drain(t)
+
+	for _, m := range h.messagesFrom(mark) {
+		if hopOf(t, m).to == h.cfg.CentralBankBIC {
+			t.Error("the request was relayed to the settlement agent; the applicant is not who sent it")
+		}
+	}
+	if n := countHops(t, h.messagesFrom(mark), hop{h.cfg.ClearingHouseBIC, h.debtorBIC, "acmt.011.001.03"}); n != 1 {
+		t.Errorf("the SENDER was sent %d acmt.011, want 1", n)
+	}
+	if n := countHops(t, h.messagesFrom(mark), hop{h.cfg.ClearingHouseBIC, joinerBIC, "acmt.011.001.03"}); n != 0 {
+		t.Errorf("the named applicant was sent %d acmt.011; it never asked for anything", n)
+	}
+	// And nothing was written for the address the impostor named.
+	if _, err := h.getRosterEntry(joinerBIC); !errors.Is(err, payment.ErrRosterEntryNotFound) {
+		t.Errorf("the clearing house routes to %s: %v", joinerBIC, err)
+	}
+	err = h.net.Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.GetSettlementMember(ctx, joinerBIC)
+		return err
+	})
+	if !errors.Is(err, payment.ErrSettlementMemberNotFound) {
+		t.Errorf("the settlement agent holds an account for %s: %v", joinerBIC, err)
+	}
+}
+
 // TestAFoundedBankIsNotAdmittedByARestart is the behaviour change joinRoster's
 // doc describes, asserted rather than stated.
 //
@@ -832,6 +892,149 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 	// possible at all.
 	if _, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly); err != nil {
 		t.Errorf("finishing a founded bank's admission after a rejoin: %v", err)
+	}
+}
+
+// TestAFoundedBankCanNeitherPayNorBePaid is the enforcement of the sentence this
+// sub-project's spec has stated since it was written, and which was measured
+// FALSE in both halves before this test existed.
+//
+// The two halves failed for two different reasons and ended in one place:
+//
+//   - Paying. "DepositTx refuses a founded bank, so it has no funded customer to
+//     pay from" is a claim about ONE way of funding a customer. An arranged
+//     overdraft is another, and lending.DisburseTx is a third, and neither
+//     consults membership. "postDebtorLegTx refuses an asset it holds no accounts
+//     in" never fires either: FoundBankTx gives a bank internal accounts in every
+//     asset it is founded with.
+//   - Being paid. A founded bank has a mesh actor from the moment Mesh.Admit
+//     reserves its address, and nothing on the way in consults the roster.
+//
+// Both reached Cleared, and at the cut-off csm.settlementLegs could not name a
+// non-member in the pacs.009 — so the whole cycle stayed Closed with every other
+// member's payments in it. That is the blast radius this test's third assertion
+// is about: the other member's payment must SETTLE.
+//
+// The refusal is asserted at the door, which is where it is made. The clearing
+// house makes it again from its own row and
+// TestTheClearingHouseWillNotClearForANonMember in package payment is what holds
+// that one — measured, the clearing house's refusal alone leaves the paying
+// direction's money in a suspense, because the pacs.002 that would reverse it is
+// addressed through the roster too and dead-letters at the non-member.
+func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
+	const foundedIBAN = "FR7630006000011234567890189"
+
+	// found builds the state Mesh.Admit's synchronous half leaves: a bank with a
+	// book and an actor, in no roster, whose customer has spendable money from an
+	// arranged overdraft rather than from a deposit.
+	found := func(t *testing.T, h *meshHarness) (*payment.Bank, deposit.Account) {
+		t.Helper()
+		ctx := context.Background()
+		b, err := h.net.FoundBank(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+		if err != nil {
+			t.Fatalf("FoundBank: %v", err)
+		}
+		if err := h.mesh.AddBank(b); err != nil {
+			t.Fatalf("AddBank: %v", err)
+		}
+		return b, h.openCustomer(t, b, "Nora", "EUR", harnessFunding, foundedIBAN)
+	}
+
+	for _, tc := range []struct {
+		name string
+		req  func(t *testing.T, h *meshHarness, b *payment.Bank, acct deposit.Account) payment.InitiatePaymentRequest
+		// payer names the bank whose clearing suspense the refused instruction
+		// would have posted into, so the assertion reads the right book.
+		payer func(h *meshHarness, founded *payment.Bank) payment.ParticipantID
+		want  string
+	}{
+		{
+			name:  "it pays",
+			payer: func(_ *meshHarness, founded *payment.Bank) payment.ParticipantID { return founded.ID },
+			req: func(t *testing.T, h *meshHarness, b *payment.Bank, acct deposit.Account) payment.InitiatePaymentRequest {
+				return payment.InitiatePaymentRequest{
+					Scheme: payment.SchemeSEPACT,
+					Debtor: payment.PartyRef{
+						Participant: b.ID, Account: acct.ID,
+						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
+					},
+					Creditor:        h.creditorRef(creditorIBAN),
+					Amount:          harnessAmount,
+					Description:     "from a bank no scheme has admitted",
+					CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
+				}
+			},
+			want: "payer's bank",
+		},
+		{
+			name:  "it is paid",
+			payer: func(h *meshHarness, _ *payment.Bank) payment.ParticipantID { return h.debtorPID },
+			req: func(t *testing.T, h *meshHarness, b *payment.Bank, acct deposit.Account) payment.InitiatePaymentRequest {
+				return payment.InitiatePaymentRequest{
+					Scheme: payment.SchemeSEPACT,
+					Debtor: h.debtorRef(),
+					Creditor: payment.PartyRef{
+						Participant: b.ID, Account: acct.ID,
+						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
+					},
+					Amount:          harnessAmount,
+					Description:     "to a bank no scheme has admitted",
+					CreditorDetails: payment.PartyDetails{Name: "Nora"},
+				}
+			},
+			want: "payee's bank",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMeshHarness(t)
+			ctx := context.Background()
+			b, acct := found(t, h)
+
+			// One healthy payment between two members, submitted BEFORE the
+			// refused one so that it is in the same open cycle. It is the other
+			// member whose money used to stop.
+			healthy := h.submitCreditTransfer(t)
+			h.drain(t)
+
+			// The payer on the refused instruction, whichever of the two it is.
+			// Its suspense is read either side of the refusal rather than
+			// compared with zero: on the "it is paid" case the payer is also the
+			// bank that submitted the healthy payment, whose own money is
+			// legitimately sitting there.
+			payer := h.getBank(t, tc.payer(h, b))
+			before, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense)
+			if err != nil {
+				t.Fatalf("reading the payer's clearing suspense: %v", err)
+			}
+
+			_, err = h.mesh.Submit(ctx, tc.req(t, h, b, acct))
+			if !errors.Is(err, payment.ErrBankNotAdmitted) {
+				t.Fatalf("submitting %s a founded bank: %v, want %v", tc.name, err, payment.ErrBankNotAdmitted)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal says %q and does not name the %s", err, tc.want)
+			}
+
+			// Refused at the door means refused before the submitting bank's
+			// half ran, so no debtor leg was posted. Task 16's on-us guard is in
+			// the same place for the same reason.
+			after, err := payer.Ledger.BookBalance(ctx, payer.Assets["EUR"].Suspense)
+			if err != nil {
+				t.Fatalf("reading the payer's clearing suspense: %v", err)
+			}
+			if after != before {
+				t.Errorf("the refused submission moved the payer's clearing suspense from %d to %d", before, after)
+			}
+
+			// And the cut-off completes, so the other member is paid. This is
+			// the assertion the whole finding was about: before the guard the
+			// cycle stayed Closed with this payment in it.
+			h.closeCycle(t)
+			h.drain(t)
+			if got := h.payment(t, healthy.ID); got.Status != payment.Settled {
+				t.Errorf("the other member's payment is %v, want %v", got.Status, payment.Settled)
+			}
+		})
 	}
 }
 

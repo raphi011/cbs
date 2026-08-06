@@ -1051,6 +1051,15 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 // RecordMembershipTx's own comparison against the bank's own address
 // (ErrNotThisBanksAdmission), and it is a different question — whether the
 // message is actionable at all, against whose message it is.
+//
+// Nor does it check what an act would WRITE. This table's rows are all about the
+// message, and a message can be perfectly readable and still leave one of the two
+// acts wrong: an acknowledgement in an asset the bank operates in none of, or one
+// moving a settlement account the bank already holds, are both refused inside
+// RecordMembershipTx and belong to no row here. Adding them would make this table
+// stop being the correspondence it claims to be — and, since the clearing house
+// legitimately records assets the bank has no accounts in, would refuse the
+// clearing house for the bank's reason.
 func checkAcknowledgement(in AdmissionAcknowledgement) error {
 	if err := in.BIC.Validate(); err != nil {
 		return fmt.Errorf("payment: this acknowledgement names no account owner this system can address: %w", err)
@@ -1107,6 +1116,27 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // quoting "" compare equal and the refusal above would never fire; and an empty
 // or malformed BIC, because this row is KEYED by it — measured at
 // `entry={BIC: Assets:[EUR] …}`, a row nothing can address.
+//
+// # What it can leave behind, enumerated
+//
+// RecordMembershipTx needed two guards beyond the message's because the state it
+// writes is not the message it reads; this act was enumerated the same way and
+// needed none, which is worth recording rather than leaving as an absence.
+// checkAcknowledgement guarantees a non-empty account list in which every asset
+// and every identifier is non-empty, so the loop below always appends at least
+// one asset and this row can never be written clearing in nothing. It only
+// APPENDS, so no value already on the entry is replaced and there is no
+// equivalent of the moved-account case. The reference and the address are the
+// row's other two fields and both are refused empty before this runs.
+//
+// What it CAN leave is an entry naming an asset the bank holds no internal
+// accounts in, and that is deliberate rather than unguarded: the assets are the
+// servicer's answer about its own book, and this institution has no business
+// asking the bank what it wanted. The bank's own act declines such an account
+// for itself. The consequence is real and it is a clearing house routing a
+// scheme its member cannot settle in, which is why AcceptAtCSMTx reads
+// RosterEntry.Assets before it takes a payment into a cycle — see
+// bothBanksAreMembersTx.
 //
 // # It writes an ADDRESS and not a description
 //
@@ -1236,7 +1266,8 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // both write it, and the loser's account numbers would be lost. See
 // admissionSequenceTx.
 //
-// # An account for an asset this bank does not operate in is not recorded
+// # An account for an asset this bank does not operate in is not recorded —
+// unless that is all of them
 //
 // The acknowledgement lists every account the servicer holds for the address,
 // which can be more than this bank has internal accounts for. There is nowhere
@@ -1245,13 +1276,34 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // either, because the servicer is answering about its own book rather than
 // about this bank's. What the bank records is what it can use.
 //
-// An acknowledgement this act cannot use at all is a different thing and is
-// refused whole, by checkAcknowledgement — which both acts driven from an
-// acknowledgement run, and which is what keeps AdmissionRef's empty value
-// meaning one thing. An acknowledgement naming NO account is among them, and it
-// is not a harmless no-op: recorded, it leaves a Member that settles through no
-// account and whose true acknowledgement is then refused for ever by the guard
-// above.
+// What it CANNOT be is all of them. An acknowledgement every account of which is
+// skipped that way would still take the bank to Member and still burn its
+// AdmissionRef, leaving a member that settles through nothing and refuses its own
+// true acknowledgement for ever — which is exactly the wedge checkAcknowledgement
+// refuses an EMPTY account list for, reached with a non-empty one. So the act
+// counts what it filed and refuses zero, with the same sentinel, because it is
+// the same fact about the message: it names no account this bank can use.
+//
+// # The two guards below are about the STATE, not the message
+//
+// checkAcknowledgement is a correspondence table against
+// ReadAdmissionAcknowledgement and is complete against it, refusal for refusal.
+// Neither of these is a message that reader would refuse, and neither is
+// derivable from that table: they are what this ACT would leave behind. Written
+// by enumerating the outcomes rather than the inputs — a Member with a settlement
+// reference it never learned, and a Member with a reference moved off the account
+// the settlement agent actually holds — because deriving from the other side's
+// list is what left the first three holes this act has had.
+//
+// The moved-account arm is ErrSettlementAccountReplaced, and it compares rather
+// than forbids: an acmt.010 lists every account the servicer holds for the
+// address, so a redelivery and a second currency's answer both repeat accounts
+// already recorded, and equal is an extension. See that sentinel for what a
+// different value cost when nothing compared it.
+//
+// An acknowledgement this act cannot use at all is refused before either, by
+// checkAcknowledgement — which both acts driven from an acknowledgement run, and
+// which is what keeps AdmissionRef's empty value meaning one thing.
 //
 // # It appends one audit event
 //
@@ -1289,13 +1341,29 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantI
 			ErrBankAlreadyAdmitted, by, bank.AdmissionRef, in.Ref)
 	}
 
-	for asset, account := range in.Accounts {
+	// And WHICH ACCOUNTS. The two guards above are about the message's
+	// identifiers; these two are about the STATE this act would leave behind,
+	// which is not the same list and was twice found not to be. In asset order,
+	// so that an acknowledgement conflicting in two assets is refused about the
+	// same one on every run — Accounts is a map and Go randomises it.
+	var usable int
+	for _, asset := range slices.Sorted(maps.Keys(in.Accounts)) {
 		accts, held := bank.Assets[asset]
 		if !held {
 			continue
 		}
+		account := in.Accounts[asset]
+		if accts.Settlement != "" && accts.Settlement != account {
+			return nil, fmt.Errorf("%w: %s settles %s through %s and this acknowledgement quotes %s",
+				ErrSettlementAccountReplaced, by, asset, accts.Settlement, account)
+		}
 		accts.Settlement = account
 		bank.Assets[asset] = accts
+		usable++
+	}
+	if usable == 0 {
+		return nil, fmt.Errorf("%w: it names %v and %s operates in none of them",
+			ErrAdmittedAccountUnusable, slices.Sorted(maps.Keys(in.Accounts)), by)
 	}
 	bank.Status = BankMember
 	bank.AdmissionRef = in.Ref
@@ -2748,6 +2816,9 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 	if err != nil {
 		return Payment{}, err
 	}
+	if err := s.bothBanksAreMembersTx(ctx, tx, p); err != nil {
+		return Payment{}, err
+	}
 	cycle, err := tx.GetOpenCycle(ctx, p.Scheme)
 	if errors.Is(err, ErrCycleNotFound) {
 		return Payment{}, ErrCycleNotOpen
@@ -2770,6 +2841,60 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 		return Payment{}, err
 	}
 	return p, nil
+}
+
+// bothBanksAreMembersTx is the clearing house asking whether it clears for the
+// two banks this payment is between.
+//
+// It is asked of the PARTIES' agents and not of the submitter, for
+// mesh.ErrOnUsPayment's reason: which bank submits flips with the scheme's
+// direction, and both directions of this defect were reachable — a founded bank
+// paying and a founded bank being paid. Both BICs are on the payment already,
+// derived rather than asserted (see SubmitPaymentTx, which fills
+// CreditorDetails.Agent from the counterparty's own row and the submitting side
+// from the bank that ran it), so this reads the roster and nothing else. That is
+// the clearing house's own key and its own table, which is what makes this the
+// one of the two membership guards that survives Task 18.
+//
+// ErrRosterEntryNotFound is turned into ErrBankNotAdmitted rather than passed
+// through, because the two say different things to the layer above: the lookup
+// coming back empty is not by itself a refusal, and only here is it one. Every
+// other error is passed through as it arrived, for the reason SubmitPaymentTx's
+// agent derivation gives at length — a dropped connection is not a statement
+// about the instruction.
+//
+// A payment refused here has already had its debtor leg posted, and getting the
+// customer's money back is csm.clear's job rather than this one's: it rejects
+// the payment and the pacs.002 makes the payer's bank reverse. That works in one
+// of the two directions and not the other, which is what Mesh.Submit's door
+// guard is for. ErrBankNotAdmitted sets both out.
+func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) error {
+	scheme, ok := s.Scheme(p.Scheme)
+	if !ok {
+		return fmt.Errorf("%w: %s, so nothing says which asset it clears in", ErrSchemeNotFound, p.Scheme)
+	}
+	for _, side := range []struct {
+		role  string
+		agent iso20022.BIC
+	}{
+		{"payer's bank", p.DebtorDetails.Agent},
+		{"payee's bank", p.CreditorDetails.Agent},
+	} {
+		entry, err := tx.GetRosterEntry(ctx, side.agent)
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrRosterEntryNotFound):
+			return fmt.Errorf("%w: the %s, %s, is not a member of %s",
+				ErrBankNotAdmitted, side.role, side.agent, p.Scheme)
+		default:
+			return err
+		}
+		if !slices.Contains(entry.Assets, scheme.Asset()) {
+			return fmt.Errorf("%w: the %s, %s, is a member of %s and clears in %v, not %s",
+				ErrBankNotAdmitted, side.role, side.agent, p.Scheme, entry.Assets, scheme.Asset())
+		}
+	}
+	return nil
 }
 
 // debtorSideTx is everything a payment's own debtor bank checks about it: the

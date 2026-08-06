@@ -410,6 +410,47 @@ The fix belongs where Task 16 put the on-us refusal: at the door, where the
 payment enters the mesh. Recorded here rather than fixed inside a documentation
 sweep, which was the right call by the task that found it.
 
+###### Neither half held, and it is enforced now (2026-08-06, whole-branch review)
+
+Left as written above. The ruling's own *cannot pay* paragraph is wrong, and both
+of its reasons are:
+
+- `DepositTx` is one way of funding a customer and not the only one. An
+  **arranged overdraft** — `overdraftLimit` on `POST /deposit-accounts`, no
+  membership gate anywhere on that path — gives a founded bank's customer
+  spendable money, and `lending.DisburseTx` gives it more. Measured: the customer
+  went to −250,000 against its limit and the bank's clearing suspense to +250,000.
+- `postDebtorLegTx` never fires, because `FoundBankTx` opens a founded bank's
+  four internal accounts in **every** asset it is founded with. There is no asset
+  it "holds no accounts in".
+
+So a founded bank could pay as well as be paid, and the paying direction ended in
+the same stranded cycle plus one thing the other did not have: the `pacs.002`
+that would have told the submitter was addressed through the roster and
+**dead-lettered**, so nobody was told and the payment still reached `Cleared`.
+
+**Refused now, by `payment.ErrBankNotAdmitted`, in two places.** `Mesh.Submit`
+asks it of both parties at the door — beside `ErrOnUsPayment`, for that guard's
+own stated reason: `Submit` is synchronous, so a refusal any later has a
+committed debtor leg to unwind. `AcceptAtCSMTx` asks it again from the clearing
+house's own roster row, which is the institution whose judgement it is and the
+only one of the two whose read survives Task 18. Measured with the door guard
+removed, the clearing house's refusal alone leaves the paying direction's money
+in a suspense for exactly the dead-letter reason above — so "one refusal closes
+both" is true of the two DIRECTIONS and not of the two remedies.
+
+It also reads `RosterEntry.Assets`, which had no reader at all: a bank admitted
+in one asset of two — reachable, because one `acmt.007` asks for one currency and
+the two conversations commit separately — is refused in the other.
+
+A payment that is already `Cleared` against a non-member gets **no route out**,
+deliberately. Both doors now refuse before `Accepted`, so nothing this code can
+run produces one; a `Cleared` → `Rejected` transition added for it would be an
+operator remedy whose only reachable input is data this system can no longer
+write, which is the field-nothing-reads shape one state further on. Admitting the
+bank still settles such a cycle whole, and that remains the answer for a store
+written by an older build.
+
 The ordering closes the rest. The address is reserved at the mesh **before**
 anything is written, and the actor is dropped again if the write fails: an
 in-memory rollback is reliable, and a rollback of a committed unit of work is

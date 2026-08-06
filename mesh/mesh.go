@@ -513,12 +513,20 @@ func (m *Mesh) Start(ctx context.Context) error {
 // # It reads the roster and not the banks, and that is a behaviour change
 //
 // The roster is what says who is a member. A bank that has been founded and not
-// admitted has a row of its own and no entry there, and it gets no actor: it
-// cannot pay, because Mesh.Submit has nobody to hand its customer's instruction
-// to, and it cannot be paid, because the clearing house would answer RC01 for
-// its address. That is the truth about such a bank rather than a limitation —
-// it has a licence, a book and customers, and no scheme has admitted it — and
-// the way in is Mesh.Admit, which registers the actor itself.
+// admitted has a row of its own and no entry there, and after a restart it gets
+// no actor — so this transport cannot reach it at all, which is a stronger thing
+// than a refusal and a narrower one: it is true of a restarted mesh and false in
+// the process that admitted the bank, where Mesh.Admit registers the actor at
+// founding so the applicant can receive its own acknowledgement.
+//
+// What is true of such a bank in both cases is that it cannot pay and cannot be
+// paid, and that is a REFUSAL and not a consequence of this read:
+// payment.ErrBankNotAdmitted, made at Mesh.Submit and again by the clearing
+// house. This paragraph asserted it as a property of the missing actor for two
+// tasks, and it was measurably false in-process for both of them. The state
+// itself is the truth about such a bank rather than a limitation — it has a
+// licence, a book and customers, and no scheme has admitted it — and the way in
+// is Mesh.Admit.
 //
 // It reads BOTH the roster and the bank rows, and the second read is a crossing
 // rather than a convenience: Mesh.banks is keyed by ParticipantID, because that
@@ -1286,6 +1294,10 @@ func (m *Mesh) takeDeadLetters() error {
 // ErrOnUsPayment. That refusal is this system declining a ROUTE and not the
 // payment; a book transfer between two customers of one bank is a real product
 // and a task of its own.
+//
+// A payment to or from a bank the scheme has NOT ADMITTED is refused in the same
+// place and for the same kind of reason — see payment.ErrBankNotAdmitted, which
+// records what it stops and why the clearing house refuses it a second time.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := m.net.Scheme(req.Scheme)
 	if !ok {
@@ -1312,6 +1324,45 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	if req.Debtor.Participant != "" && req.Debtor.Participant == req.Creditor.Participant {
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
 			req.Debtor.Participant, ErrOnUsPayment)
+	}
+	// And a payment one of whose banks the scheme has not admitted.
+	//
+	// Asked HERE, at the same door and of the same two parties, because the
+	// answer that matters is the one given before the submitting bank's half
+	// runs: that half posts the debtor leg, and every refusal downstream of it
+	// has a committed posting to unwind. The clearing house asks it again from
+	// its own row — payment.Network.bothBanksAreMembersTx — and that one is the
+	// judgement; this one is the door declining to carry the instruction at all,
+	// which is what makes the API answer a 422 rather than a 202 followed by a
+	// rejection nobody can be told about. See payment.ErrBankNotAdmitted.
+	//
+	// It goes through the ParticipantID crossing, which the clearing house's does
+	// not: a request names its parties by id and the roster is keyed by BIC, so
+	// each of these reads a bank's row to learn its address first. That is the
+	// crossing payment.Network.GetRosterEntry records on its ParticipantID
+	// argument, and Task 18 is what closes it.
+	for _, side := range []struct {
+		role string
+		ref  payment.PartyRef
+	}{
+		{"payer's bank", req.Debtor},
+		{"payee's bank", req.Creditor},
+	} {
+		// A side naming no bank is skipped rather than refused, exactly as the
+		// on-us guard above skips it: "not a member" is not the truth about a
+		// party the request did not name, and what IS wrong with such a request
+		// is SubmitPaymentTx's to say (ErrParticipantNotFound for the submitting
+		// side, ErrCounterpartyNotNamed for the other).
+		if side.ref.Participant == "" {
+			continue
+		}
+		if _, err := m.net.GetRosterEntry(ctx, side.ref.Participant); err != nil {
+			if errors.Is(err, payment.ErrRosterEntryNotFound) {
+				return payment.Payment{}, fmt.Errorf("mesh: the %s, %s, is not a member of %s: %w",
+					side.role, side.ref.Participant, req.Scheme, payment.ErrBankNotAdmitted)
+			}
+			return payment.Payment{}, err
+		}
 	}
 	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
 

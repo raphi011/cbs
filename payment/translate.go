@@ -71,6 +71,18 @@ var reasonTable = []reasonMapping{
 	{ErrMandateExceeded, "ErrMandateExceeded", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
 	{ErrParticipantNotFound, "ErrParticipantNotFound", iso20022.StatusReasonBankIdentifierIncorrect},
+
+	// The same code for a narrower fact, and the code set's own gloss covers
+	// both: RC01 is "the BIC does not identify a reachable participant", which
+	// is true of a bank that does not exist and equally true of one this scheme
+	// has not admitted. It is classified in this block rather than below because
+	// it does reach a counterparty — when the PAYEE's bank is the non-member,
+	// csm.clear turns AcceptAtCSMTx's refusal into the RJCT its submitter
+	// reverses on. In the other direction the answer dead-letters, because the
+	// bank to be told is the non-member itself; that direction is refused at
+	// Mesh.Submit's door instead, before any message exists. See
+	// ErrBankNotAdmitted, which sets out both.
+	{ErrBankNotAdmitted, "ErrBankNotAdmitted", iso20022.StatusReasonBankIdentifierIncorrect},
 	{ErrUnaddressableAccount, "ErrUnaddressableAccount", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrIdentifierMismatch, "ErrIdentifierMismatch", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrAmbiguousAddress, "ErrAmbiguousAddress", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
@@ -208,22 +220,27 @@ var reasonTable = []reasonMapping{
 	// records that the standard itself makes this rejection prose where it makes
 	// a payment rejection a code.
 	//
-	// ErrBICAlreadyAdmitted is what reaches a counterparty. The clearing house
-	// makes it before it relays a request, and mesh.csm.relayAdmission turns it
-	// into an acmt.011 addressed to the applicant — carrying the words of the
-	// error itself, because RjctnRsn is where a reason goes on that message and
-	// it is prose.
+	// What reaches a counterparty is what the CLEARING HOUSE refuses, because it
+	// refuses a request while its sender is still waiting: mesh.csm.relayAdmission
+	// turns each into an acmt.011 carrying the words of the error itself, because
+	// RjctnRsn is where a reason goes on that message and it is prose.
+	// ErrBICAlreadyAdmitted is answered to the applicant. ErrNotThisBanksAdmission
+	// is answered to the SENDER when that actor makes it, which is the one message
+	// on the path addressed to somebody other than the applicant — the applicant
+	// named by an impostor's request never asked for anything.
 	//
 	// Everything the BANK refuses is never answered at all, whatever the code
 	// set, because a bank is the LAST hop of an admission and has nobody to tell:
 	// each becomes a dead letter. Those that say the message is not this bank's
-	// business — ErrNotThisBanksAdmission about which bank,
+	// business — ErrNotThisBanksAdmission again, about which bank, and
 	// ErrBankAlreadyAdmitted about which admission — are a defect in the ROUTING
 	// rather than a judgement the sender can act on, and they take
 	// ErrStatementNotForThisBank's classification for its reason. The rest are
 	// refusals a sender COULD act on, and go unanswered for the same structural
 	// reason: the counterparty who could be told is the applicant, and the
-	// applicant is this bank.
+	// applicant is this bank. So one sentinel here is answered at one institution
+	// and dead-lettered at the other, which the empty code accommodates and a
+	// code would not.
 	//
 	// No paragraph here says how many rows there are, deliberately. The
 	// phrasings this block has already retired were each falsified by a
@@ -240,6 +257,7 @@ var reasonTable = []reasonMapping{
 	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
 	{ErrAdmissionNotIdentified, "ErrAdmissionNotIdentified", ""},
 	{ErrAdmittedAccountUnusable, "ErrAdmittedAccountUnusable", ""},
+	{ErrSettlementAccountReplaced, "ErrSettlementAccountReplaced", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
 }
 

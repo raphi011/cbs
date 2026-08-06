@@ -390,6 +390,17 @@ func (c *csm) releaseReturn(held heldReturn, id payment.PaymentID) error {
 // The field went instead, because nothing read it: routing is an address, and
 // payment.RosterEntry records the whole of that reversal.
 //
+// # It refuses two different things, and only one of them is about the roster
+//
+// WHOSE application this is comes first and reads no store: an acmt.007 names
+// its applicant in the document and its sender in the header, and this compares
+// them. Without it a bank could apply on an address it does not hold, and the
+// settlement agent would open an account for that address without ever being
+// able to tell who asked — an account servicer sees one request about one BIC.
+// See payment.ErrNotThisBanksAdmission, which is the same comparison made by the
+// BANK one hop later about the answer, and
+// TestTheClearingHouseRefusesAnApplicationOnAnotherBanksAddress.
+//
 // # The refusal lives here, one institution before the account is opened
 //
 // The roster is the DOMAIN's truth about who holds an address and the mesh's
@@ -437,6 +448,23 @@ func (c *csm) relayAdmission(ctx context.Context, from iso20022.BIC, env iso2002
 		// on. See centralBank.refuseAdmission, which makes the same distinction
 		// one hop on.
 		return fmt.Errorf("mesh: %s could not read the admission request %s sent it: %w", c.bic, from, err)
+	}
+	// WHOSE application this is. An acmt.007 names its applicant in the document
+	// and the sender in the header, and nothing made them agree: a bank could
+	// apply on another address, and what it would get is an account opened in the
+	// settlement agent's book for a BIC it does not hold and a routing entry
+	// written from the answer. payment.RecordMembershipTx makes exactly this
+	// comparison one hop later (ErrNotThisBanksAdmission) — that one is a bank
+	// refusing a message about somebody else, and this is the clearing house
+	// refusing an applicant who is somebody else.
+	//
+	// It is answered rather than dropped, and this is the one refusal on this
+	// path whose acmt.011 goes somewhere other than the applicant: the sender is
+	// who asked, the sender has an actor because it sent, and the applicant it
+	// named never asked for anything.
+	if from != in.BIC {
+		return c.refuseAdmission(from, doc, in, fmt.Errorf("%w: %s applied on behalf of %s",
+			payment.ErrNotThisBanksAdmission, from, in.BIC))
 	}
 	entry, err := c.ops.GetRosterEntryByBIC(ctx, in.BIC)
 	switch {

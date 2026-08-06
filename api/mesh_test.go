@@ -497,6 +497,82 @@ func TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName(t *testing.T) {
 		`{"account":"`+acct+`","amount":1000,"description":"opening"}`, http.StatusOK)
 }
 
+// TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection is what a founded
+// bank means to this API on the payments surface, and it is the half that used
+// to answer 202.
+//
+// Both directions were measured before the guard existed. Being paid: POST
+// /payments to a founded bank answered 202 and the payment reached Cleared.
+// Paying: an ARRANGED OVERDRAFT — the field this very request carries — gives a
+// founded bank's customer spendable money without any deposit, so its submission
+// was accepted too and posted a debtor leg. Both ended at the same cut-off
+// failure, which stranded every other member's payments in the cycle.
+//
+// 422 in both directions now, from the same door mesh.ErrOnUsPayment is refused
+// at, and the state is temporary in exactly the way the funding refusal above is
+// temporary: the same two instructions go through once the scheme has answered.
+// That is why the central bank's door is held rather than raced — without the
+// gate the bank would usually be a Member by the time the first request landed.
+func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
+	srv, msh := newAPIHarness(t)
+	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
+	defer open()
+
+	const zIBAN = "DE89-BANKZ-3003"
+	pid := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`,
+		http.StatusAccepted)["id"].(string)
+	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
+		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
+	}
+	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
+		`{"name":"Nora","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`","overdraftLimit":100000,`+
+			`"identifiers":[{"scheme":"IBAN","value":"`+zIBAN+`"}]}`,
+		http.StatusCreated)["id"].(string)
+
+	alice := seededParty(t, srv, aliceIBAN)
+	party := func(ref payment.PartyRef, iban string) string {
+		return fmt.Sprintf(`{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}}`,
+			ref.Participant, ref.Account, iban)
+	}
+	nora := payment.PartyRef{Participant: payment.ParticipantID(pid), Account: deposit.AccountID(acct)}
+	toBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
+		`"description":"to a bank no scheme has admitted","creditorName":"Nora"}`,
+		party(alice, aliceIBAN), party(nora, zIBAN))
+	fromBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
+		`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson"}`,
+		party(nora, zIBAN), party(alice, aliceIBAN))
+
+	directions := []struct {
+		name  string
+		by    http.Handler
+		body  string
+		names string
+	}{
+		{"paid", payerRoutes(t, srv), toBankZ, "payee's bank"},
+		{"paying", bank(srv, pid), fromBankZ, "payer's bank"},
+	}
+	for _, tc := range directions {
+		rec := postJSON(t, tc.by, "/payments", tc.body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Fatalf("a founded bank %s = %d, want 422 (body: %s)", tc.name, rec.Code, rec.Body)
+		}
+		if msg := rec.Body.String(); !strings.Contains(msg, "not a member") || !strings.Contains(msg, tc.names) {
+			t.Errorf("the refusal for %q does not name the %s: %s", tc.name, tc.names, msg)
+		}
+	}
+
+	// Once the scheme has answered, both go through — which is what says this
+	// refusal is about a state and not about the request.
+	open()
+	drain(t, msh)
+	for _, tc := range directions {
+		if rec := postJSON(t, tc.by, "/payments", tc.body); rec.Code != http.StatusAccepted {
+			t.Errorf("after the admission, %s = %d, want 202 (body: %s)", tc.name, rec.Code, rec.Body)
+		}
+	}
+	drain(t, msh)
+}
+
 // TestAReseededNetworkCanStillBePaidThrough is the guarantee that moved when
 // Reset stopped calling JoinRoster.
 //

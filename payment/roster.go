@@ -126,6 +126,17 @@ type RosterEntry struct {
 	// asset, which is the difference between this row and SettlementMember
 	// above.
 	//
+	// Its reader is Network.bothBanksAreMembersTx, from AcceptAtCSMTx: the
+	// clearing house will not take a payment into a cycle unless both banks are
+	// admitted in the scheme's asset. That reader was added after the field, and
+	// the field had none in the meantime — the shape that deleted Name out of
+	// this same row. What makes it a reader and not a formality is the
+	// PARTLY-ADMITTED bank: one acmt.007 asks for one currency, so a two-asset
+	// admission commits twice and a settlement agent that answers one and refuses
+	// the other leaves a Member with internal accounts in both assets and a
+	// settlement account in one. Nothing else in the system would refuse its
+	// payments in the other asset, and the cut-off could not build their pacs.009.
+	//
 	// Being a slice, it is ORDERED and it can REPEAT, and both stores must
 	// answer the same way about both — store/pg keys the child table by
 	// position for exactly that reason, and storetest's

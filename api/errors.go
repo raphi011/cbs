@@ -185,7 +185,17 @@ func errorStatus(err error) int {
 		// account, and the reason it is mapped here rather than in the handler
 		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
 		// and a rule written twice is a rule that can differ by route.
-		errors.Is(err, mesh.ErrOnUsPayment):
+		errors.Is(err, mesh.ErrOnUsPayment),
+		// A payment to or from a bank the scheme has not admitted is the same
+		// category again: the request is well formed, both accounts are real, and
+		// what refuses it is that this route does not carry it — a founded bank
+		// has a licence and a book and no place in a clearing scheme. It is
+		// mapped here rather than in the handler for mesh.ErrOnUsPayment's stated
+		// reason, and it arrives here from Mesh.Submit; the clearing house's own
+		// copy of the refusal is asked after the 202 has been answered and is
+		// reported as a rejected payment, not as a status. See
+		// payment.ErrBankNotAdmitted.
+		errors.Is(err, payment.ErrBankNotAdmitted):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),
