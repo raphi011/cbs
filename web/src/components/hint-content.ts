@@ -809,9 +809,9 @@ An account can hold several identifiers at once, and gain or lose one without it
 
 A payment records the address it was reached by whether or not the caller quoted one: the bank that owns a leg fills in that account's single identifier in the scheme's scheme, and refuses to choose (\`ErrAmbiguousAddress\`) when there are several. The submitting bank does this for its own side; the far side's address is back-filled by the *other* bank when the message reaches it — \`addressFor\` runs per leg, at the bank that owns that leg, because the account-owning bank is the authority on how its own account is addressed, not the bank that merely quoted it. That is a claim about the address, and about the payment itself, not about the whole system: see [[counterparty-details]] for what is and is not looked up when a payment is built, and for the separate, pre-submission lookup that can still resolve a name. The address is a record, not an identity — which is why a [[mandate]] compares its parties by bank and account only. Reissuing the debtor's IBAN would otherwise kill every mandate on the account, permanently.
 
-**An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides — \`deposit.Identifier.MatchValue\`, used by both stores and pinned by \`storetest\` so they cannot drift. Without it a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
+**An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides — \`deposit.Identifier.MatchValue\`, which the store re-implements in SQL and \`storetest\` pins the two against each other, because the compiler cannot. Without it a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
 
-**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every bank at read time — every bank the network has founded, not only the scheme's members — and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
+**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it: a constraint would fire on the race this read-then-write leaves open, which the register does not, and would fire as a constraint violation rather than as the domain's own refusal. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every bank at read time — every bank the network has founded, not only the scheme's members — and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
   },
   "counterparty-details": {
     title: "Counterparty details",
@@ -900,8 +900,8 @@ What is *not* a column is the balance — see [[derived-balance]]. What is not a
     body: `There is no \`balance\` column anywhere. A book balance is computed on demand by summing the account's entries, signed by [[normal-balance]] — so the account's *normal* direction is a parameter of the query, not a constant in it:
 
 \`\`\`sql
-SELECT COALESCE(SUM(CASE WHEN direction = $3 THEN amount ELSE -amount END), 0)
-FROM entries WHERE book_id = $1 AND account_id = $2;   -- $3 = the account's normal direction
+SELECT COALESCE(SUM(CASE WHEN direction = ? THEN amount ELSE -amount END), 0)
+FROM entries WHERE book_id = ? AND account_id = ?;   -- the first ? is the normal direction
 \`\`\`
 
 Hardcoding \`debit\` there would be right for every asset and expense account and would negate every liability, equity and revenue one: a customer's checking account holding 750.00 would report −750.00.
@@ -934,7 +934,9 @@ Nesting one unit of work inside another is refused rather than allowed: the inne
   },
   "row-locking": {
     title: "Locking a row before you decide on it",
-    body: `Checking a balance and then posting against it is two steps, and between them another transaction can post too — so both see enough money and together they overdraw the account. The check has to be locked to the write that depends on it:
+    body: `Checking a balance and then posting against it is two steps, and between them another transaction can post too — so both see enough money and together they overdraw the account. The check has to be tied to the write that depends on it, and there are two ways to do that.
+
+**Prevent it.** Postgres takes the lock at the read:
 
 \`\`\`sql
 SELECT id FROM accounts
@@ -945,7 +947,9 @@ SELECT id FROM accounts
 
 \`ORDER BY id\` is not cosmetic. Two transactions touching overlapping accounts in *different* orders would each hold a row the other wants — a deadlock. Taking locks in one agreed order means the second one simply waits.
 
-This is exactly what a single process-wide mutex was doing for free in the in-memory store, which is why the hazard only becomes visible when the state moves into a database. See [[idempotency-race]] for the second race it was hiding, and [[unit-of-work]] for the scope the locks are held over.`,
+**Or detect it.** SQLite admits one writer at a time and *refuses* a transaction that read at one snapshot and then tries to write after somebody else has committed. There is nothing to lock and nothing to order: the loser is turned away, the whole [[unit-of-work|unit of work]] is run again with fresh reads, and the second withdrawal now sees the balance the first one left and is refused by the domain's own rule rather than by the database's. That is what this system does — the lock method exists in the store interface and has no statement behind it.
+
+Both answers exist because the hazard does. A single process-wide mutex was hiding it for free in the in-memory store, which is why it only becomes visible when the state moves into a database. See [[idempotency-race]] for the second race it was hiding.`,
   },
   "idempotency-race": {
     title: "Idempotency under concurrency",
@@ -965,7 +969,7 @@ A reversal is closed the same way, with a **conditional update** whose row count
 
 \`\`\`sql
 UPDATE transactions SET status = 'Reversed'
- WHERE book_id = $1 AND id = $2 AND status = 'Posted';
+ WHERE book_id = ? AND id = ? AND status = 'Posted';
 -- 0 rows → someone else already reversed it
 \`\`\`
 
@@ -984,7 +988,7 @@ CREATE TABLE accounts (
 );
 \`\`\`
 
-A single-column key would force globally unique numbering and destroy the [[ledger-vs-subledger|chart of accounts]] as a readable, per-bank structure. Every query is scoped the same way: a missing \`WHERE book_id = $1\` does not error, it quietly returns another bank's rows.
+A single-column key would force globally unique numbering and destroy the [[ledger-vs-subledger|chart of accounts]] as a readable, per-bank structure. Every query is scoped the same way: a missing \`WHERE book_id = ?\` does not error, it quietly returns another bank's rows.
 
 The [[payment-lifecycle|payment layer]]'s own entities — participants, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.`,
   },

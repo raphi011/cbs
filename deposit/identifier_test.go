@@ -84,7 +84,7 @@ func TestMatchValueStripsIBANSeparatorsAndNothingElse(t *testing.T) {
 	}
 }
 
-// Matches is the comparison both stores must use, and it is not ==: two
+// Matches is the comparison a store must use, and it is not ==: two
 // identifiers that differ only in an IBAN's display separators name one
 // address, and two that differ in scheme never do.
 func TestIdentifierMatches(t *testing.T) {

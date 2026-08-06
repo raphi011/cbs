@@ -17,7 +17,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // One *tx spans the catalogue and the ledger, so catalogue rows and GL rows
-// commit or roll back together — the same claim store/mem's twin makes.
+// commit or roll back together — which under a real BEGIN/COMMIT is a claim
+// about this code rather than a side effect of one process-wide lock.
 var _ product.Tx = (*tx)(nil)
 
 func (t *tx) PutProduct(ctx context.Context, book ledger.BookID, p product.Product) error {
@@ -96,10 +97,14 @@ func (t *tx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Pr
 }
 
 // PutProductVersion upserts under (product, effective day). The day key is
-// derived with product.VersionDayKey — the same function store/mem keys its map
-// with, and the same one GetProductVersionAsOf compares against.
+// derived with product.VersionDayKey — the same function GetProductVersionAsOf
+// compares against.
 //
-// It does not refuse a write to a published row; see store/mem's twin for why.
+// It does not refuse a write to a published row, and could not: what makes such
+// a write illegal is the row's PREVIOUS state, which neither this statement nor
+// a CHECK can see. product.Catalogue refuses it, and the version hash is the one
+// control that survives a direct UPDATE — see the schema, on
+// product_versions.published_at.
 func (t *tx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
 	if err := t.write(); err != nil {
 		return err

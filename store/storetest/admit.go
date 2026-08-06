@@ -17,16 +17,15 @@ import (
 //
 // Several suites need a bank that is a Member, and none of them is testing the
 // conversation: payment's own suites are about what each act does, mesh's
-// operator and roster suites want a member to act on, store/pg's are about two
-// transactions racing, and RunRaces in this package races the acts themselves.
-// A helper each would be one copy per suite of a composition that must not
-// drift.
+// operator and roster suites want a member to act on, and RunRaces in this
+// package races the acts themselves. A helper each would be one copy per suite
+// of a composition that must not drift.
 //
 // It moved here from store/testenv at Task 17.0, and the reason is a constraint
 // rather than a preference: RunRaces needs it, and this package must not import
-// an implementation, because every implementation's tests import this package.
+// an implementation, because the implementation's tests import this package.
 // Nothing about the composition itself is backend-specific — it takes a
-// payment.Network and never names a store — which is why the move is a move and
+// payment.Network and never names a store — which is why the move was a move and
 // not a rewrite.
 //
 // The conversation itself is tested where it happens, in mesh: mesh's harness

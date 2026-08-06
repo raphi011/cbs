@@ -41,8 +41,10 @@
 --     zero time.Time, which several fields use as "unset", and SQLite sorts
 --     NULL first in ASC, which is what the listings want.
 --   * iota enums are INTEGER, holding the Go constant's value.
---   * Free-form maps and the audit payload are TEXT with a json_valid CHECK —
---     a constraint store/mem could never hold.
+--   * Free-form maps and the audit payload are TEXT with a json_valid CHECK.
+--     It is the only constraint in this file that no layer above the store
+--     duplicates: nothing in the domain asks whether a document parses, so an
+--     unparseable one is refused here or nowhere.
 --   * Every listed table carries a monotonic `seq`, allocated MAX(seq)+1 on
 --     insert and left alone by the upsert branch, so editing a row does not
 --     move it to the end of its list. Listings are ORDER BY created_at, seq —
@@ -76,18 +78,37 @@ CREATE TABLE ledgers (
     --
     -- First, the domain does not hold that invariant. A ledger, a subledger and
     -- an account are identified by their generated ID; names are labels and are
-    -- allowed to repeat. ledger/numbering_test.go's TestSubledgerNumbering
-    -- creates three subledgers all called "S" in one book precisely to check the
-    -- numbering, and store/mem accepts it. A constraint here would make this
-    -- store refuse a write store/mem performs, which is the one thing
-    -- store/storetest exists to forbid while more than one store exists.
+    -- allowed to repeat, because two customers called John Smith at one bank is
+    -- not an error and neither is a bank filing two subledgers under one
+    -- heading. ledger/numbering_test.go's TestSubledgerNumbering creates three
+    -- subledgers all called "S" in one book precisely to check the numbering.
+    --
+    -- This used to be argued as a divergence — a constraint one store could hold
+    -- and a Go map could not — and that reading expired with the second store.
+    -- What is left is the reason underneath it, which never needed one: a name
+    -- is not an identity here, so a constraint asserting that it is would refuse
+    -- a write the domain has already decided to allow.
     --
     -- Second, the race is closed one layer up, by an ID allocation taken before
-    -- the find-or-create runs. NextID(NetworkBook, …) writes id_sequences, so a
-    -- second concurrent caller blocks there until the first commits and then
-    -- sees the Central Bank ledger the first created. The counter serializes the
-    -- whole operation, not just the number it hands out. storetest's
-    -- Races/ConcurrentAdmissionsAgreeOnOneCentralBank pins it, on every store.
+    -- the find-or-create runs. NextID(NetworkBook, …) writes id_sequences, and
+    -- writing is what makes a transaction the database's writer, so a second
+    -- concurrent caller waits there until the first commits and then sees the
+    -- Central Bank ledger the first created. The counter serializes the whole
+    -- operation, not just the number it hands out.
+    --
+    -- What that ordering is worth on THIS store is measured, and it is less than
+    -- it was: with payment.admissionSequenceTx made to return nil, storetest's
+    -- Races/ConcurrentAdmissionsAgreeOnOneCentralBank passes ten runs out of
+    -- ten, on the ephemeral store and on a WAL file alike. SQLite admits one
+    -- writer, so a loser is refused at its first write and Store.Update re-runs
+    -- the unit of work — reading again, after the winner's commit, and finding
+    -- the ledger. The ordering is now a second guard rather than the only one,
+    -- and no test in this repository can see it go. It stays because it costs
+    -- nothing and because Task 18 puts the counter and this table in different
+    -- databases, at which point the ordering serializes nothing at all and the
+    -- retry is what is left — which is that task's to settle, not this one's.
+    -- payments_end_to_end_idx records the same finding for the duplicate-
+    -- reference check.
     --
     -- This paragraph used to name AddParticipantTx's first statement as the
     -- thing doing that, and to warn that the find-or-create would become racy
@@ -124,7 +145,7 @@ CREATE TABLE ledgers (
     -- Under Postgres this table said that the database refuses some text of its
     -- own accord — a NUL byte is SQLSTATE 22021 in a TEXT column, as is any byte
     -- sequence that is not valid UTF-8 — while store/mem, a map of Go strings,
-    -- refuses none of it, and that ledger.ValidateText exists to close the
+    -- refused none of it, and that ledger.ValidateText exists to close the
     -- asymmetry in the domain rather than in either store. SQLite refuses
     -- NEITHER: measured on this driver, "before\0after" and the four bytes
     -- 41 FF FE 42 both go into a STRICT TEXT column and come back
@@ -164,21 +185,22 @@ CREATE TABLE subledgers (
     -- The store is a per-table key/value layer. "The parent must exist" is a
     -- domain rule, and ledger.Book enforces it: CreateSubledgerTx reads the
     -- ledger first, CreateAccountTx reads the subledger, PostTransactionTx reads
-    -- every account it is about to touch. Put the same rule in the schema and
-    -- this store starts refusing writes store/mem performs — a divergence
-    -- between implementations, which is the single thing a store may not
-    -- introduce while more than one exists.
+    -- every account it is about to touch. Put the same rule in the schema as
+    -- well and it is enforced twice, in two places that answer differently: the
+    -- constraint fires first, and it fires as a foreign-key violation where the
+    -- domain would have said ErrLedgerNotFound.
     --
-    -- This one used to be a composite FK, and it was wrong for exactly that
-    -- reason:
+    -- This one used to be a composite FK, and while there were two stores what
+    -- it cost was visible as a disagreement:
     --
     --   PutSubledger{ID: "100", LedgerID: "ldg_nope"}
     --     store/mem = nil
     --     store/pg  = a foreign-key violation
     --
-    -- and this store would answer the same way, with foreign_keys on in the DSN.
-    -- storetest/ParentReferencesAreNotEnforced now pins the answer, so the rule
-    -- is enforced by the suite rather than remembered.
+    -- and this store, with foreign_keys on in the DSN, answers as store/pg did.
+    -- There is no second store to disagree with now, so what keeps the FK out is
+    -- the rule above and storetest/ParentReferencesAreNotEnforced, which writes
+    -- a dangling LedgerID and requires the store to take it.
     --
     -- The child-table FKs elsewhere in this file (entries -> transactions,
     -- deposit_account_identifiers -> deposit_accounts, cycle_payments -> cycles,
@@ -222,20 +244,30 @@ CREATE TABLE accounts (
     -- an absence is invisible in a schema dump: the next author reads four TEXT
     -- columns holding "EUR" and "BTC" and adds the "missing" CHECK.
     --
-    -- There is deliberately no CHECK restricting it to the known codes. A store
-    -- is a per-table key/value layer; "the asset must be one the system knows"
-    -- is a DOMAIN rule, enforced by ledger.Book.CreateAccountTx against the list
-    -- in ledger.LookupAsset — exactly where "the parent must exist" lives for
-    -- ledgers, subledgers and accounts too. A SQL store could express the rule
-    -- and store/mem could not, so neither does: a CHECK here would make this
-    -- store refuse a write store/mem performs, and the two stores accepting and
-    -- refusing the same writes is the property store/storetest exists to hold.
-    -- The subtest is ParentReferencesAreNotEnforced in
-    -- store/storetest/storetest.go, whose fixtures write accounts with no asset
-    -- set at all. An earlier composite FK on subledgers (book_id, ledger_id)
-    -- broke that same subtest and was removed for the same reason. A CHECK would
-    -- also make adding an asset — a one-line change to a Go slice — a migration,
-    -- and that second reason never mentioned store/mem at all.
+    -- There is deliberately no CHECK restricting it to the known codes, and this
+    -- is the canonical statement of why no column in this file enumerates a set
+    -- that lives in Go. Every other absent CHECK points here.
+    --
+    -- Two reasons, and the second is now the whole of it. A store is a per-table
+    -- key/value layer; "the asset must be one the system knows" is a DOMAIN
+    -- rule, enforced by ledger.Book.CreateAccountTx against the list in
+    -- ledger.LookupAsset — exactly where "the parent must exist" lives for
+    -- ledgers, subledgers and accounts. And a CHECK would make adding an asset,
+    -- which is a one-line change to a Go slice, a MIGRATION: the set would live
+    -- in two places, and the database's copy would be the one that decided.
+    --
+    -- The first reason used to be argued the other way round — a SQL store could
+    -- express the rule and a Go map could not, so neither did, because two
+    -- implementations accepting and refusing different writes was the one thing
+    -- store/storetest existed to forbid. That argument had a second store inside
+    -- it and expired with it. The second never mentioned one, which is why it is
+    -- the one left standing.
+    --
+    -- What holds the decision is still a test: ParentReferencesAreNotEnforced in
+    -- store/storetest/storetest.go writes accounts with no asset set at all, so
+    -- a CHECK added here fails it. An earlier composite FK on
+    -- subledgers (book_id, ledger_id) broke that same subtest and was removed for
+    -- the same reason.
     asset        TEXT NOT NULL,
     created_at   TEXT,
     seq          INTEGER NOT NULL,
@@ -250,9 +282,11 @@ CREATE TABLE transactions (
     value_date      TEXT,
     status          INTEGER NOT NULL,
     description     TEXT NOT NULL,
-    -- JSON, and the CHECK is the first constraint in this schema that exists
-    -- because there is no Go map on the other side of the conformance suite to
-    -- match. It admits NULL, which is a nil map — an empty one is '{}' and the
+    -- JSON, and the CHECK is the first constraint in this schema that no layer
+    -- above the store duplicates: nothing in the domain asks whether a metadata
+    -- document parses, so this is where an unparseable one is refused, and it is
+    -- refused nowhere else.
+    -- It admits NULL, which is a nil map — an empty one is '{}' and the
     -- two are kept apart because the API renders them differently.
     metadata        TEXT CHECK (json_valid(metadata)),
     reversal_of     TEXT NOT NULL,
@@ -386,10 +420,12 @@ CREATE TABLE deposit_account_identifiers (
     -- First, there is no UNIQUE (book_id, scheme, value). "One bank issues an
     -- address once" is a real domain rule and deposit.Register enforces it by
     -- reading before it writes — but nothing serializes two concurrent adds the
-    -- way NextID's counter row serializes an admission's acts, so a constraint
-    -- here would fire in a store that runs them concurrently and not in
-    -- store/mem. That is the one divergence a store may not introduce; see the
-    -- note on UNIQUE (book_id, name) on ledgers, which is the same argument. The
+    -- way an id allocation serializes an admission's acts, so the constraint and
+    -- the domain rule would not refuse the same writes: the constraint would fire
+    -- on a race the register lets through, and it would fire as a constraint
+    -- violation rather than as deposit.ErrIdentifierTaken. A rule enforced in two
+    -- places that disagree about when is enforced in neither. See the note on
+    -- UNIQUE (book_id, name) on ledgers, which is the same argument. The
     -- primary key is therefore widened with deposit_account_id so that it is a
     -- row identity rather than the domain rule in disguise, and the lookup index
     -- is a plain index. The residual duplicate is caught at READ time, ON THE
@@ -520,10 +556,11 @@ CREATE TABLE overdraft_terms (
     -- are chosen for. The key is a day rather than a timestamp because accrual
     -- iterates whole UTC days: terms changing part-way through a day would have
     -- no well-defined meaning, since the day is the unit the arithmetic is
-    -- expressed in. No store truncates for itself, which is one DST-adjacent
-    -- edge case away from two stores disagreeing about which day a repricing
-    -- landed in. Compare snapshots.date_key, which is the same pattern for the
-    -- same reason.
+    -- expressed in. The store truncates nothing, because date arithmetic in a
+    -- dialect is one DST-adjacent edge case away from disagreeing with
+    -- ledger.DayStart about which day a repricing landed in — and which day it
+    -- landed in is a domain answer. Compare snapshots.date_key, which is the
+    -- same pattern for the same reason.
     day_key         TEXT NOT NULL,
     -- The same day as day_key, as a timestamp, and the value Go reads back. It
     -- is stored beside the key rather than derived from it so that a reader of
@@ -537,7 +574,8 @@ CREATE TABLE overdraft_terms (
     -- migration was entered. It carries no foreign key to products, for the
     -- reason subledgers.ledger_id carries none: "the parent must exist" is a
     -- domain rule, enforced by deposit.Register, and a constraint here would
-    -- make this store refuse a write store/mem performs.
+    -- enforce it a second time in a place that answers a constraint violation
+    -- instead of the domain's refusal.
     product_id      TEXT NOT NULL,
     overdraft_limit INTEGER NOT NULL,
     -- Annual interest rate on the arranged overdraft, in MILLIONTHS: 1000000 is
@@ -550,13 +588,13 @@ CREATE TABLE overdraft_terms (
     -- three set is a negotiated overlay for this one customer. NULL does NOT
     -- mean interest-free — a zero-rate overlay is a real interest-free product
     -- and a different, deliberate statement — and the mixed state is refused by
-    -- deposit.OverdraftTerms.Validate rather than by a CHECK, because store/mem
-    -- must refuse exactly the same rows. There is deliberately NO CHECK on any
-    -- of the three, and none on day_count: a CHECK enumerating the valid
-    -- day-count conventions would make this store refuse a write store/mem
-    -- performs — which store/storetest exists to prevent — and would turn a
-    -- one-line change to a Go constant into a migration. This is the same
-    -- reasoning recorded on accounts.asset, applied to a new case, and it is
+    -- deposit.OverdraftTerms.Validate rather than by a CHECK, so that a caller
+    -- is told which combination is wrong instead of being handed a constraint
+    -- violation. There is deliberately NO CHECK on any of the three, and none on
+    -- day_count: a CHECK enumerating the valid day-count conventions would turn
+    -- a one-line change to a Go constant into a migration, and would put the set
+    -- in two places with the database's copy deciding. This is the reasoning
+    -- recorded on accounts.asset, applied to a new case, and it is
     -- recorded in the database because neither a missing constraint nor the
     -- meaning of NULL is visible in a schema dump.
     rate            INTEGER,
@@ -601,8 +639,9 @@ CREATE TABLE products (
     --
     -- product_versions.product_id carries no foreign key, for the reason
     -- subledgers.ledger_id does not: "the parent must exist" is a domain rule,
-    -- and product.Catalogue enforces it. A constraint here would make this store
-    -- refuse a write store/mem performs.
+    -- and product.Catalogue enforces it. A constraint here would enforce it a
+    -- second time and answer a constraint violation rather than the domain's
+    -- refusal. See accounts.asset.
     book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id         TEXT NOT NULL,
     name       TEXT NOT NULL,
@@ -645,8 +684,10 @@ CREATE TABLE product_versions (
     -- NULL means DRAFT: the row is editable and is invisible to resolution, so
     -- the published version before it stays in force through it. Non-NULL
     -- freezes the row — product.Catalogue refuses a write to it, and the refusal
-    -- is in the domain layer rather than a CHECK because store/mem must refuse
-    -- exactly the same writes.
+    -- is in the domain layer rather than a CHECK because a CHECK could not
+    -- express it: what makes the write illegal is the row's PREVIOUS state, and
+    -- a CHECK sees only the row being written. The hash column above is the one
+    -- control that does survive a direct UPDATE.
     published_at    TEXT,
     created_at      TEXT,
     seq             INTEGER NOT NULL,
@@ -840,9 +881,10 @@ CREATE TABLE facility_terms (
     -- iterates whole UTC days: terms changing part-way through a day would have
     -- no well-defined meaning, since the day is the unit the arithmetic is
     -- expressed in. No store truncates for itself, which is one DST-adjacent
-    -- edge case away from two stores disagreeing about which day a repricing
-    -- landed in. Compare overdraft_terms.day_key, which is the same pattern for
-    -- the same reason.
+    -- edge case away from disagreeing with ledger.DayStart about which day a
+    -- repricing landed in — and which day it landed in is a domain answer.
+    -- Compare overdraft_terms.day_key, which is the same pattern for the same
+    -- reason.
     day_key        TEXT NOT NULL,
     -- The same day as day_key, as a timestamp, and the value Go reads back. It
     -- is stored beside the key rather than derived from it so that a reader of
@@ -853,10 +895,10 @@ CREATE TABLE facility_terms (
     -- (interest.RateScale). Zero makes the WHOLE facility interest-free, which
     -- is a real product. There is deliberately NO CHECK on this column, and none
     -- on day_count: a CHECK enumerating the valid day-count conventions would
-    -- make this store refuse a write store/mem performs — which store/storetest
-    -- exists to prevent — and would turn a one-line change to a Go constant into
-    -- a migration. This is the same reasoning recorded on overdraft_terms.rate
-    -- and on accounts.asset, applied to a new case, and it is recorded in the
+    -- turn a one-line change to a Go constant into a migration, and would put
+    -- the set in two places with the database's copy deciding. This is the
+    -- reasoning recorded on overdraft_terms.rate and on accounts.asset, applied
+    -- to a new case, and it is recorded in the
     -- database because a missing constraint is invisible in a schema dump.
     rate           INTEGER NOT NULL,
     day_count      INTEGER NOT NULL,
@@ -923,9 +965,9 @@ CREATE TABLE banks (
     -- ISO 9362 business identifier code. NOT NULL because a bank the mesh cannot
     -- address is not a member: routing is by BICFI, so a bank without one is
     -- unreachable rather than merely undescribed. No CHECK on its shape — the
-    -- structural rule lives in iso20022.BIC, and a constraint here would make
-    -- this store refuse a write store/mem performs, which store/storetest exists
-    -- to forbid. There is also no UNIQUE: two banks sharing a BIC is a domain
+    -- structural rule lives in iso20022.BIC, and a CHECK here would state it a
+    -- second time in a dialect that cannot express it as well — see
+    -- accounts.asset. There is also no UNIQUE: two banks sharing a BIC is a domain
     -- error, and nothing serializes two concurrent admissions, so the same
     -- reasoning that kept a UNIQUE off deposit identifiers applies here. It is
     -- also the key the other two institutions hold this bank by — see
@@ -961,7 +1003,8 @@ CREATE TABLE banks (
     -- TEXT rather than the INTEGER every other status column in this schema is,
     -- because payment.BankStatus is a string type and not an iota enum.
     -- No CHECK constraint, for the reason accounts.asset carries none: the set
-    -- lives in Go and a constraint here would refuse what store/mem accepts.
+    -- lives in Go, and a CHECK would put it in two places and make adding a
+    -- third state a migration.
     status             TEXT NOT NULL,
     -- The acmt Refs/PrcId of the admission this bank recorded a membership
     -- under: what it accepted, and not what any other institution says about it.
@@ -1147,7 +1190,7 @@ CREATE TABLE roster_entries (
     -- extend one entry — why a fixture whose banks settle gives each of them an
     -- address of its own. The column stays unconstrained rather than
     -- CHECK-constrained for accounts.asset's reason: the rule lives in Go, and a
-    -- constraint here would refuse what store/mem accepts.
+    -- CHECK would state it a second time, in the place least able to change.
     admission_ref TEXT NOT NULL,
     admitted_at   TEXT,
     seq           INTEGER NOT NULL
@@ -1167,7 +1210,7 @@ CREATE TABLE roster_entry_assets (
     -- reader until then was the VALUE and not the rows: these are loaded with
     -- the parent on every read of a roster entry, single or list, because an
     -- entry handed back without its assets would not be the entry that was
-    -- written — and nothing outside the store's own conformance suite then ASKED
+    -- written — and nothing outside the store's own shared suite then ASKED
     -- what they said. That is the shape that deleted the name column from the
     -- parent table, and it is recorded here because a value carried faithfully
     -- and consulted by nobody is not visible in a schema dump either.
@@ -1176,10 +1219,12 @@ CREATE TABLE roster_entry_assets (
     -- cycle_payments made for ClearingCycle.PaymentIDs and is made here for the
     -- same two reasons. RosterEntry.Assets is an ordered slice, so the position
     -- is data rather than a surrogate; and a slice can repeat a value, so a key
-    -- on (bic, asset) would let this store REFUSE a row store/mem accepts. That
-    -- divergence is the one thing two stores may never have between them, and
-    -- this table had it. storetest's RosterEntryAssetsAreAnOrderedList is what
-    -- holds every store to the same answer.
+    -- on (bic, asset) would REFUSE a row the Go type can hold. This table had
+    -- that key, and while there were two stores it showed up as one refusing
+    -- what the other stored — which is how it was found. What makes it wrong now
+    -- is the same fact without the comparison: a store's contract is with the
+    -- TYPE it is handed. storetest's RosterEntryAssetsAreAnOrderedList is what
+    -- holds it to that.
     --
     -- What this constraint is NOT about is any writer's behaviour, and the
     -- reason it says so is that it used to. It predicted that Task 17d would
@@ -1191,9 +1236,9 @@ CREATE TABLE roster_entry_assets (
     -- in that map before this table is reached, and the reader between the wire
     -- and that writer refuses one outright:
     -- payment.ReadAdmissionAcknowledgement will not read an acknowledgement
-    -- naming two accounts in one currency. The key is still position, because a
-    -- store's contract is with the TYPE it is handed: PutRosterEntry must store
-    -- whatever slice a caller passes, and store/mem does.
+    -- naming two accounts in one currency. The key is still position, because
+    -- PutRosterEntry must store whatever slice a caller passes whether or not
+    -- any caller passes that one.
     --
     -- Whether a repeated asset is a message worth refusing is a question about
     -- the message and belongs to the institution reading it, not to the store.
@@ -1383,32 +1428,34 @@ CREATE TABLE payments (
 ) STRICT;
 
 CREATE INDEX payments_end_to_end_idx ON payments (
-    -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does
-    -- not reject a duplicate client reference — payment.Network does, in
-    -- SubmitPaymentTx — and a store that refused one where mem accepted it would
-    -- be two implementations disagreeing.
+    -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique.
     --
-    -- That argument is only sound because the application check is ATOMIC here,
-    -- and it was not always. SubmitPaymentTx read this index and then allocated
-    -- the payment id; measured on store/pg under READ COMMITTED, two concurrent
-    -- submissions of one reference both read nothing and both wrote, and eight
-    -- concurrent ones were accepted eight times against store/mem's one — the
-    -- payer debited eight times for a single client reference. Whether this
-    -- store would lose the same race the same way is not the point: the fix is
-    -- an ordering, and an ordering holds under every store.
-    -- The order is now the other way round: NextID runs first
-    -- and writes id_sequences, and the second submission blocks there until the
-    -- first commits and its payment row is visible to the read. Same
-    -- serialization the admission acts rely on, for the same reason — see
-    -- payment.admissionSequenceTx.
+    -- Refusing a duplicate client reference is payment.Network's job, in
+    -- SubmitPaymentTx. A UNIQUE index here would answer the same request with a
+    -- constraint violation instead of ErrDuplicateEndToEndID, and a caller
+    -- handling the sentinel does not handle that. It would also be the SECOND
+    -- unique index in this schema, which transactions_idempotency_key_idx
+    -- explains is the one thing the store's duplicate-key mapping cannot
+    -- survive.
     --
-    -- So this index stays non-unique, and the conformance argument above stands
-    -- as written: PutPayment is a store operation and mem's does not look at any
-    -- other row, so a UNIQUE index here would refuse a write mem accepts, and
-    -- would refuse it as a constraint violation rather than as
-    -- ErrDuplicateEndToEndID. It would also be the second unique index in this
-    -- schema, which transactions_idempotency_key_idx explains is the one thing
-    -- the store's duplicate-key mapping cannot survive.
+    -- That leaves the application check carrying the rule, which is sound only
+    -- because it is ATOMIC, and it was not always. SubmitPaymentTx read this
+    -- index and THEN allocated the payment id; measured on store/pg under READ
+    -- COMMITTED, two concurrent submissions of one reference both read nothing
+    -- and both wrote, and eight concurrent ones were accepted eight times where
+    -- store/mem accepted one — the payer debited eight times for a single client
+    -- reference. The order is the other way round now: NextID runs first and
+    -- writes id_sequences, and the second submission waits there until the first
+    -- commits and its payment row is visible to the read.
+    --
+    -- What that ordering is worth HERE is measured, and it is not what it was on
+    -- store/pg. With the two statements swapped back, storetest's
+    -- Races/ConcurrentSubmissionsOfOneReferenceAcceptOne passes ten runs out of
+    -- ten, on the ephemeral store and on a WAL file: SQLite admits one writer, so
+    -- the loser is refused at its first write and Store.Update re-runs the unit
+    -- of work against the winner's committed row. The ordering is a second guard
+    -- rather than the only one, and no test in this repository can now see it go.
+    -- ledgers records the same finding for the admission acts.
     end_to_end_id
 )
     WHERE end_to_end_id <> '';
@@ -1421,7 +1468,7 @@ CREATE TABLE cycles (
     -- one still round-trip differently: an open cycle carries an empty
     -- NetPositions and a closed one carries the computed positions. NULL is the
     -- nil map, '{}' the empty one, and json_valid is what keeps a third thing
-    -- out — the CHECK store/mem could never hold.
+    -- out. Nothing above the store checks that this column parses.
     net_positions TEXT CHECK (json_valid(net_positions)),
     opened_at     TEXT,
     closed_at     TEXT,
@@ -1439,7 +1486,7 @@ CREATE TABLE cycle_payments (
     -- ClearingCycle.PaymentIDs is an ordered slice, so like entries it gets an
     -- explicit position column, and for the reason roster_entry_assets spells
     -- out: a slice can repeat a value, so keying on the value would refuse a row
-    -- store/mem accepts.
+    -- the Go type can hold.
     cycle_id   TEXT NOT NULL REFERENCES cycles (id) ON DELETE CASCADE,
     position   INTEGER NOT NULL,
     payment_id TEXT NOT NULL,

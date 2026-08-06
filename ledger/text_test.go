@@ -10,8 +10,9 @@ import (
 
 // The corpus below is shared with store/storetest, which asserts the other half
 // of the same rule: every string ValidateText accepts must round-trip through
-// BOTH stores unchanged. Keep the two in step — a string this test moves from
-// "rejected" to "accepted" is a string store/pg then has to be able to hold.
+// the store unchanged. Keep the two in step — a string this test moves from
+// "rejected" to "accepted" is a string the store then has to be able to hold,
+// byte for byte.
 
 func TestValidateTextAcceptsOrdinaryText(t *testing.T) {
 	for _, s := range []string{
@@ -34,10 +35,12 @@ func TestValidateTextAcceptsOrdinaryText(t *testing.T) {
 }
 
 func TestValidateTextRejectsControlCharactersAndInvalidUTF8(t *testing.T) {
-	// Every one of these is legal in a Go string and legal in JSON, and every
-	// one of them is refused by Postgres — the first two as SQLSTATE 22021 in a
-	// text column, the NUL again as 22P05 inside jsonb. store/mem would store
-	// them happily, which is exactly the asymmetry the domain rule removes.
+	// Every one of these is legal in a Go string and legal in JSON, and none of
+	// them is refused by the store: SQLite holds a NUL and an invalid UTF-8 byte
+	// as happily as store/mem did, where Postgres refused the first two as
+	// SQLSTATE 22021 in a text column and the NUL again as 22P05 inside jsonb.
+	// So nothing below this line is enforced by a database. It is enforced here
+	// or nowhere, which is the argument in text.go read from the other end.
 	for _, tc := range []struct{ label, s string }{
 		{"NUL", "Ban\x00k"},
 		{"invalid UTF-8", "Ban\xffk"},
@@ -68,8 +71,10 @@ func TestValidateTextMapChecksKeysAndValues(t *testing.T) {
 	if err := ledger.ValidateTextMap("metadata", nil); err != nil {
 		t.Errorf("ValidateTextMap(nil) = %v, want nil", err)
 	}
-	// A NUL in a jsonb value is SQLSTATE 22P05, a different code from the text
-	// column's 22021 — so a fix that only looked at names would still diverge.
+	// A metadata map is one column and a name is not a value, so a check that
+	// only looked at values would leave half the document unvalidated — which is
+	// how this was found: Postgres refused a NUL in a jsonb value under 22P05,
+	// a different code from the text column's 22021.
 	if err := ledger.ValidateTextMap("metadata", map[string]string{"ref": "INV\x00"}); !errors.Is(err, ledger.ErrInvalidText) {
 		t.Errorf("ValidateTextMap with a NUL value = %v, want ErrInvalidText", err)
 	}

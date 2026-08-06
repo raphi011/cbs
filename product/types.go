@@ -188,9 +188,9 @@ func (v Version) Validate() error {
 // the same effective day replaces the first — which makes "the version in force
 // on day D" unique by construction rather than by a validation rule, and leaves
 // the book's non-overlapping-interval exclusion constraint with nothing to
-// enforce. It is deposit.TermsDayKey's twin, and store implementations must
-// derive their key with it: mem uses it as a map key, pg as the value of
-// product_versions.day_key and as the column the as-of lookup compares on.
+// enforce. It is deposit.TermsDayKey's twin, and a store must derive its key
+// with it: it is the value of product_versions.day_key and the column the as-of
+// lookup compares on.
 func VersionDayKey(day time.Time) string { return ledger.DayStart(day).Format("2006-01-02") }
 
 // VersionAt is the published version in force on a day: the last one whose

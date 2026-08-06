@@ -1,8 +1,9 @@
 // The ledger tests live in package ledger_test rather than package ledger: they
-// build a Book over store/mem, and store/mem imports ledger, so an in-package
-// test file could not import it without a cycle. The package is dot-imported so
-// the tests still read as if they were inside it; the handful of unexported
-// things they need are re-exported by export_test.go.
+// build a Book over a store from store/testenv, which reaches store/sqlite,
+// which imports ledger, so an in-package test file could not import it without
+// a cycle. The package is dot-imported so the tests still read as if they were
+// inside it; the handful of unexported things they need are re-exported by
+// export_test.go.
 package ledger_test
 
 import (
@@ -34,10 +35,10 @@ const testAsset AssetCode = "EUR"
 // testBook creates a new Book over a fresh store with a fixed clock for
 // deterministic tests.
 //
-// The store comes from testenv, which is store/mem until Task 17.3 moves it to
-// store/sqlite. Every assertion below is written against the interface rather
-// than against either, which is what let the backend change underneath them —
-// it used to be what kept store/mem and store/pg honest about each other.
+// The store comes from testenv, which opens an ephemeral store/sqlite. Every
+// assertion below is written against the interface and not against it, which is
+// what let the backend change twice underneath them without any of them moving
+// — and what makes them a statement about the ledger rather than about SQLite.
 func testBook(t *testing.T) *Book {
 	t.Helper()
 	store := testenv.New(t, testClock)
@@ -206,9 +207,9 @@ func TestGetAccount_NotFound(t *testing.T) {
 }
 
 // countingStore wraps a Store to count View calls, so a test can assert how
-// many read units of work an operation opens without instrumenting store/mem
-// or store/pg themselves. Everything but View is the embedded store's own
-// method, promoted unchanged.
+// many read units of work an operation opens without instrumenting the store
+// itself. Everything but View is the embedded store's own method, promoted
+// unchanged.
 type countingStore struct {
 	testenv.Store
 	views atomic.Int64
@@ -222,9 +223,9 @@ func (c *countingStore) View(ctx context.Context, fn func(context.Context, Tx) e
 // TestGetAccounts pins GetAccounts' reason for existing: resolving several
 // accounts costs exactly one View, regardless of how many distinct IDs (or
 // repeats of the same ID) are asked for. GetAccount, called once per ID
-// instead, would cost one View per ID — on store/pg a full BEGIN…COMMIT
-// round trip each, which is what made rendering a transaction listing's
-// entries cost roughly one Postgres round trip per entry.
+// instead, would cost one View per ID — a full BEGIN…COMMIT each, which is what
+// made rendering a transaction listing's entries cost one unit of work per
+// entry.
 func TestGetAccounts(t *testing.T) {
 	ctx := context.Background()
 	cs := &countingStore{Store: testenv.New(t, testClock)}

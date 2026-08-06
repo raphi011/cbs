@@ -67,10 +67,11 @@ type OverdraftTerms struct {
 	//
 	// nil means float and specifically NOT interest-free: a zero-rate overlay
 	// is a real interest-free product and a different, deliberate statement.
-	// Validate refuses the states in between, and store/pg's three nullable
-	// columns carry a COMMENT saying the same, because the difference between
-	// "NULL means free" and "NULL means ask the product" is invisible in a
-	// schema dump.
+	// Validate refuses the states in between, and the schema says the same thing
+	// inside the CREATE TABLE that holds the three nullable columns
+	// (overdraft_terms.rate in store/sqlite/schema/0001_init.sql), because the
+	// difference between "NULL means free" and "NULL means ask the product" is
+	// invisible in a schema dump.
 	Pricing *product.OverdraftPricing
 
 	CreatedAt time.Time // when the row was entered, not when it takes effect
@@ -82,12 +83,14 @@ type OverdraftTerms struct {
 // same effective day replaces the first — which makes "the terms in force on
 // day D" unique by construction rather than by a validation rule.
 //
-// Store implementations must derive the key of a row passed to
-// PutOverdraftTerms with this function, so that GetOverdraftTermsAsOf finds it:
-// mem uses it as a map key, pg as the value of the overdraft_terms.day_key
-// column and as the column the as-of lookup compares on. It is the same
-// discipline SnapshotDateKey follows, for the same reason — a lexicographically
-// ordered ISO day is a total order the two stores cannot disagree about.
+// A store must derive the key of a row passed to PutOverdraftTerms with this
+// function, so that GetOverdraftTermsAsOf finds it: it is the value of the
+// overdraft_terms.day_key column, and the column the as-of lookup compares on.
+// It is the same discipline SnapshotDateKey follows, for the same reason — a
+// lexicographically ordered ISO day is a total order, so "the row in force on
+// day D" is settled by a string comparison and by no date arithmetic at all.
+// Which day an instant falls in is a domain question and is answered here (see
+// ledger.DayStart) rather than by the store.
 func TermsDayKey(day time.Time) string { return ledger.DayStart(day).Format("2006-01-02") }
 
 // Validate reports whether these terms are a product. The rules are held on the

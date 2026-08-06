@@ -281,9 +281,9 @@ func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 //
 // This is the case the spec got wrong. busy_timeout does not cover a transaction
 // that holds a read and needs to upgrade — it cannot succeed by waiting — so
-// without a retry the loser gets SQLITE_BUSY where store/mem and store/pg both
-// return the domain's refusal. With isTransient stubbed to false this fails five
-// runs out of five.
+// without a retry the loser gets SQLITE_BUSY where what it is owed is the
+// domain's refusal, which is what store/mem and store/pg both answered. With
+// isTransient stubbed to false this fails five runs out of five.
 //
 // What it pins is the retry, not its BACKOFF: on the ephemeral store a retry's
 // read blocks until the winner commits, so removing the delay changes nothing

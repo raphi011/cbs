@@ -13,8 +13,7 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// RunDeposit runs the deposit-layer conformance suite against a store. Every
-// deposit.Store implementation must pass it identically.
+// RunDeposit runs the deposit-layer suite against a store.
 //
 // It talks only to deposit.Store and deposit.Tx — never to deposit.Register — so
 // what it pins is the storage contract: book scoping, not-found sentinels,
@@ -141,10 +140,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	//
 	// TWO identifiers, written out of order: a set of one round-trips through
 	// any ordering rule at all, which is how store/pg's `ORDER BY scheme, value`
-	// and store/mem's insertion order looked identical for the whole of this
-	// branch. Both stores must answer with the same order, and the order is
-	// ascending by (scheme, value) because that is the one Postgres can give
-	// cheaply.
+	// and store/mem's insertion order looked identical for the whole of a branch.
+	// The order is ascending by (scheme, value) — a stated rule rather than
+	// whatever the store's index happens to give, which is what makes it
+	// checkable.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		aa := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "AA-AURORA-0001"}
@@ -185,11 +184,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	// An account with no identifiers reads back with a NIL set, not an empty
-	// non-nil one. store/pg has no rows to return and so cannot produce
-	// anything else; store/mem is handed whatever the caller built, and
+	// non-nil one. A SQL store has no rows to return and cannot produce anything
+	// else; an in-Go one is handed whatever the caller built, and
 	// api/handlers_deposit.go builds make([]Identifier, 0) from an absent JSON
-	// field. Callers compare with reflect.DeepEqual and encoders distinguish
-	// null from [], so this is a real difference, not a cosmetic one.
+	// field — so the two answers were both reachable. Callers compare with
+	// reflect.DeepEqual and encoders distinguish null from [], so this is a real
+	// difference, not a cosmetic one.
 	t.Run("NoIdentifiersReadsBackNil", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 
@@ -212,10 +212,11 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
-	// One account carrying the same pair twice collapses to one, on both
-	// stores. store/pg cannot do otherwise — (book, account, scheme, value) is
-	// the primary key of deposit_account_identifiers and the insert is ON
-	// CONFLICT DO NOTHING — so store/mem must not keep the duplicate either.
+	// One account carrying the same pair twice collapses to one. The store
+	// cannot do otherwise — (book, account, scheme, value) is the primary key of
+	// deposit_account_identifiers and the insert is ON CONFLICT DO NOTHING — and
+	// this case is what makes that a CONTRACT rather than a consequence of the
+	// current key.
 	//
 	// This is NOT in tension with IdentifierUniquenessIsNotEnforced below. That
 	// one is about two ACCOUNTS sharing a value, which is a domain rule with no
@@ -253,9 +254,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	// A read hands back a COPY: mutating what a reader was given must not reach
-	// stored state. store/pg cannot be mutated through its return values at all,
-	// and store/mem's rollback snapshot is one level deep precisely on the
-	// promise that nothing mutates a stored entity in place.
+	// stored state. A SQL store cannot be mutated through its return values at
+	// all, which is exactly why the rule needs saying — it is free here and was
+	// not in store/mem, whose rollback snapshot was one level deep precisely on
+	// this promise.
 	t.Run("MutatingReadIdentifiersDoesNotReachTheStore", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
@@ -289,8 +291,8 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	// The mirror image: a WRITER that keeps its argument must not be able to
-	// rewrite what it stored afterwards. store/pg copies the values into
-	// Postgres and could not honour such a rewrite if it wanted to.
+	// rewrite what it stored afterwards. A SQL store copies the values into the
+	// database and could not honour such a rewrite if it wanted to.
 	t.Run("MutatingWrittenIdentifiersDoesNotReachTheStore", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
@@ -406,18 +408,16 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 		})
 	})
 
-	// An IBAN matches through its display separators, in BOTH directions, and
-	// both stores must do it the same way.
+	// An IBAN matches through its display separators, in BOTH directions.
 	//
 	// This is the case that makes a received payment message resolvable at all.
 	// An IBAN is canonically transmitted compact and this repository stores the
 	// readable form — seed.go writes SE89-AURORA-1001, and a pacs.008 for that
 	// account carries SE89AURORA1001 — so a store comparing raw values leaves
 	// every seeded account unreachable from the wire, and the system emits an
-	// address it cannot then resolve. The rule is deposit.Identifier.MatchValue;
-	// store/mem applies it in Go and store/pg in SQL, which is two
-	// implementations of one rule and exactly what this suite exists to hold
-	// together.
+	// address it cannot then resolve. The rule is deposit.Identifier.MatchValue,
+	// and a store expressing it in SQL is re-implementing a Go function: the
+	// case below is what says the two agree.
 	//
 	// The fixture stores one form and looks up the other, then the reverse. A
 	// fixture whose two sides were both compact would pass against the unfixed
@@ -518,10 +518,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	//
 	// It is the same job ParentReferencesAreNotEnforced does. "One bank issues
 	// an address once" is a domain rule that deposit.Register enforces by
-	// reading before it writes; a UNIQUE constraint in store/pg would make
-	// Postgres reject a write the Go map accepts, under a race no lock closes,
-	// which is the one divergence the store layer must never introduce. The
-	// resulting ambiguity is caught at READ time by Register.ResolveIdentifier.
+	// reading before it writes; a UNIQUE constraint would fire on the race that
+	// read-then-write leaves open, which the register does not, and would fire as
+	// a constraint violation rather than as ErrIdentifierTaken. The resulting
+	// ambiguity is caught at READ time instead, by Register.ResolveIdentifier.
 	t.Run("IdentifierUniquenessIsNotEnforced", func(t *testing.T) {
 		s := openDeposit(t, newStore)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
@@ -559,12 +559,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// canonical that refusal covers both spellings of one IBAN. The refusal is a
 	// READ followed by a write, in the domain layer, with nothing behind it —
 	// and it has to stay there. A UNIQUE index on the compacted value would be
-	// the obvious way to make store/pg enforce the same thing, and it would
-	// reject a write the Go map accepts under the race that has no lock over it:
-	// the exact divergence the store layer must never introduce, and one that
-	// would only show up on Postgres.
+	// the obvious way to make the schema enforce the same thing, and it would
+	// refuse under the race that has no lock over it — where the register does
+	// not — and refuse as a constraint violation rather than as the domain's
+	// sentinel.
 	//
-	// So both stores must ACCEPT the pair the register refuses, and one lookup
+	// So the store must ACCEPT the pair the register refuses, and one lookup
 	// must return both accounts — which is what makes the resulting ambiguity
 	// visible at read time (Register.ResolveIdentifier, and the network sweep
 	// above it) rather than lost in a constraint violation.

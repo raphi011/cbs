@@ -12,8 +12,7 @@ import (
 	"github.com/raphi011/cbs/lending"
 )
 
-// RunLending runs the lending-layer conformance suite against a store. Every
-// lending.Store implementation must pass it identically.
+// RunLending runs the lending-layer suite against a store.
 //
 // Like the other suites it talks only to lending.Store and lending.Tx — never
 // to lending.Portfolio — so what it pins is the storage contract: book scoping,

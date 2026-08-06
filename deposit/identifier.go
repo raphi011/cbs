@@ -93,10 +93,11 @@ func (i Identifier) MatchValue() string {
 // Matches reports whether two identifiers name the same address: the same
 // scheme, and the same value under that scheme's comparison rule.
 //
-// Store implementations must use this for ListDepositAccountsByIdentifier
-// rather than ==, and it is the only thing they may use — a store that compared
-// raw values would refuse a lookup the other store answers, which is the one
-// divergence the store layer must never introduce. See
+// A store must use this for ListDepositAccountsByIdentifier rather than ==, and
+// it is the only thing it may use — a store comparing raw values leaves an
+// account opened as SE89-AURORA-1001 unreachable from a message carrying
+// SE89AURORA1001, which is the same address. A store expressing this in SQL is
+// re-implementing this function, so it is pinned by
 // storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.
 func (i Identifier) Matches(o Identifier) bool {
 	return i.Scheme == o.Scheme && i.MatchValue() == o.MatchValue()

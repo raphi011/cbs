@@ -4,8 +4,8 @@ import "context"
 
 // Re-exports for the external test package.
 //
-// payment's tests live in package payment_test because they construct a
-// store/mem store, and store/mem imports payment — an in-package test file
+// payment's tests live in package payment_test because they construct a store,
+// which reaches store/sqlite, which imports payment — an in-package test file
 // importing it back would be an import cycle. The package is dot-imported
 // there, so the test bodies read exactly as they did before; this file gives
 // them the handful of internals they still need.

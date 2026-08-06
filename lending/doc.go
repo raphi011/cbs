@@ -41,7 +41,7 @@
 // form wraps one Store.Update, and the …Tx form takes a caller-supplied Tx so a
 // participant can run its deposit and lending end-of-day in one transaction. A
 // …Tx method must never call a plain method on the Portfolio or the Book — that
-// opens a second unit of work inside the first, which store/mem refuses.
+// opens a second unit of work inside the first, which the store refuses.
 //
 // # Thread safety
 //

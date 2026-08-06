@@ -66,7 +66,7 @@ type recordingStore struct {
 	//
 	// It is what lets a test say "both books moved together" rather than "both
 	// books moved", which for a crossing is the whole of the claim: two entities
-	// with two stores cannot commit as one, so an act that reaches two books
+	// with a database each cannot commit as one, so an act that reaches two books
 	// inside one Update is an act that has to become a message before they split.
 	// Views are not counted — a read crosses nothing that has to commit.
 	updates int
@@ -186,11 +186,10 @@ func (s *recordingStore) reset() {
 // everyBook is what an access records when its book is EMPTY.
 //
 // It exists for ListAudit. An AuditFilter with no BookID is not a read of no
-// book, it is a read of every book: store/mem/tx.go skips the comparison
-// entirely (`if f.BookID != "" && e.BookID != f.BookID`) and store/pg's
-// tx_audit.go omits the WHERE clause (`if f.BookID != "" { add("book_id = $%d",
-// …) }`). Recording nothing there would leave open the widest crossing in the
-// system — one call that reads every bank's audit trail, payloads included.
+// book, it is a read of every book: store/sqlite's tx_audit.go omits the WHERE
+// clause entirely (`if f.BookID != "" { … }`). Recording nothing there would
+// leave open the widest crossing in the system — one call that reads every
+// bank's audit trail, payloads included.
 //
 // It is a BookID no actor owns, so any assertion on an actor's own books fails
 // on it and names it, which is the point: an unfiltered audit read is not a
@@ -582,9 +581,9 @@ type structCarriedBook struct {
 // Compare, both of them structs with a BookID field in second position:
 //
 //   - ledger.AppendAudit(ctx, e AuditEvent) writes the row under e.BookID, and
-//     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/mem/tx.go
-//     compares e.BookID against f.BookID, store/pg's tx_audit.go writes book_id
-//     and adds `book_id = $n`. The field IS the scope.
+//     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/sqlite's
+//     tx_audit.go writes book_id from the event and adds `book_id = ?` to the
+//     filter. The field IS the scope.
 //   - payment.PutBank(ctx, b Bank) writes a network-scoped row
 //     under ledger.NetworkBook whatever b.BookID says. b.BookID is a column on
 //     that row — the name of the book this bank owns — not the book being
@@ -617,12 +616,11 @@ var structCarriedBooks = map[string]structCarriedBook{
 	// SettlementAdvice.Book is the row's record of where it landed.
 	"PutSettlementAdvice": {
 		Scoping: false,
-		Why: "payment/store.go: the book ARGUMENT scopes this write. store/pg writes book_id from that " +
-			"argument and never reads a.Book at all; store/mem overwrites a.Book from it, so neither " +
-			"store can answer with a book the caller did not name. storetest's " +
-			"SettlementAdviceIsScopedToTheBankThatWasAdvised is the evidence: it puts an advice whose " +
-			"Book field disagrees with the argument and pins that both stores file it under the " +
-			"argument's book and read the field back as that book.",
+		Why: "payment/store.go: the book ARGUMENT scopes this write. The store writes book_id from that " +
+			"argument and never reads a.Book at all, so it cannot answer with a book the caller did " +
+			"not name. storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is the evidence: " +
+			"it puts an advice whose Book field disagrees with the argument and pins that the store " +
+			"files it under the argument's book and reads the field back as that book.",
 	},
 }
 
@@ -1450,9 +1448,10 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 // ALLOCATED and the audit event it APPENDED, never through the row itself — and
 // OpenSettlementAccountTx does both: it draws an id before the read its
 // idempotency is decided from (payment.admissionSequenceTx) and appends
-// settlement_account.opened afterwards. Neither is optional. Drop the id and the
-// act's idempotency stops holding on store/pg; drop the event and the settlement
-// account exists in no immutable record.
+// settlement_account.opened afterwards. Neither is optional. Drop the event and
+// the settlement account exists in no immutable record; drop the id and the act
+// loses the ordering that made its idempotency its own rather than the store's —
+// see payment.admissionSequenceTx, which measures what that is worth here.
 //
 // So the correction is the plan's and not the domain's, exactly as Task 16's
 // return measurement was — that one predicted [CentralBankBook, NetworkBook] and
@@ -1868,13 +1867,16 @@ var errProbeDone = errors.New("probe finished")
 //
 // Each method gets its OWN unit of work, and each ends by returning errProbeDone
 // so the work rolls back. That is not tidiness: the arguments are zero values
-// apart from the book, so many of these calls fail, and under store/pg a failed
-// statement aborts the transaction. Rolling back deliberately means the probe
-// asserts the SAME thing against both stores — that Update handed back exactly
-// the error the callback returned — instead of discarding an error that only
-// Postgres would ever have produced. The store's answer to the call itself is
-// still discarded, on purpose: the book is noted BEFORE the call goes through,
-// which is what makes every method reachable without a fixture apiece.
+// apart from the book, so many of these calls fail, and returning a sentinel of
+// the probe's own means Update hands back exactly the error the callback
+// returned — asserted below — rather than whatever the store made of a bad
+// write. Under store/pg the reason was sharper still, because a failed statement
+// there aborted the transaction and every later one with it; under SQLite the
+// statement rolls back and the transaction survives, so the discipline is now
+// about what this test READS rather than about what it would otherwise break.
+// The store's answer to the call itself is still discarded, on purpose: the book
+// is noted BEFORE the call goes through, which is what makes every method
+// reachable without a fixture apiece.
 //
 // What the recorder saw survives the rollback, because a read that happened and
 // was then rolled back still happened.
@@ -2005,9 +2007,8 @@ func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 // construction sites and says so, in the packages payment.Tx actually spans.
 // Those packages are the ones the chain walk visited, not a list kept by hand.
 //
-// store/storetest is deliberately out of range. It is a conformance suite that
-// builds deliberately odd events to probe the stores, and it is not a layer a
-// mesh handler drives.
+// store/storetest is deliberately out of range. It builds deliberately odd
+// events to probe the store, and it is not a layer a mesh handler drives.
 func TestEveryAuditEventTheDomainAppendsCarriesABook(t *testing.T) {
 	w := realChainWalk(t)
 	var found int

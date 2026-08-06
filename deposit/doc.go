@@ -18,8 +18,8 @@
 // # Where the state lives
 //
 // None of it lives in this package. Accounts, holds, snapshots and the audit
-// log are kept in a Store (store/mem in-process, store/pg on Postgres), and the
-// Register contributes validation and orchestration only. Store and Tx are
+// log are kept in a Store (store/sqlite), and the Register contributes
+// validation and orchestration only. Store and Tx are
 // declared here, by the consumer, and Tx embeds ledger.Tx — so one concrete
 // transaction covers both layers and a capture's hold write and GL posting are
 // a single unit of work.

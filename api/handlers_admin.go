@@ -24,10 +24,12 @@ func (s *Server) registerAdminRoutes(mux *router) {
 // A reset is two steps — empty everything, then seed it again — and there is no
 // state between them that anyone should ever see. Against store/mem that used
 // to be free: a reset was a pointer swap, and a restart rebuilt the scenario
-// anyway. Against store/pg both steps are durable, so a request cancelled in
-// between leaves a database that is truncated and not reseeded, permanently:
+// anyway. Against a real database both steps are durable — including the
+// ephemeral one, which outlives a request even though it does not outlive the
+// process — so a request cancelled in between leaves a store that is cleared
+// and not reseeded, permanently:
 // seed.Populate's idempotency probe finds the participants the reseed already
-// wrote and returns without finishing the job, on this boot and on every one
+// wrote and returns without finishing the job, on this call and on every one
 // after it. A curl that hangs up after 80ms was enough.
 //
 // So the reset is detached from the request's cancellation and given a deadline

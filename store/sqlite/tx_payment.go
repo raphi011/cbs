@@ -45,8 +45,9 @@ var _ payment.Tx = (*tx)(nil)
 // PutBank stores a bank and the set of internal accounts it holds per asset.
 // Its Ledger and Deposit fields are simply not written: they are live handles
 // over this very store, not data, and there is no column that could hold a
-// *ledger.Book. store/mem nils them for the same reason, and the Network
-// rebinds them on the way out.
+// *ledger.Book. The Network rebinds them on the way out; storetest's
+// BankRoundTripsAndDropsLiveHandles is what says a bank must come back with them
+// dropped and with Status intact.
 //
 // The child rows are deleted and rewritten rather than upserted. An upsert
 // alone would leave behind a row for an asset the bank no longer holds, and a
@@ -82,8 +83,9 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	// deliberately random: inserting straight from the map gave a bank's asset
 	// rows an arbitrary sequence, different on every write of the same data.
 	// Nothing reads that order today — the rows fold back into a map — but `seq`
-	// means real, load-bearing ordering everywhere else in this schema, and
-	// store/mem has no equivalent randomness to diverge from.
+	// means real, load-bearing ordering everywhere else in this schema, and a
+	// column that means one thing here and nothing there is how the next reader
+	// gets it wrong.
 	for _, asset := range slices.Sorted(maps.Keys(b.Assets)) {
 		accts := b.Assets[asset]
 		if _, err := t.tx.ExecContext(ctx, `
@@ -340,7 +342,9 @@ func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMem
 // ordered LIST rather than a map: the clearing house holds no account per
 // asset, so there is nothing to key them by. They are written with an explicit
 // position, which is what lets a caller's order survive and what keeps a
-// repeated asset from being a row this store refuses and store/mem accepts.
+// repeated asset from being a row this store refuses and the Go type allows —
+// see roster_entry_assets in the schema, and storetest's
+// RosterEntryAssetsAreAnOrderedList.
 func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
 	if err := t.write(); err != nil {
 		return err
@@ -757,7 +761,7 @@ func (t *tx) GetCycle(ctx context.Context, id payment.CycleID) (payment.Clearing
 
 // GetOpenCycle returns the open cycle for a scheme. The domain keeps at most one
 // open per scheme; the earliest wins if that invariant is ever broken, which is
-// what store/mem's ordered scan does too.
+// payment.Store's documented answer rather than this query's accident.
 //
 // The scheme and the status are each bound twice rather than once. store/pg
 // wrote $1 and $2 in both the outer predicate and the subquery; a positional

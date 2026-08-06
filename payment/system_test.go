@@ -3582,7 +3582,7 @@ func (t failingUpdateTx) GetDepositAccount(ctx context.Context, book ledger.Book
 
 // failingUpdateStore wraps a real Store and hands every UPDATE a failingUpdateTx.
 // See message_test.go's failingStore for why a synthetic error at the seam is
-// the only way to provoke a store failure on demand that works on both stores.
+// the only way to provoke a store failure on demand.
 type failingUpdateStore struct {
 	Store
 	participantErr error

@@ -9,8 +9,8 @@ import (
 
 // Store owns the lending layer's persistent state. Like ledger.Store and
 // deposit.Store it is declared here, by the consumer, and implemented by
-// store/mem and store/pg — so the store packages import the domain packages and
-// never the reverse.
+// store/sqlite — so the store package imports the domain packages and never the
+// reverse.
 type Store interface {
 	Update(ctx context.Context, fn func(context.Context, Tx) error) error
 	View(ctx context.Context, fn func(context.Context, Tx) error) error
@@ -85,4 +85,4 @@ type Tx interface {
 //     ErrTermsNotFound rather than a zero row that would read as a real
 //     interest-free product.
 //   - The store truncates nothing. Callers pass an already-DayStart-ed instant
-//     and both stores key on lending.TermsDayKey of it.
+//     and the store keys on lending.TermsDayKey of it.

@@ -291,7 +291,7 @@ export const chapter: Chapter = {
         "In the relational schema the asset is stored on the `entries` table, so each leg carries the asset it was posted in.",
       answer: false,
       explanation:
-        "The asset is on **`accounts`**, and deliberately not on `entries`. An entry's asset is always its account's, so a column on `entries` would store the same fact twice and create the one thing a second copy always creates: the chance that the two disagree. Posting derives it instead, and derivation is free — the accounts have already been loaded for the sufficient-balance check. There is also no `CHECK` restricting `accounts.asset` to the known codes: 'the asset must be one the system knows' is a *domain* rule, and a constraint there would make the Postgres store refuse a write the in-memory store performs — and would turn a one-line change to a Go slice into a migration. See [[relational-mapping]].",
+        "The asset is on **`accounts`**, and deliberately not on `entries`. An entry's asset is always its account's, so a column on `entries` would store the same fact twice and create the one thing a second copy always creates: the chance that the two disagree. Posting derives it instead, and derivation is free — the accounts have already been loaded for the sufficient-balance check. There is also no `CHECK` restricting `accounts.asset` to the known codes: 'the asset must be one the system knows' is a *domain* rule, enforced where the account is created, and a constraint there would enforce it a second time in a place that answers a constraint violation instead — and would turn a one-line change to a Go slice into a migration, with the database's copy of the set deciding. See [[relational-mapping]].",
     },
     {
       kind: "numeric",

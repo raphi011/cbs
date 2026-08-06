@@ -157,11 +157,11 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 // store/pg spelled the ordering `ORDER BY scheme COLLATE "C", value COLLATE "C"`,
 // because a bare ORDER BY there sorts under the cluster's collation, which on a
 // typical en_US.UTF-8 install ignores punctuation at the first level — so
-// SE89-AURORA-1001 and SE89AURORA0999 would order one way in Postgres and the
-// other way in store/mem, and which one depended on where the database was
-// created. SQLite's default collation is BINARY, which IS byte order and is what
-// store/mem's strings.Compare does, so the qualifier has nothing to correct here
-// and is left off rather than written as a no-op.
+// SE89-AURORA-1001 and SE89AURORA0999 came back in an order that depended on
+// where the database had been created. SQLite's default collation is BINARY,
+// which IS byte order, so the qualifier has nothing to correct here and is left
+// off rather than written as a no-op. storetest orders these ascending by
+// (scheme, value) and two identifiers written out of order are what checks it.
 func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, accounts []deposit.Account) error {
 	if len(accounts) == 0 {
 		return nil
@@ -219,7 +219,7 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 // deposit.ibanSeparators and iso20022.IBAN — and it is the one the compiler
 // cannot check, so it is pinned by
 // storetest/ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators,
-// which runs against every store and fails if they disagree.
+// which fails if this SQL and deposit.Identifier.MatchValue disagree.
 //
 // For the IBAN arm it gives up the VALUE column of the (book_id, scheme, value)
 // index, which is the honest cost of comparing a derived form; the
@@ -340,9 +340,9 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 // ActiveHoldTotal sums the holds that currently reduce an account's available
 // balance: still Active, and not past their expiry as at now.
 //
-// NULL expires_at is a hold that never expires — the zero time.Time store/mem
-// checks for — and it is admitted by an explicit IS NULL rather than by the
-// comparison, which would be unknown. Expiry is strictly before now, so a hold
+// NULL expires_at is a hold that never expires — Go's zero time.Time, which
+// nullTime writes as NULL — and it is admitted by an explicit IS NULL rather
+// than by the comparison, which would be unknown for exactly those rows. Expiry is strictly before now, so a hold
 // expiring exactly at now still counts. Like BookBalance this is an aggregate:
 // an unknown account is 0, not an error.
 func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
@@ -449,9 +449,9 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 // ---------------------------------------------------------------------------
 
 // PutOverdraftTerms upserts under (account, effective day). The day key is
-// derived with deposit.TermsDayKey — the same function store/mem keys its map
-// with, and the same one GetOverdraftTermsAsOf compares against — so the stores
-// agree on which day a repricing landed in by construction.
+// derived with deposit.TermsDayKey — the same function GetOverdraftTermsAsOf
+// compares against — so the write and the as-of read cannot disagree about which
+// day a repricing landed in. Nothing here truncates a date; see that function.
 func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row deposit.OverdraftTerms) error {
 	if err := t.write(); err != nil {
 		return err

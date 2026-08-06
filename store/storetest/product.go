@@ -11,8 +11,7 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// RunProduct runs the catalogue conformance suite against a store. Every
-// product.Store implementation must pass it identically.
+// RunProduct runs the catalogue suite against a store.
 //
 // It talks only to product.Store and product.Tx — never to product.Catalogue —
 // so what it pins is the storage contract: book scoping, not-found sentinels,
@@ -201,9 +200,10 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 		})
 	})
 
-	// store/mem holds Go values in maps, so a reader could be handed the very
-	// row a later writer mutates. store/pg cannot do that at all, which is
-	// exactly why the suite has to say the two behave the same.
+	// An in-Go store holds values in maps, so a reader could be handed the very
+	// row a later writer mutates; a SQL store cannot do that at all. The rule is
+	// the same either way and is free on one of them, which is exactly why it has
+	// to be written down rather than left to whichever store is underneath.
 	t.Run("ReadRowsAreCopies", func(t *testing.T) {
 		s := openProduct(t, newStore)
 

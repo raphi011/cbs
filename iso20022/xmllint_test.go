@@ -63,8 +63,8 @@ func TestSchemaCheckIsRequiredOnlyWhenAsked(t *testing.T) {
 //
 // It cannot be a required test by default. There is no usable pure-Go XSD
 // validator, and taking a cgo dependency on libxml2 would cost this repository
-// its "no dependencies beyond pgx" property for a check that runs on five
-// files. So it shells out to xmllint and skips when the tool or the schemas are
+// its "no external dependencies" property — the one the swap to store/sqlite was
+// for — for a check that runs on five files. So it shells out to xmllint and skips when the tool or the schemas are
 // absent — see testdata/README.md for how to obtain them.
 //
 // A skip is not a pass. When this test is skipped, the golden files rest

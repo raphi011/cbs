@@ -132,10 +132,9 @@ func entryAccountIDs(txs []ledger.Transaction) []ledger.AccountID {
 
 // entryAssets resolves the asset of every account referenced by any entry
 // across txs, in one Book.GetAccounts call. Rendering a listing of N
-// transactions used to call Book.GetAccount once per entry — on store/pg,
-// one BEGIN…COMMIT round trip each — which made a listing's cost scale with
-// how many transactions it rendered rather than how much work it actually
-// did. Resolving the whole batch's accounts up front, once, is what keeps a
+// transactions used to call Book.GetAccount once per entry — one BEGIN…COMMIT
+// each — which made a listing's cost scale with how many transactions it
+// rendered rather than how much work it actually did. Resolving the whole batch's accounts up front, once, is what keeps a
 // listing at one round trip regardless of N.
 func entryAssets(ctx context.Context, lb *ledger.Book, txs []ledger.Transaction) (map[ledger.AccountID]ledger.AssetCode, error) {
 	ids := entryAccountIDs(txs)

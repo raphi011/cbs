@@ -13,8 +13,7 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// RunPayment runs the payment-layer conformance suite against a store. Every
-// payment.Store implementation must pass it identically.
+// RunPayment runs the payment-layer suite against a store.
 //
 // It talks only to payment.Store and payment.Tx — never to payment.Network,
 // which RunRaces in races.go does instead — so what it pins is the storage
@@ -33,10 +32,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		s := openPayment(t, newStore)
 
 		p := bankRow("bank_1", "Aurora Bank", early)
-		// A Network hands the store a fully bound Bank. Ledger and
-		// Deposit are handles over the store, not data: store/pg has no column
-		// to put a *ledger.Book in, so store/mem must not keep them either —
-		// otherwise code works in memory and breaks on Postgres.
+		// A Network hands the store a fully bound Bank. Ledger and Deposit are
+		// handles over the store, not data: there is no column that could hold a
+		// *ledger.Book, and a store that kept them would hand back a Bank wired
+		// to whatever it was wired to when it was written.
 		p.Ledger = ledger.NewBook(nil, "bank_1", nil)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
@@ -185,8 +184,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		// And the map the store hands back is the caller's own: mutating it
-		// must not reach into the store, which store/mem could only get wrong
-		// by handing out its own map.
+		// must not reach into the store. A SQL store cannot get that wrong; an
+		// in-Go one gets it wrong by handing out the map it stored, which is why
+		// the rule is written down rather than assumed.
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			got, err := tx.GetBank(ctx, "alpha")
 			if err != nil {
@@ -272,8 +272,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	//
 	// A member read back with an empty map settles nothing — the settlement
 	// agent would have no account to post the net position of a cut-off to — and
-	// under store/pg the map is a second table, so "the row came back" and "the
-	// accounts came back" are two different claims about two different reads.
+	// the map is a second TABLE, so "the row came back" and "the accounts came
+	// back" are two different claims about two different reads.
 	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
@@ -436,8 +436,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	//
 	// The second is the one this case was written for. store/pg keyed this child
 	// table by (bic, asset), so it refused with SQLSTATE 23505 a slice store/mem
-	// stored verbatim — the single divergence between the two stores that this
-	// suite exists to make impossible.
+	// stored verbatim. That was a divergence between two implementations when
+	// there were two; what makes it wrong with one is the same fact without the
+	// comparison — a store must hold what the Go type it is handed can hold.
 	//
 	// No writer in the system reaches it, and this case is not about a writer.
 	// It used to say the writer Task 17d adds would, by building the list from
@@ -480,8 +481,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				return string(a)
 			}), "USD", "EUR", "USD")
 
-			// And through the listing, which is a second query in store/pg and
-			// could order differently from the single read above.
+			// And through the listing, which is a second query and could order
+			// differently from the single read above.
 			listed, err := tx.ListRosterEntries(ctx)
 			if err != nil {
 				return err
@@ -569,8 +570,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		s := openPayment(t, newStore)
 
 		// samplePayment and mandate each quote a DIFFERENT non-empty identifier
-		// on the debtor side than on the creditor side. That is deliberate:
-		// store/pg holds a PartyRef's identifier as two columns per side
+		// on the debtor side than on the creditor side. That is deliberate: the
+		// store holds a PartyRef's identifier as two columns per side
 		// (scheme, value), split out of what used to be one free-form IBAN
 		// column — and two same-shaped TEXT columns is exactly the case a
 		// transposed insert argument or scan target would not fail on, it
@@ -618,9 +619,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// NOT NULL with no CHECK and no foreign key, so "" round-trips today;
 		// this case is what makes that a property of the CONTRACT rather than
 		// of the current DDL. A later CHECK (cycle_id <> ''), or the foreign
-		// key cycle_payments.cycle_id already carries, would make store/pg
-		// refuse a write store/mem accepts — and without this case the
-		// conformance suite would stay green while it did.
+		// key cycle_payments.cycle_id already carries, would refuse the write
+		// this fixture makes — and without this case nothing would notice.
 		p := samplePayment("pay_1", "e2e-1", early)
 		p.Status = payment.Initiated
 		p.CycleID = ""
@@ -908,8 +908,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// The same rule the ledger applies to a re-keyed idempotency key. The
 		// end-to-end id index is maintained by the store, so a store that only
 		// ever adds to it goes on resolving a reference the payment no longer
-		// carries — and the two implementations then disagree about which
-		// references are still free.
+		// carries — and then refuses the next payment that legitimately claims
+		// it.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early))
 		})
@@ -952,7 +952,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 
 		// Cycles and settlements carry a slice and a map, payments a map. A
 		// store that keeps the caller's reference lets a later mutation rewrite
-		// history — and store/pg, which serialises on the way in, never would.
+		// history — which a store serialising on the way in never can, so the
+		// rule has to be stated rather than left to the backend.
 		c := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleClosed, early)
 		c.PaymentIDs = []payment.PaymentID{"pay_1"}
 		c.NetPositions = map[payment.ParticipantID]ledger.Amount{"bank_1": 100}
@@ -1181,9 +1182,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				return err
 			}
 			// The other two rows admission writes. They are seeded here because
-			// each is its own table in store/pg, so a table left out of the
-			// truncation list is a row that survives a reset — and the whole
-			// point of Reset is that a reset store behaves like a fresh one.
+			// each is its own table, so a table left out of the clear is a row
+			// that survives a reset — and the whole point of Reset is that a
+			// reset store behaves like a fresh one.
 			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
 				return err
 			}
@@ -1321,7 +1322,7 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 
 // paymentRoundTripsPartyDetails pins that what a MESSAGE says about each side —
 // the agent's BIC and the account holder's name — survives a round trip through
-// both stores.
+// the store.
 //
 // It is stored rather than looked up because looking it up is a read of another
 // bank's deposit register, which is the crossing sub-project 8 exists to remove.
@@ -1355,9 +1356,8 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 }
 
 // paymentRecordsWhereTheCreditorLegLanded pins that
-// payment.Payment.CreditorLegAccount survives a round trip through both stores,
-// in both of the states it has, and that the empty one is a value rather than a
-// missing field.
+// payment.Payment.CreditorLegAccount survives a round trip in both of the states
+// it has, and that the empty one is a value rather than a missing field.
 //
 // This is a MONEY column, not a trace. payment.PostReturnLegTx claws the funds
 // back from the account named here, and the account is not the payee's whenever
@@ -1367,9 +1367,9 @@ func paymentRoundTripsPartyDetails(t *testing.T, st payment.Store) {
 // a Liability going negative, which nothing in the book refuses.
 //
 // Both states are asserted because both are written. The empty one is what every
-// payment carries until its creditor leg posts, and it is stored in Postgres as
-// ” under a NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a
-// CHECK that refused it — would refuse a write store/mem accepts.
+// payment carries until its creditor leg posts, and it is stored as ” under a
+// NOT NULL DEFAULT ”, so a store that turned it into a NULL — or a CHECK that
+// refused it — would refuse the ordinary case.
 func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 	ctx := context.Background()
 
@@ -1427,8 +1427,8 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 		}
 	}
 
-	// And through the LISTING too, which is a different query in store/pg and
-	// the same column list only because it is written down once.
+	// And through the LISTING too, which is a different query and shares a column
+	// list with the single read only because it is written down once.
 	for _, p := range listed {
 		want := map[payment.PaymentID]ledger.AccountID{
 			paid.ID: "acc_bob", diverted.ID: "acc_unclaimed", pending.ID: "",
@@ -1440,8 +1440,8 @@ func paymentRecordsWhereTheCreditorLegLanded(t *testing.T, st payment.Store) {
 }
 
 // paymentRecordsBothReturnLegs pins that payment.Payment's two return-leg
-// transaction ids survive a round trip through both stores, and that a payment
-// carrying only ONE of them round-trips as one rather than as two or none.
+// transaction ids survive a round trip, and that a payment carrying only ONE of
+// them round-trips as one rather than as two or none.
 //
 // The half-returned state is the one that matters, and it is not a corner case:
 // it is what every return looks like between the two banks' acts. The returning
@@ -1519,7 +1519,7 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
 		check("round-tripped", got[want.ID], want)
 	}
 
-	// And through the LISTING, which is a different query in store/pg.
+	// And through the LISTING, which is a different query.
 	byID := map[payment.PaymentID]payment.Payment{}
 	for _, p := range listed {
 		byID[p.ID] = p
@@ -1588,12 +1588,12 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// exactly one row, so a listing that sorted by nothing at all passed.
 	//
 	// payment.Store documents this list as AdvisedAt then seq, like every other
-	// listing in the interface, and the two stores arrive at it by different
-	// means — store/pg with ORDER BY advised_at, seq and store/mem by sorting a
-	// map, whose iteration order is deliberately randomised by the runtime. So a
-	// single unordered read is exactly what this suite exists to catch, and this
-	// is the only place it can be caught: a bank in one asset holds one advice
-	// per cut-off, and it takes three cut-offs before order means anything.
+	// listing in the interface. A SQL store gets there with ORDER BY advised_at,
+	// seq; an in-Go one had to sort a map whose iteration order the runtime
+	// randomises, which is how a missing ORDER BY and a missing sort were both
+	// reachable. This is the only place either could be caught: a bank in one
+	// asset holds one advice per cut-off, and it takes three cut-offs before
+	// order means anything.
 	//
 	// The last two share an instant, which is the half that matters. Ties are
 	// broken by INSERTION sequence and not by cycle id — cyc_4 is written before
@@ -1654,10 +1654,9 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// mesh/books_test.go's recorder relies on the two being the same thing: its
 	// override notes the argument alone, and structCarriedBooks["PutSettlementAdvice"]
 	// cites this subtest as the evidence that nothing else could be recorded.
-	// store/pg holds it by construction — its INSERT writes book_id from the
-	// argument and never reads a.Book — so store/mem has to be made to agree, and
-	// an advice whose field disagrees with the argument is the only thing that can
-	// tell whether it still does.
+	// The store holds it by construction — its INSERT writes book_id from the
+	// argument and never reads a.Book — and an advice whose field disagrees with
+	// the argument is the only thing that can tell whether that is still true.
 	misfiled := payment.SettlementAdvice{
 		Book: "bank_9", Reference: "cyc_2", Asset: "EUR",
 		Movement: 100, ClosingBalance: 100,

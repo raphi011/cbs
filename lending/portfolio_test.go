@@ -24,7 +24,7 @@ type mutableClock struct{ at time.Time }
 func (c *mutableClock) set(t time.Time) { c.at = t }
 func (c *mutableClock) now() time.Time  { return c.at }
 
-// newTestPortfolio returns a portfolio over a fresh in-memory store, the book
+// newTestPortfolio returns a portfolio over a fresh ephemeral store, the book
 // it composes with, a subledger to file facilities in, and a Liability account
 // to disburse into — standing in for a customer's current account.
 func newTestPortfolio(t *testing.T) (*lending.Portfolio, *ledger.Book, ledger.SubledgerID, ledger.AccountID) {

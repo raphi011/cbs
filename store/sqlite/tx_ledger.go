@@ -33,8 +33,8 @@ var _ ledger.Tx = (*tx)(nil)
 func (t *tx) Now() time.Time { return t.store.clock() }
 
 // write reports whether this transaction may mutate. The SQLite transaction is
-// opened read-only as well, but failing here first means every store returns the
-// same error for the same mistake.
+// opened read-only as well, but failing here first means the answer is a named
+// sentinel rather than a driver error whose text is the driver's to change.
 func (t *tx) write() error {
 	if t.readOnly {
 		return ErrReadOnly
@@ -119,7 +119,9 @@ func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int6
 //
 // One counter is shared by ALL prefixes within a book — the counter is named
 // "id", not named after the prefix — so ldg_1, tx_2 and ent_3 interleave and the
-// number doubles as a creation order, exactly as store/mem does it.
+// number doubles as a creation order. storetest's NextIDSharesOneCounterPerBook
+// is what says so: a store keying its counter by (book, prefix) would still hand
+// out unique ids, and nothing else would notice.
 func (t *tx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
 	n, err := t.nextSeq(ctx, book, "id")
 	if err != nil {
@@ -337,14 +339,16 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 	return out, rows.Err()
 }
 
-// LockAccounts is a no-op, and it is NOT store/mem's no-op.
+// LockAccounts is a no-op, and it is not the same no-op store/mem had.
 //
 // ledger.Store asks that after this returns, the balance check and the posting
-// that depends on it are one serialized step. store/pg buys that with
+// that depends on it are one serialized step. store/pg bought that with
 // SELECT … FOR UPDATE, ordered by id so two transactions over overlapping
-// account sets cannot each hold the row the other needs. store/mem gets it from
-// a process-wide mutex that was already held before the call. Here it is neither
-// bought nor already held: it is a property of the unit of work.
+// account sets could not each hold the row the other needed. store/mem got it
+// from a process-wide mutex that was already held before the call — a no-op
+// standing in for exclusion nothing in the store had arranged for THIS pair.
+// Here it is neither bought nor already held: it is a property of the unit of
+// work.
 //
 // SQLite admits one writer, and a transaction that read at one snapshot and then
 // tries to write after somebody else has committed is REFUSED rather than
@@ -658,8 +662,10 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 //
 // A zero ValueDate is stored as NULL (see nullTime), and NULL < ? is unknown
 // rather than true, so such an entry is excluded here without a separate
-// IS NOT NULL check. That is deliberate, not incidental: it is what keeps this
-// in step with store/mem's explicit IsZero exclusion.
+// IS NOT NULL check. That is deliberate rather than incidental — ledger.Tx makes
+// the exclusion part of the contract, and storetest's
+// ValueDateBalanceExcludesZeroValueDateEntries is what pins it, because reading
+// this query it looks like something the SQL happens to do.
 //
 // The bound is formatted rather than passed as a nullTime, because it is a
 // COMPARAND and not a stored value: a zero bound must compare as the earliest
@@ -688,8 +694,10 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 // timestamps for, used a second time.
 //
 // A zero ValueDate is stored as NULL, and substr(NULL) is NULL, so such an entry
-// falls out of every group rather than landing in one for year 1 — the same
-// exclusion store/mem makes explicit with e.ValueDate.IsZero().
+// falls out of every group rather than landing in one for year 1. That is the
+// same exclusion ValueDateBalance makes, arrived at the same free way, and
+// storetest's ValueDatedSeriesExcludesZeroValueDateEntries pins it separately
+// because the buckets are built by different code from the balance.
 func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
 	opening, err := t.ValueDateBalance(ctx, book, id, normal, from)
 	if err != nil {

@@ -1,32 +1,47 @@
-// Package storetest is the conformance suite every store implementation must
-// pass: RunLedger for the ledger layer, RunDeposit for the deposit layer and
-// RunPayment for the payment layer.
+// Package storetest is the shared suite a store must pass: RunLedger for the
+// ledger layer, RunDeposit for the deposit layer, RunPayment for the payment
+// layer, and RunProduct and RunLending for theirs.
 //
-// It is a normal package rather than a set of _test.go files, because every
-// implementation imports it from its own tests.
+// It is NOT a conformance suite any more, and saying so is the point of this
+// paragraph. It was written to hold two implementations to identical answers,
+// and until Task 17.3 that is what it did: store/mem was the reference, store/pg
+// and then store/sqlite had to match it, and a case that either accepted or
+// refused differently was the defect. There is one implementation now, so
+// nothing here cross-checks anything.
 //
-// The conformance suites in this file, deposit.go, payment.go, product.go and
-// lending.go talk only to the Store and Tx interfaces — never to ledger.Book,
-// deposit.Register or payment.Network — so they pin the storage contract itself:
-// identity allocation, ordering, idempotency, the balance aggregate, the audit
-// log and rollback. Anything the implementations could plausibly disagree about
-// belongs here, because this suite is the only thing keeping them from drifting
-// apart.
+// What survives the loss is the reason the cases were written the way they were.
+// This file, deposit.go, payment.go, product.go and lending.go talk only to the
+// Store and Tx interfaces — never to ledger.Book, deposit.Register or
+// payment.Network — and they name no table and no dialect, so what each case
+// pins is the CONTRACT: identity allocation, ordering, idempotency, the balance
+// aggregate, the audit log, rollback. That is a suite an implementation can be
+// held to without a second implementation to compare it against, and it is what
+// Task 18 needs: three store shapes — bank, csm, centralbank — each running this
+// file. Cross-SHAPE, where it used to be cross-implementation.
 //
-// races.go does not observe that boundary, and Task 17.0 crossed it on purpose.
-// Its cases drive payment.Network, because the defect they exist for is an
-// ordering the ACTS choose and the store cannot express — and the synthetic
+// Two of the older arguments are worth reading with that in mind rather than
+// deleting. Where a case says a constraint would make one store refuse what
+// another accepts, the divergence is history and the decision is re-justified in
+// store/sqlite/schema/0001_init.sql, on accounts.asset. And where a case records
+// what store/mem could not show, it is recording why the case exists: store/mem
+// serialized every unit of work on one mutex, so the concurrency cases were
+// blind there, and that is the shape of blindness the ephemeral store still has
+// for anything about read-then-write ordering — see races.go.
+//
+// races.go does not observe the interface boundary, and Task 17.0 crossed it on
+// purpose. Its cases drive payment.Network, because the defect they exist for is
+// an ordering the ACTS choose and the store cannot express — and the synthetic
 // stand-in written to respect the boundary, ConcurrentReadThenWriteOnOneKeyAgrees
 // below, was blind to three money defects of exactly that shape. Admit is here
 // for the same reason: races.go needs it and this package may not import an
-// implementation.
+// implementation, because the implementation's tests import this package.
 //
 // # Ordering
 //
 // Every listing is ORDER BY created_at, seq, where seq is a monotonic per-book,
-// per-table sequence assigned when a row is first inserted — a counter in
-// store/mem, a column allocated MAX(seq)+1 in store/sqlite. An upsert must not
-// reissue it, or editing a row moves it to the end of the list.
+// per-table sequence assigned when a row is first inserted — a column allocated
+// MAX(seq)+1 in store/sqlite. An upsert must not reissue it, or editing a row
+// moves it to the end of the list.
 //
 // The tie-break is never the ID. IDs are counter-derived strings, so "tx_10"
 // sorts before "tx_8" and a listing silently reorders itself the moment a
@@ -55,9 +70,7 @@ const (
 	bookB ledger.BookID = "book-b"
 )
 
-// RunLedger runs the ledger-layer conformance suite against a store. Both
-// store/mem and store/pg must pass it identically — this is the main defence
-// against the two implementations drifting.
+// RunLedger runs the ledger-layer suite against a store.
 //
 // newStore must return a store with no state in it; the suite calls it once per
 // subtest and closes the result.
@@ -433,15 +446,17 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// A store is a per-table key/value layer. "The parent must exist" is a
 		// DOMAIN rule — ledger.Book reads the ledger before creating a
 		// subledger, the subledger before an account, and every account before
-		// posting to it — and putting it in the store as well would mean the two
-		// implementations disagree the moment one of them can express it and the
-		// other cannot. store/pg can (a foreign key); store/mem cannot. So
-		// neither does, and this subtest is what says so.
+		// posting to it — and putting it in the schema as well enforces it twice,
+		// in two places that answer differently: the constraint fires first, and
+		// it fires as a foreign-key violation where the domain would have said
+		// ErrLedgerNotFound. See subledgers in store/sqlite/schema/0001_init.sql.
 		//
 		// It is written from the failure it prevents: store/pg shipped a
 		// composite FK on subledgers(book_id, ledger_id), which turned the first
-		// write below into SQLSTATE 23503 while store/mem returned nil. No other
-		// fixture in this suite writes a dangling LedgerID, so nothing caught it.
+		// write below into SQLSTATE 23503 while store/mem returned nil — and with
+		// foreign_keys on in the DSN, store/sqlite would answer as store/pg did.
+		// No other fixture in this suite writes a dangling LedgerID, so nothing
+		// caught it.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			// A subledger under a ledger that does not exist.
 			if err := tx.PutSubledger(ctx, bookA, ledger.Subledger{
@@ -760,12 +775,12 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// is entitled to handle it and carry on — retry under a fresh key, fall
 		// back to the existing transaction, record the collision. That is only
 		// true if the failed statement did not take the whole unit of work with
-		// it. In Postgres it does by default: any error aborts the transaction
-		// and every later statement fails with SQLSTATE 25P02, so the writes
-		// after the handled error are silently lost while Update still returns
-		// nil-worthy work. store/pg therefore runs the statement inside a
-		// SAVEPOINT. store/mem never had the problem, and this subtest is what
-		// says the two agree.
+		// it, and whether it does is the database's answer rather than the
+		// domain's. In Postgres any error aborts the transaction and every later
+		// statement fails with SQLSTATE 25P02, so store/pg ran this one inside a
+		// SAVEPOINT; SQLite rolls back the failed STATEMENT and leaves the
+		// transaction usable, so store/sqlite does nothing. This subtest is what
+		// says the promise is kept either way.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
 		})
@@ -836,17 +851,16 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 
 		// The store is a key/value layer: it does not validate, it stores. What
 		// it MUST do is hold, byte for byte, every string the domain is willing
-		// to hand it — because the domain is the only validator, and a store
-		// that refuses input the domain accepted is a store that refuses a write
-		// the other store performs.
+		// to hand it — because the domain is the only validator, so a store that
+		// refuses what the domain accepted refuses it with nobody to say why.
 		//
-		// Postgres cannot hold a NUL in a text column (SQLSTATE 22021) or in a
+		// Postgres could not hold a NUL in a text column (SQLSTATE 22021) or in a
 		// jsonb string (22P05), nor a byte sequence that is not valid UTF-8;
-		// store/mem holds all of them. That gap is closed in ledger.ValidateText
-		// rather than here, so the corpus below is filtered through it: anything
-		// the domain rejects never reaches a store, and everything else has to
-		// survive the trip. Loosening ValidateText widens this corpus, which is
-		// what makes this subtest bite.
+		// store/mem and store/sqlite both hold all of them. That gap is closed in
+		// ledger.ValidateText rather than here, so the corpus below is filtered
+		// through it: anything the domain rejects never reaches a store, and
+		// everything else has to survive the trip. Loosening ValidateText widens
+		// this corpus, which is what makes this subtest bite.
 		corpus := []string{
 			"Aurora Bank",
 			"Crédit Soleil",
@@ -885,8 +899,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 					Status:      ledger.Posted,
 					CreatedAt:   early,
 					Description: sm.text,
-					// Metadata is jsonb in store/pg, so it refuses a different
-					// set of bytes from a text column and needs its own sample.
+					// Metadata goes into a JSON column rather than a plain text
+					// one, which is a different encoder and a different CHECK,
+					// so it needs its own sample.
 					Metadata: map[string]string{sm.text: sm.text},
 					Entries: []ledger.Entry{
 						{ID: ledger.EntryID("ent_" + sm.id), AccountID: "100.100.001", Amount: 100, Direction: ledger.Debit},
@@ -1068,13 +1083,13 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "balance", got, ledger.Amount(0))
 	})
 
-	// ValueDateBalanceExcludesZeroValueDateEntries pins the resolution to a
-	// plan-internal contradiction: store/mem's obvious implementation
-	// (!ValueDate.Before(before)) counts a zero time.Time{}, which is before
-	// every real bound, while store/pg stores a zero date as NULL (see
-	// nullTime) and "NULL < $4" is never true — the two stores would
-	// otherwise disagree on every entry posted with no value date, and this
-	// fixture's own transaction() helper creates exactly that shape.
+	// ValueDateBalanceExcludesZeroValueDateEntries pins a rule two stores once
+	// disagreed about and one store can still get wrong. The obvious in-Go
+	// implementation (!ValueDate.Before(before)) counts a zero time.Time{},
+	// which is before every real bound; a SQL store writes a zero date as NULL
+	// and "NULL < ?" is never true. This fixture's own transaction() helper
+	// creates exactly that shape, so the two answers were reachable on every
+	// entry posted with no value date.
 	//
 	// The ruling: a zero ValueDate means "not value-dated", so it is excluded
 	// from every bound rather than included in all of them. Book resolves
@@ -1101,8 +1116,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
 			// A bound far in the future would catch this entry were a zero
-			// ValueDate treated as "before everything", exactly the failure
-			// mode store/mem's naive check has.
+			// ValueDate treated as "before everything", which is what the naive
+			// in-Go check does.
 			got, err = tx.ValueDateBalance(ctx, bookA, "900.001.003", ledger.Debit,
 				time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
 			return err
@@ -1260,15 +1275,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	// ValueDatedSeriesExcludesZeroValueDateEntries is the movement-bucketing
 	// half of ValueDateBalanceExcludesZeroValueDateEntries above, and it needs
 	// its own subtest: Series.Opening inherits that ruling by delegating to the
-	// same balance query, but the per-day buckets are built by separate code in
-	// each store, and only one of them has to do anything to get this right.
+	// same balance query, but the per-day buckets are built by separate code and
+	// could get it right in one place and wrong in the other.
 	//
-	// store/pg gets it free — a zero value date is stored as NULL, and NULL is
-	// excluded from a date_trunc grouping, so there is simply no row to bucket.
-	// store/mem has to skip it explicitly, and would otherwise bucket the entry
-	// onto time.Time{}'s day — year 1 — emitting a movement pg has no row for.
-	// That skip is the most divergence-prone line on this path, and deleting it
-	// is what this pins.
+	// A SQL store gets it free — a zero value date is stored as NULL, and NULL
+	// falls out of a day grouping, so there is no row to bucket. An in-Go one has
+	// to skip it explicitly or it buckets the entry onto time.Time{}'s day, year
+	// 1, and emits a movement for it. That skip was the most divergence-prone
+	// line on store/mem's path; what this pins now is that no movement for year 1
+	// ever appears, however the buckets are built.
 	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
 		s := open(t, newStore)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
@@ -1738,22 +1753,18 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// This suite's only case with two units of work running AT ONCE, and
 		// the gap it closes is the reason it exists.
 		//
-		// Everything else here is single-threaded, so the suite could not
-		// enforce the one property it is for — that store/pg never accepts or
-		// refuses a write differently from store/mem — for any rule the
-		// APPLICATION makes by reading and then writing. store/mem serializes
-		// every Update on one process-wide mutex, so a read-then-write is
-		// atomic there whatever the caller does; store/pg runs READ COMMITTED,
-		// where two transactions both read "not there" and both write. A
-		// pg-only concurrency test can show pg is self-consistent and can never
-		// show the two AGREE.
+		// Everything else here is single-threaded, so the suite could say nothing
+		// at all about a rule the APPLICATION makes by reading and then writing.
+		// That was the class store/mem could not show and store/pg could: one
+		// process-wide mutex made a read-then-write atomic there whatever the
+		// caller did, while READ COMMITTED let two transactions both read "not
+		// there" and both write.
 		//
-		// It is not the only case holding both stores to one winner any more —
-		// races.go does that on payment's acts, which is where the rule this
-		// stands in for actually lives, and it was written at Task 17.0 because
-		// the stand-in was blind to three money defects of this shape. What is
-		// left for this one is the shape stated at the store interface with no
-		// act to hang it on, which is what a store implementer reads.
+		// races.go does the same job on payment's acts, which is where the rule
+		// this stands in for actually lives, and it was written at Task 17.0
+		// because the stand-in was blind to three money defects of this shape.
+		// What is left for this one is the shape stated at the store interface
+		// with no act to hang it on, which is what a store implementer reads.
 		//
 		// What it encodes is the shape payment.SubmitPaymentTx uses to refuse a
 		// duplicate client reference: allocate an id, THEN read the key, THEN
@@ -1769,15 +1780,22 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		//
 		// The claim is exactly that and no wider. It does NOT say a store makes
 		// read-then-write atomic on its own; it says this ORDERING admits one
-		// writer, on both stores, and that a caller which reads before it
-		// allocates gets a different answer from each — which is what happened,
-		// with eight concurrent submissions of one reference accepted eight
-		// times on pg and once on mem, and the payer debited eight times.
+		// writer, whatever is underneath — which is what a caller reading before
+		// it allocates did not get, with eight concurrent submissions of one
+		// reference accepted eight times on store/pg and once on store/mem, and
+		// the payer debited eight times.
+		//
+		// On store/sqlite the ordering is no longer the only thing holding it:
+		// the store admits one writer and Store.Update re-runs a loser against
+		// the winner's committed row, measured at ten runs out of ten with the
+		// ordering removed. See payment.admissionSequenceTx. The case stays,
+		// because Task 18 splits the counter and the row into two databases.
 		//
 		// The read is on a NON-key attribute (the account's name) because that
 		// is the shape of the rule: a store cannot enforce it with a primary
-		// key, and a unique index would refuse where mem accepts. See index 6
-		// in store/pg/schema/0001_init.sql.
+		// key, and a unique index would answer a constraint violation where the
+		// domain answers its sentinel. See index 6 in
+		// store/sqlite/schema/0001_init.sql.
 		const claimants = 8
 		const wanted = "the-one-and-only"
 

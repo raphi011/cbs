@@ -233,9 +233,9 @@ func (t *tx) ListInstallments(ctx context.Context, book ledger.BookID, id lendin
 // ---------------------------------------------------------------------------
 
 // PutFacilityTerms upserts under (facility, effective day). The day key is
-// derived with lending.TermsDayKey — the same function store/mem keys its map
-// with, and the same one GetFacilityTermsAsOf compares against — so the stores
-// agree on which day a repricing landed in by construction.
+// derived with lending.TermsDayKey — the same function GetFacilityTermsAsOf
+// compares against — so the write and the as-of read cannot disagree about which
+// day a repricing landed in. Nothing here truncates a date; see that function.
 func (t *tx) PutFacilityTerms(ctx context.Context, book ledger.BookID, row lending.FacilityTerms) error {
 	if err := t.write(); err != nil {
 		return err

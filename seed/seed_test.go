@@ -61,7 +61,7 @@ func testMesh(t *testing.T, net *payment.Network) *mesh.Mesh {
 // testNetwork builds the sample scenario over the store testenv hands it.
 //
 // It is what makes the seed assertions (deterministic IDs, conserved reserves,
-// status coverage) claims about the seed rather than about one backend, and it is
+// status coverage) claims about the seed rather than about a store, and it is
 // the whole of what a caller of this package now assembles for itself: a store,
 // a network, a running mesh, and Populate over the three.
 func testNetwork(t *testing.T) *payment.Network {
@@ -596,7 +596,7 @@ func assertClockIsLive(t *testing.T, d *Dataset, when string) {
 }
 
 // Populate recovers the builder's own must/check panic and nothing else. A nil
-// dereference in payment, deposit, ledger or store/mem is a bug: flattening it
+// dereference in payment, deposit, ledger or the store is a bug: flattening it
 // into a seed error would return it as a 500 with the stack thrown away.
 func TestRecoverBuildOnlyCatchesSeedErrors(t *testing.T) {
 	if err := recoverBuild(nil); err != nil {

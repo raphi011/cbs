@@ -3,10 +3,13 @@
 // SQLite transpiled to Go, so the module gains Go dependencies and loses every
 // external one. No server, no Docker, no C toolchain.
 //
-// While this package is being written store/mem and store/pg both still exist
-// and store/storetest holds all three to the same answers. That is deliberate
-// and it does not last: the two of them are the only oracles this port has, and
-// Task 17.2 and 17.3 delete them.
+// It is the only implementation, and it was certified against two that are
+// gone. store/pg and store/mem were the oracles this port had: store/storetest
+// held all three to the same answers at Task 17.1, and 17.2 and 17.3 deleted
+// them. Nothing cross-checks the SQL now, which is why the two guards in
+// sqlite_test.go — foreign keys are really enforced, and there is exactly one
+// non-primary-key unique index — exist at all: both are failures that change no
+// other test's outcome.
 //
 // # Everything the connection needs rides in the DSN
 //
@@ -89,22 +92,26 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// ErrReadOnly is returned when a write is attempted inside View, mirroring
-// store/mem and store/pg. The transaction is opened read-only as well, but
-// failing in Go first makes all three stores return the same error for the same
-// mistake rather than one domain sentinel and two different driver errors.
+// ErrReadOnly is returned when a write is attempted inside View.
+//
+// The transaction is opened read-only as well, so the database would refuse the
+// write anyway; failing in Go first is what makes the answer a named sentinel a
+// caller can match on rather than a driver error whose text is the driver's to
+// change. store/mem and store/pg both answered the same way, for the same
+// reason.
 var ErrReadOnly = errors.New("sqlite: write attempted in a read-only transaction")
 
 // ErrNestedTransaction is returned when a unit of work is opened inside another
 // one on the same store.
 //
-// store/mem refuses this because its mutex is not reentrant and nesting would
-// deadlock. Here the hazard is store/pg's: a nested Update takes a SECOND
-// connection and runs a SEPARATE transaction, so the inner writes commit even
-// when the outer ones roll back. Under SQLite it is worse than under Postgres,
-// because the inner transaction then contends with the outer one for the write
-// lock and the pair can wedge. All three stores refuse it with the same shape of
-// error, so the mistake behaves identically whichever is underneath.
+// The hazard is the one store/pg had: a nested Update takes a SECOND connection
+// and runs a SEPARATE transaction, so the inner writes commit even when the
+// outer ones roll back. Under SQLite it is worse than under Postgres, because
+// the inner transaction then contends with the outer one for the write lock and
+// the pair can wedge — a hang rather than an error. store/mem refused it too,
+// there because its mutex was not reentrant, so the single most likely mistake
+// in this codebase has answered the same way under every store this repository
+// has had.
 var ErrNestedTransaction = errors.New("sqlite: a unit of work is already open on this store (call the …Tx method, not its Update-wrapping sibling)")
 
 // inUnitOfWork is the context key Update and View stamp into the context they
@@ -143,12 +150,13 @@ const (
 
 // maxOpenConns is how many connections a CALLER may hold at once.
 //
-// It is not 1. A single connection would serialize every unit of work and turn
-// this store into store/mem with a SQL dialect — which would pass the
-// conformance suites and quietly make storetest.RunConcurrentTxRaces
+// It is not 1. A single connection would serialize every unit of work — which
+// would pass every shared suite and quietly make storetest.RunConcurrentTxRaces
 // unrunnable, since that suite holds every racer at a barrier INSIDE an open
-// transaction and a second racer would never get a connection to arrive on.
-// Concurrency this store cannot express is concurrency its tests cannot check.
+// transaction and a second racer would never get a connection to arrive on. It
+// would not FAIL the suite; it would stop in it. Concurrency this store cannot
+// express is concurrency its tests cannot check, and store/mem was exactly that
+// store — one process-wide mutex, every race invisible.
 //
 // It is not unbounded either: SQLite admits one writer, so connections past the
 // handful that are reading only queue up to contend for the same lock.
@@ -321,8 +329,8 @@ func (s *Store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) 
 // backoff waits before the next attempt, and it is the difference between a
 // retry loop that works and one that does not.
 //
-// store/pg retries with no delay and is right to: Postgres detects a deadlock
-// after deadlock_timeout, about a second, so its retries are spaced by the
+// store/pg retried with no delay and was right to: Postgres detects a deadlock
+// after deadlock_timeout, about a second, so its retries were spaced by the
 // database whether the caller thinks about it or not. SQLite answers
 // immediately, so five undelayed attempts all finish inside the winner's commit
 // window and the loser exhausts them without ever seeing the winner's write.
@@ -444,12 +452,14 @@ func (s *Store) Close() error {
 // SQLITE_BUSY (5), both in under ten milliseconds with busy_timeout(5000) set.
 //
 // Without the retry the money is still right — one writer wins — but the loser
-// is told the database is locked where store/mem and store/pg both return the
-// domain's own refusal, and a caller that catches the sentinel does not catch a
-// lock error. The retry re-runs the callback, which reads again and reaches the
-// domain's guard, which refuses for the reason the other two stores refuse for.
-// That is what store/storetest's RunConcurrentTxRaces asserts: not that somebody
-// lost, but that the loser lost for the documented reason.
+// is told the database is locked, where what it is owed is the domain's own
+// refusal: a caller that catches ErrInsufficientBalance does not catch a lock
+// error. store/mem and store/pg both answered with the sentinel, the first
+// because its mutex made the loser read after the winner had committed and the
+// second because it retried too. The retry re-runs the callback, which reads
+// again and reaches the domain's guard. That is what store/storetest's
+// RunConcurrentTxRaces asserts: not that somebody lost, but that the loser lost
+// for the documented reason.
 //
 // The primary code is what is matched. SQLite's extended codes carry the primary
 // one in their low byte, so SQLITE_BUSY_SNAPSHOT and SQLITE_LOCKED_SHAREDCACHE
@@ -545,9 +555,9 @@ func (s *Store) Reset(ctx context.Context) error {
 
 // Deposit returns this store as a deposit.Store.
 //
-// It is an adapter rather than a second implementation for the same reason
-// store/mem's is: Go allows one Update method per type, and the Store interfaces
-// declare Update with different callback types. The adapter holds no state and
+// It is an adapter rather than a second implementation because Go allows one
+// Update method per type and the four Store interfaces declare Update with four
+// different callback types. The adapter holds no state and
 // hands the callback the very same *tx, so a Register and a Book built over one
 // Store share a database transaction.
 func (s *Store) Deposit() deposit.Store { return depositStore{s} }

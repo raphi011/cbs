@@ -152,7 +152,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "Three races were hidden by the mutex: the balance check ([[row-locking|closed with SELECT … FOR UPDATE]]), the [[idempotency-race|idempotency key]] (closed with a unique index), and the reversal (closed with a conditional update). Reading a finished snapshot for a past date is a pure read of immutable data — nothing races with it.",
+        "Three races were hidden by the mutex: the balance check ([[row-locking|closed by locking, or by a store that refuses the loser's write]]), the [[idempotency-race|idempotency key]] (closed with a unique index), and the reversal (closed with a conditional update). Reading a finished snapshot for a past date is a pure read of immutable data — nothing races with it.",
     },
     {
       kind: "mc",
@@ -160,7 +160,7 @@ export const chapter: Chapter = {
       difficulty: "core",
       concept: "row-locking",
       prompt:
-        "The lock that protects a balance check takes `SELECT id FROM accounts WHERE … ORDER BY id FOR UPDATE`. Why the `ORDER BY id`?",
+        "A store that protects a balance check by locking takes `SELECT id FROM accounts WHERE … ORDER BY id FOR UPDATE`. Why the `ORDER BY id`?",
       options: [
         "So the locked rows come back in a predictable order for the caller to iterate",
         "So two transactions over overlapping account sets take their locks in the same order and cannot deadlock each other",
@@ -169,7 +169,7 @@ export const chapter: Chapter = {
       ],
       answer: 1,
       explanation:
-        "Two transactions locking the same accounts in *different* orders would each hold a row the other wants — a deadlock. Taking [[row-locking|the locks in one agreed order]] means the second one simply waits. It is a two-word change that turns a hang into a queue.",
+        "Two transactions locking the same accounts in *different* orders would each hold a row the other wants — a deadlock. Taking [[row-locking|the locks in one agreed order]] means the second one simply waits. It is a two-word change that turns a hang into a queue. A store that instead *detects* the conflict — one writer at a time, and the loser's write refused so the whole unit of work runs again — needs no order, because it takes no locks.",
     },
     {
       kind: "mc",
@@ -248,7 +248,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 2],
       explanation:
-        "All three are real. This is why every mutating method comes in a pair: the plain one opens a [[unit-of-work]], the `…Tx` one joins the caller's. Refusing the nesting turns the most likely mistake in this codebase — calling the wrong one of the pair — into an immediate, identical error on both stores rather than a rare, backend-specific corruption.",
+        "All three are real. This is why every mutating method comes in a pair: the plain one opens a [[unit-of-work]], the `…Tx` one joins the caller's. Refusing the nesting turns the most likely mistake in this codebase — calling the wrong one of the pair — into an immediate, named error rather than a rare corruption whose shape depends on what is underneath.",
     },
     {
       kind: "mc",
@@ -256,7 +256,7 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "idempotency-race",
       prompt:
-        "A reversal is implemented as `UPDATE transactions SET status = 'Reversed' WHERE id = $1 AND status = 'Posted'`, and the outcome is decided by the number of rows affected. What does this buy over reading the status, comparing it, and then writing?",
+        "A reversal is implemented as `UPDATE transactions SET status = 'Reversed' WHERE id = ? AND status = 'Posted'`, and the outcome is decided by the number of rows affected. What does this buy over reading the status, comparing it, and then writing?",
       options: [
         "It avoids a second round trip to the database, which makes reversals faster",
         "The read and the write are one statement, so two concurrent reversals cannot both see 'Posted' and both proceed",
@@ -284,7 +284,7 @@ export const chapter: Chapter = {
       difficulty: "challenge",
       concept: "book-scoped-id",
       prompt:
-        "Every query against a book-scoped table carries `WHERE book_id = $1`. What is the failure mode when one is accidentally omitted?",
+        "Every query against a book-scoped table carries `WHERE book_id = ?`. What is the failure mode when one is accidentally omitted?",
       options: [
         "The query errors, because a composite primary key requires both columns",
         "The query returns nothing, because the remaining predicate cannot match",
@@ -334,7 +334,7 @@ export const chapter: Chapter = {
       options: [
         "Because the bank would have to keep it in step by hand, and the two kinds of id are indistinguishable anyway",
         "Because ids are unique across the store, a member can resolve neither kind anyway, and a reconciliation reads one shape rather than two — so the column would be a field nothing reads",
-        "Because adding it would break the conformance suite, which the in-memory store cannot satisfy",
+        "Because adding it would break the shared store suite, which pins the row's shape",
         "Because the kind is already implied by the sign of the movement column",
       ],
       answer: 1,

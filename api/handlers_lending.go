@@ -111,7 +111,7 @@ func (s *Server) handleListFacilities(w http.ResponseWriter, r *http.Request) {
 	// ListFacilitiesWithTerms rather than ListFacilities: the rate is resolved
 	// per facility from its timeline, and one unit of work resolves the whole
 	// listing — resolving each facility through its own View would make a listing
-	// N units of work over a store whose mem implementation refuses to nest them.
+	// N units of work over a store that refuses to nest them at all.
 	facilities, err := p.Lending.ListFacilitiesWithTerms(r.Context())
 	if err != nil {
 		writeError(w, err)

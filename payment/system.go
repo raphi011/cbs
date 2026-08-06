@@ -504,7 +504,7 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // admissionSequenceTx takes the network's identity counter before an admission
 // act reads the row it decides from.
 //
-// # Without it the refusals hold on one store and not the other
+// # Without it the refusals were the store's and not the act's
 //
 // Every act that decides something from a read calls this first, which is all of
 // them except FoundBankTx — that one allocates the bank's own id before it
@@ -552,36 +552,64 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // losers deadlocking, Store.Update running the callback again against a bank
 // that is Member by then. That does not happen. The callback ran exactly ONCE
 // in all 240 Postgres runs measured across the four configurations, and the
-// cold-pool loser simply ran its SELECT after the winner's COMMIT. The retry in
-// store/pg (pg.go's 40P01/40001 arm) is real and was never reached.
+// cold-pool loser simply ran its SELECT after the winner's COMMIT. store/pg's
+// retry — its 40P01/40001 arm — was real and was never reached. The lesson
+// survives the store: a retry that would explain an outcome has to be observed
+// firing, not assumed from its existence.
 //
 // One more question rides along with the second: centralBankChartTx, which
 // OpenSettlementAccountTx calls, resolves the central bank's chart of accounts
 // find-or-create BY NAME, with no unique constraint behind it. Two callers that
 // both find no Central Bank ledger both create one, and the members underneath
-// them disagree about which subledger holds reserves — 60 runs in 60. store/pg's
-// schema is where the absent constraint is argued, and it used to close this by
-// pointing at the first statement of the deleted AddParticipantTx, which drew an
-// id before anything else ran. Nothing composes the four acts in one transaction
+// them disagree about which subledger holds reserves — 60 runs in 60. The
+// schema is where the absent constraint is argued (the ledgers table in
+// store/sqlite/schema/0001_init.sql), and it used to close this by pointing at
+// the first statement of the deleted AddParticipantTx, which drew an id before
+// anything else ran. Nothing composes the four acts in one transaction
 // any more — they are four commits with messages between them — so this call is
 // what every one of them reaches the find-or-create behind. Both places point
 // here.
 //
-// store/mem serializes every Update on one process-wide mutex, so all of it is
-// atomic there whatever the caller does — 0 in 60 on every case above and below,
-// warm pool or cold, which is the whole difference. store/pg runs READ
-// COMMITTED, where two transactions both read "not there" and both write. A
-// domain refusal that holds on one store and not the other is not a refusal.
+// # What it is worth on the store that is left, measured
+//
+// Every number above is store/pg's, and store/pg is gone. store/mem serialized
+// every Update on one process-wide mutex, so all of it was atomic there whatever
+// the caller did — 0 in 60 on every case above, warm pool or cold, which is the
+// whole difference — and store/pg ran READ COMMITTED, where two transactions
+// both read "not there" and both write. A domain refusal that held on one store
+// and not the other was not a refusal, and closing that is what this function
+// was for.
+//
+// store/sqlite is neither of them. It admits ONE WRITER, so the loser of a
+// read-then-write pair is refused at its write rather than let through, and
+// Store.Update re-runs the unit of work — reading again, after the winner has
+// committed, and meeting the domain's guard. Measured, with this function made
+// to return nil: storetest's RunRaces passes ten runs out of ten, all four
+// cases, on the ephemeral store and on a WAL file alike. So the ordering below
+// is a SECOND guard here rather than the only one, and no test in this
+// repository can see it go.
+//
+// It stays for two reasons. It costs one row write per act and holds the
+// property without depending on the retry budget; and Task 18 puts the counter
+// and the rows these acts decide from in different DATABASES, at which point
+// neither this ordering nor the single-writer property spans them, and what an
+// admission's idempotency rests on becomes that task's question rather than an
+// answer it inherits.
 //
 // # Why an id allocation is the lock
 //
 // It is the ordering this repository already depends on twice — SubmitPaymentTx
 // allocates before it reads the end-to-end index, FoundBankTx allocates before
 // the composition touches anything — and it is the one store/storetest's
-// ConcurrentReadThenWriteOnOneKeyAgrees names and holds both stores to. NextID's
-// INSERT … ON CONFLICT DO UPDATE takes a row lock on id_sequences that is held
-// until the transaction ends, so the second caller blocks there and then sees
-// what the first committed.
+// ConcurrentReadThenWriteOnOneKeyAgrees states at the store interface.
+//
+// What makes an allocation a lock is that it WRITES. Under Postgres, NextID's
+// INSERT … ON CONFLICT DO UPDATE took a row lock on id_sequences held until the
+// transaction ended. Under SQLite the write is what makes this transaction the
+// database's writer, so a second allocator waits there and then reads what the
+// first committed — see store/sqlite's nextSeq, which is the same ordering
+// arrived at from the database admitting one writer rather than from a row being
+// locked.
 //
 // The number is discarded, and that is the whole of the difference from those
 // two callers. Neither row an admission writes is keyed by an id — the
@@ -590,7 +618,7 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 //
 // # It leaves gaps in the network's numbering, and they are visible
 //
-// One counter serves every prefix within a book (see store/pg's NextID), so this
+// One counter serves every prefix within a book (see store/sqlite's NextID), so this
 // advances the same counter that numbers banks, payments, mandates and cycles.
 // What a euro-only admission draws from it is: the bank's own id, one here per
 // act that decides from a read — one per settlement account asked for, one for
@@ -880,9 +908,10 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // reachable in practice and not only in principle.
 //
 // The idempotency is this act's own and not a store's: it reads the member row
-// and then writes it, which under READ COMMITTED is two callers both reading
-// "not there". What makes it hold on both stores is the id drawn before the read
-// — see admissionSequenceTx, which measures what the act does without it.
+// and then writes it, which without something ordering the two is two callers
+// both reading "not there". What orders them is the id drawn before the read —
+// see admissionSequenceTx, which measures what the act does without it, on this
+// store and on the two that came before.
 //
 // The name on the row is the one it was first opened under. An account servicer
 // names an account after the member it opened it for, and a second request that
@@ -907,7 +936,7 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // That leaves something for the relay to guarantee rather than nothing, and it
 // is worth naming because this act is reached from a message. The BIC it is
 // handed becomes the primary key of the settlement agent's own row —
-// settlement_members.bic in store/pg — so a request carrying a malformed or
+// settlement_members.bic — so a request carrying a malformed or
 // empty address writes a member row keyed by one, which no later message can
 // address and no reader can find. What must not reach here is an address
 // nothing validated: iso20022.BIC.Validate is what the reader of an acmt.007
@@ -927,8 +956,10 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 		return SettlementMember{}, err
 	}
 	// Before the read below, and before centralBankChartTx's find-or-create.
-	// See admissionSequenceTx: without it this act's idempotency is a store's
-	// property rather than this act's, and it is store/mem's only.
+	// See admissionSequenceTx: without it this act's idempotency is whatever the
+	// store underneath happens to give it rather than something the act arranged
+	// — which on store/mem was everything, on store/pg was nothing, and on
+	// store/sqlite is measured.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return SettlementMember{}, err
 	}
@@ -1165,9 +1196,10 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 		return RosterEntry{}, err
 	}
 	// Then the id, before the read the refusal is decided from. See
-	// admissionSequenceTx: without it two different admissions of one address are
-	// both accepted on store/pg and the entry records whichever committed last,
-	// which is the impostor half the time.
+	// admissionSequenceTx: without it, two different admissions of one address
+	// were both accepted on store/pg and the entry recorded whichever committed
+	// last — the impostor half the time — and that is what this ordering was put
+	// here for.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return RosterEntry{}, err
 	}
@@ -1265,10 +1297,10 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // act is idempotent in the way messages require: a redelivered acknowledgement
 // writes the same row, and a second asset's acknowledgement — same admission,
 // same reference — adds a reference the bank did not have. The id drawn before
-// the read still matters for the reason it does in the other two acts: two
-// recordings of one bank racing on store/pg would otherwise both read the row and
-// both write it, and the loser's account numbers would be lost. See
-// admissionSequenceTx.
+// the read is here for the reason it is in the other two acts: two recordings of
+// one bank racing on store/pg both read the row and both wrote it, and the
+// loser's account numbers were lost. See admissionSequenceTx, which is where
+// what that ordering is worth today is measured.
 //
 // # An account for an asset this bank does not operate in is not recorded —
 // unless that is all of them
@@ -1778,9 +1810,10 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //
 // Participants are visited in registration order, not in map order, so the
 // entries of the central bank's settlement transaction come out the same on
-// every run. That order is persisted — store/pg gives each entry an explicit
-// seq — so leaving it to Go's randomised map iteration would make the stored
-// transaction differ from run to run for no reason. The statements come out in
+// every run. That order is persisted — the store gives each entry an explicit
+// position column, because a table has no order of its own — so leaving it to
+// Go's randomised map iteration would make the stored transaction differ from
+// run to run for no reason. The statements come out in
 // the same order, so the messages a caller sends do too.
 func (s *Network) SettleCycle(ctx context.Context, id CycleID) (Settlement, []SettlementStatement, error) {
 	var out Settlement
@@ -2145,8 +2178,8 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, by Particip
 	//
 	// This comment used to say the opposite — that a failed posting left the row
 	// at Advised, and that such a row was the unreconciled position. It was never
-	// true of this code. store/mem restores its pre-fn snapshot on error and
-	// store/pg issues a ROLLBACK, so there is no half of this that can survive.
+	// true of this code. The store issues a ROLLBACK, so there is no half of this
+	// that can survive.
 	// What the row actually is: this bank's own durable record that it BOOKED
 	// this cut-off, which is what makes a redelivered statement a no-op (the
 	// GetSettlementAdvice check above) and what Task 19's reconciliation reads.
@@ -2520,22 +2553,31 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// The id comes BEFORE the duplicate check, and the order is the whole of
 	// what makes that check atomic.
 	//
-	// NextID is an INSERT … ON CONFLICT DO UPDATE on one row of id_sequences
-	// (store/pg/tx_ledger.go), so it takes a row lock that is held until this
-	// transaction ends. A second submission blocks there, and by the time it
-	// gets past, the first has either committed — so the read below sees its
-	// payment, under READ COMMITTED, and refuses the reference — or rolled back,
-	// taking the id with it. The gap-free counter serializes the whole operation
-	// and not merely the number it hands out, which is the argument
+	// NextID writes one row of id_sequences (store/sqlite's nextSeq), and writing
+	// is what makes this transaction the database's writer. A second submission
+	// waits there, and by the time it gets past, the first has either committed —
+	// so the read below sees its payment and refuses the reference — or rolled
+	// back, taking the id with it. The gap-free counter serializes the whole
+	// operation and not merely the number it hands out, which is the argument
 	// store/storetest's races.go already makes for the admission acts.
 	//
 	// With the two the other way round, eight concurrent submissions of one
-	// EndToEndID were accepted eight times on store/pg and once on store/mem —
-	// which serializes every Update on one process-wide mutex and so could never
-	// show it. The payer was debited eight times for one client reference. See
-	// storetest's ConcurrentReadThenWriteOnOneKeyAgrees — a subtest of
-	// TestConformance, not a test function of its own — which holds the two
-	// stores to the same answer for this shape.
+	// EndToEndID were accepted eight times on store/pg, under READ COMMITTED, and
+	// once on store/mem, which serialized every Update on one process-wide mutex
+	// and so could never show it. The payer was debited eight times for one client
+	// reference.
+	//
+	// What the ordering is worth on the store that is left is measured, and it is
+	// smaller: with the two statements swapped back, storetest's
+	// Races/ConcurrentSubmissionsOfOneReferenceAcceptOne passes ten runs out of
+	// ten, on the ephemeral store and on a WAL file. SQLite admits one writer, so
+	// the loser is refused at its first write and Store.Update re-runs the unit of
+	// work against the winner's committed row — the retry closes the same hole a
+	// second way, and no test here can now see this ordering go. See
+	// admissionSequenceTx, which records the same finding for the admission acts,
+	// and storetest's ConcurrentReadThenWriteOnOneKeyAgrees — a subtest of
+	// TestConformance, not a test function of its own — which states the shape at
+	// the store interface.
 	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
 	if err != nil {
 		return Payment{}, err
@@ -4019,10 +4061,11 @@ func transition(p *Payment, to PaymentStatus) error {
 }
 
 // validateParty checks a party reference's text before anything is looked up
-// with it. The identifier is stored on the payment rather than derived; the
-// two ids are used as lookup keys, and a key that reaches store/pg with a
-// control character in it raises a SQLSTATE rather than answering "no such
-// row". See ledger.ValidateText.
+// with it. The identifier is stored on the payment rather than derived, and the
+// two ids are used as lookup keys — so a control character in one names nothing
+// this system ever generated, and what a caller is owed is the domain's refusal
+// rather than whatever the store makes of a key like that. Out of store/pg it
+// was a raw SQLSTATE. See ledger.ValidateText.
 func validateParty(field string, ref PartyRef) error {
 	if err := ledger.ValidateText(field+".participant", string(ref.Participant)); err != nil {
 		return err

@@ -12,8 +12,8 @@ import (
 
 // Store owns the payment layer's persistent state. Like ledger.Store and
 // deposit.Store it is declared here, by the consumer, and implemented by
-// store/mem and store/pg — so the store packages import the domain packages and
-// never the reverse.
+// store/sqlite — so the store package imports the domain packages and never the
+// reverse.
 //
 // It is the only store handle the Network takes. The narrower ledger.Store and
 // deposit.Store views the Network needs for its books and registers are derived
@@ -76,7 +76,7 @@ type Tx interface {
 	// ListSettlementMembers is called by nothing but storetest. It is declared
 	// for the reason ListSettlementAdvices below is: the rows exist, and adding
 	// a listing later would be a second occasion to get the ordering contract
-	// wrong in two stores independently. ListRosterEntries has had a caller
+	// wrong. ListRosterEntries has had a caller
 	// since admission became a conversation — mesh.Mesh.joinRoster, which asks
 	// WHO IS A MEMBER rather than which banks exist, so that a founded and
 	// unadmitted bank gets no actor at startup.
@@ -117,9 +117,9 @@ type Tx interface {
 	// reconciliation walks a bank's own advices against a clearing suspense that
 	// has not returned to zero, and that walk is the reader. It is declared now
 	// because the rows are written now, and a listing added later would be a
-	// second occasion to get the ordering contract wrong in two stores.
-	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what holds
-	// mem and pg to one answer in the meantime.
+	// second occasion to get the ordering contract wrong. storetest's
+	// SettlementAdviceIsScopedToTheBankThatWasAdvised is what pins it in the
+	// meantime.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
 	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
@@ -142,16 +142,16 @@ type Tx interface {
 //     does not route to are different institutions' answers, and a founded bank
 //     is legitimately both.
 //
-//   - Bank.Ledger and Bank.Deposit are NOT persisted. They are
-//     live handles over the store, not data; store/pg has no column to put them
-//     in, so store/mem must not keep them either — otherwise code that works in
-//     memory breaks on Postgres. The Network rebinds them on the way out.
+//   - Bank.Ledger and Bank.Deposit are NOT persisted. They are live handles over
+//     the store, not data, and there is no column that could hold a *ledger.Book
+//     — a store that kept them would be handing back a Bank wired to whatever it
+//     was wired to when it was written. The Network rebinds them on the way out.
 //     Bank.Status IS data and must survive: a bank read back with Status ""
 //     is neither Founded nor a Member.
 //     (BankRoundTripsAndDropsLiveHandles.)
 //
-//   - The BIC-keyed rows are keyed by BIC in both stores, and their collections
-//     replace rather than merge on an upsert — SettlementMember.Accounts and
+//   - The BIC-keyed rows are keyed by BIC, and their collections replace rather
+//     than merge on an upsert — SettlementMember.Accounts and
 //     RosterEntry.Assets both, for the reason Bank.Assets does: a stale entry
 //     is an account or an asset the institution has given up and would still be
 //     acted on. (SettlementMemberKeepsOneAccountPerAsset.)

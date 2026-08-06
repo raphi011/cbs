@@ -1,10 +1,11 @@
 // Package deposit_test holds the deposit layer's tests.
 //
-// They live outside package deposit because they build a Register over
-// store/mem, and store/mem imports deposit — an in-package test file importing
-// it would be an import cycle. The package is dot-imported so the test bodies
-// read exactly as they did when they were in-package; deposit/export_test.go
-// re-exports the one unexported thing they still need.
+// They live outside package deposit because they build a Register over a store
+// from store/testenv, which reaches store/sqlite, which imports deposit — an
+// in-package test file importing it would be an import cycle. The package is
+// dot-imported so the test bodies read exactly as they did when they were
+// in-package; deposit/export_test.go re-exports the one unexported thing they
+// still need.
 package deposit_test
 
 import (

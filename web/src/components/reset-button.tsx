@@ -12,10 +12,10 @@ import { describeError } from "@/lib/api/errors";
 // Sidebar action: confirm, then reset the backend to the sample dataset.
 //
 // The copy says "all data" rather than "the in-memory state": the backend runs
-// on store/mem or on store/pg depending on how it was started, the frontend has
-// no way to tell which, and on Postgres the wipe is durable. A reset has no
-// undo either way, so this is a destructive confirm. When the nav rail is
-// collapsed it renders icon-only with a native tooltip.
+// on an ephemeral database or on a file depending on how it was started, the
+// frontend has no way to tell which, and against a file the wipe is durable. A
+// reset has no undo either way, so this is a destructive confirm. When the nav
+// rail is collapsed it renders icon-only with a native tooltip.
 export function ResetButton({ collapsed }: { collapsed?: boolean }) {
   const reset = useResetState();
   return (

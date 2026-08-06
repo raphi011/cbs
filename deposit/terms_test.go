@@ -161,8 +161,8 @@ func TestTermsDayKeyIsTheUTCCalendarDay(t *testing.T) {
 		t.Errorf("TermsDayKey = %q, want 2025-03-01", got)
 	}
 	// ISO days sort lexicographically, which is the whole reason the key is
-	// rendered this way: both stores compare it as a string and get a day
-	// comparison for free.
+	// rendered this way: the store compares it as a string and gets a day
+	// comparison for free, with no date arithmetic in any dialect.
 	if !(TermsDayKey(termsDay(2025, time.February, 28)) < TermsDayKey(termsDay(2025, time.March, 1))) {
 		t.Error("day keys do not sort lexicographically")
 	}

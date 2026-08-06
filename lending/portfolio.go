@@ -682,8 +682,7 @@ func (p *Portfolio) GetFacilityWithTerms(ctx context.Context, id FacilityID) (Fa
 
 // ListFacilitiesWithTerms is GetFacilityWithTerms over the whole book, in ONE
 // unit of work. Resolving each facility through its own View would make a
-// listing N units of work over a store whose mem implementation refuses to nest
-// them.
+// listing N units of work over a store that refuses to nest them at all.
 func (p *Portfolio) ListFacilitiesWithTerms(ctx context.Context) ([]FacilityWithTerms, error) {
 	var out []FacilityWithTerms
 	err := p.store.View(ctx, func(ctx context.Context, tx Tx) error {

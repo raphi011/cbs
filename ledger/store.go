@@ -6,17 +6,19 @@ import (
 )
 
 // Store owns all persistent state. Interfaces are declared here, by the
-// consumer, and implemented by store/mem and store/pg — so the store packages
-// import the domain packages and never the reverse.
+// consumer, and implemented by store/sqlite — so the store package imports the
+// domain packages and never the reverse.
 type Store interface {
 	// Update runs fn in one atomic unit of work, retrying on serialization
-	// failure. mem takes the write lock; pg runs BEGIN … COMMIT.
+	// failure: BEGIN … COMMIT, and the callback re-run from the top when the
+	// database refuses a write because another unit of work holds the lock.
 	Update(ctx context.Context, fn func(context.Context, Tx) error) error
 
 	// View runs fn in a read-only unit of work.
 	View(ctx context.Context, fn func(context.Context, Tx) error) error
 
-	// Reset discards all state: fresh maps for mem, TRUNCATE for pg.
+	// Reset discards all state, leaving a store that behaves like a freshly
+	// migrated one.
 	Reset(ctx context.Context) error
 
 	Close() error
@@ -49,11 +51,18 @@ type Tx interface {
 	GetAccount(ctx context.Context, book BookID, id AccountID) (Account, error)
 	ListAccounts(ctx context.Context, book BookID) ([]Account, error)
 
-	// LockAccounts takes a write lock on the given accounts in a deterministic
-	// order, so a balance check and the posting that follows it are one
-	// serialized step. mem: a no-op under the write lock. pg: SELECT … FOR
-	// UPDATE ordered by id, which also prevents deadlock between transactions
-	// with overlapping account sets.
+	// LockAccounts asks that a balance check and the posting that follows it be
+	// one serialized step, taking the accounts in a deterministic order so that
+	// two callers over overlapping sets cannot each hold what the other needs.
+	//
+	// It states the requirement rather than a mechanism, and a store may already
+	// meet it without doing anything: store/sqlite implements it as a no-op,
+	// because SQLite admits one writer and refuses a transaction that read at
+	// one snapshot and then writes after somebody else has committed — which
+	// Store.Update answers by re-running the unit of work with fresh reads. The
+	// deterministic order is what a store buying this with real locks needs; see
+	// store/sqlite.LockAccounts, which measured what a locking version bought
+	// there.
 	LockAccounts(ctx context.Context, book BookID, ids []AccountID) error
 
 	// PutTransaction stores a transaction, its ordered entries and its
@@ -61,10 +70,12 @@ type Tx interface {
 	// transaction fails with ErrDuplicateIdempotencyKey.
 	//
 	// That error is a documented answer rather than a broken unit of work: a
-	// caller may handle it and go on using the same Tx. store/pg makes that
-	// true by running the insert inside a SAVEPOINT, because in Postgres any
-	// error otherwise aborts the whole transaction. Every sentinel a store
-	// returns from a write carries the same promise.
+	// caller may handle it and go on using the same Tx. Every sentinel a store
+	// returns from a write carries the same promise, and keeping it is the
+	// store's job however its database behaves — store/pg ran the insert inside
+	// a SAVEPOINT, because in Postgres any error otherwise aborts the whole
+	// transaction; store/sqlite needs nothing, because SQLite rolls back the
+	// failed STATEMENT and leaves the transaction usable.
 	//
 	// A Put is an upsert, so re-putting a transaction under a different key
 	// RELEASES the old one: it is free for another transaction to claim.
@@ -114,10 +125,11 @@ type Tx interface {
 	// an error.
 	//
 	// Like ValueDateBalance, an entry with a zero ValueDate is not value-dated
-	// and takes no day: store/pg stores a zero date as NULL, which fails every
-	// comparison including the day grouping, so store/mem excludes it
-	// explicitly rather than bucketing it into a year-1 day store/pg has no row
-	// for.
+	// and takes no day. It is excluded from every bound and from every bucket,
+	// rather than bucketed onto time.Time{}'s day — year 1 — which is where a
+	// naive "before the bound" test would put it. store/sqlite gets both halves
+	// from storing a zero date as NULL: NULL fails every comparison and falls
+	// out of every grouping.
 	ValueDatedSeries(ctx context.Context, book BookID, id AccountID, normal Direction, from, to time.Time) (Series, error)
 
 	AppendAudit(ctx context.Context, e AuditEvent) error

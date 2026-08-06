@@ -1,7 +1,8 @@
 // This file's tests live in package deposit_test, dot-importing deposit, for
-// the same reason register_test.go does: newTestRegister builds a Register
-// over store/mem, and store/mem imports deposit, so an in-package test file
-// using it would be an import cycle. See register_test.go's package comment.
+// the same reason register_test.go does: newTestRegister builds a Register over
+// a store from store/testenv, which reaches store/sqlite, which imports
+// deposit, so an in-package test file using it would be an import cycle. See
+// register_test.go's package comment.
 package deposit_test
 
 import (
@@ -76,9 +77,9 @@ func TestAddAndRemoveIdentifier(t *testing.T) {
 // The same address twice in ONE OpenAccount call. checkIdentifierFreeTx only
 // sees accounts already in the register, and the account being opened is not
 // one of them, so nothing else catches this — and the API forwards the list
-// from a request body verbatim. Left alone it is a store divergence: store/pg's
-// identifier rows key on (scheme, value) and would keep one, a Go slice keeps
-// two.
+// from a request body verbatim. Left alone the list means two things at once:
+// the store's identifier rows key on (scheme, value) and keep one, and the Go
+// slice the caller sent holds two.
 func TestOpenAccountRefusesTheSameIdentifierTwice(t *testing.T) {
 	ctx := context.Background()
 	reg, _, sub, prd := newTestRegister(t)

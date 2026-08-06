@@ -4,8 +4,8 @@
 //
 // Like the layers below it, the package holds no state of its own: banks, the
 // two rows the other institutions keep about them, payments, mandates, clearing
-// cycles and settlements all live in a Store (store/mem in-process, store/pg on
-// Postgres) behind the payment.Store and payment.Tx interfaces declared here.
+// cycles and settlements all live in a Store (store/sqlite) behind the
+// payment.Store and payment.Tx interfaces declared here.
 //
 // # The model
 //

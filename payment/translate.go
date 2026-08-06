@@ -1504,8 +1504,8 @@ func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Ide
 // here would help no other caller and would mean this package second-guessing
 // the directory it was told to use. It belongs to the comparison itself, and
 // that is where it now lives: deposit.Identifier.MatchValue canonicalises BOTH
-// sides for the IBAN scheme, ListDepositAccountsByIdentifier compares with it in
-// both stores, and storetest holds the two implementations together. What
+// sides for the IBAN scheme, ListDepositAccountsByIdentifier compares with it,
+// and storetest holds the store's SQL to what that Go function says. What
 // reaches ResolveIdentifierTx from here is therefore an address it can resolve
 // whichever form the account was opened with. See
 // TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses.
@@ -2278,8 +2278,8 @@ func AdmissionMessage(in AdmissionRequest, servicer iso20022.BIC, mc MessageCont
 // # The BIC is the load-bearing element and is checked here
 //
 // It is what the settlement agent keys its own member row by
-// (settlement_members.bic in store/pg) and what the clearing house keys its
-// routing entry by. A request carrying an empty or malformed address would open
+// (settlement_members.bic) and what the clearing house keys its routing entry
+// by. A request carrying an empty or malformed address would open
 // an account for a bank nobody can address and file it under a key no later
 // message can reach — OpenSettlementAccountTx says so in as many words and names
 // this reader as what has to run Validate before it. So this refuses both, and

@@ -19,20 +19,19 @@ Two consequences that apply to every sub-project below:
 - **Domain knowledge stays consistent across layers.** `README.md` is
   authoritative; `web/src/components/hint-content.ts`, the quiz chapters under
   `web/src/lib/quiz/chapters/`, and the schema comments in
-  `store/pg/schema/` all have to move with it. See `CLAUDE.md`.
-- **Postgres stays optional.** `store/mem` and `store/pg` must remain
-  indistinguishable through `store/storetest`. Every new entity added below
-  needs conformance coverage, not just a `store/pg` implementation.
+  `store/sqlite/schema/` all have to move with it. See `CLAUDE.md`.
+- **Nothing requires setup.** A fresh checkout runs the whole suite with no
+  database, no Docker and no toolchain. Every new entity added below still needs
+  to be in `store/storetest`.
 
-  **Both sentences expire at Task 17.3** (`specs/2026-08-03-sqlite-only-store-design.md`).
-  `store/pg` and `store/mem` are being replaced by a single backend,
-  `store/sqlite`, on the cgo-free `modernc.org/sqlite`. What survives is the
-  property underneath — *a fresh checkout runs the whole suite with no setup* —
-  and it survives more cheaply, because one backend that needs nothing beats two
-  backends of which one did. What ends is conformance *between implementations*:
-  `store/storetest` becomes the suite each of Task 18's three store shapes runs,
-  and every new entity below still needs to be in it. The schema path in the
-  bullet above moves with it.
+  **This bullet used to read "Postgres stays optional", and Task 17.3 retired
+  it** (`specs/2026-08-03-sqlite-only-store-design.md`). `store/pg` and
+  `store/mem` were replaced by a single backend, `store/sqlite`, on the cgo-free
+  `modernc.org/sqlite`. The property underneath survives and survives more
+  cheaply, because one backend that needs nothing beats two backends of which one
+  did. What ended is conformance *between implementations*: `store/storetest` is
+  now the shared suite each of Task 18's three store shapes runs, and its doc
+  comment says so.
 
 ## Where the code stands today
 
@@ -45,7 +44,7 @@ Two consequences that apply to every sub-project below:
 - `payment` — interbank network: participants, SEPA CT (push) and SEPA DD
   (pull), `Initiated → Accepted → Cleared → Settled`, net settlement against a
   central-bank book inside one store transaction. `payment.Network`.
-- `api`, `store/mem`, `store/pg`, `store/storetest`, `seed`, `web`.
+- `api`, `store/sqlite`, `store/storetest`, `seed`, `web`.
 
 **The asset dimension is in.** The known assets are a package-level list of
 `ledger.AssetDef`s in code (code, name, scale, class — `ledger.LookupAsset`),
@@ -78,8 +77,8 @@ a reachable 404 on funding. The definitions moved into Go, where schemes already
 live. What stayed per bank is `bank_assets`: which assets a bank operates in.
 
 Foundational — it touched `ledger.Account`, `Book.PostTransaction`,
-`deposit.OpenAccount`, the participant account triple, both stores,
-`store/storetest`, the API DTOs and the web app. Doing lending first would have
+`deposit.OpenAccount`, the participant account triple, the stores that existed
+then, `store/storetest`, the API DTOs and the web app. Doing lending first would have
 meant doing lending twice.
 
 Decisions settled (full reasoning in the spec), all of which shipped as designed:
@@ -129,17 +128,19 @@ Two things the implementation sharpened, both worth carrying forward:
   `accounts.asset` deliberately has no `CHECK` restricting it to the known
   codes; Postgres could express "the asset must be one the system knows" and
   `store/mem` could not, and the conformance subtest
-  `ParentReferencesAreNotEnforced` is what holds the line. A `CHECK` would also
+  `ParentReferencesAreNotEnforced` is what held the line. A `CHECK` would also
   turn a one-line change to a Go slice into a migration. `0001_init.sql` records
-  the reasoning in the database with `COMMENT ON COLUMN`, because the absence of
-  a constraint is invisible in a schema dump.
+  the reasoning in the database, because the absence of a constraint is invisible
+  in a schema dump.
 
-  *Task 17.3 removes the first reason and keeps the ruling.* With `store/mem`
-  gone, "Postgres could express it and a Go map could not" stops being an
-  argument — but the migration reason never mentioned either store, and it is now
-  the whole reason. SQLite has no `COMMENT ON`, so the last sentence's mechanism
-  changes too: comments move inside the `CREATE TABLE`, where `sqlite_master`
-  keeps them in the stored statement text.
+  *Task 17.3 removed the first reason and kept the ruling.* With `store/mem`
+  gone, "Postgres could express it and a Go map could not" stopped being an
+  argument — the migration reason never mentioned either store, and it is now the
+  whole reason. The subtest still holds the line, because its fixtures write
+  accounts with no asset set at all. SQLite has no `COMMENT ON`, so the last
+  sentence's mechanism changed too: the reasoning is inside the `CREATE TABLE`,
+  where `sqlite_master` keeps it in the stored statement text, and
+  `TestSchemaArgumentsReachSqliteMaster` fails if it moves out.
 
 ### 2. Lending — `done`
 
@@ -311,9 +312,9 @@ and disappears. It also fixes two defects the single server could not express:
 settling moves to the central bank, where it belongs, and a bank's
 `GET /payments` stops listing every other bank's.
 
-The deployment unit is the **listener, not the process** — `store/mem` is one
-process's memory, so N processes would be N disconnected universes, and
-Postgres-optional is load-bearing. One binary runs every listener by default;
+The deployment unit is the **listener, not the process** — `store/mem` was one
+process's memory, so N processes would have been N disconnected universes, and
+Postgres-optional was load-bearing. One binary runs every listener by default;
 `-entity` ran one per process and refused to start without a DSN, saying why.
 
 *Task 17.3 reverses the constraint, in a direction nobody asked for.* A SQLite
@@ -413,9 +414,8 @@ Three sub-projects, each with its own spec, plan and branch:
   terminal, with every payer debited and every payee unpaid.
   `-entity` is gone, as this section's transport argument below concluded it
   should be.
-- **7c, the message log** — `todo`. Envelopes persisted in both stores so a
-  payment screen can show the XML that actually moved, plus the README, hint and
-  quiz layers.
+- **7c, the message log** — `todo`. Envelopes persisted so a payment screen can
+  show the XML that actually moved, plus the README, hint and quiz layers.
 
 Depends on 5, which supplies `PartyRef.Identifier` and `Scheme.AddressedBy()`.
 Reopens exactly one of 5's deferrals, and only because 5's stated reason for it
@@ -510,12 +510,13 @@ ships narrowed per-actor interfaces and a book-access recorder whose test
 assertions *are* this sub-project's specification of the split.
 
 **The end state is separate databases**, not merely separate `Store` values —
-one DSN per entity. Postgres-optional survives it (each entity's store may still
-be `store/mem`), and so does `store/storetest`, which is already per-store.
+one SQLite file per entity, or one ephemeral database per entity in a test. The
+no-setup property survives it, and so does `store/storetest`, which is already
+per-store and becomes per-shape.
 
-**Survives unchanged:** Postgres-optional (each store may still be `store/mem`,
-so `make dev` and `go test ./...` need no database), and `store/storetest`,
-which is already per-store and conforms each one independently.
+**Survives unchanged:** needing no setup (`make dev` and `go test ./...` open
+ephemeral databases), and `store/storetest`, which is already per-store and runs
+against each shape independently.
 
 **Out of scope:** separate processes, two-phase commit, and any distributed
 transaction manager. If settlement cannot be made final in one book and mirrored

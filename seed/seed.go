@@ -71,8 +71,8 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // The probe asks whether the store has content of its own, not whether this
 // exact dataset is complete, and the distinction matters because the two have
 // different false positives. A completeness check — "are there settlements? are
-// there mandates?" — would refuse to boot against a Postgres database in which
-// the user had created a couple of banks through the API and nothing else,
+// there mandates?" — would refuse to boot against a database file in which the
+// user had created a couple of banks through the API and nothing else,
 // which is an ordinary way to use this system and not a fault at all. There is
 // no marker that separates "seeded and then edited" from "never seeded" without
 // tagging rows, and a tag is a schema change in aid of a situation that should
@@ -144,7 +144,7 @@ func (e seedErr) Unwrap() error { return e.err }
 // re-panics anything else.
 //
 // The distinction matters because the builder drives four packages: a nil map
-// write or a nil dereference in payment, deposit, ledger or store/mem is a bug,
+// write or a nil dereference in payment, deposit, ledger or the store is a bug,
 // and flattening it into "seed: runtime error: invalid memory address" —
 // returned as a 500 from POST /admin/reset with the stack discarded — would
 // hide exactly the failures worth seeing. Only the errors the builder chose to

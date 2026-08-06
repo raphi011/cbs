@@ -50,20 +50,33 @@ Two mechanical rules that the build will not catch for you:
 
 `go test ./...`, `make dev` and `make run` need no database and there is no
 second run to keep green. `store/pg` is gone, and with it `TEST_DATABASE_URL`,
-`docker-compose.yml` and the `-pg` Makefile targets; what replaced it is
-`store/sqlite`, on `modernc.org/sqlite` — real SQLite transpiled to Go, so the
-module gained Go dependencies and lost every external one.
+`docker-compose.yml` and the `-pg` Makefile targets; `store/mem` is gone too.
+What replaced both is `store/sqlite`, on `modernc.org/sqlite` — real SQLite
+transpiled to Go, so the module gained Go dependencies and lost every external
+one. `store/testenv.New` opens an ephemeral one and every suite runs against it.
 
-`store/mem` is still here and still the default `store/testenv` hands the suites,
-for one more task: it is the oracle `store/sqlite` was certified against, and
-Task 17.3 deletes it. Until then `store/storetest` holds both to the same
-answers, and neither may accept or refuse a write the other does not.
+**Nothing cross-checks the SQL any more.** `store/mem` was the oracle
+`store/sqlite` was certified against and `store/pg` was the oracle before it;
+both are gone, so anything that needs proving against a second implementation has
+to be proved before it lands. What replaces the cross-check for the two failures
+that are otherwise silent is a guard each, in `store/sqlite/sqlite_test.go`:
+foreign keys are really enforced, and there is exactly one non-primary-key unique
+index.
 
-Two things are worth knowing while both exist, because they are the reason the
-swap happened at all. `store/sqlite` runs a real `BEGIN`/`COMMIT`, so "these
-writes commit or roll back together" is a claim about the code rather than a
-side effect of `store/mem`'s single process-wide mutex — and it is now true on a
-fresh checkout with no Docker. And `store/sqlite/schema/0001_init.sql` records
-its reasoning INSIDE each statement's parentheses, because SQLite drops a comment
-that sits above one; a comment moved to column 0 leaves the database silently,
-which is what `TestSchemaArgumentsReachSqliteMaster` exists to catch.
+`store/storetest` is no longer a conformance suite and its doc comment says so.
+It is the shared suite — written against `Store` and `Tx`, naming no table and no
+dialect — and Task 18's three store shapes each run it.
+
+Three things about the surviving store are worth knowing before changing
+anything near it:
+
+- **A real `BEGIN`/`COMMIT`.** "These writes commit or roll back together" is a
+  claim about the code now rather than a side effect of one process-wide mutex,
+  and it is true on a fresh checkout with no Docker.
+- **`0001_init.sql` records its reasoning INSIDE each statement's parentheses**,
+  because SQLite drops a comment that sits above one. See the section above.
+- **The ephemeral store hides read-then-write defects.** On it a retry's read
+  blocks until the winner commits, so a loser reaches the domain's guard however
+  the code underneath behaves; only a file, under WAL, lets a reader past an
+  uncommitted writer. Anything you measure about ordering must open a file.
+  `TestTheRetryBudgetOutlastsASlowWriter` is the one that does.

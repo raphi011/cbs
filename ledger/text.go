@@ -12,20 +12,24 @@ import (
 //
 // # Why this lives in the domain
 //
-// store/mem is a map of Go strings and will hold any byte sequence at all.
-// Postgres will not: a NUL is SQLSTATE 22021 in a text column and SQLSTATE
-// 22P05 inside jsonb, and so is any byte sequence that is not valid UTF-8. So
-// `POST /participants` with `{"name":"Ban\u0000k"}` — legal JSON — created a
-// participant on one store and returned a 500 carrying a raw SQLSTATE on the
-// other.
+// It was written for a divergence, and it outlived the divergence.
 //
-// That breaks the one rule store/storetest exists to enforce: store/pg must
-// never accept or refuse a write that store/mem handles differently. The fix
-// belongs here rather than in either store, for the same reason there is no
-// UNIQUE (book_id, name) in the schema: a store is a per-table key/value layer,
-// and the moment one of them can express a rule the other cannot, the two
-// disagree. What the system will accept is a domain question, so the domain
-// answers it once, for both.
+// While there were two stores, store/mem was a map of Go strings and held any
+// byte sequence at all; Postgres would not — a NUL is SQLSTATE 22021 in a text
+// column and 22P05 inside jsonb, and so is anything that is not valid UTF-8 —
+// so `POST /participants` with `{"name":"Ban\u0000k"}`, legal JSON, created a
+// participant on one store and returned a 500 carrying a raw SQLSTATE on the
+// other. The fix went here rather than into either store.
+//
+// store/sqlite holds every one of those bytes happily, so there is nothing left
+// to diverge, and the rule stays. The divergence was the occasion for it and
+// never the reason: a store is a per-table key/value layer that holds what it is
+// handed, what the system will ACCEPT is a domain question, and a rule that can
+// only be stated by naming a database is not a domain rule. It is the same
+// position the schema takes about the absent UNIQUE (book_id, name) and about
+// parent references — decided once, above the store, where it does not depend on
+// what is underneath. The section below is the wider half, and it was the wider
+// half even when Postgres was the reason anyone looked.
 //
 // # Where the boundary sits
 //
@@ -48,10 +52,10 @@ import (
 // API edge instead — see the api package's middleware — because they never pass
 // through a domain constructor.
 //
-// # Why control characters and not only the two bytes Postgres refuses
+// # Why control characters and not only the two bytes Postgres refused
 //
-// Rejecting exactly NUL and invalid UTF-8 would close the parity gap and
-// nothing else, and it would leave a rule no one can state without naming a
+// Rejecting exactly NUL and invalid UTF-8 would have closed the parity gap and
+// nothing else, and it would have left a rule no one can state without naming a
 // database. Every field above is a single-line label rendered in tables, log
 // lines, CSV exports and JSON audit payloads; a tab, a newline or an ANSI
 // escape in a bank's name has no legitimate use and several illegitimate ones.
@@ -79,8 +83,10 @@ func ValidateText(field, s string) error {
 
 // ValidateTextMap applies ValidateText to a map's keys and its values.
 //
-// Keys are checked too, because they are stored as jsonb object names and a NUL
-// in one is refused exactly as a NUL in a value is. The keys are visited in
+// Keys are checked too, because a metadata map is stored as a JSON document and
+// a key is an object NAME: it reaches the same column a value does, and there is
+// no reason for one side of a pair to be held to a weaker rule than the other.
+// The keys are visited in
 // sorted order so that a map with several bad entries always reports the same
 // one: Go's map iteration is randomised, and an error message that changes from
 // run to run is one no test can pin.

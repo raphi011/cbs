@@ -39,9 +39,9 @@ import (
 // own bookkeeping in one atomic unit of work.
 //
 // A …Tx method must never call a plain method on the Register or on the Book:
-// that would open a second unit of work inside the first, which store/mem
-// refuses (and, without the guard, would deadlock on its write lock). This is
-// why CaptureHoldTx calls Book.PostTransactionTx rather than
+// that would open a second unit of work inside the first, which the store
+// refuses outright — see sqlite.ErrNestedTransaction for what it would cost if
+// it did not. This is why CaptureHoldTx calls Book.PostTransactionTx rather than
 // Book.PostTransaction.
 //
 // # Thread Safety
@@ -75,7 +75,7 @@ type Register struct {
 //
 // Example:
 //
-//	s := mem.New(time.Now)
+//	s, _ := sqlite.Open(ctx, "", time.Now)
 //	book := ledger.NewBook(s, "bank", time.Now)
 //	reg := deposit.NewRegister(s.Deposit(), book, "bank", time.Now)
 func NewRegister(store Store, book *ledger.Book, id ledger.BookID, clock func() time.Time) *Register {
@@ -188,9 +188,10 @@ func (r *Register) OpenAccountTx(ctx context.Context, tx Tx, subledger ledger.Su
 		// checkIdentifierFreeTx reads the register, and the account being opened
 		// is not in it yet, so `identifiers: [X, X]` — which the API accepts
 		// verbatim from a request body — would sail past it. It must not: the
-		// same list means one address on store/pg, whose identifier rows carry
-		// (scheme, value) in their primary key, and two in a Go slice. Refusing
-		// beats collapsing silently: a caller who listed one address twice
+		// store's identifier rows carry (scheme, value) in their primary key, so
+		// the list means ONE address once it is written and two while it is in a
+		// Go slice. Refusing beats collapsing silently: a caller who listed one
+		// address twice
 		// either meant two different addresses and mistyped one, or is sending
 		// a list it has not deduplicated, and both are worth being told about.
 		//
@@ -607,7 +608,7 @@ func (r *Register) GetAccountWithTerms(ctx context.Context, id AccountID) (Accou
 
 // ListAccountsWithTerms is GetAccountWithTerms over the whole book, in ONE unit
 // of work. Resolving each account through its own View would make a listing N
-// units of work over a store whose mem implementation refuses to nest them.
+// units of work over a store that refuses to nest them at all.
 //
 // One version cache serves the whole listing, so a book of ten thousand accounts
 // on three products reads three product timelines rather than ten thousand — the
@@ -655,13 +656,14 @@ func (r *Register) ListAccountsWithTerms(ctx context.Context) ([]AccountWithTerm
 // been issued. See TestAddIdentifierRefusesAnotherSpellingOfAnAddressTheBankHasIssued.
 //
 // The check is a read followed by a write with no constraint behind it and no
-// lock above it, so two concurrent adds can both pass. That is deliberate — a
-// UNIQUE in store/pg would reject writes store/mem accepts — and the resulting
-// duplicate is caught by ResolveIdentifier, which refuses rather than guesses.
-// storetest/IdentifierUniquenessIsNotEnforcedAcrossSpellings pins that both
-// stores accept the pair of spellings this refuses, so that the refusal stays
-// this layer's and does not become a constraint one store has and the other
-// cannot.
+// lock above it, so two concurrent adds can both pass. That is deliberate. A
+// UNIQUE index would fire on the race this lets through and would fire as a
+// constraint violation rather than as ErrIdentifierTaken — a rule enforced in
+// two places that disagree about WHEN is enforced in neither — so the residual
+// duplicate is caught at read time instead, by ResolveIdentifier, which refuses
+// rather than guesses. storetest/IdentifierUniquenessIsNotEnforcedAcrossSpellings
+// pins that the store accepts the pair of spellings this refuses, so the refusal
+// stays this layer's.
 func (r *Register) checkIdentifierFreeTx(ctx context.Context, tx Tx, owner AccountID, ident Identifier) error {
 	holders, err := tx.ListDepositAccountsByIdentifier(ctx, r.bookID, ident)
 	if err != nil {

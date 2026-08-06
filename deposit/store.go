@@ -9,8 +9,8 @@ import (
 )
 
 // Store owns the deposit layer's persistent state. Like ledger.Store it is
-// declared here, by the consumer, and implemented by store/mem and store/pg —
-// so the store packages import the domain packages and never the reverse.
+// declared here, by the consumer, and implemented by store/sqlite — so the
+// store package imports the domain packages and never the reverse.
 type Store interface {
 	Update(ctx context.Context, fn func(context.Context, Tx) error) error
 	View(ctx context.Context, fn func(context.Context, Tx) error) error
@@ -74,9 +74,9 @@ type Tx interface {
 // snapshot is identified by (account, date) at day granularity, so taking a
 // second snapshot for the same business date overwrites the first.
 //
-// Store implementations must derive the key of a snapshot passed to PutSnapshot
-// with this function, so that GetSnapshot finds it: mem uses it as a map key,
-// pg as the value of the snapshots.date_key column.
+// A store must derive the key of a snapshot passed to PutSnapshot with this
+// function, so that GetSnapshot finds it: it is the value of the
+// snapshots.date_key column, and the column the lookup compares on.
 func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 
 // Contract notes for implementers — storetest.RunDeposit pins all of these:
@@ -114,21 +114,23 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     terms, which is ErrTermsNotFound rather than a zero row that would read
 //     as a real interest-free product.
 //   - The store truncates nothing. Callers pass an already-DayStart-ed instant
-//     and both stores key on deposit.TermsDayKey of it.
+//     and the store keys on deposit.TermsDayKey of it.
 //   - PutDepositAccount writes Account.Identifiers as part of the aggregate and
 //     REPLACES the stored set; both readers bring it back. Identifiers are not
-//     separately writable, which is the condition under which store/pg is
-//     allowed a real FOREIGN KEY on them.
+//     separately writable, which is the condition under which the schema is
+//     allowed a real FOREIGN KEY on them — see the exemption stated on
+//     subledgers in store/sqlite/schema/0001_init.sql.
 //   - ListDepositAccountsByIdentifier matches with Identifier.Matches — the
 //     scheme exactly, and the value under that scheme's comparison rule, which
 //     for an IBAN means with display separators stripped from BOTH sides. A
-//     store that compared raw values would refuse a lookup the other store
-//     answers, and an account stored as SE89-AURORA-1001 would be unreachable
-//     from a message carrying SE89AURORA1001 — which is the same address.
+//     store that compared raw values would leave an account stored as
+//     SE89-AURORA-1001 unreachable from a message carrying SE89AURORA1001 —
+//     which is the same address.
 //     (ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators.) It is
 //     book-scoped like everything else here, orders created_at then seq, and
 //     returns an empty slice — never a sentinel — when nothing matches. It must
 //     NOT enforce uniqueness: storetest/IdentifierUniquenessIsNotEnforced pins
 //     that two accounts in one book may hold the same identifier, because the
-//     rule against it lives in deposit.Register and a constraint in only one
-//     store would make the two implementations disagree.
+//     rule against it lives in deposit.Register and a constraint here would fire
+//     on a race the register lets through, as a constraint violation rather than
+//     as ErrIdentifierTaken.

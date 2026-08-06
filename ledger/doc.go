@@ -8,9 +8,11 @@
 // package, which is layered on top of this one.
 //
 // It also holds no state. Every entity lives behind the Store and Tx
-// interfaces declared in store.go and implemented by store/mem (maps and a
-// mutex) and store/pg (Postgres); what stays here is the validation and the
-// orchestration, which must be identical whichever one is plugged in.
+// interfaces declared in store.go and implemented by store/sqlite; what stays
+// here is the validation and the orchestration. The interfaces are still
+// interfaces with one implementation behind them, because the boundary is what
+// keeps this package from knowing how anything is stored — every rule here is
+// stated against Store and Tx, and none of it names a table.
 //
 // See README.md for a detailed explanation of the banking concepts
 // modeled by this package.

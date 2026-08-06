@@ -36,7 +36,7 @@ func bank(s *Server, pid string) http.Handler {
 	return s.BankRoutes(payment.ParticipantID(pid))
 }
 
-// newServer builds a Server over an empty in-memory store, with a mesh running
+// newServer builds a Server over an empty ephemeral store, with a mesh running
 // over the same network. populate is the reseed function — the tests' stand-in
 // for the sample dataset — and is called once now, as the process would at boot,
 // and again on every reset. Pass nil for a server that resets to an empty system.
@@ -1273,13 +1273,14 @@ func TestResetEmptiesState(t *testing.T) {
 // TestResetSurvivesAClientDisconnect pins that a reset is finished on the
 // server's own terms once it has started.
 //
-// POST /admin/reset TRUNCATEs and then re-seeds. Against store/pg both halves
-// are durable, so a client that hangs up in between leaves a permanently
-// half-seeded database — and seed.Populate's own idempotency probe then sees
-// participants and declines to repair it, so restarting does not help either.
-// Under store/mem the old pointer swap made that impossible; durability is what
-// makes it stick. The handler therefore detaches the work from the request's
-// cancellation.
+// POST /admin/reset clears the store and then re-seeds it. Both halves are
+// durable — the ephemeral store outlives a request even though it does not
+// outlive the process — so a client that hangs up in between leaves a
+// permanently half-seeded store, and seed.Populate's own idempotency probe then
+// sees participants and declines to repair it, so a second reset does not help
+// either. Under store/mem's old pointer swap that was impossible; durability is
+// what makes it stick. The handler therefore detaches the work from the
+// request's cancellation.
 //
 // A pre-cancelled request context is the deterministic form of "the client went
 // away": it is the same signal a disconnect delivers, arriving at the earliest
@@ -1329,9 +1330,9 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 
 // TestConcurrentResetsLeaveExactlyOneDataset pins that resets serialize.
 //
-// A reset is a TRUNCATE followed by a rebuild, and neither half is inside the
+// A reset is a clear followed by a rebuild, and neither half is inside the
 // other's unit of work — the rebuild is dozens of separate ones. Two resets
-// overlapping therefore interleave: the second truncates over the first's
+// overlapping therefore interleave: the second clears over the first's
 // half-built scenario, and the first then finishes writing on top of the
 // second's, leaving several copies of some entities and none of others.
 //
@@ -1398,17 +1399,16 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 // Text validation
 // ---------------------------------------------------------------------------
 
-// TestControlCharactersAreRefusedNotStored pins the one rule store/storetest
-// exists to enforce, at the level a client can actually reach it: store/pg must
-// never accept or refuse a write that store/mem handles differently.
+// TestControlCharactersAreRefusedNotStored pins ledger.ValidateText at the level
+// a client can actually reach it.
 //
 // `{"name":"Ban\u0000k"}` is legal JSON. store/mem stored it and answered 201;
 // store/pg could not (a NUL is SQLSTATE 22021 in a text column and 22P05 inside
-// jsonb) and answered 500 with the raw SQLSTATE in the body. The rule is now a
-// domain rule — see ledger.ValidateText — so the answer is 400 whatever is
-// underneath, which is the point: the divergence that prompted the rule is gone
-// with the store that had it, and the rule stays because it was never that
-// store's to state.
+// jsonb) and answered 500 with the raw SQLSTATE in the body. store/sqlite would
+// store it as happily as store/mem did, so nothing below the API refuses it any
+// more and the answer is 400 because the domain says so — which is the point:
+// the divergence that prompted the rule went with the stores that had it, and
+// the rule stays because it was never either store's to state.
 func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newServer(t, nil)
 
@@ -1477,10 +1477,10 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 
 // TestControlCharactersInAPathAreRefused pins the read half of the same rule.
 // A URL-encoded NUL is decoded into the path parameter and handed straight to
-// the store as a lookup key: store/mem answers 404, store/pg answers 500 with a
-// raw SQLSTATE. Identifiers here are system-generated and never contain a
-// control character, so such a request cannot name anything and is refused at
-// the edge.
+// the store as a lookup key, which store/mem answered with a 404 and store/pg
+// with a 500 carrying a raw SQLSTATE. Identifiers here are system-generated and
+// never contain a control character, so such a request cannot name anything and
+// is refused at the edge rather than left to whatever the store makes of it.
 func TestControlCharactersInAPathAreRefused(t *testing.T) {
 	h := newServer(t, nil)
 

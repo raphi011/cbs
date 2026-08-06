@@ -61,10 +61,9 @@ func (s AccountStatus) String() string {
 //
 // Asset duplicates the backing GL account's asset. That is a deliberate
 // exception to deriving rather than duplicating: the GL account's asset is
-// immutable, so the two cannot drift, and deriving it would make ListAccounts
-// an N+1 lookup in store/mem and a join in store/pg — divergent complexity in
-// both stores for a value that cannot change. store/storetest asserts they
-// always agree.
+// immutable, so the two cannot drift, and deriving it would turn every
+// ListAccounts into a join for a value that can never change.
+// store/storetest asserts they always agree.
 //
 // A customer holding several assets holds several accounts, each with its own
 // IBAN, which is how most European retail banks work.
@@ -80,9 +79,9 @@ type Account struct {
 	// bank needs no address at all.
 	//
 	// They are part of the account aggregate rather than a sibling entity, and
-	// that is load-bearing in store/pg: PutDepositAccount writes both sides
-	// itself, which is the one condition under which the schema allows a real
-	// FOREIGN KEY (see store/pg/schema/0001_init.sql).
+	// that is load-bearing in the schema: PutDepositAccount writes both sides
+	// itself, which is the one condition under which a real FOREIGN KEY is
+	// allowed (see store/sqlite/schema/0001_init.sql, on subledgers).
 	Identifiers []Identifier
 
 	// Accrued is interest earned and not yet charged, at sub-minor-unit

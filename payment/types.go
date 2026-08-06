@@ -17,7 +17,7 @@ type (
 	// reader does not take it for an oversight left behind by the split.
 	//
 	// It is on both of a payment's PartyRefs, on every bank path in the API, in
-	// the store conformance suite and in the web types. Renaming it is a
+	// the shared store suite and in the web types. Renaming it is a
 	// mechanical diff across the whole repository for no behavioural change, and
 	// it would bury the content of the task that split the row.
 	//

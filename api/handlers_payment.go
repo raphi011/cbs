@@ -26,8 +26,8 @@ func (s *Server) mandateAsset(ctx context.Context, m payment.Mandate) (string, e
 // mandateAssets resolves a whole batch of mandates' assets at once.
 //
 // The single-mandate path costs two store.View calls — a full BEGIN…COMMIT
-// each on store/pg — so calling it once per row turned GET /mandates into
-// 2N+1 round trips for what is a handful of reads. This is the same batch
+// each — so calling it once per row turned GET /mandates into 2N+1 units of
+// work for what is a handful of reads. This is the same batch
 // shape as entryAssets (see api/dto_ledger.go): resolve per distinct
 // *participant* rather than per row, and read that participant's deposit
 // accounts in one listing rather than one at a time. A listing of any number

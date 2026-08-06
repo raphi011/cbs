@@ -16,10 +16,11 @@ import (
 // # Where the state lives
 //
 // A Book owns no state of its own. Every entity, every counter and the audit
-// log live in a Store (store/mem in-process, store/pg on Postgres); the Book
-// keeps only the store handle, its BookID and its clock. All it contributes is
-// validation and orchestration — which is exactly the part that must not differ
-// between the two backends.
+// log live in a Store (store/sqlite); the Book keeps only the store handle, its
+// BookID and its clock. All it contributes is validation and orchestration —
+// which is the part that is stated against the Store interface and names no
+// table, so that what a bank will accept is decided here and not by whatever is
+// underneath.
 //
 // # Units of work
 //
@@ -38,8 +39,9 @@ import (
 // caller never has to name Debit or Credit to read a balance.
 //
 // Because Update is exclusive, a …Tx method must never be handed a Tx and then
-// call a plain method: that would open a second unit of work inside the first
-// and, on store/mem, deadlock on the store's write lock.
+// call a plain method: that would open a second unit of work inside the first,
+// which the store refuses outright rather than allowing — see
+// sqlite.ErrNestedTransaction for what it would otherwise cost.
 //
 // # Thread Safety
 //
@@ -82,7 +84,8 @@ type Book struct {
 //
 // Example:
 //
-//	book := ledger.NewBook(mem.New(time.Now), "bank", time.Now)
+//	store, _ := sqlite.Open(ctx, "", time.Now)
+//	book := ledger.NewBook(store, "bank", time.Now)
 //	l, _ := book.CreateLedger(ctx, "General Ledger")
 //	sl, _ := book.CreateSubledger(ctx, l.ID, "Accounts Receivable")
 //	acct, _ := book.CreateAccount(ctx, sl.ID, "Customer A", ledger.Asset, "EUR")
@@ -384,9 +387,9 @@ func (s *Book) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 // It exists for callers that need to resolve accounts referenced across a
 // whole batch of results — rendering the entries of a transaction listing,
 // for instance — rather than one at a time. GetAccount's single store.View
-// per call is a full BEGIN…COMMIT round trip on store/pg; calling it once per
-// entry across a listing of N transactions costs on the order of N such round
-// trips, serialized, for what is fundamentally N cheap reads. GetAccounts
+// per call is a full BEGIN…COMMIT; calling it once per entry across a listing
+// of N transactions costs on the order of N of them, serialized, for what is
+// fundamentally N cheap reads. GetAccounts
 // opens exactly one store.View and issues one tx.GetAccount per distinct ID
 // inside it, so the round-trip count stops depending on how many results are
 // being rendered.
@@ -520,7 +523,7 @@ func (s *Book) PostTransactionTx(ctx context.Context, tx Tx, req PostTransaction
 
 	// Validate: text. Every one of these is stored, and the account ids are
 	// used as lookup keys below — see ValidateText for why that is a domain
-	// rule rather than something either store enforces for itself.
+	// rule rather than something a store enforces for itself.
 	if err := ValidateText("idempotencyKey", req.IdempotencyKey); err != nil {
 		return Transaction{}, err
 	}

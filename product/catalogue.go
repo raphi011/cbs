@@ -18,10 +18,12 @@ import (
 //
 // A store accepts any write. The rules that make a catalogue trustworthy — a
 // published version is frozen, publication is forward-only, an unknown product
-// has no versions — are all enforced here, in the domain layer, because
-// store/mem and store/pg must accept exactly the same writes and a constraint
-// in one of them would be a divergence. It is the same position the schema
-// takes about text and about parent references.
+// has no versions — are all enforced here, in the domain layer. None of them is
+// a constraint a schema could carry honestly: the first is about a row's
+// PREVIOUS state, which a CHECK cannot see; the second is about today, which a
+// schema has no idea of; and the third is "the parent must exist", which the
+// schema refuses for the reason it refuses every other one. It is the same
+// position the schema takes about text and about parent references.
 type Catalogue struct {
 	// store owns all persistent state of this layer.
 	store Store

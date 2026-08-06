@@ -60,9 +60,9 @@ func modulePath(t *testing.T) string {
 //
 // It asserts the stronger property too: every import is STDLIB. "No repository
 // imports" was the narrower half of the constraint — a third-party library
-// would have sailed through it — and the project's actual rule is no
-// dependencies beyond pgx, which this package has no business acquiring for
-// itself. The stdlib test is a cheap one: an import path whose first element
+// would have sailed through it — and the project's actual rule is that nothing
+// outside the store package acquires a dependency of its own. The stdlib test is
+// a cheap one: an import path whose first element
 // carries a dot names a host, and no standard-library path does.
 //
 // Non-test files only. A test may legitimately need something from the

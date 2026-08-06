@@ -4,9 +4,9 @@
 // They are separated from translate_test.go, which tests the same file, for a
 // reason that is mechanical and worth stating rather than rediscovering. These
 // build a Network, which means a store, which means store/testenv and
-// store/storetest, and both of those reach payment — testenv through store/mem,
-// storetest directly — so an in-package test file importing either back is an
-// import cycle. translate_test.go's reason-table tests need reasonTable, which
+// store/storetest, and both of those reach payment — testenv through
+// store/sqlite, storetest directly — so an in-package test file importing either
+// back is an import cycle. translate_test.go's reason-table tests need reasonTable, which
 // is unexported and is meant to stay that way — the table is this package's own
 // classification, not something a caller chooses between. ReasonFor beside it is
 // now exported, because mesh's handlers ask for a code, but that changes nothing
@@ -652,12 +652,12 @@ func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book led
 //
 // This exists because there is no other way to reach an inbound resolution
 // failure on demand — see failingTx on what used to also be true of the
-// outbound side. Both stores check ctx.Err() before opening a transaction —
-// store/mem at mem.go:109 and store/pg at pg.go:188 — so a cancelled context
-// never gets as far as the closure, and a real database failure cannot be
-// provoked on demand from a test. A synthetic error injected at the seam
-// reaches the code under test on BOTH stores and depends on no driver
-// behaviour at all.
+// outbound side. The store checks ctx.Err() before it opens a transaction (both
+// store/sqlite's inUpdate and its inView do, and store/mem and store/pg did too),
+// so a cancelled context never gets as far as the closure, and a real database
+// failure cannot be provoked on demand from a test. A synthetic error injected
+// at the seam reaches the code under test whatever is underneath and depends on
+// no driver behaviour at all.
 type failingStore struct {
 	Store
 	err error
@@ -1062,7 +1062,7 @@ func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
 // never wrong.
 //
 // The failure is injected at the seam rather than provoked, for the reason
-// failingStore documents: both stores refuse a cancelled context before the
+// failingStore documents: the store refuses a cancelled context before the
 // closure runs, so nothing a test can do from outside reaches this code path.
 func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *testing.T) {
 	n, p := networkWithOnePayment(t)

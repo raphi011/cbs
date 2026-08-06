@@ -1,12 +1,14 @@
 // The shared suites, run against store/sqlite.
 //
-// Almost nothing is written here. store/sqlite has to behave exactly as
-// store/mem and store/pg do, so what tests it are the suites in
-// store/storetest, and this file is one line per suite. What is NOT here is as
-// deliberate: the refusals this package owns (ErrReadOnly, ErrNestedTransaction)
-// and the guards on the driver and the schema are in sqlite_test.go, which is an
-// internal test package because it reads sqlite_master and drives the retry
-// directly.
+// Almost nothing is written here. What tests this store is store/storetest, and
+// this file is one line per suite. That division was a conformance argument once
+// — three implementations, one set of answers — and it survives it: the suites
+// are written against the Store and Tx interfaces and name no table, so what
+// they pin is the CONTRACT, and Task 18 runs the same file against each of its
+// three store shapes. What is NOT here is as deliberate: the refusals this
+// package owns (ErrReadOnly, ErrNestedTransaction) and the guards on the driver
+// and the schema are in sqlite_test.go, which is an internal test package
+// because it reads sqlite_master and drives the retry directly.
 //
 // It is an external test package for the ordinary reason: store/testenv imports
 // this package, so a test file inside it that imported testenv back would be a
@@ -36,15 +38,16 @@ func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
 // newStore opens an ephemeral store of its own, migrated and empty, discarded
 // when the test ends. No skip and no environment variable: needing no setup is
-// the property store/mem existed for and the reason this backend can replace it.
+// the property store/mem existed for, and this store having it is what let
+// store/mem go.
 func newStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	return testenv.New(t, frozen)
 }
 
-// TestConformance runs all five shared conformance suites against SQLite.
-// store/mem and store/pg run the identical suites; any behaviour the three could
-// drift apart on belongs in storetest rather than here.
+// TestConformance runs all five shared suites against SQLite. Anything a store
+// could plausibly get wrong belongs in storetest rather than here, because these
+// are the cases Task 18's three shapes will each have to pass.
 func TestConformance(t *testing.T) {
 	storetest.RunLedger(t, func(t *testing.T) ledger.Store { return newStore(t) })
 	storetest.RunDeposit(t, func(t *testing.T) deposit.Store { return newStore(t).Deposit() })
@@ -54,9 +57,14 @@ func TestConformance(t *testing.T) {
 }
 
 // TestRaces runs the race suite that needs only concurrent units of work.
-// store/mem runs the identical cases and the stores must agree on who wins; the
-// cases that reach that answer here through an ordering the domain arranged, and
-// there through the mutex, say so about themselves.
+//
+// Each case pins that exactly one racer wins and that every loser lost for the
+// DOCUMENTED reason. What is worth knowing about them here is measured and is
+// recorded where the orderings are: with payment.admissionSequenceTx made to
+// return nil, all four cases still pass ten runs out of ten, because SQLite
+// admits one writer and Store.Update re-runs a loser against the winner's
+// committed row. They are regression guards on an ordering this store no longer
+// needs, kept because Task 18 splits the databases they span.
 func TestRaces(t *testing.T) {
 	storetest.RunRaces(t, func(t *testing.T) storetest.Store { return newStore(t) })
 }
@@ -75,20 +83,19 @@ func TestRaces(t *testing.T) {
 // ConcurrentAdmissionsAgreeOnOneCentralBank in TestRaces and
 // ConcurrentMarkReversedOnlyOneWins here each passed one run on store/pg with
 // their guard removed and failed within ten. A single green run of either is not
-// evidence about them; use -count=10.
+// evidence about them; use -count=10 for anything that rests on one.
 func TestConcurrentTxRaces(t *testing.T) {
 	storetest.RunConcurrentTxRaces(t, func(t *testing.T) storetest.Store { return newStore(t) })
 }
 
 // A unit of work must never be opened inside another one on the same store.
 //
-// store/mem refuses this because its mutex would deadlock. Here the failure
-// would be quieter and worse: the nested Update takes a SECOND connection and
-// runs a SEPARATE transaction, so its writes would commit even when the outer
-// ones roll back — and under SQLite it is worse again, because the inner
-// transaction then contends with the outer one for the write lock and the pair
-// can wedge. Every store refuses it, so the mistake behaves the same way
-// whichever is underneath.
+// Without the guard the nested Update takes a SECOND connection and runs a
+// SEPARATE transaction, so its writes would commit even when the outer ones roll
+// back — and worse than that under SQLite, because the inner transaction then
+// contends with the outer one for the write lock and the pair can wedge. It is
+// refused outright, which is what store/mem and store/pg did too, so the single
+// most likely mistake in this codebase has never depended on the backend.
 //
 // All five shapes are driven, not just ledger's, because each is a separate
 // Update method on a separate adapter type and the guard is per method.
@@ -144,8 +151,8 @@ func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 }
 
 // View opens a read-only transaction, so a write through its Tx cannot be part
-// of anything that commits. It is refused with the same shape of error the other
-// stores use.
+// of anything that commits. It is refused with a named sentinel rather than left
+// to the driver, which is what store/mem and store/pg did too.
 func TestViewRejectsWrites(t *testing.T) {
 	s := newStore(t)
 

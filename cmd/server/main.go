@@ -62,7 +62,7 @@ var meshConfig = mesh.Config{
 // Sizing it against one handler would be sizing it against the optimistic case.
 const meshShutdown = 30 * time.Second
 
-// store is the shape both backends share, narrowed to what this command needs.
+// store is the store, narrowed to what this command needs.
 //
 // There is no shared store.Store type: the three layers each declare their own
 // Store interface, and Go allows a type only one Update method, so one concrete
@@ -183,7 +183,7 @@ func main() {
 // straight away.
 //
 // There is nothing to redact from the log line any more, and that is why the
-// function that used to do it is gone. A Postgres DSN routinely arrives from the
+// function that used to do it is gone. A Postgres DSN routinely arrived from the
 // environment carrying a real credential, and the line recording which database
 // was opened was the easiest place in this process to leak one; a filesystem
 // path carries no secret, so the guard has nothing left to guard and saying so

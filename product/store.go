@@ -8,8 +8,8 @@ import (
 )
 
 // Store owns the catalogue's persistent state. Declared here, by the consumer,
-// and implemented by store/mem and store/pg — so the store packages import the
-// domain packages and never the reverse.
+// and implemented by store/sqlite — so the store package imports the domain
+// packages and never the reverse.
 type Store interface {
 	Update(ctx context.Context, fn func(context.Context, Tx) error) error
 	View(ctx context.Context, fn func(context.Context, Tx) error) error
@@ -48,9 +48,10 @@ type Tx interface {
 //     versions drafted for the same product and the same effective day are the
 //     same row, and the later one wins.
 //   - A store NEVER refuses a write on PublishedAt grounds. Freezing a
-//     published version is the Catalogue's job, in the domain layer, for the
-//     dual-store reason every other validation lives there — a store that
-//     refused would accept a different set of writes from the other one.
+//     published version is the Catalogue's job, in the domain layer, and a
+//     CHECK could not do it anyway: what makes the write illegal is the row's
+//     PREVIOUS state, which a constraint on the row being written cannot see.
+//     Version.Hash is the one control that survives a direct UPDATE.
 //   - GetProduct returns ErrProductNotFound and GetProductVersionAsOf returns
 //     ErrVersionNotFound when the row is missing. Wrapping is fine; errors.Is
 //     is what the suite checks.
@@ -68,6 +69,6 @@ type Tx interface {
 //     slice it is handed. Drafts are included because the domain decides what a
 //     draft means, and because an operator view needs to see one.
 //   - The store truncates nothing. Callers pass an already-DayStart-ed instant
-//     and both stores key on VersionDayKey of it.
+//     and the store keys on VersionDayKey of it.
 //   - Writes roll back with the surrounding Update, catalogue rows and ledger
 //     rows together — that is what Tx embedding ledger.Tx exists for.

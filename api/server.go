@@ -106,8 +106,8 @@ func (s *Server) network() *payment.Network { return s.net }
 // row in the database intact and still report success.
 //
 // Resets serialize. They are the one operation in this system that is NOT a
-// single unit of work and cannot be made into one: the clear is a TRUNCATE
-// outside any transaction, and the rebuild is dozens of separate units of work,
+// single unit of work and cannot be made into one: the clear is its own unit of
+// work, and the rebuild is dozens more,
 // because the seed builder drives the ordinary public API. Two overlapping
 // resets therefore interleave — the second clears over the first's half-built
 // scenario and the first finishes writing on top of the second's — leaving

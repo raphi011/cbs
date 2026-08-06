@@ -262,7 +262,7 @@ func TestRunEndOfDay_IsIdempotentAndSkipsClosedFacilities(t *testing.T) {
 // correct there — a bank does track the count daily. The stable case is the
 // current one, and it is where a broken comparison shows: Arrears carries a
 // time.Time, and == on a time.Time compares the monotonic reading and location
-// as well as the instant, so a stored value that round-trips through Postgres
+// as well as the instant, so a stored value that round-trips through the store
 // with a different location would look changed every day and rewrite the row.
 func TestRunEndOfDay_ACurrentFacilityWritesNoArrearsEvents(t *testing.T) {
 	ctx := context.Background()

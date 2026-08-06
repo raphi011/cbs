@@ -661,9 +661,10 @@ export function listOperators(): Promise<OperatorStatus[]> {
 // resetState wipes all backend data and reloads the built-in sample dataset.
 // The request has no body and returns {status:"reset"} (ignored).
 //
-// Which store the backend runs on is not observable from here, and it matters:
-// on store/pg the wipe is durable and a restart does not bring anything back.
-// The copy in reset-button.tsx is worded to be true either way.
+// Whether the backend is on an ephemeral database or a file is not observable
+// from here, and it matters: against a file the wipe is durable and a restart
+// does not bring anything back. The copy in reset-button.tsx is worded to be
+// true either way.
 export function resetState(): Promise<void> {
   return request<void>("POST", cb("/admin/reset"));
 }

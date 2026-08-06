@@ -192,8 +192,9 @@ func jsonParam(raw json.RawMessage) any {
 }
 
 // marshalStringMap encodes a string map for a json_valid column. A nil map is
-// NULL and an empty one is {}, because store/mem keeps the two apart and the API
-// renders them differently. A string, for jsonParam's reason.
+// NULL and an empty one is {}, because the API renders the two differently and a
+// round trip that collapsed them would change what a caller sees. A string, for
+// jsonParam's reason.
 func marshalStringMap(m map[string]string) (any, error) {
 	if m == nil {
 		return nil, nil

@@ -22,14 +22,18 @@
 // why the choice is a call the implementation's own test file makes, and not a
 // skip inside the suite: a skip prints PASS for a suite that never ran.
 //
-// # What a passing race is worth, per store
+// # What a passing race is worth
 //
-// A race that cannot fail on a given store is not a defect in the test. Holding
-// two implementations to the same winner IS the conformance claim, and one of
-// them may reach the answer through a lock it takes for other reasons. What is
-// not allowed is leaving it unknown: each case below records whether it can fail
-// on a serializing store, and each of those answers was established by breaking
-// the code and running it, not by reasoning about the lock.
+// A race that cannot fail on the store underneath it is not a defect in the
+// test, and it is not evidence either. Every case below was established by
+// breaking the code and running it rather than by reasoning about a lock, and
+// each records what that gave — including, now, that the ordering guards two of
+// them were written for no longer decide the outcome on store/sqlite, which
+// admits one writer and re-runs a loser through Store.Update. That is recorded
+// where the orderings are (payment.admissionSequenceTx, SubmitPaymentTx) and it
+// is the reason these are regression guards rather than probes: Task 18 puts the
+// counter and the rows they order into different databases, at which point
+// neither guard spans them and the question reopens.
 package storetest
 
 import (
@@ -81,20 +85,22 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// this reason. That function records what the act does without it: 60 runs
 	// in 60 building the central bank a second chart of accounts.
 	//
-	// This case is what makes the argument checkable rather than a claim in a
-	// comment, and store/pg/schema/0001_init.sql's note on the absent UNIQUE
-	// constraint points at it as the checkable half. It fails loudly if any act
-	// that reaches the find-or-create stops drawing a network-scoped id first.
+	// This case is what made the argument checkable rather than a claim in a
+	// comment, and store/sqlite/schema/0001_init.sql's note on the absent UNIQUE
+	// constraint points at it.
 	//
-	// This is the one case here that does not fail every time it should, and a
-	// reader deciding whether a green run means anything needs to know which.
-	// With admissionSequenceTx returning nil, one run of it passed on store/pg
-	// and ten runs failed, on "central bank ledgers: got 2, want 1". So it is a
-	// regression guard rather than a probe: run once by the suite, it will
-	// eventually catch an act that stops drawing its id, and it is not the
-	// instrument to reach for when deliberately measuring this race.
+	// What it is worth per store, each measured with admissionSequenceTx
+	// returning nil. On store/pg one run passed and ten runs failed, on "central
+	// bank ledgers: got 2, want 1" — so even there it was a regression guard
+	// rather than a probe, and not the instrument to reach for when deliberately
+	// measuring this race. On store/mem the same break passed five runs out of
+	// five. On store/sqlite it passes ten runs out of ten, on the ephemeral store
+	// and on a WAL file alike: the second creator is refused at its write and
+	// Store.Update re-runs it, so it finds the ledger the first committed.
 	//
-	// On store/mem the same break passed five runs out of five.
+	// So on the store this suite runs against today, this case cannot fail for
+	// the reason it was written. It stays because the reason will come back —
+	// Task 18 puts the counter in one database and this ledger in another.
 	t.Run("ConcurrentAdmissionsAgreeOnOneCentralBank", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -146,32 +152,34 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// A client reference deduplicated by a read that was not atomic. This one
 	// was live.
 	//
-	// SubmitPaymentTx refuses an EndToEndID it has already seen, and store/pg
-	// declines to enforce that with a UNIQUE index on conformance grounds —
-	// mem's PutPayment does not look at any other row, so an index that refused
-	// would be the two stores disagreeing (see index 6 in
-	// store/pg/schema/0001_init.sql). That leaves the application check, and
-	// under READ COMMITTED two submissions both read "not there" and both wrote.
-	// Eight concurrent submissions of one reference were accepted EIGHT times on
-	// store/pg and once on store/mem, and the payer was debited eight times for
-	// one instruction — the exact disagreement the index comment set out to
-	// prevent.
+	// SubmitPaymentTx refuses an EndToEndID it has already seen, and the schema
+	// declines to enforce that with a UNIQUE index — it would answer a
+	// constraint violation where the domain answers its sentinel, and it would be
+	// the second unique index in a schema whose duplicate-key mapping cannot
+	// survive one (see index 6 in store/sqlite/schema/0001_init.sql). That leaves
+	// the application check, and under READ COMMITTED two submissions both read
+	// "not there" and both wrote. Eight concurrent submissions of one reference
+	// were accepted EIGHT times on store/pg and once on store/mem, and the payer
+	// was debited eight times for one instruction.
 	//
-	// It cannot happen now, because SubmitPaymentTx's first store statement is
-	// NextID(NetworkBook, "pay"), whose INSERT … ON CONFLICT DO UPDATE takes a
-	// row lock on id_sequences. Every other caller blocks there and then sees
-	// what the winner committed. It is the admission acts' argument, one
-	// operation over — see payment.admissionSequenceTx — and this case fails
-	// loudly if the two statements are ever swapped back.
+	// The fix was an ordering: SubmitPaymentTx's first store statement is
+	// NextID(NetworkBook, "pay"), and writing the counter row makes that
+	// transaction the database's writer, so every other caller waits there and
+	// then sees what the winner committed. It is the admission acts' argument,
+	// one operation over — see payment.admissionSequenceTx.
+	//
+	// Measured by moving the NextID call behind the duplicate check: store/pg
+	// accepted 8 of 8 on the first run; store/mem passed five runs out of five;
+	// store/sqlite passes ten runs out of ten, on the ephemeral store and on a
+	// WAL file. So this case no longer fails loudly if the two statements are
+	// swapped back, and a reader must not take a green run as evidence that the
+	// ordering is still there.
 	//
 	// ConcurrentReadThenWriteOnOneKeyAgrees in storetest.go is the same shape
 	// with no domain in it, written when this package could not name
 	// payment.Network. It can now, so what that case is worth is the shape
 	// stated once, at the store interface, for a rule the acts have not made
 	// yet.
-	//
-	// Measured, by moving the NextID call behind the duplicate check: store/pg
-	// accepted 8 of 8 on the first run; store/mem passed five runs out of five.
 	t.Run("ConcurrentSubmissionsOfOneReferenceAcceptOne", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -239,10 +247,11 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	//
 	// Measured, with admissionSequenceTx returning nil: store/pg accepted 8 of 8
 	// on the first run, with seven applicants told they were admitted while the
-	// roster routed to an eighth; store/mem passed five runs out of five. That
-	// asymmetry is the conformance claim rather than a reason to leave the case
-	// to one store — the two must agree on who is admitted, and this is what
-	// says so.
+	// roster routed to an eighth; store/mem passed five runs out of five;
+	// store/sqlite passes ten runs out of ten, on the ephemeral store and on a
+	// WAL file. The asymmetry between the first two was the conformance claim
+	// while both existed. What it is now is a regression guard on an ordering
+	// this store does not need — see the note at the top of this file.
 	t.Run("ConcurrentAdmissionsOfOneBICAdmitOne", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -279,7 +288,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		// models an operator console hitting one address — and not as
 		// sensitivity, which it does not provide.
 		//
-		// With the sequence in place: 0 of 60, on both stores.
+		// With the sequence in place: 0 of 60, on store/pg and on store/mem.
 		for _, bic := range []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX", "SOLEFRPPXXX", "BANKESMMXXX"} {
 			refs := make([]string, 8)
 			for i := range refs {
@@ -335,7 +344,9 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// reserve account the settlement agent cannot resolve, in its own ledger.
 	//
 	// Measured, with admissionSequenceTx returning nil: store/pg recorded one of
-	// the two accounts on the first run; store/mem passed five runs out of five.
+	// the two accounts on the first run; store/mem passed five runs out of five;
+	// store/sqlite passes ten runs out of ten, on the ephemeral store and on a
+	// WAL file.
 	t.Run("ConcurrentSettlementAccountOpeningsKeepEveryAsset", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -406,7 +417,10 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 // Which of them bite on ONE run, measured on store/pg at Task 17.0 by breaking
 // what each guards: the balance check and both idempotency cases failed on the
 // first run; the reversal passed one run and failed within ten. The deadlock
-// case was not broken to see it fail, and says so about itself.
+// case was not broken to see it fail, and says so about itself. Those numbers
+// are store/pg's; what the ephemeral store can and cannot show is recorded on
+// the cases themselves and, for the balance check, in
+// store/sqlite.LockAccounts.
 func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Helper()
 
@@ -554,13 +568,12 @@ func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// This one drives tx.MarkReversed directly rather than going through
 	// Book.ReverseTransaction, and the reason is worth recording.
 	// ReverseTransactionTx allocates entry and transaction IDs before it marks
-	// anything, and NextID's INSERT … ON CONFLICT DO UPDATE takes a row lock on
-	// id_sequences — so two reversals through the Book serialize on the counter
-	// long before they reach MarkReversed, and a read-compare-write version
-	// passes that test. It was checked: the mutation survived. What the
-	// conditional UPDATE actually protects is the store primitive, which the
-	// conformance suite calls with no ID allocation at all, so that is what this
-	// calls too.
+	// anything, and writing the counter row makes that transaction the database's
+	// writer — so two reversals through the Book serialize on the counter long
+	// before they reach MarkReversed, and a read-compare-write version passes
+	// that test. It was checked: the mutation survived. What the conditional
+	// UPDATE actually protects is the store primitive, which the shared suite
+	// calls with no ID allocation at all, so that is what this calls too.
 	t.Run("ConcurrentMarkReversedOnlyOneWins", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
@@ -598,12 +611,14 @@ func RunConcurrentTxRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// LockAccounts sorts by id, so two postings over the same pair of accounts
 	// take the locks in the same order and one simply waits.
 	//
-	// Note what this case does and does not prove: Update retries a deadlock
-	// (SQLSTATE 40P01 on store/pg) up to a bounded number of times, so an
-	// UNORDERED lock would still end up green here — it would just get there by
-	// aborting and retrying rather than by waiting. The ordering is what makes
-	// the wait the normal case instead of the exception; the assertion is a
-	// regression guard on both.
+	// Note what this case does and does not prove: Update retries a lock loss up
+	// to a bounded number of times (SQLSTATE 40P01 on store/pg, SQLITE_BUSY and
+	// SQLITE_LOCKED on store/sqlite), so an UNORDERED lock would still end up
+	// green here — it would just get there by aborting and retrying rather than
+	// by waiting. The ordering is what makes the wait the normal case instead of
+	// the exception; the assertion is a regression guard on both. On
+	// store/sqlite there is no lock to order at all — LockAccounts is a
+	// documented no-op there, and its doc records what a locking version bought.
 	t.Run("OverlappingAccountSetsDoNotDeadlock", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()

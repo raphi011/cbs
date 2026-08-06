@@ -137,10 +137,10 @@ type RosterEntry struct {
 	// settlement account in one. Nothing else in the system would refuse its
 	// payments in the other asset, and the cut-off could not build their pacs.009.
 	//
-	// Being a slice, it is ORDERED and it can REPEAT, and both stores must
-	// answer the same way about both — store/pg keys the child table by
-	// position for exactly that reason, and storetest's
-	// RosterEntryAssetsAreAnOrderedList holds them to it.
+	// Being a slice, it is ORDERED and it can REPEAT, and the store must answer
+	// for both — its child table is keyed by POSITION for exactly that reason,
+	// since a key on (bic, asset) would refuse a row this type can hold, and
+	// storetest's RosterEntryAssetsAreAnOrderedList holds it to that.
 	//
 	// Whose order it is depends on who wrote it. The writer is AdmitMemberTx,
 	// which sorts the assets an acknowledgement names and appends the ones this
