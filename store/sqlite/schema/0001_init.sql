@@ -1,0 +1,57 @@
+-- 0001_init: the whole schema, in one migration.
+--
+-- Translated from store/pg/schema/0001_init.sql at Task 17.1. The arguments
+-- carry across; the Postgres spellings do not.
+--
+-- WHERE A COMMENT HAS TO GO, AND WHY IT IS NOT WHERE IT WAS
+--
+-- SQLite keeps the text of a statement in sqlite_master.sql, so a comment
+-- INSIDE a statement's parentheses reaches `.schema` and a schema dump. A
+-- comment ABOVE a statement does not: it is outside the span and is dropped.
+-- Verified on modernc's compiled-in SQLite 3.53.3 before this file was written.
+--
+-- The Postgres original kept 595 of its 612 comment lines above statements,
+-- with COMMENT ON COLUMN for the rest. Under Postgres that was free, because
+-- COMMENT ON is itself stored. Here it is not, and what would be lost is the
+-- half that matters most — an ABSENT constraint has no column to hang a comment
+-- from, so every argument about something this schema deliberately does not do
+-- lived at column 0.
+--
+-- So: every argument about something the schema does NOT do lives inside the
+-- statement it concerns. An absent constraint's reasoning goes in the
+-- parentheses of the table it is absent from, an index's in its column list.
+-- What stays out here is narrative belonging to no statement — this header —
+-- and it does not reach a dump. If you are adding a reason, put it inside the
+-- parentheses.
+--
+-- CONVENTIONS, APPLIED EVERYWHERE
+--
+--   * Book-scoped tables have a composite PRIMARY KEY (book_id, id). A
+--     single-column id would be wrong: chart-of-accounts numbers are unique
+--     within a book, not globally, so two participants legitimately both hold
+--     an account "200.100.001".
+--   * Amounts are INTEGER in minor units. Never REAL: a ledger deals in whole
+--     cents, and a rounding mode is not a thing a ledger may have.
+--   * Times are TEXT and nullable — RFC3339, UTC, nine fractional digits,
+--     always. The fixed width and the fixed zone are what make a string
+--     comparison a chronological one; see store/sqlite/time.go. NULL is Go's
+--     zero time.Time, which several fields use as "unset", and SQLite sorts
+--     NULL first in ASC, which is what the listings want.
+--   * iota enums are INTEGER, holding the Go constant's value.
+--   * Free-form maps and the audit payload are TEXT with a json_valid CHECK —
+--     a constraint store/mem could never hold.
+--   * Every listed table carries a monotonic `seq`, allocated MAX(seq)+1 on
+--     insert and left alone by the upsert branch, so editing a row does not
+--     move it to the end of its list. Listings are ORDER BY created_at, seq —
+--     never ORDER BY id, because IDs are counter-derived strings and "dep_10"
+--     sorts before "dep_8".
+--   * Every table is STRICT. SQLite enforces no declared type otherwise, and a
+--     schema that enforces nothing is worse than one with a coarser vocabulary.
+
+CREATE TABLE books (
+    -- books exists so that book_id is a real key rather than a convention. Rows
+    -- are created on demand by the first write that names a book (see
+    -- tx.ensureBook), because a book is not an entity the domain creates — a
+    -- BookID is a name a participant is written under.
+    id TEXT PRIMARY KEY
+) STRICT;
