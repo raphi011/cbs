@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -170,9 +171,18 @@ type bankOps interface {
 	// AcceptInbound is the half SubmitPaymentTx did not run — a check for the
 	// payee's bank on a push, and the posting of the debtor leg for the payer's
 	// bank on a pull.
-	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
-	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
-	AcceptInbound(ctx context.Context, id payment.PaymentID) error
+	//
+	// Both take the ACTING participant, and Task 18a is what added it. The
+	// address is resolved in that bank's own register and in no other, which is
+	// what the resolution has always CLAIMED to do and did not: it swept every
+	// member's until this task, and that sweep is the crossing the recorder's
+	// receiver set has carried since it was first measured. The actor passes its
+	// own id — see bank.pid — exactly as the settlement and return methods below
+	// do; payment.Network has no identity of its own until Task 18b, which is
+	// what will take the argument away again.
+	CreditTransferRequest(ctx context.Context, by payment.ParticipantID, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
+	DirectDebitRequest(ctx context.Context, by payment.ParticipantID, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
+	AcceptInbound(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) error
 
 	// The payer's bank's half of a rejection: give the payer their money back.
 	// GetPayment is what establishes that there is a decision to act on — see
@@ -243,6 +253,36 @@ type bankOps interface {
 	// payment's creditor banks at is a fact about the payment, and a handler that
 	// decided it would be asserting something it cannot check.
 	PostCreditorLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) (payment.Payment, error)
+
+	// The bank's own liquidity management, and the second thing on this interface
+	// whose subject is this bank rather than a payment.
+	//
+	// LodgeReserves swaps vault cash for a claim on the central bank: it posts
+	// Debit Reserve at Central Bank / Credit Vault Cash in THIS bank's book and
+	// renders the camt.050 that asks the central bank to make the matching entry
+	// in its own. Both halves in one method for SubmitAndInstruct's reason — a
+	// message that will not build must take the leg down with it — and the send
+	// still happens after, outside the unit of work.
+	//
+	// It is the crossing Task 18a closes. Funding a reserve used to be
+	// DepositTx, which posted the bank's leg AND the central bank's inside the
+	// bank's own unit of work; nothing on any of these three interfaces could
+	// narrow that, because it was one method on one Network reaching two books.
+	// What makes it expressible as a boundary is that the two halves are now two
+	// methods on two interfaces, and only ONE of them is here.
+	//
+	// The receiving half is ReceiveLodgement, on settlementOps and on no other,
+	// so no bank handler can name it — which is the same shape SettleReturn has
+	// and for the same reason: crediting a reserve account is the account
+	// servicer's act, and no member may make it.
+	//
+	// It takes the acting participant, as the settlement and return methods above
+	// do, and the actor passes its own id (see bank.pid). What the domain refuses
+	// is a bank that cannot name its own reserve account
+	// (payment.ErrSettlementMemberNotFound) — the guard that used to sit on a
+	// deposit and was wrong there.
+	LodgeReserves(ctx context.Context, by payment.ParticipantID, asset ledger.AssetCode,
+		amount ledger.Amount, mc payment.MessageContext) (payment.LodgementInstruction, iso20022.Envelope, error)
 
 	// The bank's second act of its own admission: writing down the settlement
 	// account numbers the acknowledgement told it, and becoming a Member.
@@ -421,6 +461,28 @@ type settlementOps interface {
 	// no roster and has never heard of this system's bank ids. What it is told is
 	// a BIC, a name and one currency, and a BIC is what it keys its own row by.
 	OpenSettlementAccount(ctx context.Context, in payment.AdmissionRequest) (payment.SettlementMember, error)
+
+	// ReceiveLodgement is the fourth, and it is the half of Task 18a's crossing
+	// that lands here: a member has asked this institution to credit the member's
+	// own reserve account, and this institution posts Debit Settlement Assets /
+	// Credit Reserve: <member> in its own book.
+	//
+	// It is the same pair of entries a DEPOSIT used to make in this book — from
+	// inside the funding bank's unit of work, which is what made it a crossing.
+	// Nothing about the entries changed. What changed is who makes them and on
+	// whose instruction, and that difference is the whole of what the split needs:
+	// this method is on this interface and on no other, so a bank handler cannot
+	// NAME it, and the only way a member can cause this posting is by sending a
+	// camt.050.
+	//
+	// It takes the INSTRUCTION rather than a bank, for the reason
+	// OpenSettlementAccount and SettleReturn both do: everything it acts on came
+	// off the message (payment.ReadLodgement), because a settlement agent holds no
+	// roster and has never heard of this system's bank ids. It is told a BIC, an
+	// account number, an asset and an amount — and it trusts the BIC and the
+	// amount and CHECKS the account number against its own row, which
+	// payment.ReceiveLodgementTx sets out.
+	ReceiveLodgement(ctx context.Context, in payment.LodgementInstruction) (payment.LodgementReceipt, error)
 }
 
 // *payment.Network satisfies all three today, and these assertions are what keep

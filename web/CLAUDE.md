@@ -63,7 +63,7 @@ doesn't join that group. `plain-shell` is the lobby's and Learn's.
 
 - **`DisallowUnknownFields()`** — send *only* the exact keys a request DTO defines; a stray key → 400.
 - **`*time.Time` wants RFC3339.** `<input type="date">` gives `YYYY-MM-DD`; convert to `${date}T00:00:00.000Z` or send `null`. **Exception:** snapshot `date` is a plain `YYYY-MM-DD` string.
-- **Funding requires an existing deposit account.** `POST /participants/{pid}/deposits` credits a deposit account *and* raises the central-bank reserve in step; reserves start at 0. The intro loop is: create participant → open deposit account → fund.
+- **Funding requires an existing deposit account, and it is now TWO steps.** `POST /deposits` credits a deposit account and leaves the bank holding the cash as *vault cash*; it does **not** raise the central-bank reserve, which it used to do in step. `POST /lodgements` (`{asset, amount}`, answers **202**) is what puts that cash on reserve, because only the central bank can credit an account in the central bank's book — it is a `camt.050`/`camt.025` conversation, so the reserve is not up when the request resolves. Reserves start at 0 and a bank cannot settle out of vault cash, so the intro loop is: create participant → open deposit account → fund → **lodge**.
 - **Next 16 async params.** In route handlers & dynamic pages `params` is a `Promise`; pages use client components + `useParams()`, the proxy awaits `ctx.params`.
 
 ## Conventions

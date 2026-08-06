@@ -21,9 +21,17 @@ import { useFundDeposit } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Asset } from "@/lib/types";
 
-// Funds a deposit account: credits the customer's deposit and raises the bank's
-// central-bank reserve in step. This is how reserves (which start at 0) are
-// seeded — the entry point of the whole money loop.
+// Takes cash in over the counter: credits the customer's deposit, and leaves the
+// bank holding the cash as vault cash.
+//
+// It does NOT raise the bank's central-bank reserve, and this comment used to say
+// it did — "this is how reserves (which start at 0) are seeded". Since Task 18a
+// that is the LODGEMENT's job (see LodgeReservesForm): a bank cannot write in the
+// central bank's ledger, so moving cash onto reserve is a request it sends rather
+// than an entry it makes.
+//
+// So this is still the entry point of the money loop and no longer the whole of
+// its first step. Cash in, then lodge, then the bank can settle.
 export function FundParticipantForm({
   pid,
   did,
@@ -47,7 +55,7 @@ export function FundParticipantForm({
         amount,
         description: description.trim() || undefined,
       });
-      toast.success("Funded — reserve raised in step");
+      toast.success("Cash in — held as vault cash");
       setAmount(null);
       setDescription("");
       setOpen(false);
@@ -69,12 +77,12 @@ export function FundParticipantForm({
           <DialogHeader>
             <DialogTitle>Fund deposit account</DialogTitle>
             <DialogDescription>
-              Credits this account and raises the bank&apos;s central-bank
-              reserve by the same amount.
+              Credits this account. The bank holds the cash as vault cash —
+              putting it on reserve at the central bank is a separate lodgement.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
-            <FieldLabel htmlFor="fund-amount" hint="central-bank-reserves" required>
+            <FieldLabel htmlFor="fund-amount" hint="vault-cash" required>
               Amount
             </FieldLabel>
             <MoneyInput

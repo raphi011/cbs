@@ -54,7 +54,7 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
-	assertNoError(t, sys.Deposit(ctx, b.ID, bob, 50000, "Bob opening deposit"))
+	fundAccount(t, ctx, sys, b, depositAccount(t, ctx, b, bob), 50000)
 
 	var payments []PaymentID
 	st := runCycle(t, sys, SchemeSEPACT, func() {

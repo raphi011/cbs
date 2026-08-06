@@ -89,6 +89,8 @@ func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 		"pacs004.xml": "pacs.004.001.09.xsd",
 		"pacs009.xml": "pacs.009.001.08.xsd",
 		"camt053.xml": "camt.053.001.08.xsd",
+		"camt050.xml": "camt.050.001.05.xsd",
+		"camt025.xml": "camt.025.001.05.xsd",
 		"acmt007.xml": "acmt.007.001.03.xsd",
 		"acmt010.xml": "acmt.010.001.03.xsd",
 		"acmt011.xml": "acmt.011.001.03.xsd",

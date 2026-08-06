@@ -103,8 +103,9 @@
 //   - FoundBankTx is the BANK building itself — its book, its chart of
 //     accounts, its internal accounts per asset, its default deposit product.
 //     It comes out Founded, which is a bank with a licence and no place in a
-//     scheme: it can open customer accounts, and it cannot FUND one, because
-//     funding raises a reserve no settlement agent holds for it.
+//     scheme: it can open customer accounts and take cash in, which lands in its
+//     own vault, and it cannot LODGE that cash — putting it on reserve needs the
+//     central bank to credit an account in the central bank's own book.
 //   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
 //     one asset, in its own book, and recording that it holds it. Idempotent
 //     per (BIC, asset), because one acmt.007 asks for one currency and a
@@ -241,7 +242,11 @@
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried
-//     once the member is funded. See Network for details.
+//     once the member has LODGED — which since Task 18a is two acts and not one:
+//     cash paid in reaches the bank's own vault, and putting it on reserve is a
+//     camt.050 to the central bank (see LodgeReservesTx). A deposit alone no
+//     longer unsticks a refused settlement, because settlement reads the central
+//     bank's book and a deposit never touches it. See Network for details.
 //
 //     What is no longer standing in for anything is who ASKS. The window is
 //     instructed: closing a cycle emits a pacs.009 carrying the net positions,

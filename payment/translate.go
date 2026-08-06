@@ -108,6 +108,14 @@ var reasonTable = []reasonMapping{
 	// defect, said about a different field.
 	{ErrCounterpartyNotNamed, "ErrCounterpartyNotNamed", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
+	// Its sibling, and RC01 rather than MS03 because there IS a code for this
+	// one: "the BIC does not identify a reachable participant" is exactly what
+	// an absent or malformed CdtrAgt/DbtrAgt means. It is classified here
+	// alongside ErrParticipantNotFound for that reason and not because it
+	// travels — like ErrCounterpartyNotNamed it is refused at submission, before
+	// any message exists to carry it.
+	{ErrCounterpartyAgentNotNamed, "ErrCounterpartyAgentNotNamed", iso20022.StatusReasonBankIdentifierIncorrect},
+
 	// --- Classified as never reaching a counterparty ---
 	//
 	// Each is a failure of THIS system's own bookkeeping rather than a
@@ -1170,15 +1178,28 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // can act on.
 //
 // A pacs.008 travels FROM the debtor's bank, routed by CdtrAgt, so the bank
-// reading this message is the CREDITOR's — that is what routed the message
-// here in the first place, and it is the only party this bank has any standing
-// to resolve. It is resolved by ADDRESS, exactly as before —
-// Network.ResolveIdentifierTx against the IBAN the message carries — and never
-// by an internal account id, because the message has no element for one. That
-// is also why an unresolvable creditor IBAN comes back as
-// ErrAccountNotInParticipant and becomes AC01 on the wire: from the receiver's
-// side, an address it cannot resolve for ITS OWN customer IS an incorrect
-// account number.
+// reading this message SHOULD be the CREDITOR's — that is what routed the
+// message here — and the creditor is the only party it has any standing to
+// resolve. It is resolved by ADDRESS — Network.ResolveIdentifierTx against the
+// IBAN the message carries, IN THIS BANK'S OWN REGISTER — and never by an
+// internal account id, because the message has no element for one. That is also
+// why an unresolvable creditor IBAN comes back as ErrAccountNotInParticipant and
+// becomes AC01 on the wire: from the receiver's side, an address it cannot
+// resolve for its own customer IS an incorrect account number.
+//
+// SHOULD, because CdtrAgt is what the SENDING bank asserted and nothing between
+// here and there checked it against a register. Since Task 18a it is not
+// derived either — there is no row a payer's bank could derive it from once each
+// bank holds only its own — so a payer who names the wrong bank has the message
+// delivered to that bank, and this function is what refuses it. Own-register
+// resolution is therefore the guard rather than a narrowing: under the sweep this
+// bank would have found the payee at the RIGHT bank and gone on to act on
+// somebody else's customer. See mesh's
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+//
+// `by` is the bank reading the message. It is an argument for the reason
+// ResolveIdentifier's is — payment.Network has no identity until Task 18b — and
+// the actor passes its own id, exactly as PostReturnLeg's caller does.
 //
 // The DEBTOR is not resolved at all. It is the sending bank's customer, this
 // bank's directory has no standing authority over whether that account exists,
@@ -1202,7 +1223,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
 // or posted. That is SubmitPaymentTx's job, and the separation is what lets the
 // mesh translate a message without a write and reject it before one.
-func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
+func (s *Network) CreditTransferRequest(ctx context.Context, by ParticipantID, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
 	body := doc.FIToFICstmrCdtTrf
 	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
 	if err != nil {
@@ -1222,7 +1243,7 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	}
 	// The creditor is this bank's own customer on a push; the debtor is the
 	// sending bank's and is recorded, not resolved.
-	creditor, err := s.localPartyIn(ctx, cdtrID)
+	creditor, err := s.localPartyIn(ctx, by, cdtrID)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -1245,23 +1266,33 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 // A pacs.003 travels FROM the creditor's bank, routed by DbtrAgt, so the bank
 // reading this message is the DEBTOR's — the mirror of CreditTransferRequest in
 // exactly the way the direction implies, and no further: the DEBTOR is resolved
-// by ADDRESS, exactly as before — Network.ResolveIdentifierTx against the IBAN
-// the message carries, which still lists every participant and reads every
-// register; narrowing WHICH party is put through that sweep did not narrow the
-// sweep itself. The CREDITOR is recorded from what the message says and not
-// resolved, for the identical reason CreditTransferRequest does not resolve a
-// pacs.008's debtor — the creditor is the SENDING bank's customer, not this
-// bank's to look up. The account elements are read for what they are rather
-// than by position — a reader that took the first account element as the
-// debtor's, as it is in a pacs.008, would produce a collection pointing the
-// wrong way and resolve successfully while doing it.
+// by ADDRESS, in this bank's own register. The CREDITOR is recorded from what
+// the message says and not resolved, for the identical reason
+// CreditTransferRequest does not resolve a pacs.008's debtor — the creditor is
+// the SENDING bank's customer, not this bank's to look up. The account elements
+// are read for what they are rather than by position — a reader that took the
+// first account element as the debtor's, as it is in a pacs.008, would produce a
+// collection pointing the wrong way and resolve successfully while doing it.
+//
+// Task 14 narrowed WHICH party goes through the resolution and Task 18a narrowed
+// the resolution itself; until it did, this one lookup still listed every
+// participant and read every register, which is why the mirror note in
+// mesh/books_test.go had the payer's bank reaching every bank's book for a
+// question about its own customer.
+//
+// A collection addressed to the wrong bank is refused here, and on a pull that
+// matters more than on a push: the receiving bank is the one that POSTS, so
+// under the sweep a collector who named itself as the payer's bank resolved the
+// payer at the payer's real bank and posted the debit in that bank's book. See
+// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, whose pull arm is
+// that exact instruction.
 //
 // And it carries a mandate. An empty MndtId is refused here rather than left for
 // SDD.Validate, which would refuse it too: this is another bank's claim on this
 // bank's customer's account, the mandate is the only thing that makes it
 // authorised, and the message that came with no mandate should not become a
 // request that looks like one.
-func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
+func (s *Network) DirectDebitRequest(ctx context.Context, by ParticipantID, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
 	body := doc.FIToFICstmrDrctDbt
 	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
 	if err != nil {
@@ -1285,7 +1316,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	}
 	// The debtor is this bank's own customer on a pull; the creditor is the
 	// sending bank's and is recorded, not resolved.
-	debtor, err := s.localPartyIn(ctx, dbtrID)
+	debtor, err := s.localPartyIn(ctx, by, dbtrID)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -1431,11 +1462,19 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 // authority over whether that account exists. The counterparty is not resolved
 // at all now; it is recorded from what the message itself says — see
 // CreditTransferRequest's DebtorDetails/CreditorDetails and agentIn/nameIn.
-func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+//
+// The word LOCAL became true at Task 18a and was a statement of intent before
+// it. Narrowing which PARTY was resolved did not narrow the resolution: the one
+// address that reached ResolveIdentifierTx was still looked for in every
+// member's register, so a receiving bank still read every bank's book to answer
+// a question about its own customer. `by` is what makes it local — the bank
+// asking — and ResolveIdentifierTx now answers out of that bank's register
+// alone.
+func (s *Network) localPartyIn(ctx context.Context, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
 	var ref PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		ref, err = s.addressedPartyTx(ctx, tx, ident)
+		ref, err = s.addressedPartyTx(ctx, tx, by, ident)
 		return err
 	})
 	return ref, err
@@ -1443,10 +1482,11 @@ func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (P
 
 // addressedPartyTx turns one quoted address into the party it names.
 //
-// It drives ResolveIdentifierTx rather than reimplementing the sweep, which
-// matters for a property that is easy to lose: two banks holding one identifier
-// is ErrIdentifierAmbiguous there, not the first hit, and choosing between them
-// here would route another bank's payment on the strength of listing order.
+// It drives ResolveIdentifierTx rather than reimplementing the lookup, which
+// matters for a property that is easy to lose: two of this bank's accounts
+// holding one identifier is ErrIdentifierAmbiguous there, not the first hit, and
+// choosing between them here would route a payment on the strength of listing
+// order.
 //
 // # Only a NOT-FOUND becomes a domain error
 //
@@ -1467,8 +1507,8 @@ func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (P
 // TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both
 // fail on the collapsed shape.
-func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
-	ref, err := s.ResolveIdentifierTx(ctx, tx, ident)
+func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
+	ref, err := s.ResolveIdentifierTx(ctx, tx, by, ident)
 	if errors.Is(err, deposit.ErrIdentifierNotFound) {
 		return PartyRef{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ident.Value)
 	}
@@ -2539,5 +2579,280 @@ func AdmissionRejectionMessage(in AdmissionRequest, rejected iso20022.MessageIde
 	return iso20022.Envelope{
 		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
 		Document: doc,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// The lodgement: camt.050 out, camt.025 back
+// ---------------------------------------------------------------------------
+
+// LodgementMessage renders a member's request for a reserve credit as the
+// camt.050 that carries it.
+//
+// It is a free function and not a method on Network, for AdmissionMessage's
+// reason: it reads no store and needs no scheme, because everything on the wire is
+// on the instruction or in the context.
+//
+// # It names the account it credits and not the one it debits
+//
+// CdtrAcct is the reserve account, in the central bank's book, and it is the whole
+// instruction. DbtrAcct is left ABSENT — the account being debited is this bank's
+// vault cash, in this bank's own book, which the central bank neither keeps nor
+// may read. Naming it would be quoting a servicer the number of an account in a
+// ledger it has no access to, which is the same reason a pacs.008 does not carry
+// the payer's GL account. See iso20022.LiquidityTransfer, where the asymmetry is
+// recorded on the type, and TestTheLodgementNamesTheAccountItCreditsAndNotTheOneItDebits.
+//
+// # The reference is the message id, and it has to be
+//
+// Refs on this family are not the acmt family's. There is no process id above the
+// two messages, because a lodgement is one request and one answer; what the
+// receipt quotes back is this document's own MsgId. So the instruction's Ref and
+// the context's MsgID must be the same value, and this refuses a caller that
+// disagrees rather than silently picking one — a receipt correlated against the
+// wrong one of the two would match nothing the bank ever sent.
+func LodgementMessage(in LodgementInstruction, mc MessageContext) (iso20022.Envelope, error) {
+	if err := in.BIC.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: the lodging member's address: %w", err)
+	}
+	if err := mc.To.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: Cdtr: %w", err)
+	}
+	if in.Account == "" {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"%w: CdtrAcct/Id; a lodgement naming no reserve account is one no servicer can post",
+			iso20022.ErrMissingElement)
+	}
+	if in.Ref == "" {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"%w: LqdtyTrfId/EndToEndId; nothing else correlates the receipt", iso20022.ErrMissingElement)
+	}
+	if in.Ref != mc.MsgID {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"payment: this lodgement is referenced %q and the message it would travel as is %q; "+
+				"the receipt quotes the message id, so the two cannot differ", in.Ref, mc.MsgID)
+	}
+	amount, err := amountOf(in.Amount, in.Asset)
+	if err != nil {
+		return iso20022.Envelope{}, err
+	}
+	doc := &iso20022.Camt050{LqdtyCdtTrf: iso20022.LiquidityCreditTransferV5{
+		MsgHdr: iso20022.MessageHeader{MsgId: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+		LqdtyCdtTrf: iso20022.LiquidityTransfer{
+			LqdtyTrfId: iso20022.LiquidityTransferIdentification{EndToEndId: in.Ref},
+			Cdtr:       agentOf(mc.To),
+			CdtrAcct: iso20022.CashAccount{Id: iso20022.AccountIdentification4Choice{
+				// The generic arm, not the IBAN one: a reserve account at a central
+				// bank has no IBAN, because it is not a payment address and no
+				// customer ever quotes it. The same choice camt.053's Acct and
+				// acmt.010's AcctId each make, for the same reason.
+				Othr: &iso20022.GenericAccountIdentification{Id: string(in.Account)},
+			}},
+			TrfdAmt: iso20022.TransferredAmount{AmtWthCcy: amount},
+			Dbtr:    agentOf(in.BIC),
+		},
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// ReadLodgement reads a received camt.050 as the instruction it carries: which
+// member, which account, how much, and in what.
+//
+// # The header is compared against the document, and that is the point
+//
+// Dbtr and Cdtr both duplicate something the AppHdr already says — Fr and To —
+// and this is where the duplication earns its keep. A message whose Dbtr is not
+// its sender is a member lodging on somebody else's behalf, and a message whose
+// Cdtr is not its recipient asks THIS servicer to post in ANOTHER servicer's
+// book. Neither is a thing this system permits, and neither is detectable from
+// the document alone.
+//
+// So this takes the header as an argument rather than only the document, which is
+// the one reader in this file that does. ReadAdmissionRequest does not, and the
+// difference is real: an acmt.007 is RELAYED — it travels bank to clearing house
+// to settlement agent, so its Fr is the last hop rather than the applicant, and a
+// comparison there would refuse every legitimate message. A camt.050 goes
+// straight from the member to its central bank, one hop, so the header and the
+// body must agree.
+//
+// # It does not assume validate() ran
+//
+// iso20022.Unmarshal validates, so every element checked below has already been
+// through LiquidityTransfer.validate. This checks anyway, for ReadReturn's
+// reason: a document handed to this function need not have come from Unmarshal at
+// all, and the cost of being wrong is a credit posted to a reserve account on
+// nobody's authority.
+func ReadLodgement(hdr iso20022.AppHdr, doc *iso20022.Camt050) (LodgementInstruction, error) {
+	body := doc.LqdtyCdtTrf
+	trf := body.LqdtyCdtTrf
+
+	ref := body.MsgHdr.MsgId
+	if ref == "" {
+		return LodgementInstruction{}, fmt.Errorf(
+			"%w: MsgHdr/MsgId; this request cannot be answered because nothing would correlate the receipt",
+			iso20022.ErrMissingElement)
+	}
+	member := trf.Dbtr.FinInstnId.BICFI
+	if member == "" {
+		return LodgementInstruction{}, fmt.Errorf(
+			"%w: Dbtr/FinInstnId/BICFI; this request names no member and its reserve would be keyed by nothing",
+			iso20022.ErrMissingElement)
+	}
+	if err := member.Validate(); err != nil {
+		return LodgementInstruction{}, fmt.Errorf("payment: Dbtr/FinInstnId/BICFI: %w", err)
+	}
+	if from := hdr.Fr.FIId.FinInstnId.BICFI; from != member {
+		return LodgementInstruction{}, fmt.Errorf(
+			"payment: this lodgement was sent by %s and asks to debit %s; a member lodges its own cash",
+			from, member)
+	}
+	agent := trf.Cdtr.FinInstnId.BICFI
+	if agent == "" {
+		return LodgementInstruction{}, fmt.Errorf(
+			"%w: Cdtr/FinInstnId/BICFI; this request names no account servicer", iso20022.ErrMissingElement)
+	}
+	if to := hdr.To.FIId.FinInstnId.BICFI; to != agent {
+		return LodgementInstruction{}, fmt.Errorf(
+			"payment: this lodgement was addressed to %s and names %s as the account servicer; "+
+				"one servicer cannot post in another's book", to, agent)
+	}
+	// The generic arm. An IBAN here would be a reserve account addressed as a
+	// payment address, which is what GenericAccountIdentification exists to avoid
+	// — see LodgementMessage.
+	if trf.CdtrAcct.Id.Othr == nil || trf.CdtrAcct.Id.Othr.Id == "" {
+		return LodgementInstruction{}, fmt.Errorf(
+			"%w: CdtrAcct/Id/Othr/Id; this request says which member and not which account",
+			iso20022.ErrMissingElement)
+	}
+	amount, asset, err := amountIn(trf.TrfdAmt.AmtWthCcy)
+	if err != nil {
+		return LodgementInstruction{}, err
+	}
+	if amount <= 0 {
+		return LodgementInstruction{}, fmt.Errorf("%w: TrfdAmt is %s", ErrInvalidPaymentAmount, trf.TrfdAmt.AmtWthCcy.Value)
+	}
+	return LodgementInstruction{
+		BIC:     member,
+		Agent:   agent,
+		Account: ledger.AccountID(trf.CdtrAcct.Id.Othr.Id),
+		Asset:   asset,
+		Amount:  amount,
+		Ref:     ref,
+	}, nil
+}
+
+// LodgementReceiptMessage renders an account servicer's answer as the camt.025
+// that carries it.
+//
+// # The reason is truncated here rather than discovered on the wire
+//
+// Desc is Max140Text, and the refusals that reach it are Go error strings built
+// by ReceiveLodgementTx and settlementAccountTx — which quote a BIC, an asset and
+// two account ids, and can exceed 140 characters between them. A document that
+// would not marshal is worse than a shortened reason: the member would be told
+// nothing at all, and the servicer's handler would dead-letter its own answer.
+//
+// So this truncates, and it truncates VISIBLY, with an ellipsis, so that a reader
+// of a shortened reason can tell it was shortened. acmt.011's RjctnRsn is
+// Max350Text and needs none of this, which is why the narrower limit is called out
+// on iso20022.RequestHandling rather than left to be met here.
+func LodgementReceiptMessage(r LodgementReceipt, mc MessageContext) (iso20022.Envelope, error) {
+	if r.Ref == "" {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"%w: RctDtls/OrgnlMsgId/MsgId; a receipt naming no request answers nothing",
+			iso20022.ErrMissingElement)
+	}
+	if r.Status == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: RctDtls/ReqHdlg/StsCd", iso20022.ErrMissingElement)
+	}
+	handling := iso20022.RequestHandling{StsCd: string(r.Status)}
+	if !r.Accepted() {
+		// A refusal that says nothing is one nobody can act on, and unlike
+		// acmt.011's RjctnRsn the schema does not require a reason here — so the
+		// requirement is this system's.
+		if r.Reason == "" {
+			return iso20022.Envelope{}, fmt.Errorf(
+				"%w: RctDtls/ReqHdlg/Desc on a refusal", iso20022.ErrMissingElement)
+		}
+		handling.Desc = truncateTo(r.Reason, 140)
+	}
+	doc := &iso20022.Camt025{Rct: iso20022.ReceiptV5{
+		MsgHdr: iso20022.ReceiptMessageHeader{MsgId: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+		RctDtls: []iso20022.ReceiptDetails{{
+			OrgnlMsgId: iso20022.OriginalMessageAndIssuer{
+				MsgId: r.Ref,
+				// The request's message definition, so that a member holding more
+				// than one kind of outstanding request can dispatch this answer
+				// without a table only it has. See iso20022.OriginalMessageAndIssuer.
+				MsgNmId: iso20022.Camt050{}.MessageDefinitionIdentifier(),
+			},
+			ReqHdlg: []iso20022.RequestHandling{handling},
+		}},
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// truncateTo shortens a reason to fit an element's maximum length, marking that
+// it was shortened.
+//
+// The ellipsis is inside the limit rather than added to it, which is the whole
+// reason this is a function: the obvious version returns limit+1 characters and
+// produces exactly the invalid document it was written to prevent.
+//
+// It cuts on a RUNE boundary. Max140Text counts characters and Go slices bytes,
+// so cutting at 140 bytes through a multi-byte rune would emit invalid UTF-8 —
+// which ledger.ValidateText refuses elsewhere in this repository and which no
+// XML parser will accept.
+func truncateTo(s string, limit int) string {
+	if len([]rune(s)) <= limit {
+		return s
+	}
+	const ellipsis = "…"
+	runes := []rune(s)
+	return string(runes[:limit-len([]rune(ellipsis))]) + ellipsis
+}
+
+// ReadLodgementReceipt reads a received camt.025 as the answer it carries.
+//
+// ONE receipt detail and one handling, and this refuses more rather than reading
+// the first. The schema permits a servicer to acknowledge several requests in one
+// document; this system asks about one lodgement at a time, so a receipt naming
+// two is one it has no rule for — and acting on the first while dropping the
+// second is cycleOf's mistake, which would leave a member believing a lodgement
+// was answered when the answer was about a different one.
+//
+// It reads no amount, because there is none to read. See iso20022.Camt025.
+func ReadLodgementReceipt(doc *iso20022.Camt025) (LodgementReceipt, error) {
+	details := doc.Rct.RctDtls
+	if n := len(details); n != 1 {
+		return LodgementReceipt{}, fmt.Errorf(
+			"payment: this system asks about one lodgement at a time and RctDtls carries %d", n)
+	}
+	d := details[0]
+	if d.OrgnlMsgId.MsgId == "" {
+		return LodgementReceipt{}, fmt.Errorf(
+			"%w: RctDtls/OrgnlMsgId/MsgId; nothing on this receipt says which request it answers",
+			iso20022.ErrMissingElement)
+	}
+	if n := len(d.ReqHdlg); n != 1 {
+		return LodgementReceipt{}, fmt.Errorf(
+			"payment: one request was made and ReqHdlg carries %d outcomes for it", n)
+	}
+	h := d.ReqHdlg[0]
+	if h.StsCd == "" {
+		return LodgementReceipt{}, fmt.Errorf(
+			"%w: RctDtls/ReqHdlg/StsCd; this receipt says a request arrived and not what became of it",
+			iso20022.ErrMissingElement)
+	}
+	return LodgementReceipt{
+		Ref:    d.OrgnlMsgId.MsgId,
+		Status: iso20022.TransactionStatus(h.StsCd),
+		Reason: h.Desc,
 	}, nil
 }

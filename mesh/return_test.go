@@ -1075,12 +1075,19 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 		t.Fatalf("the first refund is %v, want Reversed — this test retries a return whose leg no longer stands", got.Status)
 	}
 
-	// What makes the retry askable: the biller pays cash in over the counter,
-	// which is how a bank's reserves are replenished in this system (see
-	// payment.Deposit). Nothing about the payment changes.
+	// What makes the retry askable: the biller pays cash in over the counter, and
+	// the bank then places that cash on reserve. Two acts since Task 18a, and this
+	// comment used to name one — "which is how a bank's reserves are replenished in
+	// this system (see payment.Deposit)" — which is no longer true of a deposit.
+	//
+	// A deposit reaches the bank's vault and no institution but that bank. What
+	// replenishes a RESERVE is a lodgement, because the reserve account is in the
+	// central bank's book and only the central bank can credit it. Nothing about
+	// the payment changes either way.
 	if err := h.net.Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
 		t.Fatalf("funding the biller's bank so the return can be retried: %v", err)
 	}
+	h.lodge(t, h.creditorPID, "EUR", harnessAmount)
 
 	payerBefore := h.balance(t, h.debtorPID, h.debtorAcct.ID)
 	billerBefore := h.balance(t, h.creditorPID, h.creditorAcct.ID)

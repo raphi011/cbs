@@ -133,6 +133,20 @@ func movedTo(old string) (operator, pattern string) {
 		// On every operator; the disjointness allowlist is what records that.
 		return "clearing-house", old
 
+	case path == "/directory":
+		// It MOVED, rather than staying where the pre-split server had it, and
+		// the move is the whole of Task 18a's directory change.
+		//
+		// The one server answered "who holds this IBAN" by sweeping every bank's
+		// register, which is why the route sat with payments and cycles on the
+		// clearing house. No institution can answer that question any more —
+		// see payment.ResolveIdentifier — so what is left is "is this address
+		// one of MINE", and the only operator that can ask it is a bank. The
+		// clearing house got GET /roster in its place, which is the routing
+		// directory it does own; that route is not in this golden list because
+		// the pre-split server had no such thing.
+		return "bank", old
+
 	default:
 		// Payments, mandates, cycles, settlements, schemes, the directory.
 		return "clearing-house", old
@@ -359,8 +373,7 @@ func settledCycle(t *testing.T, h *Server) string {
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts",
 		`{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}]}`,
 		http.StatusCreated)["id"].(string)
-	doJSON(t, bank(h, a), "POST", "/deposits",
-		`{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, alice, 100000)
 
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, csm(h), "POST", "/payments", `{
@@ -369,7 +382,8 @@ func settledCycle(t *testing.T, h *Server) string {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e",
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -460,7 +474,8 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
 		"endToEndId":"`+e2e+`",
-		"creditorName":"`+to.accountName+`"
+		"creditorName":"`+to.accountName+`",
+		"creditorAgent":"`+bicOf(t, h, to.pid)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	// The payment is Initiated when the 202 is written and the counterparty has
 	// not seen it. Callers of this helper assert on what became of it, so the
@@ -483,7 +498,8 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
 		"endToEndId":"retail-1",
-		"creditorName":"` + b.accountName + `"
+		"creditorName":"` + b.accountName + `",
+		"creditorAgent":"` + bicOf(t, h, b.pid) + `"
 	}`
 
 	got := doJSON(t, bank(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
@@ -528,7 +544,8 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 		"amount":10000,
 		"mandateId":"` + mandate + `",
 		"endToEndId":"collection-1",
-		"debtorName":"` + payerBank.accountName + `"
+		"debtorName":"` + payerBank.accountName + `",
+		"debtorAgent":"` + bicOf(t, h, payerBank.pid) + `"
 	}`
 
 	// The payee's bank submits it, and is the right bank to.

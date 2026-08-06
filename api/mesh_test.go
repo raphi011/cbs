@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -208,14 +209,32 @@ var testMeshConfig = mesh.Config{
 // An IBAN is the seed's own stable name for a customer and is what these tests
 // ask by. It is stable for a reason that will outlast this task: the seed CHOSE
 // it, where an id is whatever the counter had reached.
+//
+// It SWEEPS, and since Task 18a it has to do the sweeping itself: no bank can
+// answer "whose IBAN is this" any more (payment.ResolveIdentifier), so this
+// helper asks each bank about its own register in turn. That is the test harness
+// standing outside the network and looking at all of it, which is a thing a test
+// may do and no institution may — the same standing Task 18e's reconciliation
+// harness is built on.
 func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
 	t.Helper()
-	ref, err := s.network().ResolveIdentifier(context.Background(),
-		deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban})
+	ctx := context.Background()
+	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
+	banks, err := s.network().ListBanks(ctx)
 	if err != nil {
-		t.Fatalf("resolving the seed's %s: %v", iban, err)
+		t.Fatalf("listing the seed's banks: %v", err)
 	}
-	return ref
+	for _, b := range banks {
+		switch ref, err := s.network().ResolveIdentifier(ctx, b.ID, ident); {
+		case err == nil:
+			return ref
+		case errors.Is(err, deposit.ErrIdentifierNotFound):
+		default:
+			t.Fatalf("asking %s about the seed's %s: %v", b.ID, iban, err)
+		}
+	}
+	t.Fatalf("no seeded bank holds %s", iban)
+	return payment.PartyRef{}
 }
 
 // payerRoutes is the bank router of whichever bank holds the seed's Alice — the
@@ -243,16 +262,26 @@ const (
 func validSubmission(t *testing.T, s *Server) string {
 	t.Helper()
 	payer, payee := seededParty(t, s, aliceIBAN), seededParty(t, s, bellaIBAN)
+	// creditorAgent, because since Task 18a the instruction carries the routing
+	// element — see api's initiatePaymentRequest and payment.SubmitPaymentTx.
+	// The fixture reads it off the payee's bank the way a payer reads it off an
+	// invoice; nothing on the submitting path looks it up.
+	payeeBank, err := s.network().GetBank(context.Background(), payee.Participant)
+	if err != nil {
+		t.Fatalf("reading the payee's bank: %v", err)
+	}
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"creditor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"amount":1000,
 		"description":"mesh handoff",
-		"creditorName":"Bella Bruno"
+		"creditorName":"Bella Bruno",
+		"creditorAgent":%q
 	}`,
 		payer.Participant, payer.Account, aliceIBAN,
-		payee.Participant, payee.Account, bellaIBAN)
+		payee.Participant, payee.Account, bellaIBAN,
+		payeeBank.BIC)
 }
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -449,25 +478,34 @@ func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
 	return out
 }
 
-// TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName is the other half of
-// what a founded bank means to this API.
+// TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt is the successor
+// to TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName, and it is a
+// REVERSAL rather than a rename.
 //
-// Funding is the one operation that reaches ACROSS to the settlement agent —
-// cash paid in raises the customer's balance and the bank's reserve in one unit
-// of work — so a bank with no settlement account has nowhere for the second leg
-// to land. It used to name the empty account anyway and come back 404 "account
-// not found", which is the customer's account by any reasonable reading and is
-// the one thing in the request that was fine.
+// That test asserted a 422 on POST /deposits: funding was the one operation that
+// reached across to the settlement agent — cash paid in raised the customer's
+// balance and the bank's reserve in one unit of work — so a bank with no
+// settlement account had nowhere for the second leg to land, and the refusal
+// named membership rather than coming back 404 about the customer's account.
 //
-// 422 and a sentence about membership instead. The state is legitimate and
-// temporary, and what an operator has to do about it is wait, not correct their
-// request.
+// The 422 was right about the code and wrong about banking. A bank's counter has
+// nothing to do with its central bank account: a bank that has founded itself and
+// joined no scheme can open its doors and take money, and it holds that money as
+// vault cash. Task 18a splits the two acts, and the refusal moves to the one it
+// was always true about.
+//
+// So this asserts BOTH halves at once, which is what makes it a reversal and not
+// two tests:
+//
+//   - POST /deposits succeeds, 200, with the customer's balance to show for it.
+//   - POST /lodgements is refused, 422, with a sentence about the reserve account
+//     this bank cannot name.
 //
 // The bank is provably still Founded while this runs: the central bank's door is
 // held, so the acmt.007 cannot be answered and the acknowledgement that fills in
 // the settlement reference cannot arrive. Without the gate this would be a race
 // against three actors, and one that mostly loses.
-func TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName(t *testing.T) {
+func TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt(t *testing.T) {
 	srv, msh := newAPIHarness(t)
 	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
 	defer open()
@@ -478,23 +516,47 @@ func TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName(t *testing.T) {
 		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
 	}
 
-	// A customer account it CAN open, and money it cannot take in.
+	// A customer account it can open, and money it CAN now take in.
 	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`"}`, http.StatusCreated)["id"].(string)
-	rec := do(t, bank(srv, pid), "POST", "/deposits",
-		`{"account":"`+acct+`","amount":1000,"description":"opening"}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("funding a founded bank = %d, want 422 (body: %s)", rec.Code, rec.Body)
-	}
-	if msg := rec.Body.String(); !strings.Contains(msg, "not yet admitted") {
-		t.Errorf("the refusal does not say the bank is not admitted yet: %s", msg)
+	bal := doJSON(t, bank(srv, pid), "POST", "/deposits",
+		`{"account":"`+acct+`","amount":1000,"description":"opening"}`, http.StatusOK)
+	if got := int64(bal["book"].(float64)); got != 1000 {
+		t.Errorf("the depositor's balance is %d, want 1000; a founded bank can take cash", got)
 	}
 
-	// Once the scheme has answered, the same request goes through.
+	// And the cash it cannot place on reserve, because there is no reserve
+	// account to place it in.
+	rec := do(t, bank(srv, pid), "POST", "/lodgements", `{"asset":"EUR","amount":1000}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("lodging at a founded bank = %d, want 422 (body: %s)", rec.Code, rec.Body)
+	}
+	if msg := rec.Body.String(); !strings.Contains(msg, "holds no reserve account") {
+		t.Errorf("the refusal does not say the bank has no reserve account to lodge into: %s", msg)
+	}
+
+	// Once the scheme has answered, the lodgement goes through — 202, because the
+	// reserve credit is the central bank's to make and is still on the wire.
 	open()
 	drainServer(t, srv)
-	doJSON(t, bank(srv, pid), "POST", "/deposits",
-		`{"account":"`+acct+`","amount":1000,"description":"opening"}`, http.StatusOK)
+	out := doJSON(t, bank(srv, pid), "POST", "/lodgements", `{"asset":"EUR","amount":1000}`, http.StatusAccepted)
+	if out["ref"].(string) == "" {
+		t.Error("the accepted lodgement carries no reference, so nothing correlates its receipt")
+	}
+	if got := out["agent"].(string); got != string(testMeshConfig.CentralBankBIC) {
+		t.Errorf("the lodgement names %q as the agent, want the central bank %q", got, testMeshConfig.CentralBankBIC)
+	}
+
+	// The reserve is real once the conversation has finished, which is what says
+	// the central bank posted its own half rather than merely answering.
+	drainServer(t, srv)
+	rows := reserveRows(t, srv, pid)
+	if len(rows) != 1 {
+		t.Fatalf("a member's reserves = %v, want one row", rows)
+	}
+	if got := int64(rows[0]["reserve"].(float64)); got != 1000 {
+		t.Errorf("the reserve after the lodgement is %d, want 1000", got)
+	}
 }
 
 // TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection is what a founded
@@ -535,12 +597,16 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 			ref.Participant, ref.Account, iban)
 	}
 	nora := payment.PartyRef{Participant: payment.ParticipantID(pid), Account: deposit.AccountID(acct)}
+	aliceBank, err := srv.network().GetBank(context.Background(), alice.Participant)
+	if err != nil {
+		t.Fatalf("reading the seeded payer's bank: %v", err)
+	}
 	toBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-		`"description":"to a bank no scheme has admitted","creditorName":"Nora"}`,
-		party(alice, aliceIBAN), party(nora, zIBAN))
+		`"description":"to a bank no scheme has admitted","creditorName":"Nora","creditorAgent":%q}`,
+		party(alice, aliceIBAN), party(nora, zIBAN), "BNKZDEFFXXX")
 	fromBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
-		`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson"}`,
-		party(nora, zIBAN), party(alice, aliceIBAN))
+		`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson","creditorAgent":%q}`,
+		party(nora, zIBAN), party(alice, aliceIBAN), aliceBank.BIC)
 
 	directions := []struct {
 		name  string
@@ -697,7 +763,8 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
 		"amount":25000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["paymentId"].(string)
 	drainServer(t, h)
 	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {

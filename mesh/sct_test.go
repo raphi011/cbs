@@ -578,8 +578,8 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 				Creditor:        otherRef,
 				Amount:          harnessAmount,
 				Description:     "one bank, both customers",
-				CreditorDetails: payment.PartyDetails{Name: other.Name},
-				DebtorDetails:   payment.PartyDetails{Name: h.debtorAcct.Name},
+				CreditorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: other.Name},
+				DebtorDetails:   payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 			})
 			if !errors.Is(err, ErrOnUsPayment) {
 				t.Fatalf("Submit = %v, want it refused as an on-us payment", err)

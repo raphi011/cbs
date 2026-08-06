@@ -811,7 +811,7 @@ A payment records the address it was reached by whether or not the caller quoted
 
 **An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides — \`deposit.Identifier.MatchValue\`, which the store re-implements in SQL and \`storetest\` pins the two against each other, because the compiler cannot. Without it a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
 
-**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it: a constraint would fire on the race this read-then-write leaves open, which the register does not, and would fire as a constraint violation rather than as the domain's own refusal. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every bank at read time — every bank the network has founded, not only the scheme's members — and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
+**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it: a constraint would fire on the race this read-then-write leaves open, which the register does not, and would fire as a constraint violation rather than as the domain's own refusal. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**, and it now does so within one bank only. It used to sweep every bank at read time — every bank the network had founded, not only the scheme's members — catching a within-bank duplicate *and* a collision across two banks. The sweep is gone: the lookup answers out of the **asking bank's own register**, because a bank that keeps its own database cannot read another's, and no real bank holds a register of another's customers. So it still answers \`ErrIdentifierAmbiguous\` rather than guessing when two of that bank's *own* accounts claim one address, and a cross-bank collision is now simply **invisible** — two customers at two banks may hold one address with nothing in the system able to notice. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
   },
   "counterparty-details": {
     title: "Counterparty details",
@@ -821,7 +821,7 @@ A payment records the address it was reached by whether or not the caller quoted
 
 \`SubmitPaymentTx\` — the SUBMITTING bank, before either leg posts — refuses an unnamed counterparty outright (\`ErrCounterpartyNotNamed\`). The RECEIVING bank's half, \`AcceptInboundTx\`, runs no check on either field at all. For its own side — the creditor's account on a push, the debtor's on a pull — it does read that account (\`creditorSideTx\`/\`debtorSideTx\`) and could in principle compare the name it finds there against what the other bank asserted, but it does not: overwriting \`CreditorDetails\`/\`DebtorDetails\` there would desynchronise the stored payment from the message that already went out on the wire. That is a deliberate restraint, not an inability.
 
-None of this says no lookup for the far side's name exists anywhere in the system — a separate, pre-submission one does: \`GET /directory\` resolves an IBAN across the network and does read the resolved account's name off the payee's own bank's register. What it says is narrower, and about the payment itself: nothing that ends up stored as \`PartyDetails\` is ever the product of one bank reading another's register. That used to be false — \`payment.partyTx\` fetched the far side's name out of the *other* bank's deposit register on the happy path of every submission, a bank reading a book that was never its own — and closing it is exactly what makes building an outbound message today read nothing across the boundary it crosses: the name travels on the instruction because there is nowhere else a payment may take it from.`,
+This paragraph used to soften the claim: no lookup for the far side's name existed *in a payment*, but a separate pre-submission one did — \`GET /directory\` resolved an IBAN across the network and read the name off the payee's own bank's register. **That exception is gone.** The lookup answers out of one bank's own register, so nothing in this system resolves an address across banks and there is no cross-bank name to reach a payment even in principle. What was the narrower claim is now the whole of it: nothing that ends up stored as \`PartyDetails\` is ever the product of one bank reading another's register. That used to be false — \`payment.partyTx\` fetched the far side's name out of the *other* bank's deposit register on the happy path of every submission, a bank reading a book that was never its own — and closing it is exactly what makes building an outbound message today read nothing across the boundary it crosses: the name travels on the instruction because there is nowhere else a payment may take it from.`,
   },
   "audit-trail": {
     title: "Audit trail",
@@ -1098,25 +1098,78 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
+    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], [[vault-cash|vault cash]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
 \`\`\`
 Bank A
 ├── EUR: suspense, reserve, unclaimed,
-│        returns receivable, settlement
+│        returns receivable, vault cash,
+│        settlement
 └── USD: suspense, reserve, unclaimed,
-         returns receivable, settlement
+         returns receivable, vault cash,
+         settlement
 \`\`\`
 
-They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
+They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and vault cash joined it when taking cash in stopped being the same act as putting it on reserve. One column there is one account per asset automatically.
 
 All but one of them are created in the bank's own book when it is [[bank-founding|founded]]. The settlement account is the exception: the central bank opens that one, in its own book, when it answers the bank's application — so on a founded bank the column is empty.
 
 [[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.
 
 There is deliberately **no fallback** to a default asset. Defaulting to euro would settle a dollar cycle in the wrong money, quietly, in the one place in the system where money becomes final.`,
+  },
+  "vault-cash": {
+    title: "Vault cash is the bank's own money",
+    body: `**Vault cash** is the notes in the drawer: an [[account-type-asset|asset]], in the bank's own book, and the only account on a bank's chart that is **nobody else's promise**.
+
+Compare it with the others and the point is immediate:
+
+\`\`\`
+Reserve at Central Bank  a claim ON the central bank
+Returns Receivable       a claim ON a biller
+Clearing Suspense        money OWED to a counterparty's customer
+Unclaimed Balances       money OWED to someone unidentified
+Vault Cash               money. Held.
+\`\`\`
+
+**It is where cash paid in over the counter lands.** A customer hands over €100; the bank's vault cash rises by €100 and what it [[account-type-liability|owes]] that customer rises by €100. One institution, one pair of entries, one book — and nobody else has to agree, which is why taking a deposit sends no message anywhere.
+
+\`\`\`
+Debit  Vault Cash (EUR)      100  (Asset ↑)
+Credit Alice's deposit (EUR) 100  (Liability ↑)
+\`\`\`
+
+Every [[bank-founding|founded]] bank has one, per asset, from the moment it is founded — **before** any scheme has heard of it and whether or not one ever does. That is what makes "a founded bank can take money in" true.
+
+**A bank cannot settle out of it.** Interbank obligations are discharged in [[central-bank-reserves|central-bank money]], not in the bank's own cash, so a bank that takes deposits and never [[lodgement|lodges]] accumulates vault cash it cannot pay anyone with. So the balance here is a real figure and not a way-station: it is **how much of what this bank's customers paid in has not been placed on reserve**.
+
+This account did not exist until the stores were split. A deposit used to debit the [[reserve-account|reserve]] directly and post the matching credit in the central bank's own ledger — one bank writing in another institution's book, which is the thing that cannot survive each entity owning its own database.`,
+  },
+  "lodgement": {
+    title: "A lodgement is a conversation; a deposit is not",
+    body: `A **lodgement** is a bank swapping [[vault-cash|vault cash]] for a claim on its central bank. It is how [[central-bank-reserves|reserves]] — which start at zero — actually come to exist.
+
+**The contrast with a deposit is the whole idea.** A customer paying cash in is *one* institution's act: the bank takes the notes and writes two lines in its own book. Nobody else's book moves, nobody has to agree, and there is nothing to tell anyone.
+
+Moving that cash onto reserve is a **different act between two institutions**. The bank cannot write in the central bank's book, so it cannot credit its own reserve account — only the account servicer can. And the way one institution asks another to post is a **message**:
+
+\`\`\`
+bank  --camt.050-->  central bank      "credit my reserve, here is the cash"
+bank  <--camt.025--  central bank      "done" (or "no")
+
+bank's book:          Debit Reserve at Central Bank / Credit Vault Cash
+central bank's book:  Debit Settlement Assets       / Credit Reserve: <bank>
+\`\`\`
+
+**Two books, two [[unit-of-work|units of work]], one message each way.** That is not machinery added for realism — it is the only shape available once each institution keeps its own books. A single transaction spanning both would be the very thing the split exists to remove.
+
+The bank posts its own leg **before** it sends, and the reason is the message rather than the money: a \`camt.025\` carries no amount, so a bank cannot work out what to post from the answer. Between the send and the receipt its reserve mirror says more than the central bank's book does — the same [[unreconciled-position|unreconciled position]] a cut-off opens.
+
+A bank with no [[settlement-account|reserve account]] to lodge into is refused, which is the check that used to sit — wrongly — on taking a deposit. See [[bank-founding]].
+
+\`camt.050\` is closer to the real thing than most of this system's messages: it is exactly what a TARGET2 or CLM participant sends to move liquidity onto its RTGS account.`,
   },
   "bank-founding": {
     title: "Founded, and not yet a member",
@@ -1128,16 +1181,21 @@ Its own book is unrestricted — it opens customer accounts, publishes products,
 Founded
   book, chart of accounts, product
   opens customer accounts
-  CANNOT fund one          → 422
+  TAKES CASH IN            → held as [[vault-cash|vault cash]]
+  CANNOT lodge it          → 422
   CANNOT pay or be paid    → 422
 
 Member — the above, plus
   a settlement account at the central bank
   a row in the routing directory
-  can be funded, can settle
+  can lodge, can settle
 \`\`\`
 
-**Funding is the one people guess wrong.** Cash paid in raises the bank's reserve at the central bank in the same [[unit-of-work|unit of work]], and there is no reserve to raise until a settlement agent has opened one. The API answers \`422\` naming the *membership*, not the account.
+**Taking money in is the one people guess wrong, and this note used to guess it wrong too.** It said a founded bank *cannot* be funded — that cash paid in raises the bank's reserve in the same [[unit-of-work|unit of work]], so there is no reserve to raise until a settlement agent has opened one, and the API answers \`422\` naming the membership.
+
+That was an accurate description of the code and a false statement about banking. **A bank's counter has nothing to do with its central bank account.** A bank that has founded itself and joined no scheme can open its doors and take deposits; it simply holds what it takes as [[vault-cash|vault cash]], which is its own money in its own hands.
+
+What a founded bank cannot do is turn that cash into reserves. That is a [[lodgement]] — a request to the central bank, because only the central bank can credit an account in the central bank's book — and it is refused with \`422\` for a bank that has no reserve account to lodge into. The refusal did not disappear; it **moved to the act it was always true about**.
 
 **Paying is a refusal, not an inability.** For a while it was only an intention — an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit, and the network's [[account-addressing|address lookup]] resolves a founded bank's addresses like anyone else's, so such a bank could both pay and be paid. What that cost is why it is now refused of BOTH parties, at the mesh's door and again at the clearing house: the cut-off cannot name a non-member in the settlement instruction, so one such payment stopped the **whole cycle**, with every other member's payments in it.
 
@@ -1158,7 +1216,7 @@ The central bank's row
 The bank's own row
   BankAccounts.Settlement
   the number it was told, quoted
-  whenever it funds a reserve
+  whenever it [[lodgement|lodges]] cash
 \`\`\`
 
 One account **per asset**, because a reserve in euro says nothing about a reserve in dollars. That is also why a bank joining in two assets applies twice: the account-opening request carries one currency, so it asks once per asset and is answered once per asset.

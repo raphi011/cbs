@@ -444,12 +444,40 @@ var (
 	// instruction exists — see PartyDetails — but its answer is never wired into
 	// the payment.)
 	//
-	// The counterparty's AGENT is not part of this refusal, and used to be. It is
-	// derived from the roster rather than asserted — see PartyDetails.Agent — so
-	// there is nothing for a caller to omit, and a name-only guard is the whole
-	// of what "the instruction does not name the counterparty" can now mean. A
-	// counterparty at a participant that does not exist is ErrParticipantNotFound
-	// instead, which is the accurate statement: the instruction named a bank,
-	// and no such bank is a member.
+	// The counterparty's AGENT has its own sentinel below and has moved between
+	// the two twice. It was part of this refusal; Task 14 derived it, so there
+	// was nothing left for a caller to omit; Task 18a made it asserted again,
+	// because the row it was derived from is the counterparty's own and a bank
+	// holds only its own. Two sentinels rather than one because the two omissions
+	// have different remedies — a payer who left the name out types a name, and a
+	// payer who left the BIC out has to go and find one.
 	ErrCounterpartyNotNamed = errors.New("payment: the instruction does not name the counterparty")
+
+	// ErrCounterpartyAgentNotNamed is a submission that did not say which BANK
+	// the other side is at, or said it in something that is not a BIC.
+	//
+	// ONE sentinel for both, because the remedy is the same and the distinction
+	// is not one a caller can act on differently: an instruction that carries no
+	// routing element and one that carries an unusable one are equally
+	// unsendable, and the message names which it was.
+	//
+	// It is the routing element, and this system has nowhere to get it from: the
+	// counterparty's own row is the counterparty's, the roster is keyed by the
+	// BIC being asked for and belongs to the clearing house, and there is no
+	// IBAN-to-BIC directory service here. SEPA is IBAN-only because every bank
+	// subscribes to one; without it an address is an IBAN and a BIC, as SEPA's
+	// was before 2016 and a cross-border transfer's still is.
+	//
+	// Refused at SUBMISSION rather than at message-building, even though the
+	// missing element is the message's, because a submission that committed the
+	// payer's debit and then failed to render an instruction is the money bug
+	// SubmitAndInstruct exists to prevent — see its doc for the shape.
+	//
+	// What this refusal does NOT claim is that the BIC is right. Nothing here can
+	// check it: the whole point of the split is that this bank cannot read the
+	// counterparty's register, so a wrong-but-well-formed BIC is delivered to the
+	// bank it names and refused THERE, with AC01, by a bank that does not hold
+	// the address. See SubmitPaymentTx and
+	// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+	ErrCounterpartyAgentNotNamed = errors.New("payment: the instruction does not name a usable BIC for the counterparty's bank")
 )

@@ -76,8 +76,8 @@
 // The rest follow the ISO schema alone. testdata/README.md already records why
 // for pacs.009 — the EPC governs SEPA Credit Transfer and SEPA Direct Debit
 // between PSPs and their customers, not a clearing house's settlement
-// instruction to a central bank — and the same holds for camt.053 and for the
-// three acmt messages: no Implementation Guideline was consulted for any of
+// instruction to a central bank — and the same holds for the three camt messages
+// and the three acmt ones: no Implementation Guideline was consulted for any of
 // them, and their shapes come from the XSD and from nothing else. That is a
 // statement about what was read, not a claim that the EPC is silent, and the
 // distinction is the same one the outstanding debt above is recorded for.
@@ -133,6 +133,16 @@
 //     The central bank sends one to each member after a cut-off, for that
 //     member's reserve account. It is sub-project 8's, and it is the message
 //     that reverses the first ruling below.
+//   - camt.050.001.05 LqdtyCdtTrf — a liquidity credit transfer: a member bank
+//     asking its central bank to move cash onto the bank's own reserve account.
+//     It is the lodgement, and it is the message that makes funding a reserve a
+//     conversation between two institutions instead of one bank writing in
+//     another's book. See Camt050 on why a lodgement is a conversation and a
+//     deposit is not.
+//   - camt.025.001.05 Rct — the receipt, and the same conversation coming back:
+//     the central bank saying it credited the reserve, or saying it would not.
+//     It carries no amount, which is what decides where the member's own leg is
+//     posted; see Camt025.
 //   - acmt.007.001.03 AcctOpngReq — an account-opening request: a bank asking a
 //     settlement agent for the settlement account its admission depends on.
 //   - acmt.010.001.03 AcctReqAck — the agent's acknowledgement, naming the
@@ -164,10 +174,22 @@
 // about a movement on an account it does not hold, because every actor could
 // read every book. Sub-project 8 creates the first institution that cannot — a
 // member bank whose reserve at the central bank moves in the CENTRAL BANK's
-// book — so the movement has to arrive as a message or not at all. camt.053 is
-// carried; the rest of the family is not, and camt.054 is refused on the
-// specific ground that a notification carries no balance and therefore cannot
-// detect a wrong posting. See Camt053.
+// book — so the movement has to arrive as a message or not at all. See Camt053.
+//
+// Three of the family are carried now rather than one, and the second and third
+// came for a reason the first had already established rather than a new one.
+// camt.053 is how a member is TOLD what its reserve account did after a cut-off;
+// camt.050 and camt.025 are how a member ASKS for a movement on that account and
+// is answered, which is the same wall met from the other side — a bank that may
+// not read the central bank's book may not write in it either, so a lodgement
+// has to be a request. See Camt050.
+//
+// The rest of the family is still absent, and two refusals are specific rather
+// than residual. camt.054 is refused because a notification carries entries and
+// no balance, so it can drive a posting and never detect a wrong one. camt.051
+// pulls liquidity back the other way, and this system lodges cash and never
+// withdraws it — the reason UseCase gives for the rest of acmt, applied to a
+// second family.
 //
 // # A reversed ruling: "the SEPA interbank messages"
 //

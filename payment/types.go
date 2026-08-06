@@ -229,11 +229,14 @@ func (r PartyRef) SameParty(o PartyRef) bool {
 // BANK'S BOOK on the happy path of every submission, measured by the recorder in
 // mesh/books_test.go and recorded there at length. A real payer's bank knows the
 // payee's name because the payer typed it in, not because building the
-// instruction went and found it, so the name travels on the instruction. That
-// is a claim about the payment and not about the whole system: GET /directory
-// still resolves an address across the network and does read the resolved
-// account's name off its own bank's register. What no longer happens is that
-// answer reaching a payment — what is stored is what was typed.
+// instruction went and found it, so the name travels on the instruction.
+//
+// This used to add that it was a claim about the payment and not about the whole
+// system, because GET /directory "still resolves an address across the network"
+// and reads the resolved account's name. That exception is gone as of Task 18a:
+// the lookup answers out of ONE bank's own register, so nothing in this system
+// resolves an address across banks and there is no cross-bank name to reach a
+// payment even in principle. The claim is now about the whole system.
 //
 // Storing it is therefore not a cache. There is nothing to fall back to.
 type PartyDetails struct {

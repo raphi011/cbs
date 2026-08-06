@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -1324,6 +1325,15 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// flips with the scheme's direction, and on-us is precisely the case where
 	// both answers are the same institution; a guard that read the submitter
 	// would be comparing a bank with itself.
+	//
+	// The two participants are compared where an instruction names both, and the
+	// counterparty's ADDRESS is compared against the submitter's own further
+	// down — see the BIC check after the actor lookup. Two guards for one rule,
+	// and the reason is that they cover different instructions rather than the
+	// same one twice: since Task 18a a payer's bank cannot know the payee's
+	// internal participant id (payment.ResolveIdentifier), so an ordinary
+	// instruction from a customer names one side and this comparison cannot
+	// fire. What every instruction does name is the counterparty's BIC.
 	if req.Debtor.Participant != "" && req.Debtor.Participant == req.Creditor.Participant {
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
 			req.Debtor.Participant, ErrOnUsPayment)
@@ -1391,6 +1401,47 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		// would sit Initiated for ever.
 		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", submitter)
 	}
+	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction
+	// a customer actually hands in.
+	//
+	// It RESOLVES rather than comparing BICs, and the difference is the whole
+	// reason this arm is here. Since Task 18a the counterparty's BIC is the
+	// PAYER'S ASSERTION (payment.SubmitPaymentTx says why nothing derives it any
+	// more), so "the asserted agent is this bank" is not a statement about where
+	// the payee banks — it is a statement about what somebody typed, and a payer
+	// who types their own bank's BIC for a payee at another bank would be told
+	// their instruction is a book transfer, which it is not. What IS a fact this
+	// bank holds is whether the address resolves in its own register.
+	//
+	// The participant comparison further up covers the instructions this cannot:
+	// a caller that names both internal ids — the seed, and this package's
+	// fixtures — has already said the answer, and the two guards cover different
+	// instructions rather than the same one twice.
+	//
+	// It reads this bank's OWN register and no other, which is what makes it a
+	// question this institution may ask at all. Marked as this bank's work so the
+	// recorder attributes it here rather than to nobody.
+	//
+	// It cannot be asked before the actor lookup, because that lookup is what
+	// says which bank is submitting. It is still before b.submit, which is the
+	// ordering the paragraph above requires: Submit is synchronous, so a guard
+	// any later would have to unwind a committed debtor leg.
+	counterparty := req.Creditor
+	if scheme.Direction() == payment.Pull {
+		counterparty = req.Debtor
+	}
+	if counterparty.Identifier != (deposit.Identifier{}) {
+		switch _, err := m.net.ResolveIdentifier(withActor(ctx, b.bic), submitter, counterparty.Identifier); {
+		case err == nil:
+			return payment.Payment{}, fmt.Errorf("mesh: %s holds both the payer's account and the payee's for this instruction: %w",
+				b.bic, ErrOnUsPayment)
+		case errors.Is(err, deposit.ErrIdentifierNotFound):
+			// The ordinary case: the payee is somebody else's customer, which is
+			// the only thing this bank can conclude and the only thing it needs to.
+		default:
+			return payment.Payment{}, err
+		}
+	}
 	return b.submit(ctx, req)
 }
 
@@ -1401,7 +1452,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // committed before anything is sent. What it does NOT answer is whether the
 // scheme accepted — that arrives later, at two other actors, as a message. The
 // bank it returns is Founded, which is a working bank that can open customer
-// accounts and cannot fund one. See "A founded bank can neither pay nor be paid
+// accounts and take cash in, and cannot lodge it. See "A founded bank can neither pay nor be paid
 // is a REFUSAL now" in doc.go for where that is enforced, and why not here.
 //
 // # The address is reserved first, and that is the orphan defect's fix
@@ -1803,6 +1854,46 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 		return fmt.Errorf("mesh: no bank actor for participant %s", returner)
 	}
 	return b.returnPayment(ctx, id, reason, text)
+}
+
+// Lodge is a member bank moving its own vault cash onto reserve at the central
+// bank.
+//
+// It is the door for the third conversation in this mesh, beside Submit and
+// Admit, and its synchronous half is theirs: the bank's own posting runs on the
+// caller's goroutine and the answer comes back as a message. What comes back from
+// this call is therefore the INSTRUCTION that was sent, not a confirmation — the
+// camt.025 arrives at bank.receiveLodgementReceipt after a Drain, exactly as an
+// admission's acknowledgement does.
+//
+// # Why the caller names the participant and the asset
+//
+// A lodgement is one institution's decision about its own liquidity, so there is
+// no routing question to answer and no scheme to consult: the acting bank IS the
+// subject. That is the whole difference from Submit, which has to work out which
+// of two banks submits before it can pick an actor.
+//
+// The ASSET is named because a bank operating in two of them holds two reserve
+// accounts and two vaults, and nothing about "move cash onto reserve" says which.
+// There is no default and deliberately not the euro one joiningAssets applies: a
+// bank that founded itself in dollars would have a euro lodgement invented for it.
+//
+// # The actor lookup refuses for Submit's reason
+//
+// A bank this mesh has no actor for could send nothing and be answered by nobody,
+// so its lodgement would post a leg against a message that never left. Refused
+// before the bank's half runs, which is the ordering every door in this file
+// keeps.
+func (m *Mesh) Lodge(ctx context.Context, id payment.ParticipantID, asset ledger.AssetCode,
+	amount ledger.Amount) (payment.LodgementInstruction, error) {
+
+	m.mu.Lock()
+	b, ok := m.banks[id]
+	m.mu.Unlock()
+	if !ok {
+		return payment.LodgementInstruction{}, fmt.Errorf("mesh: no bank actor for participant %s", id)
+	}
+	return b.lodge(ctx, asset, amount)
 }
 
 // submitterOf is the party whose bank hands a payment to the clearing house.

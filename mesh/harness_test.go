@@ -325,21 +325,38 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	}
 	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit, debtorIBAN)
 	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0, creditorIBAN)
+	// Funding is TWO acts since Task 18a, and the fixture has to run both.
+	//
+	// A deposit gives the customer a balance and leaves the bank holding vault
+	// cash; it no longer raises the bank's reserve, because a bank cannot write in
+	// the central bank's book. So every fixture that wants a settleable payment
+	// also lodges, which is a real camt.050/camt.025 round trip through the mesh.
+	//
+	// Both are behind the SAME option, and that is deliberate rather than lazy.
+	// fundTheDebtor has always meant "this bank can pay", and it still means
+	// exactly that; splitting it into two options would let a fixture ask for a
+	// bank with a funded customer and no reserve, which is a state no test in this
+	// package wants and which would fail at settlement in a way that named neither
+	// option. A test that wants that state can lodge for itself — see
+	// TestABankCannotSettleOutOfVaultCash, which is the one that does.
 	if opts.fundTheDebtor {
 		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
+		h.lodge(t, h.debtor.ID, "EUR", harnessFunding)
 	}
 	if opts.twoAssets {
 		h.debtorUSDAcct = h.openCustomer(t, h.debtor, "Alice", "USD", 0, debtorUSDIBAN)
 		h.creditorUSDAcct = h.openCustomer(t, h.creditor, "Bruno", "USD", 0, creditorUSDIBAN)
-		// Funded on the same terms as the euro side, and separately, because a
-		// deposit raises the reserve in the funded account's OWN asset. A dollar
-		// cycle settles across dollar reserves and a euro balance is no use to
-		// it.
+		// Funded and lodged on the same terms as the euro side, and separately in
+		// both halves, because each is per asset: a deposit lands in the funded
+		// account's OWN vault, and a lodgement moves one asset's vault onto that
+		// asset's reserve. A dollar cycle settles across dollar reserves and a euro
+		// balance is no use to it.
 		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit USD: %v", err)
 		}
+		h.lodge(t, h.debtor.ID, "USD", harnessFunding)
 	}
 
 	h.debtorBIC, h.creditorBIC = h.debtor.BIC, h.creditor.BIC
@@ -576,11 +593,11 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Amount:      harnessAmount,
 		Description: "invoice 42",
 		// Push: the creditor is the counterparty, so the request must name it —
-		// the NAME, and only the name. No Agent: the counterparty's BIC is derived
-		// from the roster by SubmitPaymentTx and anything set here is discarded.
-		// TestAWrongCounterpartyAgentDoesNotMisroute sets one on purpose, which is
-		// the only place in this package that should.
-		CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
+		// the NAME and the BIC. Since Task 18a nothing derives the second: the row
+		// it was derived from is the counterparty's own, and a bank holds only its
+		// own. TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG
+		// one on purpose, which is the only place in this package that should.
+		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 	}
 }
 
@@ -622,8 +639,8 @@ func (h *meshHarness) directDebitRequest(t *testing.T) payment.InitiatePaymentRe
 		MandateID:   h.mandate.ID,
 		Description: "subscription 7",
 		// Pull: the debtor is the counterparty, so the request must name it. See
-		// creditTransferRequest on why there is no Agent beside the name.
-		DebtorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
+		// creditTransferRequest on why the BIC sits beside the name.
+		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	}
 }
 
@@ -683,7 +700,7 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 		Description: "invoice 43",
 		// Push: the creditor is the counterparty, so the request must name it. See
 		// creditTransferRequest on why there is no Agent beside the name.
-		CreditorDetails: payment.PartyDetails{Name: h.creditorUSDAcct.Name},
+		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("Submit in USD: %v", err)
@@ -833,7 +850,7 @@ func (h *meshHarness) spendTheCredit(t *testing.T) {
 		Creditor:        h.debtorRef(),
 		Amount:          harnessAmount,
 		Description:     "spending what arrived",
-		CreditorDetails: payment.PartyDetails{Name: h.debtorAcct.Name},
+		CreditorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 	})
 	if err != nil {
 		t.Fatalf("the payee could not spend the credit: %v", err)
@@ -1003,6 +1020,77 @@ func (h *meshHarness) suspense(t *testing.T, id payment.ParticipantID) ledger.Am
 		t.Fatalf("AccountsFor EUR: %v", err)
 	}
 	bal, err := p.Ledger.BookBalance(ctx, accts.Suspense)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	return bal
+}
+
+// lodge puts one bank's vault cash on reserve through the mesh's own door, and
+// drains so that the central bank has posted its half before the caller goes on.
+//
+// It goes through the MESH rather than through payment.Network.LodgeReserves,
+// because the domain call posts only the BANK's leg and hands back a camt.050
+// nobody sends — which is half a lodgement, and would leave every fixture with a
+// reserve mirror the central bank's book had never heard of. Settlement reads the
+// central bank's row, so a fixture built that way would fail at the cut-off with
+// nothing to say why.
+//
+// Draining here is what makes the reserve real before the test starts. The fixture
+// forgets its own messages afterwards (see newHarness), so the round trip does not
+// show up in a test that counts what it provoked.
+func (h *meshHarness) lodge(t *testing.T, id payment.ParticipantID, asset ledger.AssetCode, amount ledger.Amount) {
+	t.Helper()
+	if _, err := h.mesh.Lodge(context.Background(), id, asset, amount); err != nil {
+		t.Fatalf("Lodge %s %s: %v", id, asset, err)
+	}
+	h.drain(t)
+}
+
+// vaultCash is one bank's euro vault balance: the cash it is holding and has not
+// placed on reserve.
+//
+// It exists for the deposit and lodgement measurements, which are the two acts
+// that move it in opposite directions — cash in raises it, a lodgement lowers it
+// — and both need a balance rather than a book set, because a book set cannot
+// tell a posting from a read.
+func (h *meshHarness) vaultCash(t *testing.T, id payment.ParticipantID) ledger.Amount {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetBank(ctx, id)
+	if err != nil {
+		t.Fatalf("GetBank %s: %v", id, err)
+	}
+	accts, err := p.AccountsFor("EUR")
+	if err != nil {
+		t.Fatalf("AccountsFor EUR: %v", err)
+	}
+	bal, err := p.Ledger.BookBalance(ctx, accts.VaultCash)
+	if err != nil {
+		t.Fatalf("BookBalance: %v", err)
+	}
+	return bal
+}
+
+// reserveMirror is one bank's own Reserve at Central Bank balance: what its own
+// book says its claim on the central bank is.
+//
+// It is NOT the central bank's record of the same account — that is
+// ReserveBalance, read from the settlement agent's book — and the whole point of
+// having both is that they can disagree. See payment.BankAccounts on the
+// unreconciled interval.
+func (h *meshHarness) reserveMirror(t *testing.T, id payment.ParticipantID) ledger.Amount {
+	t.Helper()
+	ctx := context.Background()
+	p, err := h.net.GetBank(ctx, id)
+	if err != nil {
+		t.Fatalf("GetBank %s: %v", id, err)
+	}
+	accts, err := p.AccountsFor("EUR")
+	if err != nil {
+		t.Fatalf("AccountsFor EUR: %v", err)
+	}
+	bal, err := p.Ledger.BookBalance(ctx, accts.Reserve)
 	if err != nil {
 		t.Fatalf("BookBalance: %v", err)
 	}

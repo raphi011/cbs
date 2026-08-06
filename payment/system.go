@@ -486,6 +486,72 @@ type AdmissionAcknowledgement struct {
 	Ref      string
 }
 
+// LodgementInstruction is a member bank asking its central bank to move cash
+// onto the bank's own reserve account.
+//
+// It is the input to the receiving half and the output of the asking half, which
+// is the shape AdmissionRequest has and for the same reason: the settlement agent
+// holds no roster, has never heard of this system's bank ids, and can act only on
+// what the message told it. Everything here comes off a camt.050.
+//
+// # Why the account and the BIC are both on it
+//
+// Account is the reserve account to credit, quoted by the bank that holds it —
+// the number it learned from its admission acknowledgement, the way an account
+// holder knows its own IBAN. BIC is the member asking. They are not redundant:
+// the account is what the central bank POSTS to and the BIC is what it checks
+// that account against, so a lodgement quoting another member's account number
+// is refused rather than executed. See ReceiveLodgementTx.
+//
+// Agent is the central bank being asked, and it is here so that the receiving
+// half can refuse a message addressed to a different servicer — the same check
+// ReadLodgement makes against the header. A system with one central bank does not
+// need it to route; it needs it to be able to say no.
+//
+// Ref is the request's own message identifier, and it is what the receipt quotes
+// back. A camt.025 carries no amount and no account, so this is the whole of the
+// correlation between the two halves; see Camt025.
+//
+// It is a plain struct and not a message. ReadLodgement builds one from a
+// camt.050 and LodgementMessage renders one, both in translate.go, because the
+// acts below know nothing about the wire.
+type LodgementInstruction struct {
+	BIC     iso20022.BIC
+	Agent   iso20022.BIC
+	Account ledger.AccountID
+	Asset   ledger.AssetCode
+	Amount  ledger.Amount
+	Ref     string
+}
+
+// LodgementReceipt is the central bank's answer to a LodgementInstruction: it
+// credited the reserve, or it would not.
+//
+// Status is one of two iso20022.TransactionStatus values and Reason is prose. The
+// prose is the family's doing rather than this system's — camt.025's StsCd is a
+// code set nothing here can check and its Desc is Max140Text — which is why
+// payment's reasonTable gives the lodgement's refusals the empty code, exactly as
+// it does the admission's. See RequestHandling.
+//
+// It carries NO amount and no account, because the message does not. That is not
+// a narrowing: it is what forces the asking bank to post its own leg BEFORE it
+// sends, since a receipt cannot tell it what to post. See LodgeReservesTx.
+type LodgementReceipt struct {
+	Ref    string
+	Status iso20022.TransactionStatus
+	Reason string
+}
+
+// Accepted reports whether the central bank credited the reserve.
+//
+// A method rather than a comparison at each call site, because the two callers
+// that branch on it are in different packages and the code it compares against
+// is one this system chose rather than one a schema pins. See RequestHandling on
+// why ACSC is reused here from the payment family.
+func (r LodgementReceipt) Accepted() bool {
+	return r.Status == iso20022.TransactionStatusSettlementCompleted
+}
+
 // joiningAssets applies the joining default: a bank that names no assets joins
 // with the euro.
 //
@@ -795,6 +861,21 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	if err != nil {
 		return nil, err
 	}
+	// A third subledger, and the reason it is not one of the two above is the
+	// whole of what Task 18a's deposit change is about. Vault cash is not owed to
+	// a customer, so it is not a Customer Deposit; and it is not a position
+	// against another institution, so it is not Interbank. It is the bank's own
+	// money, in its own hands — the one asset on this chart that is nobody else's
+	// promise.
+	//
+	// It is created AFTER the other two on purpose. Subledgers are numbered in
+	// creation order, so appending leaves every account number in the two
+	// existing subledgers exactly where it was; inserting it above would
+	// renumber a chart of accounts that fixtures and golden files already quote.
+	treasury, err := bank.CreateSubledgerTx(ctx, tx, gl.ID, "Treasury")
+	if err != nil {
+		return nil, err
+	}
 
 	// One set of internal accounts per asset. Naming them with the asset in
 	// parentheses keeps them apart in a chart of accounts that now holds
@@ -839,11 +920,21 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 		if err != nil {
 			return nil, err
 		}
+		// An Asset, and the one on this chart that is not a claim on anybody. A
+		// reserve is a claim on the central bank and Returns Receivable is a claim
+		// on a biller; this is cash the bank is holding, and it is where cash paid
+		// in over the counter lands. See DepositTx, and BankAccounts.VaultCash on
+		// why a founded bank has one before it has a settlement account.
+		vaultCash, err := bank.CreateAccountTx(ctx, tx, treasury.ID, "Vault Cash ("+string(asset)+")", ledger.Asset, asset)
+		if err != nil {
+			return nil, err
+		}
 		accounts[asset] = BankAccounts{
 			Suspense:          suspense.ID,
 			Reserve:           reserve.ID,
 			Unclaimed:         unclaimed.ID,
 			ReturnsReceivable: returnsReceivable.ID,
+			VaultCash:         vaultCash.ID,
 		}
 	}
 
@@ -1415,20 +1506,39 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantI
 	return bank, nil
 }
 
-// Deposit funds a customer deposit account with cash, modelled as the bank
-// placing the cash on reserve at the central bank.
+// Deposit takes cash in over the counter: the bank holds the notes, and it owes
+// the depositor their balance.
 //
-// Two books move in step, keeping the reserve mirror intact:
+// One book, one pair of entries, one institution:
 //
-//	bank ledger:    Debit  Reserve at Central Bank (asset)  / Credit customer (liability)
-//	central bank:   Debit  Settlement Assets (asset)        / Credit Reserve: <bank> (liability)
+//	bank ledger:    Debit  Vault Cash (asset)  / Credit customer (liability)
 //
-// Which reserve moves is decided by the funded account's own asset, read here
+// Which vault moves is decided by the funded account's own asset, read here
 // rather than chosen by the caller. Cash paid into a dollar account raises the
-// bank's dollar reserve; there is nothing for a caller to pick and therefore
+// bank's dollar vault; there is nothing for a caller to pick and therefore
 // nothing to default, and the two legs cannot end up in different assets.
 //
-// Both postings go through one Tx, so the mirror can never be half-written.
+// # This used to reach the central bank's ledger, and that was crossing 6
+//
+// A deposit was modelled as the bank placing the cash on reserve, which took two
+// postings in two books inside one unit of work — Debit Reserve at Central Bank /
+// Credit customer here, and Debit Settlement Assets / Credit Reserve: <bank>
+// there. The second was a member bank writing in the settlement agent's ledger,
+// and it was the last crossing in sub-project 8's table that never became a
+// message: funding arrives from an operator or a fixture, with no institution
+// behind it, so no recorder assertion built on booksTouchedBy could see it.
+//
+// What was wrong with it is not only the store. It said that cash cannot be paid
+// in at a bank that has not joined a payment scheme, which is false about banking
+// — a bank's counter has nothing to do with its central bank account — and the
+// refusal it produced (ErrSettlementMemberNotFound) was a settlement agent's
+// sentinel answering a question about a customer's money.
+//
+// Both halves are fixed by the same change. Cash becomes VAULT CASH, which every
+// founded bank has from FoundBankTx; and moving it onto reserve becomes a
+// LODGEMENT, which is a camt.050 to the central bank and its camt.025 back. See
+// LodgeReservesTx, and Camt050 on why a lodgement is a conversation and a deposit
+// is not.
 func (s *Network) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return s.DepositTx(ctx, tx, participant, account, amount, description)
@@ -1437,23 +1547,12 @@ func (s *Network) Deposit(ctx context.Context, participant ParticipantID, accoun
 
 // DepositTx is Deposit within a caller-supplied unit of work.
 //
-// # The account it credits at the central bank is read off the bank's own row
-//
-// Every other reader of a settlement account now asks the settlement agent's own
-// SettlementMember row; this one does not, and the difference is whose question
-// it is. Here the funding bank is quoting its OWN account number — the reference
-// it learned from its admission acknowledgement, the way an account holder knows
-// its own IBAN — so Bank.Assets[asset].Settlement is the right record to read
-// and reading the central bank's would be this bank looking somebody else's
-// customer up.
-//
-// That leaves the read legitimate and leaves the crossing exactly where it has
-// always been: THE POSTING. The second PostTransactionTx below writes an entry
-// in CentralBankBook, which is a bank posting in the central bank's ledger, and
-// no re-routing of a lookup changes it by a line. It is crossing 6 in the spec's
-// table, it is open, and what closes it is a model of cash arriving somewhere —
-// a vault and a lodgement — which is its own task and deliberately not folded
-// into this one.
+// It names no account outside this bank's book and asks the central bank nothing.
+// The read that used to be here — Bank.Assets[asset].Settlement, the bank's own
+// record of its settlement account number — went with the posting it was for:
+// there is no leg at the central bank to resolve an account for. What still reads
+// that field is LodgeReservesTx, which is where quoting one's own account number
+// belongs, because that is the act with a counterparty.
 func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
@@ -1485,68 +1584,268 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err != nil {
 		return err
 	}
-	// A bank that has founded itself and not yet joined has no settlement account
-	// to place the cash on reserve in, and its own row says so by carrying no
-	// reference. Refused HERE, by name, because the alternative is what this
-	// posting did before the check existed: it named the empty account, the
-	// central bank's ledger refused an account it does not have, and the caller
-	// was told "account not found" — which reads as the CUSTOMER's account, the
-	// one thing in the request that is certainly fine.
+	// There is no guard on the settlement account here, and its absence is the
+	// change rather than an oversight.
 	//
-	// The sentinel is the settlement agent's, because the fact this refusal is
-	// usually about is the settlement agent's: no account is held for this bank.
-	// What is read for it is the bank's own record rather than the agent's member
-	// row, for the reason this function's doc gives — a funding bank quotes its
-	// own account number.
+	// This used to refuse a bank whose Assets[asset].Settlement was empty, with
+	// ErrSettlementMemberNotFound and the sentence "is founded and not yet
+	// admitted, so it has no reserve to fund". It was a true description of what
+	// the code then did — the second posting named that account, so an empty one
+	// had to be caught before the central bank's ledger answered "account not
+	// found" about what reads as the customer's account — and it was a false
+	// statement about banking. A bank's counter does not depend on its central
+	// bank account. A founded bank can take cash.
 	//
-	// The two CAN disagree, and it used to say here that they could not, on the
-	// grounds that one acknowledgement writes both. It does not. The agent's
-	// account is opened when the acmt.007 is handled and BEFORE the acmt.010 is
-	// built (mesh.centralBank.receiveAdmission), and the bank's reference is
-	// written only when that acknowledgement comes back — so an admission whose
-	// acknowledgement goes missing leaves the agent holding an account this bank
-	// does not know the number of. Measured, by parking the second acmt.010 of a
-	// two-asset admission before the bank: GET /reserves reports two rows,
-	// [EUR 0, USD 0]; the bank is a Member; its own USD reference is empty; and a
-	// USD deposit is refused HERE with 422. That is exactly the inconsistency
-	// RecordMembershipTx describes and api.Server.reserveRows reports from the
-	// other side — a reserve the console can see and the bank cannot spend.
-	//
-	// Refusing is still right in that state: a bank that cannot name its own
-	// account cannot quote it, and posting to the empty string would be the "404
-	// account not found" this check exists to stop. What is imprecise there is
-	// only the sentence, which says the bank is founded and not yet admitted when
-	// it is a Member in another asset. The disagreement is one-directional —
-	// nothing writes the bank's reference before the agent's account exists — so
-	// an empty reference here never means the agent's book is missing something
-	// the bank knows about.
-	if accts.Settlement == "" {
-		return fmt.Errorf("%w: %s is founded and not yet admitted, so it has no reserve to fund in %s",
-			ErrSettlementMemberNotFound, p.BIC, asset)
-	}
-
-	if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+	// The guard is not deleted so much as MOVED, to the act it was always true
+	// about: LodgeReservesTx cannot place cash on reserve at an agent that holds
+	// no account for this bank, and refuses there with that sentinel. The
+	// imprecision the old sentence carried — it said "founded and not yet
+	// admitted" of a bank that may be a Member in a different asset — is gone with
+	// the sentence rather than fixed in place, which is what closes it as a
+	// defect.
+	_, err = p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
-			{AccountID: accts.Reserve, Amount: amount, Direction: ledger.Debit},
+			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Debit},
 			{AccountID: gl, Amount: amount, Direction: ledger.Credit},
-		},
-	}); err != nil {
-		return err
-	}
-
-	cbAssets, err := s.centralBankAssetsAccountTx(ctx, tx, asset)
-	if err != nil {
-		return err
-	}
-	_, err = s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
-		Description: "Reserve credit: " + p.Name,
-		Entries: []ledger.Entry{
-			{AccountID: cbAssets, Amount: amount, Direction: ledger.Debit},
-			{AccountID: accts.Settlement, Amount: amount, Direction: ledger.Credit},
 		},
 	})
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// The lodgement: cash becomes reserves, in two books, over a message
+// ---------------------------------------------------------------------------
+
+// LodgeReserves is a bank swapping vault cash for a claim on its central bank.
+//
+// It is the asking half, and it is the bank's own posting plus the instruction it
+// then sends:
+//
+//	bank ledger:  Debit  Reserve at Central Bank (asset)  / Credit Vault Cash (asset)
+//
+// The matching pair is the CENTRAL BANK's and lands in the central bank's own
+// book, from the camt.050 this returns — see ReceiveLodgementTx. Two books, two
+// units of work, one message each way, which is what closes crossing 6.
+//
+// # It posts and instructs together, for SubmitAndInstruct's reason
+//
+// One act and not two. Building the instruction can fail — a bank that cannot
+// name its own settlement account — and a refusal reported after the leg was
+// posted would leave the bank's reserve mirror raised for a lodgement nobody was
+// ever asked to perform. Posting the leg and rendering the message now commit or
+// roll back together; the SEND still happens after, which is the property
+// TestARolledBackSubmitSendsNothing pins for a payment and
+// TestARolledBackLodgementSendsNothing pins here.
+//
+// # Why the bank posts before it is answered, and what that costs
+//
+// Because a camt.025 carries no amount. The receipt names the request and says
+// what became of it, and there is no element on it for how much was moved, so a
+// bank cannot post its own leg FROM the answer. The two ways out are to post
+// first, or to remember the outstanding request in the actor until the answer
+// arrives — and the second is the shape csm.held already has, whose known defect
+// is that it does not survive a restart. So: post first.
+//
+// What that costs is an interval in which the bank's own Reserve at Central Bank
+// says more than the central bank's book does. That is not a new class of defect
+// here; it is the unreconciled position this system already models and already
+// documents (see BankAccounts), the same interval a cut-off opens between the
+// reserve moving and the member booking its camt.053. What is different is that a
+// REFUSED lodgement never closes it, and nothing in 18a detects that. The guard
+// below is what makes it unreachable rather than merely unlikely, and Task 18e's
+// reconciliation harness is the instrument that would find it if it happened.
+func (s *Network) LodgeReserves(ctx context.Context, by ParticipantID, asset ledger.AssetCode,
+	amount ledger.Amount, mc MessageContext) (LodgementInstruction, iso20022.Envelope, error) {
+
+	var (
+		in  LodgementInstruction
+		env iso20022.Envelope
+	)
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		in, env, err = s.LodgeReservesTx(ctx, tx, by, asset, amount, mc)
+		return err
+	})
+	if err != nil {
+		return LodgementInstruction{}, iso20022.Envelope{}, err
+	}
+	return in, env, nil
+}
+
+// LodgeReservesTx is LodgeReserves within a caller-supplied unit of work.
+//
+// # The guard the deposit used to make
+//
+// A bank whose Assets[asset].Settlement is empty is refused here with
+// ErrSettlementMemberNotFound. That check used to live in DepositTx, where it
+// said a founded bank could not take cash — true of the code and false of banking
+// — and this is the act it was always correct about: a bank that cannot name its
+// own reserve account cannot ask for a credit to it, and the central bank has no
+// account to post to.
+//
+// It also makes the central bank's own refusal unreachable in practice, which is
+// what keeps the interval described above closed. Nothing writes a bank's
+// settlement reference before the agent's account exists — RecordMembershipTx
+// runs on the acknowledgement, and the account is opened before that
+// acknowledgement is built — so a bank able to pass this guard is one the agent
+// certainly holds an account for. The disagreement is one-directional, and this
+// is the direction that is safe.
+//
+// # It does not refuse a bank with too little cash, and does not need to
+//
+// Vault Cash is an Asset, and ledger.Book guards Asset accounts against going
+// negative, so lodging more than the vault holds is refused by the ledger with
+// ErrInsufficientBalance — which borrowedReasons already maps to AM04, "the
+// account cannot cover this". A guard here would be a second copy of a rule the
+// ledger states better, and it would have to be kept in step with it.
+func (s *Network) LodgeReservesTx(ctx context.Context, tx Tx, by ParticipantID, asset ledger.AssetCode,
+	amount ledger.Amount, mc MessageContext) (LodgementInstruction, iso20022.Envelope, error) {
+
+	if amount <= 0 {
+		return LodgementInstruction{}, iso20022.Envelope{}, ErrInvalidPaymentAmount
+	}
+	p, err := s.bankTx(ctx, tx, by)
+	if err != nil {
+		return LodgementInstruction{}, iso20022.Envelope{}, err
+	}
+	accts, err := p.AccountsFor(asset)
+	if err != nil {
+		return LodgementInstruction{}, iso20022.Envelope{}, err
+	}
+	if accts.Settlement == "" {
+		return LodgementInstruction{}, iso20022.Envelope{}, fmt.Errorf(
+			"%w: %s holds no reserve account it can name in %s, so it has nothing to lodge into",
+			ErrSettlementMemberNotFound, p.BIC, asset)
+	}
+
+	in := LodgementInstruction{
+		BIC:     p.BIC,
+		Agent:   mc.To,
+		Account: accts.Settlement,
+		Asset:   asset,
+		Amount:  amount,
+		Ref:     mc.MsgID,
+	}
+	// Rendered inside the unit of work, before the posting is final, for the
+	// reason this act's doc gives: a message that will not build must take the
+	// leg down with it.
+	env, err := LodgementMessage(in, mc)
+	if err != nil {
+		return LodgementInstruction{}, iso20022.Envelope{}, err
+	}
+
+	// The swap: a claim on the central bank replaces cash in the drawer. Both
+	// accounts are this bank's own, in this bank's own book, which is what makes
+	// this half of the lodgement something a member may do at all.
+	if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description:    "Lodgement to reserve: " + string(asset),
+		IdempotencyKey: "lodge:" + in.Ref,
+		Entries: []ledger.Entry{
+			{AccountID: accts.Reserve, Amount: amount, Direction: ledger.Debit},
+			{AccountID: accts.VaultCash, Amount: amount, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		return LodgementInstruction{}, iso20022.Envelope{}, err
+	}
+	return in, env, nil
+}
+
+// ReceiveLodgement is the central bank's half: crediting a member's reserve
+// account because the member asked it to.
+//
+// It is the receiving half of the same conversation, and it posts in the central
+// bank's own book and in no member's:
+//
+//	central bank:  Debit  Settlement Assets (asset)  / Credit Reserve: <member> (asset)
+//
+// That is the same pair the deposit used to post here from inside the BANK's unit
+// of work. What has changed is who posts it and on whose instruction — which is
+// the whole of the crossing, and the reason this method is on settlementOps and
+// on no other interface.
+func (s *Network) ReceiveLodgement(ctx context.Context, in LodgementInstruction) (LodgementReceipt, error) {
+	var out LodgementReceipt
+	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = s.ReceiveLodgementTx(ctx, tx, in)
+		return err
+	})
+	if err != nil {
+		return LodgementReceipt{}, err
+	}
+	return out, nil
+}
+
+// ReceiveLodgementTx is ReceiveLodgement within a caller-supplied unit of work.
+//
+// # It reads its OWN member row, not the bank's
+//
+// The instruction quotes an account number, and this act does not trust it. It
+// asks its own settlement_members row which account it holds for this BIC in this
+// asset (settlementAccountTx) and posts to THAT, then checks the quoted number
+// against it. A servicer that posted to whatever account a message named would
+// credit another member's reserve on request, which is the one thing an account
+// servicer must never do.
+//
+// So the quoted account is a CHECK and not a lookup, and the difference is worth
+// stating because the field looks like a lookup key. A mismatch means the member
+// and the agent disagree about which account this is, and that disagreement is
+// refused rather than resolved in either direction.
+//
+// # What it refuses, and why each is answerable
+//
+// A BIC it holds no account for is ErrSettlementMemberNotFound; an asset it holds
+// no account for that member in is ErrParticipantAssetNotFound. Both come from
+// settlementAccountTx, and both are the true state of an agent asked to credit an
+// account it does not keep. A quoted account that is not the one it holds is
+// ErrSettlementAccountReplaced, reused from admission because it is the same
+// disagreement about the same field.
+//
+// Each becomes a REFUSING camt.025 rather than an error to the caller, and the
+// prose it travels as is the receipt's Desc. See mesh.centralBank.receiveLodgement.
+//
+// # It is idempotent on the request's reference
+//
+// A queue redelivers, so a lodgement can arrive twice. The idempotency key is the
+// asking bank's own message identifier, which is the only durable trace of a
+// lodgement anywhere in this system: there is no lodgement row, here or at the
+// bank. That is ErrReturnAlreadySettled's shape — a redelivered act caught by the
+// key on the posting it would repeat, in the book of the institution that made it
+// — and it is why this act needs no table of its own.
+func (s *Network) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementInstruction) (LodgementReceipt, error) {
+	if in.Amount <= 0 {
+		return LodgementReceipt{}, ErrInvalidPaymentAmount
+	}
+	if err := in.BIC.Validate(); err != nil {
+		return LodgementReceipt{}, fmt.Errorf("payment: the lodging member's address: %w", err)
+	}
+	// The agent's own record of the account it holds, and never the number the
+	// message quoted. See the doc above.
+	held, err := s.settlementAccountTx(ctx, tx, in.BIC, in.Asset)
+	if err != nil {
+		return LodgementReceipt{}, err
+	}
+	if in.Account != "" && in.Account != held {
+		return LodgementReceipt{}, fmt.Errorf(
+			"%w: %s lodges %s into %s and this agent holds %s for it",
+			ErrSettlementAccountReplaced, in.BIC, in.Asset, in.Account, held)
+	}
+
+	assets, err := s.centralBankAssetsAccountTx(ctx, tx, in.Asset)
+	if err != nil {
+		return LodgementReceipt{}, err
+	}
+	if _, err := s.centralBank.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
+		Description:    "Reserve credit on lodgement: " + string(in.BIC),
+		IdempotencyKey: "lodge:" + in.Ref,
+		Entries: []ledger.Entry{
+			{AccountID: assets, Amount: in.Amount, Direction: ledger.Debit},
+			{AccountID: held, Amount: in.Amount, Direction: ledger.Credit},
+		},
+	}); err != nil {
+		return LodgementReceipt{}, err
+	}
+	return LodgementReceipt{Ref: in.Ref, Status: iso20022.TransactionStatusSettlementCompleted}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2620,10 +2919,8 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// side call, so an instruction that names nobody is refused before the
 	// debtor leg is posted rather than after.
 	counterparty := &p.CreditorDetails
-	counterpartyRef := p.Creditor
 	if !push {
 		counterparty = &p.DebtorDetails
-		counterpartyRef = p.Debtor
 	}
 
 	// The NAME is asserted by the payer and there is nowhere else it could come
@@ -2637,54 +2934,60 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		return Payment{}, err
 	}
 
-	// The AGENT is DERIVED, and is the one thing on a payment that a payer is
-	// never allowed to assert.
+	// The AGENT is ASSERTED, and Task 18a is where it went back to being so.
 	//
-	// It used to be taken from the instruction and checked for BIC FORMAT only,
-	// which made it a routing decision handed to whoever filled in the form:
-	// this agent goes on the wire as CdtrAgt/DbtrAgt (translate.go's partiesOf)
-	// and the clearing house routes on exactly that element with no store read
-	// of its own (mesh/csm.go's relayCreditTransfer and relayDirectDebit). A
-	// push whose CreditorDetails.Agent named the payer's own bank came back to
-	// its sender, which then answered its own instruction; a pull whose
-	// DebtorDetails.Agent named the collector saw the COLLECTING bank post the
-	// debit in the payer's bank's book. Both were measured — see
-	// mesh/books_test.go's TestAWrongCounterpartyAgentDoesNotMisroute, which is
-	// the pin.
+	// # What it was, and why the derivation could not survive the split
 	//
-	// This is what a real SEPA originating bank does. SEPA has been IBAN-only
-	// since February 2016: the payer supplies an IBAN and a name, and the
-	// originating bank derives the routing itself rather than trusting a BIC
-	// somebody typed. The payment already names which participant the
-	// counterparty is at, and that bank's OWN ROW is the authority on its
-	// address — "routing needs the bank, not the name".
+	// It was DERIVED: `tx.GetBank(counterpartyRef.Participant)`, the counterparty
+	// bank's own row, with whatever the instruction carried discarded. That was
+	// Task 14's fix for a real routing defect — this element goes out as
+	// CdtrAgt/DbtrAgt (translate.go's partiesOf) and the clearing house relays on
+	// exactly it with no store read of its own, so a payer who typed the wrong
+	// bank chose the bank.
 	//
-	// The bank row and not the clearing house's roster, which is what a reader
-	// expects here and what several comments around this one used to say. The
-	// roster is keyed by BIC, so deriving a BIC from it would need the answer to
-	// start with; and the two tables differ in exactly one case — a bank founded
-	// and not yet admitted has a row here and no entry there — which is a
-	// difference this derivation must NOT make, because a payment to or from
-	// such a bank is refused as a payment (payment.ErrBankNotAdmitted) rather
-	// than left with no agent to address.
+	// The row it read is the counterparty's, and from Task 18c a bank holds only
+	// its own. There is no second source to move the derivation to. The roster is
+	// keyed by the BIC being derived, and it is the CLEARING HOUSE's row rather
+	// than a bank's; and this network has no IBAN-to-BIC directory service, which
+	// is the thing a real originating bank actually derives from. SEPA is
+	// IBAN-only because every bank subscribes to such a table, not because the
+	// routing is computable from the address.
 	//
-	// Reading a bank's row is NOT a read of the counterparty's book. Bank rows
-	// are network-scoped: tx.GetBank takes no BookID and is
-	// deliberately not one of the recorder's overrides in mesh/books_test.go, so
-	// the submitting bank's measured set is unchanged by this call. The same
-	// test asserts that, on both directions.
+	// So the address on an instruction here is an IBAN AND a BIC — which is what
+	// SEPA was before February 2016, and what a cross-border transfer still is.
 	//
-	// A participant nobody has admitted is ErrParticipantNotFound, unwrapped
-	// from the store's own sentinel rather than manufactured here — and every
-	// other error is passed through as it arrived, for the reason checkPartyTx
-	// and addressedPartyTx both set out at length: a dropped connection is not a
-	// statement about the instruction, and RC01 "bank identifier incorrect" on
-	// the wire would be a false one.
-	counterpartyBank, err := tx.GetBank(ctx, counterpartyRef.Participant)
-	if err != nil {
-		return Payment{}, err
+	// # What makes that safe, and it is the same commit's other half
+	//
+	// Both measured failures of the asserted agent had one mechanism: the bank
+	// the message reached could resolve a payee it does not hold, because
+	// ResolveIdentifierTx swept every member's register. A push naming the
+	// payer's own bank came back to its sender, which found the payee at the real
+	// bank and answered its own instruction; a pull naming the collector saw the
+	// COLLECTING bank post the debit in the payer's bank's book.
+	//
+	// Task 18a narrows that resolution to the resolving bank's own register. A
+	// misdirected message now has nothing to resolve, and the bank that receives
+	// it answers AC01 — which is the true statement about what it was sent, and
+	// what a real bank does with a payment for an IBAN it does not hold. The
+	// payer's debit is reversed by the rejection. See mesh/books_test.go's
+	// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, which is the pin and
+	// is the old test reversed.
+	//
+	// # What is still refused here
+	//
+	// The FORMAT, and nothing else. An unnamed agent is refused by name, because
+	// the message cannot be built without CdtrAgt/DbtrAgt and a submission that
+	// committed the payer's debit before discovering that would be the money bug
+	// SubmitAndInstruct exists to prevent. A malformed one is refused for the
+	// reason FoundBankTx validates a BIC at founding rather than at first use:
+	// the mesh cannot route to it, so the refusal belongs where the payer can
+	// still fix it.
+	if counterparty.Agent == "" {
+		return Payment{}, ErrCounterpartyAgentNotNamed
 	}
-	counterparty.Agent = counterpartyBank.BIC
+	if err := counterparty.Agent.Validate(); err != nil {
+		return Payment{}, fmt.Errorf("%w: %w", ErrCounterpartyAgentNotNamed, err)
+	}
 
 	// The submitting bank's own side comes from its own register, overwriting
 	// anything the request supplied: a payer does not rename themselves on an
@@ -2733,10 +3036,42 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 }
 
 // AcceptInbound is AcceptInboundTx in its own unit of work.
-func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
+func (s *Network) AcceptInbound(ctx context.Context, by ParticipantID, id PaymentID) error {
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
-		return s.AcceptInboundTx(ctx, tx, id)
+		return s.AcceptInboundTx(ctx, tx, by, id)
 	})
+}
+
+// resolveOwnPartyTx replaces a party ref with the one THIS bank resolves for the
+// address on it. It is AcceptInboundTx's half of the sweep's removal — see that
+// function's doc for why the row's ref cannot be trusted for the far side.
+//
+// # An unaddressed party is left as it stands, and that is a fallback with a life
+// expectancy
+//
+// A ref with no identifier cannot be resolved, and the arm is reachable only
+// from a caller that never built a message: an instruction quoting no address
+// for the far side fails CreditTransferMessage with ErrUnaddressableAccount, so
+// nothing that goes on the wire reaches here without one. What does reach it is
+// the seed and the domain suites, which drive SubmitPaymentTx and this function
+// directly.
+//
+// So for those callers the submitting bank's ref stands, which is exactly the
+// trust this change exists to remove — and it survives only because ONE payment
+// row is shared. Task 18d gives each entity its own, at which point the
+// receiving bank writes its row from the message and there is no ref to fall
+// back to; the fallback goes with the shared row rather than being tightened
+// here.
+func (s *Network) resolveOwnPartyTx(ctx context.Context, tx Tx, by ParticipantID, ref *PartyRef) error {
+	if ref.Identifier == (deposit.Identifier{}) {
+		return nil
+	}
+	resolved, err := s.addressedPartyTx(ctx, tx, by, ref.Identifier)
+	if err != nil {
+		return err
+	}
+	*ref = resolved
+	return nil
 }
 
 // AcceptInboundTx is the RECEIVING bank's half: the half SubmitPaymentTx did
@@ -2755,6 +3090,34 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 // and posts the debtor leg. That posting is the whole reason a direct debit
 // posts nothing at submission — until this runs, the payer's money has not
 // moved and no actor has looked at their account.
+//
+// # It resolves its own party rather than trusting the row's, and Task 18a is
+// why
+//
+// The payment row names both parties by (participant, account) — internal ids —
+// and until Task 18a this half used the ones the SUBMITTING bank wrote. That
+// worked for one reason: ResolveIdentifierTx swept every member's register, so
+// the submitting bank could look the payee up in the payee's bank's book and
+// write down its account id. That sweep is crossing 2 and it is gone; a payer's
+// bank cannot know another bank's internal key, and in life it never could.
+//
+// So this half resolves the counterparty's ADDRESS — the IBAN the message
+// carries — in its OWN register, and overwrites the ref. It is the resolution
+// mesh/bank.go's receive handlers already made and then discarded, moved to
+// where its answer is used. What the submitting bank writes for the far side is
+// now a guess this bank corrects, and 18d makes it not even a guess: with a
+// payment row per entity the receiving bank writes its own row from the message
+// and there is nothing to correct.
+//
+// A not-found is ErrAccountNotInParticipant and becomes AC01, which is the same
+// answer the discarded resolution produced and for the same reason — see
+// addressedPartyTx, and mesh's
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames for the case that makes
+// it fire on the happy-looking path.
+//
+// `by` is the bank answering. It is an argument for the reason
+// ResolveIdentifier's is: payment.Network has no identity until Task 18b, and
+// the actor passes its own id (mesh's bank.pid).
 //
 // It takes an ID and LOADS the payment, as AcceptAtCSMTx does, and it refuses
 // anything that is not still Initiated.
@@ -2798,7 +3161,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID) error {
 // and all. The absence is pinned, not merely current — adding an event here
 // fails the four exact-sequence assertions at payment/audit_test.go:75, :169,
 // :245 and api/server_test.go:1090.
-func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) error {
+func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, by ParticipantID, id PaymentID) error {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
 		return err
@@ -2816,13 +3179,23 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 	before := p
 	sc := SchemeContext{Network: s, Tx: tx, Now: s.now()}
 	if scheme.Direction() == Push {
-		// The account and participant returned here are the RECEIVING bank's
+		// WHICH ACCOUNT of this bank's the payment is for, decided here and not
+		// taken from the row. See the note above on why this half resolves.
+		if err := s.resolveOwnPartyTx(ctx, tx, by, &p.Creditor); err != nil {
+			return err
+		}
+		// The account and participant returned below are the RECEIVING bank's
 		// own — the creditor's, for a push — and are deliberately discarded:
 		// unlike SubmitPaymentTx, this half must not use them to overwrite
 		// CreditorDetails. That field already holds what the payer asserted,
 		// and the pacs.008 already sent carries exactly that name; rewriting it
 		// here would desynchronise the stored payment from the message that
 		// already went out.
+		//
+		// The REF and the DETAILS are opposite cases and the difference is whose
+		// fact each is. Which of this bank's accounts an address names is this
+		// bank's own answer and nobody else's; what the payee is called is the
+		// payer's assertion and this bank has no standing to correct it.
 		if _, _, err := s.creditorSideTx(ctx, tx, scheme, &p, sc); err != nil {
 			return err
 		}
@@ -2834,6 +3207,9 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID) erro
 		// for a collection it in fact accepted.
 		if p.DebtorLegTx != "" {
 			return nil
+		}
+		if err := s.resolveOwnPartyTx(ctx, tx, by, &p.Debtor); err != nil {
+			return err
 		}
 		// See the push arm above: the account and participant here are the
 		// RECEIVING (debtor's) bank's own, and are discarded for the same
@@ -4085,28 +4461,44 @@ func validateParty(field string, ref PartyRef) error {
 }
 
 // ResolveIdentifier turns an external address — an IBAN today — into the party
-// it names. It is the network's directory.
+// it names, WITHIN ONE BANK's register. `by` is the bank asking, and the answer
+// is about its own customers or there is no answer.
 //
-// A real network's directory is a service with an index; this is a sweep over
-// tx.ListBanks, which is the honest shape at four banks and the boundary at
-// which a proxy-alias registry would arrive. Aliases that are NOT bank-issued
-// (a phone number, an email address) cannot be resolved this way at all, since
-// no bank can guarantee they are unique — which is why SEPA's Proxy Lookup
-// Service and UPI are separate central services rather than a sweep like this.
+// # It used to sweep, and the narrowing is Task 18a's
 //
-// EVERY BANK and not every member: this sweeps the bank rows, so an address at a
-// bank the scheme has not admitted resolves here exactly like any other. That is
-// deliberate and it is not a membership filter in disguise — a founded bank's
-// customers have real accounts with real IBANs, and a directory that hid them
-// would be answering a different question. What refuses a PAYMENT to or from
-// such a bank is ErrBankNotAdmitted, at the mesh's door and at the clearing
-// house, and this lookup is one of the two things that made that refusal
-// necessary.
-func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
+// It called tx.ListBanks and asked every member's register in turn, which made
+// it "the network's directory" — a directory assembled by reading every bank's
+// book, on the happy path of every received message. That is crossing 2 in the
+// db-per-entity design's table, and it is the read a bank cannot make once it
+// holds only its own register: ListBanks has no answer and neither has
+// another member's BookID.
+//
+// The narrowing is not a reduction in what this system can honestly answer. A
+// bank has never had the standing to say whether an address at ANOTHER bank
+// exists — that is the other bank's register and the other bank's customer — and
+// the sweep's answers about them were the only thing that made an asserted
+// counterparty BIC dangerous (see mesh's
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames). What is genuinely lost
+// is the network-wide lookup, and it is lost because this network has no
+// directory SERVICE to replace it with. A real one does: SEPA banks resolve an
+// IBAN's bank out of a subscribed IBAN-to-BIC table, and aliases that are not
+// bank-issued (a phone number, an email address) go to a separate central
+// service — the EPC's Proxy Lookup Service, or UPI — precisely because no bank
+// can guarantee they are unique. Neither is a sweep, and neither is something
+// one bank can build out of the others' books.
+//
+// So the question this answers is "is this address one of MINE", which is the
+// one a receiving bank actually has to answer, and the one that produces AC01
+// for anything else.
+//
+// `by` is an argument rather than the Network's own identity because
+// payment.Network has no identity yet; Task 18b gives it one and removes the
+// argument.
+func (s *Network) ResolveIdentifier(ctx context.Context, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
 	var out PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		out, err = s.ResolveIdentifierTx(ctx, tx, ident)
+		out, err = s.ResolveIdentifierTx(ctx, tx, by, ident)
 		return err
 	})
 	return out, err
@@ -4114,38 +4506,37 @@ func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifie
 
 // ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of work.
 //
-// Two banks holding the identifier is ErrIdentifierAmbiguous rather than the
-// first one found. Uniqueness is enforced per bank — that is the widest scope a
-// register can see — so a collision across banks is representable, and choosing
-// between them here would route a payment to a bank on the strength of listing
-// order.
-func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+// Two accounts at this bank holding the identifier is ErrIdentifierAmbiguous
+// rather than the first one found. Uniqueness is not enforced at write time —
+// deposit.Register.AddIdentifier says why — so a collision is representable, and
+// choosing between two of this bank's own accounts would route a payment on the
+// strength of listing order.
+//
+// It used to be able to find that collision ACROSS banks as well, which was the
+// widest scope a sweep could see. That scope is gone with the sweep and nothing
+// replaces it: two banks issuing one IBAN is a fact neither of them can now
+// observe, and in life it is the IBAN's issuer registry that stops it happening
+// rather than anybody's directory noticing afterwards.
+func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
 	if err := ident.Validate("identifier"); err != nil {
 		return PartyRef{}, err
 	}
-	members, err := tx.ListBanks(ctx)
+	bank, err := s.bankTx(ctx, tx, by)
 	if err != nil {
 		return PartyRef{}, err
 	}
-	var found PartyRef
-	hits := 0
-	for _, m := range members {
-		holders, err := tx.ListDepositAccountsByIdentifier(ctx, m.BookID, ident)
-		if err != nil {
-			return PartyRef{}, err
-		}
-		hits += len(holders)
-		if hits > 1 {
-			return PartyRef{}, deposit.ErrIdentifierAmbiguous
-		}
-		if len(holders) == 1 {
-			found = PartyRef{Participant: m.ID, Account: holders[0].ID, Identifier: ident}
-		}
+	holders, err := tx.ListDepositAccountsByIdentifier(ctx, bank.BookID, ident)
+	if err != nil {
+		return PartyRef{}, err
 	}
-	if hits == 0 {
+	switch len(holders) {
+	case 0:
 		return PartyRef{}, deposit.ErrIdentifierNotFound
+	case 1:
+		return PartyRef{Participant: bank.ID, Account: holders[0].ID, Identifier: ident}, nil
+	default:
+		return PartyRef{}, deposit.ErrIdentifierAmbiguous
 	}
-	return found, nil
 }
 
 // checkPartyTx verifies that a party's participant exists and its deposit

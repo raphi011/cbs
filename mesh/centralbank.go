@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -82,12 +83,22 @@ type centralBank struct {
 // handle dispatches on the message that arrived. See bank.handle, which has the
 // same shape and the same reason for taking the sender as an argument.
 //
-// Three arms. Two of them are the two ways reserves MOVE — a cut-off's positions
-// being discharged, and one settled payment being sent back — and the third is
-// the one that creates the account they move across. A pacs.008 or a pacs.003
-// arriving here would be a customer payment sent to the settlement agent, which
-// no actor in this mesh does and which this actor could not act on; it becomes a
-// dead letter rather than a shrug, for the reason bank.handle's default gives.
+// Four arms, and they divide three-and-one rather than two-and-two. THREE of
+// them move central-bank money: a cut-off's positions being discharged, one
+// settled payment being sent back, and a member lodging cash onto its own
+// reserve. The fourth creates the account the other three move across.
+//
+// The lodgement is the newest and it is the only one of the three a MEMBER asks
+// for. A settlement instruction comes from the clearing house and a return comes
+// from a bank that is telling this actor about a payment; a camt.050 is an account
+// holder asking its servicer to credit its account, which is the same relationship
+// the acmt.007 arm serves and a different one from the other two. See
+// receiveLodgement.
+//
+// A pacs.008 or a pacs.003 arriving here would be a customer payment sent to the
+// settlement agent, which no actor in this mesh does and which this actor could
+// not act on; it becomes a dead letter rather than a shrug, for the reason
+// bank.handle's default gives.
 func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	env, err := iso20022.Unmarshal(raw)
 	if err != nil {
@@ -98,6 +109,8 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 		return cb.receiveSettlement(ctx, from, env.AppHdr, doc)
 	case *iso20022.Pacs004:
 		return cb.receiveReturn(ctx, from, env.AppHdr, doc)
+	case *iso20022.Camt050:
+		return cb.receiveLodgement(ctx, from, env.AppHdr, doc)
 	case *iso20022.Acmt007:
 		return cb.receiveAdmission(ctx, from, doc)
 	default:
@@ -544,6 +557,119 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 		return fmt.Errorf("mesh: %s opened %s's settlement account and could not say so: %w", cb.bic, in.BIC, err)
 	}
 	return cb.m.send(cb.bic, from, env)
+}
+
+// receiveLodgement is the central bank crediting a member's reserve account
+// because the member asked it to: the fourth thing this actor does, and the one
+// that closes Task 18a's crossing.
+//
+// # The entries are not new; the instruction is
+//
+// Debit Settlement Assets / Credit Reserve: <member> is exactly the pair
+// Network.DepositTx used to post in this book. It posted them from inside the
+// FUNDING BANK's unit of work, which is what made funding a reserve the one
+// crossing on sub-project 8's list that never became a message and that no
+// recorder assertion could see. Nothing about the entries changed. What changed is
+// that a member can no longer make them: it sends a camt.050, and this handler is
+// the only thing in the system that posts them.
+//
+// # It has receiveAdmission's shape, and reads the parties off the message
+//
+// Read the message, run the domain act in one unit of work, answer — and for
+// receiveAdmission's reason: a settlement agent holds no roster and has never
+// heard of this system's bank ids. What a camt.050 tells it is a BIC, an account
+// number, an asset and an amount, and the BIC is what it keys its own row by. See
+// payment.ReadLodgement, and payment.ReceiveLodgementTx on why the quoted account
+// number is a CHECK against its own row rather than a lookup.
+//
+// It takes the HEADER as well as the document, which receiveAdmission does not,
+// and the difference is the relay. An acmt.007 arrives here having been forwarded
+// by the clearing house, so its Fr is the last hop rather than the applicant; a
+// camt.050 comes straight from the member, one hop, so the header and the body
+// must agree and ReadLodgement is where they are compared.
+//
+// # It answers camt.025 and NOT pacs.002
+//
+// receiveAdmission makes the same discrimination and reaches for acmt.011. A
+// status report is about a payment transaction, and a lodgement is not one: it
+// moves no customer's money, belongs to no scheme and no cycle, and has no
+// OrgnlTxId to quote. The cash-management family carries its own acknowledgement.
+//
+// The consequence is admission's consequence: the reason travels as PROSE rather
+// than as a code, because camt.025's StsCd is a code set nothing here can check
+// and its Desc is free text. It is why payment's reasonTable gives these
+// sentinels the empty code. See iso20022.RequestHandling.
+//
+// # Everything the domain refuses is answered, and one thing is dead-lettered
+//
+// A member it holds no account for, an asset it holds no account for that member
+// in, and an account number that is not the one it holds are all answered with a
+// refusing receipt: each is a judgement about the request that the sender can act
+// on, and refusing to a counterparty is completed work rather than a defect.
+//
+// A REDELIVERED lodgement is not. The queue can deliver twice, and the second copy
+// names a request this agent has already posted; payment.ReceiveLodgementTx keys
+// that posting on the request's own message id, so the repeat is caught by the
+// ledger as ErrDuplicateIdempotencyKey rather than posted again. Answering it
+// would tell the member its lodgement was refused when in fact it happened, which
+// is receiveSettlement's discrimination about ErrCycleNotClosed exactly. Dead
+// letter, and no second receipt.
+//
+// # It answers the SENDER, and the sender is the member
+//
+// Unlike a settlement or a return, there is no third institution in this
+// conversation. The clearing house is not a party to a member's liquidity
+// management, routes nothing here, and would have nothing to do with the answer.
+func (cb *centralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Camt050) error {
+	in, err := payment.ReadLodgement(hdr, doc)
+	if err != nil {
+		// Answered against the message id off the document rather than the
+		// reader's output, for refuseAdmission's reason: the commonest way to be
+		// here is that the reader refused. A message carrying no id at all cannot
+		// be correlated by the member that sent it, so it becomes a dead letter
+		// instead — answerUnreadable's shape for a family with no FF01 in it.
+		ref := doc.LqdtyCdtTrf.MsgHdr.MsgId
+		if ref == "" {
+			return fmt.Errorf("mesh: %s was sent a lodgement with no message id by %s, so no receipt could name it: %w",
+				cb.bic, from, err)
+		}
+		return cb.acknowledgeLodgement(from, payment.LodgementReceipt{
+			Ref:    ref,
+			Status: iso20022.TransactionStatusRejected,
+			Reason: err.Error(),
+		})
+	}
+
+	receipt, err := cb.ops.ReceiveLodgement(ctx, in)
+	if err != nil {
+		if errors.Is(err, ledger.ErrDuplicateIdempotencyKey) {
+			return fmt.Errorf("mesh: %s was told to lodge %s again: %w", cb.bic, in.Ref, err)
+		}
+		return cb.acknowledgeLodgement(from, payment.LodgementReceipt{
+			Ref:    in.Ref,
+			Status: iso20022.TransactionStatusRejected,
+			Reason: err.Error(),
+		})
+	}
+	return cb.acknowledgeLodgement(from, receipt)
+}
+
+// acknowledgeLodgement sends the camt.025 back to the member that asked.
+//
+// The cause is NOT returned once it has been answered, for cb.answer's reason: a
+// refusal the counterparty was told about is completed work, and returning it as
+// well would make every refused lodgement a dead letter too.
+func (cb *centralBank) acknowledgeLodgement(to iso20022.BIC, r payment.LodgementReceipt) error {
+	env, err := payment.LodgementReceiptMessage(r, payment.MessageContext{
+		From:  cb.bic,
+		To:    to,
+		MsgID: cb.m.nextMsgID(cb.bic),
+		Now:   cb.m.now(),
+	})
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not build its camt.025 for %s: %w", cb.bic, to, err)
+	}
+	return cb.m.send(cb.bic, to, env)
 }
 
 // refuseAdmission answers an acmt.007 this actor will not act on, back to

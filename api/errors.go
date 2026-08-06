@@ -174,6 +174,10 @@ func errorStatus(err error) int {
 		// on the submission path looks the other side up, so the instruction
 		// must carry it.
 		errors.Is(err, payment.ErrCounterpartyNotNamed),
+		// Its sibling since Task 18a: the counterparty's BIC is asserted rather
+		// than derived, so an instruction can now omit or mangle it. Same
+		// category and same 422 — the caller can fix it by supplying one.
+		errors.Is(err, payment.ErrCounterpartyAgentNotNamed),
 		// A malformed BIC is well-formed JSON naming a field that is not a
 		// structurally valid ISO 9362 code — the same category as an
 		// unaddressable account, not a decoding failure.

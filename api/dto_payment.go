@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -391,29 +392,37 @@ type initiatePaymentRequest struct {
 	Description string            `json:"description"`
 	Metadata    map[string]string `json:"metadata"`
 
-	// DebtorName and CreditorName are the names on the two accounts. Only the
-	// COUNTERPARTY's is required — the creditor's on a push, the debtor's on a
-	// pull — because submission looks it up nowhere: the account is at another
+	// DebtorName and CreditorName are the names on the two accounts, and
+	// DebtorAgent and CreditorAgent the BICs of the two banks. Only the
+	// COUNTERPARTY's pair is required — the creditor's on a push, the debtor's on
+	// a pull — because submission looks neither up: the account is at another
 	// bank, and nothing on the path that builds a payment reads another bank's
-	// register. See payment.ErrCounterpartyNotNamed, which says what the
-	// separate GET /directory lookup does and does not feed.
+	// register. See payment.ErrCounterpartyNotNamed and
+	// payment.ErrCounterpartyAgentNotNamed.
 	//
-	// There is deliberately NO debtorAgent or creditorAgent. There used to be,
-	// and it was a routing hole: the agent goes on the wire as CdtrAgt/DbtrAgt
-	// and the clearing house routes on it, so a payer who typed the wrong BIC
-	// chose which bank received the payment. Both agents are now derived from
-	// the bank row of the participant the request already names — see
-	// payment.SubmitPaymentTx — which is what a SEPA originating bank does, and
-	// is why this request carries an account holder's name and no bank
-	// identifier at all.
+	// # The agent fields have been here, then not, and are here again
 	//
-	// Removed rather than accepted-and-ignored, and this decoder is what makes
-	// that the sharper of the two: respond.go's DisallowUnknownFields turns a
-	// client that still sends creditorAgent into a 400 naming the field. A
-	// silently ignored routing element would be the worse failure by far — the
-	// caller would have every reason to believe it chose the destination bank.
-	DebtorName   string `json:"debtorName,omitempty"`
-	CreditorName string `json:"creditorName,omitempty"`
+	// They were removed at Task 14 because they were a routing hole: the agent
+	// goes on the wire as CdtrAgt/DbtrAgt and the clearing house routes on it, so
+	// a payer who typed the wrong BIC chose which bank received the payment. The
+	// fix was to DERIVE both from the bank row of the participant the request
+	// names.
+	//
+	// Task 18a put them back, because that row is the counterparty's own and a
+	// bank holds only its own — see payment.SubmitPaymentTx, which sets out why
+	// there is no second source and why the network has no directory service to
+	// be one. What makes an asserted agent safe is the other half of the same
+	// change: a bank resolves an address in its own register only, so a
+	// misdirected payment is refused with AC01 by the bank that was named rather
+	// than silently accepted for another bank's customer.
+	//
+	// The submitting bank's OWN side is still ignored on both fields. A payer
+	// does not rename themselves and does not reroute their own bank; both come
+	// from the register and the row the listener is bound to.
+	DebtorName    string `json:"debtorName,omitempty"`
+	CreditorName  string `json:"creditorName,omitempty"`
+	DebtorAgent   string `json:"debtorAgent,omitempty"`
+	CreditorAgent string `json:"creditorAgent,omitempty"`
 }
 
 func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
@@ -426,13 +435,74 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,
 		Metadata:    req.Metadata,
-		// No Agent on either side: SubmitPaymentTx derives both from the named
-		// participants' own bank rows and would ignore anything set here.
-		DebtorDetails:   payment.PartyDetails{Name: req.DebtorName},
-		CreditorDetails: payment.PartyDetails{Name: req.CreditorName},
+		// Both sides are passed through. Which one is the counterparty is the
+		// scheme's direction to decide, and SubmitPaymentTx overwrites the
+		// submitting bank's own side from its own register either way — so
+		// forwarding both is correct and forwarding only the one this layer
+		// guessed at would be a second place that has to know the direction.
+		DebtorDetails:   payment.PartyDetails{Agent: iso20022.BIC(req.DebtorAgent), Name: req.DebtorName},
+		CreditorDetails: payment.PartyDetails{Agent: iso20022.BIC(req.CreditorAgent), Name: req.CreditorName},
 	}
 }
 
 type openCycleRequest struct {
 	Scheme string `json:"scheme"`
+}
+
+// lodgementDTO is what POST /lodgements answers: the instruction that went out,
+// and not a balance.
+//
+// It carries no balance BECAUSE the reserve credit has not happened yet — it is
+// the central bank's to make, on a message still in flight. A DTO with a reserve
+// figure on it would be answering a question this handler cannot answer, and the
+// figure would be the bank's own mirror rather than the reserve itself. See
+// handleLodgeReserves on the 202.
+//
+// Ref is what a caller can correlate with: the message identifier the camt.025
+// quotes back. Nothing in the store is keyed by it — this system holds no
+// lodgement row — so it is useful for reading the log rather than for a follow-up
+// request, and saying so here is better than implying a GET that does not exist.
+type lodgementDTO struct {
+	Ref    string `json:"ref"`
+	Asset  string `json:"asset"`
+	Amount int64  `json:"amount"`
+	// Account is the reserve account the credit was asked for, as this bank knows
+	// it: the number it learned from its own admission acknowledgement.
+	Account string `json:"account"`
+	// Agent is the central bank asked. It is on the DTO because a bank's operator
+	// reading this back should see WHO was asked, which is the one party to the
+	// conversation the request did not name.
+	Agent string `json:"agent"`
+}
+
+func toLodgementDTO(in payment.LodgementInstruction) lodgementDTO {
+	return lodgementDTO{
+		Ref:     in.Ref,
+		Asset:   string(in.Asset),
+		Amount:  int64(in.Amount),
+		Account: string(in.Account),
+		Agent:   string(in.Agent),
+	}
+}
+
+// lodgementRequest is a bank asking its central bank to move vault cash onto the
+// bank's reserve account.
+//
+// It names an ASSET where fundRequest above names an account, and the contrast is
+// the whole difference between the two operations. A deposit is about one
+// customer's account, so the asset follows from it and there is nothing for a
+// caller to choose. A lodgement is about the BANK: it moves the bank's own cash,
+// of which there is one pot per asset, and nothing else in the request says which.
+//
+// There is deliberately no default. A bank founded in dollars would have a euro
+// lodgement invented for it by one, and the refusal it would get
+// (ErrParticipantAssetNotFound) would name an asset the caller never mentioned.
+//
+// No description either, and that is not an omission. A deposit's description is
+// the teller's note about a customer's transaction; a lodgement's counterparty is
+// a central bank, which is told what this is by the message definition, and the
+// posting's own description is written by the domain. See payment.LodgeReservesTx.
+type lodgementRequest struct {
+	Asset  string `json:"asset"`
+	Amount int64  `json:"amount"`
 }

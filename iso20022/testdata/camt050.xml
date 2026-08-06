@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Envelope>
+  <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.02">
+    <Fr>
+      <FIId>
+        <FinInstnId>
+          <BICFI>AURODEFFXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </Fr>
+    <To>
+      <FIId>
+        <FinInstnId>
+          <BICFI>CBSEDEFFXXX</BICFI>
+        </FinInstnId>
+      </FIId>
+    </To>
+    <BizMsgIdr>AURODEFFXXX-LODGE-1</BizMsgIdr>
+    <MsgDefIdr>camt.050.001.05</MsgDefIdr>
+    <CreDt>2026-08-01T11:00:00Z</CreDt>
+  </AppHdr>
+  <Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.050.001.05">
+    <LqdtyCdtTrf>
+      <MsgHdr>
+        <MsgId>AURODEFFXXX-LODGE-1</MsgId>
+        <CreDtTm>2026-08-01T11:00:00Z</CreDtTm>
+      </MsgHdr>
+      <LqdtyCdtTrf>
+        <LqdtyTrfId>
+          <EndToEndId>AURODEFFXXX-LODGE-1</EndToEndId>
+        </LqdtyTrfId>
+        <Cdtr>
+          <FinInstnId>
+            <BICFI>CBSEDEFFXXX</BICFI>
+          </FinInstnId>
+        </Cdtr>
+        <CdtrAcct>
+          <Id>
+            <Othr>
+              <Id>acc_cb_reserve_bank_1_eur</Id>
+            </Othr>
+          </Id>
+        </CdtrAcct>
+        <TrfdAmt>
+          <AmtWthCcy Ccy="EUR">500000.00</AmtWthCcy>
+        </TrfdAmt>
+        <Dbtr>
+          <FinInstnId>
+            <BICFI>AURODEFFXXX</BICFI>
+          </FinInstnId>
+        </Dbtr>
+      </LqdtyCdtTrf>
+    </LqdtyCdtTrf>
+  </Document>
+</Envelope>

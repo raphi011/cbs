@@ -91,12 +91,22 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 		t.Fatalf("the payee holds %d, want 0 — nothing has settled", got)
 	}
 
-	// The operator's remedy: fund the short member. A deposit raises the
-	// customer's balance and the bank's reserve together, which is what makes it
-	// the fixture's way of putting reserves behind a bank that lent without any.
+	// The operator's remedy: fund the short member, which since Task 18a is TWO
+	// acts rather than one.
+	//
+	// A deposit raises the customer's balance and leaves the bank holding vault
+	// cash. It no longer raises the reserve, so on its own it would not unstick
+	// this cycle at all — the central bank's book is what settlement reads, and a
+	// deposit never reaches it. The lodgement is what puts the reserve behind the
+	// bank, and it is a real camt.050/camt.025 round trip.
+	//
+	// That the remedy needs both is the point rather than a detail of the fixture.
+	// A bank cannot settle out of cash in its own drawer; it settles out of central
+	// bank money, and getting some is a conversation.
 	if err := h.net.Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
+	h.lodge(t, h.debtorPID, "EUR", harnessAmount)
 
 	// And ask again. This is the route POST /cycles/{cid}/settle reaches.
 	if _, err := h.mesh.Settle(context.Background(), stuck.ID); err != nil {

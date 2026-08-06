@@ -36,6 +36,27 @@ operate in — which is why all three carry the same `PrcId` and their own
 `MsgId`. See `Acmt007` for why this use of the family is not how a central-bank
 account is really opened.
 
+`camt050.xml` and `camt025.xml` are a fourth file of the same kind, and one
+conversation rather than two documents: Aurora Bank asking its central bank to
+move EUR 500,000.00 of vault cash onto its reserve account, and the central bank
+saying it did. Their shapes come from `camt.050.001.05.xsd` and
+`camt.025.001.05.xsd` and from nothing else, for the reason `pacs009.xml` gives —
+the EPC governs SEPA credit transfers and direct debits between PSPs and their
+customers, not a member's liquidity transfer to its central bank.
+
+Their correlator is not the acmt family's. The receipt names the request by its
+`MsgId` (`RctDtls/OrgnlMsgId/MsgId`), because a lodgement is one request and one
+answer; an admission is several requests that are one process, so it needs a
+`PrcId` above the messages. See `Camt025` on `OriginalMessageAndIssuer`.
+
+**One value in `camt025.xml` is unverifiable and is not a schema fact.**
+`ReqHdlg/StsCd` is `Max4AlphaNumericText` with no `xs:enumeration` behind it, so
+`xmllint` accepts any four characters and the `ACSC` in that file is this
+system's choice rather than something the check confirms. See `RequestHandling`,
+which records why the value was reused from `TransactionStatus` instead of
+invented, and what a repository holding the external status code list should do
+about it. It is the same unpaid debt `BankTransactionCode` carries.
+
 **To enable the schema check**, download the message schemas from
 <https://www.iso20022.org/iso-20022-message-definitions> into `testdata/xsd/`
 using the file names the test expects:
@@ -47,6 +68,8 @@ using the file names the test expects:
     testdata/xsd/pacs.004.001.09.xsd
     testdata/xsd/pacs.009.001.08.xsd
     testdata/xsd/camt.053.001.08.xsd
+    testdata/xsd/camt.050.001.05.xsd
+    testdata/xsd/camt.025.001.05.xsd
     testdata/xsd/acmt.007.001.03.xsd
     testdata/xsd/acmt.010.001.03.xsd
     testdata/xsd/acmt.011.001.03.xsd
@@ -61,6 +84,16 @@ wrong. **A message added to that map is a line added here.**
 The directory is not committed: the schemas are redistributed under ISO's terms
 and are not this repository's to vendor. The test skips when they are absent, and
 `.gitignore` is what keeps a `git add -A` from vendoring them anyway.
+
+Not every one of them is on that page. The versions this repository pins are in
+several cases no longer the current ones, and a superseded version lives in the
+**archive** instead — <https://www.iso20022.org/catalogue-messages/iso-20022-messages-archive>,
+which takes a `?search=` query. `camt.050.001.05` and `camt.025.001.05` are both
+there, under Cash Management V01, and each row has its own `XSD` button. Search
+for the identifier, expand the message set and then the `camt` group, and take
+the XSD from the row whose identifier matches EXACTLY — the neighbouring rows are
+other messages of the same family, and `camt.051.001.05` is one row below the one
+this repository wants.
 
 **They are not scriptable to fetch.** `iso20022.org`'s catalogue pages do not
 answer a non-browser client, and the schema downloads sit behind an acceptance

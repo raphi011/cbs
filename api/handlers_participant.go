@@ -17,9 +17,11 @@ import (
 // # 202, and what an operator has when it answers
 //
 // A founded bank. Its book, its chart of accounts and its default product exist,
-// so it can open customer accounts straight away. What it cannot do is take a
-// cash deposit, since funding raises a reserve and no settlement agent holds an
-// account for it yet — 422, naming the membership. It is in no routing
+// so it can open customer accounts straight away, and it can take cash in: a
+// deposit lands in this bank's own vault and involves nobody else. What it cannot
+// do is LODGE that cash on reserve, since only the central bank can credit an
+// account in the central bank's book and none is held for this bank yet — 422 from
+// POST /lodgements, naming the reserve account it cannot name. It is in no routing
 // directory either, and the cost of that is wider than this bank: nothing STOPS
 // a payment being addressed to it, and a cut-off carrying one cannot be
 // instructed at all, so EVERY member in that cycle is left with its payments
@@ -132,8 +134,10 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	// No asset on the wire: funding raises the reserve of whichever asset the
-	// funded account is denominated in, which the network reads for itself.
+	// No asset on the wire: the cash lands in the vault of whichever asset the
+	// funded account is denominated in, which the network reads for itself. A
+	// LODGEMENT does name one, because it is about the bank rather than about an
+	// account — see handleLodgeReserves.
 	if err := s.network().Deposit(r.Context(), p.ID, deposit.AccountID(req.Account), ledger.Amount(req.Amount), req.Description); err != nil {
 		writeError(w, err)
 		return
@@ -149,6 +153,70 @@ func (s *Server) handleFundDeposit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toBalanceDTO(bal, acct.Asset))
+}
+
+// handleLodgeReserves is a bank placing its own vault cash on reserve at the
+// central bank.
+//
+// # Why this is a route at all, and why it is on the BANK's port
+//
+// Funding a reserve used to be a side effect of POST /deposits: cash paid in
+// raised the customer's balance and the bank's reserve in one unit of work,
+// because one store held both books. Task 18a splits them, so the second half
+// needs a door of its own — and it is on this port because a lodgement is the
+// BANK's decision about its own liquidity. The clearing house has no business in
+// it, and the central bank does not initiate it.
+//
+// # 202 and not 200, and that is the substance
+//
+// POST /deposits answers 200 with the new balance, because a deposit is finished
+// when it returns: one institution, one posting. This answers 202 with the
+// instruction that was sent, because the reserve credit is another institution's
+// to make and has not happened yet — the camt.050 is on the wire and the camt.025
+// comes back to bank.receiveLodgementReceipt.
+//
+// So a caller that reads a reserve immediately after this may see the old figure,
+// and that is honest rather than a defect: it is the same asynchrony
+// POST /payments has, and for the same reason. What HAS happened by the time this
+// returns is the bank's own leg — its vault is down and its reserve mirror is up.
+//
+// # The refusal a founded bank gets
+//
+// A bank that cannot name its own settlement account is refused with
+// payment.ErrSettlementMemberNotFound and a 422. That refusal used to be given by
+// POST /deposits and was wrong there — it said cash could not be paid in at a
+// bank the scheme had not answered for — and it is right here: a bank with no
+// reserve account has no reserve to lodge into. See
+// TestABankTheSchemeHasNotAnsweredForCanTakeCashAndCannotLodgeIt.
+func (s *Server) handleLodgeReserves(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.participant(w, r)
+	if !ok {
+		return
+	}
+	var req lodgementRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	if req.Asset == "" {
+		writeBadRequest(w, "asset is required: a bank holds one pot of vault cash per asset and nothing else in this request says which")
+		return
+	}
+	in, err := s.mesh.Lodge(r.Context(), p.ID, ledger.AssetCode(req.Asset), ledger.Amount(req.Amount))
+	if err != nil {
+		// A lodgement that committed and could not be SENT hands the instruction
+		// back beside the error, as Mesh.Submit does with its payment: this bank's
+		// vault is down and its reserve mirror up, with nothing on its way to the
+		// central bank to match it. It is the one place that half-happened state
+		// can be recorded, because this system keeps no lodgement row.
+		if in.Ref != "" {
+			s.log.Error("api: a lodgement committed and its instruction did not go out",
+				"bank", p.BIC, "lodgement", in.Ref, "asset", in.Asset, "amount", in.Amount, "err", err)
+		}
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, toLodgementDTO(in))
 }
 
 func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {

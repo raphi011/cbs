@@ -27,8 +27,11 @@ import type {
   Product,
   DescriptionRequest,
   DirectoryEntry,
+  RosterEntry,
   Facility,
   FundRequest,
+  Lodgement,
+  LodgementRequest,
   Hold,
   InitiatePaymentRequest,
   Installment,
@@ -69,10 +72,32 @@ export function addParticipant(body: AddParticipantRequest): Promise<Participant
   return request("POST", cb("/members"), body);
 }
 
-// Funds a customer deposit account (and the bank's central-bank reserve in
-// step). Returns the deposit account's new balance.
+// Takes cash in over the counter: credits a customer deposit account, and leaves
+// the bank holding the cash. Returns the account's new balance.
+//
+// It does NOT raise the bank's central-bank reserve, and this comment used to say
+// it did. The two were one call for as long as one store held both books; since
+// Task 18a a deposit reaches the bank's own vault and no institution but that
+// bank, because a bank cannot write in the central bank's ledger. lodgeReserves
+// below is the other half.
 export function fundDeposit(pid: string, body: FundRequest): Promise<Balance> {
   return request("POST", bank(pid, `/deposits`), body);
+}
+
+// Places a bank's vault cash on reserve at the central bank: the lodgement.
+//
+// Answers 202 with the INSTRUCTION, not a balance. The reserve credit is the
+// central bank's to make and travels as a camt.050, with a camt.025 receipt back,
+// so the reserve is not up when this resolves. What HAS happened is the bank's own
+// leg: its vault is down and its own reserve mirror is up.
+//
+// This is how reserves — which start at 0 — are seeded. A bank cannot settle out
+// of cash in its own drawer.
+export function lodgeReserves(
+  pid: string,
+  body: LodgementRequest,
+): Promise<Lodgement> {
+  return request("POST", bank(pid, `/lodgements`), body);
 }
 
 // --- Schemes --------------------------------------------------------------
@@ -83,24 +108,28 @@ export function listSchemes(): Promise<Scheme[]> {
 
 // --- Directory ------------------------------------------------------------
 
-// Resolving an address on the clearing house's listener: the operator whose job
-// "which bank holds this?" is. 404 when nobody holds it, 409 when two banks do —
-// an ambiguous address is an error rather than a first hit, following the
-// settlement rule about not defaulting quietly.
+// The clearing house's ROUTING directory: every address the scheme will send a
+// message to. It is a list and not a lookup, because the question this
+// institution can answer is "who may be addressed" and not "who holds this
+// IBAN".
 //
-// A customer's lookup is NOT this function. It goes to their own bank's listener
-// (see resolveIdentifierAtBank), because a retail client has no CSM connection.
-export function resolveIdentifierAtCsm(
-  scheme: string,
-  value: string,
-): Promise<DirectoryEntry> {
-  return request("GET", csm(`/directory${qs({ scheme, value })}`));
+// There used to be a resolveIdentifierAtCsm here, asking the second question of
+// this listener. It is gone with the route: answering it meant sweeping every
+// bank's deposit register, and the clearing house holds none — see
+// api/surface.go and payment.ResolveIdentifier. Nothing in this system answers
+// "which bank holds this IBAN" now; a payer is told the BIC the way they are
+// told the IBAN.
+export function listRoster(): Promise<RosterEntry[]> {
+  return request("GET", csm("/roster"));
 }
 
-// The same question asked of a customer's own bank. A bank is a scheme
-// participant with directory access, and validating a payee's address before
-// accepting an instruction is what it uses that for. This is the one a customer's
-// browser may call; the CSM's is an operator's.
+// An address resolved in ONE bank's own register, on that bank's listener. 404
+// when this bank does not hold it — including when another bank does, which is
+// the narrowing — and 409 when two of its own accounts do.
+//
+// This is the one a customer's browser may call. What it is not, any more, is a
+// way to find out whose IBAN this is: it answers only about the bank being
+// asked.
 export function resolveIdentifierAtBank(
   pid: string,
   scheme: string,

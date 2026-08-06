@@ -776,20 +776,32 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // below lost the creditor's book the same day. What this section predicted
 // would eventually close its own prediction now records that it did.
 //
-// # The receiving bank reaches every bank's book, by design of the directory
+// # The receiving bank USED to reach every bank's book, and Task 18a is why it
+// no longer does
 //
-// The payee's bank resolves the message BY ADDRESS — which is the point, and
-// what produces AC01 for an IBAN nobody holds — and this network's directory is
-// a sweep: ResolveIdentifierTx calls ListDepositAccountsByIdentifier once per
-// member (payment/system.go). Asking "whose IBAN is this" therefore reads every
-// member's register. A real network answers that question at a directory service
-// and not by asking each bank, and this one says so in ResolveIdentifier's own
-// doc; the sweep is the honest shape at two banks.
+// This was the second of the two crossings this test was built to find, and it
+// outlived the first by four tasks. The payee's bank resolves the message BY
+// ADDRESS — which is the point, and what produces AC01 for an IBAN it does not
+// hold — and that resolution was a SWEEP: ResolveIdentifierTx called
+// ListDepositAccountsByIdentifier once per member, so asking "whose IBAN is
+// this" read every member's register, on the happy path, every time.
 //
-// So the receiving bank's set is every BANK book and neither NetworkBook nor the
-// central bank's: its half writes the payment row (network-scoped, and it
-// appends no audit event — see AcceptInboundTx on why the payment's lifecycle
-// has two facts and not three), so nothing in it allocates a network id.
+// Task 14 narrowed which PARTY was resolved and could not narrow the sweep,
+// because narrowing it needs the bank to know which register is its own and
+// payment.Network had no identity to answer with. Task 18a passes the identity
+// as an argument rather than waiting for it (payment.ResolveIdentifierTx), and
+// the receiving bank's set drops to its own book alone.
+//
+// It is neither NetworkBook nor the central bank's, and the absence of the first
+// is worth a sentence: its half writes the payment row, which is network-scoped,
+// but it appends no audit event — see AcceptInboundTx on why the payment's
+// lifecycle has two facts and not three — so nothing in it allocates a network
+// id.
+//
+// What is NOT here, and belongs to Task 18b: this is still a bank being TOLD
+// which register is its own by its caller. Nothing in payment refuses a bank
+// that passes somebody else's id. The recorder is what would see it, and this
+// assertion is where it would show.
 func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h := newMeshHarness(t) // builds a seeded network + mesh over a recordingStore
 
@@ -799,7 +811,8 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 
 	assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
 		[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
-	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC), h.bankBooks())
+	assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC),
+		[]ledger.BookID{h.creditorBook})
 
 	// Neither of them went near the central bank's book. Only settlement moves
 	// reserves, and no bank settles: that is the whole distinction between
@@ -844,16 +857,17 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //
 // # The RECEIVING bank, which here is the payer's, and which POSTS
 //
-// Every bank book, and neither NetworkBook nor the central bank's — again the
-// same as the push's receiver, and this one is the more informative half. Its
-// directory sweep is the same sweep: DirectDebitRequest resolves the DEBTOR —
+// Its own book, and neither NetworkBook nor the central bank's — again the same
+// as the push's receiver, and this one is the more informative half. Its
+// resolution is the same resolution: DirectDebitRequest resolves the DEBTOR —
 // this bank's own customer, the only party a pacs.003 routed here gives it
-// standing over — by address, and ResolveIdentifierTx asks every member in turn
-// even for that one lookup, so answering "whose IBAN is this" still reads every
-// member's register. Narrowing which party is resolved did not narrow the
-// sweep itself; see payment.DirectDebitRequest and localPartyIn for why not,
-// and mesh/bank.go's own doc on the receive handlers for the same point made
-// about the code that calls this.
+// standing over — by address, in this bank's own register.
+//
+// It was every bank's book until Task 18a, for the same reason the push's
+// receiver was: ResolveIdentifierTx asked every member in turn even for that one
+// lookup. See TestWhichBooksEachBankActuallyReaches for the whole of why that
+// took two tasks to close, and payment.DirectDebitRequest for what a wrongly
+// addressed collection now meets instead.
 //
 // What is new is that this half MOVES MONEY and NetworkBook still does not
 // appear. The debtor leg is posted here, and every id and audit event that
@@ -934,7 +948,8 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 
 	assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
 		[]ledger.BookID{h.creditorBook, ledger.NetworkBook})
-	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
+	assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC),
+		[]ledger.BookID{h.debtorBook})
 
 	// Clearing a collection costs the clearing house exactly what clearing a
 	// credit transfer costs it, which is the point of relaying by an address the
@@ -953,44 +968,53 @@ func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
 	}
 }
 
-// TestAWrongCounterpartyAgentDoesNotMisroute is the ROUTING half of the two
-// measurements above, and it exists because neither of them could fail on it.
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames is the ROUTING half of
+// the two measurements above, and it is Task 14's routing test REVERSED.
 //
-// The two tests above both build their request from the harness, which quotes
-// the counterparty's real BIC, so both measure a mesh in which the agent on the
-// instruction and the agent on the roster agree. Making the counterparty's name
-// travel on the instruction — the whole of Task 14 — made it possible for them
-// to disagree, because the same request field carried the BIC and nothing
-// compared it with anything. The clearing house ROUTES on that BIC: csm.go's
-// relayCreditTransfer reads CdtrAgt out of the pacs.008 and relayDirectDebit
-// reads DbtrAgt out of the pacs.003, deliberately without a store read. So a
-// payer who typed the wrong bank chose the bank.
+// # What it used to assert, and why that is gone
 //
-// Measured before it was fixed, and both directions fail in ways worth naming
-// because they are not the same failure:
+// It used to be TestAWrongCounterpartyAgentDoesNotMisroute, and what it pinned
+// was a DERIVATION: SubmitPaymentTx read the counterparty's own Bank row for its
+// BIC and discarded whatever the instruction carried, so a payer who typed the
+// wrong bank was overruled rather than obeyed. That was measured against two
+// real failures and both are worth keeping written down, because they are what a
+// reader will expect this test to still be about:
 //
 //   - PUSH, with the payee's agent set to the PAYER's own bank. The pacs.008
-//     comes back to its sender, which answers its own instruction: the payer's
-//     bank's set becomes [debtor, creditor, network] — the very set Task 14
-//     moved it off — and the payee's bank is handed nothing at all.
-//   - PULL, with the payer's agent set to the COLLECTOR's own bank. Worse, and
-//     not symmetrically: AcceptInboundTx posts the debtor leg into the book of
-//     the payment's DEBTOR participant, so the collecting bank posts the debit
-//     in the PAYER'S BANK'S BOOK, while the payer's bank never sees the
-//     collection and its set is empty.
+//     came back to its sender, which then ANSWERED ITS OWN INSTRUCTION: the
+//     payer's bank's set became [debtor, creditor, network] and the payee's bank
+//     was handed nothing.
+//   - PULL, with the payer's agent set to the COLLECTOR's own bank. The
+//     collecting bank posted the debit in the PAYER'S BANK'S BOOK, because
+//     AcceptInboundTx posts into the book of the payment's debtor participant.
 //
-// The fix is not a comparison. SubmitPaymentTx DERIVES the counterparty's agent
-// from the roster row for the participant the payment already names, and ignores
-// whatever the instruction carried — which is what a real SEPA originating bank
-// does, IBAN-only since 2016. The last assertion in each subtest is that
-// derivation: the stored agent is the roster's, not the one submitted.
+// The derivation is gone at Task 18a, and not because the hazard stopped being
+// one. It read `tx.GetBank(counterparty)` — the counterparty's own row, in the
+// counterparty's own store from Task 18c — and a bank that holds only its own
+// row has no answer to give. There is nowhere else to derive it FROM either: the
+// roster is keyed by the BIC being derived and belongs to the clearing house, and
+// this network has no IBAN-to-BIC directory service. So the address on an
+// instruction is an IBAN and a BIC, which is what SEPA was before it went
+// IBAN-only in 2016 and what a cross-border transfer still is today.
 //
-// The book sets are asserted again here, unchanged from the two tests above, for
-// one specific reason: the roster read the fix adds is network-scoped and
-// deliberately not a recordingTx override, so it must record NO book access. If
-// it ever became book-scoped these sets would grow, and this is where that would
-// show.
-func TestAWrongCounterpartyAgentDoesNotMisroute(t *testing.T) {
+// # What makes an asserted agent safe, and it is the OTHER change in this commit
+//
+// Both failures above have one mechanism: the bank the message reached could
+// resolve a payee it does not hold. ResolveIdentifierTx swept every member's
+// register, so the wrong bank looked the creditor's IBAN up, found it at the
+// RIGHT bank, and acted on somebody else's customer. Task 18a narrows that sweep
+// to the resolving bank's own register — and the moment it does, a misdirected
+// message has nothing to resolve and the bank that receives it says so.
+//
+// So the two subtests below assert the refusal rather than the correction. A
+// payer who names the wrong bank does not get their payment routed for them;
+// they get it back, with AC01, from the bank they named. That is the honest
+// answer and it is the one a real network gives.
+//
+// The book sets are asserted again for one specific reason: the wrong bank must
+// touch its OWN book and no other. Under the sweep it touched every bank's, which
+// is precisely the crossing that made the misroute dangerous.
+func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 	t.Run("push", func(t *testing.T) {
 		h := newMeshHarness(t)
 		req := h.creditTransferRequest(t)
@@ -1005,18 +1029,38 @@ func TestAWrongCounterpartyAgentDoesNotMisroute(t *testing.T) {
 		}
 		h.drain(t)
 
-		if n := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); n != 1 {
-			t.Errorf("the payee's bank was handed %d credit transfers, want 1", n)
+		// Routed as addressed. The clearing house relays on CdtrAgt with no store
+		// read of its own, so the message goes where the instruction said.
+		if n := h.messagesSentTo(h.debtorBIC, "pacs.008.001.08"); n != 1 {
+			t.Errorf("the bank the payer named was handed %d credit transfers, want 1", n)
 		}
-		if n := h.messagesSentTo(h.debtorBIC, "pacs.008.001.08"); n != 0 {
-			t.Errorf("the payer's bank was handed %d credit transfers, want 0 — it is the sender, not a destination", n)
+		if n := h.messagesSentTo(h.creditorBIC, "pacs.008.001.08"); n != 0 {
+			t.Errorf("the payee's real bank was handed %d credit transfers, want 0 — nothing addressed it", n)
 		}
-		assertBooksTouched(t, "the payer's bank", h.booksTouchedBy(h.debtorBIC),
-			[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
-		assertBooksTouched(t, "the payee's bank", h.booksTouchedBy(h.creditorBIC), h.bankBooks())
 
-		if got := h.payment(t, p.ID).CreditorDetails.Agent; got != h.creditorBIC {
-			t.Errorf("stored creditor agent = %q, want the roster's %q — the instruction's BIC must be ignored, not recorded", got, h.creditorBIC)
+		// And refused there, because that bank does not hold the payee's IBAN.
+		got := h.payment(t, p.ID)
+		if got.Status != payment.Rejected {
+			t.Fatalf("status = %v, want Rejected", got.Status)
+		}
+		if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
+			t.Errorf("reject code = %q, want AC01 — the named bank holds no such address", got.RejectCode)
+		}
+		// The payer got their money back. A misdirected payment that left the
+		// payer short would be worse than one that was quietly re-routed.
+		if bal := h.suspense(t, h.debtorPID); bal != 0 {
+			t.Errorf("clearing suspense = %d after a refusal, want 0", bal)
+		}
+
+		// The bank that was wrongly named answered out of its OWN register and
+		// reached no other book. Under the sweep this set was every bank's.
+		assertBooksTouched(t, "the bank the payer wrongly named", h.booksTouchedBy(h.debtorBIC),
+			[]ledger.BookID{h.debtorBook, ledger.NetworkBook})
+
+		// And the agent is RECORDED rather than overruled: what the payment says
+		// about the counterparty's bank is what the instruction said.
+		if got := got.CreditorDetails.Agent; got != h.debtorBIC {
+			t.Errorf("stored creditor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, h.debtorBIC)
 		}
 	})
 
@@ -1033,18 +1077,33 @@ func TestAWrongCounterpartyAgentDoesNotMisroute(t *testing.T) {
 		}
 		h.drain(t)
 
-		if n := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); n != 1 {
-			t.Errorf("the payer's bank was handed %d collections, want 1", n)
+		if n := h.messagesSentTo(h.creditorBIC, "pacs.003.001.08"); n != 1 {
+			t.Errorf("the bank the collector named — itself — was handed %d collections, want 1", n)
 		}
-		if n := h.messagesSentTo(h.creditorBIC, "pacs.003.001.08"); n != 0 {
-			t.Errorf("the collecting bank was handed %d of its own collections, want 0", n)
+		if n := h.messagesSentTo(h.debtorBIC, "pacs.003.001.08"); n != 0 {
+			t.Errorf("the payer's real bank was handed %d collections, want 0 — nothing addressed it", n)
 		}
-		assertBooksTouched(t, "the payee's bank, submitting a collection", h.booksTouchedBy(h.creditorBIC),
-			[]ledger.BookID{h.creditorBook, ledger.NetworkBook})
-		assertBooksTouched(t, "the payer's bank, answering a collection", h.booksTouchedBy(h.debtorBIC), h.bankBooks())
 
-		if got := h.payment(t, p.ID).DebtorDetails.Agent; got != h.debtorBIC {
-			t.Errorf("stored debtor agent = %q, want the roster's %q — the instruction's BIC must be ignored, not recorded", got, h.debtorBIC)
+		got := h.payment(t, p.ID)
+		if got.Status != payment.Rejected {
+			t.Fatalf("status = %v, want Rejected", got.Status)
+		}
+		if got.RejectCode != iso20022.StatusReasonIncorrectAccountNumber {
+			t.Errorf("reject code = %q, want AC01 — the named bank holds no such address", got.RejectCode)
+		}
+		// Nothing was collected. On a pull the receiving bank is the one that
+		// posts, so a collection answered by the wrong bank must leave no debit
+		// anywhere — least of all in the payer's bank's book, which is where the
+		// sweep used to put it.
+		if bal := h.suspense(t, h.debtorPID); bal != 0 {
+			t.Errorf("the payer's bank's clearing suspense = %d, want 0 — it never saw this collection", bal)
+		}
+
+		assertBooksTouched(t, "the collector, having addressed the collection to itself",
+			h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook, ledger.NetworkBook})
+
+		if got := got.DebtorDetails.Agent; got != h.creditorBIC {
+			t.Errorf("stored debtor agent = %q, want the instruction's %q — an asserted agent is recorded, not replaced", got, h.creditorBIC)
 		}
 	})
 }
@@ -1516,97 +1575,253 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 	}
 }
 
-// TestFundingAReserveReachesTwoBooks pins crossing 6 as a fact rather than a
-// note.
+// TestTakingCashInReachesOnlyTheBanksOwnBook is the successor to
+// TestFundingAReserveReachesTwoBooks, and it is that measurement turned inside
+// out.
 //
-// It is the one measurement in this file that is expected to PASS today and to
-// FAIL the day the stores split, and that is what it is for. Network.DepositTx
-// posts the funding bank's reserve mirror and the central bank's leg in one unit
-// of work, and it is the only way a reserve is funded in this system: cash paid
-// in raises a customer's balance and the bank's reserve together, because that
-// is what a deposit IS here. There is no vault and no lodgement to route it
-// through — modelling one is what closes this crossing, and the spec gives that
-// its own task rather than folding it into the task that made admission a
-// conversation.
+// The old one pinned crossing 6 as a fact: Network.DepositTx posted the funding
+// bank's reserve mirror AND the central bank's matching leg in one unit of work,
+// because a deposit WAS the bank placing cash on reserve, and there was no vault
+// and no lodgement to route it through. It was the one measurement in this file
+// expected to pass then and to fail the day the stores split. Task 18a is where
+// it fails, and it failed on exactly the two assertions that named the crossing —
+// the book set shrank to the bank's own, and no transaction landed in the central
+// bank's book — which is why it is rewritten here rather than edited.
 //
-// # No instrument this sub-project had could have found it
+// What replaces it asserts the crossing is GONE, and asserts it three ways,
+// because "reaches one book" is a claim two different bugs could satisfy.
 //
-// The recorder attributes a book to the actor whose unit of work reached it, and
-// funding never becomes a message: it arrives at Network.Deposit from an
-// operator or from a fixture, with no institution behind it. So booksTouchedBy
-// has nothing to narrow by and every assertion built on it — every other
-// measurement in this file — is blind to this call by construction. It drives
-// the recorder directly instead, the way TestWritingAParticipantTouchesNoBankBook
-// does, and reads the whole-store set.
+// # No instrument this sub-project had could have found the original
 //
-// # The measured set is [the bank's book, CentralBankBook], and the plan said three
+// That reason is unchanged and still worth keeping, because it is why this test
+// is shaped as it is. The recorder attributes a book to the actor whose unit of
+// work reached it, and taking cash in never becomes a message: it arrives at
+// Network.Deposit from an operator or from a fixture, with no institution behind
+// it. So booksTouchedBy has nothing to narrow by, and every assertion built on it
+// — every other measurement in this file — is blind to this call by construction.
+// It drives the recorder directly instead, the way
+// TestWritingAParticipantTouchesNoBankBook does, and reads the whole-store set.
 //
-// This task's plan predicted NetworkBook in the set too, on the reasoning the
-// note above the tests gives: a network-scoped write reaches this recorder
-// through the id it allocated and the audit event it appended. The measurement
-// says otherwise, and the reason is that a deposit writes NO network row. It
-// allocates no network id and appends no audit event; its whole record is the
-// two ledger transactions, one in each of the two books below. That is the same
-// correction Task 16's return measurement made — the question both times is
-// whether the act writes a row of the network's, and here it does not.
+// # Why a book set alone would not be enough
 //
-// # What the two books mean
+// A read touches a book exactly as a write does, and the converse trap is the one
+// that matters now: a deposit that posted NOTHING AT ALL would also touch one
+// book and would also leave the central bank's alone. So the balance is asserted
+// too. Vault cash rising by the amount paid in is what says the money went
+// somewhere, and it is the entry that did not exist before this task — the debit
+// used to be to Reserve at Central Bank.
 //
-// The bank's own book takes the funded account's credit and the debit to its
-// Reserve at Central Bank. CentralBankBook takes the matching pair in the
-// settlement agent's ledger: its Settlement Assets debited, this bank's
-// settlement account credited. The second is a bank posting in another
-// institution's book, inside the funding bank's own unit of work, and no
-// re-routing of a LOOKUP changes it — Task 17 moved DepositTx's account read
-// from the central bank's member row to the bank's own record of its account
-// number, and the posting stayed exactly where it was. See Network.DepositTx,
-// which says the same thing from the other side. That the posting is a posting
-// and not that surviving lookup is what the transaction count below pins; see
-// the next section.
+// The transaction count in the central bank's book stays, with its sense
+// reversed. It is what catches the halfway state where the posting is removed and
+// the READ is not: centralBankAssetsAccountTx used to run a line earlier and
+// would still have put CentralBankBook in the set. It is gone, and a zero here is
+// what says so.
 //
-// # Three assertions, because the book set alone cannot say "posting"
-//
-// The recorder notes which books a unit of work TOUCHED, and a read touches a
-// book exactly as a write does. Delete only the second PostTransactionTx from
-// DepositTx and CentralBankBook is still recorded — centralBankAssetsAccountTx
-// reads the settlement agent's chart of accounts a line earlier — so the book
-// set on its own is satisfied by a deposit that posts nothing there at all. That
-// is not a flaw in the recorder: a read of another institution's book is a
-// crossing too, and under split stores it fails the same way. It is a limit on
-// what one assertion can claim.
-//
-// So the posting is counted separately, as transactions appearing in the central
-// bank's book, and the unit of work is counted too. The three together are the
-// sentence this test's name makes: the settlement agent's book is REACHED, a
-// transaction lands IN it, and it lands in the same commit as the bank's own.
-// Drop any one leg of the crossing and one of the three fails.
-func TestFundingAReserveReachesTwoBooks(t *testing.T) {
+// One unit of work, still, and it now means the opposite of what it used to.
+// There it said the two books move together, and two units would have meant the
+// crossing was already split. Here there is one book to move, and more than one
+// unit of work would mean a deposit had acquired a second act — which is what a
+// LODGEMENT is, and a lodgement is not this call.
+func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 	h := newMeshHarness(t)
 
-	// Read before the recorder is cleared, so this fixture's own read is not part
-	// of the measurement.
+	// Both read before the recorder is cleared, so this fixture's own reads are
+	// not part of the measurement.
 	before := h.centralBankTransactionCount(t)
+	vaultBefore := h.vaultCash(t, h.debtor.ID)
 
 	// The fixture's payer, funded again. Which account it is does not matter to
 	// what this measures — every deposit takes the same two legs — and reusing
 	// the fixture's keeps the call under test the only thing in the measurement.
+	const amount = ledger.Amount(100_000)
 	h.rec.reset()
-	if err := h.net.Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, 100_000, "cash in"); err != nil {
+	if err := h.net.Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 
 	// Both taken before anything else reads the store, for the same reason.
 	touched, units := h.rec.touched(), h.rec.unitsOfWork()
 
-	assertBooksTouched(t, "funding a reserve", touched,
-		[]ledger.BookID{h.debtorBook, payment.CentralBankBook})
-	if got := h.centralBankTransactionCount(t) - before; got != 1 {
-		t.Errorf("funding a reserve wrote %d transactions in the central bank's book, want 1; "+
-			"the crossing is a POSTING there and the book set alone cannot tell one from a read", got)
+	assertBooksTouched(t, "taking cash in", touched, []ledger.BookID{h.debtorBook})
+	if got := h.centralBankTransactionCount(t) - before; got != 0 {
+		t.Errorf("taking cash in wrote %d transactions in the central bank's book, want 0; "+
+			"a customer handing over notes is not a movement on a reserve account", got)
 	}
 	if units != 1 {
-		t.Errorf("funding a reserve opened %d units of work, want 1; the crossing is that both "+
-			"books move together, and two of them would mean it had already been split", units)
+		t.Errorf("taking cash in opened %d units of work, want 1; moving the cash onward is a "+
+			"LODGEMENT and a separate act, but paying it in is one institution's own posting", units)
+	}
+	// The book set and the counts above are all satisfied by a deposit that posts
+	// nothing whatsoever. This is what says the money arrived, and it names the
+	// account that makes the deposit one institution's act.
+	if got, want := h.vaultCash(t, h.debtor.ID)-vaultBefore, amount; got != want {
+		t.Errorf("taking cash in raised vault cash by %d, want %d; cash paid in over the counter "+
+			"is cash the bank is holding", got, want)
+	}
+}
+
+// TestALodgementIsTwoBooksInTwoUnitsOfWork is the other half of the crossing, and
+// it is the measurement that says the crossing was CLOSED rather than merely
+// moved.
+//
+// TestTakingCashInReachesOnlyTheBanksOwnBook says the deposit stopped reaching the
+// central bank's book. On its own that is satisfied by a system in which reserves
+// can no longer be funded at all, which is not a fix. This is the other side:
+// reserves still get funded, the same two pairs of entries still land in the same
+// two books, and what changed is that they land in TWO UNITS OF WORK with a
+// message between them.
+//
+// # The three assertions, and why each is a different claim
+//
+// The recorder attributes a book to the actor whose unit of work reached it, so
+// the first two are per-ACTOR sets and this is what a crossing looks like when it
+// has become a conversation:
+//
+//   - The lodging bank reaches its OWN book and no other. Before this task it
+//     reached the central bank's too, inside its own transaction, and that WAS
+//     crossing 6.
+//   - The central bank reaches its own book. It is a separate actor now, doing its
+//     own posting on its own goroutine, because a camt.050 arrived.
+//
+// The third is the unit-of-work count, and it is the one that would catch a
+// "conversation" that was really still one transaction. TestFundingAReserveReaches-
+// TwoBooks asserted units == 1 and called that the crossing; here more than one is
+// the POINT, and exactly one would mean the split had not happened.
+//
+// # The balances are asserted too, for the deposit measurement's reason
+//
+// A book set is satisfied by a lodgement that posts nothing. So this checks that
+// the vault went down, the bank's own reserve mirror went up, and — separately —
+// that the CENTRAL BANK's record of the same reserve went up. The last is the one
+// that matters most: it is read from the settlement agent's own book, which is
+// what settlement reads, and it is the whole point of the message having been
+// sent. A lodgement that raised only the bank's mirror would leave a bank that
+// believes it can settle and cannot.
+func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+
+	// A fresh deposit, so there is cash in the vault that has not been lodged.
+	// The fixture has already lodged its own funding, which is what every other
+	// test in this package needs; this one wants an unlodged balance to move.
+	const amount = ledger.Amount(75_000)
+	if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+		t.Fatalf("Deposit: %v", err)
+	}
+
+	vaultBefore := h.vaultCash(t, h.debtor.ID)
+	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
+	cbBefore, err := h.net.ReserveBalance(ctx, h.debtor.ID, "EUR")
+	if err != nil {
+		t.Fatalf("ReserveBalance: %v", err)
+	}
+
+	h.rec.reset()
+	if _, err := h.mesh.Lodge(ctx, h.debtor.ID, "EUR", amount); err != nil {
+		t.Fatalf("Lodge: %v", err)
+	}
+	h.drain(t)
+	units := h.rec.unitsOfWork()
+
+	assertBooksTouched(t, "the lodging bank", h.booksTouchedBy(h.debtorBIC),
+		[]ledger.BookID{h.debtorBook})
+	assertBooksTouched(t, "the central bank, crediting a reserve on a lodgement",
+		h.booksTouchedBy(h.cfg.CentralBankBIC),
+		[]ledger.BookID{payment.CentralBankBook})
+	if units < 2 {
+		t.Errorf("a lodgement opened %d units of work, want at least 2; the crossing closing IS that "+
+			"the two books no longer move together, and one unit of work would mean they still do", units)
+	}
+
+	if got, want := vaultBefore-h.vaultCash(t, h.debtor.ID), amount; got != want {
+		t.Errorf("the lodgement took %d out of the vault, want %d", got, want)
+	}
+	if got, want := h.reserveMirror(t, h.debtor.ID)-mirrorBefore, amount; got != want {
+		t.Errorf("the lodgement raised the bank's own reserve mirror by %d, want %d", got, want)
+	}
+	cbAfter, err := h.net.ReserveBalance(ctx, h.debtor.ID, "EUR")
+	if err != nil {
+		t.Fatalf("ReserveBalance: %v", err)
+	}
+	if got, want := cbAfter-cbBefore, amount; got != want {
+		t.Errorf("the central bank's record of the reserve rose by %d, want %d; without this the bank "+
+			"believes it can settle and the book settlement reads says otherwise", got, want)
+	}
+}
+
+// TestABankCannotLodgeCashItDoesNotHold is the ledger doing the work rather than
+// a guard in payment, and it is here because the alternative was a second copy of
+// a rule the ledger already states.
+//
+// Vault Cash is an Asset, and ledger.Book guards Asset accounts against going
+// negative. So a lodgement bigger than the vault is refused with
+// ledger.ErrInsufficientBalance — which payment's borrowedReasons already maps to
+// AM04, "the account cannot cover this" — and payment.LodgeReservesTx deliberately
+// makes no check of its own.
+//
+// What this pins is that the refusal BINDS: nothing is posted, so the bank's
+// reserve mirror does not move and no camt.050 goes out. A bank that could lodge
+// cash it did not hold would be creating central-bank money out of nothing.
+func TestABankCannotLodgeCashItDoesNotHold(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+
+	vault := h.vaultCash(t, h.debtor.ID)
+	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
+	mark := h.messagesSeen()
+
+	_, err := h.mesh.Lodge(ctx, h.debtor.ID, "EUR", vault+1)
+	if !errors.Is(err, ledger.ErrInsufficientBalance) {
+		t.Fatalf("lodging more than the vault holds = %v, want ledger.ErrInsufficientBalance", err)
+	}
+	if got := h.vaultCash(t, h.debtor.ID); got != vault {
+		t.Errorf("the vault holds %d after a refused lodgement, want %d unchanged", got, vault)
+	}
+	if got := h.reserveMirror(t, h.debtor.ID); got != mirrorBefore {
+		t.Errorf("the reserve mirror moved to %d on a refused lodgement, want %d unchanged", got, mirrorBefore)
+	}
+	if sent := h.messagesSeen() - mark; sent != 0 {
+		t.Errorf("a refused lodgement put %d messages on the wire, want none", sent)
+	}
+}
+
+// TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything is the domain half of the
+// same change, and it is a reversal rather than a new rule.
+//
+// DepositTx used to refuse a bank whose settlement reference was empty, with
+// ErrSettlementMemberNotFound and the sentence "is founded and not yet admitted,
+// so it has no reserve to fund". That was an accurate description of the code —
+// the posting it was about named that account — and a false statement about
+// banking. A bank's counter has nothing to do with its central bank account.
+//
+// So this drives a bank that has been FOUNDED and admitted to nothing, and pays
+// cash in. It is the sharpest form of the claim available: there is no settlement
+// account anywhere in the system for this bank, so a deposit that still wanted
+// one could not possibly succeed by accident.
+//
+// It deliberately does NOT drain. admit returns a Founded bank because the
+// scheme's answer arrives as a message, so leaving the queue alone is what keeps
+// this bank in the state the test is about.
+func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+
+	founded := h.admit(t, "Solo Bank", "SOLODEFFXXX", []ledger.AssetCode{"EUR"})
+	if accts, err := founded.AccountsFor("EUR"); err != nil {
+		t.Fatalf("AccountsFor EUR: %v", err)
+	} else if accts.Settlement != "" {
+		t.Fatalf("Settlement = %q, want it empty; a founded bank has no settlement account", accts.Settlement)
+	}
+
+	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0, "DE89370400440532013099")
+	if err := h.net.Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
+		t.Fatalf("Deposit at a founded bank: %v; a founded bank can open its doors and take money", err)
+	}
+	if got, want := h.balance(t, founded.ID, acct.ID), ledger.Amount(250_00); got != want {
+		t.Errorf("the depositor's balance is %d, want %d", got, want)
+	}
+	if got, want := h.vaultCash(t, founded.ID), ledger.Amount(250_00); got != want {
+		t.Errorf("the bank's vault cash is %d, want %d", got, want)
 	}
 }
 

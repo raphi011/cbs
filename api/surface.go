@@ -107,7 +107,21 @@ func (s *Server) clearingHouseRouter() *router {
 	// write that routing entry from the answer (mesh.csm).
 	mux.HandleFunc("GET /members", s.handleListParticipants)
 	mux.HandleFunc("GET /schemes", s.handleListSchemes)
-	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
+	// The ROUTING directory, and it is the one the paragraph above says this
+	// institution genuinely owns: roster_entries, written by payment.AdmitMemberTx
+	// from the settlement agent's acknowledgement. It answers "where may a message
+	// addressed to this member be sent", which is a question about addresses and
+	// not about accounts.
+	//
+	// GET /directory used to be here and is gone. It resolved an IBAN across the
+	// whole network by sweeping every bank's register — a clearing house reading
+	// every member's deposit accounts, which is not a thing this institution holds
+	// and, from Task 18c, not a thing it could reach. The csm shape has no deposit
+	// register at all. What replaced it on a BANK's port is a lookup in that
+	// bank's own register (api/handlers_directory.go); what replaces it here is
+	// this, because the answer a clearing house has always actually had is the
+	// roster.
+	mux.HandleFunc("GET /roster", s.handleListRoster)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	mux.HandleFunc("GET /payments/audit", s.handlePaymentAudit)
 	s.registerPaymentRoutes(mux)
@@ -121,12 +135,24 @@ func (s *Server) bankRouter() *router {
 	// this listener reads the bound identity instead of the path.
 	mux.HandleFunc("GET /me", s.handleGetParticipant)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
-	// A bank is a scheme participant with directory access, and validating a
-	// payee's address before accepting an instruction is what it uses that for.
-	// The alternative — a customer's browser querying the CSM — would give a
-	// retail app a clearing-house connection no retail app has.
+	// A bank resolving an address in its OWN register. It used to be described
+	// here as "validating a payee's address before accepting an instruction",
+	// which it can no longer do and which was only ever true because the lookup
+	// swept every other bank's register.
+	//
+	// What is left is a real question and a narrower one: which of this bank's
+	// accounts holds this address. A customer's own IBAN, an on-us payee, an
+	// operator checking an address before issuing another one. A payee at another
+	// bank is not something this bank can confirm, and the honest answer is the
+	// not-found this now gives — see api/handlers_directory.go and
+	// payment.ResolveIdentifier.
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)
 	mux.HandleFunc("POST /deposits", s.handleFundDeposit)
+	// The other half of what POST /deposits used to do in one call. Cash in is one
+	// institution's act and lands in this bank's vault; moving it onto reserve is
+	// a conversation with the central bank, so it is a second request and answers
+	// 202. See handleLodgeReserves.
+	mux.HandleFunc("POST /lodgements", s.handleLodgeReserves)
 	mux.HandleFunc("GET /audit", s.handleLedgerAudit)
 	mux.HandleFunc("GET /deposit-audit", s.handleDepositAudit)
 	// A bank's own legs. The clearing house serves the same two patterns

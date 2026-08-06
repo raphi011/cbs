@@ -994,9 +994,12 @@ CREATE TABLE banks (
     product_id         TEXT NOT NULL,
     -- How far through admission this bank is: Founded, or Member.
     -- A Founded bank has a licence, a book and a chart of accounts and no place
-    -- in a scheme — it can open customer accounts and it cannot FUND one,
-    -- because funding raises a reserve at the central bank and no settlement
-    -- agent holds an account for it to raise. That is a true state and not a
+    -- in a scheme — it can open customer accounts and take cash in, which lands
+    -- in its own vault_cash, and it cannot LODGE that cash, because putting it on
+    -- reserve needs the central bank to credit an account in the central bank's
+    -- own book and no settlement agent holds one for it. That refusal used to sit
+    -- on the deposit and said such a bank could not be funded at all, which was
+    -- true of the code and false about banking. That is a true state and not a
     -- broken one, because a bank exists before it joins a scheme. It is also
     -- what an interrupted admission leaves behind, which is what makes
     -- re-driving one safe.
@@ -1093,6 +1096,30 @@ CREATE TABLE bank_assets (
     -- someone unknown. Booking it as a liability, like unclaimed, would still
     -- balance and would say the exact opposite of what happened.
     returns_receivable TEXT NOT NULL,
+    -- The cash this bank is holding, and the only account in this row that is
+    -- nobody else's promise. reserve is a claim on the central bank, suspense is
+    -- money owed to a counterparty's customer, unclaimed is owed to somebody
+    -- unidentified and returns_receivable is owed by a biller. This is money.
+    --
+    -- It is where cash paid in over the counter lands, and it is the second
+    -- column this table has gained — which is the point the row's own comment
+    -- makes about why adding a KIND of account is cheap here.
+    --
+    -- Why it exists is a claim about what a bank IS rather than about storage. A
+    -- deposit used to debit reserve and post the matching credit in the central
+    -- bank's own ledger, so paying cash in was modelled as placing it on reserve;
+    -- that made a bank with no settlement account unable to take money at all,
+    -- which is false about banking, and it made a member bank write in another
+    -- institution's book, which is the crossing this schema will not be able to
+    -- express once each entity has its own database. Cash in now debits this and
+    -- credits the customer, in one book. Moving it onward is a LODGEMENT — a
+    -- camt.050 to the central bank and its camt.025 back — which is two postings
+    -- in two databases with a message between them.
+    --
+    -- So a non-zero balance here is not a way-station: it is how much of what
+    -- this bank's customers paid in has not been placed on reserve, and a bank
+    -- that never lodges cannot settle with it.
+    vault_cash         TEXT NOT NULL,
     -- This bank's reserve account at the central bank: an account in ANOTHER
     -- institution's book, which is why it is the one column in this table naming
     -- an id this table's owner did not allocate. Every other account here was
@@ -1101,9 +1128,13 @@ CREATE TABLE bank_assets (
     -- number — a customer knows their IBAN without holding the bank's ledger —
     -- and it is not the record a settlement agent reads: that one is
     -- settlement_members, which the central bank writes and owns. Both exist,
-    -- and the readers have not all moved yet; funding a reserve still quotes
-    -- this one, which is the account holder asking for a credit to its own
-    -- account and is the honest reader to leave behind.
+    -- and the readers have not all moved yet; what quotes this one is a
+    -- LODGEMENT, which is the account holder asking for a credit to its own
+    -- account and is the honest reader to leave behind. Taking a DEPOSIT used to
+    -- quote it too and no longer does — cash in reaches vault_cash and no
+    -- institution but this one — so the readers left here are the two acts that
+    -- genuinely address the central bank: asking it for a reserve credit, and
+    -- checking that an arriving statement is about the account this bank holds.
     settlement         TEXT NOT NULL,
     seq                INTEGER NOT NULL,
     PRIMARY KEY (bank_id, asset)
@@ -1308,11 +1339,13 @@ CREATE TABLE payments (
     -- register. It is stored rather than looked up because BUILDING A PAYMENT
     -- looks it up nowhere: no bank reads the counterparty bank's deposit
     -- register to fill this column in. A real payer's bank knows the payee's
-    -- name because the payer typed it onto the instruction. (A lookup does
-    -- exist — GET /directory resolves an address across the network and does
-    -- read the resolved account's name off its own bank's register — but its
-    -- answer never reaches the payment: what lands here is what was typed, not
-    -- what was resolved.) The two NAME columns are therefore not a cache: there
+    -- name because the payer typed it onto the instruction. This used to grant an
+    -- exception — GET /directory resolved an address ACROSS THE NETWORK and read
+    -- the resolved account's name, though its answer never reached the payment —
+    -- and Task 18a removed it: that lookup answers out of one bank's own register,
+    -- so no reader in this system spans two banks' registers and there is no
+    -- cross-bank name that could reach this column even in principle. The two NAME
+    -- columns are therefore not a cache: there
     -- is nothing to fall back to, and a NULL here would be an unsendable
     -- payment.
     debtor_name                TEXT NOT NULL DEFAULT '',

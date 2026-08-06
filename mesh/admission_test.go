@@ -136,7 +136,7 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 
 	in := h.creditTransferRequest(t)
 	in.Creditor = payment.PartyRef{Participant: joiner.ID, Account: acct.ID, Identifier: acct.Identifiers[0]}
-	in.CreditorDetails = payment.PartyDetails{Name: acct.Name}
+	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	received, err := h.mesh.Submit(ctx, in)
 	if err != nil {
 		t.Fatalf("Submit to the admitted bank: %v", err)
@@ -961,7 +961,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					Creditor:        h.creditorRef(creditorIBAN),
 					Amount:          harnessAmount,
 					Description:     "from a bank no scheme has admitted",
-					CreditorDetails: payment.PartyDetails{Name: h.creditorAcct.Name},
+					CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 				}
 			},
 			want: "payer's bank",
@@ -979,7 +979,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					},
 					Amount:          harnessAmount,
 					Description:     "to a bank no scheme has admitted",
-					CreditorDetails: payment.PartyDetails{Name: "Nora"},
+					CreditorDetails: payment.PartyDetails{Agent: b.BIC, Name: "Nora"},
 				}
 			},
 			want: "payee's bank",

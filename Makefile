@@ -108,7 +108,7 @@ test: ## Run the Go and web suites (no setup)
 test-schemas: ## Run every XSD check, requiring xmllint and iso20022/testdata/xsd
 	set -euo pipefail
 	ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/ -run TestGoldenFilesValidateAgainstTheSchema -v
-	ISO20022_REQUIRE_SCHEMAS=1 go test ./payment/ -run TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema -v
+	ISO20022_REQUIRE_SCHEMAS=1 go test ./payment/ -run 'ValidateAgainstTheSchema' -v
 
 clean: ## Remove build outputs
 	rm -rf bin $(WEB)/.next

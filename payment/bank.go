@@ -23,9 +23,18 @@ type BankStatus string
 
 const (
 	// BankFounded is a bank with a licence, a book and a chart of accounts, and
-	// no place in a scheme. It can open customer accounts; it cannot FUND one,
-	// because funding raises a reserve at the central bank and no settlement
-	// agent holds an account for it to raise (DepositTx, ErrSettlementMemberNotFound).
+	// no place in a scheme. It can open customer accounts AND take cash in — the
+	// money lands in its own vault (BankAccounts.VaultCash) and no other
+	// institution is involved. What it cannot do is LODGE that cash: putting it on
+	// reserve needs the central bank to credit an account in the central bank's
+	// book, and no settlement agent holds one for it (LodgeReservesTx,
+	// ErrSettlementMemberNotFound).
+	//
+	// That refusal used to sit on the deposit and said this bank could not be
+	// funded at all, which was true of the code and false about banking: a bank's
+	// counter has nothing to do with its central bank account. Task 18a moved it to
+	// the act it was always correct about.
+	//
 	// It is in no routing directory either, so nothing it takes part in can
 	// settle — what a transport does and does not enforce about that is measured
 	// in mesh/doc.go's admission section rather than asserted here.
@@ -64,9 +73,12 @@ const (
 //     opposite class from Unclaimed, on purpose: that one is owed BY the bank
 //     to somebody it hasn't identified, this is owed TO the bank by somebody
 //     it has.
+//   - VaultCash (Asset): the cash the bank is holding. The only account here
+//     that is not somebody's promise, and where money paid in over the counter
+//     lands.
 //   - Settlement: this bank's reserve account in the central-bank ledger.
 //
-// The first four are accounts in this bank's own book. The fifth is an account
+// The first five are accounts in this bank's own book. The sixth is an account
 // in ANOTHER institution's book, and it is here as the account holder's record
 // of its own account number — the way a customer knows their IBAN without
 // holding the bank's ledger. What it is not is the only record of that account:
@@ -76,11 +88,17 @@ const (
 // Which reader reads which is decided by whose question it is, and the readers
 // split two ways. SettleCycleTx, SettleReturnTx and ReserveBalance read the
 // central bank's row: those are the settlement agent posting in its own book, and
-// the operator console asking it about that book. DepositTx and
+// the operator console asking it about that book. LodgeReservesTx and
 // PostSettlementAdviceTx read THIS field, because both are the account holder
-// using its own account number — one quoting it to fund a deposit, the other
-// checking that an arriving statement is about the account it holds and not
+// using its own account number — one quoting it to ask for a reserve credit, the
+// other checking that an arriving statement is about the account it holds and not
 // another member's.
+//
+// DepositTx used to be first on that list and is not on it at all any more, and
+// the reason is Task 18a's crossing. Taking cash in is now one institution's act
+// in one book — see VaultCash — so it has no reason to name an account in
+// anybody else's. What quotes this number is the LODGEMENT that moves the cash
+// onward, and that is a message rather than a posting.
 //
 // It is empty on a founded bank. The number is something the bank has to be
 // told, and RecordMembershipTx is where being told lands.
@@ -116,6 +134,46 @@ type BankAccounts struct {
 	// nowhere on the account to put the debit, and it is the only one this
 	// account is reached for.
 	ReturnsReceivable ledger.AccountID
+
+	// VaultCash is the cash this bank is holding: notes in a drawer, and the
+	// asset side of a deposit paid in over the counter.
+	//
+	// An Asset, and the only account on a bank's chart that is nobody else's
+	// promise. A reserve is a claim on the central bank, a suspense balance is
+	// money owed to a counterparty's customer, Unclaimed is owed to somebody
+	// unidentified and ReturnsReceivable is owed by a biller. This is money, held.
+	//
+	// # It is why a founded bank can take a deposit
+	//
+	// It exists from FoundBankTx, per asset, alongside the other four — before any
+	// settlement account is opened and independently of whether one ever is. That
+	// is the whole of Task 18a's deposit change. DepositTx used to credit the
+	// customer and debit Reserve at Central Bank, and then post the matching pair
+	// in the CENTRAL BANK's book to keep the reserve mirror true; so a bank with no
+	// settlement account had nowhere to put the cash and was refused
+	// (ErrSettlementMemberNotFound), and a bank with one reached into another
+	// institution's ledger inside its own unit of work, which was crossing 6.
+	//
+	// Cash paid in now debits this and credits the customer, in this book and
+	// nowhere else. Nothing about it involves the central bank, because nothing
+	// about a customer handing over notes does: a bank that has founded itself and
+	// joined no scheme can still open its doors and take money, and it holds that
+	// money as cash until it chooses to do something else with it.
+	//
+	// # What moves it onward is a conversation
+	//
+	// LodgeReservesTx is the something else: Debit Reserve at Central Bank, Credit
+	// this — the bank swapping cash for a claim on the central bank — matched by
+	// the central bank crediting the bank's reserve account in ITS book, from a
+	// camt.050 this bank sends. Two books, two units of work, and a message
+	// between them instead of one bank writing in the other's ledger.
+	//
+	// The balance here is therefore real and meaningful rather than a way-station:
+	// it is how much of what this bank's customers paid in has not been placed on
+	// reserve. A bank that takes deposits and never lodges accumulates vault cash
+	// and cannot settle with it, which is the true consequence and the one the
+	// seed avoids by lodging after it funds.
+	VaultCash ledger.AccountID
 
 	Settlement ledger.AccountID
 }
@@ -199,7 +257,8 @@ type Bank struct {
 	ProductID product.ID
 
 	// Status is how far through admission this bank is. See BankStatus: a
-	// Founded bank can open customer accounts and cannot fund one.
+	// Founded bank can open customer accounts and take cash in, and cannot lodge
+	// that cash on reserve.
 	//
 	// The zero value is neither, which is why every writer sets it explicitly
 	// and storetest asserts it survives the round trip: a bank read back with

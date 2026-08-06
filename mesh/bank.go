@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -117,12 +118,23 @@ type bank struct {
 	// advice is about one bank's customer, and the answer must be this actor's
 	// own identity rather than a lookup.
 	//
-	// This is NOT the bank identity Task 18 owes payment.Network. That one is
-	// about narrowing ResolveIdentifierTx's sweep to "this bank's register", and
-	// it needs the DOMAIN layer to know whose register is whose. This is the
-	// mesh's own index turned around: Mesh.banks is already keyed by
-	// ParticipantID, so the actor is being told something the mesh knew when it
-	// built it. Nothing here narrows a sweep.
+	// It is now ALSO what narrows the domain's address resolution, and this note
+	// used to say in as many words that it was not.
+	//
+	// The distinction it drew was real: this is the mesh's own index turned
+	// around — Mesh.banks is keyed by ParticipantID, so the actor is being told
+	// something the mesh knew when it built it — whereas narrowing
+	// ResolveIdentifierTx needs the DOMAIN layer to know whose register is whose.
+	// What the note got wrong is the conclusion, that the two could not be the
+	// same value. Task 18a passes this one down: CreditTransferRequest,
+	// DirectDebitRequest and AcceptInbound all take it, and payment resolves in
+	// that bank's register and no other.
+	//
+	// It is a loan and not the answer. Nothing in payment refuses an actor that
+	// passes somebody else's id — the identity is still the caller's assertion,
+	// exactly as it is for PostSettlementAdvice and the two return legs. Task 18b
+	// gives payment.Network an identity of its own and takes every one of these
+	// arguments away again.
 	pid payment.ParticipantID
 }
 
@@ -175,6 +187,8 @@ func (b *bank) handle(ctx context.Context, from iso20022.BIC, raw []byte) error 
 		return b.receiveStatus(ctx, doc)
 	case *iso20022.Camt053:
 		return b.receiveStatement(ctx, from, doc)
+	case *iso20022.Camt025:
+		return b.receiveLodgementReceipt(from, doc)
 	case *iso20022.Acmt010:
 		return b.receiveAdmission(ctx, from, doc)
 	case *iso20022.Acmt011:
@@ -370,20 +384,31 @@ func returnReasonOf(env iso20022.Envelope) string {
 // First: can this message be resolved to an instruction at all? That is
 // CreditTransferRequest, which resolves the CREDITOR — this bank's own
 // customer, the only party a pacs.008 routed here by CdtrAgt gives this bank
-// any standing to look up — BY ADDRESS. The SWEEP that address is checked
-// against is not this bank's own register: ResolveIdentifierTx still lists
-// every participant and reads every register, exactly as it did before this
-// narrowing (see payment.localPartyIn), so AC01 fires only when nobody in the
-// WHOLE NETWORK holds the creditor's IBAN — a creditor address some other bank
-// happens to hold still resolves. What changed is which PARTY is put through
-// that sweep, not which registers the sweep reaches; narrowing the sweep
-// itself needs the bank's own identity, which is a later sub-project's, not
-// this one's. It is the question a real receiving bank asks first, because
-// until it is answered the bank does not know the message is even for one of
-// its customers. It no longer sweeps the directory for the DEBTOR too — see
-// payment.CreditTransferRequest and localPartyIn — so an unaddressable or
-// unknown debtor IBAN, which names a customer at the SENDING bank and nothing
-// this bank could ever confirm, is not refused here.
+// any standing to look up — BY ADDRESS, IN THIS BANK'S OWN REGISTER. It is the
+// question a real receiving bank asks first, because until it is answered the
+// bank does not know the message is even for one of its customers. It does not
+// resolve the DEBTOR — see payment.CreditTransferRequest and localPartyIn — so
+// an unaddressable or unknown debtor IBAN, which names a customer at the
+// SENDING bank and nothing this bank could ever confirm, is not refused here.
+//
+// # Own register, and the two tasks it took
+//
+// Task 14 narrowed which PARTY goes through the resolution and this doc used to
+// say, at length, that it had not narrowed the resolution itself: the one
+// address that reached ResolveIdentifierTx was still looked for in every
+// member's register, so AC01 fired only when NOBODY in the network held the
+// creditor's IBAN and an address some other bank happened to hold still
+// resolved. Task 18a narrows the lookup, and the identity it needed is passed as
+// b.pid rather than waited for.
+//
+// What that changes is not the happy path — a message correctly routed here is
+// about this bank's own customer either way — but the WRONGLY routed one. Since
+// Task 18a the counterparty's BIC is asserted by the payer rather than derived
+// (payment.SubmitPaymentTx says why it has to be), so this handler is what a
+// misdirected credit transfer reaches. Under the sweep it would have found the
+// payee at the payee's real bank and accepted a payment for another bank's
+// customer; now it holds no such address and answers AC01. See
+// mesh/books_test.go's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
 // Second: does this bank's own half check out? That is AcceptInbound: the payee's
 // account exists, is in the scheme's asset, is addressable, and can take a
@@ -411,7 +436,7 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 	// refer back by. More than one is refused below, by CreditTransferRequest.
 	ref := body.CdtTrfTxInf[0].PmtId
 
-	if _, err := b.ops.CreditTransferRequest(ctx, doc); err != nil {
+	if _, err := b.ops.CreditTransferRequest(ctx, b.pid, doc); err != nil {
 		return b.answer(from, orig, ref, err)
 	}
 	return b.accept(ctx, from, orig, ref)
@@ -423,14 +448,12 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 // The two questions are the same two, in the same order. First, can this message
 // be resolved to an instruction at all — DirectDebitRequest, which resolves the
 // DEBTOR — this bank's own customer, the party a pacs.003 routed here by
-// DbtrAgt gives this bank standing over — BY ADDRESS. As on the push side, the
-// sweep that address is checked against is network-wide and not narrowed to
-// this bank's own register — see receiveCreditTransfer's doc for the whole of
-// that point — so AC01 fires only when nobody in the WHOLE NETWORK holds the
-// debtor's IBAN. The CREDITOR is the sending bank's customer and is not
-// resolved, for the same reason receiveCreditTransfer's debtor is not — see
-// that handler and payment.DirectDebitRequest. Second, does this bank's own
-// half check out — AcceptInbound.
+// DbtrAgt gives this bank standing over — BY ADDRESS, in this bank's own
+// register, for the whole of the reason receiveCreditTransfer's doc gives. The
+// CREDITOR is the sending bank's customer and is not resolved, for the same
+// reason receiveCreditTransfer's debtor is not — see that handler and
+// payment.DirectDebitRequest. Second, does this bank's own half check out —
+// AcceptInbound.
 //
 // What differs is what the second question DOES. On a push it is a check and
 // nothing more; here it is the posting. The payer's money leaves their account
@@ -439,6 +462,12 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 // account at all. So a refusal here is a refusal that no other party could have
 // made: AM04 is the payer's balance, and the bank that submitted this collection
 // has no way of knowing it.
+//
+// That is also why own-register resolution matters more on this side than on the
+// push. A collection addressed to the wrong bank used to resolve the payer
+// through the sweep and post the debit in the PAYER'S BANK'S BOOK — the
+// collecting bank moving another bank's customer's money. Now the bank that was
+// wrongly named holds no such address and answers AC01 before anything posts.
 //
 // The resolved request is discarded for the same reason receiveCreditTransfer
 // discards its own — one store, one payment row, loaded by the identifier the
@@ -455,7 +484,7 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 	// refer back by. More than one is refused below, by DirectDebitRequest.
 	ref := body.DrctDbtTxInf[0].PmtId
 
-	if _, err := b.ops.DirectDebitRequest(ctx, doc); err != nil {
+	if _, err := b.ops.DirectDebitRequest(ctx, b.pid, doc); err != nil {
 		return b.answer(from, orig, ref, err)
 	}
 	return b.accept(ctx, from, orig, ref)
@@ -466,7 +495,7 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 // because the direction changes what the half DOES and not what this actor does
 // about it.
 func (b *bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification) error {
-	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId)); err != nil {
+	if err := b.ops.AcceptInbound(ctx, b.pid, payment.PaymentID(ref.TxId)); err != nil {
 		// Already answered. A queue redelivers, so the same message can arrive
 		// twice — and the second time the payment is no longer Initiated, which
 		// is what this sentinel says. It must NOT become a rejection: payment's
@@ -908,7 +937,7 @@ func (b *bank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso
 // refused.
 //
 // There is nothing to write. The bank stays Founded — which is a working bank
-// that can open customer accounts and cannot fund one — and that is already what
+// that can open customer accounts and take cash in, and cannot lodge it — and that is already what
 // it is, because nothing about a bank changes when it applies. The
 // state an operator re-drives is exactly the state this message leaves.
 //
@@ -926,6 +955,111 @@ func (b *bank) receiveAdmissionRejection(from iso20022.BIC, doc *iso20022.Acmt01
 		"bank", b.bic, "from", from,
 		"admission", doc.AcctReqRjctn.Refs.PrcId.Id,
 		"reason", strings.Join(doc.AcctReqRjctn.Refs.RjctnRsn, "; "))
+	return nil
+}
+
+// lodge is a bank moving its own vault cash onto reserve: the asking half of a
+// lodgement, and the message that asks.
+//
+// It is submit's and returnPayment's shape — this bank's own posting, then a
+// message handing the rest to another institution — and it is the third act in
+// this package with that shape. What differs is the subject: submit carries a
+// customer's money and this carries the bank's own.
+//
+// # Why the bank posts first, and why that is not returnPayment's reason
+//
+// returnPayment posts before it sends so that a refusal BINDS — a payee who has
+// spent the money must not be outrun between a check and a send. Here the reason
+// is the MESSAGE SHAPE: a camt.025 carries no amount, so a bank cannot post its
+// own leg from the answer, and the only alternative is holding the outstanding
+// request in this actor until the answer arrives. That is csm.held's shape, whose
+// known defect is that it does not survive a restart, and a second one of those
+// is not worth a reserve credit. See payment.LodgeReservesTx and
+// iso20022.Camt025.
+//
+// # The seam, and it is the same seam
+//
+// A posting that COMMITTED and a send that failed leaves this bank's reserve
+// mirror raised against a lodgement the central bank was never asked to make. It
+// is returned as an error naming both halves, exactly as submit's is, rather than
+// swallowed.
+//
+// The remedy is NOT to ask again, and that is the difference from returnPayment's
+// seam worth writing down. payment.LodgeReservesTx keys its posting on the
+// message id, and a retry through this method takes a NEW id from
+// Mesh.nextMsgID — so asking again lodges a second time rather than completing
+// the first. What closes the gap is Task 18e's reconciliation harness, which is
+// the instrument for a break that never became a message.
+func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
+	// Everything below is this bank's work, and is recorded as this bank's. See
+	// withActor.
+	ctx = withActor(ctx, b.bic)
+
+	to := b.m.cfg.CentralBankBIC
+	in, env, err := b.ops.LodgeReserves(ctx, b.pid, asset, amount, payment.MessageContext{
+		From:  b.bic,
+		To:    to,
+		MsgID: b.m.nextMsgID(b.bic),
+		Now:   b.m.now(),
+	})
+	if err != nil {
+		return payment.LodgementInstruction{}, err
+	}
+	if err := b.m.send(b.bic, to, env); err != nil {
+		return in, fmt.Errorf("mesh: %s posted its lodgement %s and could not send it: %w", b.bic, in.Ref, err)
+	}
+	return in, nil
+}
+
+// receiveLodgementReceipt is the lodging bank being told what became of its
+// request.
+//
+// There is nothing to post. This bank's leg committed before the camt.050 was
+// sent, and the receipt carries no amount to post from even if there were — so
+// what arrives is a CONFIRMATION, and the shape of this handler follows from
+// that: it is receiveAdmissionRejection's, not receiveStatus's.
+//
+// # An accepted receipt is logged and nothing else
+//
+// The reserve mirror this bank raised is now matched by the central bank's own
+// entry, which is exactly what this bank already assumed. Nothing in the store
+// records the difference between "assumed" and "confirmed", because this system
+// keeps no lodgement row — the durable trace is the idempotency key on each
+// institution's own posting. Logging it is what makes the confirmation visible at
+// all; see receiveAdmissionRejection, which logs for the same reason.
+//
+// # A REFUSED receipt is the interval nothing closes
+//
+// It means this bank's Reserve at Central Bank says more than the central bank's
+// book does, and will go on saying it. That is stated here rather than handled,
+// and the honest reason is that handling it needs something 18a does not have:
+// the amount to reverse is not on the receipt, so this handler cannot unwind the
+// leg without a lodgement row to read it from.
+//
+// What makes it unreachable rather than merely unhandled is the guard on the
+// asking side. payment.LodgeReservesTx refuses a bank that cannot name its own
+// settlement account, and nothing writes that reference before the central bank's
+// account exists — so a bank able to ask is one the agent holds an account for,
+// and the refusals ReceiveLodgementTx can make are refusals a lodgement cannot
+// provoke. It is logged at ERROR for that reason: reaching it means the guard's
+// premise is false, which is a defect in this system rather than news about the
+// request.
+//
+// It is not a dead letter either way. A dead letter is for what nobody could be
+// told, and this bank has been told.
+func (b *bank) receiveLodgementReceipt(from iso20022.BIC, doc *iso20022.Camt025) error {
+	r, err := payment.ReadLodgementReceipt(doc)
+	if err != nil {
+		return fmt.Errorf("mesh: %s could not read the lodgement receipt %s sent it: %w", b.bic, from, err)
+	}
+	if r.Accepted() {
+		b.m.log.Info("mesh: lodgement accepted",
+			"bank", b.bic, "from", from, "lodgement", r.Ref)
+		return nil
+	}
+	b.m.log.Error("mesh: lodgement refused, and this bank's reserve mirror is now overstated",
+		"bank", b.bic, "from", from, "lodgement", r.Ref, "reason", r.Reason,
+		"note", "LodgeReservesTx's guard is meant to make this unreachable; see bank.receiveLodgementReceipt")
 	return nil
 }
 

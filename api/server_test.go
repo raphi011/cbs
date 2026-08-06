@@ -161,6 +161,36 @@ func admitMember(t *testing.T, s *Server, body string, want int) map[string]any 
 	return out
 }
 
+// fundAndLodge gives a bank's customer a balance AND puts the cash on reserve,
+// over HTTP, which is what a fixture needs before anything it submits can settle.
+//
+// Two requests since Task 18a, and this helper is the two of them. POST /deposits
+// raises the customer's balance and leaves the bank holding vault cash; a bank
+// settles out of central-bank money, and POST /lodgements is how it gets some.
+//
+// It drains, because the lodgement answers 202: the reserve credit is the central
+// bank's to make, on a camt.050 still on the wire, so a fixture that did not drain
+// would go on to close a cycle against a reserve that was not there yet.
+func fundAndLodge(t *testing.T, s *Server, pid, did string, amount int64) {
+	t.Helper()
+	doJSON(t, bank(s, pid), "POST", "/deposits",
+		fmt.Sprintf(`{"account":%q,"amount":%d,"description":"opening"}`, did, amount), http.StatusOK)
+	lodge(t, s, pid, "EUR", amount)
+}
+
+// lodge puts one bank's vault cash on reserve over HTTP and drains, so the
+// central bank has posted its half before the caller goes on.
+//
+// It is separate from fundAndLodge for the fixtures that top a reserve up without
+// a customer paying anything in — see the recovery test, whose operator remedy is
+// both acts.
+func lodge(t *testing.T, s *Server, pid, asset string, amount int64) {
+	t.Helper()
+	doJSON(t, bank(s, pid), "POST", "/lodgements",
+		fmt.Sprintf(`{"asset":%q,"amount":%d}`, asset, amount), http.StatusAccepted)
+	drainServer(t, s)
+}
+
 // do runs a request through the handler and returns the recorder.
 func do(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -279,7 +309,7 @@ func TestSCTEndToEnd(t *testing.T) {
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SCT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SCT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, alice, 100000)
 
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 
@@ -292,7 +322,8 @@ func TestSCTEndToEnd(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SCT-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)
 	// Initiated, not Accepted: the payee's bank has not seen it yet. Draining is
 	// what carries the conversation to its end.
@@ -827,7 +858,8 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 }
 
@@ -891,7 +923,7 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	}
 
 	// Cycle and settlement: derived from the scheme.
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+aliceEUR+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, aliceEUR, 100000)
 
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	assertEqual(t, "created cycle asset", cyc["asset"].(string), "EUR")
@@ -908,7 +940,8 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+aliceEUR+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-DTO-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -1050,7 +1083,8 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"short-reserve",
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1073,7 +1107,13 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 
 	// The remedy: fund the short member, then ask the clearing house to instruct
 	// settlement again.
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":25000,"description":"reserve top-up"}`, http.StatusOK)
+	//
+	// Funding is TWO requests since Task 18a. POST /deposits reaches this bank's
+	// own vault and no institution but this one, so on its own it would not unstick
+	// the cycle at all — settlement reads the central bank's book. POST /lodgements
+	// is what puts the reserve there, and it is a real camt.050/camt.025 round trip
+	// with a drain behind it. See fundAndLodge.
+	fundAndLodge(t, h, a, alice, 25000)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/settle", "", http.StatusAccepted)
 	drainServer(t, h)
 
@@ -1508,7 +1548,7 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-AUDIT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, alice, 100000)
 
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
@@ -1516,7 +1556,8 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":25000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1658,7 +1699,8 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	doJSON(t, csm(h), "POST", "/payments/"+second+"/reject", `{"reason":"AM05"}`, http.StatusAccepted)
@@ -1694,7 +1736,8 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -1739,7 +1782,8 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertEqual(t, "payer's book balance after submission", bookOf(), before-1000)
@@ -1781,7 +1825,8 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -2689,7 +2734,8 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-VD-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -3071,16 +3117,27 @@ func anotherAccountAtSameBank(t *testing.T, h *Server, pid string) string {
 	return doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Bruno","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 }
 
-// TestDirectoryResolvesAnIBAN pins GET /directory's happy path: an account
-// opened with an identifier is resolvable by it, and the response names the
-// participant, the account, its display name and its asset — everything a
-// caller needs to show who an address belongs to before paying it.
-func TestDirectoryResolvesAnIBAN(t *testing.T) {
+// TestDirectoryResolvesItsOwnCustomer pins GET /directory's happy path on the
+// surface it survives on: a BANK's, resolving an address in its own register.
+//
+// It used to be TestDirectoryResolvesAnIBAN and it used to run against the
+// CLEARING HOUSE's port, because the route was there and the resolution was a
+// sweep over every bank's register. Task 18a took both away — see
+// api/handlers_directory.go and payment.ResolveIdentifier — so the question is
+// asked of the bank that can answer it.
+//
+// The response names the participant and the account and nothing else. Name and
+// asset went with the sweep: they were a join into whichever bank turned out to
+// hold the address, which on a bank's port was one bank reading another's
+// register for the payee's name.
+func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
+	var pid payment.ParticipantID
 	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
 		p, err := admitForPopulate(ctx, net, msh, "Aurora Bank", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
+		pid = p.ID
 		_, err = p.Deposit.OpenAccount(ctx, p.CustomerSubledger, "Alice", "EUR", p.ProductID, 0,
 			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"})
 		return err
@@ -3089,20 +3146,54 @@ func TestDirectoryResolvesAnIBAN(t *testing.T) {
 	var got struct {
 		Participant string `json:"participant"`
 		Account     string `json:"account"`
-		Name        string `json:"name"`
-		Asset       string `json:"asset"`
 	}
-	getJSON(t, csm(srv), "/directory?scheme=IBAN&value=SE89-AURORA-1001", &got)
-	if got.Participant == "" || got.Account == "" || got.Name == "" || got.Asset == "" {
-		t.Fatalf("directory response = %#v, want it fully populated", got)
+	getJSON(t, bank(srv, string(pid)), "/directory?scheme=IBAN&value=SE89-AURORA-1001", &got)
+	if got.Participant != string(pid) || got.Account == "" {
+		t.Fatalf("directory response = %#v, want this bank's own account", got)
 	}
 }
 
-// TestDirectoryUnknownIBANIs404 pins that an address nobody holds is a missing
-// resource, not an empty success.
+// TestDirectoryUnknownIBANIs404 pins that an address this bank does not hold is
+// a missing resource, not an empty success.
+//
+// "This bank does not hold" and not "nobody holds", which is the narrowing:
+// there is no route in this system that answers the second question, and
+// TestDirectoryDoesNotAnswerForAnotherBanksCustomer below is the pin for that.
 func TestDirectoryUnknownIBANIs404(t *testing.T) {
 	srv := newServer(t, nil)
-	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=NOBODY-0001", "", http.StatusNotFound)
+	pid, _ := someAccount(t, srv)
+	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value=NOBODY-0001", "", http.StatusNotFound)
+}
+
+// TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the narrowing itself, on
+// the wire, and it is the assertion the old sweep would have failed.
+//
+// A real address, really held, at a bank that is not the one being asked. Under
+// the sweep this answered 200 with the other bank's participant, account, name
+// and asset — a bank learning another bank's customer's name over HTTP, which is
+// the crossing GET /directory carried after Task 14 closed its twin on the
+// payment path.
+func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
+	var asker payment.ParticipantID
+	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
+		holder, err := admitForPopulate(ctx, net, msh, "Aurora Bank", "AURODEFFXXX")
+		if err != nil {
+			return err
+		}
+		if _, err := holder.Deposit.OpenAccount(ctx, holder.CustomerSubledger, "Alice", "EUR", holder.ProductID, 0,
+			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}); err != nil {
+			return err
+		}
+		other, err := admitForPopulate(ctx, net, msh, "Banca Verde", "VERDITMMXXX")
+		if err != nil {
+			return err
+		}
+		asker = other.ID
+		return nil
+	})
+
+	doJSON(t, bank(srv, string(asker)), "GET", "/directory?scheme=IBAN&value=SE89-AURORA-1001", "",
+		http.StatusNotFound)
 }
 
 // TestDirectoryMissingParamsIs400 pins that scheme and value are both
@@ -3110,8 +3201,9 @@ func TestDirectoryUnknownIBANIs404(t *testing.T) {
 // succeed.
 func TestDirectoryMissingParamsIs400(t *testing.T) {
 	srv := newServer(t, nil)
-	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN", "", http.StatusBadRequest)
-	doJSON(t, csm(srv), "GET", "/directory?value=X", "", http.StatusBadRequest)
+	pid, _ := someAccount(t, srv)
+	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN", "", http.StatusBadRequest)
+	doJSON(t, bank(srv, pid), "GET", "/directory?value=X", "", http.StatusBadRequest)
 }
 
 // TestAddAndRemoveIdentifierEndpoints covers the per-account identifier
@@ -3126,8 +3218,8 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 	doJSON(t, bank(srv, pid), "POST", base+did+"/identifiers",
 		`{"scheme":"IBAN","value":"XX00-TEST-0001"}`, http.StatusNoContent)
 
-	// Now resolvable.
-	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusOK)
+	// Now resolvable, by its own bank.
+	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusOK)
 
 	// A second account at the same bank cannot take it.
 	other := anotherAccountAtSameBank(t, srv, pid)
@@ -3135,7 +3227,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 		`{"scheme":"IBAN","value":"XX00-TEST-0001"}`, http.StatusConflict)
 
 	doJSON(t, bank(srv, pid), "DELETE", base+did+"/identifiers/IBAN/XX00-TEST-0001", "", http.StatusNoContent)
-	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusNotFound)
+	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value=XX00-TEST-0001", "", http.StatusNotFound)
 }
 
 // TestDirectoryAmbiguousIdentifierIs409 pins deposit.ErrIdentifierAmbiguous's
@@ -3144,31 +3236,43 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 // tidying the 409 arm into the 404 arm would break a client's retry logic
 // silently.
 //
-// Two banks issuing one value is the only way to reach it without going around
-// a register: per-bank uniqueness cannot see across banks, which is exactly why
-// the network's sweep refuses rather than picking.
+// # It used to be TWO BANKS, and that is no longer reachable
+//
+// Two banks issuing one value was the only way in, because per-bank uniqueness
+// cannot see across banks and the sweep refused rather than picking. The sweep
+// is gone (payment.ResolveIdentifier), so each bank now answers about its own
+// and neither can see the other's — see
+// payment's TestACrossBankCollisionIsNoLongerObservable, which records that loss.
+//
+// What still reaches 409 is the collision a register CAN see: two accounts at
+// ONE bank. It arises from a race between two AddIdentifier calls that both read
+// before either wrote, so the second identifier is written straight through the
+// store, past the register's write-time check.
 func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
-	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
-		// A BIC each, because the mesh gives every bank an actor keyed by its
-		// address and refuses two banks on one. The ambiguity this test is about
-		// is in the two banks' IBANs, not in their BICs.
-		for _, b := range []struct{ name, bic string }{
-			{"Aurora Bank", "AURODEFFXXX"},
-			{"Banca Verde", "VERDITMMXXX"},
-		} {
-			p, err := admitForPopulate(ctx, net, msh, b.name, iso20022.BIC(b.bic))
-			if err != nil {
-				return err
-			}
-			if _, err := p.Deposit.OpenAccount(ctx, p.CustomerSubledger, "Holder", "EUR", p.ProductID, 0,
-				deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	srv := newServer(t, nil)
+	pid, did := someAccount(t, srv)
+	other := anotherAccountAtSameBank(t, srv, pid)
 
-	doJSON(t, csm(srv), "GET", "/directory?scheme=IBAN&value=SHARED-0001", "", http.StatusConflict)
+	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
+	doJSON(t, bank(srv, pid), "POST", "/deposit-accounts/"+did+"/identifiers",
+		`{"scheme":"IBAN","value":"SHARED-0001"}`, http.StatusNoContent)
+
+	p, err := srv.network().GetBank(context.Background(), payment.ParticipantID(pid))
+	if err != nil {
+		t.Fatalf("reading the bank: %v", err)
+	}
+	if err := p.Deposit.Store().Update(context.Background(), func(ctx context.Context, tx deposit.Tx) error {
+		a, err := tx.GetDepositAccount(ctx, p.BookID, deposit.AccountID(other))
+		if err != nil {
+			return err
+		}
+		a.Identifiers = append(a.Identifiers, shared)
+		return tx.PutDepositAccount(ctx, p.BookID, a)
+	}); err != nil {
+		t.Fatalf("planting the duplicate: %v", err)
+	}
+
+	doJSON(t, bank(srv, pid), "GET", "/directory?scheme=IBAN&value=SHARED-0001", "", http.StatusConflict)
 }
 
 // TestPaymentAddressingRefusalsAre422 pins the status codes of the three ways
@@ -3223,7 +3327,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// A creditor with no address at all: an SCT cannot reach it.
 	nobody := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Nobody","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, alice, 100000)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
 	// assertAliceUntouched is the money half. It reads the BOOK balance rather
@@ -3249,7 +3353,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+nobody+`"},
 		"amount":1000,
-		"creditorName":"Nobody"
+		"creditorName":"Nobody",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a payee with no address at all")
 
@@ -3259,7 +3364,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the payee's address quoted on the payer's leg")
 
@@ -3274,7 +3380,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a push that quoted no payee address")
 
@@ -3286,7 +3393,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the same refusal on the payer's own bank surface")
 
@@ -3314,7 +3422,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusAccepted)
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")
@@ -3329,7 +3438,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob"
+		"creditorName":"Bob",
+		"creditorAgent":"`+bicOf(t, h, b)+`"
 	}`, http.StatusUnprocessableEntity)
 
 	// The aggregate, and the only thing covering the ErrAmbiguousAddress case
@@ -3350,91 +3460,77 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 }
 
 // TestPostPaymentRequiresTheCounterpartyName is the dedicated pin for
-// payment.ErrCounterpartyNotNamed's 422 over HTTP. It is a 422 and not a 500:
-// well-formed JSON this system will not act on, the same class as the
-// addressing refusals TestPaymentAddressingRefusalsAre422 covers.
+// payment.ErrCounterpartyNotNamed's and ErrCounterpartyAgentNotNamed's 422 over
+// HTTP. Both are 422 and not 500: well-formed JSON this system will not act on,
+// the same class as the addressing refusals TestPaymentAddressingRefusalsAre422
+// covers.
 //
 // Two other tests in this file also expect a 422 from a payment submission —
 // TestCrossAssetPaymentReturns422 and TestPaymentAddressingRefusalsAre422 —
-// and both supply creditorName specifically so the request reaches their own
-// subject instead of this guard; their comments say so. This is the test that
-// hits the guard on purpose.
+// and both supply creditorName and creditorAgent specifically so the request
+// reaches their own subject instead of these guards; their comments say so.
+// This is the test that hits them on purpose.
 //
-// Both accounts carry an IBAN and the creditor's is quoted on every request,
-// same as TestPaymentAddressingRefusalsAre422's shape: a request that instead
-// left addressing to chance could be refused by ErrUnaddressableAccount
-// (api/errors.go's other 422) with the counterparty guard deleted entirely,
-// and every refusal subtest would stay green having pinned nothing.
+// Both accounts carry an IBAN and the creditor's is quoted on every request:
+// a request that instead left addressing to chance could be refused by
+// ErrUnaddressableAccount (api/errors.go's other 422) with both counterparty
+// guards deleted entirely, and every refusal subtest would stay green having
+// pinned nothing.
 //
-// # What this table used to be, and why it is shorter
+// # What this table has been, twice
 //
-// It had four rows, over two fields: creditorAgent and creditorName. The agent
-// is gone from this request — routing is derived from the named party's own bank
-// row and never asserted by a payer, see initiatePaymentRequest and
-// payment.SubmitPaymentTx — so three of those four rows were asking about a
-// field that no longer exists. Two of them were also the weak ones: they left
-// creditorAgent empty and stayed 422 with the guard deleted, because an empty
-// BIC failed iso20022.BIC.Validate() a few lines below. What survives is the
-// row that actually falsified the guard, plus its control, plus a new row that
-// pins the field's REMOVAL rather than its absence.
+// It had four rows over two fields, then one row over one, and it is two rows
+// over two again. The movement tracks a ruling that reversed rather than churn:
+// Task 14 DERIVED the counterparty's agent from its own bank row, so the field
+// left this DTO and three of the four rows were asking about something that no
+// longer existed; Task 18a put it back, because that row is the counterparty's
+// and a bank under Task 18c holds only its own.
+//
+// The row that is NOT coming back is the pair that left creditorAgent empty and
+// stayed 422 with the guard deleted, because an empty BIC failed
+// iso20022.BIC.Validate() further down. An empty agent is now refused by name,
+// which is what makes it a pin instead of a coincidence.
 //
 // Re-derived by mutation on the code as it now stands, not carried over.
-// Deleting the `if counterparty.Name == ""` block in payment/system.go and
-// rerunning this test:
+// Deleting each guard in payment/system.go and rerunning:
 //
-//   - "no name" flips 422 -> 500, and is now the only refusal row rather than
-//     one of three. Nothing else in SubmitPaymentTx rejects an empty
-//     counterparty name — ledger.ValidateText permits "" — so the request
+//   - "no name" flips 422 -> 500. Nothing else in SubmitPaymentTx rejects an
+//     empty counterparty name — ledger.ValidateText permits "" — so the request
 //     proceeds into building the outbound pacs.008, which fails the message's
 //     own mandatory-element check (iso20022.ErrMissingElement, "Cdtr/Nm"), for
-//     which api/errors.go has no entry. There is no second guard standing
-//     behind ErrCounterpartyNotNamed at all now, which makes this row a
-//     stronger pin than the three it replaces.
-//   - "a name — the control" is unaffected, as a control should be.
-//   - "a payer's BIC is not a field this API has" is unaffected by that
-//     mutation and is not meant to be: its subject is the DTO, not the guard.
-//     It is a 400 and not a 422 because respond.go's DisallowUnknownFields
-//     refuses the body before any domain code sees it — which is the answer
-//     this removal has to produce, since a silently ignored routing element
-//     would leave a client believing it had chosen the destination bank.
-//
-// The transcript is in this task's final fix report,
-// .superpowers/sdd/2026-08-02-task-14-message-carries-the-parties/final-fix-wave-report.md.
+//     which api/errors.go has no entry.
+//   - "no agent" flips 422 -> 500 the same way, on Cdtr/CdtrAgt: the message
+//     cannot be rendered without a BIC either, and the failure lands after the
+//     payer's leg would have posted, which is exactly why the guard is at
+//     submission and not at message-building. See SubmitAndInstruct.
+//   - "a malformed agent" flips 422 -> 500 for the same reason, one validation
+//     later.
+//   - "a name and an agent — the control" is unaffected, as a control should be.
 func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	h := newServer(t, nil)
 	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
-	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)
+	fundAndLodge(t, h, a, alice, 100000)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
+
+	parties := `"debtor":{"participant":"` + a + `","account":"` + alice + `"},` +
+		`"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
 
 	for _, tc := range []struct {
 		name       string
 		body       string
 		wantStatus int
 	}{
-		{"no name", `{
-			"scheme":"sepa.ct",
-			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
-			"amount":1000
-		}`, http.StatusUnprocessableEntity},
-		{"a name — the control", `{
-			"scheme":"sepa.ct",
-			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
-			"amount":1000,
-			"creditorName":"Bob"
-		}`, http.StatusAccepted},
-		{"a payer's BIC is not a field this API has", `{
-			"scheme":"sepa.ct",
-			"debtor":{"participant":"` + a + `","account":"` + alice + `"},
-			"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},
-			"amount":1000,
-			"creditorName":"Bob",
-			"creditorAgent":"BNKBDEFFXXX"
-		}`, http.StatusBadRequest},
+		{"no name", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
+			"creditorAgent":"` + bicOf(t, h, b) + `"}`, http.StatusUnprocessableEntity},
+		{"no agent", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
+			"creditorName":"Bob"}`, http.StatusUnprocessableEntity},
+		{"a malformed agent", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
+			"creditorName":"Bob","creditorAgent":"not-a-bic"}`, http.StatusUnprocessableEntity},
+		{"a name and an agent — the control", `{"scheme":"sepa.ct",` + parties + `"amount":1000,
+			"creditorName":"Bob","creditorAgent":"` + bicOf(t, h, b) + `"}`, http.StatusAccepted},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertStatus(t, csm(h), "POST", "/payments", tc.body, tc.wantStatus)
@@ -3457,4 +3553,26 @@ func TestDepositAccountDTOCarriesIdentifiers(t *testing.T) {
 	if len(got.Identifiers) == 0 {
 		t.Fatal("depositAccountDTO carried no identifiers")
 	}
+}
+
+// bicOf answers which address a bank is at.
+//
+// It exists because Task 18a made the counterparty's BIC something the
+// INSTRUCTION carries: SubmitPaymentTx used to derive it from the
+// counterparty's own bank row, and that row is the counterparty's, so a bank
+// under Task 18c's stores has no way to read it. Every submission body below
+// therefore names a creditorAgent (or a debtorAgent on a pull), exactly as the
+// payer would.
+//
+// The test asking the server for it is the fixture standing in for an invoice.
+// A real payer reads the BIC off one; there is no invoice here, so this is where
+// the value comes from — and it must not be mistaken for something the SUBMITTING
+// BANK does, which is the whole point of the change.
+func bicOf(t *testing.T, h *Server, pid string) string {
+	t.Helper()
+	p, err := h.network().GetBank(context.Background(), payment.ParticipantID(pid))
+	if err != nil {
+		t.Fatalf("reading %s's address: %v", pid, err)
+	}
+	return string(p.BIC)
 }

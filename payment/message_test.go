@@ -81,10 +81,10 @@ func networkWithOnePayment(t *testing.T) (*Network, Payment) {
 		EndToEndID:  "e2e-1",
 		Description: "invoice 42",
 		// Push: the creditor is the counterparty, so the request must name it —
-		// the NAME only. The BIC on the payment this returns comes from the roster,
-		// derived by SubmitPaymentTx, so the message built from it still carries
-		// Verde's CdtrAgt without the fixture asserting one.
-		CreditorDetails: PartyDetails{Name: bruno.Name},
+		// the NAME and, since Task 18a, the BIC. Nothing derives the second any
+		// more: the row it was derived from is the counterparty's own, and a bank
+		// holds only its own. See payment.SubmitPaymentTx.
+		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
 	assertNoError(t, err)
 	return sys, p
@@ -113,8 +113,8 @@ func networkWithOneCollection(t *testing.T) (*Network, Payment, Mandate) {
 		EndToEndID:  "e2e-dd-1",
 		Description: "electricity, August",
 		// Pull: the debtor is the counterparty, so the request must name it. See
-		// networkWithOnePayment on why no Agent is set.
-		DebtorDetails: PartyDetails{Name: alice.Name},
+		// networkWithOnePayment on why the Agent is the fixture's to supply.
+		DebtorDetails: PartyDetails{Agent: aurora.BIC, Name: alice.Name},
 	})
 	assertNoError(t, err)
 	return sys, p, m
@@ -786,7 +786,7 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	got, err := n.CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	got, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, back.Document.(*iso20022.Pacs008))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v", err)
 	}
@@ -861,7 +861,7 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	got, err := n.DirectDebitRequest(ctx, back.Document.(*iso20022.Pacs003))
+	got, err := n.DirectDebitRequest(ctx, p.Debtor.Participant, back.Document.(*iso20022.Pacs003))
 	if err != nil {
 		t.Fatalf("DirectDebitRequest: %v", err)
 	}
@@ -928,7 +928,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	unknown := iso20022.IBAN("SE00000000000000000000")
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].DbtrAcct.Id.IBAN = &unknown
 
-	req, err := n.CreditTransferRequest(ctx, doc)
+	req, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v — a receiving bank does not check the sender's customer", err)
 	}
@@ -954,7 +954,7 @@ func TestAReceivingBankDoesNotResolveTheSendersCustomerOnAPull(t *testing.T) {
 	unknown := iso20022.IBAN("IT00000000000000000000")
 	doc.FIToFICstmrDrctDbt.DrctDbtTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
-	req, err := n.DirectDebitRequest(ctx, doc)
+	req, err := n.DirectDebitRequest(ctx, p.Debtor.Participant, doc)
 	if err != nil {
 		t.Fatalf("DirectDebitRequest: %v — a receiving bank does not check the sender's customer", err)
 	}
@@ -974,7 +974,7 @@ func TestCreditTransferRequestRefusesAnUnknownIBAN(t *testing.T) {
 	unknown := iso20022.IBAN("DE00000000000000000000")
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].CdtrAcct.Id.IBAN = &unknown
 
-	_, err = n.CreditTransferRequest(ctx, doc)
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	if err == nil {
 		t.Fatal("resolved an IBAN no account holds")
 	}
@@ -1012,7 +1012,7 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 		Othr: &iso20022.GenericAccountIdentification{Id: "4111111111111111"},
 	}
 
-	_, err = n.CreditTransferRequest(ctx, doc)
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("CreditTransferRequest on a non-IBAN account = %v, want ErrUnaddressableAccount", err)
 	}
@@ -1024,10 +1024,26 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 // ResolveIdentifierTx returns deposit.ErrIdentifierAmbiguous rather than the
 // first hit, and this translator passes that through unchanged. AC01 would tell
 // the sending bank its customer quoted a bad IBAN, which is a false statement
-// about someone else's data: the IBAN is fine, and it is THIS network's
-// directory that cannot say whose it is. An error with no code falls to MS03,
-// "this agent could not carry it out", which is the true one.
-func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
+// about someone else's data: the IBAN is fine, and it is this bank's own
+// register that cannot say which of its accounts is meant. An error with no
+// code falls to MS03, "this agent could not carry it out", which is the true
+// one.
+//
+// # It used to be a THIRD BANK claiming the address, and that is no longer the
+// case this can be provoked with
+//
+// The contender was another bank, because the sweep read every register and so
+// was the only thing in the system that could see two of them at once. Task 18a
+// narrowed the lookup to the receiving bank's own register, so a third bank
+// holding the same IBAN is now invisible here — see
+// TestACrossBankCollisionIsNoLongerObservable, which records that loss where the
+// resolution lives.
+//
+// What survives, and what this provokes now, is the collision a register CAN
+// see: two of this bank's own accounts holding one address. The pass-through
+// being tested is the same pass-through, and it is the one that matters — the
+// discipline is that only a NOT-FOUND becomes AC01.
+func TestCreditTransferRequestRefusesAnAddressTwoOfItsOwnAccountsClaim(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
 	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
@@ -1035,14 +1051,23 @@ func TestCreditTransferRequestRefusesAnAddressTwoBanksClaim(t *testing.T) {
 		t.Fatalf("CreditTransferMessage: %v", err)
 	}
 
-	// A third bank opens an account holding the creditor's IBAN. Uniqueness is
-	// enforced per bank, which is the widest scope a register can see, so this
-	// is reachable rather than hypothetical.
-	nord, err := storetest.Admit(ctx, n, "Nord Bank", "NORDSESSXXX", euroOnly)
+	// A second account AT THE RECEIVING BANK holding the creditor's IBAN.
+	// Written straight through the store, past the register's write-time check,
+	// because that is the only way it arises — see
+	// TestResolveIdentifierRefusesAWithinBankCollision.
+	verde, err := n.GetBank(ctx, p.Creditor.Participant)
 	assertNoError(t, err)
-	openCustomer(t, ctx, nord, "Impostor", p.Creditor.Identifier.Value)
+	impostor := openCustomer(t, ctx, verde, "Impostor", "IT60-VERDE-9999")
+	assertNoError(t, verde.Deposit.Store().Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
+		a, err := tx.GetDepositAccount(ctx, verde.BookID, impostor.ID)
+		if err != nil {
+			return err
+		}
+		a.Identifiers = append(a.Identifiers, p.Creditor.Identifier)
+		return tx.PutDepositAccount(ctx, verde.BookID, a)
+	}))
 
-	_, err = n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, env.Document.(*iso20022.Pacs008))
 	if !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
 		t.Fatalf("CreditTransferRequest on a contested address = %v, want ErrIdentifierAmbiguous", err)
 	}
@@ -1075,7 +1100,7 @@ func TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure(t *tes
 	dropped := errors.New("connection reset by peer")
 	broken := NewNetwork(failingStore{Store: n.Store(), err: dropped}, func() time.Time { return fixedTime })
 
-	_, err = broken.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	_, err = broken.CreditTransferRequest(ctx, p.Creditor.Participant, env.Document.(*iso20022.Pacs008))
 	if err == nil {
 		t.Fatal("resolved a party while the store was failing")
 	}
@@ -1111,7 +1136,7 @@ func TestCreditTransferRequestRefusesAMessageInAnotherAsset(t *testing.T) {
 		Ccy: "BTC", Value: "0.00250000",
 	}
 
-	_, err = n.CreditTransferRequest(ctx, doc)
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	if !errors.Is(err, ErrAssetMismatch) {
 		t.Fatalf("CreditTransferRequest on a BTC pacs.008 = %v, want ErrAssetMismatch", err)
 	}
@@ -1149,14 +1174,14 @@ func TestCreditTransferRequestReadsTheSchemeFromTheCurrency(t *testing.T) {
 
 	// The euro message still resolves to the euro scheme, which is the half that
 	// must not change.
-	req, err := n.CreditTransferRequest(ctx, doc)
+	req, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	assertNoError(t, err)
 	assertEqual(t, "scheme of a euro pacs.008", req.Scheme, SchemeSEPACT)
 
 	// The same message in dollars resolves to the dollar scheme rather than
 	// being refused as a mismatch.
 	doc.FIToFICstmrCdtTrf.CdtTrfTxInf[0].IntrBkSttlmAmt = iso20022.ActiveCurrencyAndAmount{Ccy: "USD", Value: "2500.00"}
-	req, err = n.CreditTransferRequest(ctx, doc)
+	req, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	assertNoError(t, err)
 	assertEqual(t, "scheme of a dollar pacs.008", req.Scheme, SchemeID("usd.ct"))
 	assertEqual(t, "amount in minor units", req.Amount, ledger.Amount(250000))
@@ -1180,7 +1205,7 @@ func TestCreditTransferRequestRefusesAnAmbiguousScheme(t *testing.T) {
 	env, err := n.CreditTransferMessage(p, MessageContext{From: "AURODEFFXXX", To: "CSMXFRPPXXX", MsgID: "x", Now: messageNow})
 	assertNoError(t, err)
 
-	_, err = n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, env.Document.(*iso20022.Pacs008))
 	if !errors.Is(err, ErrAssetMismatch) {
 		t.Fatalf("CreditTransferRequest with two euro push schemes = %v, want ErrAssetMismatch", err)
 	}
@@ -1205,7 +1230,7 @@ func TestCreditTransferRequestRefusesAnUnknownCurrency(t *testing.T) {
 	// ledger.ErrAssetNotFound and not merely "an error": the refusal must be
 	// the ledger saying it does not define this asset, not some later
 	// complaint about the number's shape at a scale that was guessed.
-	if _, err := n.CreditTransferRequest(ctx, doc); !errors.Is(err, ledger.ErrAssetNotFound) {
+	if _, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, doc); !errors.Is(err, ledger.ErrAssetNotFound) {
 		t.Fatalf("CreditTransferRequest in an undefined currency = %v, want ledger.ErrAssetNotFound", err)
 	}
 }
@@ -1234,7 +1259,7 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 		t.Fatalf("the fixture message carries EndToEndId %q, want NOTPROVIDED", got)
 	}
 
-	req, err := n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	req, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, env.Document.(*iso20022.Pacs008))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest: %v", err)
 	}
@@ -1282,7 +1307,7 @@ func TestCreditTransferRequestRefusesATruncatedFile(t *testing.T) {
 	doc := env.Document.(*iso20022.Pacs008)
 	doc.FIToFICstmrCdtTrf.GrpHdr.NbOfTxs = "2"
 
-	_, err = n.CreditTransferRequest(ctx, doc)
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, doc)
 	if err == nil {
 		t.Fatal("read a message that declared two transactions and carried one")
 	}
@@ -1310,7 +1335,7 @@ func TestCreditTransferRequestRefusesABulkMessage(t *testing.T) {
 	body.CdtTrfTxInf = append(body.CdtTrfTxInf, body.CdtTrfTxInf[0])
 	body.GrpHdr.NbOfTxs = "2"
 
-	_, err = n.CreditTransferRequest(ctx, env.Document.(*iso20022.Pacs008))
+	_, err = n.CreditTransferRequest(ctx, p.Creditor.Participant, env.Document.(*iso20022.Pacs008))
 	if err == nil {
 		t.Fatal("read one payment out of a message carrying two")
 	}
@@ -1333,7 +1358,7 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 	doc := env.Document.(*iso20022.Pacs003)
 	doc.FIToFICstmrDrctDbt.DrctDbtTxInf[0].DrctDbtTx.MndtRltdInf.MndtId = ""
 
-	if _, err := n.DirectDebitRequest(ctx, doc); !errors.Is(err, ErrMandateRequired) {
+	if _, err := n.DirectDebitRequest(ctx, p.Debtor.Participant, doc); !errors.Is(err, ErrMandateRequired) {
 		t.Fatalf("DirectDebitRequest with no mandate = %v, want ErrMandateRequired", err)
 	}
 }
@@ -1409,7 +1434,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 		t.Fatalf("Unmarshal: %v", err)
 	}
 
-	got, err := n.CreditTransferRequest(ctx, back.Document.(*iso20022.Pacs008))
+	got, err := n.CreditTransferRequest(ctx, p.Creditor.Participant, back.Document.(*iso20022.Pacs008))
 	if err != nil {
 		t.Fatalf("CreditTransferRequest on seed-shaped addresses: %v", err)
 	}

@@ -9,6 +9,7 @@ import { IdText } from "@/components/id-text";
 import { EnumBadge } from "@/components/enum-badge";
 import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
+import { LodgeReservesForm } from "@/components/forms/lodge-reserves-form";
 import { Money, UnresolvedAmount } from "@/components/money";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OpenDepositAccountForm } from "@/components/forms/open-deposit-account-form";
@@ -98,19 +99,35 @@ export default function BankHome() {
             ) : reserveLoading ? (
               <Skeleton className="mt-1 h-6 w-24" />
             ) : reserve && reserve.length > 0 ? (
+              // One row per asset, and a Lodge button beside each: a lodgement
+              // moves the bank's own cash, of which there is one pot per asset,
+              // so this list is already the right shape to hang the action off.
+              //
+              // The button is HERE and not on the deposit-account page because a
+              // lodgement is the bank's own treasury decision rather than
+              // anything to do with a customer. Taking cash in is on the account
+              // (see FundParticipantForm); putting it on reserve is the bank's.
               <div className="mt-1 space-y-0.5 text-xl font-semibold tabular-nums">
                 {reserve.map((r) => {
                   const asset = byCode.get(r.asset);
                   return asset ? (
-                    <p key={r.asset}>
-                      <Money amount={r.reserve} asset={asset} />
-                    </p>
+                    <div key={r.asset} className="flex items-center justify-between gap-2">
+                      <p>
+                        <Money amount={r.reserve} asset={asset} />
+                      </p>
+                      <LodgeReservesForm pid={pid} asset={asset} />
+                    </div>
                   ) : (
                     <UnresolvedAmount key={r.asset} code={r.asset} isLoading={assetLoading} />
                   );
                 })}
               </div>
             ) : (
+              // No reserve ROWS at all means the central bank holds no account
+              // for this bank, which is a bank the scheme has not answered for
+              // yet. There is nothing to lodge into, so no button: the domain
+              // would refuse it (ErrSettlementMemberNotFound) and the honest
+              // thing is not to offer the action.
               <p className="mt-1 text-sm text-muted-foreground">No reserves yet.</p>
             )}
           </CardContent>

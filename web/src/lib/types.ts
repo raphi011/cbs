@@ -303,10 +303,16 @@ export interface ParticipantAccounts {
 // A founded bank runs its own book, and that part is unrestricted: it opens
 // customer accounts, publishes products and adds ledgers, all measured against a
 // bank held in this state. What it cannot do is anything needing another
-// institution. It cannot take a cash deposit, which is the one people guess
-// wrong: funding a customer raises the bank's reserve at the central bank in the
-// same step, and there is no reserve to raise until the scheme has answered. The
-// API says so with a 422 naming the membership, not the account. And nothing it
+// institution. It CAN take a cash deposit, and this comment used to say it could
+// not — "funding a customer raises the bank's reserve at the central bank in the
+// same step, and there is no reserve to raise until the scheme has answered", with
+// a 422 naming the membership. That described the code and misdescribed banking: a
+// bank's counter has nothing to do with its central bank account. Cash in lands in
+// this bank's own vault and POST /deposits answers 200.
+//
+// What it cannot do is LODGE that cash — put it on reserve — because only the
+// central bank can credit an account in the central bank's book. POST /lodgements
+// is the 422, and it names the reserve account this bank cannot name. And nothing it
 // takes part in can settle, because a settlement instruction names its members
 // through the routing directory this bank is not in.
 //
@@ -329,6 +335,12 @@ export type ParticipantStatus = "Founded" | "Member";
 export interface Participant {
   id: string;
   name: string;
+  // The bank's ISO 9362 address: what a counterparty addresses it by and what
+  // the mesh routes on. participantDTO has carried it all along; this interface
+  // did not, because nothing in the UI needed it until the routing directory
+  // became a screen — the roster is keyed by BIC and carries no name, so joining
+  // the two is the only way to show a member's name beside its address.
+  bic: string;
   status: ParticipantStatus;
   // The bank's default deposit product, created with its chart of accounts at
   // onboarding. It is what the open-account form offers.
@@ -342,16 +354,35 @@ export interface AccountIdentifier {
   value: string;
 }
 
-// What GET /directory answers: enough to tell a caller who an address belongs
-// to before they pay it. `identifier` is echoed back so a client that fired
-// several lookups at once can tell the answers apart. See
-// api/handlers_directory.go's directoryEntryDTO.
+// What GET /directory answers: which of the ASKING BANK's own accounts holds
+// the address. `identifier` is echoed back so a client that fired several
+// lookups at once can tell the answers apart. See api/handlers_directory.go's
+// directoryEntryDTO.
+//
+// It used to carry `name` and `asset`, and to be answerable network-wide. Both
+// went at Task 18a: the resolution was a sweep over every bank's register, and
+// the name and asset were a join into whichever bank turned out to hold the
+// address — one bank reading another's register for the payee's name, over
+// HTTP. A bank holds its own register and no other, so the honest question is
+// "is this one of mine".
 export interface DirectoryEntry {
   participant: string;
   account: string;
-  name: string;
-  asset: string;
   identifier: AccountIdentifier;
+}
+
+// One row of the clearing house's ROUTING directory: an address the scheme will
+// send to, the assets it clears in, the admission it was admitted under, and
+// when. See api/handlers_directory.go's rosterEntryDTO.
+//
+// No name. An acmt.010 carries none, so the clearing house has never been told
+// one — the name beside a BIC on this screen comes from GET /members, which is a
+// different question asked of a different table.
+export interface RosterEntry {
+  bic: string;
+  assets: string[];
+  admissionRef: string;
+  admittedAt: string;
 }
 
 export interface PartyRef {
@@ -665,6 +696,42 @@ export interface FundRequest {
   description?: string;
 }
 
+// LodgementRequest is a bank asking its central bank to move vault cash onto the
+// bank's reserve account: the second half of what funding used to be.
+//
+// It names an ASSET where FundRequest names an account, and the contrast is the
+// whole difference. A deposit is about one customer's account, so the asset
+// follows from it. A lodgement is about the BANK — its own cash, one pot per
+// asset — and nothing else in the request says which. There is no default: a bank
+// founded in dollars would have a euro lodgement invented for it by one.
+export interface LodgementRequest {
+  asset: string;
+  amount: number;
+}
+
+// Lodgement is what POST /lodgements answers, and it is an INSTRUCTION rather
+// than a balance.
+//
+// No reserve figure on it, because the reserve credit has not happened yet: it is
+// the central bank's to make, on a camt.050 still in flight, and the route answers
+// 202. A caller that reads a reserve straight afterwards may see the old number —
+// the same asynchrony a submitted payment has.
+//
+// `ref` is the message identifier the camt.025 receipt quotes back. Nothing in the
+// store is keyed by it, so it is for reading the log rather than for a follow-up
+// request.
+export interface Lodgement {
+  ref: string;
+  asset: string;
+  amount: number;
+  // account is the reserve account the credit was asked for, as this bank knows
+  // it — the number it learned from its own admission acknowledgement.
+  account: string;
+  // agent is the central bank asked: the one party to the conversation the
+  // request itself does not name.
+  agent: string;
+}
+
 // openFacilityRequest opens either product behind one route: `kind` selects
 // which. `method`/`termMonths` apply only to a TermLoan; `minPayment` only to
 // a RevolvingLine — see api/dto_lending.go's openFacilityRequest.
@@ -700,22 +767,31 @@ export interface InitiatePaymentRequest {
   endToEndId?: string;
   description?: string;
   metadata?: Record<string, string> | null;
-  // debtorName and creditorName are the names on the two accounts. Only the
-  // COUNTERPARTY's is required — the creditor's on a push, the debtor's on a
-  // pull — because submission looks it up nowhere: the account is at another
+  // The names on the two accounts, and the BICs of the two banks. Only the
+  // COUNTERPARTY's pair is required — the creditor's on a push, the debtor's on
+  // a pull — because submission looks neither up: the account is at another
   // bank, and nothing on the path that builds a payment reads another bank's
   // register.
   //
-  // There is deliberately no debtorAgent or creditorAgent. A party's BIC is
-  // derived by the submitting bank from the named party's own bank record —
-  // not from the clearing house's routing roster, which is keyed by the very
-  // BIC being derived — and never asserted by the payer: the
-  // clearing house routes on that element, so a form that asked for it would
-  // let a payer choose which bank got paid. The backend's decoder rejects
-  // unknown fields, so sending one is a 400 rather than a value quietly
-  // ignored. See api/dto_payment.go's initiatePaymentRequest.
+  // The agent fields were REMOVED and are back, and the reversal is domain
+  // content rather than churn. They went because a payer who typed the BIC chose
+  // which bank got paid — the clearing house routes on that element — and the
+  // submitting bank derived it instead, from the counterparty's own bank record.
+  // That record is the counterparty's, and under a store per entity a bank holds
+  // only its own, so there is nothing left to derive from and no directory
+  // service here to derive it with. SEPA is IBAN-only because every bank
+  // subscribes to an IBAN-to-BIC table; without one, an address is an IBAN and a
+  // BIC.
+  //
+  // What makes that safe is the other half of the same change: a bank resolves
+  // an address in its own register only, so a payment addressed to the wrong
+  // bank comes back AC01 from the bank that was named rather than being quietly
+  // accepted for another bank's customer. See api/dto_payment.go's
+  // initiatePaymentRequest and payment.SubmitPaymentTx.
   debtorName?: string;
   creditorName?: string;
+  debtorAgent?: string;
+  creditorAgent?: string;
 }
 
 export interface OpenCycleRequest {

@@ -89,10 +89,11 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	for _, asset := range slices.Sorted(maps.Keys(b.Assets)) {
 		accts := b.Assets[asset]
 		if _, err := t.tx.ExecContext(ctx, `
-			INSERT INTO bank_assets (bank_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement, seq)
-			VALUES (?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("bank_assets")+`)`,
+			INSERT INTO bank_assets (bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, settlement, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("bank_assets")+`)`,
 			string(b.ID), string(asset),
-			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable), string(accts.Settlement)); err != nil {
+			string(accts.Suspense), string(accts.Reserve), string(accts.Unclaimed), string(accts.ReturnsReceivable),
+			string(accts.VaultCash), string(accts.Settlement)); err != nil {
 			return fmt.Errorf("sqlite: put bank %s asset %s: %w", b.ID, asset, err)
 		}
 	}
@@ -124,7 +125,7 @@ func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 // have to be de-duplicated on the way back — the same shape the cycle and
 // settlement readers use, and not worth it for a child table this small.
 func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[payment.ParticipantID]map[ledger.AssetCode]payment.BankAccounts, error) {
-	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, settlement FROM bank_assets"
+	query := "SELECT bank_id, asset, suspense, reserve, unclaimed, returns_receivable, vault_cash, settlement FROM bank_assets"
 	args := []any{}
 	if id != "" {
 		query += " WHERE bank_id = ?"
@@ -145,7 +146,8 @@ func (t *tx) bankAssets(ctx context.Context, id payment.ParticipantID) (map[paym
 			asset ledger.AssetCode
 			accts payment.BankAccounts
 		)
-		if err := rows.Scan(&id, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable, &accts.Settlement); err != nil {
+		if err := rows.Scan(&id, &asset, &accts.Suspense, &accts.Reserve, &accts.Unclaimed, &accts.ReturnsReceivable,
+			&accts.VaultCash, &accts.Settlement); err != nil {
 			return nil, fmt.Errorf("sqlite: bank assets: %w", err)
 		}
 		if out[id] == nil {

@@ -43,6 +43,20 @@ func bicLexicalSpace(schema, typeName string) string {
 // A schema that declares neither type is not evidence either way and is passed
 // over; the compared count is asserted non-zero so that an empty directory
 // cannot make this pass by examining nothing.
+//
+// A schema declaring only ONE of them is passed over for the same reason, and
+// that arm used to be an error. It was written when every schema here declared
+// both, so the case it refused had never occurred; camt.050.001.05 and
+// camt.025.001.05 are the first that declare BICFI alone, and they are entitled
+// to. camt.050 identifies both parties as financial institutions
+// (BranchAndFinancialInstitutionIdentification6) and camt.025 names no party at
+// all, so neither has an element of the AnyBIC type to declare it for.
+//
+// Skipping them is provably safe rather than merely convenient: a type a schema
+// does not declare is one no element in that schema can have, so there is no
+// element in either message whose lexical space this test would have been
+// checking. Ten of the twelve schemas still declare both and still compare, so
+// the claim is checked exactly as hard as it was before the two arrived.
 func TestAnyBICAndBICFIShareOneLexicalSpace(t *testing.T) {
 	schemas, err := filepath.Glob(filepath.Join("testdata", "xsd", "*.xsd"))
 	if err != nil {
@@ -60,13 +74,9 @@ func TestAnyBICAndBICFIShareOneLexicalSpace(t *testing.T) {
 		}
 		anyBIC := bicLexicalSpace(string(body), "AnyBICDec2014Identifier")
 		bicfi := bicLexicalSpace(string(body), "BICFIDec2014Identifier")
-		if anyBIC == "" && bicfi == "" {
-			continue
-		}
+		// Neither, or only one: no evidence either way. See the note above on why
+		// only-one is passed over rather than refused.
 		if anyBIC == "" || bicfi == "" {
-			t.Errorf("%s declares only one of the two BIC types (AnyBIC %q, BICFI %q); "+
-				"the claim that they share a lexical space is not checkable there",
-				filepath.Base(path), anyBIC, bicfi)
 			continue
 		}
 		if anyBIC != bicfi {

@@ -368,9 +368,53 @@ func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
 	return ref
 }
 
-// fund credits a deposit account with cash and raises the bank's reserve.
+// fund credits a deposit account with cash, which the bank then holds as vault
+// cash.
+//
+// It no longer raises the bank's reserve, and that is Task 18a's change rather
+// than a change to the seed's intent. Cash paid in is one institution's act in one
+// book; moving it onto reserve is a LODGEMENT, which is a conversation with the
+// central bank and cannot happen inside a deposit. See lodge, which every funded
+// bank has to run before this scenario can settle anything.
 func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
 	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
+}
+
+// lodge moves one bank's vault cash onto its reserve at the central bank, and
+// drains the mesh so that the receipt has arrived before the seed goes on.
+//
+// # Why the seed has to do this at all
+//
+// Deposit used to raise the bank's reserve as a side effect, so a funded bank
+// could settle immediately. It does not any more, and nothing else in this
+// scenario funds a reserve — so without this every bank would reach the first
+// cut-off with a zero reserve and settlement would fail for all of them. That is
+// why 18a.4 and 18a.5 are one commit: either alone leaves this scenario broken.
+//
+// # It goes through the MESH and not through the domain
+//
+// b.net.LodgeReserves would post the bank's own leg and hand back a camt.050 that
+// nobody sends, which is exactly half a lodgement: the bank's reserve mirror would
+// rise and the central bank's book would never hear about it. So this uses the
+// mesh's door, and the seed plays the operator asking for it.
+//
+// That makes it the one place in this file where the seed does NOT compose the
+// halves itself. initiate composes three, and its doc explains why — the seed runs
+// before any actor exists. By the time funding happens the actors DO exist: every
+// bank in this scenario has been admitted through mesh.Admit already, which is
+// what gave it the settlement account this lodgement quotes. So there is a real
+// conversation available and the seed uses it.
+//
+// # It drains
+//
+// The camt.025 is what confirms the central bank posted its half, and a scenario
+// that left it queued would hand the API a mesh with messages in flight — which
+// is the state Populate's own contract says it does not leave. Draining here also
+// means a failure in the central bank's half surfaces as this seed failing rather
+// than as a dead letter discovered later.
+func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
+	must(b.mesh.Lodge(b.ctx, p.ID, "EUR", amount))
+	check(b.mesh.Drain(b.ctx))
 }
 
 // initiate runs all three halves of an initiation — the submitting bank's, the
@@ -396,7 +440,16 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 		if err != nil {
 			return err
 		}
-		if err := b.net.AcceptInboundTx(ctx, tx, p.ID); err != nil {
+		// The RECEIVING bank answers, and which one that is follows the scheme's
+		// direction: the payee's bank on a push, the payer's on a pull. It is
+		// named here because AcceptInboundTx resolves the counterparty in the
+		// answering bank's own register since Task 18a — see its doc — and the
+		// seed is playing that bank as well as the submitting one.
+		receiver := p.Creditor.Participant
+		if scheme, ok := b.net.Scheme(p.Scheme); ok && scheme.Direction() == payment.Pull {
+			receiver = p.Debtor.Participant
+		}
+		if err := b.net.AcceptInboundTx(ctx, tx, receiver, p.ID); err != nil {
 			return err
 		}
 		out, err = b.net.AcceptAtCSMTx(ctx, tx, p.ID)
@@ -566,10 +619,15 @@ func (b *builder) settle(id payment.CycleID) {
 // taken from the account the seed itself already built — this is the seed
 // playing the payer who typed the payee's name in, not a lookup.
 //
-// No Agent. The creditor's BIC is derived from the roster by SubmitPaymentTx
-// and anything set here would be discarded, so setting it would be the seed
-// demonstrating an input this system does not accept — see
-// payment.PartyDetails.Agent.
+// The BIC too, since Task 18a. It used to be derived by SubmitPaymentTx from the
+// counterparty's own bank row, and that row is the counterparty's — a bank holds
+// only its own — so the payer supplies it, as SEPA's payers did before 2016 and
+// a cross-border payer still does. See payment.PartyDetails.Agent.
+//
+// The seed takes it off the bank it is about to address, which is the one place
+// this fixture differs from the payer it is playing: a real payer reads the BIC
+// off an invoice. What the seed must not do is take it off a LOOKUP, and it does
+// not — cp is a bank this builder founded itself, in this process.
 func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
@@ -578,13 +636,13 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		Amount:          amount,
 		EndToEndID:      e2e,
 		Description:     desc,
-		CreditorDetails: payment.PartyDetails{Name: c.Name},
+		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})
 }
 
 // initSDD submits a direct debit. It is the SUBMITTING (creditor's) bank, so
-// the request must name the counterparty: the name on the debtor's account,
-// and not the debtor's bank. See initSCT.
+// the request must name the counterparty: the name on the debtor's account, and
+// the debtor's bank. See initSCT.
 func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:        payment.SchemeSEPADD,
@@ -594,7 +652,7 @@ func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 		MandateID:     mandate,
 		EndToEndID:    e2e,
 		Description:   desc,
-		DebtorDetails: payment.PartyDetails{Name: d.Name},
+		DebtorDetails: payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 	})
 }
 
@@ -636,7 +694,7 @@ func (b *builder) build() {
 	chloe := b.open(soleil, "Chloé Caron", "FR76-SOLEIL-4001")
 	claude := b.open(soleil, "Claude Clément", "FR76-SOLEIL-4002")
 
-	// --- Funding (also raises each bank's central-bank reserve) ------------
+	// --- Funding: cash in, which each bank holds as vault cash -------------
 	b.fund(aurora, alice, 200_000)
 	b.fund(aurora, aaron, 50_000)
 	b.fund(aurora, annie, 30_000)
@@ -647,6 +705,22 @@ func (b *builder) build() {
 	b.fund(nord, niklas, 60_000)
 	b.fund(soleil, chloe, 120_000)
 	b.fund(soleil, claude, 90_000)
+
+	// --- Lodgement: each bank places that cash on reserve -------------------
+	//
+	// The whole of it, per bank, which is what makes each bank's vault return to
+	// zero and its reserve equal what its customers paid in. That is the state the
+	// old Deposit left directly, and reproducing it exactly is deliberate: every
+	// later phase of this scenario — the settled cycle, the netting, the returns —
+	// was written against those reserve balances, so a seed that lodged only part
+	// would change numbers this file's own tests and the web fixtures assert.
+	//
+	// A bank cannot settle out of vault cash, so this is what makes the cut-offs
+	// below possible at all. See lodge.
+	b.lodge(aurora, 280_000)
+	b.lodge(verde, 270_000)
+	b.lodge(nord, 360_000)
+	b.lodge(soleil, 210_000)
 
 	b.clock.advance(2 * time.Hour)
 

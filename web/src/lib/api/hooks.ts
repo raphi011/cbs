@@ -86,21 +86,14 @@ export function useSchemes() {
 
 // --- Directory --------------------------------------------------------------
 
-// Resolves an external address to the account that holds it. `retry: false`
-// because a 404 here is an answer — nobody holds that IBAN — and retrying it
-// three times only delays saying so.
-export function useCsmDirectory(scheme: string, value: string) {
-  return useQuery({
-    queryKey: qk.csmDirectory(scheme, value),
-    queryFn: () => api.resolveIdentifierAtCsm(scheme, value),
-    enabled: scheme !== "" && value !== "",
-    retry: false,
-  });
+// The clearing house's routing directory: every address the scheme will send to.
+export function useRoster() {
+  return useQuery({ queryKey: qk.roster(), queryFn: api.listRoster });
 }
 
-// A customer's payee lookup, on their own bank's listener. `retry: false` because
-// a 404 here is an answer — nobody holds that IBAN — and retrying it three times
-// only delays telling them so.
+// An address resolved in one bank's own register. `retry: false` because a 404
+// here is an answer — this bank does not hold that IBAN — and retrying it three
+// times only delays saying so.
 export function useBankDirectory(pid: string, scheme: string, value: string) {
   return useQuery({
     queryKey: qk.bankDirectory(pid, scheme, value),
@@ -450,18 +443,52 @@ export function useCloseDepositAccount(pid: string) {
   });
 }
 
-// Funds a deposit account and raises the bank's central-bank reserve in step,
-// so this also refreshes reserves and the central-bank audit log.
+// Takes cash in: the customer's balance rises and the bank holds the cash.
+//
+// It invalidates this bank's deposits and NOTHING of the central bank's, and the
+// difference from what this hook used to do is Task 18a's. Funding raised the
+// reserve in step, so this refreshed reserves and the central-bank audit log too;
+// a deposit now reaches the bank's own vault and no institution but that bank, so
+// invalidating the central bank's queries would be re-fetching data this call
+// cannot have changed. useLodgeReserves is what moves them.
 export function useFundDeposit(pid: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: import("../types").FundRequest) =>
       api.fundDeposit(pid, body),
+    onSuccess: () => invalidateDeposits(qc, pid),
+  });
+}
+
+// Places the bank's vault cash on reserve, which is what actually moves a
+// reserve — so this is where the central bank's queries are invalidated.
+//
+// # The invalidation races the message, deliberately
+//
+// The route answers 202: the reserve credit is the central bank's to make, on a
+// camt.050 still in flight, so a re-fetch triggered here may read the reserve
+// before the central bank has posted. In this system it will not, because the mesh
+// delivers synchronously inside one process — but that is a property of the
+// transport rather than of this hook, and a real network would show the old figure
+// briefly.
+//
+// Invalidating anyway is right: the alternative is not invalidating, which leaves
+// a stale figure on screen for ever.
+//
+// qk.participant(pid) is the whole of this bank's subtree — ledger and deposit keys
+// nest under it — and it is here because the bank's own Vault Cash and Reserve at
+// Central Bank accounts both moved. One invalidate rather than one per account
+// list, which is what that key layout is for.
+export function useLodgeReserves(pid: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: import("../types").LodgementRequest) =>
+      api.lodgeReserves(pid, body),
     onSuccess: () => {
-      invalidateDeposits(qc, pid);
       qc.invalidateQueries({ queryKey: qk.reserves() });
       qc.invalidateQueries({ queryKey: qk.reserve(pid) });
       qc.invalidateQueries({ queryKey: qk.centralBankAudit() });
+      qc.invalidateQueries({ queryKey: qk.participant(pid) });
     },
   });
 }

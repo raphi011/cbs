@@ -17,15 +17,12 @@ import { ErrorState } from "@/components/error-state";
 import { Hint } from "@/components/hint";
 import {
   useAssetLookup,
-  useBankDirectory,
   useBankPayment,
   useDepositAccount,
   useDepositBalance,
-  useParticipants,
   useSchemes,
   useSubmitPayment,
 } from "@/lib/api/hooks";
-import { useDebouncedValue } from "@/lib/use-debounced-value";
 import { describeError } from "@/lib/api/errors";
 
 // A retail "send money" is a SEPA credit transfer: a push scheme needing no
@@ -50,40 +47,61 @@ export default function CustomerSend() {
   const [iban, setIban] = useState("");
   const [amount, setAmount] = useState<number | null>(null);
   const [reference, setReference] = useState("");
-  // What the payer says about the payee, and it is exactly one thing: the NAME.
+  // What the payer says about the payee, and since Task 18a it is three things:
+  // the IBAN, the NAME and the BIC.
   //
-  // GET /directory (api/handlers_directory.go's handleResolveIdentifier)
-  // resolves the typed IBAN across the network and reads the resolved account —
-  // bank, asset and name — off the payee's own bank's deposit register, but
-  // PayeeLine below shows only the bank: rendering the resolved name would teach
-  // that the payer's bank confirms who it is paying, and it does not — the name
-  // that goes on the instruction is the one the payer typed. This field is not
-  // populated from that answer either: the payer types it, and the request
-  // carries what was typed.
+  // # The BIC field was removed and is back, and the reversal is the lesson
   //
-  // There is no BIC field, and its absence is the teaching point rather than a
-  // simplification. This form used to ask for the payee's bank, and that made a
-  // routing element into something a customer typed — the clearing house relays
-  // a pacs.008 on CdtrAgt, so a wrong BIC here sent the payment to the wrong
-  // bank. The bank derives it from the payee's own record in the network now,
-  // which is what a real SEPA originating bank does: IBAN-only since 2016, an
-  // address and a name from the payer and the routing from the network.
+  // This form used to ask for the payee's bank; Task 14 took the field away,
+  // because the clearing house relays a pacs.008 on CdtrAgt and a wrong BIC here
+  // sent the payment to the wrong bank. The submitting bank derived it instead,
+  // from the payee's own bank record — which is what a SEPA originating bank
+  // does, IBAN-only since 2016.
+  //
+  // That record belongs to the payee's bank, and under a store per entity a bank
+  // holds only its own. There is no other source: the clearing house's roster is
+  // keyed by the BIC being asked for, and this network has no IBAN-to-BIC
+  // directory service — which is the thing SEPA's IBAN-only rule actually rests
+  // on. So the address a payer gives is an IBAN AND a BIC, as it was before 2016
+  // and as it still is for a payment outside SEPA.
+  //
+  // What makes that safe is not this form. A wrong BIC now sends the payment to
+  // the bank that was named, and THAT bank refuses it — it holds no such IBAN in
+  // its own register, so it answers AC01 and the payer's debit is reversed. It is
+  // the narrowing of the address lookup, not the removal of the field, that
+  // stopped a typed BIC being able to misapply somebody's money.
+  //
+  // # There is no payee lookup here at all any more
+  //
+  // There was: GET /directory resolved the typed IBAN across the whole network
+  // and this form would not submit until it had. It cannot, because answering it
+  // meant reading every bank's deposit register. A bank's own directory answers
+  // only for its own customers now, so a lookup here would confirm exactly the
+  // payees this form is not for.
+  //
+  // Nothing is lost that a payer really had. A real payer is not told their
+  // payee's name back by their bank before they pay — they read it off an
+  // invoice — and this form used to render the resolved bank one line above the
+  // fields asking the payer to type the payee's details, which taught the
+  // opposite of what the system does.
   const [creditorName, setCreditorName] = useState("");
+  const [creditorAgent, setCreditorAgent] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
   // shape 7b needs: the answer to "did it work?" is a second request, not a
   // return value.
   const [acceptedId, setAcceptedId] = useState<string | null>(null);
-
-  // Resolved live as you type, settled first so a keystroke is not a request.
-  // Through the customer's own bank — a retail client has no CSM connection.
-  const settledIban = useDebouncedValue(iban.trim(), 350);
-  const payee = useBankDirectory(pid, settledIban ? "IBAN" : "", settledIban);
 
   const asset = account ? byCode.get(account.asset) : undefined;
   const scheme = schemes?.find((s) => s.id === SEND_SCHEME);
   const frozen = account?.status === "Frozen";
   const closed = account?.status === "Closed";
   const ownIban = account?.identifiers.find((i) => i.scheme === "IBAN");
+  // Paying yourself is the one payee mistake this form can still catch on its
+  // own, because it needs no register: the address typed is the address of the
+  // account being paid FROM. Everything else about the payee is somebody else's
+  // to answer, and the answer arrives as a rejection.
+  const payingSelf =
+    ownIban != null && iban.trim() !== "" && ownIban.value === iban.trim();
 
   // Folding an assets failure into "still loading" would leave a customer
   // staring at a skeleton with no error and no retry — the account can be
@@ -94,45 +112,49 @@ export default function CustomerSend() {
   // The scheme settles in one asset and this account holds one; a mismatch is not
   // a form error the customer can fix, so it is stated rather than hidden.
   const assetMismatch = scheme != null && scheme.asset !== account.asset;
-  const payingSelf = payee.data?.account === did && payee.data?.participant === pid;
 
   const canSend =
     !frozen &&
     !closed &&
     !assetMismatch &&
-    payee.data != null &&
     !payingSelf &&
+    iban.trim() !== "" &&
     amount != null &&
     amount > 0 &&
-    creditorName.trim() !== "";
+    creditorName.trim() !== "" &&
+    creditorAgent.trim() !== "";
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!canSend || !payee.data) return;
+    if (!canSend) return;
     try {
       const accepted = await submit.mutateAsync({
         scheme: SEND_SCHEME,
-        // Routing is by id, which is why the IBAN had to be resolved. The
-        // identifier is quoted so the payment records the address it was reached
-        // by; initiation would back-fill it either way.
         debtor: { participant: pid, account: did },
+        // The payee is named by ADDRESS and by nothing else. participant and
+        // account are the payee bank's own internal keys and a payer has never
+        // had any way to know them — this form used to fill them from the
+        // directory sweep, which is exactly the read that closed. The receiving
+        // bank resolves the IBAN in its own register and fills them in
+        // (payment.AcceptInboundTx).
         creditor: {
-          participant: payee.data.participant,
-          account: payee.data.account,
-          identifier: payee.data.identifier,
+          participant: "",
+          account: "",
+          identifier: { scheme: "IBAN", value: iban.trim() },
         },
         amount: amount!,
         description: reference.trim() || undefined,
-        // The payer's own account of who they're paying — see the state
-        // declaration above for why this bank cannot supply it instead, and
-        // for why the payee's BIC is not here beside it.
+        // The payer's own account of who they are paying, and where. See the
+        // state declaration above for why both are the payer's to give.
         creditorName: creditorName.trim(),
+        creditorAgent: creditorAgent.trim(),
       });
       setAcceptedId(accepted.paymentId);
       setIban("");
       setAmount(null);
       setReference("");
       setCreditorName("");
+      setCreditorAgent("");
     } catch (err) {
       toast.error(describeError(err));
     }
@@ -187,13 +209,11 @@ export default function CustomerSend() {
                 disabled={frozen || closed}
                 onChange={(e) => setIban(e.target.value)}
               />
-              <PayeeLine
-                query={settledIban}
-                isLoading={payee.isLoading}
-                error={payee.error}
-                bank={payee.data?.participant}
-                payingSelf={payingSelf}
-              />
+              {payingSelf && (
+                <p className="text-xs text-destructive">
+                  That is this account&apos;s own IBAN.
+                </p>
+              )}
             </div>
 
             <div className="space-y-1.5">
@@ -206,6 +226,25 @@ export default function CustomerSend() {
                 disabled={frozen || closed}
                 onChange={(e) => setCreditorName(e.target.value)}
               />
+            </div>
+
+            <div className="space-y-1.5">
+              <FieldLabel htmlFor="send-creditor-agent" hint="account-addressing" required>
+                Payee&apos;s bank (BIC)
+              </FieldLabel>
+              <Input
+                id="send-creditor-agent"
+                value={creditorAgent}
+                placeholder="VERDITMMXXX"
+                className="font-mono"
+                disabled={frozen || closed}
+                onChange={(e) => setCreditorAgent(e.target.value.toUpperCase())}
+              />
+              <p className="text-xs text-muted-foreground">
+                Off the invoice, with the IBAN. Your bank cannot look this up —
+                nothing here holds an index of who banks where — and a payment
+                sent to the wrong bank comes back refused.
+              </p>
             </div>
 
             <div className="space-y-1.5">
@@ -249,44 +288,6 @@ export default function CustomerSend() {
         </CardContent>
       </Card>
     </div>
-  );
-}
-
-// What the directory said about the address typed so far — the BANK it
-// routes to, and nothing about who holds it: naming the payee is the payer's
-// job, done in the field below this line, not something the directory
-// answers for them. The bank shown here is informational; it is not what the
-// instruction carries and not what routes the payment — the payer's own bank
-// derives that from the payee's own record when it submits. A miss is an answer
-// and is stated plainly; an ambiguous
-// address — two banks claiming it — is a 409 and describeError names it.
-function PayeeLine({
-  query,
-  isLoading,
-  error,
-  bank,
-  payingSelf,
-}: {
-  query: string;
-  isLoading: boolean;
-  error: unknown;
-  bank?: string;
-  payingSelf: boolean;
-}) {
-  // The directory answers with a participant id; the customer needs its name.
-  const { data: participants } = useParticipants();
-  if (!query) return null;
-  if (isLoading) return <Skeleton className="h-4 w-40" />;
-  if (error) return <p className="text-xs text-destructive">{describeError(error)}</p>;
-  if (payingSelf) {
-    return <p className="text-xs text-destructive">That is this account&apos;s own IBAN.</p>;
-  }
-  if (!bank) return null;
-  const bankName = participants?.find((p) => p.id === bank)?.name ?? bank;
-  return (
-    <p className="text-xs text-muted-foreground">
-      Routes to <span className="font-medium text-foreground">{bankName}</span>
-    </p>
   );
 }
 

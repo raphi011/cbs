@@ -100,11 +100,9 @@ export const qk = {
     ["participants", pid, "facilities", fid, "schedule"] as const,
   totals: (pid: string) => ["participants", pid, "totals"] as const,
 
-  // Keyed by the listener that answered as well as the address: the same
-  // question asked of the clearing house and of a bank are two different
-  // requests, and only one of them is a customer's to make.
-  csmDirectory: (scheme: string, value: string) =>
-    ["clearing-house", "directory", scheme, value] as const,
+  // The clearing house's routing directory. Not keyed by an address: it is the
+  // whole list, because "who may be addressed" has no argument.
+  roster: () => ["clearing-house", "roster"] as const,
   bankPayment: (pid: string, payid: string) =>
     ["participants", pid, "payments", payid] as const,
   bankDirectory: (pid: string, scheme: string, value: string) =>
