@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -144,11 +145,14 @@ func TestExactlyOneUniqueIndex(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 
-	// Task 17.1b adds transactions_idempotency_key_idx and this becomes an
-	// equality on that name. Until the schema is translated the assertion that
-	// can be made is the one that catches a second index appearing.
-	if len(names) > 1 {
-		t.Errorf("unique indexes = %v, want at most one; the SQLITE_CONSTRAINT_UNIQUE mapping cannot tell them apart", names)
+	// An equality, not a bound. "At most one" was what could be asserted before
+	// the schema was translated; now the one index is there, and naming it is
+	// what makes the test fail if it is ever RENAMED or dropped as well as if a
+	// second one appears. A dropped index would leave the mapping answering
+	// ErrDuplicateIdempotencyKey to nothing at all.
+	want := []string{"transactions_idempotency_key_idx"}
+	if !slices.Equal(names, want) {
+		t.Errorf("unique indexes = %v, want exactly %v; the SQLITE_CONSTRAINT_UNIQUE mapping cannot tell two of them apart", names, want)
 	}
 }
 
@@ -157,18 +161,37 @@ func TestExactlyOneUniqueIndex(t *testing.T) {
 // This is the property CLAUDE.md protects — the reasoning is recorded in the
 // database, because a missing constraint is invisible in a schema dump — and
 // under Postgres it was free, because COMMENT ON is stored. Here it holds only
-// for comments inside a statement's parentheses, so it is worth a test rather
-// than a convention nobody checks.
-func TestSchemaCommentsReachSqliteMaster(t *testing.T) {
+// for comments inside a statement's parentheses, and a comment moved above its
+// statement is dropped silently, so it is worth a test rather than a convention
+// nobody checks.
+//
+// What is asserted is not that comments exist. It is that the arguments about
+// what the schema does NOT do are in the database, one of each kind the ruling
+// distinguishes: an absent constraint on a table, an absent one recorded on an
+// index's column list, and a COMMENT ON COLUMN's successor. Any of the three
+// moved back to column 0 fails this and nothing else in the repository.
+func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 	s := newStore(t)
 
-	var ddl string
-	if err := s.db.QueryRowContext(context.Background(),
-		"SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'books'").Scan(&ddl); err != nil {
-		t.Fatalf("read sqlite_master: %v", err)
-	}
-	if !strings.Contains(ddl, "--") {
-		t.Errorf("books carries no comment in sqlite_master; its reasoning did not reach the database:\n%s", ddl)
+	for _, want := range []struct{ object, argument string }{
+		// An absent table constraint. Nothing else records that the missing
+		// UNIQUE is a decision.
+		{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
+		// An absent CHECK, which under Postgres was a COMMENT ON COLUMN.
+		{"accounts", "There is deliberately no CHECK restricting it to the known codes"},
+		// An index's own reasoning, inside its column list.
+		{"transactions_idempotency_key_idx", "the ONLY unique index in this schema"},
+		// An absent foreign key, and the exemption that says which ones stay.
+		{"subledgers", "carries NO foreign key"},
+	} {
+		var ddl string
+		if err := s.db.QueryRowContext(context.Background(),
+			"SELECT sql FROM sqlite_master WHERE name = ?", want.object).Scan(&ddl); err != nil {
+			t.Fatalf("read %s from sqlite_master: %v", want.object, err)
+		}
+		if !strings.Contains(ddl, want.argument) {
+			t.Errorf("%s: the database does not hold %q — the argument is in the file and not in the database, which is the failure this test exists for", want.object, want.argument)
+		}
 	}
 }
 
