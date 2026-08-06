@@ -18,7 +18,7 @@ import (
 // listing order, upsert identity, and the two things a store could get subtly
 // wrong without any other test noticing, which are that the as-of lookup skips
 // drafts and that a returned row's pricing is a copy.
-func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
+func RunProduct(t *testing.T, newStore func(*testing.T, ledger.BookID) product.Store) {
 	t.Helper()
 
 	// Helpers local to this suite.
@@ -33,7 +33,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	}
 
 	t.Run("ProductRoundTrip", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		want := product.Product{
 			ID: "prd_1", Name: "Basic Current Account",
@@ -76,7 +76,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	})
 
 	t.Run("GetOnMissingRowsReturnsSentinels", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		viewProduct(t, s, func(ctx context.Context, tx product.Tx) error {
 			if _, err := tx.GetProduct(ctx, bookA, "prd_nope"); !errors.Is(err, product.ErrProductNotFound) {
@@ -97,7 +97,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	})
 
 	t.Run("VersionTimelineIsAscendingAndUpsertsByDay", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		jan, mar, jun := day(1), day(60), day(150)
 
@@ -113,8 +113,12 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 					return err
 				}
 			}
-			// Same product ID, other book: two products, and neither read
-			// below may see this.
+			return nil
+		})
+		// Same product ID, other bank: two products, in two databases, and
+		// neither read below may see the other's.
+		otherBank := openProduct(t, newStore, bookB)
+		updateProduct(t, otherBank, func(ctx context.Context, tx product.Tx) error {
 			return tx.PutProductVersion(ctx, bookB, version("prd_1", jan, 999_000, jan))
 		})
 
@@ -127,13 +131,6 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 			assertEqual(t, "first", int64(rows[0].Overdraft.Rate), int64(100_000))
 			assertEqual(t, "second", int64(rows[1].Overdraft.Rate), int64(200_000))
 			assertEqual(t, "third", int64(rows[2].Overdraft.Rate), int64(300_000))
-
-			other, err := tx.ListProductVersions(ctx, bookB, "prd_1")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "book B is its own product", len(other), 1)
-			assertEqual(t, "book B rate", int64(other[0].Overdraft.Rate), int64(999_000))
 
 			as, err := tx.GetProductVersionAsOf(ctx, bookA, "prd_1", day(59))
 			if err != nil {
@@ -166,13 +163,23 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 			assertEqual(t, "the day's version was replaced", int64(rows[1].Overdraft.Rate), int64(250_000))
 			return nil
 		})
+		// And the other bank's product of the same id is untouched by any of it.
+		viewProduct(t, otherBank, func(ctx context.Context, tx product.Tx) error {
+			other, err := tx.ListProductVersions(ctx, bookB, "prd_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "book B is its own product", len(other), 1)
+			assertEqual(t, "book B rate", int64(other[0].Overdraft.Rate), int64(999_000))
+			return nil
+		})
 	})
 
 	// A store that returned drafts from the as-of lookup would price accounts
 	// from a version nobody published, and every other subtest here would still
 	// pass. It is the one behaviour in this suite worth its own case.
 	t.Run("AsOfSkipsDraftsAndListIncludesThem", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		updateProduct(t, s, func(ctx context.Context, tx product.Tx) error {
 			if err := tx.PutProductVersion(ctx, bookA, version("prd_1", day(1), 100_000, day(1))); err != nil {
@@ -205,7 +212,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	// the same either way and is free on one of them, which is exactly why it has
 	// to be written down rather than left to whichever store is underneath.
 	t.Run("ReadRowsAreCopies", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		updateProduct(t, s, func(ctx context.Context, tx product.Tx) error {
 			return tx.PutProductVersion(ctx, bookA, version("prd_1", day(1), 100_000, day(1)))
@@ -230,7 +237,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	})
 
 	t.Run("WritesRollBackWithTheLedgersOwn", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 		boom := errors.New("boom")
 
 		err := s.Update(context.Background(), func(ctx context.Context, tx product.Tx) error {
@@ -263,7 +270,7 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 	})
 
 	t.Run("ResetClearsCatalogueState", func(t *testing.T) {
-		s := openProduct(t, newStore)
+		s := openProduct(t, newStore, bookA)
 
 		updateProduct(t, s, func(ctx context.Context, tx product.Tx) error {
 			if err := tx.PutProduct(ctx, bookA, product.Product{
@@ -297,9 +304,9 @@ func RunProduct(t *testing.T, newStore func(*testing.T) product.Store) {
 // openProduct, updateProduct and viewProduct mirror openDeposit/updateDeposit/
 // viewDeposit in deposit.go: one store per subtest, closed when it ends, and a
 // t.Fatalf on any error the subtest did not expect.
-func openProduct(t *testing.T, newStore func(*testing.T) product.Store) product.Store {
+func openProduct(t *testing.T, newStore func(*testing.T, ledger.BookID) product.Store, book ledger.BookID) product.Store {
 	t.Helper()
-	s := newStore(t)
+	s := newStore(t, book)
 	t.Cleanup(func() { _ = s.Close() })
 	return s
 }

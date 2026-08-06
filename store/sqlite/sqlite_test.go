@@ -12,17 +12,41 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/payment"
 )
 
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
-// newStore opens an ephemeral store of its own, migrated and empty, closed and
-// deleted when the test ends.
+// testBook is the book the stores below answer for.
+//
+// A bank's book is its BIC in production and this is not one, deliberately: none
+// of the cases in this file is about an institution. They are about the driver,
+// the pragmas, the retry loop and the schema dump, and dressing their fixtures
+// up as a member bank would suggest the value carried meaning here. The one
+// thing it must be is CONSISTENT with the store, because a store answers for
+// exactly one book and refuses the rest — see ErrNotThisStoresBook.
+const testBook ledger.BookID = "bank"
+
+// newStore opens an ephemeral BANK store of its own, migrated and empty, closed
+// and deleted when the test ends.
+//
+// The bank shape is the default here because it is the widest — every table any
+// shape has except the clearing house's roster and cycles and the central bank's
+// member register — so a case about the driver rather than about an institution
+// has the most to reach for. The three cases that ARE about a shape say which
+// one; see newShapeStore.
 func newStore(t *testing.T) *Store {
 	t.Helper()
-	s, err := Open(context.Background(), "", frozen)
+	return newShapeStore(t, Bank, testBook)
+}
+
+// newShapeStore opens an ephemeral store of a named shape, for the cases that
+// are about the schema rather than about the store.
+func newShapeStore(t *testing.T, shape Shape, book ledger.BookID) *Store {
+	t.Helper()
+	s, err := Open(context.Background(), shape, book, "", frozen)
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("open %s: %v", shape, err)
 	}
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
@@ -109,52 +133,74 @@ func TestPragmasReachEveryPooledConnection(t *testing.T) {
 	}
 }
 
-// Exactly one non-primary-key unique index exists in the schema.
+// Each shape holds exactly the unique indexes its sentinel mapping can tell
+// apart, and for the clearing house that number is ZERO.
 //
 // The sentinel mapping depends on it. SQLite names no index in a constraint
 // error, so a unique conflict is identified by the extended code alone
 // (SQLITE_CONSTRAINT_UNIQUE) rather than by matching an index name the way
 // store/pg does. That is exactly as targeted as the name — and only while the
-// idempotency index is the only unique index there is. Add a second and the
-// mapping silently starts answering ErrDuplicateIdempotencyKey to an unrelated
-// collision.
+// idempotency index is the only unique index in the database the conflict came
+// from. Add a second and the mapping silently starts answering
+// ErrDuplicateIdempotencyKey to an unrelated collision.
+//
+// It is PER SHAPE since Task 18c, and the interesting number is the csm's. The
+// clearing house keeps no book of accounts, so it has no transactions table and
+// therefore no idempotency index — which means SQLITE_CONSTRAINT_UNIQUE is
+// UNRAISABLE in that database. That is worth asserting rather than leaving
+// implied: a unique index added there would have no mapping at all, and the
+// first conflict on it would surface as a driver string.
 //
 // sqlite_autoindex_* entries are excluded: those are the indexes SQLite creates
 // for PRIMARY KEY and UNIQUE column constraints, they raise
 // SQLITE_CONSTRAINT_PRIMARYKEY rather than …_UNIQUE, and they are not what the
 // mapping is about.
-func TestExactlyOneUniqueIndex(t *testing.T) {
-	s := newStore(t)
+func TestExactlyOneUniqueIndexPerShapeThatHasABook(t *testing.T) {
+	for _, c := range []struct {
+		shape Shape
+		book  ledger.BookID
+		want  []string
+	}{
+		// An equality, not a bound. "At most one" was what could be asserted
+		// before the schema was translated; now the one index is there, and
+		// naming it is what makes this fail if it is ever RENAMED or dropped as
+		// well as if a second one appears. A dropped index would leave the
+		// mapping answering ErrDuplicateIdempotencyKey to nothing at all.
+		{Bank, testBook, []string{"transactions_idempotency_key_idx"}},
+		{CentralBank, payment.CentralBankBook, []string{"transactions_idempotency_key_idx"}},
+		// Nil rather than empty, because that is what a nil slice scans to
+		// below and slices.Equal treats the two as equal anyway.
+		{CSM, payment.ClearingHouseBook, nil},
+	} {
+		t.Run(c.shape.String(), func(t *testing.T) {
+			s := newShapeStore(t, c.shape, c.book)
 
-	rows, err := s.db.QueryContext(context.Background(), `
-		SELECT name FROM sqlite_master
-		 WHERE type = 'index' AND sql IS NOT NULL AND sql LIKE 'CREATE UNIQUE INDEX%'
-		 ORDER BY name`)
-	if err != nil {
-		t.Fatalf("read sqlite_master: %v", err)
-	}
-	defer rows.Close()
+			rows, err := s.db.QueryContext(context.Background(), `
+				SELECT name FROM sqlite_master
+				 WHERE type = 'index' AND sql IS NOT NULL AND sql LIKE 'CREATE UNIQUE INDEX%'
+				 ORDER BY name`)
+			if err != nil {
+				t.Fatalf("read sqlite_master: %v", err)
+			}
+			defer rows.Close()
 
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read: %v", err)
-	}
+			var names []string
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					t.Fatalf("scan: %v", err)
+				}
+				names = append(names, name)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("read: %v", err)
+			}
 
-	// An equality, not a bound. "At most one" was what could be asserted before
-	// the schema was translated; now the one index is there, and naming it is
-	// what makes the test fail if it is ever RENAMED or dropped as well as if a
-	// second one appears. A dropped index would leave the mapping answering
-	// ErrDuplicateIdempotencyKey to nothing at all.
-	want := []string{"transactions_idempotency_key_idx"}
-	if !slices.Equal(names, want) {
-		t.Errorf("unique indexes = %v, want exactly %v; the SQLITE_CONSTRAINT_UNIQUE mapping cannot tell two of them apart", names, want)
+			if !slices.Equal(names, c.want) {
+				t.Errorf("unique indexes in the %s schema = %v, want exactly %v; the SQLITE_CONSTRAINT_UNIQUE mapping cannot tell two of them apart",
+					c.shape, names, c.want)
+			}
+		})
 	}
 }
 
@@ -170,30 +216,63 @@ func TestExactlyOneUniqueIndex(t *testing.T) {
 // What is asserted is not that comments exist. It is that the arguments about
 // what the schema does NOT do are in the database, one of each kind the ruling
 // distinguishes: an absent constraint on a table, an absent one recorded on an
-// index's column list, and a COMMENT ON COLUMN's successor. Any of the three
-// moved back to column 0 fails this and nothing else in the repository.
+// index's column list, and a COMMENT ON COLUMN's successor. Any of them moved
+// back to column 0 fails this and nothing else in the repository.
+//
+// One case per SHAPE since Task 18c, because there are three schema files and a
+// comment that slid to column 0 in one of them is invisible to a check on
+// another. The csm's two are the ones worth naming: it is the shape with no book
+// of accounts, so its arguments are all about tables the other two do not have
+// or foreign keys that cross into another institution's database — the class of
+// argument that has no column to hang on and would otherwise live nowhere.
 func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
-	s := newStore(t)
-
-	for _, want := range []struct{ object, argument string }{
-		// An absent table constraint. Nothing else records that the missing
-		// UNIQUE is a decision.
-		{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
-		// An absent CHECK, which under Postgres was a COMMENT ON COLUMN.
-		{"accounts", "There is deliberately no CHECK restricting it to the known codes"},
-		// An index's own reasoning, inside its column list.
-		{"transactions_idempotency_key_idx", "the ONLY unique index in this schema"},
-		// An absent foreign key, and the exemption that says which ones stay.
-		{"subledgers", "carries NO foreign key"},
+	for _, c := range []struct {
+		shape Shape
+		book  ledger.BookID
+		want  []struct{ object, argument string }
+	}{
+		{Bank, testBook, []struct{ object, argument string }{
+			// An absent table constraint. Nothing else records that the missing
+			// UNIQUE is a decision.
+			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
+			// An absent CHECK, which under Postgres was a COMMENT ON COLUMN.
+			{"accounts", "There is deliberately no CHECK restricting it to the known codes"},
+			// An index's own reasoning, inside its column list.
+			{"transactions_idempotency_key_idx", "the ONLY unique index in this schema"},
+			// An absent foreign key, and the exemption that says which ones stay.
+			{"subledgers", "carries NO foreign key"},
+			// A column that is NOT here, which is the only kind of argument the
+			// split adds and the only kind with nothing at all to hang on.
+			{"payments", "cycle_id is NOT here. A BANK HAS NO CYCLES"},
+		}},
+		{CentralBank, payment.CentralBankBook, []struct{ object, argument string }{
+			{"ledgers", "A note on what is NOT here: UNIQUE (book_id, name)"},
+			{"subledgers", "carries NO foreign key"},
+			{"transactions_idempotency_key_idx", "the ONLY unique index in THIS schema"},
+		}},
+		{CSM, payment.ClearingHouseBook, []struct{ object, argument string }{
+			// A foreign key that cannot be written because the table it would
+			// point at is in another institution's database.
+			{"cycles", "there is no foreign key that could be written"},
+			// The audit log's absent foreign key, argued in the shape that has
+			// no books table at all.
+			{"audit_events", "It has no foreign key to books"},
+		}},
 	} {
-		var ddl string
-		if err := s.db.QueryRowContext(context.Background(),
-			"SELECT sql FROM sqlite_master WHERE name = ?", want.object).Scan(&ddl); err != nil {
-			t.Fatalf("read %s from sqlite_master: %v", want.object, err)
-		}
-		if !strings.Contains(ddl, want.argument) {
-			t.Errorf("%s: the database does not hold %q — the argument is in the file and not in the database, which is the failure this test exists for", want.object, want.argument)
-		}
+		t.Run(c.shape.String(), func(t *testing.T) {
+			s := newShapeStore(t, c.shape, c.book)
+			for _, want := range c.want {
+				var ddl string
+				if err := s.db.QueryRowContext(context.Background(),
+					"SELECT sql FROM sqlite_master WHERE name = ?", want.object).Scan(&ddl); err != nil {
+					t.Fatalf("read %s from the %s schema's sqlite_master: %v", want.object, c.shape, err)
+				}
+				if !strings.Contains(ddl, want.argument) {
+					t.Errorf("%s.%s: the database does not hold %q — the argument is in the file and not in the database, which is the failure this test exists for",
+						c.shape, want.object, want.argument)
+				}
+			}
+		})
 	}
 }
 
@@ -395,7 +474,7 @@ func TestUpdateRetriesUntilTheDomainGuardDecides(t *testing.T) {
 // budget, so this fails if the budget is cut and passes if it is kept.
 func TestTheRetryBudgetOutlastsASlowWriter(t *testing.T) {
 	ctx := context.Background()
-	s, err := Open(ctx, filepath.Join(t.TempDir(), "budget.db"), frozen)
+	s, err := Open(ctx, Bank, testBook, filepath.Join(t.TempDir(), "budget.db"), frozen)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

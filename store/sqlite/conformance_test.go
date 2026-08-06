@@ -36,10 +36,31 @@ import (
 // than on wall-clock luck.
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
 
-// newStore opens an ephemeral store of its own, migrated and empty, discarded
-// when the test ends. No skip and no environment variable: needing no setup is
-// the property store/mem existed for, and this store having it is what let
-// store/mem go.
+// newBank opens an ephemeral BANK store of its own answering for the given book,
+// migrated and empty, discarded when the test ends. No skip and no environment
+// variable: needing no setup is the property store/mem existed for, and this
+// store having it is what let store/mem go.
+//
+// It takes the book because a store answers for exactly ONE of them since Task
+// 18c, so a suite wanting two books asks for two stores — see storetest's bookA
+// and bookB. The shape is the bank's because it is the only one of the three
+// that holds every table these five suites reach.
+func newBank(t *testing.T, book ledger.BookID) *sqlite.Store {
+	t.Helper()
+	s, err := sqlite.Open(context.Background(), sqlite.Bank, book, "", frozen)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	return s
+}
+
+// newStore is newBank on the book store/testenv opens for the domain suites, for
+// the cases here that need one store and do not care which book it answers for.
 func newStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	return testenv.New(t, frozen)
@@ -49,11 +70,11 @@ func newStore(t *testing.T) *sqlite.Store {
 // could plausibly get wrong belongs in storetest rather than here, because these
 // are the cases Task 18's three shapes will each have to pass.
 func TestConformance(t *testing.T) {
-	storetest.RunLedger(t, func(t *testing.T) ledger.Store { return newStore(t) })
-	storetest.RunDeposit(t, func(t *testing.T) deposit.Store { return newStore(t).Deposit() })
-	storetest.RunProduct(t, func(t *testing.T) product.Store { return newStore(t).Product() })
-	storetest.RunPayment(t, func(t *testing.T) payment.Store { return newStore(t).Payment() })
-	storetest.RunLending(t, func(t *testing.T) lending.Store { return newStore(t).Lending() })
+	storetest.RunLedger(t, func(t *testing.T, b ledger.BookID) ledger.Store { return newBank(t, b) })
+	storetest.RunDeposit(t, func(t *testing.T, b ledger.BookID) deposit.Store { return newBank(t, b).Deposit() })
+	storetest.RunProduct(t, func(t *testing.T, b ledger.BookID) product.Store { return newBank(t, b).Product() })
+	storetest.RunPayment(t, func(t *testing.T, b ledger.BookID) payment.Store { return newBank(t, b).Payment() })
+	storetest.RunLending(t, func(t *testing.T, b ledger.BookID) lending.Store { return newBank(t, b).Lending() })
 }
 
 // TestRaces runs the race suite that needs only concurrent units of work.
@@ -67,7 +88,29 @@ func TestConformance(t *testing.T) {
 // needs, kept because Task 18 removes the book their counter is drawn from and
 // this is what would notice if the replacement stopped ordering anything.
 func TestRaces(t *testing.T) {
-	storetest.RunRaces(t, func(t *testing.T) storetest.Store { return newStore(t) })
+	storetest.RunSystemRaces(t, func(t *testing.T) payment.Stores { return testenv.NewSet(t, frozen) })
+	storetest.RunClearingHouseRaces(t, func(t *testing.T) payment.Store {
+		return openShape(t, sqlite.CSM, payment.ClearingHouseBook).Payment()
+	})
+	storetest.RunCentralBankRaces(t, func(t *testing.T) payment.Store {
+		return openShape(t, sqlite.CentralBank, payment.CentralBankBook).Payment()
+	})
+}
+
+// openShape opens one institution's ephemeral store, for the two race suites
+// that are about a single institution's database.
+func openShape(t *testing.T, shape sqlite.Shape, book ledger.BookID) *sqlite.Store {
+	t.Helper()
+	s, err := sqlite.Open(context.Background(), shape, book, "", frozen)
+	if err != nil {
+		t.Fatalf("open %s: %v", shape, err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+	return s
 }
 
 // TestConcurrentTxRaces runs the races that need several units of work open at
@@ -143,7 +186,7 @@ func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 	other := newStore(t)
 	err := s.Update(context.Background(), func(ctx context.Context, _ ledger.Tx) error {
 		return other.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
-			return tx.PutLedger(ctx, "book", ledger.Ledger{ID: "ldg_1"})
+			return tx.PutLedger(ctx, testenv.BankBook, ledger.Ledger{ID: "ldg_1"})
 		})
 	})
 	if err != nil {
@@ -159,20 +202,20 @@ func TestViewRejectsWrites(t *testing.T) {
 
 	cases := map[string]func(context.Context, ledger.Tx) error{
 		"NextID": func(ctx context.Context, tx ledger.Tx) error {
-			_, err := tx.NextID(ctx, "book", "ldg")
+			_, err := tx.NextID(ctx, testenv.BankBook, "ldg")
 			return err
 		},
 		"PutLedger": func(ctx context.Context, tx ledger.Tx) error {
-			return tx.PutLedger(ctx, "book", ledger.Ledger{ID: "ldg_1"})
+			return tx.PutLedger(ctx, testenv.BankBook, ledger.Ledger{ID: "ldg_1"})
 		},
 		"AppendAudit": func(ctx context.Context, tx ledger.Tx) error {
-			return tx.AppendAudit(ctx, ledger.AuditEvent{ID: "evt_1", BookID: "book"})
+			return tx.AppendAudit(ctx, ledger.AuditEvent{ID: "evt_1", BookID: testenv.BankBook})
 		},
 		"MarkReversed": func(ctx context.Context, tx ledger.Tx) error {
-			return tx.MarkReversed(ctx, "book", "tx_1")
+			return tx.MarkReversed(ctx, testenv.BankBook, "tx_1")
 		},
 		"LockAccounts": func(ctx context.Context, tx ledger.Tx) error {
-			return tx.LockAccounts(ctx, "book", []ledger.AccountID{"100.100.001"})
+			return tx.LockAccounts(ctx, testenv.BankBook, []ledger.AccountID{"100.100.001"})
 		},
 	}
 

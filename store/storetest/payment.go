@@ -37,11 +37,11 @@ const (
 //
 // newStore must return a store with no state in it; the suite calls it once per
 // subtest and closes the result.
-func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
+func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store) {
 	t.Helper()
 
 	t.Run("BankRoundTripsAndDropsLiveHandles", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		p := bankRow(auroraBIC, "Aurora Bank", early)
 		// A Network hands the store a fully bound Bank. Ledger and Deposit are
@@ -131,7 +131,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("BankAssetsRoundTripAndReplaceOnUpsert", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutBank(ctx, payment.Bank{
@@ -227,7 +227,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// could not make — which is why the store is asked for this row by BIC here
 	// and never by a bank id.
 	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
@@ -290,7 +290,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// the map is a second TABLE, so "the row came back" and "the accounts came
 	// back" are two different claims about two different reads.
 	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutSettlementMember(ctx, payment.SettlementMember{
@@ -375,7 +375,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// putting it back a failure rather than a quiet regression, which is the
 	// whole point of an allowed-field table over a hand-read struct.
 	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		allowed := map[string]bool{
 			"BIC":          true,
@@ -479,7 +479,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	// The other roster case uses EUR, USD, which a store that sorted its child
 	// rows would pass by accident.
 	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			e := rosterEntry("AURODEFFXXX", early)
@@ -532,7 +532,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("GetOnMissingPaymentRowsReturnsSentinels", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// Seed one row of every kind, so the not-found path is exercised on a
 		// populated store rather than only on an empty one.
@@ -582,7 +582,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("PartyRefIdentifierRoundTrips", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// samplePayment and mandate each quote a DIFFERENT non-empty identifier
 		// on the debtor side than on the creditor side. That is deliberate: the
@@ -622,7 +622,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("SubmittedPaymentRoundTripsWithNoCycleAndNoDebtorLeg", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// The shape the split invented, and the one every payment now passes
 		// through: Initiated, in NO cycle, and — for a pull — with no debtor
@@ -678,7 +678,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("RejectedPaymentKeepsItsCodeAndItsText", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		p := samplePayment("pay_1", "e2e-1", early)
 		p.Status = payment.Rejected
@@ -716,7 +716,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("PaymentListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		late := early.Add(time.Hour)
 
@@ -839,7 +839,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("GetOpenCycleFindsTheOpenCycleForItsScheme", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			// A settled cycle for the same scheme, an open cycle for a
@@ -881,7 +881,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("GetPaymentByEndToEndIDIsExactAndIgnoresEmpty", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
@@ -922,7 +922,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("RePuttingAPaymentReleasesItsOldEndToEndID", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// The same rule the ledger applies to a re-keyed idempotency key. The
 		// end-to-end id index is maintained by the store, so a store that only
@@ -967,7 +967,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("PutIsAnUpsertAndDeepCopies", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// Cycles and settlements carry a slice and a map, payments a map. A
 		// store that keeps the caller's reference lets a later mutation rewrite
@@ -1077,27 +1077,27 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("SettlementAdviceIsScopedToTheBankThatWasAdvised", func(t *testing.T) {
-		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore))
+		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore, bookA))
 	})
 
 	t.Run("AdvicesAreKeyedByReferenceNotByCycle", func(t *testing.T) {
-		advicesAreKeyedByReferenceNotByCycle(t, openPayment(t, newStore))
+		advicesAreKeyedByReferenceNotByCycle(t, openPayment(t, newStore, bookA))
 	})
 
 	t.Run("PaymentRoundTripsPartyDetails", func(t *testing.T) {
-		paymentRoundTripsPartyDetails(t, openPayment(t, newStore))
+		paymentRoundTripsPartyDetails(t, openPayment(t, newStore, bookA))
 	})
 
 	t.Run("PaymentRecordsWhereTheCreditorLegLanded", func(t *testing.T) {
-		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore))
+		paymentRecordsWhereTheCreditorLegLanded(t, openPayment(t, newStore, bookA))
 	})
 
 	t.Run("PaymentRecordsBothReturnLegs", func(t *testing.T) {
-		paymentRecordsBothReturnLegs(t, openPayment(t, newStore))
+		paymentRecordsBothReturnLegs(t, openPayment(t, newStore, bookA))
 	})
 
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		// This is what the whole embedding chain exists for: SettleCycle writes
 		// payment rows, posts through the ledger and reads the deposit layer in
@@ -1185,7 +1185,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	})
 
 	t.Run("ResetClearsPaymentState", func(t *testing.T) {
-		s := openPayment(t, newStore)
+		s := openPayment(t, newStore, bookA)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early)); err != nil {
@@ -1807,9 +1807,9 @@ func settlement(id payment.SettlementID, cycleID payment.CycleID, settledAt time
 
 // openPayment builds a fresh store for one subtest and closes it when the
 // subtest ends.
-func openPayment(t *testing.T, newStore func(*testing.T) payment.Store) payment.Store {
+func openPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store, book ledger.BookID) payment.Store {
 	t.Helper()
-	s := newStore(t)
+	s := newStore(t, book)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)

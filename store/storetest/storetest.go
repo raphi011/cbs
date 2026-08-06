@@ -66,29 +66,40 @@ import (
 // store-level guarantee is per book and the interesting failure mode is a
 // implementation that leaks state across books.
 //
-// bookC is a third and is used by one case, AuditPagingIsScopedToItsFilter,
-// which needs a book whose events are payment-scoped so that the pager has gaps
-// to step over. That case named ledger.NetworkBook, which is deleted: the
-// constant meant "belongs to no single institution", and each of the row kinds
-// sequenced under it turned out to have exactly one owner (see
-// payment.ClearingHouseBook). A name from this package rather than that one,
-// because this file talks to ledger.Store and ledger.Tx and to nothing above
-// them — the case is about a filter's predicates, not about who owns a book.
+// bookA is the book the store handed to a suite ANSWERS FOR, and every case
+// that names one names it. Since Task 18c a store answers for exactly one book
+// and refuses the rest, so a case wanting a second book asks the factory for a
+// second STORE — which is what a second book is: another institution's database.
+//
+// bookB is that second store's book. It is used by the handful of cases about
+// isolation, and what each of them now demonstrates is stronger than what it did
+// with two books in one database: the rows cannot collide because the databases
+// cannot see each other, rather than because a primary key is composite.
+//
+// There was a bookC, for AuditPagingIsScopedToItsFilter, which needed a third
+// book whose events were payment-scoped so that the pager had gaps to step over.
+// The gaps come from the scopes and always did, so that case needs one book and
+// the constant is gone.
 const (
 	bookA ledger.BookID = "book-a"
 	bookB ledger.BookID = "book-b"
-	bookC ledger.BookID = "book-c"
 )
 
 // RunLedger runs the ledger-layer suite against a store.
 //
 // newStore must return a store with no state in it; the suite calls it once per
 // subtest and closes the result.
-func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
+func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Store) {
 	t.Helper()
 
 	t.Run("NextSubledgerBlockStepsBy100PerBook", func(t *testing.T) {
-		s := open(t, newStore)
+		// TWO STORES, because a store answers for one book and refuses the
+		// rest. The claim is the same one it always was — a second book's chart
+		// of accounts starts at 100 rather than continuing the first's — and
+		// what changed is that the two books are now two databases, which is the
+		// only place a second book can be. See the note on bookA above.
+		s := open(t, newStore, bookA)
+		other := open(t, newStore, bookB)
 
 		var gotA []int
 		var gotB []int
@@ -100,6 +111,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 				}
 				gotA = append(gotA, block)
 			}
+			return nil
+		})
+		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			block, err := tx.NextSubledgerBlock(ctx, bookB)
 			if err != nil {
 				return err
@@ -114,13 +128,15 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("NextIDSharesOneCounterPerBook", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// ONE counter per book, shared by every prefix — not one counter per
 		// prefix. The number doubles as a creation order, which is why ldg_1,
 		// tx_2 and ent_3 interleave rather than each restarting at 1. A store
 		// that keyed its counter by (book, prefix) would still hand out unique
 		// IDs, so nothing else in this suite would notice.
+		other := open(t, newStore, bookB)
+
 		var inA, inB []string
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, prefix := range []string{"ldg", "tx", "ent", "evt", "tx"} {
@@ -130,7 +146,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 				}
 				inA = append(inA, id)
 			}
-			// A second book numbers independently, from its own 1.
+			return nil
+		})
+		// A second book numbers independently, from its own 1 — in a database of
+		// its own, which is where a second book is.
+		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			id, err := tx.NextID(ctx, bookB, "tx")
 			if err != nil {
 				return err
@@ -144,7 +164,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("TransactionEntriesKeepTheirOrder", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// Transaction.Entries is an ordered slice, and the order is meaningful:
 		// it is the order the legs were written in, and it is what a settlement
@@ -206,7 +226,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("EntryValueDateDefaultsToTransaction", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		ctx := context.Background()
 		value := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
@@ -236,7 +256,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("EntriesKeepDivergentValueDates", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		ctx := context.Background()
 		early := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
@@ -271,7 +291,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("NextAccountSeqResetsPerTypeAndSubledger", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		var liabilityIn100, assetIn100, liabilityIn200 []int
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
@@ -303,24 +323,34 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("SameIDsInDifferentBooks", func(t *testing.T) {
-		s := open(t, newStore)
+		// TWO STORES, and this is the case where the change says the most.
+		//
+		// The claim is unchanged: chart-of-accounts IDs are unique within a
+		// book, not globally, so two banks may both hold an account numbered
+		// 200.100.001. What used to demonstrate it was two books in one
+		// database, which was the weaker half of the truth — the ids did not
+		// collide because the primary key was composite. Now the two banks are
+		// two databases that cannot see each other, which is why the ids cannot
+		// collide in the first place.
+		s := open(t, newStore, bookA)
+		other := open(t, newStore, bookB)
 
-		// Chart-of-accounts IDs are unique within a book, not globally: two
-		// banks may both hold an account numbered 200.100.001.
 		const shared ledger.AccountID = "200.100.001"
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
-			if err := tx.PutAccount(ctx, bookA, ledger.Account{ID: shared, Name: "Alice at A", Type: ledger.Liability}); err != nil {
-				return err
-			}
+			return tx.PutAccount(ctx, bookA, ledger.Account{ID: shared, Name: "Alice at A", Type: ledger.Liability})
+		})
+		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutAccount(ctx, bookB, ledger.Account{ID: shared, Name: "Bob at B", Type: ledger.Liability})
 		})
 
 		var inA, inB ledger.Account
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			var err error
-			if inA, err = tx.GetAccount(ctx, bookA, shared); err != nil {
-				return err
-			}
+			inA, err = tx.GetAccount(ctx, bookA, shared)
+			return err
+		})
+		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
+			var err error
 			inB, err = tx.GetAccount(ctx, bookB, shared)
 			return err
 		})
@@ -342,7 +372,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	// a store that drops it — an insert that forgets the column, a scan that
 	// forgets the field — turns every account into an account in nothing.
 	t.Run("AccountRoundTripsItsAsset", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutAccount(ctx, bookA, ledger.Account{
@@ -371,7 +401,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("GetOnMissingRowsReturnsSentinels", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// A store that reports "not found" as anything other than the domain
 		// sentinel — a wrapped sql.ErrNoRows, say — turns every 404 in the API
@@ -410,9 +440,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return nil
 		})
 
-		// The same IDs in another book are equally not found: a lookup that
-		// forgot to scope by book would return book-a's rows here.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		// The same IDs in ANOTHER STORE are equally not found. This used to be
+		// the same store and a second book, and the failure it was written for
+		// was a lookup that forgot to scope by book. That defect is a table's
+		// primary key away from impossible now, and the one it catches instead
+		// is bigger: a second bank's database answering with the first bank's
+		// rows, which is what the whole split is for.
+		other := open(t, newStore, bookB)
+		view(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			_, err := tx.GetLedger(ctx, bookB, "ldg_1")
 			assertErrorIs(t, "GetLedger across books", err, ledger.ErrLedgerNotFound)
 
@@ -431,7 +466,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 
 		// And in an entirely empty book, where the tables hold nothing at all.
-		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		// It is a third STORE for the reason above, and a book of its own.
+		empty := open(t, newStore, "book-empty")
+		view(t, empty, func(ctx context.Context, tx ledger.Tx) error {
 			_, err := tx.GetLedger(ctx, "book-empty", "ldg_1")
 			assertErrorIs(t, "GetLedger in an empty book", err, ledger.ErrLedgerNotFound)
 
@@ -451,7 +488,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ParentReferencesAreNotEnforced", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// A store is a per-table key/value layer. "The parent must exist" is a
 		// DOMAIN rule — ledger.Book reads the ledger before creating a
@@ -522,7 +559,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		early := time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 		late := early.Add(time.Hour)
@@ -691,7 +728,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("DuplicateIdempotencyKeyRejected", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", "key-1"))
@@ -712,14 +749,17 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		})
 		assertEqual(t, "transaction behind key-1", string(found.ID), "tx_1")
 
-		// Keys are per book, so the same key is free in another book.
-		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
+		// Keys are per book, so the same key is free in another book — which is
+		// another bank's database, and the index that enforces this is that
+		// database's own.
+		other := open(t, newStore, bookB)
+		update(t, other, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookB, transaction("tx_9", "key-1"))
 		})
 	})
 
 	t.Run("RePuttingATransactionReleasesItsOldIdempotencyKey", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// PutTransaction is an upsert, and an upsert may change the key. The
 		// old claim has to go with it. A store that only ever adds to its
@@ -779,7 +819,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("HandledDuplicateKeyLeavesTheUnitOfWorkUsable", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// ErrDuplicateIdempotencyKey is a domain sentinel, which means a caller
 		// is entitled to handle it and carry on — retry under a fresh key, fall
@@ -857,7 +897,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("EveryTextTheDomainAcceptsRoundTrips", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// The store is a key/value layer: it does not validate, it stores. What
 		// it MUST do is hold, byte for byte, every string the domain is willing
@@ -958,7 +998,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("EmptyIdempotencyKeyNotDeduplicated", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// An empty key is an absent key, not an identity: it must never
 		// deduplicate, however many transactions carry it.
@@ -987,7 +1027,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("BookBalanceIncludesReversedTransactions", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		const cash ledger.AccountID = "100.100.001"
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
@@ -1034,7 +1074,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDateBalanceCountsOnlyEntriesBeforeTheBound", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		day := func(d int) time.Time { return time.Date(2026, 4, d, 0, 0, 0, 0, time.UTC) }
 
@@ -1081,7 +1121,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDateBalanceOfUnknownAccountIsZero", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		var got ledger.Amount
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
@@ -1106,7 +1146,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	// every entry it posts (see PostTransaction), so this only arises from a
 	// Tx caller constructing an Entry directly, as this test does.
 	t.Run("ValueDateBalanceExcludesZeroValueDateEntries", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, ledger.Transaction{
@@ -1141,7 +1181,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	// and those are what cancel the original — so a bound falling after the
 	// original's value date must see the net, zero, not the gross.
 	t.Run("ValueDateBalanceNetsAReversalOnTheOriginalsDay", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		const cash ledger.AccountID = "900.001.005"
 		originalValue := time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -1196,7 +1236,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDatedSeriesBucketsByDayAndCarriesAnOpening", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
@@ -1231,7 +1271,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDatedSeriesSignsByNormalDirection", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
@@ -1262,7 +1302,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDatedSeriesOfEmptyWindowIsEmpty", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
@@ -1295,7 +1335,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	// line on store/mem's path; what this pins now is that no movement for year 1
 	// ever appears, however the buckets are built.
 	t.Run("ValueDatedSeriesExcludesZeroValueDateEntries", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		postValueDatedSeriesFixture(t, s, day)
 
@@ -1346,7 +1386,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ValueDatedSeriesOfUnknownAccountIsEmpty", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 		day := func(d int) time.Time { return time.Date(2026, 6, d, 0, 0, 0, 0, time.UTC) }
 		// Seeded, so an empty result means "this account has none" rather than
 		// "there is no data at all" — which an unseeded store cannot tell apart.
@@ -1365,7 +1405,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("MarkReversedIsConditional", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			return tx.PutTransaction(ctx, bookA, transaction("tx_1", ""))
@@ -1397,7 +1437,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("AuditOrderedBySeq", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// The clock is frozen, so OccurredAt ties on every event: Seq, assigned
 		// by the store, is the only thing that can order the log.
@@ -1425,14 +1465,18 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("AuditFilterByScopeTypeEntityAndBefore", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
+		// Every event is this store's own book, because a store answers for one
+		// and refuses the rest. The fourth used to be book-b's and carried the
+		// "BookID narrows" dimension; what replaces that dimension is the
+		// refusal below, which is a stronger claim about the same filter.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, e := range []ledger.AuditEvent{
 				{ID: "evt_1", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated, EntityID: "ldg_1"},
 				{ID: "evt_2", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated, EntityID: "200.100.001"},
 				{ID: "evt_3", BookID: bookA, Scope: ledger.ScopeDeposit, Type: ledger.EventAccountOpened, EntityID: "dep_1"},
-				{ID: "evt_4", BookID: bookB, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated, EntityID: "200.100.001"},
+				{ID: "evt_4", BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated, EntityID: "200.100.002"},
 			} {
 				if err := tx.AppendAudit(ctx, e); err != nil {
 					return err
@@ -1441,35 +1485,47 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return nil
 		})
 
-		// No filter: everything, from every book and scope.
+		// No filter: everything, every scope. It used to say "every book" as
+		// well, and there is one — this institution's own log is the whole of
+		// what a store holds now.
 		assertEqual(t, "unfiltered", len(audit(t, s, ledger.AuditFilter{})), 4)
 
-		// BookID narrows to one book.
-		byBook := audit(t, s, ledger.AuditFilter{BookID: bookB})
-		assertEqual(t, "by book", len(byBook), 1)
-		assertEqual(t, "by book id", byBook[0].ID, "evt_4")
+		// BookID naming THIS store's book still narrows, which on a one-book
+		// store means it changes nothing and must not break.
+		assertEqual(t, "by this store's own book", len(audit(t, s, ledger.AuditFilter{BookID: bookA})), 4)
+
+		// BookID naming ANOTHER institution's book is REFUSED, and that is the
+		// point: an empty page is what a caller reading the wrong store would
+		// otherwise get, and it is indistinguishable from end-of-data. Which
+		// error is the implementation's to name — this package names no dialect
+		// — so what is asserted is that there IS one.
+		if _, err := listAudit(s, ledger.AuditFilter{BookID: bookB}); err == nil {
+			t.Error("a filter naming another institution's book was answered rather than refused; an empty page reads as end-of-data")
+		}
 
 		// Scope narrows to one layer.
 		byScope := audit(t, s, ledger.AuditFilter{Scope: ledger.ScopeDeposit})
 		assertEqual(t, "by scope", len(byScope), 1)
 		assertEqual(t, "by scope id", byScope[0].ID, "evt_3")
 
-		// Type narrows to one event type, across books.
+		// Type narrows to one event type.
 		byType := audit(t, s, ledger.AuditFilter{Type: ledger.EventAccountCreated})
 		assertEqual(t, "by type", len(byType), 2)
 
-		// EntityID alone is not book-scoped, so it finds both books' rows; with
-		// a book it finds one.
+		// EntityID picks one entity out of a type that has two.
 		byEntity := audit(t, s, ledger.AuditFilter{EntityID: "200.100.001"})
-		assertEqual(t, "by entity", len(byEntity), 2)
-		byBookAndEntity := audit(t, s, ledger.AuditFilter{BookID: bookA, EntityID: "200.100.001"})
-		assertEqual(t, "by book and entity", len(byBookAndEntity), 1)
-		assertEqual(t, "by book and entity id", byBookAndEntity[0].ID, "evt_2")
+		assertEqual(t, "by entity", len(byEntity), 1)
+		assertEqual(t, "by entity id", byEntity[0].ID, "evt_2")
 
-		// Filters compose.
+		// Filters compose: scope and type together match two, and the entity
+		// narrows them to one.
 		combined := audit(t, s, ledger.AuditFilter{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated})
-		assertEqual(t, "combined", len(combined), 1)
-		assertEqual(t, "combined id", combined[0].ID, "evt_2")
+		assertEqual(t, "combined", len(combined), 2)
+		narrowed := audit(t, s, ledger.AuditFilter{
+			BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated, EntityID: "200.100.001",
+		})
+		assertEqual(t, "combined and narrowed", len(narrowed), 1)
+		assertEqual(t, "combined and narrowed id", narrowed[0].ID, "evt_2")
 
 		// Before is an exclusive upper bound on Seq.
 		all := audit(t, s, ledger.AuditFilter{})
@@ -1480,7 +1536,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("AuditLimitKeepsNewestBelowBefore", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for _, id := range []string{"evt_1", "evt_2", "evt_3", "evt_4", "evt_5"} {
@@ -1518,20 +1574,26 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("AuditPagingIsScopedToItsFilter", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// Seq is a store-GLOBAL total order, not per book or per scope, so a
 		// scope's events are separated by gaps that belong to other scopes. A
 		// pager that treated Before as "the previous few sequence numbers"
 		// instead of as one predicate among the rest would return other layers'
 		// events — or nothing at all.
+		// One book, four kinds of event, because a store answers for one book.
+		// The gaps this case needs come from the SCOPES rather than from the
+		// books — which is what they always came from, since Seq is global and a
+		// scope's events are what the filter selects. Two of these were book-b's
+		// and book-c's; bookC exists for this case alone and now names nothing,
+		// which is why it is gone from the constants above.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			for round := range 3 {
 				for _, e := range []ledger.AuditEvent{
 					{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
 					{BookID: bookA, Scope: ledger.ScopeDeposit, Type: ledger.EventAccountOpened},
-					{BookID: bookB, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
-					{BookID: bookC, Scope: ledger.ScopePayment, Type: ledger.EventPaymentAccepted},
+					{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventLedgerCreated},
+					{BookID: bookA, Scope: ledger.ScopePayment, Type: ledger.EventPaymentAccepted},
 				} {
 					e.ID = fmt.Sprintf("evt_%s_%d", e.Type, round)
 					e.EntityID = fmt.Sprintf("ent_%d", round)
@@ -1543,7 +1605,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return nil
 		})
 
-		filter := ledger.AuditFilter{BookID: bookC, Scope: ledger.ScopePayment}
+		filter := ledger.AuditFilter{BookID: bookA, Scope: ledger.ScopePayment}
 		all := audit(t, s, filter)
 		assertEqual(t, "payment events", len(all), 3)
 
@@ -1570,9 +1632,9 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		assertEqual(t, "page below the oldest match", len(audit(t, s, paged)), 0)
 
 		// Before composes with Scope and EntityID together. The two matches are
-		// in different books and are separated by a deposit-scope event, so
-		// paging between them only works if Before is one predicate among the
-		// rest rather than a slice of the global sequence.
+		// separated by a deposit-scope event, so paging between them only works
+		// if Before is one predicate among the rest rather than a slice of the
+		// global sequence.
 		byEntity := ledger.AuditFilter{Scope: ledger.ScopeLedger, EntityID: "ent_1"}
 		ent1 := audit(t, s, byEntity)
 		assertEqual(t, "ledger events for ent_1", len(ent1), 2)
@@ -1588,7 +1650,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ResetClearsEverything", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
 			if _, err := tx.NextID(ctx, bookA, "ldg"); err != nil {
@@ -1674,7 +1736,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("UpdateRollsBackOnError", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		boom := errors.New("storetest: deliberate failure")
 		err := s.Update(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
@@ -1758,7 +1820,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	})
 
 	t.Run("ConcurrentReadThenWriteOnOneKeyAgrees", func(t *testing.T) {
-		s := open(t, newStore)
+		s := open(t, newStore, bookA)
 
 		// This suite's only case with two units of work running AT ONCE, and
 		// the gap it closes is the reason it exists.
@@ -1889,9 +1951,9 @@ var errTaken = errors.New("storetest: the name is already claimed")
 // ---------------------------------------------------------------------------
 
 // open builds a fresh store for one subtest and closes it when the subtest ends.
-func open(t *testing.T, newStore func(*testing.T) ledger.Store) ledger.Store {
+func open(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Store, book ledger.BookID) ledger.Store {
 	t.Helper()
-	s := newStore(t)
+	s := newStore(t, book)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)
@@ -1938,6 +2000,19 @@ func audit(t *testing.T, s ledger.Store, f ledger.AuditFilter) []ledger.AuditEve
 		return err
 	})
 	return out
+}
+
+// listAudit is audit without the assertion, for the one case that is about the
+// ERROR rather than about the page: a filter naming another institution's book
+// must be refused, and audit above would fail the test on the way past.
+func listAudit(s ledger.Store, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+	var out []ledger.AuditEvent
+	err := s.View(context.Background(), func(ctx context.Context, tx ledger.Tx) error {
+		var err error
+		out, err = tx.ListAudit(ctx, f)
+		return err
+	})
+	return out, err
 }
 
 // transaction builds a minimal balanced transaction for tests that only care

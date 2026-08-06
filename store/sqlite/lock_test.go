@@ -10,6 +10,7 @@ import (
 
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/store/sqlite"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // Two postings that cannot both spend the same balance, driven through
@@ -35,7 +36,7 @@ import (
 // budget's own limit is TestTheRetryBudgetOutlastsASlowWriter's subject.
 func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 	ctx := context.Background()
-	s, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "postings.db"), frozen)
+	s, err := sqlite.Open(ctx, sqlite.Bank, testenv.BankBook, filepath.Join(t.TempDir(), "postings.db"), frozen)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestConcurrentPostingsOnAFileReachTheDomainGuard(t *testing.T) {
 		}
 	})
 
-	book := ledger.NewBook(s, "bank", frozen)
+	book := ledger.NewBook(s, testenv.BankBook, frozen)
 	cash, equity := fundedChart(t, book, 1_000)
 
 	const hold = 50 * time.Millisecond

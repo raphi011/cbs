@@ -18,7 +18,7 @@ import (
 // to lending.Portfolio — so what it pins is the storage contract: book scoping,
 // the not-found sentinel, listing order, the composite instalment key, and the
 // cross-layer rollback that lending.Tx embedding ledger.Tx exists to provide.
-func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
+func RunLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.Store) {
 	t.Helper()
 
 	// A facility stores its asset even though the two GL accounts it wraps
@@ -26,7 +26,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	// after deposit_accounts.asset. Duplication is only safe while the copies
 	// agree, so the suite says so out loud for this column too.
 	t.Run("FacilityAssetMatchesItsGLAccounts", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
 			for _, a := range []ledger.Account{
@@ -76,7 +76,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	})
 
 	t.Run("FacilityRoundTripsEveryField", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		// Every field, because most of them are the sort a store can silently
 		// drop: a minimum-payment share that reads back as zero is a line that
@@ -187,7 +187,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	})
 
 	t.Run("GetOnAMissingFacilityReturnsTheSentinel", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
 			return tx.PutFacility(ctx, bookA, lending.Facility{
@@ -199,27 +199,38 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			_, err := tx.GetFacility(ctx, bookA, "fac_nope")
 			assertErrorIs(t, "GetFacility on an unknown facility", err, lending.ErrFacilityNotFound)
 
-			// The same ID in another book is equally not found: a lookup that
-			// forgot to scope by book would return book-a's row here.
-			_, err = tx.GetFacility(ctx, bookB, "fac_1")
-			assertErrorIs(t, "GetFacility across books", err, lending.ErrFacilityNotFound)
+			return nil
+		})
 
-			_, err = tx.GetFacility(ctx, "book-empty", "fac_1")
+		// The same ID in another bank's database is equally not found. This was
+		// a second book in one store and the defect it caught was a lookup that
+		// forgot to scope by book; what it catches now is a second bank's store
+		// answering with the first bank's row.
+		other := openLending(t, newStore, bookB)
+		viewLending(t, other, func(ctx context.Context, tx lending.Tx) error {
+			_, err := tx.GetFacility(ctx, bookB, "fac_1")
+			assertErrorIs(t, "GetFacility across books", err, lending.ErrFacilityNotFound)
+			return nil
+		})
+		empty := openLending(t, newStore, "book-empty")
+		viewLending(t, empty, func(ctx context.Context, tx lending.Tx) error {
+			_, err := tx.GetFacility(ctx, "book-empty", "fac_1")
 			assertErrorIs(t, "GetFacility in an empty book", err, lending.ErrFacilityNotFound)
 			return nil
 		})
 	})
 
 	t.Run("FacilitiesAreScopedByBook", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		const shared lending.FacilityID = "fac_1"
+		other := openLending(t, newStore, bookB)
 		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
-			if err := tx.PutFacility(ctx, bookA, lending.Facility{
+			return tx.PutFacility(ctx, bookA, lending.Facility{
 				ID: shared, Name: "Loan at A", Asset: "EUR", OpenedAt: early,
-			}); err != nil {
-				return err
-			}
+			})
+		})
+		updateLending(t, other, func(ctx context.Context, tx lending.Tx) error {
 			return tx.PutFacility(ctx, bookB, lending.Facility{
 				ID: shared, Name: "Loan at B", Asset: "EUR", OpenedAt: early,
 			})
@@ -232,12 +243,6 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			}
 			assertEqual(t, "facility in book-a", inA.Name, "Loan at A")
 
-			inB, err := tx.GetFacility(ctx, bookB, shared)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "facility in book-b", inB.Name, "Loan at B")
-
 			listed, err := tx.ListFacilities(ctx, bookA)
 			if err != nil {
 				return err
@@ -245,10 +250,18 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			assertEqual(t, "facilities listed for book-a", len(listed), 1)
 			return nil
 		})
+		viewLending(t, other, func(ctx context.Context, tx lending.Tx) error {
+			inB, err := tx.GetFacility(ctx, bookB, shared)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "facility in book-b", inB.Name, "Loan at B")
+			return nil
+		})
 	})
 
 	t.Run("ListFacilitiesOrderingIsOpenedAtThenSeq", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		late := early.Add(time.Hour)
 		// The row inserted FIRST carries the LATEST OpenedAt, and the IDs span
@@ -300,7 +313,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	})
 
 	t.Run("InstallmentsAreKeyedByFacilityAndSeq", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		due := func(n int) time.Time {
 			return time.Date(2025, time.February, 15, 0, 0, 0, 0, time.UTC).AddDate(0, n, 0)
@@ -363,7 +376,13 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 			}
 			assertEqual(t, "no schedule", len(none), 0)
 
-			// And instalments are book-scoped like everything else.
+			return nil
+		})
+
+		// And instalments are book-scoped like everything else, which is to say
+		// they are in one bank's database and no other's.
+		otherBank := openLending(t, newStore, bookB)
+		viewLending(t, otherBank, func(ctx context.Context, tx lending.Tx) error {
 			acrossBooks, err := tx.ListInstallments(ctx, bookB, "fac_1")
 			if err != nil {
 				return err
@@ -411,7 +430,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	})
 
 	t.Run("LendingAndLedgerWritesRollBackTogether", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		// The reason Tx embeds ledger.Tx: a disbursement is a facility write
 		// and a GL posting, and a store where one survives the other's failure
@@ -463,7 +482,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	// for. A store that got any of them wrong would produce interest figures
 	// nobody could reproduce, and no other subtest would notice.
 	t.Run("FacilityTermsTimeline", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		jan := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		mar := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -485,7 +504,12 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 					return err
 				}
 			}
-			// A second book's rows must be invisible to the first.
+			return nil
+		})
+		// A second bank's rows must be invisible to the first, and they are in a
+		// second bank's database.
+		otherBank := openLending(t, newStore, bookB)
+		updateLending(t, otherBank, func(ctx context.Context, tx lending.Tx) error {
 			return tx.PutFacilityTerms(ctx, bookB, lending.FacilityTerms{
 				FacilityID: "fac_1", EffectiveFrom: jan, Rate: 999_000, CreatedAt: early,
 			})
@@ -517,6 +541,9 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 				t.Errorf("effective from: got %v, want %v", rows[0].EffectiveFrom, jan)
 			}
 
+			return nil
+		})
+		viewLending(t, otherBank, func(ctx context.Context, tx lending.Tx) error {
 			other, err := tx.ListFacilityTerms(ctx, bookB, "fac_1")
 			if err != nil {
 				return err
@@ -580,7 +607,7 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 	})
 
 	t.Run("ResetClearsLendingRows", func(t *testing.T) {
-		s := openLending(t, newStore)
+		s := openLending(t, newStore, bookA)
 
 		updateLending(t, s, func(ctx context.Context, tx lending.Tx) error {
 			if err := tx.PutFacility(ctx, bookA, lending.Facility{
@@ -630,9 +657,9 @@ func RunLending(t *testing.T, newStore func(*testing.T) lending.Store) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func openLending(t *testing.T, newStore func(*testing.T) lending.Store) lending.Store {
+func openLending(t *testing.T, newStore func(*testing.T, ledger.BookID) lending.Store, book ledger.BookID) lending.Store {
 	t.Helper()
-	s := newStore(t)
+	s := newStore(t, book)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)

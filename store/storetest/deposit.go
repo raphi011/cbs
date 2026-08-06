@@ -22,14 +22,14 @@ import (
 //
 // newStore must return a store with no state in it; the suite calls it once per
 // subtest and closes the result.
-func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
+func RunDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.Store) {
 	t.Helper()
 
 	// A deposit account stores its asset even though its backing GL account
 	// already carries it — the one duplicated fact in the schema. Duplication
 	// is only safe while the two agree, so the suite says so out loud.
 	t.Run("DepositAccountAssetMatchesItsGLAccount", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			if err := tx.PutAccount(ctx, bookA, ledger.Account{
@@ -67,19 +67,21 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("DepositAccountRoundTripsAndIsBookScoped", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		// The same deposit account ID in two books is two different accounts,
-		// exactly as in the ledger: an implementation that forgets its
-		// WHERE book_id = $1 hands one bank another bank's customer.
+		// exactly as in the ledger — and since Task 18c the two books are two
+		// banks' DATABASES, so what would once have handed one bank another
+		// bank's customer is a store answering about a book it does not hold.
 		const shared deposit.AccountID = "dep_1"
+		other := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: shared, GLAccount: "200.100.001", Name: "Alice at A",
 				Status: deposit.Active, CreatedAt: early,
-			}); err != nil {
-				return err
-			}
+			})
+		})
+		updateDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
 				ID: shared, GLAccount: "200.100.001", Name: "Bob at B",
 				Status: deposit.Frozen, CreatedAt: early,
@@ -93,10 +95,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			if inA, err = tx.GetDepositAccount(ctx, bookA, shared); err != nil {
 				return err
 			}
-			if inB, err = tx.GetDepositAccount(ctx, bookB, shared); err != nil {
-				return err
-			}
 			listedA, err = tx.ListDepositAccounts(ctx, bookA)
+			return err
+		})
+		viewDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
+			var err error
+			inB, err = tx.GetDepositAccount(ctx, bookB, shared)
 			return err
 		})
 
@@ -145,7 +149,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// whatever the store's index happens to give, which is what makes it
 	// checkable.
 	t.Run("IdentifiersSurviveAccountRead", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		aa := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "AA-AURORA-0001"}
 		zz := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "ZZ-AURORA-9999"}
 
@@ -191,7 +195,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// reflect.DeepEqual and encoders distinguish null from [], so this is a real
 	// difference, not a cosmetic one.
 	t.Run("NoIdentifiersReadsBackNil", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
@@ -223,7 +227,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// constraint behind it. This is one account listing one address twice, which
 	// is not a domain question at all: it is the same row written twice.
 	t.Run("DuplicateIdentifiersOnOneAccountCollapse", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -259,7 +263,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// not in store/mem, whose rollback snapshot was one level deep precisely on
 	// this promise.
 	t.Run("MutatingReadIdentifiersDoesNotReachTheStore", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -294,7 +298,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// rewrite what it stored afterwards. A SQL store copies the values into the
 	// database and could not honour such a rewrite if it wanted to.
 	t.Run("MutatingWrittenIdentifiersDoesNotReachTheStore", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 		mine := []deposit.Identifier{iban}
 
@@ -321,7 +325,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// is an upsert of the whole aggregate everywhere else; identifiers must not
 	// be the one part of it that accumulates.
 	t.Run("IdentifiersAreReplacedByAnUpsert", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		first := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 		second := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-9999"}
 
@@ -360,16 +364,20 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// where that half lives. This case was called …IsExactAndBookScoped until
 	// the value stopped being matched exactly.
 	t.Run("ListDepositAccountsByIdentifierMatchesTheSchemeExactlyAndIsBookScoped", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
 
+		// The second bank's account, in the second bank's database. One IBAN at
+		// two banks is what the book scoping is about, and it is now two
+		// databases rather than two book_id values.
+		otherBank := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
-			if err := tx.PutDepositAccount(ctx, bookA, deposit.Account{
+			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: "dep_1", Name: "Alice", Asset: "EUR",
 				Identifiers: []deposit.Identifier{iban},
-			}); err != nil {
-				return err
-			}
+			})
+		})
+		updateDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
 				ID: "dep_2", Name: "Bruno", Asset: "EUR",
 				Identifiers: []deposit.Identifier{iban},
@@ -406,6 +414,19 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			return nil
 		})
+
+		// And the other bank's database holds its own account under the very
+		// same IBAN, which is the whole of what "book-scoped" is protecting.
+		viewDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
+			inB, err := tx.ListDepositAccountsByIdentifier(ctx, bookB, iban)
+			if err != nil {
+				return err
+			}
+			if len(inB) != 1 || inB[0].ID != "dep_2" {
+				t.Fatalf("book B lookup = %#v, want just dep_2", inB)
+			}
+			return nil
+		})
 	})
 
 	// An IBAN matches through its display separators, in BOTH directions.
@@ -423,12 +444,17 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// fixture whose two sides were both compact would pass against the unfixed
 	// code and prove nothing.
 	t.Run("ListDepositAccountsByIdentifierMatchesAnIBANThroughItsSeparators", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		const pan = deposit.IdentifierScheme("PAN")
 		stored := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
 		spaced := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89 AURORA 1001"}
 
+		// dep_2 is a SECOND BANK's account, in a second bank's database, because
+		// a store answers for one book. It could have been a second account in
+		// this one; keeping it at the other bank costs nothing and keeps the
+		// pair of directions being read off two independent stores.
+		otherBank := openDeposit(t, newStore, bookB)
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			// dep_1 holds the readable form, dep_2 the compact one. Two accounts
 			// so that each direction is tested against a row stored the other
@@ -439,17 +465,17 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}); err != nil {
 				return err
 			}
-			if err := tx.PutDepositAccount(ctx, bookB, deposit.Account{
-				ID: "dep_2", Name: "Bruno", Asset: "EUR",
-				Identifiers: []deposit.Identifier{compact},
-			}); err != nil {
-				return err
-			}
 			// A scheme with no display form, holding a value that carries a
 			// hyphen anyway.
 			return tx.PutDepositAccount(ctx, bookA, deposit.Account{
 				ID: "dep_3", Name: "Cara", Asset: "EUR",
 				Identifiers: []deposit.Identifier{{Scheme: pan, Value: "4111-1111"}},
+			})
+		})
+		updateDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
+			return tx.PutDepositAccount(ctx, bookB, deposit.Account{
+				ID: "dep_2", Name: "Bruno", Asset: "EUR",
+				Identifiers: []deposit.Identifier{compact},
 			})
 		})
 
@@ -470,15 +496,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			if len(hit) != 1 || hit[0].ID != "dep_1" {
 				t.Fatalf("spaced lookup of a hyphenated row = %#v, want just dep_1", hit)
-			}
-			// Hyphenated query, compact row: the reverse, which a store that
-			// only compacted the QUERY would fail.
-			hit, err = tx.ListDepositAccountsByIdentifier(ctx, bookB, stored)
-			if err != nil {
-				return err
-			}
-			if len(hit) != 1 || hit[0].ID != "dep_2" {
-				t.Fatalf("hyphenated lookup of a compact row = %#v, want just dep_2", hit)
 			}
 			// What must NOT happen: the separators are removed, not treated as
 			// wildcards, and a different account number stays a different one.
@@ -511,6 +528,20 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			}
 			return nil
 		})
+
+		// Hyphenated query, compact row: the reverse direction, which a store
+		// that only compacted the QUERY would fail. It is the other bank's
+		// database, which is where the compact row lives.
+		viewDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
+			hit, err := tx.ListDepositAccountsByIdentifier(ctx, bookB, stored)
+			if err != nil {
+				return err
+			}
+			if len(hit) != 1 || hit[0].ID != "dep_2" {
+				t.Fatalf("hyphenated lookup of a compact row = %#v, want just dep_2", hit)
+			}
+			return nil
+		})
 	})
 
 	// The store does NOT enforce uniqueness, and this test is what keeps it
@@ -523,7 +554,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// a constraint violation rather than as ErrIdentifierTaken. The resulting
 	// ambiguity is caught at READ time instead, by Register.ResolveIdentifier.
 	t.Run("IdentifierUniquenessIsNotEnforced", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		iban := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
@@ -569,7 +600,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// visible at read time (Register.ResolveIdentifier, and the network sweep
 	// above it) rather than lost in a constraint violation.
 	t.Run("IdentifierUniquenessIsNotEnforcedAcrossSpellings", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 		display := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 		compact := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89AURORA1001"}
 
@@ -605,7 +636,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("GetOnMissingDepositRowsReturnsSentinels", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		// A store that reports "not found" as anything but the domain sentinel
 		// turns every 404 in the deposit API into a 500.
@@ -635,8 +666,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			return nil
 		})
 
-		// The same IDs in another book are equally not found.
-		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+		// The same IDs in another bank's database are equally not found.
+		other := openDeposit(t, newStore, bookB)
+		viewDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
 			_, err := tx.GetDepositAccount(ctx, bookB, "dep_1")
 			assertErrorIs(t, "GetDepositAccount across books", err, deposit.ErrAccountNotFound)
 
@@ -648,8 +680,10 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 			return nil
 		})
 
-		// And in a book that has never been written to at all.
-		viewDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
+		// And in a book that has never been written to at all — a third store,
+		// for the reason above.
+		empty := openDeposit(t, newStore, "book-empty")
+		viewDeposit(t, empty, func(ctx context.Context, tx deposit.Tx) error {
 			_, err := tx.GetDepositAccount(ctx, "book-empty", "dep_1")
 			assertErrorIs(t, "GetDepositAccount in an empty book", err, deposit.ErrAccountNotFound)
 
@@ -663,7 +697,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("DepositListOrderingIsCreatedAtThenSeq", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		late := early.Add(time.Hour)
 
@@ -765,7 +799,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("ActiveHoldTotalExcludesReleasedCapturedAndExpired", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		now := early.Add(12 * time.Hour)
 		yesterday := early.Add(-24 * time.Hour)
@@ -781,13 +815,19 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				hold("hld_4", "dep_1", 800, deposit.HoldCaptured, early, time.Time{}),
 				// Not counted: expired before now.
 				hold("hld_5", "dep_1", 1600, deposit.HoldActive, early, yesterday),
-				// Not counted: another account, and another book.
+				// Not counted: another account.
 				hold("hld_6", "dep_2", 3200, deposit.HoldActive, early, time.Time{}),
 			} {
 				if err := tx.PutHold(ctx, bookA, h); err != nil {
 					return err
 				}
 			}
+			return nil
+		})
+		// Another bank's dep_1, in another bank's database, holding a much
+		// larger amount: the aggregate must not reach it.
+		other := openDeposit(t, newStore, bookB)
+		updateDeposit(t, other, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutHold(ctx, bookB, hold("hld_7", "dep_1", 6400, deposit.HoldActive, early, time.Time{}))
 		})
 
@@ -804,13 +844,6 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				return err
 			}
 			assertEqual(t, "active hold total for the other account", other, ledger.Amount(3200))
-
-			// Scoped by book: book-b's dep_1 is a different account.
-			inB, err := tx.ActiveHoldTotal(ctx, bookB, "dep_1", now)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "active hold total in book-b", inB, ledger.Amount(6400))
 
 			// Like BookBalance this is an aggregate: an unknown account is 0,
 			// not an error.
@@ -846,7 +879,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("SnapshotUpsertsByAccountAndDate", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		first := deposit.Snapshot{
 			AccountID: "dep_1",
@@ -905,7 +938,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("UpdateRollsBackDepositAndLedgerWritesTogether", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		// The reason deposit.Tx embeds ledger.Tx: a capture writes a hold and
 		// posts a GL transaction, and a failure must undo both. Seed one
@@ -971,7 +1004,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	})
 
 	t.Run("ResetClearsDepositState", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		updateDeposit(t, s, func(ctx context.Context, tx deposit.Tx) error {
 			if err := tx.PutDepositAccount(ctx, bookA, account("dep_1", early)); err != nil {
@@ -1038,7 +1071,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// table now, covered by OverdraftTermsTimeline below. What is left on the
 	// account is what an accrual carries FORWARD rather than what prices it.
 	t.Run("AccrualStateRoundTrip", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		accrual := time.Date(2025, 3, 4, 0, 0, 0, 0, time.UTC)
 		want := deposit.Account{
@@ -1110,7 +1143,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// for. A store that got any of them wrong would produce interest figures
 	// nobody could reproduce, and no other subtest would notice.
 	t.Run("OverdraftTermsTimeline", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		jan := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		mar := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
@@ -1139,7 +1172,12 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 					return err
 				}
 			}
-			// A second book's rows must be invisible to the first.
+			return nil
+		})
+		// A second bank's rows must be invisible to the first, and they are in a
+		// second bank's database.
+		otherBank := openDeposit(t, newStore, bookB)
+		updateDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
 			return tx.PutOverdraftTerms(ctx, bookB, deposit.OverdraftTerms{
 				AccountID: "dep_1", EffectiveFrom: jan, ProductID: "prd_basic",
 				Pricing:   &product.OverdraftPricing{Rate: 999_000},
@@ -1176,6 +1214,9 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 				t.Errorf("effective from: got %v, want %v", rows[0].EffectiveFrom, jan)
 			}
 
+			return nil
+		})
+		viewDeposit(t, otherBank, func(ctx context.Context, tx deposit.Tx) error {
 			other, err := tx.ListOverdraftTermsForAccount(ctx, bookB, "dep_1")
 			if err != nil {
 				return err
@@ -1243,7 +1284,7 @@ func RunDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) {
 	// stores must round-trip the distinction, and neither may hand a reader a
 	// pointer into its own state.
 	t.Run("OverdraftTermsPricingOverlayRoundTrip", func(t *testing.T) {
-		s := openDeposit(t, newStore)
+		s := openDeposit(t, newStore, bookA)
 
 		overlay := product.OverdraftPricing{Rate: 90_000, UnarrangedRate: 350_000, DayCount: interest.Thirty360}
 		free := product.OverdraftPricing{}
@@ -1361,9 +1402,9 @@ func snapshot(acct deposit.AccountID, date time.Time) deposit.Snapshot {
 
 // openDeposit builds a fresh store for one subtest and closes it when the
 // subtest ends.
-func openDeposit(t *testing.T, newStore func(*testing.T) deposit.Store) deposit.Store {
+func openDeposit(t *testing.T, newStore func(*testing.T, ledger.BookID) deposit.Store, book ledger.BookID) deposit.Store {
 	t.Helper()
-	s := newStore(t)
+	s := newStore(t, book)
 	t.Cleanup(func() {
 		if err := s.Close(); err != nil {
 			t.Errorf("Close: %v", err)
