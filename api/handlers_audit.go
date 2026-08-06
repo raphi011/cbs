@@ -90,5 +90,5 @@ func (s *Server) handleCentralBankAudit(w http.ResponseWriter, r *http.Request) 
 // payments and clearing cycles, which belong to no single bank and so live
 // under ledger.NetworkBook.
 func (s *Server) handlePaymentAudit(w http.ResponseWriter, r *http.Request) {
-	s.writeAudit(w, r, auditFilter(r, ledger.NetworkBook, ledger.ScopePayment))
+	s.writeAudit(w, r, auditFilter(r, payment.ClearingHouseBook, ledger.ScopePayment))
 }

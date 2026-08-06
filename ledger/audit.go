@@ -9,9 +9,17 @@ import (
 // are unique within a book, not globally, so BookID scopes every lookup.
 type BookID string
 
-// NetworkBook is the sentinel BookID for network-scoped entities (participants,
-// payments, mandates, cycles, settlements), which belong to no single bank.
-const NetworkBook BookID = "network"
+// There is no sentinel BookID here any more, and its absence is worth a line
+// where it used to be.
+//
+// NetworkBook meant "belongs to no single bank" and named the book participants,
+// payments, mandates, cycles and settlements were keyed and sequenced under. It
+// was deleted at Task 18, when each institution got a database of its own, and
+// it was deleted rather than renamed: every row it covered turned out to have
+// exactly one owner, so what the sentinel was expressing was that one store held
+// everything, not that anything was genuinely nobody's. The three books that
+// replace it are each an institution's own — a bank's is its own id, and see
+// payment.ClearingHouseBook and payment.CentralBankBook for the other two.
 
 // Scope names the layer an audit event originated in.
 type Scope string
@@ -72,8 +80,11 @@ const (
 	EventProductVersionDrafted   = "product.version_drafted"
 	EventProductVersionPublished = "product.version_published"
 
-	// ScopePayment. These are network-scoped: they describe entities that
-	// belong to no single bank, so they are recorded under NetworkBook.
+	// ScopePayment. Each of these is recorded under the book of the institution
+	// that performed it, in that institution's own store: a mandate event in the
+	// creditor bank's log, a clearing event in the clearing house's, a settlement
+	// event in the central bank's. They used to share one book, which is the
+	// thing Task 18 removed; see payment/audit.go.
 	//
 	// The first four are an admission, one event per act, because an admission
 	// is four units of work at three institutions and the log is this system's

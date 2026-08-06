@@ -22,6 +22,12 @@ import (
 var _ product.Tx = (*tx)(nil)
 
 func (t *tx) PutProduct(ctx context.Context, book ledger.BookID, p product.Product) error {
+	if err := t.inShape("products"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -63,6 +69,12 @@ func scanProduct(row interface{ Scan(...any) error }) (product.Product, error) {
 }
 
 func (t *tx) GetProduct(ctx context.Context, book ledger.BookID, id product.ID) (product.Product, error) {
+	if err := t.inShape("products"); err != nil {
+		return product.Product{}, err
+	}
+	if err := t.own(book); err != nil {
+		return product.Product{}, err
+	}
 	row := t.tx.QueryRowContext(ctx, `
 		SELECT `+productColumns+` FROM products WHERE book_id = ? AND id = ?`,
 		string(book), string(id))
@@ -77,6 +89,12 @@ func (t *tx) GetProduct(ctx context.Context, book ledger.BookID, id product.ID) 
 }
 
 func (t *tx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Product, error) {
+	if err := t.inShape("products"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT `+productColumns+` FROM products WHERE book_id = ?
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
@@ -106,6 +124,12 @@ func (t *tx) ListProducts(ctx context.Context, book ledger.BookID) ([]product.Pr
 // control that survives a direct UPDATE — see the schema, on
 // product_versions.published_at.
 func (t *tx) PutProductVersion(ctx context.Context, book ledger.BookID, v product.Version) error {
+	if err := t.inShape("product_versions"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -169,6 +193,12 @@ func scanProductVersion(row interface{ Scan(...any) error }) (product.Version, e
 // day_key — an ISO day and therefore lexicographically ordered. Ascending is
 // load-bearing: product.VersionAt binary-searches the slice this returns.
 func (t *tx) ListProductVersions(ctx context.Context, book ledger.BookID, id product.ID) ([]product.Version, error) {
+	if err := t.inShape("product_versions"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT `+productVersionColumns+`
 		FROM product_versions WHERE book_id = ? AND product_id = ?
@@ -194,6 +224,12 @@ func (t *tx) ListProductVersions(ctx context.Context, book ledger.BookID, id pro
 // and filters on published_at so a draft is invisible — the row before it stays
 // in force through it.
 func (t *tx) GetProductVersionAsOf(ctx context.Context, book ledger.BookID, id product.ID, day time.Time) (product.Version, error) {
+	if err := t.inShape("product_versions"); err != nil {
+		return product.Version{}, err
+	}
+	if err := t.own(book); err != nil {
+		return product.Version{}, err
+	}
 	row := t.tx.QueryRowContext(ctx, `
 		SELECT `+productVersionColumns+`
 		FROM product_versions

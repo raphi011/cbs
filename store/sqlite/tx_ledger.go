@@ -42,11 +42,53 @@ func (t *tx) write() error {
 	return nil
 }
 
+// own reports whether this store answers for the given book, and it is called
+// FIRST in every method that takes one — before the read-only check, before the
+// books row is ensured, before any statement runs.
+//
+// The ordering is the whole value of it. A foreign book used to produce a silent
+// not-found: the statement ran, matched nothing, and the caller got an empty
+// listing or a "ledger not found" several layers away from the institution that
+// had no business asking. Putting the guard after anything at all leaves a path
+// on which that still happens — after write(), a View still sweeps another
+// institution's book; after ensureBook, the store has already INSERTED a row for
+// it, which is a foreign book being created rather than refused.
+//
+// See ErrNotThisStoresBook for what this catches and what stays the recorder's.
+func (t *tx) own(book ledger.BookID) error {
+	if book == t.store.book {
+		return nil
+	}
+	return fmt.Errorf("%w: this is %s's store, and %q is somebody else's book",
+		ErrNotThisStoresBook, t.store.book, book)
+}
+
+// inShape reports whether this store's schema holds the named table, and it is
+// called first in every method whose table is not in all three shapes.
+//
+// The table name is passed rather than derived, because a method can name more
+// than one and the one worth refusing on is the one it is ABOUT: PutCycle writes
+// cycles and cycle_payments, and a store without cycles has neither, so naming
+// the parent is enough and naming both would be a list to keep in step.
+//
+// See ErrNotInThisShape for why this is a sentinel rather than the "no such
+// table" the driver would otherwise produce.
+func (t *tx) inShape(table string) error {
+	if _, ok := t.store.shape.holds[table]; ok {
+		return nil
+	}
+	return fmt.Errorf("%w: this is the %s shape and it has no %s table",
+		ErrNotInThisShape, t.store.shape, table)
+}
+
 // ensureBook creates the books row every book-scoped table's foreign key points
 // at. Books are not an entity the domain creates — a BookID is simply a name a
 // participant is written under — so the row appears the first time something is
 // written under it.
 func (t *tx) ensureBook(ctx context.Context, book ledger.BookID) error {
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if _, ok := t.books[book]; ok {
 		return nil
 	}
@@ -101,6 +143,9 @@ func placeholders(n int) string {
 // arrived at because SQLite admits one writer rather than because this row is
 // locked.
 func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int64, error) {
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	if err := t.write(); err != nil {
 		return 0, err
 	}
@@ -123,6 +168,9 @@ func (t *tx) nextSeq(ctx context.Context, book ledger.BookID, name string) (int6
 // is what says so: a store keying its counter by (book, prefix) would still hand
 // out unique ids, and nothing else would notice.
 func (t *tx) NextID(ctx context.Context, book ledger.BookID, prefix string) (string, error) {
+	if err := t.own(book); err != nil {
+		return "", err
+	}
 	n, err := t.nextSeq(ctx, book, "id")
 	if err != nil {
 		return "", err
@@ -133,6 +181,12 @@ func (t *tx) NextID(ctx context.Context, book ledger.BookID, prefix string) (str
 // NextSubledgerBlock issues the next chart-of-accounts block for a book: 100,
 // 200, 300, …
 func (t *tx) NextSubledgerBlock(ctx context.Context, book ledger.BookID) (int, error) {
+	if err := t.inShape("subledgers"); err != nil {
+		return 0, err
+	}
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	n, err := t.nextSeq(ctx, book, "subledger_block")
 	if err != nil {
 		return 0, err
@@ -143,6 +197,12 @@ func (t *tx) NextSubledgerBlock(ctx context.Context, book ledger.BookID) (int, e
 // NextAccountSeq issues the next account number within one
 // "<typeBlock>.<subledgerID>" branch of a book, restarting at 1 per branch.
 func (t *tx) NextAccountSeq(ctx context.Context, book ledger.BookID, typeBlock int, subledger ledger.SubledgerID) (int, error) {
+	if err := t.inShape("accounts"); err != nil {
+		return 0, err
+	}
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	n, err := t.nextSeq(ctx, book, fmt.Sprintf("account:%d.%s", typeBlock, subledger))
 	if err != nil {
 		return 0, err
@@ -155,6 +215,12 @@ func (t *tx) NextAccountSeq(ctx context.Context, book ledger.BookID, typeBlock i
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger) error {
+	if err := t.inShape("ledgers"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -175,6 +241,12 @@ func (t *tx) PutLedger(ctx context.Context, book ledger.BookID, l ledger.Ledger)
 }
 
 func (t *tx) GetLedger(ctx context.Context, book ledger.BookID, id ledger.LedgerID) (ledger.Ledger, error) {
+	if err := t.inShape("ledgers"); err != nil {
+		return ledger.Ledger{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Ledger{}, err
+	}
 	var l ledger.Ledger
 	var createdAt nullTime
 	err := t.tx.QueryRowContext(ctx,
@@ -191,6 +263,12 @@ func (t *tx) GetLedger(ctx context.Context, book ledger.BookID, id ledger.Ledger
 }
 
 func (t *tx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledger, error) {
+	if err := t.inShape("ledgers"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT id, name, created_at FROM ledgers WHERE book_id = ?
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
@@ -217,6 +295,12 @@ func (t *tx) ListLedgers(ctx context.Context, book ledger.BookID) ([]ledger.Ledg
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Subledger) error {
+	if err := t.inShape("subledgers"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -236,6 +320,12 @@ func (t *tx) PutSubledger(ctx context.Context, book ledger.BookID, sl ledger.Sub
 }
 
 func (t *tx) GetSubledger(ctx context.Context, book ledger.BookID, id ledger.SubledgerID) (ledger.Subledger, error) {
+	if err := t.inShape("subledgers"); err != nil {
+		return ledger.Subledger{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Subledger{}, err
+	}
 	var sl ledger.Subledger
 	var createdAt nullTime
 	err := t.tx.QueryRowContext(ctx,
@@ -252,6 +342,12 @@ func (t *tx) GetSubledger(ctx context.Context, book ledger.BookID, id ledger.Sub
 }
 
 func (t *tx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.Subledger, error) {
+	if err := t.inShape("subledgers"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT id, ledger_id, name, created_at FROM subledgers WHERE book_id = ?
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
@@ -278,6 +374,12 @@ func (t *tx) ListSubledgers(ctx context.Context, book ledger.BookID) ([]ledger.S
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Account) error {
+	if err := t.inShape("accounts"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -298,6 +400,12 @@ func (t *tx) PutAccount(ctx context.Context, book ledger.BookID, a ledger.Accoun
 }
 
 func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) (ledger.Account, error) {
+	if err := t.inShape("accounts"); err != nil {
+		return ledger.Account{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Account{}, err
+	}
 	var a ledger.Account
 	var typ int64
 	var createdAt nullTime
@@ -316,6 +424,12 @@ func (t *tx) GetAccount(ctx context.Context, book ledger.BookID, id ledger.Accou
 }
 
 func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Account, error) {
+	if err := t.inShape("accounts"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT id, subledger_id, name, type, asset, created_at FROM accounts WHERE book_id = ?
 		ORDER BY created_at ASC NULLS FIRST, seq`, string(book))
@@ -386,6 +500,12 @@ func (t *tx) ListAccounts(ctx context.Context, book ledger.BookID) ([]ledger.Acc
 // method behaves. The suite is not what holds this; the measurement above is,
 // and it had to open a file to be worth anything.
 func (t *tx) LockAccounts(ctx context.Context, book ledger.BookID, ids []ledger.AccountID) error {
+	if err := t.inShape("accounts"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -426,6 +546,12 @@ const transactionColumns = `
 // a new key frees the old one: the key lives in the row, not in an index that
 // could outlive it.
 func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.Transaction) error {
+	if err := t.inShape("transactions"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -482,6 +608,12 @@ func (t *tx) PutTransaction(ctx context.Context, book ledger.BookID, txn ledger.
 }
 
 func (t *tx) GetTransaction(ctx context.Context, book ledger.BookID, id ledger.TransactionID) (ledger.Transaction, error) {
+	if err := t.inShape("transactions"); err != nil {
+		return ledger.Transaction{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Transaction{}, err
+	}
 	out, err := t.queryTransactions(ctx, `
 		SELECT `+transactionColumns+`
 		FROM transactions t
@@ -498,6 +630,12 @@ func (t *tx) GetTransaction(ctx context.Context, book ledger.BookID, id ledger.T
 }
 
 func (t *tx) GetTransactionByIdempotencyKey(ctx context.Context, book ledger.BookID, key string) (ledger.Transaction, error) {
+	if err := t.inShape("transactions"); err != nil {
+		return ledger.Transaction{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Transaction{}, err
+	}
 	// An empty key is an absent key, never an identity, so it is not even
 	// looked up — the index does not contain it either.
 	if key == "" {
@@ -519,6 +657,12 @@ func (t *tx) GetTransactionByIdempotencyKey(ctx context.Context, book ledger.Boo
 }
 
 func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger.Transaction, error) {
+	if err := t.inShape("transactions"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	return t.queryTransactions(ctx, `
 		SELECT `+transactionColumns+`
 		FROM transactions t
@@ -531,6 +675,12 @@ func (t *tx) ListTransactions(ctx context.Context, book ledger.BookID) ([]ledger
 // account — with ALL of its legs, not only the matching ones, which is why the
 // account predicate is an EXISTS rather than a join condition.
 func (t *tx) ListTransactionsForAccount(ctx context.Context, book ledger.BookID, id ledger.AccountID) ([]ledger.Transaction, error) {
+	if err := t.inShape("transactions"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	return t.queryTransactions(ctx, `
 		SELECT `+transactionColumns+`
 		FROM transactions t
@@ -606,6 +756,12 @@ func (t *tx) queryTransactions(ctx context.Context, query string, args ...any) (
 // second affects zero rows. The follow-up SELECT only decides which error to
 // report; it is not part of the decision.
 func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.TransactionID) error {
+	if err := t.inShape("transactions"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -646,6 +802,12 @@ func (t *tx) MarkReversed(ctx context.Context, book ledger.BookID, id ledger.Tra
 // Like every aggregate, an account with no entries is zero, including one that
 // does not exist; callers wanting ErrAccountNotFound read the account first.
 func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction) (ledger.Amount, error) {
+	if err := t.inShape("entries"); err != nil {
+		return 0, err
+	}
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	var balance ledger.Amount
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
@@ -671,6 +833,12 @@ func (t *tx) BookBalance(ctx context.Context, book ledger.BookID, id ledger.Acco
 // COMPARAND and not a stored value: a zero bound must compare as the earliest
 // instant, and NULL would make the predicate unknown for every row.
 func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, before time.Time) (ledger.Amount, error) {
+	if err := t.inShape("entries"); err != nil {
+		return 0, err
+	}
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	var balance ledger.Amount
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(CASE WHEN e.direction = ? THEN e.amount ELSE -e.amount END), 0)
@@ -699,6 +867,12 @@ func (t *tx) ValueDateBalance(ctx context.Context, book ledger.BookID, id ledger
 // storetest's ValueDatedSeriesExcludesZeroValueDateEntries pins it separately
 // because the buckets are built by different code from the balance.
 func (t *tx) ValueDatedSeries(ctx context.Context, book ledger.BookID, id ledger.AccountID, normal ledger.Direction, from, to time.Time) (ledger.Series, error) {
+	if err := t.inShape("entries"); err != nil {
+		return ledger.Series{}, err
+	}
+	if err := t.own(book); err != nil {
+		return ledger.Series{}, err
+	}
 	opening, err := t.ValueDateBalance(ctx, book, id, normal, from)
 	if err != nil {
 		return ledger.Series{}, err

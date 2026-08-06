@@ -10,11 +10,26 @@ import (
 
 // The payment layer's audit trail.
 //
-// Every event here is network-scoped: participants, mandates, payments and
-// clearing cycles belong to no single bank, so they are recorded under
-// ledger.NetworkBook with ledger.ScopePayment — the same book the network's IDs
-// are drawn from. A bank's own books keep their ledger- and deposit-scope logs
-// separately, and the two never mix, because Scope discriminates them.
+// Every event here is recorded under THE ACTING INSTITUTION's own book, with
+// ledger.ScopePayment — the same book that institution's IDs are drawn from. A
+// bank's own books keep their ledger- and deposit-scope logs separately, and the
+// three never mix, because Scope discriminates them.
+//
+// It used to say "network-scoped": participants, mandates, payments and clearing
+// cycles belonged to no single bank, so they went under ledger.NetworkBook and
+// one audit stream held all three institutions' payment-layer events
+// interleaved. Task 18 split the databases and the stream went with them. Each
+// of those rows had exactly one owner all along — a mandate is the creditor
+// bank's, a cycle is the clearing house's — and what the shared book was hiding
+// is that "the network did this" was never a thing that happened. Some institution
+// did it.
+//
+// The visible consequence is that one payment now leaves events in up to three
+// logs, and that is the honest record rather than a duplication: the payer's
+// bank initiated it, the clearing house cleared it, the payee's bank credited
+// it, and each of those is that institution's own history. Reading them
+// together is the reconciliation harness's job, and it is the one thing no
+// institution may do.
 
 // appendAuditTx records an immutable payment-scope event through the caller's
 // transaction, so an event never outlives an operation that rolled back. This
@@ -30,13 +45,13 @@ func (s *Network) appendAuditTx(ctx context.Context, tx Tx, eventType, entityID 
 	if err != nil {
 		return fmt.Errorf("audit %s: marshal payload: %w", eventType, err)
 	}
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "evt")
+	id, err := tx.NextID(ctx, s.book(), "evt")
 	if err != nil {
 		return err
 	}
 	return tx.AppendAudit(ctx, ledger.AuditEvent{
 		ID:         id,
-		BookID:     ledger.NetworkBook,
+		BookID:     s.book(),
 		Scope:      ledger.ScopePayment,
 		Type:       eventType,
 		EntityID:   entityID,

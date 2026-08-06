@@ -78,7 +78,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -91,6 +93,122 @@ import (
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
 )
+
+// ---------------------------------------------------------------------------
+// Shapes
+// ---------------------------------------------------------------------------
+
+// Shape is which of the three schemas a store carries, and therefore which
+// institution it can be.
+//
+// A shape is a SCHEMA and not a second driver. There is one implementation of
+// every Store and Tx method in this package and it is shared by all three; what
+// differs is which tables are underneath it, which is enough to make a crossing
+// a table that is not there rather than a row nobody should have read. That was
+// the point of putting the boundary in the DDL: "the clearing house has no
+// ledger" was true before Task 18 and was asserted by exactly one test, and it
+// is now a fact about the database.
+//
+// The three values are the three actors in mesh/ops.go — bankOps, csmOps,
+// settlementOps — and there is no fourth. In particular there is no shape
+// holding every table: the monolith that one existed as died with this task,
+// and re-adding it would restore the ability to write a statement that spans two
+// institutions, which is the whole of what was removed.
+type Shape struct {
+	// dir is the directory under schema/ holding this shape's migrations, and
+	// it doubles as the name in a refusal.
+	dir string
+
+	// holds is every table this shape's schema creates. It is what Reset empties
+	// and what the method guards consult, and it is written out rather than read
+	// from sqlite_master so that a method can be refused BEFORE it reaches SQL —
+	// a named sentinel rather than "no such table: cycles", which is a driver
+	// string and not something a caller can match on.
+	holds map[string]struct{}
+}
+
+// String names the shape, for the refusals.
+func (s Shape) String() string { return s.dir }
+
+// The three shapes. See Shape.
+var (
+	// Bank is one member bank: a ledger, a deposit register, products, lending,
+	// its own single row in banks, the mandates it holds as creditor bank, its
+	// own copy of each payment it is a party to, and the advices it was sent.
+	Bank = shape("bank",
+		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
+		"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
+		"products", "product_versions",
+		"facilities", "installments", "facility_terms",
+		"banks", "bank_assets", "mandates", "payments", "settlement_advices",
+		"audit_events", "id_sequences")
+
+	// CSM is the clearing house: a roster, cycles, its own copy of each payment
+	// it carries, and no book of accounts of any kind.
+	CSM = shape("csm",
+		"roster_entries", "roster_entry_assets",
+		"payments", "cycles", "cycle_payments",
+		"audit_events", "id_sequences")
+
+	// CentralBank is the settlement agent: a ledger holding the members' reserve
+	// accounts, its own member register, the settlements it discharged, and no
+	// customers and no payments.
+	CentralBank = shape("centralbank",
+		"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
+		"settlement_members", "settlement_member_accounts",
+		"settlements", "settlement_positions",
+		"audit_events", "id_sequences")
+)
+
+func shape(dir string, tables ...string) Shape {
+	holds := make(map[string]struct{}, len(tables))
+	for _, t := range tables {
+		holds[t] = struct{}{}
+	}
+	return Shape{dir: dir, holds: holds}
+}
+
+// ErrNotInThisShape is returned by a method whose table this store's schema does
+// not create: PutCycle on a bank, PutBank on the clearing house, PutPayment on
+// the central bank.
+//
+// It exists because payment.Tx is ONE interface over three schemas. Go has no
+// way to give the clearing house a Tx without PutBank on it, so every shape
+// implements every method and two thirds of them have nothing to write to. What
+// they must not do is fail as SQL. "no such table: banks" is a driver string, it
+// arrives from whichever statement happened to run first, and nothing above the
+// store can match on it — so a crossing would be a 500 with a stack trace
+// instead of a refusal a caller can handle and a test can assert.
+//
+// It is checked BEFORE anything else in the method, including the read-only
+// guard, and that ordering is deliberate. A View is a legitimate thing to open
+// on any store; asking the clearing house to list its cycles inside one is
+// legitimate too; asking it to list its BANKS is not, and it is not more
+// legitimate for being a read. The class of defect this ordering avoids is the
+// one Task 18b's own review found twice: a guard placed after an early return
+// that leaves its "does not apply" path open.
+var ErrNotInThisShape = errors.New("sqlite: this store's schema holds no such table")
+
+// ErrNotThisStoresBook is returned when a method is handed a BookID this store
+// does not answer for.
+//
+// EACH STORE OWNS EXACTLY ONE BookID, and this is the guard that makes that more
+// than a convention. It is the central new refusal of Task 18 and what it turns
+// a crossing into is a loud error: before it, a bank's network reaching into the
+// central bank's book got a silent not-found — an empty listing, a zero balance,
+// a "ledger not found" three layers away — and the only instrument that could
+// see it was the book recorder in mesh/books_test.go, which watches mesh actors
+// and is therefore blind to anything that never becomes a message. Two of the
+// six crossings this sub-project found were of exactly that kind.
+//
+// It does not replace the recorder and the recorder gets STRONGER beside it. The
+// two answer different questions: this one says a store was asked about a book
+// that is not its own, and the recorder says which books an act touched at all.
+// A bank posting in the wrong place within its OWN book is still the recorder's
+// to catch, and always will be — a BookID is an ordinary argument and one value
+// of it is as valid as another until something says otherwise. This is that
+// something, for the one value it can decide.
+var ErrNotThisStoresBook = errors.New("sqlite: this store does not answer for that book")
 
 // ErrReadOnly is returned when a write is attempted inside View.
 //
@@ -167,6 +285,20 @@ type Store struct {
 	db    *sql.DB
 	clock func() time.Time
 
+	// shape is which schema is underneath, and therefore which methods have a
+	// table to answer from. See Shape and ErrNotInThisShape.
+	shape Shape
+
+	// book is the ONE BookID this store answers for, and every method taking one
+	// refuses any other. See ErrNotThisStoresBook.
+	//
+	// It is a field on the store and not on the schema because only one of the
+	// three shapes knows its own value at build time: the clearing house's and
+	// the central bank's books are constants, and a bank's is the bank's id,
+	// which is minted when that bank's database is provisioned. So the value
+	// arrives at Open, from the composition root that named the database.
+	book ledger.BookID
+
 	// keep is one connection held for an ephemeral store's lifetime. A memdb
 	// database is destroyed when its last connection closes, and database/sql
 	// retires idle connections when it likes, so without this a store loses
@@ -175,15 +307,27 @@ type Store struct {
 	keep *sql.Conn
 }
 
-// Open opens the database at path, applies the embedded migrations and returns a
-// store reading time from clock.
+// Open opens the database at path as one institution, applies that shape's
+// migrations and returns a store reading time from clock.
+//
+// shape is which schema goes in and book is the one BookID the result answers
+// for; see Shape and ErrNotThisStoresBook. Both are required, and the pair is
+// what a store IS after Task 18 — a database with no institution attached is the
+// thing that was removed, so there is no way to ask for one.
 //
 // An empty path means an ephemeral in-memory database of its own: the name is
 // random, so two stores opened with an empty path never see each other's rows.
 // That is what a test suite wants and it is what `cmd/server` with no -database
 // means — ephemeral, and needing no setup, which is the property store/mem
-// existed for.
-func Open(ctx context.Context, path string, clock func() time.Time) (*Store, error) {
+// existed for. It matters more than it did: a test now opens N+2 of these, and
+// two banks sharing rows would be the split silently not happening.
+func Open(ctx context.Context, shape Shape, book ledger.BookID, path string, clock func() time.Time) (*Store, error) {
+	if shape.holds == nil {
+		return nil, fmt.Errorf("sqlite: open: no shape; a database with no institution attached is what Task 18 removed")
+	}
+	if book == "" {
+		return nil, fmt.Errorf("sqlite: open %s: no book; every store answers for exactly one and refuses the rest", shape)
+	}
 	dsn, ephemeral := dsn(path)
 
 	db, err := sql.Open("sqlite", dsn)
@@ -201,7 +345,7 @@ func Open(ctx context.Context, path string, clock func() time.Time) (*Store, err
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
 
-	s := &Store{db: db, clock: clock}
+	s := &Store{db: db, clock: clock, shape: shape, book: book}
 
 	if ephemeral {
 		conn, err := db.Conn(ctx)
@@ -216,12 +360,22 @@ func Open(ctx context.Context, path string, clock func() time.Time) (*Store, err
 		_ = s.Close()
 		return nil, fmt.Errorf("sqlite: ping: %w", err)
 	}
-	if err := migrate(ctx, db); err != nil {
+	if err := migrate(ctx, db, shape); err != nil {
 		_ = s.Close()
 		return nil, err
 	}
 	return s, nil
 }
+
+// Shape is which schema this store carries, and Book is the one BookID it
+// answers for.
+//
+// Both are exported because the composition root has to be able to ask. Nothing
+// in the domain does: an institution's handle knows which institution it is (see
+// payment.Identity), and a store that had to be interrogated about its own
+// identity would be one the caller had not been given deliberately.
+func (s *Store) Shape() Shape        { return s.shape }
+func (s *Store) Book() ledger.BookID { return s.book }
 
 // dsn builds the connection string, and every setting the store depends on is in
 // it rather than issued afterwards. It reports whether the database is
@@ -508,24 +662,18 @@ func isUniqueViolation(err error) bool {
 // Reset
 // ---------------------------------------------------------------------------
 
-// tables is every table Reset empties. The order is irrelevant: every REFERENCES
-// in the schema is ON DELETE CASCADE, so a parent takes its children with it and
-// a child emptied first is a no-op when its parent follows.
-var tables = []string{
-	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
-	"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
-	"products", "product_versions",
-	"facilities", "installments", "facility_terms",
-	"banks", "bank_assets",
-	"settlement_members", "settlement_member_accounts",
-	"roster_entries", "roster_entry_assets",
-	"mandates", "payments", "cycles", "cycle_payments",
-	"settlements", "settlement_positions", "settlement_advices",
-	"audit_events", "id_sequences",
-}
-
 // Reset discards all state, so a reset store behaves exactly like a freshly
 // migrated one.
+//
+// What it empties is this SHAPE's tables and nothing else, which is not a
+// narrowing so much as the only thing it could now mean: there is one list per
+// schema and it is Shape.holds, so a table added to a schema and forgotten here
+// is no longer possible. The single list this replaces had all 31 tables in it
+// and would have started failing on whichever shape it reached first.
+//
+// The order is irrelevant: every REFERENCES in every schema is ON DELETE
+// CASCADE, so a parent takes its children with it and a child emptied first is a
+// no-op when its parent follows.
 //
 // store/pg needed TRUNCATE … RESTART IDENTITY to put its BIGSERIALs back to 1.
 // Nothing here does: every seq is allocated MAX(seq)+1 over the table it belongs
@@ -538,7 +686,7 @@ func (s *Store) Reset(ctx context.Context) error {
 		return err
 	}
 	var stmt strings.Builder
-	for _, table := range tables {
+	for _, table := range slices.Sorted(maps.Keys(s.shape.holds)) {
 		stmt.WriteString("DELETE FROM ")
 		stmt.WriteString(table)
 		stmt.WriteString(";\n")

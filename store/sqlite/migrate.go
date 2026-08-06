@@ -9,11 +9,25 @@ import (
 	"sort"
 )
 
-//go:embed schema/*.sql
+//go:embed schema/bank/*.sql schema/csm/*.sql schema/centralbank/*.sql
 var schemaFS embed.FS
 
-// migrate applies every embedded migration that has not run yet, each in its own
-// transaction, in filename order.
+// migrate applies every embedded migration for one SHAPE that has not run yet,
+// each in its own transaction, in filename order.
+//
+// # One migration per shape, which is where CLAUDE.md's rule went
+//
+// There was one migration, edited in place, and the rationale was that no
+// database is deployed: every database this repository meets is ephemeral or a
+// throwaway file, both of which migrate from empty, so there is no history for
+// anyone to replay and a second file would be ceremony. That rationale survives
+// Task 18 exactly as it was. What did not survive is the sentence, because the
+// boundary between institutions is now in the DDL: there are three schemas
+// because there are three kinds of database, not because anything was layered
+// on top of anything.
+//
+// So a shape names a DIRECTORY and the files in it are that shape's history.
+// Each still has exactly one, and each is still edited in place.
 //
 // # No advisory lock, and none is needed
 //
@@ -27,10 +41,17 @@ var schemaFS embed.FS
 //
 // A migration that is edited after it has run stays applied and the edit is
 // never seen. That is the limitation store/pg documents and it is inherited
-// deliberately rather than fixed here: while there is one migration the
-// difference is invisible, and Task 18 gives each shape its own file rather than
-// layering new ones onto this.
-func migrate(ctx context.Context, db *sql.DB) error {
+// deliberately rather than fixed here: while each shape has one migration the
+// difference is invisible.
+//
+// The filename is the key and the shape's directory is NOT part of it, which is
+// safe only because no database is ever migrated as two shapes. A store is
+// opened for one shape and keeps it; there is no path that would apply
+// bank/0001_init.sql and then find csm/0001_init.sql already recorded. If a
+// shape ever had to be layered onto an existing database that rule would have to
+// come back as a composite key, and it would come back as a data migration
+// rather than as a change here.
+func migrate(ctx context.Context, db *sql.DB, shape Shape) error {
 	if _, err := db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 		    filename   TEXT PRIMARY KEY,
@@ -44,9 +65,10 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 
-	entries, err := schemaFS.ReadDir("schema")
+	dir := "schema/" + shape.dir
+	entries, err := schemaFS.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("sqlite: read schema dir: %w", err)
+		return fmt.Errorf("sqlite: read %s: %w", dir, err)
 	}
 	names := make([]string, 0, len(entries))
 	for _, e := range entries {
@@ -60,9 +82,9 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, done := applied[name]; done {
 			continue
 		}
-		body, err := schemaFS.ReadFile("schema/" + name)
+		body, err := schemaFS.ReadFile(dir + "/" + name)
 		if err != nil {
-			return fmt.Errorf("sqlite: read %s: %w", name, err)
+			return fmt.Errorf("sqlite: read %s/%s: %w", dir, name, err)
 		}
 		if err := applyOne(ctx, db, name, string(body)); err != nil {
 			return err

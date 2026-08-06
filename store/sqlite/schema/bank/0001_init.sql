@@ -1,7 +1,17 @@
--- 0001_init: the whole schema, in one migration.
+-- bank/0001_init: one member bank's whole world, in one migration.
 --
--- Translated from store/pg/schema/0001_init.sql at Task 17.1. The arguments
--- carry across; the Postgres spellings do not.
+-- There are three of these files and this is the largest. Each is one
+-- institution's schema and one database at run time: a bank's, the clearing
+-- house's, the settlement agent's. What a shape leaves OUT is the point of
+-- having three — a bank has no cycles, no settlement rows and no roster,
+-- because a bank does not know the network exists. It knows its customers, its
+-- counterparties as they arrive in messages, and where to send one.
+--
+-- Split from a single 1729-line schema at Task 18. That file had all 31 tables
+-- in one database and the boundary between institutions was a convention the
+-- book recorder in mesh/books_test.go measured; here it is the DDL, so a
+-- crossing is a table that is not there rather than a row nobody should have
+-- read.
 --
 -- WHERE A COMMENT HAS TO GO, AND WHY IT IS NOT WHERE IT WAS
 --
@@ -21,18 +31,31 @@
 -- So: every argument about something the schema does NOT do lives inside the
 -- statement it concerns. An absent constraint's reasoning goes in the
 -- parentheses of the table it is absent from, an index's in its column list.
--- Where an argument spans two tables it goes in the one whose absent constraint
--- it is about and the other names it, because copying it is how one fact ends up
--- in nine places. What stays out here is narrative belonging to no statement —
--- this header — and it does not reach a dump. If you are adding a reason, put it
--- inside the parentheses.
+-- What stays out here is narrative belonging to no statement — this header —
+-- and it does not reach a dump. If you are adding a reason, put it inside the
+-- parentheses.
+--
+-- AND WHICH OF THE THREE FILES IT GOES IN
+--
+-- Six tables in this file are also in centralbank/0001_init.sql, because a
+-- settlement agent keeps a book of accounts too, and one is also in
+-- csm/0001_init.sql. Their DDL repeats; their ARGUMENTS do not. An argument
+-- that spans two shapes is written once, in the shape whose absent constraint
+-- it is about, and the other names it rather than restating it — copying is how
+-- one fact ends up in nine places and then in three versions.
+--
+-- This file is the canonical home for most of them, because most of the columns
+-- an argument is about are here: the seq allocation rule (ledgers.seq), the
+-- absent CHECK on an asset code (accounts.asset), the absent parent foreign key
+-- (subledgers), the absent UNIQUE on a name (ledgers), and the three rows one
+-- admission writes (banks). The central bank's copy of the find-or-create race
+-- is the one argument that goes the other way, because the chart of accounts it
+-- is about is the central bank's; ledgers names it.
 --
 -- CONVENTIONS, APPLIED EVERYWHERE
 --
---   * Book-scoped tables have a composite PRIMARY KEY (book_id, id). A
---     single-column id would be wrong: chart-of-accounts numbers are unique
---     within a book, not globally, so two participants legitimately both hold
---     an account "200.100.001".
+--   * Book-scoped tables have a composite PRIMARY KEY (book_id, id). See books
+--     for what that column means now that a database holds one book.
 --   * Amounts are INTEGER in minor units. Never REAL: a ledger deals in whole
 --     cents, and a rounding mode is not a thing a ledger may have.
 --   * Times are TEXT and nullable — RFC3339, UTC, nine fractional digits,
@@ -61,6 +84,24 @@ CREATE TABLE books (
     -- are created on demand by the first write that names a book (see
     -- tx.ensureBook), because a book is not an entity the domain creates — a
     -- BookID is a name a participant is written under.
+    --
+    -- IT HOLDS EXACTLY ONE ROW, and that is the whole of Task 18 seen from the
+    -- smallest table in the schema. A bank's database is a bank's book; the
+    -- store is opened for one BookID and refuses every other with
+    -- sqlite.ErrNotThisStoresBook, so the only row that can ever appear here is
+    -- the one this bank was opened as. Two participants both holding an account
+    -- numbered 200.100.001 is still true and is still why chart-of-accounts ids
+    -- are not global — but what keeps them apart is now two databases, not two
+    -- values in this column.
+    --
+    -- The column therefore survives as a CONSTANT, and keeping it is a decision
+    -- rather than inertia. Dropping it would rewrite the primary key of every
+    -- table below and every statement in store/sqlite that names one, to remove
+    -- a column whose value the store already refuses to get wrong; and
+    -- id_sequences and audit_events are keyed by book in all three shapes, so
+    -- the column could not go everywhere in any case. What it costs is a reader
+    -- meeting (book_id, id) and inferring that a second book could appear here.
+    -- It cannot. This row is the guarantee.
     id TEXT PRIMARY KEY
 ) STRICT;
 
@@ -69,81 +110,31 @@ CREATE TABLE books (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE ledgers (
-    -- A note on what is NOT here: UNIQUE (book_id, name).
+    -- A note on what is NOT here: UNIQUE (book_id, name), and this is the
+    -- canonical statement of why. centralbank/0001_init.sql's ledgers carries
+    -- the half that is about the settlement agent's own chart of accounts and
+    -- names this one for the rest.
     --
-    -- It is tempting, because the payment layer resolves the central bank's
-    -- chart of accounts by find-or-create *by name*, and a unique constraint
-    -- would turn a lost race into a constraint violation instead of silent
-    -- divergence. It cannot go in, for two reasons.
-    --
-    -- First, the domain does not hold that invariant. A ledger, a subledger and
-    -- an account are identified by their generated ID; names are labels and are
+    -- The domain does not hold that invariant. A ledger, a subledger and an
+    -- account are identified by their generated ID; names are labels and are
     -- allowed to repeat, because two customers called John Smith at one bank is
     -- not an error and neither is a bank filing two subledgers under one
     -- heading. ledger/numbering_test.go's TestSubledgerNumbering creates three
     -- subledgers all called "S" in one book precisely to check the numbering.
+    -- So a constraint asserting that a name is an identity would refuse a write
+    -- the domain has already decided to allow.
     --
     -- This used to be argued as a divergence — a constraint one store could hold
     -- and a Go map could not — and that reading expired with the second store.
-    -- What is left is the reason underneath it, which never needed one: a name
-    -- is not an identity here, so a constraint asserting that it is would refuse
-    -- a write the domain has already decided to allow.
+    -- What is left is the reason underneath it, which never needed one.
     --
-    -- Second, the race is closed one layer up, by an ID allocation taken before
-    -- the find-or-create runs. NextID(NetworkBook, …) writes id_sequences, and
-    -- writing is what makes a transaction the database's writer, so a second
-    -- concurrent caller waits there until the first commits and then sees the
-    -- Central Bank ledger the first created. The counter serializes the whole
-    -- operation, not just the number it hands out.
-    --
-    -- What that ordering is worth on THIS store is measured, and it is less than
-    -- it was: with payment.admissionSequenceTx made to return nil, storetest's
-    -- Races/ConcurrentAdmissionsAgreeOnOneCentralBank passes ten runs out of
-    -- ten, on the ephemeral store and on a WAL file alike. SQLite admits one
-    -- writer, so a loser is refused at its first write and Store.Update re-runs
-    -- the unit of work — reading again, after the winner's commit, and finding
-    -- the ledger. The ordering is now a second guard rather than the only one,
-    -- and no test in this repository can see it go. It stays because it costs
-    -- nothing and because Task 18 has to decide where the counter it draws from
-    -- lives: ledger.NetworkBook, which every one of these orderings allocates
-    -- from today, disappears with the split. If each entity's counter moves into
-    -- that entity's own store, the ordering survives unchanged, because the
-    -- counter row and the row being decided from are still in one database. If
-    -- an act's allocation and its read land in two, nothing spans them and the
-    -- retry does not either — two databases is two transactions. That is Task
-    -- 18's question and this comment does not answer it.
-    -- payments_end_to_end_idx records the same finding for the duplicate-
-    -- reference check.
-    --
-    -- This paragraph used to name AddParticipantTx's first statement as the
-    -- thing doing that, and to warn that the find-or-create would become racy
-    -- again "if AddParticipantTx ever stops drawing a network-scoped ID first".
-    -- What happened was not the case it warned about, and then it was worse than
-    -- it. Task 17c split admission into four acts, and
-    -- payment.OpenSettlementAccountTx — a NEW caller of the find-or-create,
-    -- driven on its own by an institution doing its own unit of work — reached
-    -- it without one. Measured on store/pg at 60 runs in 60 building the central
-    -- bank a second chart of accounts. Task 17d then deleted AddParticipantTx:
-    -- nothing composes the four acts in one transaction any more, so there is no
-    -- first statement of anything left to point at.
-    --
-    -- So the lock is no longer any one call's first statement. It is
-    -- payment.admissionSequenceTx, which every admission act that decides from a
-    -- read takes before it reads, and which that function documents. The warning
-    -- this paragraph replaces is worth keeping in its general form: there is no
-    -- constraint behind the find-or-create, so any NEW caller of it that could
-    -- reach it FIRST must draw a network-scoped ID before it does, and a reader
-    -- who does not know that will not learn it from this table.
-    --
-    -- One caller reaches it without drawing one, and the qualifier above is why
-    -- that is not a live hole rather than an exception nobody noticed:
-    -- payment.DepositTx, through centralBankAssetsAccountTx. It is pre-existing
-    -- and it cannot race the creation, because funding a deposit requires a
-    -- settlement account, which requires an admission, which built the Central
-    -- Bank ledger before any deposit could be made. It would become live the day
-    -- something funds a reserve for a bank the settlement agent has never opened
-    -- an account for — which the domain refuses — so what protects it is an
-    -- ordering in the flows rather than anything in this schema.
+    -- What is NOT the reason, in this shape, is a race. Nothing in a bank's book
+    -- is resolved by find-or-create on a name: a bank's chart of accounts is
+    -- built once, by payment.FoundBankTx, in the act that creates the bank, and
+    -- every account after that is created with an id the bank allocated. The
+    -- find-or-create this constraint keeps getting proposed for is the CENTRAL
+    -- BANK's, it runs in another institution's database, and the ordering that
+    -- closes it is argued there.
     --
     -- Also not here: a CHECK on the text columns.
     --
@@ -207,11 +198,15 @@ CREATE TABLE subledgers (
     -- the rule above and storetest/ParentReferencesAreNotEnforced, which writes
     -- a dangling LedgerID and requires the store to take it.
     --
-    -- The child-table FKs elsewhere in this file (entries -> transactions,
-    -- deposit_account_identifiers -> deposit_accounts, cycle_payments -> cycles,
-    -- settlement_positions -> settlements) are a different case and stay: the
-    -- store writes both sides of those itself, within one statement sequence, so
-    -- there is no caller who could ever produce an orphan.
+    -- The child-table FKs are a different case and stay: the store writes both
+    -- sides of those itself, within one statement sequence, so there is no
+    -- caller who could ever produce an orphan. This shape has two of them —
+    -- entries -> transactions and deposit_account_identifiers ->
+    -- deposit_accounts — and the other two shapes have one each, cycle_payments
+    -- -> cycles at the clearing house and settlement_positions -> settlements at
+    -- the central bank. They name this paragraph rather than repeating it, and
+    -- the exemption is the same in all three: an aggregate the store writes
+    -- whole.
     book_id    TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     id         TEXT NOT NULL,
     ledger_id  TEXT NOT NULL,
@@ -240,9 +235,12 @@ CREATE TABLE accounts (
     name         TEXT NOT NULL,
     type         INTEGER NOT NULL,
     -- The asset this account is denominated in, fixed at creation, and the
-    -- canonical statement of why NONE of this schema's asset columns carries a
-    -- constraint. deposit_accounts.asset, bank_assets.asset and facilities.asset
-    -- point here rather than repeat it.
+    -- canonical statement of why NO asset column in ANY of the three shapes
+    -- carries a constraint. deposit_accounts.asset, bank_assets.asset,
+    -- facilities.asset and mandates.asset point here rather than repeat it, and
+    -- so do settlement_member_accounts.asset in centralbank/0001_init.sql and
+    -- roster_entry_assets.asset in csm/0001_init.sql. Three schemas is three
+    -- occasions to state one rule differently; it is stated once.
     --
     -- It is recorded here, in the database, and not only in the file that built
     -- the database, because the ABSENCE of a constraint is what needs saying and
@@ -320,6 +318,15 @@ CREATE UNIQUE INDEX transactions_idempotency_key_idx
         -- Adding a second unique index would silently make that sentinel the
         -- answer to an unrelated collision. TestExactlyOneUniqueIndex reads
         -- sqlite_master and fails if one appears.
+        --
+        -- The claim is now per SHAPE and the test is three, because the mapping
+        -- is one function over three schemas. This shape and the central bank's
+        -- each hold exactly this index and no other; the clearing house's holds
+        -- NONE, having no transactions table, so SQLITE_CONSTRAINT_UNIQUE cannot
+        -- be raised in that database at all and the assertion there is zero.
+        -- That is worth asserting rather than leaving implied: a unique index
+        -- added to the csm shape would make a duplicate-key sentinel reachable
+        -- in an institution that has no idempotency key to duplicate.
         book_id, idempotency_key
     )
     WHERE idempotency_key <> '';
@@ -943,15 +950,21 @@ CREATE INDEX facility_terms_facility_idx ON facility_terms (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE banks (
-    -- banks is the bank's own record of itself, and it is the first of the three
-    -- rows one admission writes.
+    -- banks is the bank's own record of itself, and it holds EXACTLY ONE ROW.
     --
-    -- ADMISSION WRITES THREE ROWS, ONE PER INSTITUTION, and the argument for
-    -- that lives here because it is an argument about a table this schema does
-    -- NOT have. banks is the bank's record of itself; settlement_members is the
-    -- central bank's record of an account it opened; roster_entries is the
-    -- clearing house's record of where to send a message. Each has exactly one
-    -- writer, and both of the others name this comment rather than repeat it.
+    -- ADMISSION WRITES THREE ROWS, ONE PER INSTITUTION, and this is the
+    -- canonical statement of that. banks is the bank's record of itself;
+    -- settlement_members is the central bank's record of an account it opened;
+    -- roster_entries is the clearing house's record of where to send a message.
+    -- Each has exactly one writer, and both of the others name this comment
+    -- rather than repeat it.
+    --
+    -- The argument used to be made here because the other two tables were in
+    -- this same file and their being separate rows was the only thing keeping
+    -- them apart. It is made here now because they are in different DATABASES
+    -- and this is the one a reader of a bank's schema will reach. That is the
+    -- difference Task 18 makes to this paragraph: the claim did not change, the
+    -- thing enforcing it did.
     --
     -- They were one row until admission became a conversation, and the reason
     -- they had to come apart is what the settlement agent used to do: it read
@@ -959,30 +972,82 @@ CREATE TABLE banks (
     -- across an institutional boundary on the settlement path, so a settlement
     -- agent given a database of its own would have had nothing to settle from.
     -- Splitting the row is what gives each institution a record it could hold
-    -- alone.
+    -- alone — and each now HAS one, so the read that forced the split is no
+    -- longer merely wrong, it is a table that is not there.
     --
     -- The two rows that are not the bank's are keyed by BIC. Neither institution
     -- allocates or is ever told a bank id — what a message carries is a BIC — so
     -- a bank id in either of them would be an identifier its owner has no way to
     -- have learnt and no way to check.
+    --
+    -- WHY ONE ROW AND NOT A LIST. There is no ListBanks in this shape's world.
+    -- A bank knows itself; it learns a counterparty from the message that names
+    -- one and never from a register, and the roster that says who exists is the
+    -- clearing house's table in the clearing house's database. Every sweep this
+    -- table used to serve — resolving an address across every member, reading a
+    -- counterparty's BIC off its row, listing participants for an operator —
+    -- was closed at Task 18a or moved to the clearing house at Task 18d, and
+    -- what makes those closures hold is that there is nothing here to sweep.
+    --
+    -- THE ID IS THE BIC. It is also this bank's BookID (see books), and the name
+    -- of this database. One identifier, and nothing allocates it.
+    --
+    -- It used to be a counter-derived string, bank_1, drawn from a counter every
+    -- institution shared. Task 18 deleted that counter, and what it exposed is
+    -- that the id had been doing two jobs: this bank's own name for itself, and
+    -- THE NETWORK'S ADDRESS FOR IT. Only the first survives isolation. Eight
+    -- readers in mesh turned a participant id into a BIC by reading a bank's row
+    -- first — the clearing house resolving a roster entry, a bank deciding whose
+    -- payment it had been sent — and every one of them is a read into a database
+    -- its caller does not hold. A message has never carried a participant id, so
+    -- there was no source for the value those readers started from either.
+    --
+    -- Collapsing the two is not a narrowing. Once the network's address is the
+    -- BIC everywhere, a separate id would distinguish nothing: this table holds
+    -- one row, so within this database the value is a constant, and the only
+    -- thing that ever needs to tell banks apart is the composition root, whose
+    -- identifier for a bank is the BIC already. A field whose value is always the
+    -- same string is not an identity, it is ceremony.
+    --
+    -- What it also removes is a chicken and egg. A bank's database is named by
+    -- its id; a counter-derived id would have to be allocated from a counter
+    -- inside that database, which is the one place that cannot name it. That
+    -- knot is why FoundBank was called through the CLEARING HOUSE's handle right
+    -- up to this task — the joining bank had no handle of its own yet — and it
+    -- dissolves rather than being worked around, because a joining bank arrives
+    -- already knowing its BIC.
+    --
+    -- There is deliberately no UNIQUE and no CHECK. UNIQUE would be vacuous over
+    -- one row. What actually refuses two banks on one address is
+    -- roster_entries' primary key at the clearing house, which answers
+    -- ErrBICAlreadyAdmitted; see csm/0001_init.sql. The structural rule for the
+    -- code itself lives in iso20022.BIC, and a CHECK here would state it a second
+    -- time in a dialect that cannot express it as well — see accounts.asset.
+    -- The ISO 9362 business identifier code, which is this bank's id, its BookID
+    -- and the name of its database. THREE COLUMNS BECAME ONE HERE and that is
+    -- worth stating, because two of them are gone rather than renamed and a
+    -- reader comparing this against an older dump will look for them.
+    --
+    -- `bic` was a second column holding this same value. It existed because the
+    -- id was a counter-derived string and the BIC was the address the other two
+    -- institutions held this bank by; with the id BEING the address there is one
+    -- fact and it is stored once. What Go still has is two TYPES over it —
+    -- payment.ParticipantID and iso20022.BIC — and that is not duplication: the
+    -- structural rule for the code lives in iso20022.BIC.Validate, which is also
+    -- why there is no CHECK here. A CHECK would state it a second time in a
+    -- dialect that cannot express it as well; see accounts.asset.
+    --
+    -- `book_id` was a third, holding which book this bank owns. A bank IS its own
+    -- book — that was already true and the column was already a copy — and now
+    -- the book is fixed when the store is opened and refused every other value
+    -- (sqlite.ErrNotThisStoresBook), so a stored copy could only ever be the same
+    -- answer or a wrong one. The column also used to carry an argument that no
+    -- longer has a subject: it was DATA rather than part of the key, and the
+    -- distinction between payment-layer tables keyed by book and payment-layer
+    -- tables keyed by id alone was the whole of sub-project 8. There is no
+    -- network left for the second kind to belong to.
     id                 TEXT PRIMARY KEY,
     name               TEXT NOT NULL,
-    -- ISO 9362 business identifier code. NOT NULL because a bank the mesh cannot
-    -- address is not a member: routing is by BICFI, so a bank without one is
-    -- unreachable rather than merely undescribed. No CHECK on its shape — the
-    -- structural rule lives in iso20022.BIC, and a CHECK here would state it a
-    -- second time in a dialect that cannot express it as well — see
-    -- accounts.asset. There is also no UNIQUE: two banks sharing a BIC is a domain
-    -- error, and nothing serializes two concurrent admissions, so the same
-    -- reasoning that kept a UNIQUE off deposit identifiers applies here. It is
-    -- also the key the other two institutions hold this bank by — see
-    -- settlement_members and roster_entries, where it is the primary key.
-    bic                TEXT NOT NULL,
-    -- Which book this bank owns. It is DATA and not part of this row's key, and
-    -- that distinction is the whole of sub-project 8 — see settlement_advices,
-    -- which carries the statement of which payment-layer tables are
-    -- network-scoped and which are the member's.
-    book_id            TEXT NOT NULL,
     customer_subledger TEXT NOT NULL,
     -- The catalogue entry this bank opens customer accounts from — the Basic
     -- product founding creates for every bank, before any scheme has heard of it
@@ -1029,9 +1094,10 @@ CREATE TABLE banks (
     -- disagreeing with settlement_members about which account the bank holds.
     -- It is NOT roster_entries.admission_ref duplicated. That one decides
     -- between two institutions contending for an address, in a row this
-    -- institution does not own and which moves to another database when the
-    -- stores split; this is a bank comparing a message against its own memory,
-    -- and needs nobody else's table to do it.
+    -- institution does not own and which is now in another database entirely;
+    -- this is a bank comparing a message against its own memory, and needs
+    -- nobody else's table to do it. The two columns having survived into two
+    -- schemas is the check on that: neither could be replaced by a join.
     admission_ref      TEXT NOT NULL,
     created_at         TEXT,
     seq                INTEGER NOT NULL
@@ -1110,8 +1176,11 @@ CREATE TABLE bank_assets (
     -- bank's own ledger, so paying cash in was modelled as placing it on reserve;
     -- that made a bank with no settlement account unable to take money at all,
     -- which is false about banking, and it made a member bank write in another
-    -- institution's book, which is the crossing this schema will not be able to
-    -- express once each entity has its own database. Cash in now debits this and
+    -- institution's book — a crossing this schema can no longer express at all,
+    -- because the central bank's ledger is not in this database and there is
+    -- nothing here to post the other leg to. Task 18a closed it while one store
+    -- was still underneath, which is why that step went first: the recorder
+    -- could still measure it. Cash in now debits this and
     -- credits the customer, in one book. Moving it onward is a LODGEMENT — a
     -- camt.050 to the central bank and its camt.025 back — which is two postings
     -- in two databases with a message between them.
@@ -1127,8 +1196,10 @@ CREATE TABLE bank_assets (
     -- It is legitimate as the account holder's record of its own account
     -- number — a customer knows their IBAN without holding the bank's ledger —
     -- and it is not the record a settlement agent reads: that one is
-    -- settlement_members, which the central bank writes and owns. Both exist,
-    -- and the readers have not all moved yet; what quotes this one is a
+    -- settlement_members, in the central bank's own database, which nothing in
+    -- this shape can reach — so the two copies are no longer a duplication one
+    -- reader could resolve by picking the other, which is what they were while
+    -- both tables sat in one file. What quotes this one is a
     -- LODGEMENT, which is the account holder asking for a credit to its own
     -- account and is the honest reader to leave behind. Taking a DEPOSIT used to
     -- quote it too and no longer does — cash in reaches vault_cash and no
@@ -1140,157 +1211,22 @@ CREATE TABLE bank_assets (
     PRIMARY KEY (bank_id, asset)
 ) STRICT;
 
-CREATE TABLE settlement_members (
-    -- settlement_members is the CENTRAL BANK's own record of a member, keyed by
-    -- the only identifier it is ever told. It is the second of the three rows
-    -- one admission writes; banks carries the argument for the split.
-    --
-    -- Not keyed by a bank id: the settlement agent holds no roster and allocates
-    -- no ids, and what an account-opening request carries is a BIC. A bank id
-    -- here would be a foreign key into somebody else's database as soon as the
-    -- stores split, and a value this institution could not have obtained even
-    -- now.
-    --
-    -- What it holds is a name to address a statement to and one account per
-    -- asset, and nothing about how the member runs — not its book, not its
-    -- subledgers, not its product. A central bank knows which account it holds
-    -- for whom. It does not know what its members do with the money.
-    bic       TEXT PRIMARY KEY,
-    name      TEXT NOT NULL,
-    opened_at TEXT,
-    seq       INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE settlement_member_accounts (
-    -- One settlement account per asset, in the central bank's own book.
-    --
-    -- A child table for the reason bank_assets is one: an account is denominated
-    -- in exactly one asset, so a member clearing in two currencies holds two
-    -- accounts rather than one account with two balances. The account ids here
-    -- are the central bank's own, allocated in its own book — the difference
-    -- from bank_assets.settlement, which is the same account remembered by the
-    -- customer.
-    bic     TEXT NOT NULL REFERENCES settlement_members (bic) ON DELETE CASCADE,
-    asset   TEXT NOT NULL,
-    account TEXT NOT NULL,
-    seq     INTEGER NOT NULL,
-    PRIMARY KEY (bic, asset)
-) STRICT;
-
-CREATE TABLE roster_entries (
-    -- roster_entries is the CLEARING HOUSE's record of a member: where to send a
-    -- message addressed to it. It is the third of the three rows one admission
-    -- writes; banks carries the argument for the split.
-    --
-    -- It carries NO account identifier of any kind — no account, no subledger,
-    -- no product, no book. A clearing house holding one would be holding the
-    -- means to reach into a bank's ledger, and under one shared store nothing
-    -- but a test would notice it doing so. That is not hypothetical: the row
-    -- this table replaced carried the central bank's account ids, and four
-    -- readers in three institutions resolved their postings through it.
-    --
-    -- Keyed by BIC, like settlement_members and for the same reason: a clearing
-    -- house routes what a message addresses, and a message addresses a BIC.
-    --
-    -- It carries no NAME either, and that is the newer half of the same
-    -- principle. The row had one until the message that writes it was read:
-    -- AccountRequestAcknowledgementV03 identifies the account owner with an
-    -- OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
-    -- has no legal name, country or address anywhere on it. So a name here could
-    -- only be filled by the clearing house remembering the application across
-    -- the relay, and nothing read it: every reader of this row in mesh takes the
-    -- BIC and touches nothing else, and the operator console lists banks from
-    -- their own rows. A member's legal name lives where a message delivered
-    -- one — on the bank's row, and on settlement_members, which learns it from
-    -- the acmt.007's Org/FullLglNm and names the reserve account after it.
-    bic           TEXT PRIMARY KEY,
-    -- The process id every message of one admission echoes, and the clearing
-    -- house's only way to tell two admissions apart. The acknowledgement that
-    -- causes this row carries no back-reference to the request, so there is
-    -- nothing else to correlate on.
-    -- It is what makes a refusal implementable at all: the address is reserved
-    -- before anything is sent, so the only requests that can arrive on a BIC
-    -- already in this table are the same bank asking for a second asset — one
-    -- currency per request, so a two-currency bank really does ask twice — and
-    -- an operator re-driving an interrupted admission. A refusal keyed on the
-    -- BIC alone would refuse exactly those two and never fire on the impostor it
-    -- exists for.
-    -- NOT NULL, and never empty in a row any act writes: payment's
-    -- AdmitMemberTx refuses an acknowledgement quoting no admission, because ""
-    -- compares equal to every other "" and two institutions on one address would
-    -- then extend a single entry instead of the second being refused.
-    -- mesh.Mesh.Admit mints one process id per admission and every message of it
-    -- echoes that value; the seed and the test suites compose no messages and
-    -- derive a reference from the BIC instead (see store/storetest.Admit), which
-    -- means two of THEIR admissions on one address share one reference and
-    -- extend one entry — why a fixture whose banks settle gives each of them an
-    -- address of its own. The column stays unconstrained rather than
-    -- CHECK-constrained for accounts.asset's reason: the rule lives in Go, and a
-    -- CHECK would state it a second time, in the place least able to change.
-    admission_ref TEXT NOT NULL,
-    admitted_at   TEXT,
-    seq           INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE roster_entry_assets (
-    -- The assets a member clears in, one row each.
-    --
-    -- It carries no account, which is the whole difference between this child
-    -- table and the other two: the clearing house holds no account for any
-    -- asset. It knows which schemes a member is in so that it can refuse to
-    -- clear one it is not in, and that is all it knows.
-    --
-    -- That refusal is real and it is where the reader is: payment's
-    -- bothBanksAreMembersTx, from AcceptAtCSMTx, will not take a payment into a
-    -- cycle unless both banks' entries name the scheme's asset. What had no
-    -- reader until then was the VALUE and not the rows: these are loaded with
-    -- the parent on every read of a roster entry, single or list, because an
-    -- entry handed back without its assets would not be the entry that was
-    -- written — and nothing outside the store's own shared suite then ASKED
-    -- what they said. That is the shape that deleted the name column from the
-    -- parent table, and it is recorded here because a value carried faithfully
-    -- and consulted by nobody is not visible in a schema dump either.
-    --
-    -- Keyed by POSITION and not by asset, which is the same decision
-    -- cycle_payments made for ClearingCycle.PaymentIDs and is made here for the
-    -- same two reasons. RosterEntry.Assets is an ordered slice, so the position
-    -- is data rather than a surrogate; and a slice can repeat a value, so a key
-    -- on (bic, asset) would REFUSE a row the Go type can hold. This table had
-    -- that key, and while there were two stores it showed up as one refusing
-    -- what the other stored — which is how it was found. What makes it wrong now
-    -- is the same fact without the comparison: a store's contract is with the
-    -- TYPE it is handed. storetest's RosterEntryAssetsAreAnOrderedList is what
-    -- holds it to that.
-    --
-    -- What this constraint is NOT about is any writer's behaviour, and the
-    -- reason it says so is that it used to. It predicted that Task 17d would
-    -- build this list from an acmt.010's unbounded AccountForAction1 and that a
-    -- repeat would arrive that way. The writer arrived at Task 17c instead —
-    -- payment's AdmitMemberTx — and it cannot produce one from either end: it
-    -- takes the assets from a map keyed by asset, and it appends only the ones
-    -- the entry does not already hold. A message repeating a currency collapses
-    -- in that map before this table is reached, and the reader between the wire
-    -- and that writer refuses one outright:
-    -- payment.ReadAdmissionAcknowledgement will not read an acknowledgement
-    -- naming two accounts in one currency. The key is still position, because
-    -- PutRosterEntry must store whatever slice a caller passes whether or not
-    -- any caller passes that one.
-    --
-    -- Whether a repeated asset is a message worth refusing is a question about
-    -- the message and belongs to the institution reading it, not to the store.
-    --
-    -- The order the position preserves is AdmitMemberTx's: the assets of one
-    -- acknowledgement sorted, because they come out of a map and Go randomises
-    -- map iteration, appended after the ones the member was already admitted
-    -- for. So an extension leaves the earlier assets where they were, and this
-    -- column is what lets that be true without a schema change.
-    bic      TEXT NOT NULL REFERENCES roster_entries (bic) ON DELETE CASCADE,
-    position INTEGER NOT NULL,
-    asset    TEXT NOT NULL,
-    PRIMARY KEY (bic, position)
-) STRICT;
-
 CREATE TABLE mandates (
+    -- A MANDATE IS THE CREDITOR'S BANK'S ROW, and it is in this file and in no
+    -- other for that reason. In SEPA the creditor holds the mandate: the biller
+    -- collects it, the biller's bank vets the biller and carries the refund risk
+    -- for eight weeks, and payment.SDD.ValidateMandate says so. The debtor's
+    -- bank is RECORDED here, by BIC, and holds nothing.
+    --
+    -- It was a network-level resource until Task 18b — POST /mandates on the
+    -- clearing house's port, a row keyed by id in a shared store, and
+    -- CreateMandateTx reading both parties' registers to check the two accounts
+    -- agreed on an asset. That read is what could not survive: the debtor's
+    -- account is in another bank's database. The check did not disappear, it
+    -- MOVED — a mismatched mandate is now created and refused at its first
+    -- collection, by the debtor's bank, which is the only institution that can
+    -- see both sides. See asset below, and CreateMandateTx.
+    --
     -- debtor/creditor _identifier_scheme and _identifier_value are the PartyRef's
     -- payment.PartyRef.Identifier: the external address (an IBAN today) that was
     -- quoted for that side, STORED rather than looked up from
@@ -1301,11 +1237,26 @@ CREATE TABLE mandates (
     -- takes on scheme and value, for the same reason: the known schemes are Go
     -- constants, not a database enum.
     id                         TEXT PRIMARY KEY,
-    debtor_participant         TEXT NOT NULL,
+    -- The BIC of the DEBTOR's bank: who to collect from. It is the whole of what
+    -- this row records about the other side, and it is recorded rather than
+    -- resolved, because that bank's register is in that bank's database.
+    --
+    -- It was debtor_participant, a bank id, and under Task 18 an id and a BIC are
+    -- the same value — see banks. The column is renamed rather than merely
+    -- retyped because what it holds is an ADDRESS the creditor's bank sends a
+    -- collection to, and calling it a participant suggested a party this
+    -- institution could look up.
+    debtor_agent               TEXT NOT NULL,
     debtor_account             TEXT NOT NULL,
     debtor_identifier_scheme   TEXT NOT NULL,
     debtor_identifier_value    TEXT NOT NULL,
-    creditor_participant       TEXT NOT NULL,
+    -- There is no creditor_agent beside it and there was no creditor_participant
+    -- either, once this row became the creditor bank's own. A MANDATE IS THE
+    -- CREDITOR'S BANK'S ROW, so the creditor's bank is always this one, and a
+    -- column holding the same value in every row of every mandate this
+    -- institution ever writes records nothing. CreateMandateTx refuses a mandate
+    -- whose creditor is not this bank's customer (ErrNotThisBanksMandate), which
+    -- is the guard the column looked like it was supporting and never was.
     creditor_account           TEXT NOT NULL,
     creditor_identifier_scheme TEXT NOT NULL,
     creditor_identifier_value  TEXT NOT NULL,
@@ -1338,24 +1289,73 @@ CREATE TABLE mandates (
 ) STRICT;
 
 CREATE TABLE payments (
+    -- THIS BANK's row about a payment it is a party to, and one payment is now
+    -- three of these in three databases.
+    --
+    -- It was one row until Task 18. The payer's bank, the clearing house and the
+    -- payee's bank all read and wrote the same row, and a status was a single
+    -- value they took turns setting — which is why mesh/doc.go could say a
+    -- receiving bank "reads the payment row and trusts it over the message it
+    -- just received" and mean something faintly alarming by it. Now the row a
+    -- bank reads is its OWN, so what it trusts is its own prior belief, and the
+    -- three copies are ALLOWED TO DISAGREE. That is not a defect to be
+    -- reconciled away: settlement is final at the central bank and the
+    -- participants catch up afterwards, so "the clearing house has cleared this
+    -- and the payee's bank has not heard yet" is a state the system must be able
+    -- to be in, and here it is two rows with two statuses.
+    --
+    -- csm/0001_init.sql has the other shape of this table. Compare the two
+    -- rather than assuming they match; three columns differ and each difference
+    -- is a claim:
+    --
+    --   * cycle_id is NOT here. A BANK HAS NO CYCLES. It is not that the column
+    --     would be empty — nothing in mesh/bank.go names a cycle at all, and the
+    --     cycles table is in another institution's database. What a bank learns
+    --     about a cut-off is a settlement_advices row quoting a reference it
+    --     cannot resolve, and that table says so in as many words.
+    --   * debtor_leg_tx, creditor_leg_tx, creditor_leg_account,
+    --     return_clawback_tx and return_refund_tx are here and NOT at the
+    --     clearing house, which posts nothing and holds no book of accounts.
+    --   * The two agent columns mean something narrower here; see debtor_agent.
+    --
+    -- TWO COLUMNS ARE GONE FROM BOTH SHAPES: debtor_participant and
+    -- creditor_participant. They named each party's bank as a ParticipantID
+    -- beside an agent column naming the same bank as a BIC, and Task 18 made
+    -- those one value — see banks above. Two columns that cannot differ are not
+    -- two facts. The agent columns are the survivors because they are what goes
+    -- on the wire as DbtrAgt/CdtrAgt, and payment.PartyRef loses its Participant
+    -- field with them.
+    --
+    -- One consequence is worth naming rather than discovering: a WRONG
+    -- counterparty agent and a wrong counterparty are no longer distinguishable,
+    -- because there is one value to be wrong. That does not weaken anything —
+    -- the payment is still delivered to the bank the instruction names, which
+    -- resolves the address in its own register and answers AC01 — but
+    -- mesh/books_test.go's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames
+    -- is about a disagreement between the two, and there is no longer one to
+    -- construct.
+    --
+    -- The primary key is the payment id alone and not (book_id, id), unlike
+    -- every ledger table above. A payment id is minted by the bank that submits
+    -- the payment and travels on the wire; the receiving bank stores the id it
+    -- was SENT rather than one of its own, which is what lets a pacs.002 name a
+    -- payment both banks recognise. So the id is already globally meaningful in
+    -- a way a chart-of-accounts number is not, and adding the constant book
+    -- column would buy nothing. settlement_advices is the counter-example
+    -- immediately below and explains itself.
     id                         TEXT PRIMARY KEY,
     scheme                     TEXT NOT NULL,
-    debtor_participant         TEXT NOT NULL,
     debtor_account             TEXT NOT NULL,
     debtor_identifier_scheme   TEXT NOT NULL,
     debtor_identifier_value    TEXT NOT NULL,
-    creditor_participant       TEXT NOT NULL,
     creditor_account           TEXT NOT NULL,
     creditor_identifier_scheme TEXT NOT NULL,
     creditor_identifier_value  TEXT NOT NULL,
-    -- See creditor_agent: derived from the banks row at submission, never taken
-    -- from the instruction, and stored rather than joined because this row
-    -- records the message that was sent. The banks table and NOT roster_entries:
-    -- that table is the clearing house's own, and what it decides is whether the
-    -- payment is carried AT ALL (mesh.Mesh.Submit and
-    -- payment.Network.bothBanksAreMembersTx both refuse a bank with no row in
-    -- it), never which BIC goes in this column. The two tables differ: a bank
-    -- that is founded and not yet admitted has a banks row and no roster entry.
+    -- See creditor_agent, which carries the rule for both. One of the two is
+    -- this bank's OWN and is taken off its own row; the other is the
+    -- counterparty's and is taken off the INSTRUCTION. Which is which depends on
+    -- the scheme's direction — the submitting bank is the payer's on a push and
+    -- the payee's on a pull — so neither column can be described on its own.
     debtor_agent               TEXT NOT NULL DEFAULT '',
     -- The account holder name as QUOTED ON THE INSTRUCTION, not as held in the
     -- register. It is stored rather than looked up because BUILDING A PAYMENT
@@ -1371,24 +1371,45 @@ CREATE TABLE payments (
     -- is nothing to fall back to, and a NULL here would be an unsendable
     -- payment.
     debtor_name                TEXT NOT NULL DEFAULT '',
-    -- The BIC of the bank holding this party's account, and — unlike the two
-    -- name columns beside it — NOT what the instruction said. Both agent columns
-    -- are DERIVED at submission from the banks row for the party this payment
-    -- already names (payment.SubmitPaymentTx), and whatever a caller supplied is
-    -- discarded. The reason is what this element DOES: it goes out as
-    -- CdtrAgt/DbtrAgt and the clearing house ROUTES on it without reading
+    -- The BIC of the bank holding this party's account. The rule for both agent
+    -- columns is here; debtor_agent points at it rather than restating it.
+    --
+    -- THE SUBMITTING BANK'S OWN SIDE IS DERIVED AND THE COUNTERPARTY'S IS
+    -- ASSERTED, and the asymmetry is the whole of Task 14. This bank is the
+    -- authority on its own customer, so its own agent comes off its own banks
+    -- row at submission and whatever the request supplied is discarded — a payer
+    -- does not get to rename their own bank on an instruction. The
+    -- COUNTERPARTY's agent is what the payer typed, validated for FORMAT and for
+    -- nothing else (payment.SubmitPaymentTx, ErrCounterpartyAgentNotNamed), and
+    -- it is not checked against anything, because there is nothing in this
+    -- database to check it against: the counterparty's bank row is in the
+    -- counterparty's own store.
+    --
+    -- This paragraph said the opposite until Task 18 — that BOTH columns were
+    -- derived from the banks row for the party this payment names — and that was
+    -- true when banks held every member. It stopped being true at Task 14, when
+    -- the counterparty's details started travelling on the request, and the
+    -- sentence outlived the code by four tasks. What makes it unrepeatable now
+    -- is that the sweep it described cannot be written: ListBanks over other
+    -- members does not exist in this shape.
+    --
+    -- What the element DOES is why the own side is not asserted either: it goes
+    -- out as CdtrAgt/DbtrAgt and the clearing house ROUTES on it without reading
     -- anything, so a payer allowed to assert it would be a payer choosing which
     -- bank received the payment. Real SEPA is the same shape — IBAN-only since
-    -- 2016, the originating bank derives the routing. It is therefore, TODAY, a
-    -- redundant copy of what banks.bic holds for creditor_participant — no
-    -- operation in this system changes a BIC once a bank is admitted, so the two
-    -- cannot yet disagree. It is stored anyway, and the reason is what the row
-    -- is: a record of the message that WAS SENT, not a view onto the banks table
-    -- as it stands now. PutBank is an upsert (see store/storetest), so the day a
-    -- BIC can be corrected is the day a join would silently rewrite the address
-    -- on every payment already settled. There is no foreign key for the same
-    -- reason. The parallel comment on debtor_agent is deliberately not repeated;
-    -- the two columns are one rule.
+    -- 2016, the originating bank derives the routing. A WRONG counterparty agent
+    -- is therefore not refused at submission: the message is delivered to the
+    -- bank it names, which resolves the address in its own register, does not
+    -- find it and answers AC01. See mesh/books_test.go's
+    -- TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+    --
+    -- Stored rather than joined even for the own side, and the reason is what
+    -- the row is: a record of the message that WAS SENT, not a view onto the
+    -- banks table as it stands now. PutBank is an upsert (see store/storetest),
+    -- so the day a BIC can be corrected is the day a join would silently rewrite
+    -- the address on every payment already settled. There is no foreign key for
+    -- the same reason — and now also because for one of the two columns the row
+    -- it would reference is in another database.
     creditor_agent             TEXT NOT NULL DEFAULT '',
     creditor_name              TEXT NOT NULL DEFAULT '',
     amount                     INTEGER NOT NULL,
@@ -1403,7 +1424,6 @@ CREATE TABLE payments (
     -- payment that was never rejected has no code, and an absent code and an
     -- empty one are the same fact here.
     reject_code                TEXT NOT NULL DEFAULT '',
-    cycle_id                   TEXT NOT NULL,
     booking_date               TEXT,
     value_date                 TEXT,
     description                TEXT NOT NULL,
@@ -1462,27 +1482,48 @@ CREATE TABLE payments (
     -- a non-empty value says an attempt was MADE and not that it still stands. A
     -- refused return leaves a reversed transaction with its id still written
     -- here.
-    -- Together with return_clawback_tx it is how a return knows which of its two
-    -- legs is the SECOND, and therefore which one takes the payment to Returned:
-    -- the leg that finds the other side's id already written is the one arriving
-    -- last. That reading takes a written id at face value, and it is safe only
-    -- because a leg can be unwound only while the payment is still settled —
-    -- which is to say only while the OTHER side is unposted. A bank cannot check
-    -- the other id anyway: the two legs are in two books, and no bank reads the
-    -- other's. Neither column can be that marker on its own, because which leg
-    -- goes first flips with the scheme's direction — the returning bank posts
-    -- before it sends, and the returning bank is the payee's on a push and the
-    -- payer's on a pull. Both are DEFAULT '' rather than NULL, for
-    -- creditor_leg_account's reason: a leg that has not been posted has no
-    -- transaction, and an absent id and an empty one are the same fact. No
-    -- foreign key to transactions, and here the reason is stronger than the one
-    -- the agent columns give — these two ids are in DIFFERENT BOOKS, and under
-    -- the store split they will be in different databases, so a constraint
-    -- across them could not be written at all. That split is also what ends this
-    -- pair: one payment is one row that both banks read today, and when it
-    -- becomes two rows in two stores neither bank can see the other's leg, so
-    -- the counterparty's id stops being available to read at all. What replaces
-    -- it is that task's to decide.
+    -- EXACTLY ONE OF THE TWO IS EVER FILLED IN THIS DATABASE, and which one
+    -- depends on the scheme's direction: the returning bank posts the clawback
+    -- and the other bank posts the refund, and the returning bank is the payee's
+    -- on a push and the payer's on a pull. So a bank's row carries the leg IT
+    -- posted and says nothing about the other.
+    --
+    -- That is what Task 18 changed here, and the previous version of this
+    -- paragraph predicted the change without being able to answer it. The pair
+    -- used to sit in ONE row both banks read, and it decided which leg was the
+    -- SECOND: the leg that found the other side's id already written was the one
+    -- arriving last, and it was the one that took the payment to Returned. That
+    -- reading is gone, because the other side's id is in another bank's database
+    -- and no statement here can reach it.
+    --
+    -- What replaces it is that THERE IS NO SECOND LEG TO DETECT. Each bank takes
+    -- ITS OWN row to Returned when it posts its own leg, because its own row is
+    -- the only one it can move, and the three copies of this payment are allowed
+    -- to disagree while a return is in flight exactly as they are while a
+    -- settlement is — see this table's own comment. The state the marker existed
+    -- to produce, one row reaching Returned once both legs were down, is the
+    -- clearing house's to hold on its copy: it is the institution that told both
+    -- banks, and the only one with a reason to know that both were told.
+    --
+    -- A non-empty value still says this bank ATTEMPTED its leg and still does
+    -- NOT say the leg stands. When the settlement agent refuses a return, the
+    -- bank that had already posted unwinds by REVERSING its transaction and the
+    -- id stays here, because this column records what the bank did and the
+    -- ledger records whether it holds — so anything deciding whether the posting
+    -- is still owed reads the transaction's status, and the retry's idempotency
+    -- key is derived from the id, which is what lets the leg be posted again
+    -- without a counter to say which attempt this is. Both are DEFAULT ''
+    -- rather than NULL, for creditor_leg_account's reason: a leg that has not
+    -- been posted has no transaction, and an absent id and an empty one are the
+    -- same fact.
+    --
+    -- Still no foreign key to transactions, and the reason has had to change.
+    -- It used to be that the two ids were in DIFFERENT BOOKS, so a constraint
+    -- across them could not be written at all. The id this bank fills in now IS
+    -- a transaction in this bank's own book in this same database, so the
+    -- constraint has become writable — and it stays out for the reason the agent
+    -- columns give, which never depended on the other one: this row records what
+    -- WAS done, not a view onto the ledger as it stands now.
     return_refund_tx           TEXT NOT NULL DEFAULT '',
     seq                        INTEGER NOT NULL
 ) STRICT;
@@ -1508,83 +1549,49 @@ CREATE INDEX payments_end_to_end_idx ON payments (
     -- writes id_sequences, and the second submission waits there until the first
     -- commits and its payment row is visible to the read.
     --
+    -- THE COUNTER FOLLOWS THE ROW, which is the ruling Task 18 needed before it
+    -- could delete ledger.NetworkBook. The id this ordering rests on used to be
+    -- allocated under that book — a counter every institution shared — and the
+    -- ordering was only ever worth anything because the counter row and the row
+    -- being decided from were in one database. They still are, and that is not
+    -- luck: a submission is one bank's act, it allocates from ITS OWN book's
+    -- counter in id_sequences below, and it reads this index in the same
+    -- database and the same transaction. Had the allocation stayed anywhere
+    -- else, nothing would span the two — two databases is two transactions, and
+    -- no retry can make one of them see the other.
+    --
     -- What that ordering is worth HERE is measured, and it is not what it was on
-    -- store/pg. With the two statements swapped back, storetest's
-    -- Races/ConcurrentSubmissionsOfOneReferenceAcceptOne passes ten runs out of
-    -- ten, on the ephemeral store and on a WAL file: SQLite admits one writer, so
-    -- the loser is refused at its first write and Store.Update re-runs the unit
-    -- of work against the winner's committed row. The ordering is a second guard
-    -- rather than the only one, and no test in this repository can now see it go.
-    -- ledgers records the same finding for the admission acts.
+    -- store/pg. With the two statements swapped back, the duplicate-reference
+    -- race passes ten runs out of ten, on the ephemeral store and on a WAL file:
+    -- SQLite admits one writer, so the loser is refused at its first write and
+    -- Store.Update re-runs the unit of work against the winner's committed row.
+    -- The ordering is a second guard rather than the only one, and no test in
+    -- this repository can now see it go.
     end_to_end_id
 )
     WHERE end_to_end_id <> '';
 
-CREATE TABLE cycles (
-    id            TEXT PRIMARY KEY,
-    scheme        TEXT NOT NULL,
-    status        INTEGER NOT NULL,
-    -- A JSON column rather than a child table, so that a nil map and an empty
-    -- one still round-trip differently: an open cycle carries an empty
-    -- NetPositions and a closed one carries the computed positions. NULL is the
-    -- nil map, '{}' the empty one, and json_valid is what keeps a third thing
-    -- out. Nothing above the store checks that this column parses.
-    net_positions TEXT CHECK (json_valid(net_positions)),
-    opened_at     TEXT,
-    closed_at     TEXT,
-    settlement_id TEXT NOT NULL,
-    seq           INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX cycles_open_idx ON cycles (
-    -- Index 7: GetOpenCycle. Partial on the open status, which is the only one
-    -- it ever asks for. status 0 is payment.CycleOpen.
-    scheme
-) WHERE status = 0;
-
-CREATE TABLE cycle_payments (
-    -- ClearingCycle.PaymentIDs is an ordered slice, so like entries it gets an
-    -- explicit position column, and for the reason roster_entry_assets spells
-    -- out: a slice can repeat a value, so keying on the value would refuse a row
-    -- the Go type can hold.
-    cycle_id   TEXT NOT NULL REFERENCES cycles (id) ON DELETE CASCADE,
-    position   INTEGER NOT NULL,
-    payment_id TEXT NOT NULL,
-    PRIMARY KEY (cycle_id, position)
-) STRICT;
-
-CREATE TABLE settlements (
-    id            TEXT PRIMARY KEY,
-    cycle_id      TEXT NOT NULL,
-    settlement_tx TEXT NOT NULL,
-    value_date    TEXT,
-    settled_at    TEXT,
-    seq           INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE settlement_positions (
-    settlement_id  TEXT NOT NULL REFERENCES settlements (id) ON DELETE CASCADE,
-    participant_id TEXT NOT NULL,
-    amount         INTEGER NOT NULL,
-    PRIMARY KEY (settlement_id, participant_id)
-) STRICT;
-
 CREATE TABLE settlement_advices (
     -- settlement_advices is a MEMBER BANK's record of a reserve movement it was
-    -- told about — a cut-off's net settlement or a single return — and it is the
-    -- first payment-layer table keyed by book.
+    -- told about: a cut-off's net settlement, or a single return.
     --
-    -- Every other table in this section — banks, payments, mandates, cycles,
-    -- settlements — is network-scoped: those rows belong to no single bank, so
-    -- they are keyed by their id alone and sequenced under ledger.NetworkBook
-    -- rather than under any member's book. Note the exact claim, because a
-    -- looser one is false: banks DOES carry a book_id column, but as DATA —
-    -- which book that bank owns — and not as part of its key. This is the first
-    -- payment-layer table where the book is part of the identity, and that
-    -- difference is the whole of sub-project 8. A cycle is the clearing house's;
-    -- a settlement is the central bank's; this is the member's, and when the
-    -- stores split it moves into that member's own database and the other two do
-    -- not follow it.
+    -- IT USED TO BE THE ONLY PAYMENT-LAYER TABLE KEYED BY BOOK, and that is
+    -- worth recording because the distinction it was the sole example of has
+    -- gone. Every other payment-layer table — banks, payments, mandates, cycles,
+    -- settlements — was network-scoped: keyed by id alone and sequenced under
+    -- ledger.NetworkBook, belonging to no single institution because one
+    -- database held them all. This one was keyed by book, and it was keyed by
+    -- book because it was one member's own record, and sub-project 8 was
+    -- entirely about that difference. There is nothing left for the difference
+    -- to distinguish. Cycles and settlements are in other databases; banks holds
+    -- one row; payments holds this bank's own copy. The whole file is the
+    -- member's now, and this table stopped being the exception by everything
+    -- else becoming it.
+    --
+    -- So the book column here is not what it was either. It is the same constant
+    -- every other book_id in this file is (see books), and it stays in the
+    -- primary key because the key is (reference, asset) and widening it costs
+    -- nothing, not because it distinguishes this table from its neighbours.
     --
     -- Two banks advised of one movement write two rows independently. That is
     -- not redundancy: settlement is final at the central bank and participants
@@ -1615,11 +1622,13 @@ CREATE TABLE settlement_advices (
     -- same kind about the same account, which is why one column takes both.
     --
     -- There is no `kind` column beside it to say which, and that is a decision
-    -- rather than an omission. Ids are unique across the store, so nothing is
-    -- ambiguous; a member can resolve NEITHER kind — a cycle is the clearing
-    -- house's row and a payment the network's, and after the split neither is in
-    -- this bank's database at all — so knowing which it is buys the member
-    -- nothing it could act on; and the reconciliation that will read these rows
+    -- rather than an omission. Ids do not collide, so nothing is ambiguous; a
+    -- member can resolve NEITHER kind — a cycle is the clearing house's row in
+    -- the clearing house's database, and a payment id here is the id of a
+    -- payment SETTLED AND RETURNED, which this bank does hold a copy of but
+    -- learns nothing from that the advice has not already told it — so knowing
+    -- which it is buys the member nothing it could act on; and the
+    -- reconciliation that will read these rows
     -- asks one question, "did this bank book what it was told", which is one
     -- shape and not two. A discriminator nothing branches on is a field that can
     -- only drift out of step with the id beside it.
@@ -1631,12 +1640,16 @@ CREATE TABLE settlement_advices (
     -- bank's clearing suspense has not returned to zero and there is no row here
     -- against the payment id.
     --
-    -- No foreign key to anything. A member bank HAS no cycles — after the split
-    -- the cycles table is not in its database at all — and a payment id is the
-    -- same shape of foreign fact in the other direction: the reference names a
-    -- row in an institution the member does not share a database with, in either
-    -- direction. A constraint here would encode exactly the sharing this
-    -- sub-project removes.
+    -- No foreign key on reference, and the reason has become a fact rather than
+    -- a policy. A MEMBER BANK HAS NO CYCLES: the cycles table is not in this
+    -- database, so a constraint naming it could not be written. When the
+    -- reference is a payment id there IS a payments row here it could name, and
+    -- it still stays out — the advice is a statement the central bank made about
+    -- this bank's reserve account, and it has to be recordable whether or not
+    -- this bank holds a copy of the payment it mentions. Constraining it would
+    -- make a member's ability to file what it was told depend on what else it
+    -- happens to know, which is the sharing this sub-project removes, arriving
+    -- by the back door.
     book_id         TEXT NOT NULL REFERENCES books (id) ON DELETE CASCADE,
     reference       TEXT NOT NULL,
     asset           TEXT NOT NULL,
@@ -1663,9 +1676,23 @@ CREATE TABLE settlement_advices (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE audit_events (
+    -- THE AUDIT LOG IS PER INSTITUTION, and this table is in all three shapes
+    -- for that reason rather than because the DDL was convenient to repeat.
+    -- What a bank's log holds is what this bank did and was told; the clearing
+    -- house's holds its clearing decisions and the central bank's its
+    -- settlements, in their own databases. There is no cross-entity view and
+    -- there never was one to lose: GET /audit has been bound per listener since
+    -- the api gained one port per institution, so a bank's port reads this
+    -- table, the central bank's reads its own and the clearing house's reads
+    -- /payments/audit against its own. The split made the endpoints honest
+    -- rather than changing them.
+    --
     -- seq is a total order over the WHOLE store, not per book and not per scope,
     -- which is what makes AuditFilter.Before a global cursor that every other
-    -- predicate is applied alongside.
+    -- predicate is applied alongside. "The whole store" is now one
+    -- institution's, so the cursor no longer interleaves three institutions'
+    -- events and a page of it is one actor's history rather than a slice
+    -- through everybody's.
     --
     -- It has no foreign key to books: an audit event must be appendable whatever
     -- else is or is not in the database, and a log that can be blocked by a
@@ -1718,10 +1745,33 @@ CREATE TABLE id_sequences (
     -- book shared by every prefix, so ldg_1, evt_2 and tx_3 interleave and the
     -- number doubles as a creation order.
     --
-    -- This table is also the serialization point several other comments in this
+    -- THE COUNTER FOLLOWS THE ROW. This bank's ids are allocated here, from this
+    -- bank's own book, in the same database and the same transaction as whatever
+    -- they are about — and that is the ruling Task 18 had to make before it
+    -- could delete ledger.NetworkBook, which every read-then-write ordering in
+    -- this system used to allocate from. An act allocates from the store it is
+    -- about to write. Where an act could not satisfy that it was a crossing and
+    -- had to become a message, which is this sub-project's thesis rather than an
+    -- exception to it: the four orderings that mattered — a payment id before
+    -- the duplicate-reference check, and the three admission acts before their
+    -- find-or-creates — each turned out to belong to exactly one institution, so
+    -- each kept its counter and its read in one database and none of them had to
+    -- be replaced.
+    --
+    -- So this table is still the serialization point the other comments in this
     -- schema point at. A caller that writes it before it reads is ordered
-    -- against every other caller that does, which is what closes the races
-    -- ledgers and payments_end_to_end_idx describe.
+    -- against every other caller that does — within THIS institution, which is
+    -- as far as ordering has ever actually reached, and now as far as it claims
+    -- to. See payments_end_to_end_idx, and ledgers in
+    -- centralbank/0001_init.sql.
+    --
+    -- One consequence is worth stating because a reader will otherwise find it
+    -- surprising: ids REPEAT across institutions. Every bank's first ledger is
+    -- ldg_1, because each counts from one in a database of its own. Nothing
+    -- compares an id across a boundary — what crosses is a BIC and a payment id
+    -- the submitting bank minted — so the collisions are unobservable, and
+    -- making them impossible would mean a counter somebody shared, which is
+    -- exactly what was deleted.
     book_id    TEXT NOT NULL,
     name       TEXT NOT NULL,
     next_value INTEGER NOT NULL,

@@ -60,12 +60,23 @@ const (
 // AsBank is one member bank's identity: the participant whose book, whose
 // deposit register and whose customers this network's acts are about.
 //
-// It is the only one of the three that carries a value, and what it carries is
-// the ParticipantID alone. Its BookID is not stored beside it because a bank IS
-// its own book — ledger.BookID(ID), fixed by FoundBankTx and documented on
-// Bank.BookID — so a second copy here could only ever be the same answer or a
-// wrong one. Its BIC is not stored either: every act that needs one reads it off
-// the bank's own row, which it has already loaded to reach the book.
+// It is the only one of the three that carries a value, and ONE value is all
+// there is to carry. A bank's ParticipantID, its BookID, its BIC and the name of
+// its database are the same string since Task 18 — see Network.book and
+// FoundBankTx. This doc used to explain why the BookID and the BIC were not
+// stored beside the id: the book because a bank IS its own book, so a copy could
+// only be the same answer or a wrong one, and the BIC because every act that
+// needed one read it off the bank's own row. The first reason survives and the
+// second is what collapsed: reading the BIC off a row was fine while the row was
+// this bank's, and eight readers in mesh were doing it to OTHER banks' rows, in
+// databases they no longer hold.
+//
+// The type stays ParticipantID rather than iso20022.BIC because the two say
+// different things at a call site — which participant is acting, versus which
+// address a message is going to — and because iso20022.BIC is where the
+// structural rule lives and this is not the layer that validates it. Whether
+// that distinction is worth two types over one value is worth revisiting once
+// the wiring has settled.
 func AsBank(pid ParticipantID) Identity { return Identity{role: roleBank, pid: pid} }
 
 // AsClearingHouse is the CSM's identity: it clears, it nets, it routes, and it

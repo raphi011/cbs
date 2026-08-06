@@ -151,10 +151,61 @@ func (s *Network) self() (ParticipantID, error) {
 	return pid, nil
 }
 
-// CentralBankBook is the BookID of the central bank's own book of accounts. It
-// is a real chart of accounts, unlike ledger.NetworkBook, which labels the
-// network-scoped entities that belong to no single bank.
+// CentralBankBook is the BookID of the central bank's own book of accounts, and
+// also the book its own rows are keyed and sequenced under. See Network.book.
 const CentralBankBook ledger.BookID = "central-bank"
+
+// ClearingHouseBook is the BookID the clearing house's own rows are keyed and
+// sequenced under.
+//
+// It is NOT a chart of accounts and there is none to be had: the clearing house
+// keeps no book of accounts, which csm/0001_init.sql now states by having no
+// ledger tables at all. What it names is the audit log and the id counters,
+// which are book-keyed in every shape because ledger.Tx is one interface over
+// three schemas.
+//
+// It replaces ledger.NetworkBook, and the replacement is not a rename. That
+// constant meant "belongs to no single institution", and it was the book under
+// which participants, payments, mandates, cycles and settlements were all
+// sequenced — one counter, one audit stream, shared by everybody, in the one
+// database that held everything. There is no network left for anything to
+// belong to. Each of those rows turned out to have exactly one owner, each owner
+// now has a database, and this is the clearing house's name for its own.
+const ClearingHouseBook ledger.BookID = "clearing-house"
+
+// book is the BookID this institution's own rows are keyed and sequenced under,
+// and the answer to every "which book?" that used to be ledger.NetworkBook.
+//
+// THE COUNTER FOLLOWS THE ROW. Every read-then-write ordering in this package
+// allocates an id before the read it decides from, and the ordering is worth
+// something only while the counter row and the row being decided from are in one
+// database — two databases is two transactions, and no retry can make one of
+// them see the other. So an act allocates from the store it is about to write,
+// which is this one, because a Network is one institution's handle and its store
+// is that institution's.
+//
+// That the four orderings survived unchanged is a finding rather than a design:
+// each of them — a payment id before the duplicate-reference check, and the
+// three admission acts before their find-or-creates — turned out to belong to
+// exactly one institution already. Had any of them spanned two, it would have
+// had to become a message.
+//
+// There is no zero case. NewNetwork refuses an identity-less network, so every
+// Network reaching this has one of the three roles.
+func (s *Network) book() ledger.BookID {
+	switch s.id.role {
+	case roleBank:
+		// A bank IS its own book: ledger.BookID(ID), fixed by FoundBankTx and
+		// documented on Bank.BookID. Since Task 18 that id is the bank's BIC, so
+		// this is also its address and the name of its database — one identifier
+		// doing what three used to. See FoundBankTx.
+		return ledger.BookID(s.id.pid)
+	case roleClearingHouse:
+		return ClearingHouseBook
+	default:
+		return CentralBankBook
+	}
+}
 
 // The central bank's chart of accounts is identified by name rather than by a
 // cached ID, because a cached ID does not survive Store.Reset and is wrong the
@@ -827,7 +878,7 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // is its own commit at its own institution now, driven by a message, and there is
 // no earlier allocation to ride on.
 func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
-	_, err := tx.NextID(ctx, ledger.NetworkBook, "adm")
+	_, err := tx.NextID(ctx, s.book(), "adm")
 	return err
 }
 
@@ -953,13 +1004,44 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	}
 	assets = joiningAssets(assets)
 
-	// The bank gets its own book within the shared store, identified by its
-	// participant ID, so its chart of accounts is numbered independently of
-	// every other bank's.
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "bank")
+	// NOTHING IS ALLOCATED HERE. THE BANK'S ID IS ITS BIC.
+	//
+	// It used to be NextID(ledger.NetworkBook, "bank"), drawn from a counter every
+	// institution shared, and that counter is gone. What replaced it is not
+	// another counter, and the reason is worth having at the line that used to
+	// draw one.
+	//
+	// A counter-derived id could not work at all. A bank's database is named by
+	// its id, and the counter an id is drawn from is a row in id_sequences inside
+	// that database — so allocating it would mean opening the store whose name is
+	// the value being allocated. That knot is why FoundBank was called through the
+	// CLEARING HOUSE's handle right up to this task: the joining bank had no
+	// handle of its own yet. mesh.Mesh.Admit and store/storetest.Admit both did
+	// it and both were recorded as deferrals.
+	//
+	// Siting the counter somewhere else would have been the wrong fix, because
+	// the id had stopped meaning anything. It was doing two jobs — this bank's own
+	// name for itself, and the NETWORK'S ADDRESS for it — and only the first
+	// survives isolation: eight readers in mesh turned a participant id into a BIC
+	// by reading a bank's row, and every one of them is a read into a database its
+	// caller does not hold. Take the second job away and the first distinguishes
+	// nothing, because a bank's database holds one bank. An id that is a constant
+	// is not an identity.
+	//
+	// So there is one identifier and a joining bank arrives already knowing it.
+	// s.self() is this network's identity, which is the BIC, which is this store's
+	// one BookID — the value it was opened for and refuses every other of. See
+	// banks in store/sqlite/schema/bank/0001_init.sql, where the argument is
+	// recorded in the database.
+	pid, err := s.self()
 	if err != nil {
 		return nil, err
 	}
+	if ParticipantID(bic) != pid {
+		return nil, fmt.Errorf("%w: this is %s's store and the application is %s's",
+			ErrNotThisInstitutionsAct, pid, bic)
+	}
+	id := string(pid)
 	bookID := ledger.BookID(id)
 	bank := ledger.NewBook(s.ledgers, bookID, s.clock)
 
@@ -2092,7 +2174,7 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor P
 			debtor.Participant, debtor.Account)
 	}
 
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "mnd")
+	id, err := tx.NextID(ctx, s.book(), "mnd")
 	if err != nil {
 		return Mandate{}, err
 	}
@@ -2179,7 +2261,7 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 		return ClearingCycle{}, err
 	}
 
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "cyc")
+	id, err := tx.NextID(ctx, s.book(), "cyc")
 	if err != nil {
 		return ClearingCycle{}, err
 	}
@@ -2464,7 +2546,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		}
 	}
 
-	settlementID, err := tx.NextID(ctx, ledger.NetworkBook, "set")
+	settlementID, err := tx.NextID(ctx, s.book(), "set")
 	if err != nil {
 		return Settlement{}, nil, err
 	}
@@ -3127,7 +3209,7 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// and storetest's ConcurrentReadThenWriteOnOneKeyAgrees — a subtest of
 	// TestConformance, not a test function of its own — which states the shape at
 	// the store interface.
-	id, err := tx.NextID(ctx, ledger.NetworkBook, "pay")
+	id, err := tx.NextID(ctx, s.book(), "pay")
 	if err != nil {
 		return Payment{}, err
 	}

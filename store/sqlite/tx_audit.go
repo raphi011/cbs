@@ -19,6 +19,14 @@ import (
 // set is overwritten: the sequence is a total order over the whole store, and
 // only the store can issue it.
 func (t *tx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
+	// The book arrives on the event rather than as a parameter, so this is the
+	// one place the guard has to reach into an argument to find it. It is still
+	// first, and for the reason tx.own gives: an event appended under another
+	// institution's book is that institution's history being written by somebody
+	// who is not it, and there is no reader downstream that would notice.
+	if err := t.own(e.BookID); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -47,6 +55,17 @@ func (t *tx) AppendAudit(ctx context.Context, e ledger.AuditEvent) error {
 // took the oldest matches — would return short or empty pages that look like
 // end-of-data.
 func (t *tx) ListAudit(ctx context.Context, f ledger.AuditFilter) ([]ledger.AuditEvent, error) {
+	// An EMPTY BookID is "no filter" and stays legal, which after Task 18 means
+	// "this institution's whole log" rather than "everybody's" — there is nothing
+	// else in the database. A NON-EMPTY one naming somebody else's book is
+	// refused rather than answered with the empty page it would otherwise
+	// produce, which is precisely the silent not-found this guard exists for: a
+	// caller asking the wrong store gets a page that looks like end-of-data.
+	if f.BookID != "" {
+		if err := t.own(f.BookID); err != nil {
+			return nil, err
+		}
+	}
 	where := make([]string, 0, 5)
 	args := make([]any, 0, 5)
 	add := func(clause string, arg any) {

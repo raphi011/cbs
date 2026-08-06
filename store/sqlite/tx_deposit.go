@@ -28,6 +28,12 @@ var _ deposit.Tx = (*tx)(nil)
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutDepositAccount(ctx context.Context, book ledger.BookID, a deposit.Account) error {
+	if err := t.inShape("deposit_accounts"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -106,6 +112,12 @@ func scanDepositAccount(row interface{ Scan(...any) error }) (deposit.Account, e
 }
 
 func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) (deposit.Account, error) {
+	if err := t.inShape("deposit_accounts"); err != nil {
+		return deposit.Account{}, err
+	}
+	if err := t.own(book); err != nil {
+		return deposit.Account{}, err
+	}
 	row := t.tx.QueryRowContext(ctx, `
 		SELECT `+depositAccountColumns+`
 		FROM deposit_accounts WHERE book_id = ? AND id = ?`,
@@ -125,6 +137,12 @@ func (t *tx) GetDepositAccount(ctx context.Context, book ledger.BookID, id depos
 }
 
 func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]deposit.Account, error) {
+	if err := t.inShape("deposit_accounts"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT `+depositAccountColumns+`
 		FROM deposit_accounts WHERE book_id = ?
@@ -163,6 +181,9 @@ func (t *tx) ListDepositAccounts(ctx context.Context, book ledger.BookID) ([]dep
 // off rather than written as a no-op. storetest orders these ascending by
 // (scheme, value) and two identifiers written out of order are what checks it.
 func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, accounts []deposit.Account) error {
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -226,6 +247,12 @@ func (t *tx) hydrateIdentifiers(ctx context.Context, book ledger.BookID, account
 // (book_id, scheme) prefix still applies. See the index in the schema, where the
 // alternatives and the reason neither was taken are recorded.
 func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.BookID, ident deposit.Identifier) ([]deposit.Account, error) {
+	if err := t.inShape("deposit_account_identifiers"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	value := `i.value = ?`
 	if ident.Scheme == deposit.IdentifierIBAN {
 		value = `replace(replace(i.value, ' ', ''), '-', '') = ?`
@@ -263,6 +290,12 @@ func (t *tx) ListDepositAccountsByIdentifier(ctx context.Context, book ledger.Bo
 // ---------------------------------------------------------------------------
 
 func (t *tx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) error {
+	if err := t.inShape("holds"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -288,6 +321,12 @@ func (t *tx) PutHold(ctx context.Context, book ledger.BookID, h deposit.Hold) er
 }
 
 func (t *tx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID) (deposit.Hold, error) {
+	if err := t.inShape("holds"); err != nil {
+		return deposit.Hold{}, err
+	}
+	if err := t.own(book); err != nil {
+		return deposit.Hold{}, err
+	}
 	var (
 		h                  deposit.Hold
 		status             int64
@@ -310,6 +349,12 @@ func (t *tx) GetHold(ctx context.Context, book ledger.BookID, id deposit.HoldID)
 }
 
 func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Hold, error) {
+	if err := t.inShape("holds"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT id, account_id, amount, expires_at, description, status, created_at
 		FROM holds WHERE book_id = ? AND account_id = ?
@@ -346,6 +391,12 @@ func (t *tx) ListHoldsForAccount(ctx context.Context, book ledger.BookID, id dep
 // expiring exactly at now still counts. Like BookBalance this is an aggregate:
 // an unknown account is 0, not an error.
 func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit.AccountID, now time.Time) (ledger.Amount, error) {
+	if err := t.inShape("holds"); err != nil {
+		return 0, err
+	}
+	if err := t.own(book); err != nil {
+		return 0, err
+	}
 	var total ledger.Amount
 	err := t.tx.QueryRowContext(ctx, `
 		SELECT COALESCE(SUM(amount), 0) FROM holds
@@ -367,6 +418,12 @@ func (t *tx) ActiveHoldTotal(ctx context.Context, book ledger.BookID, id deposit
 // deposit.SnapshotDateKey, which is also what GetSnapshot is handed, so the two
 // agree by construction.
 func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snapshot) error {
+	if err := t.inShape("snapshots"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -392,6 +449,12 @@ func (t *tx) PutSnapshot(ctx context.Context, book ledger.BookID, s deposit.Snap
 }
 
 func (t *tx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.AccountID, dateKey string) (deposit.Snapshot, error) {
+	if err := t.inShape("snapshots"); err != nil {
+		return deposit.Snapshot{}, err
+	}
+	if err := t.own(book); err != nil {
+		return deposit.Snapshot{}, err
+	}
 	var (
 		s               deposit.Snapshot
 		date, takenAt   nullTime
@@ -417,6 +480,12 @@ func (t *tx) GetSnapshot(ctx context.Context, book ledger.BookID, id deposit.Acc
 // already a total order; the insertion sequence is the tie-break only so that
 // every listing follows one rule.
 func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.Snapshot, error) {
+	if err := t.inShape("snapshots"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT account_id, business_date, book_balance, holds_balance, available_balance, taken_at
 		FROM snapshots WHERE book_id = ? AND account_id = ?
@@ -453,6 +522,12 @@ func (t *tx) ListSnapshotsForAccount(ctx context.Context, book ledger.BookID, id
 // compares against — so the write and the as-of read cannot disagree about which
 // day a repricing landed in. Nothing here truncates a date; see that function.
 func (t *tx) PutOverdraftTerms(ctx context.Context, book ledger.BookID, row deposit.OverdraftTerms) error {
+	if err := t.inShape("overdraft_terms"); err != nil {
+		return err
+	}
+	if err := t.own(book); err != nil {
+		return err
+	}
 	if err := t.write(); err != nil {
 		return err
 	}
@@ -529,6 +604,12 @@ func scanOverdraftTerms(row interface{ Scan(...any) error }) (deposit.OverdraftT
 // which is an ISO day and therefore lexicographically ordered. Ascending is
 // load-bearing: deposit.termsAt binary-searches the slice this returns.
 func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookID, id deposit.AccountID) ([]deposit.OverdraftTerms, error) {
+	if err := t.inShape("overdraft_terms"); err != nil {
+		return nil, err
+	}
+	if err := t.own(book); err != nil {
+		return nil, err
+	}
 	rows, err := t.tx.QueryContext(ctx, `
 		SELECT `+overdraftTermsColumns+`
 		FROM overdraft_terms WHERE book_id = ? AND account_id = ?
@@ -555,6 +636,12 @@ func (t *tx) ListOverdraftTermsForAccount(ctx context.Context, book ledger.BookI
 // is compared against was written the same way, so no timestamp arithmetic
 // happens in the database at all.
 func (t *tx) GetOverdraftTermsAsOf(ctx context.Context, book ledger.BookID, id deposit.AccountID, day time.Time) (deposit.OverdraftTerms, error) {
+	if err := t.inShape("overdraft_terms"); err != nil {
+		return deposit.OverdraftTerms{}, err
+	}
+	if err := t.own(book); err != nil {
+		return deposit.OverdraftTerms{}, err
+	}
 	row := t.tx.QueryRowContext(ctx, `
 		SELECT `+overdraftTermsColumns+`
 		FROM overdraft_terms
