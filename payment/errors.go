@@ -172,8 +172,9 @@ var (
 	// checkAcknowledgement refuses it in the acts, which are separately callable.
 	ErrAdmissionNotIdentified = errors.New("payment: this acknowledgement quotes no admission")
 
-	// ErrAdmittedAccountUnusable is an acknowledgement carrying an account this
-	// system cannot file: one naming no asset, or an asset naming no account.
+	// ErrAdmittedAccountUnusable is an acknowledgement whose accounts neither act
+	// can file: NO account at all, one naming no asset, or an asset naming no
+	// account.
 	//
 	// The asset is what decides which of a bank's internal account sets a
 	// settlement reference belongs to and which schemes a member clears in, so an
@@ -182,11 +183,19 @@ var (
 	// identifier that is empty is the same hole from the other end: a settlement
 	// reference nothing can post to.
 	//
-	// ReadAdmissionAcknowledgement refuses both on the way in from the wire. This
-	// is the same refusal in the acts, so that the reader's is defence in depth
-	// rather than the only line — the rule Task 16e arrived at for ReadReturn and
-	// SettleReturnTx after an implementer found the hole outside its brief.
-	ErrAdmittedAccountUnusable = errors.New("payment: this acknowledgement carries an account this system cannot file")
+	// The EMPTY LIST is the third arm and the one that cost most, because it is
+	// the value that makes the other two not apply: a loop over no accounts
+	// refuses nothing. Recorded, it wedges both institutions — a Member that
+	// settles through no account, a roster entry that clears in no scheme, and
+	// the true acknowledgement then refused for ever by the admission-reference
+	// guards those two rows now carry.
+	//
+	// ReadAdmissionAcknowledgement refuses all three on the way in from the wire.
+	// These are the same refusals in the acts, so that the reader's are defence
+	// in depth rather than the only line — the rule Task 16e arrived at for
+	// ReadReturn and SettleReturnTx after an implementer found the hole outside
+	// its brief. See checkAcknowledgement, which sets the two lists side by side.
+	ErrAdmittedAccountUnusable = errors.New("payment: this acknowledgement does not name a usable account")
 
 	// ErrNotThisBanksAdmission is a bank recording an acknowledgement addressed
 	// to another bank's BIC.

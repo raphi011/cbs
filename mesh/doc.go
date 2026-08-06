@@ -29,16 +29,21 @@
 // # The flows, listed once
 //
 // A push, a pull, a cut-off, a return and an admission — the sections below, in
-// that order. They are listed here and counted nowhere, because the count is
-// what goes stale: five files disagreed about it at once, each of them right
-// when it was written and none of them right together — admission was "the
-// fourth flow" in some and the clearing house's "fifth job" in another, while
-// elsewhere this system still had four flows in total. What each flow IS does
-// not change when another arrives, and how many there are is a fact about the
-// list rather than about any of them.
+// that order. They are listed here and counted nowhere.
 //
-// The sentence that replaced those counts carried a tally of its own and got it
-// wrong, which is the same defect one layer up. Hence no number here either.
+// The count is what goes stale, and it went stale in every direction at once.
+// Files across this package and payment disagreed about how many flows there
+// were, and admission was called "the fourth flow" in some and the clearing
+// house's "fifth job" in another. Some of those were right when they were
+// written and overtaken; the two that called admission the fourth were wrong on
+// the day they were written, in the commit that ADDED admission as the fifth —
+// which is worse, and is the case for not writing the number at all rather than
+// for keeping it up to date.
+//
+// Then the sentence that retired those counts carried a tally of its own and got
+// the distribution wrong. Hence no number here either: what each flow IS does
+// not change when another arrives, and how many there are is a fact about this
+// list, readable from it.
 //
 // # Bytes, not structs
 //

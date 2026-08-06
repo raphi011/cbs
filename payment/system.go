@@ -972,40 +972,86 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 
 // checkAcknowledgement refuses an acknowledgement neither act can act on.
 //
-// Both acts driven from an acknowledgement run it, which is the doubling this
-// task's brief asks for: ReadAdmissionAcknowledgement makes the same refusals on
-// the way in from the wire, and a reader's guard that is the only line is not
-// defence in depth. The acts are separately callable — an institution doing its
-// own unit of work is the whole point of the split — so what they refuse has to
-// be true of them and not only of the one caller that composes messages today.
+// # It is ReadAdmissionAcknowledgement's refusals, made again in the acts
 //
-// Every element the acts DECIDE from is checked here or by the act itself, and
-// the list is short enough to state:
+// That is the whole specification, and it is stated as a correspondence rather
+// than as a list this function invented: everything the reader will not read off
+// an acmt.010, the acts will not act on. The reader is the only guard a message
+// meets, and the acts are separately callable — an institution doing its own
+// unit of work is the point of the split — so a reader's guard that is the only
+// line is not defence in depth. It is the rule Task 16e arrived at for
+// ReadReturn and SettleReturnTx after an implementer found the hole outside its
+// brief.
 //
-//   - the ADMISSION REFERENCE, below. Both acts read it, and "" is not a value:
-//     Bank.AdmissionRef reads an empty stored reference as "this bank has
-//     accepted nothing yet", so an acknowledgement quoting none would leave a
-//     Member bank in the state a Founded one is in and hand the next
-//     acknowledgement — any acknowledgement — its settlement references. It does
-//     the same to AdmitMemberTx from the other side: two institutions on one BIC
-//     both quoting "" compare equal, and the second extends the first's entry
-//     instead of being refused.
-//   - the CURRENCY and the ACCOUNT of each entry, below. The currency decides
-//     which of a bank's internal account sets a reference belongs to and which
-//     schemes a member clears in, so an empty one is filed under the empty asset
-//     by both readers.
-//   - the BIC, by each act itself, because they use it differently: AdmitMemberTx
-//     keys its row by it and RecordMembershipTx compares it with the bank's own.
+// The correspondence, refusal for refusal:
 //
-// It is one function and not lines in each act because the two would otherwise
-// refuse different things. On an empty currency the clearing house would write a
+//	ReadAdmissionAcknowledgement          here
+//	------------------------------------  ------------------------------------
+//	OrgId/AnyBIC absent                   in.BIC.Validate
+//	OrgId/AnyBIC malformed                in.BIC.Validate
+//	Refs/PrcId/Id absent                  ErrAdmissionNotIdentified
+//	AcctId empty                          ErrAdmittedAccountUnusable
+//	AcctId[i]/Ccy absent                  ErrAdmittedAccountUnusable
+//	AcctId[i]/Id/Othr/Id absent           ErrAdmittedAccountUnusable
+//	two accounts in one currency          unrepresentable: Accounts is a map
+//
+// TestAnUnusableAcknowledgementIsRefusedByBothActs and
+// TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs are what hold the
+// right-hand column; TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile
+// holds the left. A refusal added to the reader and not here is a row of this
+// table with an empty right-hand side, which is how each of the three holes this
+// function has grown to cover got in.
+//
+// # Why each of them, and what "" means
+//
+// The BIC and the reference are both values that a guard elsewhere reads as
+// ABSENCE, which is what made them dangerous rather than merely untidy:
+//
+//   - an empty Bank.AdmissionRef means "this bank has accepted nothing yet", so
+//     an acknowledgement quoting none resets that guard and hands the next
+//     message — any message — the bank's settlement references. An empty
+//     RosterEntry.AdmissionRef compares equal to every other empty one, so two
+//     institutions on one address would extend a single entry.
+//   - an empty or malformed BIC is the KEY of the roster row AdmitMemberTx
+//     writes. Measured: `AdmitMemberTx bic="" -> entry={BIC: Assets:[EUR] …}` and
+//     the same for "nonsense" — rows nothing can address and no reader can find.
+//     RecordMembershipTx was already covered by its own comparison, since a
+//     bank's own BIC is validated at founding and cannot equal either; the
+//     clearing house had nothing.
+//
+// The accounts are the acknowledgement's whole content, and an empty list is the
+// value that makes the per-account arms below not execute at all. Measured, it
+// WEDGES both institutions: a Member that settles through no account and a
+// roster entry that clears in no scheme, and then the true acknowledgement is
+// refused for ever by the very guards those two rows now carry.
+//
+// # It is one function and it runs before the id
+//
+// One function and not lines in each act, because the two would otherwise refuse
+// different things — on an empty currency the clearing house would write a
 // member clearing in the empty asset and the bank would silently skip the
 // account; on an empty reference the clearing house would merge two institutions
-// and the bank would forget that it had ever been admitted. Same message, two
-// answers, and in each pair only one of them visible.
+// and the bank would forget it had been admitted. Same message, two answers, and
+// in each pair only one of them visible.
+//
+// It reads no store, so it runs BEFORE admissionSequenceTx rather than after: a
+// message this system cannot act on should not cost an identity from the
+// network's counter, and there is nothing here for that lock to protect.
+//
+// What it does NOT check is which bank an acknowledgement is FOR. That is
+// RecordMembershipTx's own comparison against the bank's own address
+// (ErrNotThisBanksAdmission), and it is a different question — whether the
+// message is actionable at all, against whose message it is.
 func checkAcknowledgement(in AdmissionAcknowledgement) error {
+	if err := in.BIC.Validate(); err != nil {
+		return fmt.Errorf("payment: this acknowledgement names no account owner this system can address: %w", err)
+	}
 	if in.Ref == "" {
 		return fmt.Errorf("%w: it is addressed to %s", ErrAdmissionNotIdentified, in.BIC)
+	}
+	if len(in.Accounts) == 0 {
+		return fmt.Errorf("%w: it names none at all, and would admit %s to nothing",
+			ErrAdmittedAccountUnusable, in.BIC)
 	}
 	for asset, account := range in.Accounts {
 		if asset == "" {
@@ -1045,11 +1091,13 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // makes the refusal binding rather than a race two callers can both win. See
 // admissionSequenceTx.
 //
-// An acknowledgement quoting no admission, or carrying an account that names no
-// asset, is refused after the id above and before the read the refusal is
-// decided from — see checkAcknowledgement. The empty reference is the one that
-// matters here: two institutions on one BIC both quoting "" compare equal, so
-// the refusal this act exists to make would never fire.
+// An acknowledgement this act cannot use is refused before any of the above, by
+// checkAcknowledgement, which is ReadAdmissionAcknowledgement's refusals made
+// again in the act. Two of them decide this act's own guards rather than merely
+// tidying the row: an empty reference, because two institutions on one BIC both
+// quoting "" compare equal and the refusal above would never fire; and an empty
+// or malformed BIC, because this row is KEYED by it — measured at
+// `entry={BIC: Assets:[EUR] …}`, a row nothing can address.
 //
 // # It writes an ADDRESS and not a description
 //
@@ -1068,14 +1116,16 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // real change to what this institution routes: a second asset admitted is a
 // second scheme this member clears in.
 func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (RosterEntry, error) {
-	// Before the read the refusal is decided from. See admissionSequenceTx:
-	// without it two different admissions of one address are both accepted on
-	// store/pg and the entry records whichever committed last, which is the
-	// impostor half the time.
-	if err := s.admissionSequenceTx(ctx, tx); err != nil {
+	// The message first, because this reads no store and a message this act
+	// cannot use should not cost an identity from the network's counter.
+	if err := checkAcknowledgement(in); err != nil {
 		return RosterEntry{}, err
 	}
-	if err := checkAcknowledgement(in); err != nil {
+	// Then the id, before the read the refusal is decided from. See
+	// admissionSequenceTx: without it two different admissions of one address are
+	// both accepted on store/pg and the entry records whichever committed last,
+	// which is the impostor half the time.
+	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return RosterEntry{}, err
 	}
 	entry, err := tx.GetRosterEntry(ctx, in.BIC)
@@ -1186,10 +1236,13 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // either, because the servicer is answering about its own book rather than
 // about this bank's. What the bank records is what it can use.
 //
-// An acknowledgement quoting no admission, or carrying an account that names NO
-// asset, is a different thing and is refused whole. See checkAcknowledgement,
-// which both acts driven from an acknowledgement run — and which is what keeps
-// AdmissionRef's empty value meaning one thing.
+// An acknowledgement this act cannot use at all is a different thing and is
+// refused whole, by checkAcknowledgement — which both acts driven from an
+// acknowledgement run, and which is what keeps AdmissionRef's empty value
+// meaning one thing. An acknowledgement naming NO account is among them, and it
+// is not a harmless no-op: recorded, it leaves a Member that settles through no
+// account and whose true acknowledgement is then refused for ever by the guard
+// above.
 //
 // # It appends one audit event
 //
@@ -1198,7 +1251,13 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // reason that one can be silent about everything the founding did not know: the
 // settlement account numbers are on this event and on no other.
 func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantID, in AdmissionAcknowledgement) (*Bank, error) {
-	// Before the read this act's write is derived from. See admissionSequenceTx.
+	// The message first, for AdmitMemberTx's reason: this reads no store, and a
+	// message this act cannot use should not cost an identity.
+	if err := checkAcknowledgement(in); err != nil {
+		return nil, err
+	}
+	// Then the id, before the read this act's write is derived from. See
+	// admissionSequenceTx.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -1219,9 +1278,6 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, by ParticipantI
 	if bank.AdmissionRef != "" && bank.AdmissionRef != in.Ref {
 		return nil, fmt.Errorf("%w: %s recorded its membership under %q and this acknowledgement quotes %q",
 			ErrBankAlreadyAdmitted, by, bank.AdmissionRef, in.Ref)
-	}
-	if err := checkAcknowledgement(in); err != nil {
-		return nil, err
 	}
 
 	for asset, account := range in.Accounts {

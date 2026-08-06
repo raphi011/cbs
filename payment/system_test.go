@@ -1762,68 +1762,97 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	assertEqual(t, "the admission the bank recorded", mustGetBank(t, ctx, sys, bank.ID).AdmissionRef, "adm-1")
 }
 
-// TestAnAcknowledgementNamingNoAssetIsRefusedByBothActs is the doubling of the
-// currency guard.
+// TestAnUnusableAcknowledgementIsRefusedByBothActs holds the right-hand column
+// of checkAcknowledgement's correspondence: everything
+// ReadAdmissionAcknowledgement will not read off an acmt.010, neither act will
+// act on.
 //
-// ReadAdmissionAcknowledgement refuses an account with no currency on the way in
-// from the wire, and for one round that was the ONLY refusal — which makes the
-// reader's guard the only line rather than defence in depth, and these acts are
-// separately callable. It is the rule Task 16e arrived at for ReadReturn and
-// SettleReturnTx after an implementer found the hole outside its brief.
+// It is a table rather than a case per shape because the property is the
+// CORRESPONDENCE and not any one refusal. Three of these rows were added after
+// the fact, each of them a hole found by probing rather than by reading — the
+// admission reference, the BIC, and the empty account list — and each time the
+// missing row was the one nobody had set the two lists side by side to notice.
+// A refusal added to the reader with no row here is what this is meant to make
+// visible.
 //
-// The two acts would otherwise refuse different things, which is why the check
-// is one function they share: the clearing house would write a member clearing
-// in the empty asset, and the bank would silently skip the account. Same
-// message, two answers, and only one of them visible.
-func TestAnAcknowledgementNamingNoAssetIsRefusedByBothActs(t *testing.T) {
+// # The wedge is asserted, and it is the reason these are refusals rather than
+// no-ops
+//
+// Two of the shapes look harmless in isolation: an acknowledgement naming no
+// account writes a row with nothing in it. Measured, they are not. The bank
+// becomes a Member that settles through no account and the roster entry clears
+// in no scheme, and then the TRUE acknowledgement is refused for ever, by the
+// admission-reference guards those two rows now carry:
+//
+//	PROBE6  bank, ack with NO accounts:   err=<nil> status="Member" ref="impostor-adm" settlement=""
+//	PROBE6b the REAL ack then arrives:    err=…recorded its membership under "impostor-adm"…
+//	PROBE7  roster, ack with NO accounts: err=<nil> entry={BIC:… Assets:[] AdmissionRef:impostor-adm}
+//	PROBE7b the REAL ack then arrives:    err=…is admitted under "impostor-adm"…
+//
+// So each case ends by driving the real acknowledgement through, which is what
+// says the refusal left both institutions able to finish the admission.
+func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 	ctx := context.Background()
-	sys := testNetwork(t)
-
-	var bank *Bank
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
-		return err
-	})
+	real := AdmissionAcknowledgement{
+		BIC: testBIC, Ref: "adm-1",
+		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
+	}
 
 	for _, tc := range []struct {
-		what     string
-		accounts map[ledger.AssetCode]ledger.AccountID
+		what string
+		in   AdmissionAcknowledgement
 	}{
-		{"an account naming no asset", map[ledger.AssetCode]ledger.AccountID{"": "200.100.001"}},
-		{"an asset naming no account", map[ledger.AssetCode]ledger.AccountID{testAsset: ""}},
+		{"no account owner", AdmissionAcknowledgement{
+			Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}}},
+		{"a malformed account owner", AdmissionAcknowledgement{
+			BIC: "nonsense", Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}}},
+		{"no account at all", AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-x"}},
+		{"an account naming no asset", AdmissionAcknowledgement{
+			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{"": "200.100.009"}}},
+		{"an asset naming no account", AdmissionAcknowledgement{
+			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: ""}}},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
-			in := AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-1", Accounts: tc.accounts}
+			// A network each, because a case that wrote something would otherwise
+			// decide the next one's outcome.
+			sys := testNetwork(t)
+			var bank *Bank
+			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+				bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+				return err
+			})
 
-			err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-				_, err := sys.AdmitMemberTx(ctx, tx, in)
+			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+				_, err := sys.AdmitMemberTx(ctx, tx, tc.in)
+				return err
+			}); err == nil {
+				t.Errorf("the clearing house admitted a member from an acknowledgement with %s", tc.what)
+			}
+			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+				_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, tc.in)
+				return err
+			}); err == nil {
+				t.Errorf("the bank recorded a membership from an acknowledgement with %s", tc.what)
+			}
+
+			// Neither institution wrote anything, and — the load-bearing half —
+			// the real acknowledgement still goes through. A refusal that left a
+			// row behind would wedge the admission it was protecting.
+			if got := mustGetBank(t, ctx, sys, bank.ID); got.Status != BankFounded {
+				t.Errorf("the bank is %q after the refusal, want %q", got.Status, BankFounded)
+			}
+			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+				if _, err := sys.AdmitMemberTx(ctx, tx, real); err != nil {
+					return err
+				}
+				_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, real)
 				return err
 			})
-			if !errors.Is(err, ErrAdmittedAccountUnusable) {
-				t.Errorf("the clearing house admitted %s: %v, want ErrAdmittedAccountUnusable", tc.what, err)
-			}
-			err = sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-				_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, in)
-				return err
-			})
-			if !errors.Is(err, ErrAdmittedAccountUnusable) {
-				t.Errorf("the bank recorded %s: %v, want ErrAdmittedAccountUnusable", tc.what, err)
-			}
+			admitted := mustGetBank(t, ctx, sys, bank.ID)
+			assertEqual(t, "the bank after the true acknowledgement", string(admitted.Status), "Member")
+			assertEqual(t, "its settlement reference", string(admitted.Assets[testAsset].Settlement), "200.100.001")
 		})
 	}
-
-	// Neither act wrote anything: the bank is still Founded and the roster is
-	// still empty. A refusal that half-applied would be worse than one that let
-	// the message through.
-	if got := mustGetBank(t, ctx, sys, bank.ID); got.Status != BankFounded {
-		t.Errorf("the bank is %q after two refused acknowledgements, want %q", got.Status, BankFounded)
-	}
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
-		if _, err := tx.GetRosterEntry(ctx, testBIC); !errors.Is(err, ErrRosterEntryNotFound) {
-			t.Errorf("a refused acknowledgement put %s in the roster: %v", testBIC, err)
-		}
-		return nil
-	}))
 }
 
 // TestABankCannotRecordAnotherBanksMembership is ErrStatementNotForThisBank's
