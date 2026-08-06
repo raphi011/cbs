@@ -104,9 +104,14 @@ CREATE TABLE ledgers (
     -- the unit of work — reading again, after the winner's commit, and finding
     -- the ledger. The ordering is now a second guard rather than the only one,
     -- and no test in this repository can see it go. It stays because it costs
-    -- nothing and because Task 18 puts the counter and this table in different
-    -- databases, at which point the ordering serializes nothing at all and the
-    -- retry is what is left — which is that task's to settle, not this one's.
+    -- nothing and because Task 18 has to decide where the counter it draws from
+    -- lives: ledger.NetworkBook, which every one of these orderings allocates
+    -- from today, disappears with the split. If each entity's counter moves into
+    -- that entity's own store, the ordering survives unchanged, because the
+    -- counter row and the row being decided from are still in one database. If
+    -- an act's allocation and its read land in two, nothing spans them and the
+    -- retry does not either — two databases is two transactions. That is Task
+    -- 18's question and this comment does not answer it.
     -- payments_end_to_end_idx records the same finding for the duplicate-
     -- reference check.
     --

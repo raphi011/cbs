@@ -1788,8 +1788,10 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// On store/sqlite the ordering is no longer the only thing holding it:
 		// the store admits one writer and Store.Update re-runs a loser against
 		// the winner's committed row, measured at ten runs out of ten with the
-		// ordering removed. See payment.admissionSequenceTx. The case stays,
-		// because Task 18 splits the counter and the row into two databases.
+		// ordering removed. See payment.admissionSequenceTx. The case stays
+		// because Task 18 removes ledger.NetworkBook, whose counter is what every
+		// caller of this shape allocates from, and this is the case that states
+		// the shape a replacement has to keep.
 		//
 		// The read is on a NON-key attribute (the account's name) because that
 		// is the shape of the rule: a store cannot enforce it with a primary

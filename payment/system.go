@@ -590,11 +590,14 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // repository can see it go.
 //
 // It stays for two reasons. It costs one row write per act and holds the
-// property without depending on the retry budget; and Task 18 puts the counter
-// and the rows these acts decide from in different DATABASES, at which point
-// neither this ordering nor the single-writer property spans them, and what an
-// admission's idempotency rests on becomes that task's question rather than an
-// answer it inherits.
+// property without depending on the retry budget; and Task 18 has to decide
+// where the counter it draws from lives, because ledger.NetworkBook — which
+// this function allocates from — disappears with the split. If each entity's
+// counter moves into that entity's own store, the ordering survives unchanged:
+// each act's allocation and the row it decides from are still one database
+// apart from nothing. If they land in two, neither the ordering NOR the retry
+// spans them, because two databases is two transactions. Removing this now
+// would decide that question by default.
 //
 // # Why an id allocation is the lock
 //

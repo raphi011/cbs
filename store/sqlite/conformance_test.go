@@ -64,7 +64,8 @@ func TestConformance(t *testing.T) {
 // return nil, all four cases still pass ten runs out of ten, because SQLite
 // admits one writer and Store.Update re-runs a loser against the winner's
 // committed row. They are regression guards on an ordering this store no longer
-// needs, kept because Task 18 splits the databases they span.
+// needs, kept because Task 18 removes the book their counter is drawn from and
+// this is what would notice if the replacement stopped ordering anything.
 func TestRaces(t *testing.T) {
 	storetest.RunRaces(t, func(t *testing.T) storetest.Store { return newStore(t) })
 }

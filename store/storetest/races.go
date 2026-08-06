@@ -31,9 +31,11 @@
 // them were written for no longer decide the outcome on store/sqlite, which
 // admits one writer and re-runs a loser through Store.Update. That is recorded
 // where the orderings are (payment.admissionSequenceTx, SubmitPaymentTx) and it
-// is the reason these are regression guards rather than probes: Task 18 puts the
-// counter and the rows they order into different databases, at which point
-// neither guard spans them and the question reopens.
+// is the reason these are regression guards rather than probes rather than a
+// reason to delete them: the counter every one of these orderings allocates from
+// is ledger.NetworkBook's, and Task 18 removes that book. Where its counter goes
+// decides whether the ordering still spans the read it protects, and that is
+// Task 18's question rather than one this file answers.
 package storetest
 
 import (
@@ -99,8 +101,10 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	// Store.Update re-runs it, so it finds the ledger the first committed.
 	//
 	// So on the store this suite runs against today, this case cannot fail for
-	// the reason it was written. It stays because the reason will come back —
-	// Task 18 puts the counter in one database and this ledger in another.
+	// the reason it was written. It stays as a regression guard: the ordering it
+	// pins is drawn from ledger.NetworkBook's counter, Task 18 removes that book,
+	// and this case is what will notice if the replacement no longer orders the
+	// find-or-create.
 	t.Run("ConcurrentAdmissionsAgreeOnOneCentralBank", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
