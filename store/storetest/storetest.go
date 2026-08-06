@@ -617,9 +617,27 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 
 		// An upsert keeps a row where it was: marking a transaction reversed, or
 		// re-putting an account with a new status, must not move it to the end.
+		//
+		// All three of the ledger's own tables, not just accounts. The rule is
+		// one line of SQL per table in a store that writes SQL — the insertion
+		// sequence is left out of the update branch — and one line is what a
+		// port gets wrong in one table and right in the others. Measured on
+		// store/sqlite: re-putting a LEDGER with its sequence rewritten moved it
+		// to the end of its listing and every case in this file still passed,
+		// because only accounts were re-put here.
 		update(t, s, func(ctx context.Context, tx ledger.Tx) error {
-			return tx.PutAccount(ctx, bookA, ledger.Account{
+			if err := tx.PutAccount(ctx, bookA, ledger.Account{
 				ID: "200.100.008", SubledgerID: "100", Type: ledger.Liability, Name: "renamed", CreatedAt: early,
+			}); err != nil {
+				return err
+			}
+			if err := tx.PutLedger(ctx, bookA, ledger.Ledger{
+				ID: "ldg_8", Name: "renamed", CreatedAt: early,
+			}); err != nil {
+				return err
+			}
+			return tx.PutSubledger(ctx, bookA, ledger.Subledger{
+				ID: "100", LedgerID: "ldg_8", Name: "renamed", CreatedAt: early,
 			})
 		})
 		view(t, s, func(ctx context.Context, tx ledger.Tx) error {
@@ -629,6 +647,20 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			}
 			assertOrder(t, "ListAccounts after an upsert", ids(reordered, func(a ledger.Account) string { return string(a.ID) }),
 				"200.100.008", "200.100.020", "200.100.009", "100.200.001")
+
+			reledgered, err := tx.ListLedgers(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListLedgers after an upsert", ids(reledgered, func(l ledger.Ledger) string { return string(l.ID) }),
+				"ldg_8", "ldg_20", "ldg_9", "ldg_10")
+
+			resubled, err := tx.ListSubledgers(ctx, bookA)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListSubledgers after an upsert", ids(resubled, func(sl ledger.Subledger) string { return string(sl.ID) }),
+				"100", "50", "200", "300")
 			return nil
 		})
 	})

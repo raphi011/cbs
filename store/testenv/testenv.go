@@ -33,17 +33,19 @@ import (
 
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/pg"
+	"github.com/raphi011/cbs/store/sqlite"
 	"github.com/raphi011/cbs/store/storetest"
 )
 
-// Store is the shape both implementations share. It is storetest.Store, aliased
+// Store is the shape every implementation shares. It is storetest.Store, aliased
 // so that the suites which already say testenv.Store keep saying it.
 type Store = storetest.Store
 
-// compile-time checks that both implementations really are interchangeable here.
+// compile-time checks that the implementations really are interchangeable here.
 var (
 	_ Store = (*mem.Store)(nil)
 	_ Store = (*pg.Store)(nil)
+	_ Store = (*sqlite.Store)(nil)
 )
 
 // DSN returns the Postgres connection string the suites should use, or "" for
@@ -58,6 +60,39 @@ func New(t *testing.T, clock func() time.Time) Store {
 		return OpenInFreshSchema(t, dsn, clock)
 	}
 	return mem.New(clock)
+}
+
+// OpenSQLite opens an ephemeral SQLite store and migrates it, closing it when
+// the test ends.
+//
+// There is no naming scheme here, and that is the answer to the question rather
+// than an omission. An in-memory SQLite database is named, process-wide, and two
+// stores sharing a name would share rows — so the name has to be unique per
+// STORE, and store/sqlite generates a random one inside Open for every empty
+// path. Putting a scheme here as well would be a second source of names for the
+// same thing.
+//
+// It is what Task 18 needs. There the count is N+2 databases per test, one per
+// entity plus the network's and the central bank's; each is a store, so each
+// calls Open and gets a name of its own. A per-test scheme would have had to
+// learn to count.
+//
+// Nothing here reads TEST_DATABASE_URL: this store needs no setup at all, which
+// is the property store/mem existed for and the reason it can be replaced.
+func OpenSQLite(t *testing.T, clock func() time.Time) *sqlite.Store {
+	t.Helper()
+	store, err := sqlite.Open(context.Background(), "", clock)
+	if err != nil {
+		t.Fatalf("testenv: open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		// Close is idempotent, which matters because storetest closes the store
+		// it was handed as well.
+		if err := store.Close(); err != nil {
+			t.Errorf("testenv: close: %v", err)
+		}
+	})
+	return store
 }
 
 // schemaPrefix is unique per process, so that packages tested in parallel — each

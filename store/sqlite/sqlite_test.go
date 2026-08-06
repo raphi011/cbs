@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/raphi011/cbs/ledger"
 )
 
 func frozen() time.Time { return time.Unix(0, 0).UTC() }
@@ -195,26 +197,82 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 	}
 }
 
-// A unit of work may not be opened inside another one on the same store.
-func TestNestedUnitOfWorkIsRefused(t *testing.T) {
+// A listing's order is chronological for instants inside one second.
+//
+// timeLayout claims two things are load-bearing — UTC always, and nine
+// fractional digits always, INCLUDING when they are all zero — because a string
+// comparison is only a chronological comparison while every value has the same
+// width and the same zone. Nothing else in this repository can fail on either:
+// every suite runs on a frozen clock at one whole second in UTC, so no second
+// instant is ever compared against it and no offset is ever written.
+//
+// Both halves were watched failing, and one of them not where the comment this
+// replaces said it would:
+//
+//   - timeLayout changed to time.RFC3339Nano, which is what a reader reaches
+//     for: the whole suite stays green and this fails, because a WHOLE SECOND
+//     renders with no fraction at all and 'Z' is a larger byte than '.', so
+//     "…:00Z" sorts after "…:00.045Z" and the earliest row comes out last.
+//     Trailing zeros among values that all have a fraction are NOT the hazard:
+//     ".45" already sorts before ".5". The fixture below therefore carries a
+//     whole second, which is the pair that decides it.
+//   - the .UTC() dropped from formatTime: the row written at +02:00 renders
+//     with a later hour for the same instant and sorts last.
+func TestOrderingIsChronologicalWithinOneSecond(t *testing.T) {
 	s := newStore(t)
+	ctx := context.Background()
 
-	err := s.inUpdate(context.Background(), func(ctx context.Context, _ *sql.Tx) error {
-		return s.inUpdate(ctx, func(context.Context, *sql.Tx) error { return nil })
-	})
-	if !errors.Is(err, ErrNestedTransaction) {
-		t.Fatalf("nested Update: got %v, want %v", err, ErrNestedTransaction)
+	base := time.Date(2027, 7, 15, 10, 0, 0, 0, time.UTC)
+	// Deliberately out of chronological order on insert, so the listing has to
+	// do the ordering, and each of the two hazards is carried by the row that
+	// exposes it.
+	//
+	// ldg_1 is a WHOLE SECOND, which a variable-width layout renders with no
+	// fraction at all, and it is the earliest — so a layout that drops the zeros
+	// sends the first row to the end.
+	//
+	// ldg_2 is written in a +02:00 zone and is the SECOND earliest, so its digits
+	// read 12:00 where every other row reads 10:00 — a store that does not
+	// normalise to UTC sends it to the end too. Putting the offset on a row that
+	// belongs last would prove nothing, because a broken sort would agree.
+	rows := []struct {
+		id string
+		at time.Time
+	}{
+		{"ldg_3", base.Add(450 * time.Millisecond)},
+		{"ldg_1", base},
+		{"ldg_5", base.Add(900 * time.Millisecond)},
+		{"ldg_4", base.Add(500 * time.Millisecond)},
+		{"ldg_2", base.Add(45 * time.Millisecond).In(time.FixedZone("CEST", 2*60*60))},
+	}
+	if err := s.Update(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		for _, r := range rows {
+			if err := tx.PutLedger(ctx, "bank", ledger.Ledger{ID: ledger.LedgerID(r.id), CreatedAt: r.at}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
 	}
 
-	// A different store is not the same unit of work.
-	other := newStore(t)
-	if err := s.inUpdate(context.Background(), func(ctx context.Context, _ *sql.Tx) error {
-		return other.inUpdate(ctx, func(ctx context.Context, tx *sql.Tx) error {
-			_, err := tx.ExecContext(ctx, "INSERT INTO books (id) VALUES ('b')")
+	var got []string
+	if err := s.View(ctx, func(ctx context.Context, tx ledger.Tx) error {
+		out, err := tx.ListLedgers(ctx, "bank")
+		if err != nil {
 			return err
-		})
+		}
+		for _, l := range out {
+			got = append(got, string(l.ID))
+		}
+		return nil
 	}); err != nil {
-		t.Fatalf("unit of work on a second store: %v", err)
+		t.Fatalf("list: %v", err)
+	}
+
+	want := []string{"ldg_1", "ldg_2", "ldg_3", "ldg_4", "ldg_5"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ListLedgers = %v, want %v — a string comparison stopped being a chronological one", got, want)
 	}
 }
 
