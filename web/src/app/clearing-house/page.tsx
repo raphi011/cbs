@@ -85,12 +85,15 @@ export default function ClearingHouse() {
         ) : participants && participants.length === 0 ? (
           <Card>
             <CardContent className="py-10 text-sm text-muted-foreground">
-              {/* Admission is the central bank's act: opening a member's
-                  reserve and settlement accounts happens in its own book, so
-                  there is no "create participant" button here — see
-                  /central-bank. */}
-              No participants yet. A member bank is admitted at the central
-              bank, not here.
+              {/* No "create participant" button, because founding a bank is
+                  not this institution's act and it has no route for one:
+                  POST /members is served by the central bank's listener alone.
+                  What this one does in an admission is decide whether to relay
+                  the application and write its routing entry from the
+                  settlement agent's answer — see /central-bank. */}
+              No participants yet. A bank is founded at the central bank&rsquo;s
+              console, not here; this list is where it is seen becoming a
+              member.
             </CardContent>
           </Card>
         ) : (

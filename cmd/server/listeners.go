@@ -33,13 +33,15 @@ type entity struct {
 // plan builds the listener table: the two institutions, then one listener per
 // member bank in registration order, from base+2 upward.
 //
-// Ports are static. A participant admitted at runtime gets a store row, a chart
-// of accounts and reserve accounts — and no listener until the process
-// restarts. That is a decision about what admission means rather than a
-// limitation to apologise for: admitting a member to a payment network is an
-// operational act — a scheme agreement, a settlement account, an operator
-// provisioning a connection — and an API call that instantly yielded a running
-// bank would teach the wrong thing.
+// Ports are static. A bank founded at runtime through POST /members gets a store
+// row, a chart of accounts and a product — and no listener until the process
+// restarts. That is a decision about what joining a network means rather than a
+// limitation to apologise for: it is an operational act — a scheme agreement, an
+// account another institution has to open, an operator provisioning a connection
+// — and an API call that instantly yielded a running bank would teach the wrong
+// thing. Its settlement account is not part of that call either: the central
+// bank opens that one when the bank's application reaches it, so the listener is
+// the second thing such a bank waits for rather than the only one.
 func plan(ctx context.Context, net *payment.Network, base int) ([]entity, error) {
 	parts, err := net.ListBanks(ctx)
 	if err != nil {

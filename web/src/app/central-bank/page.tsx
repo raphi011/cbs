@@ -61,9 +61,12 @@ interface Shortfall {
 // move reserves between them — it never sees an individual payment, which is
 // what the operator split made expressible for the first time.
 //
-// Admission is the central bank's act too: opening a member's reserve and
-// settlement accounts happens in the central bank's own book, which is why
-// POST /members is its route and not the clearing house's.
+// The New participant button belongs to this console and admits nobody. What it
+// calls founds a bank — a book, a chart of accounts and a product, all in that
+// bank's own book — and applies to the scheme on its behalf, so what comes back
+// is a Founded bank with no settlement account anywhere. This central bank opens
+// that account afterwards, in its own handler, when the application reaches it;
+// the clearing house's list is where the bank is seen becoming a member.
 //
 // # This console no longer settles anything
 //
@@ -85,7 +88,7 @@ export default function CentralBankPage() {
       <PageHeader
         title="Central bank"
         hint="central-bank-reserves"
-        description="Banks meet only here. The central bank holds one reserve account per participant and asset, and settlement is reserves moving between them."
+        description="Banks meet only here. The central bank opens one reserve account per admitted member and asset — a bank it has not answered for yet has none — and settlement is reserves moving between them."
         actions={<CreateParticipantDialog />}
       />
 

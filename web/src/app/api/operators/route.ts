@@ -9,10 +9,12 @@ import {
 
 // Which operators actually have a listener behind them.
 //
-// Ports are static by design: a bank admitted at runtime through POST /members
-// gets reserve accounts and no listener until the server restarts, because
-// admitting a member to a network is an operational act and modelling it as an
-// API call that instantly yields a running bank teaches the wrong thing. The
+// Ports are static by design: a bank founded at runtime through POST /members
+// gets a store row and a chart of accounts of its own and no listener until the
+// server restarts, because joining a network is an operational act and modelling
+// it as an API call that instantly yields a running bank teaches the wrong
+// thing — the settlement account it needs before it can settle anything is
+// another institution's to open, after that call has already answered. The
 // lobby and the identity picker need to tell those two states apart *before*
 // offering a console, so this answers once for every bank rather than letting
 // each one discover it through a 502.
@@ -69,9 +71,9 @@ export async function GET() {
         // pid always comes from this same roster, so its position is always
         // found and bankUrl never throws here — the port is always derivable.
         // What is not guaranteed is that anything is bound to it: a bank
-        // admitted at runtime gets a derived port and no listener until the
-        // server restarts, so probe() failing against that port is what tells
-        // admitted from provisioned, not a thrown error.
+        // founded at runtime gets a derived port and no listener until the
+        // server restarts, so probe() failing against that port is what tells a
+        // bank on the list from one with a console, not a thrown error.
         return { operator: `bank/${pid}`, live: await probe(bankUrl(pid, roster, CFG)) };
       }),
     ),
