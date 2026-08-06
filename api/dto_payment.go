@@ -56,8 +56,10 @@ type participantDTO struct {
 	// founding, so a payment addressed to a founded bank is relayed, accepted and
 	// reaches Cleared like any other and the cut-off carrying it is what fails.
 	// payment.FoundBankTx and web/src/lib/types.ts — this DTO's TypeScript twin —
-	// carry the same retraction; mesh/doc.go has the measurement, and says no test
-	// pins it.
+	// carry the same retraction; mesh/doc.go has the measurement, and records that
+	// no test in THAT package pins it. The narrowing is deliberate: what was
+	// checked is the transport's own suite, and a wider claim about this
+	// repository is not one that comment made.
 	//
 	// It became a state a client can SEE when admission became a conversation: POST /members
 	// answers 202 with a founded bank, and the scheme's answer arrives at two

@@ -297,8 +297,8 @@ export interface ParticipantAccounts {
 }
 
 // A bank's place in the scheme. "Founded" is a bank with a book, a chart of
-// accounts and customers, that no settlement agent holds an account for and no
-// clearing house routes to. "Member" is one the scheme has admitted.
+// accounts and customers, that no settlement agent holds an account for.
+// "Member" is one the scheme has admitted.
 //
 // A founded bank runs its own book, and that part is unrestricted: it opens
 // customer accounts, publishes products and adds ledgers, all measured against a

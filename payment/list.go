@@ -25,9 +25,13 @@ import (
 // Every bank, and not every member: founding is what writes the row, so a bank
 // the scheme has not answered for is in this list carrying Status Founded.
 // Callers depend on that rather than working around it — api's GET /members is
-// how a console watches a bank become a member, and cmd/server's port table
-// gives a founded bank a listener. GetRosterEntry below is the narrower
-// question, answered from the table admission writes rather than from this one.
+// how a console watches a bank become a member, and cmd/server builds its port
+// table from this call at start-up, so a bank that was founded before the
+// process started gets a listener whether or not the scheme ever answered for
+// it. (A bank founded at RUNTIME gets none until the next restart, which is a
+// fact about the static table rather than about this list.) GetRosterEntry below
+// is the narrower question, answered from the table admission writes rather than
+// from this one.
 //
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
@@ -48,8 +52,14 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 	return out, err
 }
 
-// GetBank returns the member bank with the given ID, with its Ledger and
-// Deposit handles bound. Returns ErrParticipantNotFound if no such bank exists.
+// GetBank returns the bank with the given ID — founded or admitted, for
+// ListBanks's reason — with its Ledger and Deposit handles bound. Returns
+// ErrParticipantNotFound if no such bank exists.
+//
+// A founded one is not an edge case here: Mesh.Admit's re-drive branch reads its
+// bank through this method precisely because that bank is founded and the roster
+// has no entry for it, so a lookup that answered only for members would break the
+// one path out of an interrupted admission.
 //
 // What it hands back is a bank's own record, live handles and all, so a caller
 // that is not that bank gets the ability to read and write its books. Two of
