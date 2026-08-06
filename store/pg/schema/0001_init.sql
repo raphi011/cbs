@@ -812,10 +812,14 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
 --
 -- That refusal is real and it is where the reader is: payment's
 -- bothBanksAreMembersTx, from AcceptAtCSMTx, will not take a payment into a
--- cycle unless both banks' entries name the scheme's asset. Until that existed
--- these rows had no reader outside the store's own conformance suite, which is
--- the shape that deleted the name column from the parent table — recorded here
--- because a child table nothing reads is not visible in a schema dump either.
+-- cycle unless both banks' entries name the scheme's asset. What had no reader
+-- until then was the VALUE and not the rows: these are loaded with the parent on
+-- every read of a roster entry, single or list, because an entry handed back
+-- without its assets would not be the entry that was written — and nothing
+-- outside the store's own conformance suite then ASKED what they said. That is
+-- the shape that deleted the name column from the parent table, and it is
+-- recorded here because a value carried faithfully and consulted by nobody is
+-- not visible in a schema dump either.
 --
 -- Keyed by POSITION and not by asset, which is the same decision cycle_payments
 -- made for ClearingCycle.PaymentIDs and is made here for the same two reasons.

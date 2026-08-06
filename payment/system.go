@@ -1717,10 +1717,25 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
 //     See PostCreditorLegTx.
 //
-// So this reads a cycle, the bank rows and its own book, and no payment at all,
-// which is the whole of what a settlement agent has. The bank rows and not the
-// clearing house's roster: what it needs of each member is a settlement account
-// number, and the roster deliberately carries none.
+// So this reads a cycle, the bank rows, its own SettlementMember rows and its
+// own book, and no payment at all, which is the whole of what a settlement agent
+// has.
+//
+// What it takes off the BANK rows is not the settlement account number, and this
+// sentence used to say it was. That number is the agent's own and comes off the
+// agent's own row, keyed by BIC, through settlementAccountTx — which is the read
+// Task 17b's SettlementMember exists to make possible, and the reason a
+// settlement agent given its own database still has something to settle from.
+// What the bank rows answer is the IDENTIFIER: a cycle's net positions are keyed
+// by ParticipantID, the agent's own records are keyed by BIC, and a bank's row is
+// the only thing in the system that holds the mapping between the two. The
+// clearing house's roster could not have answered it either — it is keyed by BIC
+// as well, and starts from the address rather than arriving at it.
+//
+// The second thing read off those rows is a check and not a lookup: AccountsFor,
+// whether the member operates in the cycle's asset at all. Both reads are
+// settlementLegsTx's, and its doc is where the one that survives Task 18 is
+// separated from the one that does not.
 //
 // # The settlement window, and what stopped being true about it
 //

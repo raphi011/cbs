@@ -573,6 +573,41 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 	drain(t, msh)
 }
 
+// TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound is a status code
+// Mesh.Submit's membership guard changed on its way past, kept because nothing
+// else holds it.
+//
+// A payment naming a bank that HAS NO ROW is a different request from the one
+// the test above is about: that bank is founded and waiting for a scheme, this
+// one was never founded and the id is a typo. Nothing on this route looked such
+// an id up before Task 17 — the first thing to notice was Mesh.Submit's
+// bank-actor map, whose miss is a bare error with no case in errorStatus, so the
+// answer was 500. The membership read asks first, and it asks through
+// payment.Network.GetRosterEntry, which reads the bank's row before the roster:
+// no row is payment.ErrParticipantNotFound, which errorStatus maps to 404 and
+// did before this guard existed.
+//
+// So what is asserted here is an ORDER and not a mapping. The sentinel's status
+// was never in doubt; what makes it reach a caller at all is that the membership
+// read runs BEFORE the actor lookup, and anything that moves it later restores
+// the 500 silently. Measured both ways while this was written: with the guard,
+// 404 "participant not found"; with it removed, 500 "mesh: no bank actor for
+// participant bank_nobody".
+//
+// It is asked of the clearing house's console because that is the only surface
+// that can ask it. A bank's own POST /payments compares the submitter with the
+// bank it is bound to first, so an id no bank holds is refused there as the
+// wrong submitter, 422, before the mesh is reached.
+func TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound(t *testing.T) {
+	srv, _ := newAPIHarness(t)
+	body := strings.Replace(validSubmission(t, srv),
+		string(seededParty(t, srv, aliceIBAN).Participant), "bank_nobody", 1)
+	rec := postJSON(t, csm(srv), "/payments", body)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a payment whose payer's bank has no row = %d, want 404 (body: %s)", rec.Code, rec.Body)
+	}
+}
+
 // TestAReseededNetworkCanStillBePaidThrough is the guarantee that moved when
 // Reset stopped calling JoinRoster.
 //

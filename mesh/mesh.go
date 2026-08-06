@@ -1344,6 +1344,19 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// each of these reads a bank's row to learn its address first. That is the
 	// crossing payment.Network.GetRosterEntry records on its ParticipantID
 	// argument, and Task 18 is what closes it.
+	//
+	// That crossing changed a status code on its way past, which is worth writing
+	// down because nothing about a membership guard predicts it. A party naming a
+	// participant NO BANK ROW EXISTS FOR fails the id half of this read, before
+	// the roster is reached, and comes back payment.ErrParticipantNotFound — a
+	// 404, and the truth about a request naming a bank that is not there. It used
+	// to fall through to the bank-actor map below, whose miss is a bare error with
+	// no case in api.errorStatus, so the caller was told 500 about its own typo.
+	// Only the clearing house's console sees the difference: a bank's own
+	// POST /payments refuses an unfamiliar submitter with a 422 of its own before
+	// the mesh is reached. Pinned by
+	// api.TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound, because what
+	// makes the 404 reach a caller is this read running FIRST.
 	for _, side := range []struct {
 		role string
 		ref  payment.PartyRef
