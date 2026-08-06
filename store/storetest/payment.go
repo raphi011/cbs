@@ -25,18 +25,34 @@ const (
 	verdeBIC  iso20022.BIC = "VERDITMMXXX"
 )
 
-// RunPayment runs the payment-layer suite against a store.
+// RunPayment runs the payment-layer cases whose rows are a MEMBER BANK's: its
+// own record of itself, the mandates it holds as creditor bank, its copy of each
+// payment it is a party to, and the advices it was sent.
 //
 // It talks only to payment.Store and payment.Tx — never to payment.Network,
-// which RunRaces in races.go does instead — so what it pins is the storage
-// contract: the not-found sentinels, the fact that
-// a Bank's live handles are derived rather than stored, listing order,
-// the open-cycle and end-to-end-id lookups, deep copying, and the three-layer
-// rollback that payment.Tx embedding deposit.Tx embedding ledger.Tx exists to
-// provide.
+// which the race suites in races.go do instead — so what it pins is the storage
+// contract: the not-found sentinels, the fact that a Bank's live handles are
+// derived rather than stored, listing order, the end-to-end-id lookup, deep
+// copying, and the three-layer rollback that payment.Tx embedding deposit.Tx
+// embedding ledger.Tx exists to provide.
 //
-// newStore must return a store with no state in it; the suite calls it once per
-// subtest and closes the result.
+// # It was one suite over one store, and it is three
+//
+// The other two are RunClearingHousePayment and RunCentralBankPayment. The split
+// is the SCHEMA's: a bank's database has no roster, no cycles and no
+// settlements, so every case about those would be refused by name on it — which
+// is the intended way to find a case that has been put in the wrong suite.
+//
+// Two cases lost something real in the split and say so where they are. The
+// rollback case can no longer claim that a cycle rolls back with a payment,
+// because the two are in two databases and no transaction spans them; and the
+// listing-order case orders one institution's rows at a time. Both are the
+// narrower claim being the true one rather than a weakening.
+//
+// newStore must return a store answering for the given book with no state in it;
+// the suite calls it once per subtest and closes the result. It takes a book
+// because the advice cases need a SECOND bank, which since Task 18c means a
+// second store.
 func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store) {
 	t.Helper()
 
@@ -219,318 +235,10 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		})
 	})
 
-	// SettlementMemberIsKeyedByBIC is the central bank's own record of a bank it
-	// holds a settlement account for, and the point of the case is the key.
-	//
-	// The settlement agent holds no roster and no participant ids. What an
-	// acmt.007 tells it is a BIC, so a lookup by anything else is a lookup it
-	// could not make — which is why the store is asked for this row by BIC here
-	// and never by a bank id.
-	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
-		s := openPayment(t, newStore, bookA)
-
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
-				return err
-			}
-			return tx.PutSettlementMember(ctx, settlementMember("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "member name", got.Name, "Banca Verde")
-			assertEqual(t, "member bic", string(got.BIC), "VERDITMMXXX")
-			assertEqual(t, "member opened at", got.OpenedAt.Equal(early.Add(time.Hour)), true)
-
-			// A BIC no bank answers to is the sentinel, not an empty row: the
-			// central bank asked to settle for a member it has never opened an
-			// account for must fail rather than post to "".
-			_, err = tx.GetSettlementMember(ctx, "NORDSESSXXX")
-			assertErrorIs(t, "GetSettlementMember on a BIC with no member", err, payment.ErrSettlementMemberNotFound)
-
-			members, err := tx.ListSettlementMembers(ctx)
-			if err != nil {
-				return err
-			}
-			assertOrder(t, "settlement members", ids(members, func(m payment.SettlementMember) string {
-				return string(m.BIC)
-			}), "AURODEFFXXX", "VERDITMMXXX")
-			return nil
-		})
-
-		// The upsert is on the BIC, which is what makes re-driving an admission
-		// safe: the same bank asking twice must not become two members.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			renamed := settlementMember("VERDITMMXXX", "Banca Verde SpA", early.Add(time.Hour))
-			return tx.PutSettlementMember(ctx, renamed)
-		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			members, err := tx.ListSettlementMembers(ctx)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "members after an upsert", len(members), 2)
-			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "member name after an upsert", got.Name, "Banca Verde SpA")
-			return nil
-		})
-	})
-
-	// SettlementMemberKeepsOneAccountPerAsset pins that the map survives the
-	// round trip with its keys.
-	//
-	// A member read back with an empty map settles nothing — the settlement
-	// agent would have no account to post the net position of a cut-off to — and
-	// the map is a second TABLE, so "the row came back" and "the accounts came
-	// back" are two different claims about two different reads.
-	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
-		s := openPayment(t, newStore, bookA)
-
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutSettlementMember(ctx, payment.SettlementMember{
-				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
-				Accounts: map[ledger.AssetCode]ledger.AccountID{
-					"EUR": "200.100.001",
-					"USD": "200.100.002",
-				},
-			})
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "accounts held", len(got.Accounts), 2)
-			assertEqual(t, "EUR settlement account", string(got.Accounts["EUR"]), "200.100.001")
-			assertEqual(t, "USD settlement account", string(got.Accounts["USD"]), "200.100.002")
-
-			// The listing carries them too. A settlement agent walking its
-			// members to settle a cut-off reads the listing, not a Get per BIC.
-			listed, err := tx.ListSettlementMembers(ctx)
-			if err != nil {
-				return err
-			}
-			if len(listed) != 1 || len(listed[0].Accounts) != 2 {
-				t.Errorf("ListSettlementMembers = %+v, want one member with two accounts", listed)
-			}
-			return nil
-		})
-
-		// An upsert replaces the set rather than merging into it: an account for
-		// an asset the member no longer holds would be settled through after the
-		// member gave it up.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutSettlementMember(ctx, payment.SettlementMember{
-				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
-				Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "200.100.001"},
-			})
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "accounts after an upsert", len(got.Accounts), 1)
-
-			// And the map handed back is the caller's own.
-			delete(got.Accounts, "EUR")
-			again, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "accounts after a reader mutation", len(again.Accounts), 1)
-			return nil
-		})
-	})
-
-	// RosterEntryCarriesNoAccountIdentifiers is the case that makes the split a
-	// claim about the code rather than about the plan.
-	//
-	// The clearing house routes. It has no business holding a bank's subledger,
-	// its product, or its account at the central bank, and the way that stops
-	// being a promise is a check on the STRUCT: the table below is the whole set
-	// of fields a RosterEntry may have, so a field added to it fails this case by
-	// name instead of passing silently.
-	//
-	// AdmissionRef is in the table and is not an account identifier. It is the
-	// PrcId every message of one admission echoes — a correlator for a
-	// conversation, naming no account in any book — and the clearing house's
-	// refusal is what reads it. What this case exists to keep out is an
-	// identifier that would let this institution reach into another's ledger; a
-	// process id reaches nothing.
-	//
-	// Name is NOT in the table, and it used to be. The acmt.010 this row is
-	// written from identifies the account owner with an
-	// OrganisationIdentification29, which has a BIC and no name element at all —
-	// so a name here could only be filled by the clearing house remembering the
-	// application across the relay, and nothing read it. This case is what makes
-	// putting it back a failure rather than a quiet regression, which is the
-	// whole point of an allowed-field table over a hand-read struct.
-	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
-		s := openPayment(t, newStore, bookA)
-
-		allowed := map[string]bool{
-			"BIC":          true,
-			"Assets":       true,
-			"AdmissionRef": true,
-			"AdmittedAt":   true,
-		}
-		typ := reflect.TypeOf(payment.RosterEntry{})
-		for i := range typ.NumField() {
-			name := typ.Field(i).Name
-			if !allowed[name] {
-				t.Errorf("RosterEntry carries %s %s.\n"+
-					"The clearing house's row is routing and nothing else. If this field is an account "+
-					"identifier, a subledger or a product it belongs on the bank's own row; if it is "+
-					"genuinely routing, add it to the table above and say why here.",
-					name, typ.Field(i).Type)
-			}
-		}
-		for name := range allowed {
-			if _, ok := typ.FieldByName(name); !ok {
-				t.Errorf("the allowed-field table names %s, which RosterEntry no longer has", name)
-			}
-		}
-
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
-				return err
-			}
-			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", early.Add(time.Hour)))
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "roster admission reference", got.AdmissionRef, "adm-AURODEFFXXX")
-			assertEqual(t, "roster admitted at", got.AdmittedAt.Equal(early), true)
-			assertOrder(t, "roster assets", ids(got.Assets, func(a ledger.AssetCode) string {
-				return string(a)
-			}), "EUR", "USD")
-
-			_, err = tx.GetRosterEntry(ctx, "NORDSESSXXX")
-			assertErrorIs(t, "GetRosterEntry on an unadmitted BIC", err, payment.ErrRosterEntryNotFound)
-
-			entries, err := tx.ListRosterEntries(ctx)
-			if err != nil {
-				return err
-			}
-			assertOrder(t, "roster entries", ids(entries, func(e payment.RosterEntry) string {
-				return string(e.BIC)
-			}), "AURODEFFXXX", "VERDITMMXXX")
-			if len(entries[0].Assets) != 2 {
-				t.Errorf("listed roster entry has %d assets, want 2", len(entries[0].Assets))
-			}
-
-			// The slice handed back is the caller's own, for the reason every
-			// other row here deep-copies: a stored row a caller can mutate in
-			// place is not stored.
-			got.Assets[0] = "GBP"
-			again, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "roster asset after a reader mutation", string(again.Assets[0]), "EUR")
-			return nil
-		})
-	})
-
-	// RosterEntryAssetsAreAnOrderedList pins the two properties of Assets that
-	// its Go type has and a set does not: the caller's ORDER survives, and a
-	// REPEATED asset is stored rather than refused.
-	//
-	// The second is the one this case was written for. store/pg keyed this child
-	// table by (bic, asset), so it refused with SQLSTATE 23505 a slice store/mem
-	// stored verbatim. That was a divergence between two implementations when
-	// there were two; what makes it wrong with one is the same fact without the
-	// comparison — a store must hold what the Go type it is handed can hold.
-	//
-	// No writer in the system reaches it, and this case is not about a writer.
-	// It used to say the writer Task 17d adds would, by building the list from
-	// an acmt.010's unbounded AccountForAction1; the writer turned out to be
-	// payment.AdmitMemberTx at Task 17c, taking the assets from a map keyed by
-	// asset and appending only the ones the entry does not already hold, so a
-	// message that repeats a currency collapses before this table is reached.
-	// The reader that message goes through has since landed too and refuses one
-	// outright — payment.ReadAdmissionAcknowledgement will not read an
-	// acknowledgement naming two accounts in one currency — so the repeat cannot
-	// arrive from the wire either.
-	//
-	// What is asserted here is the STORE's contract with the Go type it is
-	// handed: Assets is a slice, a slice can repeat, and a store must hold what a
-	// caller passes it whether or not any caller passes that.
-	//
-	// What a store must NOT do is decide about it. Refusing a duplicate is a
-	// judgement about the message that carried it, and it belongs to the
-	// institution reading the message; a store that refused would make that
-	// judgement in one store and not the other, which is how this started.
-	//
-	// The order is asserted with a fixture that is NOT alphabetical, on purpose.
-	// The other roster case uses EUR, USD, which a store that sorted its child
-	// rows would pass by accident.
-	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
-		s := openPayment(t, newStore, bookA)
-
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			e := rosterEntry("AURODEFFXXX", early)
-			e.Assets = []ledger.AssetCode{"USD", "EUR", "USD"}
-			return tx.PutRosterEntry(ctx, e)
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertOrder(t, "roster assets as written", ids(got.Assets, func(a ledger.AssetCode) string {
-				return string(a)
-			}), "USD", "EUR", "USD")
-
-			// And through the listing, which is a second query and could order
-			// differently from the single read above.
-			listed, err := tx.ListRosterEntries(ctx)
-			if err != nil {
-				return err
-			}
-			if len(listed) != 1 {
-				t.Fatalf("ListRosterEntries returned %d entries, want 1", len(listed))
-			}
-			assertOrder(t, "roster assets in listings", ids(listed[0].Assets, func(a ledger.AssetCode) string {
-				return string(a)
-			}), "USD", "EUR", "USD")
-			return nil
-		})
-
-		// An upsert replaces the list wholesale, duplicates and all, so a
-		// shorter list does not leave the tail of the longer one behind.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			e := rosterEntry("AURODEFFXXX", early)
-			e.Assets = []ledger.AssetCode{"GBP"}
-			return tx.PutRosterEntry(ctx, e)
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
-			if err != nil {
-				return err
-			}
-			assertOrder(t, "roster assets after an upsert", ids(got.Assets, func(a ledger.AssetCode) string {
-				return string(a)
-			}), "GBP")
-			return nil
-		})
-	})
-
+	// The sentinels for the rows a BANK holds. The cycle's and the settlement's
+	// are in the two institution suites below, because a bank's database holds
+	// neither table — which is the split showing through a case that used to
+	// assert all of them at once.
 	t.Run("GetOnMissingPaymentRowsReturnsSentinels", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
@@ -543,13 +251,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
 				return err
 			}
-			if err := tx.PutMandate(ctx, mandate("mnd_1", early)); err != nil {
-				return err
-			}
-			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)); err != nil {
-				return err
-			}
-			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
+			return tx.PutMandate(ctx, mandate("mnd_1", early))
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
@@ -564,19 +266,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 
 			_, err = tx.GetMandate(ctx, "mnd_nope")
 			assertErrorIs(t, "GetMandate on an unknown mandate", err, payment.ErrMandateNotFound)
-
-			_, err = tx.GetCycle(ctx, "cyc_nope")
-			assertErrorIs(t, "GetCycle on an unknown cycle", err, payment.ErrCycleNotFound)
-
-			// The seeded cycle is Settled, so no cycle is open for its scheme.
-			_, err = tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
-			assertErrorIs(t, "GetOpenCycle with nothing open", err, payment.ErrCycleNotFound)
-
-			_, err = tx.GetOpenCycle(ctx, "no.such.scheme")
-			assertErrorIs(t, "GetOpenCycle for an unknown scheme", err, payment.ErrCycleNotFound)
-
-			_, err = tx.GetSettlement(ctx, "set_nope")
-			assertErrorIs(t, "GetSettlement on an unknown settlement", err, payment.ErrSettlementNotFound)
 			return nil
 		})
 	})
@@ -756,30 +445,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 					return err
 				}
 			}
-			for _, c := range []struct {
-				id string
-				at time.Time
-			}{{"cyc_10", late}, {"cyc_8", early}, {"cyc_20", early}, {"cyc_9", early}} {
-				if err := tx.PutCycle(ctx, cycle(payment.CycleID(c.id), payment.SchemeSEPACT, payment.CycleSettled, c.at)); err != nil {
-					return err
-				}
-			}
-			for _, st := range []struct {
-				id string
-				at time.Time
-			}{{"set_10", late}, {"set_8", early}, {"set_20", early}, {"set_9", early}} {
-				if err := tx.PutSettlement(ctx, settlement(payment.SettlementID(st.id), "cyc_8", st.at)); err != nil {
-					return err
-				}
-			}
 			return nil
 		})
 
 		var banks []payment.Bank
 		var payments []payment.Payment
 		var mandates []payment.Mandate
-		var cycles []payment.ClearingCycle
-		var settlements []payment.Settlement
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			var err error
 			if banks, err = tx.ListBanks(ctx); err != nil {
@@ -788,13 +459,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			if payments, err = tx.ListPayments(ctx); err != nil {
 				return err
 			}
-			if mandates, err = tx.ListMandates(ctx); err != nil {
-				return err
-			}
-			if cycles, err = tx.ListCycles(ctx); err != nil {
-				return err
-			}
-			settlements, err = tx.ListSettlements(ctx)
+			mandates, err = tx.ListMandates(ctx)
 			return err
 		})
 
@@ -804,22 +469,14 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			"pay_8", "pay_20", "pay_9", "pay_10")
 		assertOrder(t, "ListMandates", ids(mandates, func(m payment.Mandate) string { return string(m.ID) }),
 			"mnd_8", "mnd_20", "mnd_9", "mnd_10")
-		assertOrder(t, "ListCycles", ids(cycles, func(c payment.ClearingCycle) string { return string(c.ID) }),
-			"cyc_8", "cyc_20", "cyc_9", "cyc_10")
-		assertOrder(t, "ListSettlements", ids(settlements, func(st payment.Settlement) string { return string(st.ID) }),
-			"set_8", "set_20", "set_9", "set_10")
 
-		// An upsert keeps a row where it was: settling a cycle or rejecting a
-		// payment must not move it to the bottom of the list.
+		// An upsert keeps a row where it was: rejecting a payment must not move
+		// it to the bottom of the list. The cycle's half of this claim is
+		// CycleListOrderingIsOpenedAtThenSeq, in the clearing house's suite.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			p := samplePayment("pay_8", "e2e-pay_8", early)
 			p.Status = payment.Rejected
-			if err := tx.PutPayment(ctx, p); err != nil {
-				return err
-			}
-			c := cycle("cyc_8", payment.SchemeSEPACT, payment.CycleSettled, early)
-			c.SettlementID = "set_8"
-			return tx.PutCycle(ctx, c)
+			return tx.PutPayment(ctx, p)
 		})
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			reordered, err := tx.ListPayments(ctx)
@@ -828,54 +485,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			}
 			assertOrder(t, "ListPayments after an upsert", ids(reordered, func(p payment.Payment) string { return string(p.ID) }),
 				"pay_8", "pay_20", "pay_9", "pay_10")
-			cs, err := tx.ListCycles(ctx)
-			if err != nil {
-				return err
-			}
-			assertOrder(t, "ListCycles after an upsert", ids(cs, func(c payment.ClearingCycle) string { return string(c.ID) }),
-				"cyc_8", "cyc_20", "cyc_9", "cyc_10")
-			return nil
-		})
-	})
-
-	t.Run("GetOpenCycleFindsTheOpenCycleForItsScheme", func(t *testing.T) {
-		s := openPayment(t, newStore, bookA)
-
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			// A settled cycle for the same scheme, an open cycle for a
-			// different scheme, and the one that should be found.
-			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)); err != nil {
-				return err
-			}
-			if err := tx.PutCycle(ctx, cycle("cyc_2", payment.SchemeSEPADD, payment.CycleOpen, early)); err != nil {
-				return err
-			}
-			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleOpen, early))
-		})
-
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			ct, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "open SCT cycle", string(ct.ID), "cyc_3")
-
-			dd, err := tx.GetOpenCycle(ctx, payment.SchemeSEPADD)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "open SDD cycle", string(dd.ID), "cyc_2")
-			return nil
-		})
-
-		// Closing it makes it invisible here — that is what lets OpenCycle
-		// enforce one open cycle per scheme.
-		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleClosed, early))
-		})
-		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			_, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
-			assertErrorIs(t, "GetOpenCycle after closing", err, payment.ErrCycleNotFound)
 			return nil
 		})
 	})
@@ -966,54 +575,33 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 		})
 	})
 
+	// The deep-copy rule for the rows a BANK holds. The cycle's, which carries a
+	// slice AND a map, and the settlement's are asserted in the two institution
+	// suites — where the tables are.
 	t.Run("PutIsAnUpsertAndDeepCopies", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// Cycles and settlements carry a slice and a map, payments a map. A
-		// store that keeps the caller's reference lets a later mutation rewrite
-		// history — which a store serialising on the way in never can, so the
-		// rule has to be stated rather than left to the backend.
-		c := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleClosed, early)
-		c.PaymentIDs = []payment.PaymentID{"pay_1"}
-		c.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
-
+		// A payment carries a map and a bank carries one too: the accounts it
+		// holds per asset. A store that keeps the caller's reference lets a later
+		// mutation rewrite history — which a store serialising on the way in
+		// never can, so the rule has to be stated rather than left to the
+		// backend.
 		p := samplePayment("pay_1", "SCT-001", early)
 		p.Metadata = map[string]string{"scheme": "sepa.ct"}
-
-		st := settlement("set_1", "cyc_1", early)
-		st.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
-
-		// A bank carries one too: the accounts it holds per asset.
 		bank := bankRow(auroraBIC, "Aurora Bank", early)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutCycle(ctx, c); err != nil {
-				return err
-			}
 			if err := tx.PutPayment(ctx, p); err != nil {
 				return err
 			}
-			if err := tx.PutBank(ctx, bank); err != nil {
-				return err
-			}
-			return tx.PutSettlement(ctx, st)
+			return tx.PutBank(ctx, bank)
 		})
 
 		// Mutate the caller's copies after the write.
-		c.PaymentIDs[0] = "pay_tampered"
-		c.NetPositions[auroraBIC] = 999
 		p.Metadata["scheme"] = "tampered"
-		st.NetPositions[auroraBIC] = 999
 		bank.Assets["EUR"] = payment.BankAccounts{Suspense: "tampered"}
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			gotCycle, err := tx.GetCycle(ctx, "cyc_1")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "cycle payment id after caller mutation", string(gotCycle.PaymentIDs[0]), "pay_1")
-			assertEqual(t, "cycle net position after caller mutation", gotCycle.NetPositions[auroraBIC], ledger.Amount(100))
-
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -1027,28 +615,13 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			assertEqual(t, "bank suspense after caller mutation",
 				string(gotBank.Assets["EUR"].Suspense), "200.200.001")
 
-			gotSettlement, err := tx.GetSettlement(ctx, "set_1")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "settlement net position after caller mutation", gotSettlement.NetPositions[auroraBIC], ledger.Amount(100))
-
 			// And the other direction: mutating what a Get returned must not
 			// reach back into the store.
-			gotCycle.PaymentIDs[0] = "pay_tampered"
-			gotCycle.NetPositions[auroraBIC] = 999
 			gotPayment.Metadata["scheme"] = "tampered"
 			return nil
 		})
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			gotCycle, err := tx.GetCycle(ctx, "cyc_1")
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "cycle payment id after reader mutation", string(gotCycle.PaymentIDs[0]), "pay_1")
-			assertEqual(t, "cycle net position after reader mutation", gotCycle.NetPositions[auroraBIC], ledger.Amount(100))
-
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
 				return err
@@ -1057,27 +630,27 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			return nil
 		})
 
-		// The upsert: a settled cycle replaces the closed one rather than
+		// The upsert: a rejected payment replaces the accepted one rather than
 		// adding a second row, and the status change is what is read back.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			settled := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)
-			settled.SettlementID = "set_1"
-			return tx.PutCycle(ctx, settled)
+			rejected := samplePayment("pay_1", "SCT-001", early)
+			rejected.Status = payment.Rejected
+			return tx.PutPayment(ctx, rejected)
 		})
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			all, err := tx.ListCycles(ctx)
+			all, err := tx.ListPayments(ctx)
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "cycles after an upsert", len(all), 1)
-			assertEqual(t, "cycle status after an upsert", all[0].Status.String(), payment.CycleSettled.String())
-			assertEqual(t, "settlement id after an upsert", string(all[0].SettlementID), "set_1")
+			assertEqual(t, "payments after an upsert", len(all), 1)
+			assertEqual(t, "payment status after an upsert", all[0].Status.String(), payment.Rejected.String())
 			return nil
 		})
 	})
 
 	t.Run("SettlementAdviceIsScopedToTheBankThatWasAdvised", func(t *testing.T) {
-		settlementAdviceIsScopedToTheBankThatWasAdvised(t, openPayment(t, newStore, bookA))
+		settlementAdviceIsScopedToTheBankThatWasAdvised(t,
+			openPayment(t, newStore, bookA), openPayment(t, newStore, bookB))
 	})
 
 	t.Run("AdvicesAreKeyedByReferenceNotByCycle", func(t *testing.T) {
@@ -1099,9 +672,16 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 	t.Run("UpdateRollsBackAllThreeLayersTogether", func(t *testing.T) {
 		s := openPayment(t, newStore, bookA)
 
-		// This is what the whole embedding chain exists for: SettleCycle writes
-		// payment rows, posts through the ledger and reads the deposit layer in
-		// one unit of work, so a failure must undo all of it.
+		// This is what the whole embedding chain exists for: a bank's own act
+		// writes payment rows, posts through the ledger and reads the deposit
+		// layer in one unit of work, so a failure must undo all of it.
+		//
+		// The rows are this INSTITUTION's, and that is the split narrowing what
+		// the case can claim rather than weakening it. The cycle and the
+		// settlement it also wrote are in two other databases, and the honest
+		// statement about those is the opposite one: they cannot roll back with
+		// these, because no transaction spans two databases. That is what the
+		// mesh models everywhere else.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early))
 		})
@@ -1112,12 +692,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
-				return err
-			}
-			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early)); err != nil {
-				return err
-			}
-			if err := tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early)); err != nil {
 				return err
 			}
 			if err := tx.PutMandate(ctx, mandate("mnd_1", early)); err != nil {
@@ -1150,12 +724,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			// longer exists.
 			_, err = tx.GetPaymentByEndToEndID(ctx, "SCT-001")
 			assertErrorIs(t, "end-to-end id from the failed unit of work", err, payment.ErrPaymentNotFound)
-
-			_, err = tx.GetCycle(ctx, "cyc_1")
-			assertErrorIs(t, "cycle from the failed unit of work", err, payment.ErrCycleNotFound)
-
-			_, err = tx.GetSettlement(ctx, "set_1")
-			assertErrorIs(t, "settlement from the failed unit of work", err, payment.ErrSettlementNotFound)
 
 			_, err = tx.GetMandate(ctx, "mnd_1")
 			assertErrorIs(t, "mandate from the failed unit of work", err, payment.ErrMandateNotFound)
@@ -1197,20 +765,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			if err := tx.PutMandate(ctx, mandate("mnd_1", early)); err != nil {
 				return err
 			}
-			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early)); err != nil {
-				return err
-			}
-			// The other two rows admission writes. They are seeded here because
-			// each is its own table, so a table left out of the clear is a row
-			// that survives a reset — and the whole point of Reset is that a
-			// reset store behaves like a fresh one.
-			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
-				return err
-			}
-			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
-				return err
-			}
-			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
+			return nil
 		})
 
 		if err := s.Reset(context.Background()); err != nil {
@@ -1224,18 +779,6 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			}
 			assertEqual(t, "banks after reset", len(banks), 0)
 
-			members, err := tx.ListSettlementMembers(ctx)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "settlement members after reset", len(members), 0)
-
-			entries, err := tx.ListRosterEntries(ctx)
-			if err != nil {
-				return err
-			}
-			assertEqual(t, "roster entries after reset", len(entries), 0)
-
 			payments, err := tx.ListPayments(ctx)
 			if err != nil {
 				return err
@@ -1248,26 +791,653 @@ func RunPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.S
 			}
 			assertEqual(t, "mandates after reset", len(mandates), 0)
 
+			// The end-to-end index is state too: a reference claimed before the
+			// reset must be free afterwards.
+			_, err = tx.GetPaymentByEndToEndID(ctx, "SCT-001")
+			assertErrorIs(t, "end-to-end id after reset", err, payment.ErrPaymentNotFound)
+			return nil
+		})
+	})
+}
+
+// RunClearingHousePayment runs the payment-layer cases whose rows are the
+// CLEARING HOUSE's: the roster it routes by, and the cycles it cuts.
+//
+// It is a suite of its own since Task 18c, and the division is the schema's
+// rather than a way of grouping tests. The clearing house's database has no
+// banks table, no mandates, no settlements and no book of accounts at all, so
+// every case above would be refused by name on it — which is the intended way to
+// find one that has been put in the wrong suite.
+//
+// newStore must return the clearing house's store with no state in it; the suite
+// calls it once per subtest and closes the result.
+func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Store) {
+	t.Helper()
+
+	// The cycle sentinels, which are the clearing house's half of what
+	// GetOnMissingPaymentRowsReturnsSentinels asserts for the bank.
+	t.Run("GetOnMissingCycleRowsReturnsSentinels", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		// A row to make the not-found path run against a populated store.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetCycle(ctx, "cyc_nope")
+			assertErrorIs(t, "GetCycle on an unknown cycle", err, payment.ErrCycleNotFound)
+
+			// The seeded cycle is Settled, so no cycle is open for its scheme.
+			_, err = tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
+			assertErrorIs(t, "GetOpenCycle with nothing open", err, payment.ErrCycleNotFound)
+
+			_, err = tx.GetOpenCycle(ctx, "no.such.scheme")
+			assertErrorIs(t, "GetOpenCycle for an unknown scheme", err, payment.ErrCycleNotFound)
+			return nil
+		})
+	})
+
+	// Cycle listing order, which was part of PaymentListOrderingIsCreatedAtThenSeq
+	// while one store held every row kind. The fixture is that case's: a
+	// CreatedAt tie only the insertion sequence can break, ids whose
+	// lexicographic order disagrees with insertion order, and the row inserted
+	// FIRST carrying the latest instant.
+	// A cycle carries a slice AND a map, which is what makes it the row this rule
+	// is most worth asserting on. See PutIsAnUpsertAndDeepCopies for the bank's
+	// half of the same rule.
+	// Reset empties this institution's tables, which is its share of what
+	// ResetClearsPaymentState asserts for the bank. Each row kind is its own
+	// table, so a table left out of the clear is a row that survives a reset —
+	// and the whole point of Reset is that a reset store behaves like a fresh
+	// one.
+	t.Run("ResetClearsTheClearingHousesState", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
+				return err
+			}
+			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleOpen, early))
+		})
+		if err := s.Reset(context.Background()); err != nil {
+			t.Fatalf("Reset: %v", err)
+		}
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			entries, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster entries after reset", len(entries), 0)
+
 			cycles, err := tx.ListCycles(ctx)
 			if err != nil {
 				return err
 			}
 			assertEqual(t, "cycles after reset", len(cycles), 0)
 
+			// The open-cycle query is state too.
+			_, err = tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
+			assertErrorIs(t, "open cycle after reset", err, payment.ErrCycleNotFound)
+			return nil
+		})
+	})
+
+	t.Run("CycleIsAnUpsertAndDeepCopies", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		c := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleClosed, early)
+		c.PaymentIDs = []payment.PaymentID{"pay_1"}
+		c.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutCycle(ctx, c)
+		})
+
+		// Mutate the caller's copy after the write.
+		c.PaymentIDs[0] = "pay_tampered"
+		c.NetPositions[auroraBIC] = 999
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetCycle(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "cycle payment id after caller mutation", string(got.PaymentIDs[0]), "pay_1")
+			assertEqual(t, "cycle net position after caller mutation", got.NetPositions[auroraBIC], ledger.Amount(100))
+
+			// And the other direction: mutating what a Get returned must not
+			// reach back into the store.
+			got.PaymentIDs[0] = "pay_tampered"
+			got.NetPositions[auroraBIC] = 999
+			return nil
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetCycle(ctx, "cyc_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "cycle payment id after reader mutation", string(got.PaymentIDs[0]), "pay_1")
+			assertEqual(t, "cycle net position after reader mutation", got.NetPositions[auroraBIC], ledger.Amount(100))
+			return nil
+		})
+
+		// The upsert: a settled cycle replaces the closed one rather than
+		// adding a second row, and the status change is what is read back.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			settled := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)
+			settled.SettlementID = "set_1"
+			return tx.PutCycle(ctx, settled)
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			all, err := tx.ListCycles(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "cycles after an upsert", len(all), 1)
+			assertEqual(t, "cycle status after an upsert", all[0].Status.String(), payment.CycleSettled.String())
+			assertEqual(t, "settlement id after an upsert", string(all[0].SettlementID), "set_1")
+			return nil
+		})
+	})
+
+	t.Run("CycleListOrderingIsOpenedAtThenSeq", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+		late := early.Add(time.Hour)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			for _, c := range []struct {
+				id string
+				at time.Time
+			}{{"cyc_10", late}, {"cyc_8", early}, {"cyc_20", early}, {"cyc_9", early}} {
+				if err := tx.PutCycle(ctx, cycle(payment.CycleID(c.id), payment.SchemeSEPACT, payment.CycleSettled, c.at)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			cycles, err := tx.ListCycles(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListCycles", ids(cycles, func(c payment.ClearingCycle) string { return string(c.ID) }),
+				"cyc_8", "cyc_20", "cyc_9", "cyc_10")
+			return nil
+		})
+
+		// An upsert keeps a row where it was: settling a cycle must not move it
+		// to the bottom of the list.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			c := cycle("cyc_8", payment.SchemeSEPACT, payment.CycleSettled, early)
+			c.SettlementID = "set_8"
+			return tx.PutCycle(ctx, c)
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			cs, err := tx.ListCycles(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListCycles after an upsert", ids(cs, func(c payment.ClearingCycle) string { return string(c.ID) }),
+				"cyc_8", "cyc_20", "cyc_9", "cyc_10")
+			return nil
+		})
+	})
+
+	// RosterEntryCarriesNoAccountIdentifiers is the case that makes the split a
+	// claim about the code rather than about the plan.
+	//
+	// The clearing house routes. It has no business holding a bank's subledger,
+	// its product, or its account at the central bank, and the way that stops
+	// being a promise is a check on the STRUCT: the table below is the whole set
+	// of fields a RosterEntry may have, so a field added to it fails this case by
+	// name instead of passing silently.
+	//
+	// AdmissionRef is in the table and is not an account identifier. It is the
+	// PrcId every message of one admission echoes — a correlator for a
+	// conversation, naming no account in any book — and the clearing house's
+	// refusal is what reads it. What this case exists to keep out is an
+	// identifier that would let this institution reach into another's ledger; a
+	// process id reaches nothing.
+	//
+	// Name is NOT in the table, and it used to be. The acmt.010 this row is
+	// written from identifies the account owner with an
+	// OrganisationIdentification29, which has a BIC and no name element at all —
+	// so a name here could only be filled by the clearing house remembering the
+	// application across the relay, and nothing read it. This case is what makes
+	// putting it back a failure rather than a quiet regression, which is the
+	// whole point of an allowed-field table over a hand-read struct.
+	t.Run("RosterEntryCarriesNoAccountIdentifiers", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		allowed := map[string]bool{
+			"BIC":          true,
+			"Assets":       true,
+			"AdmissionRef": true,
+			"AdmittedAt":   true,
+		}
+		typ := reflect.TypeOf(payment.RosterEntry{})
+		for i := range typ.NumField() {
+			name := typ.Field(i).Name
+			if !allowed[name] {
+				t.Errorf("RosterEntry carries %s %s.\n"+
+					"The clearing house's row is routing and nothing else. If this field is an account "+
+					"identifier, a subledger or a product it belongs on the bank's own row; if it is "+
+					"genuinely routing, add it to the table above and say why here.",
+					name, typ.Field(i).Type)
+			}
+		}
+		for name := range allowed {
+			if _, ok := typ.FieldByName(name); !ok {
+				t.Errorf("the allowed-field table names %s, which RosterEntry no longer has", name)
+			}
+		}
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutRosterEntry(ctx, rosterEntry("AURODEFFXXX", early)); err != nil {
+				return err
+			}
+			return tx.PutRosterEntry(ctx, rosterEntry("VERDITMMXXX", early.Add(time.Hour)))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster admission reference", got.AdmissionRef, "adm-AURODEFFXXX")
+			assertEqual(t, "roster admitted at", got.AdmittedAt.Equal(early), true)
+			assertOrder(t, "roster assets", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "EUR", "USD")
+
+			_, err = tx.GetRosterEntry(ctx, "NORDSESSXXX")
+			assertErrorIs(t, "GetRosterEntry on an unadmitted BIC", err, payment.ErrRosterEntryNotFound)
+
+			entries, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster entries", ids(entries, func(e payment.RosterEntry) string {
+				return string(e.BIC)
+			}), "AURODEFFXXX", "VERDITMMXXX")
+			if len(entries[0].Assets) != 2 {
+				t.Errorf("listed roster entry has %d assets, want 2", len(entries[0].Assets))
+			}
+
+			// The slice handed back is the caller's own, for the reason every
+			// other row here deep-copies: a stored row a caller can mutate in
+			// place is not stored.
+			got.Assets[0] = "GBP"
+			again, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "roster asset after a reader mutation", string(again.Assets[0]), "EUR")
+			return nil
+		})
+	})
+
+	// RosterEntryAssetsAreAnOrderedList pins the two properties of Assets that
+	// its Go type has and a set does not: the caller's ORDER survives, and a
+	// REPEATED asset is stored rather than refused.
+	//
+	// The second is the one this case was written for. store/pg keyed this child
+	// table by (bic, asset), so it refused with SQLSTATE 23505 a slice store/mem
+	// stored verbatim. That was a divergence between two implementations when
+	// there were two; what makes it wrong with one is the same fact without the
+	// comparison — a store must hold what the Go type it is handed can hold.
+	//
+	// No writer in the system reaches it, and this case is not about a writer.
+	// It used to say the writer Task 17d adds would, by building the list from
+	// an acmt.010's unbounded AccountForAction1; the writer turned out to be
+	// payment.AdmitMemberTx at Task 17c, taking the assets from a map keyed by
+	// asset and appending only the ones the entry does not already hold, so a
+	// message that repeats a currency collapses before this table is reached.
+	// The reader that message goes through has since landed too and refuses one
+	// outright — payment.ReadAdmissionAcknowledgement will not read an
+	// acknowledgement naming two accounts in one currency — so the repeat cannot
+	// arrive from the wire either.
+	//
+	// What is asserted here is the STORE's contract with the Go type it is
+	// handed: Assets is a slice, a slice can repeat, and a store must hold what a
+	// caller passes it whether or not any caller passes that.
+	//
+	// What a store must NOT do is decide about it. Refusing a duplicate is a
+	// judgement about the message that carried it, and it belongs to the
+	// institution reading the message; a store that refused would make that
+	// judgement in one store and not the other, which is how this started.
+	//
+	// The order is asserted with a fixture that is NOT alphabetical, on purpose.
+	// The other roster case uses EUR, USD, which a store that sorted its child
+	// rows would pass by accident.
+	t.Run("RosterEntryAssetsAreAnOrderedList", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			e := rosterEntry("AURODEFFXXX", early)
+			e.Assets = []ledger.AssetCode{"USD", "EUR", "USD"}
+			return tx.PutRosterEntry(ctx, e)
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster assets as written", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "USD", "EUR", "USD")
+
+			// And through the listing, which is a second query and could order
+			// differently from the single read above.
+			listed, err := tx.ListRosterEntries(ctx)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 {
+				t.Fatalf("ListRosterEntries returned %d entries, want 1", len(listed))
+			}
+			assertOrder(t, "roster assets in listings", ids(listed[0].Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "USD", "EUR", "USD")
+			return nil
+		})
+
+		// An upsert replaces the list wholesale, duplicates and all, so a
+		// shorter list does not leave the tail of the longer one behind.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			e := rosterEntry("AURODEFFXXX", early)
+			e.Assets = []ledger.AssetCode{"GBP"}
+			return tx.PutRosterEntry(ctx, e)
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetRosterEntry(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "roster assets after an upsert", ids(got.Assets, func(a ledger.AssetCode) string {
+				return string(a)
+			}), "GBP")
+			return nil
+		})
+	})
+
+	t.Run("GetOpenCycleFindsTheOpenCycleForItsScheme", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			// A settled cycle for the same scheme, an open cycle for a
+			// different scheme, and the one that should be found.
+			if err := tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)); err != nil {
+				return err
+			}
+			if err := tx.PutCycle(ctx, cycle("cyc_2", payment.SchemeSEPADD, payment.CycleOpen, early)); err != nil {
+				return err
+			}
+			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleOpen, early))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			ct, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "open SCT cycle", string(ct.ID), "cyc_3")
+
+			dd, err := tx.GetOpenCycle(ctx, payment.SchemeSEPADD)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "open SDD cycle", string(dd.ID), "cyc_2")
+			return nil
+		})
+
+		// Closing it makes it invisible here — that is what lets OpenCycle
+		// enforce one open cycle per scheme.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutCycle(ctx, cycle("cyc_3", payment.SchemeSEPACT, payment.CycleClosed, early))
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
+			assertErrorIs(t, "GetOpenCycle after closing", err, payment.ErrCycleNotFound)
+			return nil
+		})
+	})
+}
+
+// RunCentralBankPayment runs the payment-layer cases whose rows are the CENTRAL
+// BANK's: its own register of the members it holds settlement accounts for.
+//
+// See RunClearingHousePayment on why this is a suite of its own.
+//
+// newStore must return the central bank's store with no state in it; the suite
+// calls it once per subtest and closes the result.
+func RunCentralBankPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
+	t.Helper()
+
+	// The settlement sentinel and the settlement listing's order, which were the
+	// central bank's share of two cases that ran against one store.
+	t.Run("GetOnAMissingSettlementReturnsTheSentinel", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			_, err := tx.GetSettlement(ctx, "set_nope")
+			assertErrorIs(t, "GetSettlement on an unknown settlement", err, payment.ErrSettlementNotFound)
+			return nil
+		})
+	})
+
+	// A settlement carries a map of net positions, and the deep-copy rule is the
+	// same one PutIsAnUpsertAndDeepCopies states for the bank's rows.
+	// See ResetClearsTheClearingHousesState for what this is a share of.
+	t.Run("ResetClearsTheCentralBanksState", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
+			return tx.PutSettlement(ctx, settlement("set_1", "cyc_1", early))
+		})
+		if err := s.Reset(context.Background()); err != nil {
+			t.Fatalf("Reset: %v", err)
+		}
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "settlement members after reset", len(members), 0)
+
 			settlements, err := tx.ListSettlements(ctx)
 			if err != nil {
 				return err
 			}
 			assertEqual(t, "settlements after reset", len(settlements), 0)
+			return nil
+		})
+	})
 
-			// The end-to-end index is state too: a reference claimed before the
-			// reset must be free afterwards.
-			_, err = tx.GetPaymentByEndToEndID(ctx, "SCT-001")
-			assertErrorIs(t, "end-to-end id after reset", err, payment.ErrPaymentNotFound)
+	t.Run("SettlementDeepCopiesItsNetPositions", func(t *testing.T) {
+		s := openInstitution(t, newStore)
 
-			// And so is the open-cycle query.
-			_, err = tx.GetOpenCycle(ctx, payment.SchemeSEPACT)
-			assertErrorIs(t, "open cycle after reset", err, payment.ErrCycleNotFound)
+		st := settlement("set_1", "cyc_1", early)
+		st.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlement(ctx, st)
+		})
+		st.NetPositions[auroraBIC] = 999
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlement(ctx, "set_1")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "settlement net position after caller mutation", got.NetPositions[auroraBIC], ledger.Amount(100))
+			return nil
+		})
+	})
+
+	t.Run("SettlementListOrderingIsSettledAtThenSeq", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+		late := early.Add(time.Hour)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			for _, st := range []struct {
+				id string
+				at time.Time
+			}{{"set_10", late}, {"set_8", early}, {"set_20", early}, {"set_9", early}} {
+				if err := tx.PutSettlement(ctx, settlement(payment.SettlementID(st.id), "cyc_8", st.at)); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			settlements, err := tx.ListSettlements(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "ListSettlements", ids(settlements, func(st payment.Settlement) string { return string(st.ID) }),
+				"set_8", "set_20", "set_9", "set_10")
+			return nil
+		})
+	})
+
+	// SettlementMemberIsKeyedByBIC is the central bank's own record of a bank it
+	// holds a settlement account for, and the point of the case is the key.
+	//
+	// The settlement agent holds no roster and no participant ids. What an
+	// acmt.007 tells it is a BIC, so a lookup by anything else is a lookup it
+	// could not make — which is why the store is asked for this row by BIC here
+	// and never by a bank id.
+	t.Run("SettlementMemberIsKeyedByBIC", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			if err := tx.PutSettlementMember(ctx, settlementMember("AURODEFFXXX", "Aurora Bank", early)); err != nil {
+				return err
+			}
+			return tx.PutSettlementMember(ctx, settlementMember("VERDITMMXXX", "Banca Verde", early.Add(time.Hour)))
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "member name", got.Name, "Banca Verde")
+			assertEqual(t, "member bic", string(got.BIC), "VERDITMMXXX")
+			assertEqual(t, "member opened at", got.OpenedAt.Equal(early.Add(time.Hour)), true)
+
+			// A BIC no bank answers to is the sentinel, not an empty row: the
+			// central bank asked to settle for a member it has never opened an
+			// account for must fail rather than post to "".
+			_, err = tx.GetSettlementMember(ctx, "NORDSESSXXX")
+			assertErrorIs(t, "GetSettlementMember on a BIC with no member", err, payment.ErrSettlementMemberNotFound)
+
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertOrder(t, "settlement members", ids(members, func(m payment.SettlementMember) string {
+				return string(m.BIC)
+			}), "AURODEFFXXX", "VERDITMMXXX")
+			return nil
+		})
+
+		// The upsert is on the BIC, which is what makes re-driving an admission
+		// safe: the same bank asking twice must not become two members.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			renamed := settlementMember("VERDITMMXXX", "Banca Verde SpA", early.Add(time.Hour))
+			return tx.PutSettlementMember(ctx, renamed)
+		})
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			members, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "members after an upsert", len(members), 2)
+			got, err := tx.GetSettlementMember(ctx, "VERDITMMXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "member name after an upsert", got.Name, "Banca Verde SpA")
+			return nil
+		})
+	})
+
+	// SettlementMemberKeepsOneAccountPerAsset pins that the map survives the
+	// round trip with its keys.
+	//
+	// A member read back with an empty map settles nothing — the settlement
+	// agent would have no account to post the net position of a cut-off to — and
+	// the map is a second TABLE, so "the row came back" and "the accounts came
+	// back" are two different claims about two different reads.
+	t.Run("SettlementMemberKeepsOneAccountPerAsset", func(t *testing.T) {
+		s := openInstitution(t, newStore)
+
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementMember(ctx, payment.SettlementMember{
+				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
+				Accounts: map[ledger.AssetCode]ledger.AccountID{
+					"EUR": "200.100.001",
+					"USD": "200.100.002",
+				},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts held", len(got.Accounts), 2)
+			assertEqual(t, "EUR settlement account", string(got.Accounts["EUR"]), "200.100.001")
+			assertEqual(t, "USD settlement account", string(got.Accounts["USD"]), "200.100.002")
+
+			// The listing carries them too. A settlement agent walking its
+			// members to settle a cut-off reads the listing, not a Get per BIC.
+			listed, err := tx.ListSettlementMembers(ctx)
+			if err != nil {
+				return err
+			}
+			if len(listed) != 1 || len(listed[0].Accounts) != 2 {
+				t.Errorf("ListSettlementMembers = %+v, want one member with two accounts", listed)
+			}
+			return nil
+		})
+
+		// An upsert replaces the set rather than merging into it: an account for
+		// an asset the member no longer holds would be settled through after the
+		// member gave it up.
+		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			return tx.PutSettlementMember(ctx, payment.SettlementMember{
+				BIC: "AURODEFFXXX", Name: "Aurora Bank", OpenedAt: early,
+				Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "200.100.001"},
+			})
+		})
+
+		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
+			got, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts after an upsert", len(got.Accounts), 1)
+
+			// And the map handed back is the caller's own.
+			delete(got.Accounts, "EUR")
+			again, err := tx.GetSettlementMember(ctx, "AURODEFFXXX")
+			if err != nil {
+				return err
+			}
+			assertEqual(t, "accounts after a reader mutation", len(again.Accounts), 1)
 			return nil
 		})
 	})
@@ -1565,51 +1735,61 @@ func paymentRecordsBothReturnLegs(t *testing.T, st payment.Store) {
 // that bank's store and nowhere else — and a key that omitted the book would
 // make the second bank's advice overwrite the first's here and be unmigratable
 // there.
-func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.Store) {
+func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st, other payment.Store) {
 	ctx := context.Background()
 	one := payment.SettlementAdvice{
-		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
+		Book: bookA, Reference: "cyc_1", Asset: "EUR",
 		Movement: -250000, ClosingBalance: 750000,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
 	two := payment.SettlementAdvice{
-		Book: "bank_3", Reference: "cyc_1", Asset: "EUR",
+		Book: bookB, Reference: "cyc_1", Asset: "EUR",
 		Movement: 250000, ClosingBalance: 250000,
 		Status: payment.AdvicePosted, MirrorTx: "txn_9",
 		AdvisedAt: early, PostedAt: early,
 	}
+	// TWO STORES, because an advice is one bank's record of what it was told and
+	// each bank holds its own database. The scoping this case is named for used
+	// to be a book_id column in one store; it is two databases now, and the
+	// listing below is scoped because there is nothing else in it.
 	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		if err := tx.PutSettlementAdvice(ctx, one.Book, one); err != nil {
-			return err
-		}
-		return tx.PutSettlementAdvice(ctx, two.Book, two)
+		return tx.PutSettlementAdvice(ctx, one.Book, one)
 	}); err != nil {
 		t.Fatalf("PutSettlementAdvice: %v", err)
+	}
+	if err := other.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
+		return tx.PutSettlementAdvice(ctx, two.Book, two)
+	}); err != nil {
+		t.Fatalf("PutSettlementAdvice at the second bank: %v", err)
 	}
 
 	var gotOne, gotTwo payment.SettlementAdvice
 	var listed []payment.SettlementAdvice
 	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		var err error
-		if gotOne, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+		if gotOne, err = tx.GetSettlementAdvice(ctx, bookA, "cyc_1", "EUR"); err != nil {
 			return err
 		}
-		if gotTwo, err = tx.GetSettlementAdvice(ctx, "bank_3", "cyc_1", "EUR"); err != nil {
-			return err
-		}
-		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		listed, err = tx.ListSettlementAdvices(ctx, bookA)
 		return err
 	}); err != nil {
 		t.Fatalf("reading advices: %v", err)
 	}
+	if err := other.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		var err error
+		gotTwo, err = tx.GetSettlementAdvice(ctx, bookB, "cyc_1", "EUR")
+		return err
+	}); err != nil {
+		t.Fatalf("reading the second bank's advice: %v", err)
+	}
 	if gotOne != one {
-		t.Errorf("bank_2's advice round-tripped as %+v, want %+v", gotOne, one)
+		t.Errorf("the advised bank's advice round-tripped as %+v, want %+v", gotOne, one)
 	}
 	if gotTwo != two {
-		t.Errorf("bank_3's advice round-tripped as %+v, want %+v", gotTwo, two)
+		t.Errorf("the second bank's advice round-tripped as %+v, want %+v", gotTwo, two)
 	}
 	if len(listed) != 1 {
-		t.Errorf("bank_2 lists %d advices, want 1 — the list is scoped to one book", len(listed))
+		t.Errorf("the advised bank lists %d advices, want 1 — the list is scoped to one book", len(listed))
 	}
 
 	// The ORDER, which the scoping assertion above could not reach: bank_2 held
@@ -1629,9 +1809,9 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// key would pass on distinct timestamps and fail here.
 	later := early.Add(time.Hour)
 	for _, a := range []payment.SettlementAdvice{
-		{Book: "bank_2", Reference: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
+		{Book: bookA, Reference: "cyc_4", Asset: "EUR", Movement: 40, ClosingBalance: 40,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
-		{Book: "bank_2", Reference: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
+		{Book: bookA, Reference: "cyc_3", Asset: "EUR", Movement: 30, ClosingBalance: 30,
 			Status: payment.AdviceAdvised, AdvisedAt: later},
 	} {
 		if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
@@ -1643,7 +1823,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	var ordered []payment.SettlementAdvice
 	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		var err error
-		ordered, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		ordered, err = tx.ListSettlementAdvices(ctx, bookA)
 		return err
 	}); err != nil {
 		t.Fatalf("ListSettlementAdvices: %v", err)
@@ -1654,11 +1834,11 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	}
 	want := []string{"cyc_1", "cyc_4", "cyc_3"}
 	if len(got) != len(want) {
-		t.Fatalf("bank_2 lists %v, want %v", got, want)
+		t.Fatalf("the advised bank lists %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("bank_2 lists %v, want %v — AdvisedAt ascending, ties by insertion sequence", got, want)
+			t.Errorf("the advised bank lists %v, want %v — AdvisedAt ascending, ties by insertion sequence", got, want)
 			break
 		}
 	}
@@ -1667,7 +1847,7 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// bank that read a zero advice would post a mirror leg of nothing and mark
 	// a cut-off it never heard about as settled.
 	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		_, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_nope", "EUR")
+		_, err := tx.GetSettlementAdvice(ctx, bookA, "cyc_nope", "EUR")
 		if !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
 			t.Errorf("got %v, want ErrSettlementAdviceNotFound", err)
 		}
@@ -1686,31 +1866,37 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 	// argument and never reads a.Book — and an advice whose field disagrees with
 	// the argument is the only thing that can tell whether that is still true.
 	misfiled := payment.SettlementAdvice{
-		Book: "bank_9", Reference: "cyc_2", Asset: "EUR",
+		Book: bookB, Reference: "cyc_2", Asset: "EUR",
 		Movement: 100, ClosingBalance: 100,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
 	if err := st.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return tx.PutSettlementAdvice(ctx, "bank_2", misfiled)
+		return tx.PutSettlementAdvice(ctx, bookA, misfiled)
 	}); err != nil {
 		t.Fatalf("PutSettlementAdvice with a mismatched Book: %v", err)
 	}
 	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		got, err := tx.GetSettlementAdvice(ctx, "bank_2", "cyc_2", "EUR")
+		got, err := tx.GetSettlementAdvice(ctx, bookA, "cyc_2", "EUR")
 		if err != nil {
 			return err
 		}
-		if got.Book != "bank_2" {
-			t.Errorf("an advice put under bank_2 carrying Book %q read back as %q; "+
-				"the argument chooses the book and the field records it", misfiled.Book, got.Book)
-		}
-		// And the field did not file it anywhere: bank_9 was never written to.
-		if _, err := tx.GetSettlementAdvice(ctx, "bank_9", "cyc_2", "EUR"); !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
-			t.Errorf("bank_9 holds the advice its Book field named: got %v, want ErrSettlementAdviceNotFound", err)
+		if got.Book != bookA {
+			t.Errorf("an advice put under %s carrying Book %q read back as %q; "+
+				"the argument chooses the book and the field records it", bookA, misfiled.Book, got.Book)
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("reading the misfiled advice: %v", err)
+	}
+	// And the field filed it nowhere: the OTHER bank, whose book the field
+	// named, holds no such row — in a database this store cannot write to.
+	if err := other.View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		if _, err := tx.GetSettlementAdvice(ctx, bookB, "cyc_2", "EUR"); !errors.Is(err, payment.ErrSettlementAdviceNotFound) {
+			t.Errorf("the second bank holds the advice the Book field named: got %v, want ErrSettlementAdviceNotFound", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("reading the second bank: %v", err)
 	}
 }
 
@@ -1722,12 +1908,12 @@ func settlementAdviceIsScopedToTheBankThatWasAdvised(t *testing.T, st payment.St
 func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 	ctx := context.Background()
 	cutOff := payment.SettlementAdvice{
-		Book: "bank_2", Reference: "cyc_1", Asset: "EUR",
+		Book: bookA, Reference: "cyc_1", Asset: "EUR",
 		Movement: -250000, ClosingBalance: 750000,
 		Status: payment.AdviceAdvised, AdvisedAt: early,
 	}
 	rtn := payment.SettlementAdvice{
-		Book: "bank_2", Reference: "pay_9", Asset: "EUR",
+		Book: bookA, Reference: "pay_9", Asset: "EUR",
 		Movement: 5000, ClosingBalance: 755000,
 		Status: payment.AdvicePosted, MirrorTx: "txn_5",
 		AdvisedAt: early, PostedAt: early,
@@ -1745,13 +1931,13 @@ func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 	var listed []payment.SettlementAdvice
 	if err := st.View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		var err error
-		if gotCutOff, err = tx.GetSettlementAdvice(ctx, "bank_2", "cyc_1", "EUR"); err != nil {
+		if gotCutOff, err = tx.GetSettlementAdvice(ctx, bookA, "cyc_1", "EUR"); err != nil {
 			return err
 		}
-		if gotReturn, err = tx.GetSettlementAdvice(ctx, "bank_2", "pay_9", "EUR"); err != nil {
+		if gotReturn, err = tx.GetSettlementAdvice(ctx, bookA, "pay_9", "EUR"); err != nil {
 			return err
 		}
-		listed, err = tx.ListSettlementAdvices(ctx, "bank_2")
+		listed, err = tx.ListSettlementAdvices(ctx, bookA)
 		return err
 	}); err != nil {
 		t.Fatalf("reading advices: %v", err)
@@ -1763,7 +1949,7 @@ func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 		t.Errorf("the payment-referenced advice round-tripped as %+v, want %+v", gotReturn, rtn)
 	}
 	if len(listed) != 2 {
-		t.Fatalf("bank_2 lists %d advices, want 2 — one referencing a cycle and one a payment", len(listed))
+		t.Fatalf("the bank lists %d advices, want 2 — one referencing a cycle and one a payment", len(listed))
 	}
 }
 
@@ -1807,6 +1993,20 @@ func settlement(id payment.SettlementID, cycleID payment.CycleID, settledAt time
 
 // openPayment builds a fresh store for one subtest and closes it when the
 // subtest ends.
+// openInstitution is openPayment for the two institution suites, whose factories
+// take no book: there is exactly one clearing house and one central bank, each
+// answering for a book that is a constant.
+func openInstitution(t *testing.T, newStore func(*testing.T) payment.Store) payment.Store {
+	t.Helper()
+	s := newStore(t)
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return s
+}
+
 func openPayment(t *testing.T, newStore func(*testing.T, ledger.BookID) payment.Store, book ledger.BookID) payment.Store {
 	t.Helper()
 	s := newStore(t, book)

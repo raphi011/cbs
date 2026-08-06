@@ -74,6 +74,12 @@ func TestConformance(t *testing.T) {
 	storetest.RunDeposit(t, func(t *testing.T, b ledger.BookID) deposit.Store { return newBank(t, b).Deposit() })
 	storetest.RunProduct(t, func(t *testing.T, b ledger.BookID) product.Store { return newBank(t, b).Product() })
 	storetest.RunPayment(t, func(t *testing.T, b ledger.BookID) payment.Store { return newBank(t, b).Payment() })
+	storetest.RunClearingHousePayment(t, func(t *testing.T) payment.Store {
+		return openShape(t, sqlite.CSM, payment.ClearingHouseBook).Payment()
+	})
+	storetest.RunCentralBankPayment(t, func(t *testing.T) payment.Store {
+		return openShape(t, sqlite.CentralBank, payment.CentralBankBook).Payment()
+	})
 	storetest.RunLending(t, func(t *testing.T, b ledger.BookID) lending.Store { return newBank(t, b).Lending() })
 }
 

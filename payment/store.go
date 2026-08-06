@@ -216,8 +216,10 @@ type Tx interface {
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
 }
 
-// Contract notes for implementers. Each of these is asserted by
-// storetest.RunPayment; the named subtest is what pins it.
+// Contract notes for implementers. Each of these is asserted by one of the three
+// payment suites in store/storetest — RunPayment for a bank's rows,
+// RunClearingHousePayment for the roster and the cycles, RunCentralBankPayment
+// for the settlement register — and the named subtest is what pins it.
 //
 //   - Not-found sentinels. GetBank -> ErrParticipantNotFound, GetPayment
 //     and GetPaymentByEndToEndID -> ErrPaymentNotFound, GetMandate ->
@@ -271,6 +273,9 @@ type Tx interface {
 //
 //   - Rollback spans all three layers: a failed Update undoes payment rows,
 //     deposit rows, ledger rows and audit appends written through the same Tx.
+//     It spans one INSTITUTION and no more, and that is not a limitation to be
+//     lifted: a unit of work is one database's, so the cycle another institution
+//     wrote in the same instant rolls back on its own terms or not at all.
 //     (UpdateRollsBackAllThreeLayersTogether.)
 //
 //   - GetSettlementAdvice -> ErrSettlementAdviceNotFound. The key is
@@ -282,7 +287,10 @@ type Tx interface {
 //     seq, like every other listing here.
 //     (SettlementAdviceIsScopedToTheBankThatWasAdvised.)
 //
-//   - Reset clears the payment tables too. (ResetClearsPaymentState.)
+//   - Reset clears the payment tables too — this SHAPE's, which is the only
+//     thing it could now mean. (ResetClearsPaymentState, and its two
+//     institution halves, ResetClearsTheClearingHousesState and
+//     ResetClearsTheCentralBanksState.)
 
 // ---------------------------------------------------------------------------
 // Narrower views of the same store
