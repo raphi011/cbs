@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import { accentFor } from "./accent";
 
-// Two accents can differ in chroma while sharing a hue — bank_7 and the
-// clearing house did, at hue 150 — and read as confusingly close at a
+// Two accents can differ in chroma while sharing a hue — a seeded bank and the
+// clearing house once did, both at hue 150 — and read as confusingly close at a
 // glance even though their oklch() strings aren't literally equal. Pulling
 // out the hue is what makes that collision visible to a test.
 function hueOf(accent: string | undefined): number {
@@ -11,6 +11,17 @@ function hueOf(accent: string | undefined): number {
   const parts = match?.replace(/^oklch\(|\)$/g, "").split(/\s+/) ?? [];
   return Number(parts[2]);
 }
+
+// The ids the sample dataset's four banks actually have, which is the whole
+// point of this fixture: accentFor hashes the id, so a collision test run
+// against ids nobody has proves nothing about the screens a reader sees.
+//
+// They are not consecutive and they move. Every id in this system comes from one
+// counter per book, so an act that draws one more than it used to shifts every
+// id after it — these four have moved twice while admission became a
+// conversation. Read them back from GET /members (the clearing house's console
+// lists them) when this test fails on a fresh dataset.
+const SEEDED_BANKS = ["bank_1", "bank_9", "bank_17", "bank_25"];
 
 describe("accentFor", () => {
   // Telling the two institutions apart at a glance is exactly the lesson the
@@ -30,26 +41,22 @@ describe("accentFor", () => {
   });
 
   it("distinguishes the four seeded banks", () => {
-    const accents = ["bank_1", "bank_3", "bank_5", "bank_7"].map((pid) =>
-      accentFor({ persona: "bank", pid }),
-    );
-    expect(new Set(accents).size).toBe(4);
+    const accents = SEEDED_BANKS.map((pid) => accentFor({ persona: "bank", pid }));
+    expect(new Set(accents).size).toBe(SEEDED_BANKS.length);
   });
 
-  // The four seeded banks being distinct from each other, and the two
-  // institutions being distinct from each other, says nothing about a bank
-  // colliding with an institution — bank_7 and the clearing house used to
-  // resolve to the same hue, 150, differing only in chroma. All six seeded
-  // accents (two institutions, four banks) must be distinct by hue.
-  it("distinguishes all six seeded accents by hue", () => {
-    const hues = [
+  // The seeded banks being distinct from each other, and the two institutions
+  // being distinct from each other, says nothing about a bank colliding with an
+  // institution — one seeded bank and the clearing house used to resolve to the
+  // same hue, differing only in chroma. Every seeded accent, banks and
+  // institutions together, must be distinct by hue.
+  it("distinguishes every seeded accent by hue", () => {
+    const accents = [
       accentFor({ persona: "central-bank" }),
       accentFor({ persona: "clearing-house" }),
-      ...["bank_1", "bank_3", "bank_5", "bank_7"].map((pid) =>
-        accentFor({ persona: "bank", pid }),
-      ),
-    ].map(hueOf);
-    expect(new Set(hues).size).toBe(6);
+      ...SEEDED_BANKS.map((pid) => accentFor({ persona: "bank", pid })),
+    ];
+    expect(new Set(accents.map(hueOf)).size).toBe(accents.length);
   });
 
   // You are a customer *of* Aurora, and the screen should say so without a

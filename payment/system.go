@@ -1369,6 +1369,24 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err != nil {
 		return err
 	}
+	// A bank that has founded itself and not yet joined has no settlement account
+	// to place the cash on reserve in, and its own row says so by carrying no
+	// reference. Refused HERE, by name, because the alternative is what this
+	// posting did before the check existed: it named the empty account, the
+	// central bank's ledger refused an account it does not have, and the caller
+	// was told "account not found" — which reads as the CUSTOMER's account, the
+	// one thing in the request that is certainly fine.
+	//
+	// The sentinel is the settlement agent's, because the fact is the settlement
+	// agent's: no account is held for this bank. What is read for it is the
+	// bank's own record rather than the agent's member row, for the reason this
+	// function's doc gives — a funding bank quotes its own account number — and
+	// the two cannot disagree here, since both are written by the same
+	// acknowledgement.
+	if accts.Settlement == "" {
+		return fmt.Errorf("%w: %s is founded and not yet admitted, so it has no reserve to fund in %s",
+			ErrSettlementMemberNotFound, p.BIC, asset)
+	}
 
 	if _, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,

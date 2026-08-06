@@ -62,6 +62,14 @@ type recordingStore struct {
 	// right default: attributing it to an institution would put work no actor did
 	// into that actor's ledger of crossings.
 	byActor map[iso20022.BIC]map[ledger.BookID]bool
+	// updates counts the WRITING units of work opened since the last reset.
+	//
+	// It is what lets a test say "both books moved together" rather than "both
+	// books moved", which for a crossing is the whole of the claim: two entities
+	// with two stores cannot commit as one, so an act that reaches two books
+	// inside one Update is an act that has to become a message before they split.
+	// Views are not counted — a read crosses nothing that has to commit.
+	updates int
 }
 
 var _ payment.Store = (*recordingStore)(nil)
@@ -75,6 +83,9 @@ func newRecordingStore(inner payment.Store) *recordingStore {
 }
 
 func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	s.mu.Lock()
+	s.updates++
+	s.mu.Unlock()
 	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
 	})
@@ -156,10 +167,19 @@ func sortedBooks(set map[ledger.BookID]bool) []ledger.BookID {
 	return out
 }
 
+// unitsOfWork is how many writing units of work have been opened since the last
+// reset. See recordingStore.updates.
+func (s *recordingStore) unitsOfWork() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updates
+}
+
 func (s *recordingStore) reset() {
 	s.mu.Lock()
 	s.books = map[ledger.BookID]bool{}
 	s.byActor = map[iso20022.BIC]map[ledger.BookID]bool{}
+	s.updates = 0
 	s.mu.Unlock()
 }
 
@@ -1494,6 +1514,76 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 	}
 	if slices.Contains(h.booksTouchedBy(joinerBIC), payment.CentralBankBook) {
 		t.Error("the joining bank reached the central bank's book; the settlement account is opened for it, not by it")
+	}
+}
+
+// TestFundingAReserveReachesTwoBooks pins crossing 6 as a fact rather than a
+// note.
+//
+// It is the one measurement in this file that is expected to PASS today and to
+// FAIL the day the stores split, and that is what it is for. Network.DepositTx
+// posts the funding bank's reserve mirror and the central bank's leg in one unit
+// of work, and it is the only way a reserve is funded in this system: cash paid
+// in raises a customer's balance and the bank's reserve together, because that
+// is what a deposit IS here. There is no vault and no lodgement to route it
+// through — modelling one is what closes this crossing, and the spec gives that
+// its own task rather than folding it into the task that made admission a
+// conversation.
+//
+// # No instrument this sub-project had could have found it
+//
+// The recorder attributes a book to the actor whose unit of work reached it, and
+// funding never becomes a message: it arrives at Network.Deposit from an
+// operator or from a fixture, with no institution behind it. So booksTouchedBy
+// has nothing to narrow by and every assertion built on it — every other
+// measurement in this file — is blind to this call by construction. It drives
+// the recorder directly instead, the way TestWritingAParticipantTouchesNoBankBook
+// does, and reads the whole-store set.
+//
+// # The measured set is [the bank's book, CentralBankBook], and the plan said three
+//
+// This task's plan predicted NetworkBook in the set too, on the reasoning the
+// note above the tests gives: a network-scoped write reaches this recorder
+// through the id it allocated and the audit event it appended. The measurement
+// says otherwise, and the reason is that a deposit writes NO network row. It
+// allocates no network id and appends no audit event; its whole record is the
+// two ledger transactions, one in each of the two books below. That is the same
+// correction Task 16's return measurement made — the question both times is
+// whether the act writes a row of the network's, and here it does not.
+//
+// # What the two books mean
+//
+// The bank's own book takes the funded account's credit and the debit to its
+// Reserve at Central Bank. CentralBankBook takes the matching pair in the
+// settlement agent's ledger: its Settlement Assets debited, this bank's
+// settlement account credited. The second is a bank posting in another
+// institution's book, inside the funding bank's own unit of work, and no
+// re-routing of a LOOKUP changes it — Task 17 moved DepositTx's account read
+// from the central bank's member row to the bank's own record of its account
+// number, and the posting stayed exactly where it was. See
+// Network.DepositTx, which says the same thing from the other side.
+//
+// The unit of work is counted rather than described, because "in one unit of
+// work" is the whole of what makes this a crossing and not two acts: two stores
+// cannot commit together, so the day the settlement agent has its own store this
+// call has to become a message and this count is what stops it being split
+// quietly first.
+func TestFundingAReserveReachesTwoBooks(t *testing.T) {
+	h := newMeshHarness(t)
+
+	// The fixture's payer, funded again. Which account it is does not matter to
+	// what this measures — every deposit takes the same two legs — and reusing
+	// the fixture's keeps the call under test the only thing in the measurement.
+	h.rec.reset()
+	if err := h.net.Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, 100_000, "cash in"); err != nil {
+		t.Fatalf("Deposit: %v", err)
+	}
+
+	assertBooksTouched(t, "funding a reserve", h.rec.touched(),
+		[]ledger.BookID{h.debtorBook, payment.CentralBankBook})
+	if got := h.rec.unitsOfWork(); got != 1 {
+		t.Errorf("funding a reserve opened %d units of work, want 1; the crossing is that both "+
+			"books move together, and two of them would mean it had already been split", got)
 	}
 }
 

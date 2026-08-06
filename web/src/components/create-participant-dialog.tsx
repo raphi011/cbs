@@ -19,10 +19,18 @@ import { FieldLabel } from "./field-label";
 import { useAddParticipant, useAssets } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 
-// Creates a participant (member bank). It does not navigate to the new bank's
-// console: a bank admitted at runtime has no listener until the server
-// restarts, so that console would 502 on every request — exactly what the
-// lobby and identity picker refuse to walk into.
+// Founds a bank and applies to the scheme for it.
+//
+// What POST /members answers with is a FOUNDED bank, and this form says so
+// rather than reporting an admission. The application is answered by two other
+// institutions and arrives afterwards, so at the moment this dialog closes the
+// bank has its own book and its own customers and no settlement account
+// anywhere: it cannot pay or be paid, and the clearing house's list is where it
+// is seen becoming a member.
+//
+// It does not navigate to the new bank's console: a bank founded at runtime has
+// no listener until the server restarts, so that console would 502 on every
+// request — exactly what the lobby and identity picker refuse to walk into.
 export function CreateParticipantDialog({
   trigger,
 }: {
@@ -34,11 +42,12 @@ export function CreateParticipantDialog({
   // addresses it by, and what the mesh routes on. Required: POST /members
   // 422s without one (payment.Participant.BIC).
   const [bic, setBic] = useState("");
-  // The assets the bank joins with. Each one provisions a suspense, reserve
-  // and settlement account, and a bank can only hold money in an asset it
-  // joined with — so this is the one screen that decides it, and it cannot be
-  // changed afterwards. Defaults to the euro, matching the backend's default
-  // for an omitted list.
+  // The assets the bank joins with. Founding opens a suspense and a reserve
+  // account per asset in the bank's own book, and the application asks the
+  // central bank for a settlement account in each; a bank can only hold money in
+  // an asset it joined with, so this is the one screen that decides it, and it
+  // cannot be changed afterwards. Defaults to the euro, matching the backend's
+  // default for an omitted list.
   const [assets, setAssets] = useState<string[]>(["EUR"]);
   const known = useAssets();
   const add = useAddParticipant();
@@ -62,9 +71,15 @@ export function CreateParticipantDialog({
           setName("");
           setBic("");
           setAssets(["EUR"]);
+          // Reports what was DONE and not what was granted. The bank exists
+          // and its application is out; whether the scheme takes it is answered
+          // elsewhere, and a toast saying "admitted" would be this screen
+          // claiming an outcome no institution had reached yet.
           toast.success(
-            `${p.name} admitted. Its reserve accounts are open; it gets a listener ` +
-              `of its own when the server restarts — admission is not provisioning.`,
+            `${p.name} founded, and its application is with the scheme. It can open ` +
+              `customer accounts now; it can pay and be paid once the central bank and ` +
+              `the clearing house have answered. A listener of its own comes with the ` +
+              `next server restart.`,
           );
         },
         onError: (err) => toast.error(describeError(err)),
@@ -87,9 +102,12 @@ export function CreateParticipantDialog({
           <DialogHeader>
             <DialogTitle>New participant</DialogTitle>
             <DialogDescription>
-              A participant is a member bank in the network. Creating one
-              provisions its chart of accounts: a customer subledger, a clearing
-              suspense account, and a reserve account at the central bank.
+              A participant is a bank in the network. This founds it — its own
+              book, a customer subledger and a clearing suspense account — and
+              applies to the scheme on its behalf. Joining is a conversation
+              between three institutions, so it is a founded bank that comes
+              back, and the central bank and the clearing house answer after
+              this dialog has closed.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -138,9 +156,10 @@ export function CreateParticipantDialog({
               })}
             </div>
             <p className="text-xs text-muted-foreground">
-              One suspense, reserve and settlement account is opened per asset.
-              A bank can only hold money in an asset it joined with, and the set
-              cannot be changed afterwards.
+              Founding opens a suspense and a reserve account per asset in the
+              bank&apos;s own book, and asks the central bank for a settlement
+              account in each. A bank can only hold money in an asset it joined
+              with, and the set cannot be changed afterwards.
             </p>
           </div>
           <DialogFooter>
@@ -153,7 +172,7 @@ export function CreateParticipantDialog({
                 assets.length === 0
               }
             >
-              {add.isPending ? "Creating…" : "Create participant"}
+              {add.isPending ? "Founding…" : "Found and apply"}
             </Button>
           </DialogFooter>
         </form>

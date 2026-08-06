@@ -37,6 +37,22 @@ type participantDTO struct {
 	// BIC is this bank's ISO 9362 business identifier code — what a
 	// counterparty addresses it by, and what the mesh routes on.
 	BIC string `json:"bic"`
+	// Status is "Founded" or "Member", and it is the field that says whether this
+	// bank can be paid.
+	//
+	// A founded bank has a book, a chart of accounts and a product, and can open
+	// customer accounts; no settlement agent holds an account for it and no
+	// clearing house routes to it, so nothing it submits can clear. It became a
+	// state a client can SEE when admission became a conversation: POST /members
+	// answers 202 with a founded bank, and the scheme's answer arrives at two
+	// other institutions afterwards. Before that the two were one commit and
+	// every bank a caller could read was a member.
+	//
+	// It is a string of the domain's own values rather than a boolean, because
+	// "not a member" is not one condition — Task 19's reconciliation is what
+	// finds the admissions that stopped halfway, and a bool would have to be
+	// widened on the day it names one.
+	Status string `json:"status"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
 	// product, so a client that has just created a bank needs to be told which
@@ -63,6 +79,7 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 		ID:                string(p.ID),
 		Name:              p.Name,
 		BIC:               string(p.BIC),
+		Status:            string(p.Status),
 		ProductID:         string(p.ProductID),
 		CustomerSubledger: string(p.CustomerSubledger),
 		Assets:            assets,

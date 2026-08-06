@@ -458,6 +458,62 @@ func TestAdmissionRefusesAnAddressAnotherBankAnswersTo(t *testing.T) {
 	}
 }
 
+// TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal pins the one case of a taken
+// address where nobody answers to the address yet.
+//
+// The three other ways ErrAddressTaken is reached are all somebody else holding
+// it: a member (the roster read), an institution, another bank of this mesh. A
+// RESERVED address is none of those — it is this same bank, between claiming its
+// address and getting its actor — and the difference is the whole reason the
+// layer above needs to tell them apart. api.handleAddParticipant answers the
+// other three with "admit this bank on an address of its own", which is advice
+// that cannot be followed here: the address is not the problem, and the fix is to
+// wait for the application that is already out.
+//
+// The reservation is made through claimAddress, which is the call Admit itself
+// makes, because the window it opens is otherwise a few microseconds wide and
+// nothing outside this package can hold it open. What it costs is a white-box
+// test; what it buys is a deterministic one.
+func TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal(t *testing.T) {
+	h := newMeshHarness(t)
+	ctx := context.Background()
+
+	// An admission on this address is in flight: claimed, and not yet
+	// registered.
+	if redriving, err := h.mesh.claimAddress(joinerBIC); err != nil || redriving != "" {
+		t.Fatalf("claiming a free address: (%q, %v), want (\"\", nil)", redriving, err)
+	}
+
+	before := h.bankCount(t)
+	_, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	if err == nil {
+		t.Fatal("a second admission on an address already claimed succeeded")
+	}
+	if !errors.Is(err, ErrAdmissionInFlight) {
+		t.Errorf("Admit on a reserved address: %v, want ErrAdmissionInFlight", err)
+	}
+	// And still a taken address, so nothing that only asks that question has
+	// stopped getting an answer.
+	if !errors.Is(err, ErrAddressTaken) {
+		t.Errorf("ErrAdmissionInFlight does not wrap ErrAddressTaken: %v", err)
+	}
+	if after := h.bankCount(t); after != before {
+		t.Errorf("the refused admission wrote %d bank row(s)", after-before)
+	}
+
+	// The reservation goes back, and the address was never anybody else's: the
+	// bank whose admission was in flight can still be admitted on it.
+	h.mesh.releaseAddress(joinerBIC)
+	joiner, err := h.mesh.Admit(ctx, "Nordhaven Bank", joinerBIC, euroOnly)
+	if err != nil {
+		t.Fatalf("admitting once the reservation is released: %v", err)
+	}
+	h.drain(t)
+	if got := h.getBank(t, joiner.ID); got.Status != payment.BankMember {
+		t.Errorf("the bank is %q, want %q", got.Status, payment.BankMember)
+	}
+}
+
 // TestNothingIsWrittenWhenTheAddressIsRefused is the ordering, made falsifiable.
 // The address is claimed before the bank's unit of work runs, so a clash writes
 // no row at all — where the call this replaced wrote the row and THEN asked.

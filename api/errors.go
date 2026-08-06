@@ -98,6 +98,17 @@ func errorStatus(err error) int {
 		// back to the clearing house as a pacs.002 rather than to a caller as a
 		// status code.
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
+		// A bank the settlement agent holds no account for is a bank that has
+		// founded itself and not yet joined — a legitimate state since admission
+		// became a conversation, and a refusal about that bank's membership
+		// rather than about anything in the request. 422 for the same reason the
+		// asset case above is: the request is well formed and the state refuses
+		// it. It reaches a caller from POST /participants/{pid}/deposits, whose
+		// customer account is fine and whose bank has nowhere to place the cash on
+		// reserve; the reserve routes never surface it, because a bank with no
+		// settlement account is reported as no row rather than as an error (see
+		// Server.reserveRows).
+		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),
 		errors.Is(err, lending.ErrLimitExceeded),

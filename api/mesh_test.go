@@ -39,9 +39,12 @@ import (
 // them by IBAN rather than by id — see seededParty, which says why the ids are
 // no longer written down.
 //
-// The mesh is started AFTER the seed, which is the order cmd/server uses and for
-// the same reason: mesh.Start reads the participant roster once, so a mesh
-// started over an empty store would have no member banks in it at all.
+// The mesh is started BEFORE the seed, which is the order cmd/server uses and
+// for the same reason: the seed admits its banks through the mesh's own door, so
+// the two institutions that answer an application have to be running before
+// there is an application to answer. mesh.Start's roster read finds nothing here
+// — the banks it would have registered are the ones Populate is about to admit,
+// and each of those gets its actor from Mesh.Admit as it is founded.
 //
 // Drain FIRST, then Stop, at cleanup. Stop closes every inbox in one step before
 // it joins anybody, so a conversation still in flight when it runs is cut — the
@@ -55,9 +58,6 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 	data := seed.New()
 	store := testenv.New(t, data.Now)
 	net := payment.NewNetwork(store.Payment(), data.Now)
-	if err := data.Populate(ctx, net); err != nil {
-		t.Fatalf("populate: %v", err)
-	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := testMeshConfig
@@ -87,6 +87,15 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 		gate.openAll()
 		gates.Delete(msh)
 	})
+
+	// Seeded LAST, and after both cleanups are registered: the seed's four
+	// admissions are conversations through this mesh, so a Populate that failed
+	// halfway would otherwise leave actor goroutines nobody joins. They pass the
+	// gate like every other message and go straight through, because no test has
+	// run yet and so no gate is held.
+	if err := data.Populate(ctx, net, msh); err != nil {
+		t.Fatalf("populate: %v", err)
+	}
 	return NewServer(net, msh, data.Populate, log), msh
 }
 
@@ -190,12 +199,15 @@ var testMeshConfig = mesh.Config{
 //
 // The ids used to be written down here — bank_1 and dep_22 for Alice — on the
 // grounds that the store's id sequences start from nothing and the seed builds
-// the same things in the same order every time. Both halves are still true and
-// the numbers are not: admission draws three more network ids than it did (see
-// payment.admissionSequenceTx), so Banca Verde moved from bank_3 to bank_6 and
-// every id after it moved with it. The next task to add an allocation will move
-// them again. An IBAN is the seed's own stable name for a customer, so it is
-// what these tests ask by.
+// the same things in the same order every time. Both of those are still true,
+// and the numbers were still wrong twice in one task: every network id comes
+// from one counter, so an act that allocates one more than it used to moves
+// every id after it. Admission became three acts and then a conversation, and
+// each change shifted the whole sequence.
+//
+// An IBAN is the seed's own stable name for a customer and is what these tests
+// ask by. It is stable for a reason that will outlast this task: the seed CHOSE
+// it, where an id is whatever the counter had reached.
 func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
 	t.Helper()
 	ref, err := s.network().ResolveIdentifier(context.Background(),
@@ -333,6 +345,90 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 	}
 }
 
+// TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName is the other half of
+// what a founded bank means to this API.
+//
+// Funding is the one operation that reaches ACROSS to the settlement agent —
+// cash paid in raises the customer's balance and the bank's reserve in one unit
+// of work — so a bank with no settlement account has nowhere for the second leg
+// to land. It used to name the empty account anyway and come back 404 "account
+// not found", which is the customer's account by any reasonable reading and is
+// the one thing in the request that was fine.
+//
+// 422 and a sentence about membership instead. The state is legitimate and
+// temporary, and what an operator has to do about it is wait, not correct their
+// request.
+//
+// The bank is provably still Founded while this runs: the central bank's door is
+// held, so the acmt.007 cannot be answered and the acknowledgement that fills in
+// the settlement reference cannot arrive. Without the gate this would be a race
+// against three actors, and one that mostly loses.
+func TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName(t *testing.T) {
+	srv, msh := newAPIHarness(t)
+	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
+	defer open()
+
+	p := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`, http.StatusAccepted)
+	pid := p["id"].(string)
+	if got := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)["status"].(string); got != "Founded" {
+		t.Fatalf("the bank is %q; this test is about one the scheme has not answered for", got)
+	}
+
+	// A customer account it CAN open, and money it cannot take in.
+	acct := doJSON(t, bank(srv, pid), "POST", "/deposit-accounts",
+		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, srv, pid)+`"}`, http.StatusCreated)["id"].(string)
+	rec := do(t, bank(srv, pid), "POST", "/deposits",
+		`{"account":"`+acct+`","amount":1000,"description":"opening"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("funding a founded bank = %d, want 422 (body: %s)", rec.Code, rec.Body)
+	}
+	if msg := rec.Body.String(); !strings.Contains(msg, "not yet admitted") {
+		t.Errorf("the refusal does not say the bank is not admitted yet: %s", msg)
+	}
+
+	// Once the scheme has answered, the same request goes through.
+	open()
+	drainServer(t, srv)
+	doJSON(t, bank(srv, pid), "POST", "/deposits",
+		`{"account":"`+acct+`","amount":1000,"description":"opening"}`, http.StatusOK)
+}
+
+// TestAReseededNetworkCanStillBePaidThrough is the guarantee that moved when
+// Reset stopped calling JoinRoster.
+//
+// A reset forgets every bank actor, truncates and reseeds. The actors used to be
+// put back in a step of the reset's own — read the roster, register it whole —
+// and now they are not: the reseed admits its banks through the mesh, so each
+// one gets its actor in the call that founds it. That is a better division of
+// labour and a weaker guarantee, because nothing in api can check that a reseed
+// did it. This is what checks it, from the outside, in the only way that
+// matters: a payment between two reseeded banks reaches the far side.
+//
+// A row with no actor answers every read, so an assertion on the participant
+// list would pass over exactly the failure this exists to catch. It has to be a
+// payment, and it has to be carried to Accepted, because that is the state only
+// the PAYEE's bank can put it in.
+func TestAReseededNetworkCanStillBePaidThrough(t *testing.T) {
+	srv, _ := newAPIHarness(t)
+
+	rec := post(t, srv.CentralBankRoutes(), "/admin/reset")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset = %d (body: %s)", rec.Code, rec.Body)
+	}
+
+	// The seed's own two customers, resolved again: the reseed rebuilt them, and
+	// their ids are not the ones the first build had reason to be.
+	pay := postJSON(t, payerRoutes(t, srv), "/payments", validSubmission(t, srv))
+	if pay.Code != http.StatusAccepted {
+		t.Fatalf("submitting after a reset = %d (body: %s)", pay.Code, pay.Body)
+	}
+	id := decodePaymentID(t, pay)
+	drain(t, srv.mesh)
+	if got := getPayment(t, srv, id); got.Status != "Accepted" {
+		t.Fatalf("a payment through a reseeded network is %q, want Accepted", got.Status)
+	}
+}
+
 // A reset replaces the network, so it has to replace the mesh's picture of it.
 //
 // This is the sequence the reviewer walked over HTTP and it failed at step 4:
@@ -344,7 +440,7 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 //
 // Every assertion below is one of the three things that were wrong: the
 // re-admission is accepted, the bank that comes back can actually be paid
-// through — which is the part a 201 alone would not prove, since a row with no
+// through — which is the part the 202 alone would not prove, since a row with no
 // actor answers every read and carries no payment — and the refusal that IS
 // still reachable says something true.
 func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
@@ -354,8 +450,8 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 		t.Helper()
 		return admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, want)
 	}
-	admit("Bank A", "BNKADEFFXXX", http.StatusCreated)
-	admit("Bank B", "BNKBDEFFXXX", http.StatusCreated)
+	admit("Bank A", "BNKADEFFXXX", http.StatusAccepted)
+	admit("Bank B", "BNKBDEFFXXX", http.StatusAccepted)
 
 	assertStatus(t, cb(h), "POST", "/admin/reset", "", http.StatusOK)
 
@@ -366,8 +462,8 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	}
 
 	// The same two addresses, on a system that has never heard of them.
-	a := admit("Bank A again", "BNKADEFFXXX", http.StatusCreated)["id"].(string)
-	b := admit("Bank B again", "BNKBDEFFXXX", http.StatusCreated)["id"].(string)
+	a := admit("Bank A again", "BNKADEFFXXX", http.StatusAccepted)["id"].(string)
+	b := admit("Bank B again", "BNKBDEFFXXX", http.StatusAccepted)["id"].(string)
 
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-AFTER-RESET-01"}]}`,

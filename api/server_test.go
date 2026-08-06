@@ -43,24 +43,36 @@ func bank(s *Server, pid string) http.Handler {
 //
 // The mesh is not optional and every test here gets one, because since
 // sub-project 7b it is what carries a payment past the bank it was handed to.
-// Started after populate, which is the order cmd/server uses: mesh.Start reads
-// the participant roster once, and a bank admitted afterwards — which for most
-// tests here is every bank — registers itself through POST /members. That is why
-// two banks in one test may not share a BIC: two actors on one address is a
-// routing table with one entry, and the mesh refuses it at admission.
+// Started BEFORE populate, which is the order cmd/server uses: a reseed admits
+// its banks through the mesh's own door, so the institutions that answer an
+// application have to be running first. mesh.Start's roster read therefore finds
+// nothing, and every bank in these tests — the reseed's and the ones admitted
+// later through POST /members — gets its actor from Mesh.Admit. That is why two
+// banks in one test may not share a BIC: two actors on one address is a routing
+// table with one entry, and the mesh refuses it at admission.
 //
 // Drain FIRST, then Stop, at cleanup, and both errors are reported. See
 // newAPIHarness in mesh_test.go, which says why at length.
-func newServer(t *testing.T, populate func(context.Context, *payment.Network) error) *Server {
+func newServer(t *testing.T, populate func(context.Context, *payment.Network, *mesh.Mesh) error) *Server {
+	t.Helper()
+	return newServerOverStore(t, nil, populate)
+}
+
+// newServerOverStore is newServer with the payment store wrapped, for the one
+// test that needs to hold a unit of work open. gate may be nil, which is every
+// other caller.
+func newServerOverStore(t *testing.T, gate *gatedStore,
+	populate func(context.Context, *payment.Network, *mesh.Mesh) error) *Server {
+
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
 	store := testenv.New(t, clock)
-	net := payment.NewNetwork(store.Payment(), clock)
-	if populate != nil {
-		if err := populate(context.Background(), net); err != nil {
-			t.Fatalf("populate: %v", err)
-		}
+	var ps payment.Store = store.Payment()
+	if gate != nil {
+		gate.Store = ps
+		ps = gate
 	}
+	net := payment.NewNetwork(ps, clock)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	msh, err := mesh.New(net, testMeshConfig, log)
 	if err != nil {
@@ -79,7 +91,39 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Network) er
 			t.Errorf("stopping: %v", err)
 		}
 	})
+	if populate != nil {
+		if err := populate(context.Background(), net, msh); err != nil {
+			t.Fatalf("populate: %v", err)
+		}
+	}
 	return NewServer(net, msh, populate, log)
+}
+
+// admitForPopulate is what a reseed here uses to make a bank: the mesh's own
+// door, then a wait for the scheme to answer.
+//
+// Every one of these baselines used to call testenv.Admit, which plays the four
+// acts in one goroutine and writes the member row itself. That is no longer
+// enough for a RESEED. api.Server.Reset forgets every bank actor before it
+// truncates and no longer re-registers them afterwards, so a reseed that wrote
+// its rows directly would rebuild a network whose banks answer every read and
+// carry no payment. Going through Admit is what gives each one its actor in the
+// same call that founds it.
+//
+// It drains per bank, for the reason seed.builder.admit gives: network ids come
+// from one counter, and a conversation still running while the next bank is
+// founded moves that bank's id.
+func admitForPopulate(ctx context.Context, net *payment.Network, msh *mesh.Mesh,
+	name string, bic iso20022.BIC) (*payment.Bank, error) {
+
+	founded, err := msh.Admit(ctx, name, bic, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := msh.Drain(ctx); err != nil {
+		return nil, err
+	}
+	return net.GetBank(ctx, founded.ID)
 }
 
 // drainServer waits for the mesh behind a Server built by newServer to go quiet.
@@ -209,7 +253,7 @@ func prdOf(t *testing.T, h *Server, pid string) string {
 func TestDepositFlow(t *testing.T) {
 	h := newServer(t, nil)
 
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// Fund Alice and confirm the returned balance.
@@ -228,8 +272,8 @@ func TestDepositFlow(t *testing.T) {
 func TestSCTEndToEnd(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SCT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
@@ -298,7 +342,7 @@ func TestSCTEndToEnd(t *testing.T) {
 // where a default would go unnoticed.
 func TestCreateAccountRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 
@@ -312,7 +356,7 @@ func TestCreateAccountRequiresAsset(t *testing.T) {
 
 func TestOpenDepositAccountRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"No Asset"}`, http.StatusBadRequest)
 }
@@ -376,18 +420,185 @@ func TestCreateParticipantBICIsValidatedAndRendered(t *testing.T) {
 		})
 	}
 
-	p := admitMember(t, h, `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)
+	p := admitMember(t, h, `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusAccepted)
 	assertEqual(t, "bic on creation", p["bic"].(string), "AURODEFFXXX")
 
 	reread := doJSON(t, bank(h, p["id"].(string)), "GET", "/me", "", http.StatusOK)
 	assertEqual(t, "bic on a later read", reread["bic"].(string), "AURODEFFXXX")
 }
 
+// TestAdmissionAnswers202WithAFoundedBank pins what POST /members says about a
+// bank that has applied and not yet been answered.
+//
+// Three things, and they are one claim seen three ways. The status code is 202
+// rather than 201, because the resource an operator is asking for — a member of
+// the scheme — does not exist yet and this call cannot make it exist. The DTO
+// says Founded, which is the only field that distinguishes the two states. And
+// the settlement account, which is the central bank's to open, is EMPTY in that
+// answer and filled in once the conversation has finished.
+//
+// The reserves route is the other half of the same moment, and it is the one
+// that used to fail outright: a founded bank has no settlement account, so
+// ReserveBalance answers ErrSettlementMemberNotFound and the handler returned
+// that for the whole participant — a 500 for a bank in a state this system
+// creates on every admission. It reports NO ROW for such a bank instead. Not a
+// zero: zero is a balance, and there is no account to have one.
+func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
+	h := newServer(t, nil)
+
+	founded := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)
+	pid := founded["id"].(string)
+	assertEqual(t, "status in the 202", founded["status"].(string), "Founded")
+	assets := founded["assets"].([]any)
+	if len(assets) != 1 {
+		t.Fatalf("a euro bank came back with %d asset rows, want 1", len(assets))
+	}
+	assertEqual(t, "settlement account in the 202",
+		assets[0].(map[string]any)["settlement"].(string), "")
+
+	// Reserves: nothing to report, and a 200 saying so.
+	var reserves []map[string]any
+	getJSON(t, cb(h), "/reserves/"+pid, &reserves)
+	if len(reserves) != 0 {
+		t.Errorf("a founded bank reports %v; the central bank holds no account for it yet", reserves)
+	}
+	// And the list route passes over it rather than failing on it.
+	var all []map[string]any
+	getJSON(t, cb(h), "/reserves", &all)
+	if len(all) != 0 {
+		t.Errorf("the reserve list reports %v with no bank admitted yet", all)
+	}
+
+	// Once the scheme has answered, all three change together.
+	drainServer(t, h)
+	member := doJSON(t, bank(h, pid), "GET", "/me", "", http.StatusOK)
+	assertEqual(t, "status after the conversation", member["status"].(string), "Member")
+	settlement := member["assets"].([]any)[0].(map[string]any)["settlement"].(string)
+	if settlement == "" {
+		t.Error("the bank is a Member and carries no settlement account")
+	}
+	getJSON(t, cb(h), "/reserves/"+pid, &reserves)
+	if len(reserves) != 1 || reserves[0]["asset"] != "EUR" {
+		t.Fatalf("a member's reserves = %v, want one EUR row", reserves)
+	}
+	assertEqual(t, "the reserve of a member that has been funded by nobody",
+		int64(reserves[0]["reserve"].(float64)), int64(0))
+}
+
+// TestAdmittingABICWithAnAdmissionInFlightSaysToWait pins the OTHER 422, which
+// is the one an operator could act wrongly on.
+//
+// Both refusals are ErrAddressTaken and until now both were answered with the
+// same sentence: another institution answers to this BIC, nothing was written,
+// admit this bank on an address of its own. Every clause of it is wrong for an
+// admission that is merely still in flight — it is not another institution, it
+// is this same bank; nothing was written YET rather than at all; and a second
+// address does not help, because the first one is already this bank's.
+//
+// # Holding the window open
+//
+// The reservation exists between claiming the address and registering the
+// actor, which is one FoundBank away and would otherwise be microseconds. So
+// this drives the store: gatedStore holds the founding unit of work open, the
+// second request runs while it is held, and the assertion is on the answer that
+// request gets. Nothing here sleeps and nothing races — the goroutine reports
+// when it is inside the gate.
+func TestAdmittingABICWithAnAdmissionInFlightSaysToWait(t *testing.T) {
+	gate := newGatedStore()
+	h := newServerOverStore(t, gate, nil)
+
+	entered, release := gate.armOneUpdate()
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`) }()
+	<-entered
+
+	// The same address, while the first application holds it.
+	rec := do(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A again"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a second admission on an address in flight = %d, want 422 (body: %s)", rec.Code, rec.Body)
+	}
+	msg := rec.Body.String()
+	for _, want := range []string{"already under way", "wait"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal does not say %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "another institution") || strings.Contains(msg, "address of its own") {
+		t.Errorf("the refusal sends the operator to a different address for an admission that is simply not finished: %s", msg)
+	}
+
+	release()
+	if first := <-done; first.Code != http.StatusAccepted {
+		t.Fatalf("the admission that held the address = %d, want 202 (body: %s)", first.Code, first.Body)
+	}
+	drainServer(t, h)
+	assertBankCountByBIC(t, h, "BNKADEFFXXX", 1)
+}
+
+// assertBankCountByBIC counts the banks answering to one address. By BIC and not
+// by id, because what it is for is a SECOND founding on an address that already
+// has one, which would have an id of its own and be invisible to any assertion
+// about the first.
+func assertBankCountByBIC(t *testing.T, h *Server, bic string, want int) {
+	t.Helper()
+	var members []participantDTO
+	getJSON(t, csm(h), "/members", &members)
+	var got int
+	for _, m := range members {
+		if m.BIC == bic {
+			got++
+		}
+	}
+	if got != want {
+		t.Errorf("%d banks answer to %s, want %d", got, bic, want)
+	}
+}
+
+// gatedStore is a payment.Store that can hold ONE writing unit of work open.
+//
+// It exists for a single test, and for a single reason: an admission reserves
+// its address for the length of its founding unit of work, and nothing outside
+// the mesh can otherwise observe that window. Reads are never held — the second
+// request has to be able to make its own — and only the first Update after
+// arming is, so the request that is meant to be blocked is the one that is.
+type gatedStore struct {
+	payment.Store
+
+	mu      sync.Mutex
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newGatedStore() *gatedStore { return &gatedStore{} }
+
+// armOneUpdate makes the next writing unit of work stop on entry. It returns a
+// channel that is closed once that has happened and the function that lets it
+// go.
+func (g *gatedStore) armOneUpdate() (<-chan struct{}, func()) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	g.mu.Lock()
+	g.entered, g.release = entered, release
+	g.mu.Unlock()
+	return entered, sync.OnceFunc(func() { close(release) })
+}
+
+func (g *gatedStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	g.mu.Lock()
+	entered, release := g.entered, g.release
+	g.entered, g.release = nil, nil
+	g.mu.Unlock()
+	if entered != nil {
+		close(entered)
+		<-release
+	}
+	return g.Store.Update(ctx, fn)
+}
+
 // TestAccountResponseIncludesAsset pins that the account, deposit-account and
 // entry DTOs all carry the asset they are denominated in.
 func TestAccountResponseIncludesAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 
 	res := do(t, bank(h, pid), "GET", "/deposit-accounts", "")
@@ -422,7 +633,7 @@ func TestAccountResponseIncludesAsset(t *testing.T) {
 // value-dated balance, read back with ?asOf=today, carries only the first.
 func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -461,7 +672,7 @@ func TestBalanceEndpointReportsTheValueDatedBalance(t *testing.T) {
 // either way, which is what makes the two figures distinguishable here.
 func TestBalanceEndpointDefaultsAsOfToNow(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -498,7 +709,7 @@ func TestBalanceEndpointDefaultsAsOfToNow(t *testing.T) {
 // ?asOf=: it must not panic and must not silently fall back to now.
 func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -517,7 +728,7 @@ func TestBalanceEndpointRejectsAnUnparseableAsOf(t *testing.T) {
 // the default EUR-only set.
 func TestCreateParticipantWithAssets(t *testing.T) {
 	h := newServer(t, nil)
-	p := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusCreated)
+	p := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusAccepted)
 	assets := p["assets"].([]any)
 	if len(assets) != 1 {
 		t.Fatalf("participant assets = %v, want exactly one (USD)", assets)
@@ -540,7 +751,7 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 		{"explicitly empty", `{"bic":"BNKBDEFFXXX","name":"Bank B","assets":[]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := admitMember(t, h, tc.body, http.StatusCreated)
+			p := admitMember(t, h, tc.body, http.StatusAccepted)
 			assets := p["assets"].([]any)
 			if len(assets) != 1 {
 				t.Fatalf("participant assets = %v, want exactly one (EUR)", assets)
@@ -563,8 +774,8 @@ func TestCreateParticipantDefaultsToEuroForEmptyAndAbsentAssets(t *testing.T) {
 // subject at all.
 func TestCrossAssetPaymentReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD"]}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 
@@ -592,8 +803,8 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 func TestPaymentDTOsCarryAsset(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD","EUR"]}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B","assets":["EUR","USD"]}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["USD","EUR"]}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B","assets":["EUR","USD"]}`, http.StatusAccepted)["id"].(string)
 	aliceUSD := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"AliceUSD","asset":"USD","productId":"`+prdOf(t, h, a)+`"}`, http.StatusCreated)["id"].(string)
 	// aliceEUR and bob feed the SCT payment below, which addresses both legs by
 	// IBAN (payment.Scheme.AddressedBy) — aliceUSD and bobUSD only ever back a
@@ -779,8 +990,8 @@ func TestNoRouteSettlesACycle(t *testing.T) {
 // 25,000 against a reserve of nothing — a real bank in a real morning.
 func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	h := newServer(t, nil)
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SHORT-ALICE-0001"}]}`,
 		http.StatusCreated)["id"].(string)
@@ -840,7 +1051,7 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 // TestErrorMapping locks one error per HTTP status class.
 func TestErrorMapping(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 
 	// 404: unknown participant.
@@ -907,7 +1118,7 @@ func TestAuditEndpointIncludesPayloadAndSeq(t *testing.T) {
 
 	// Founding a bank posts several ledger audit events as a side effect
 	// (ledger + subledgers + accounts), so no further setup is needed.
-	admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)
+	admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)
 
 	rec := do(t, bank(h, "bank_1"), "GET", "/audit", "")
 	if rec.Code != http.StatusOK {
@@ -943,7 +1154,7 @@ func TestAdminReset(t *testing.T) {
 	}
 
 	// Create a participant, confirm it's present.
-	admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)
+	admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)
 	if emptyList() {
 		t.Fatal("expected one participant before reset, got empty list")
 	}
@@ -965,7 +1176,7 @@ func TestAdminReset(t *testing.T) {
 func TestResetEmptiesState(t *testing.T) {
 	// The tests' sample dataset: one bank with one customer. Idempotent, like
 	// the real one, so booting and resetting are the same call.
-	baseline := func(ctx context.Context, net *payment.Network) error {
+	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
 		existing, err := net.ListBanks(ctx)
 		if err != nil {
 			return err
@@ -973,7 +1184,7 @@ func TestResetEmptiesState(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := testenv.Admit(ctx, net, "Bank A", "BANKDEFFXXX", nil)
+		p, err := admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -1035,7 +1246,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		populateRan bool
 		populateCtx error
 	)
-	baseline := func(ctx context.Context, net *payment.Network) error {
+	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
 		populateRan = true
 		populateCtx = ctx.Err()
 		existing, err := net.ListBanks(ctx)
@@ -1045,7 +1256,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		_, err = testenv.Admit(ctx, net, "Bank A", "BANKDEFFXXX", nil)
+		_, err = admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
 		return err
 	}
 
@@ -1087,7 +1298,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // a single reset unsafe. Eight resets against a durable store produced twelve
 // participants where there should have been four.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
-	baseline := func(ctx context.Context, net *payment.Network) error {
+	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
 		existing, err := net.ListBanks(ctx)
 		if err != nil {
 			return err
@@ -1095,7 +1306,7 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := testenv.Admit(ctx, net, "Bank A", "BANKDEFFXXX", nil)
+		p, err := admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -1158,7 +1369,7 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newServer(t, nil)
 
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000,"description":"opening"}`, http.StatusOK)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
@@ -1248,8 +1459,8 @@ func TestControlCharactersInAPathAreRefused(t *testing.T) {
 // IDs and the payment ID.
 func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	t.Helper()
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-AUDIT-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
@@ -1801,7 +2012,7 @@ func openRevolvingLine(t *testing.T, h *Server, pid string, commitment int64) ma
 // reports zero drawn and zero accrued without a further round trip.
 func TestOpenTermLoanAndRevolvingLine(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	loan := openTermLoan(t, h, pid, 12)
 	assertEqual(t, "loan kind", loan["kind"].(string), "TermLoan")
@@ -1830,7 +2041,7 @@ func TestOpenTermLoanAndRevolvingLine(t *testing.T) {
 // and nothing here may pick one on the caller's behalf.
 func TestOpenFacilityRequiresAsset(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"TermLoan","name":"No Asset","commitment":100000,"rate":50000,
@@ -1843,7 +2054,7 @@ func TestOpenFacilityRequiresAsset(t *testing.T) {
 // account type: an unknown value is a 400 before the domain is ever called.
 func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	assertStatus(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"Nonsense","name":"X","asset":"EUR","commitment":100000,"rate":50000,"dayCount":"ACT/365"
@@ -1866,7 +2077,7 @@ func TestOpenFacilityRejectsUnknownEnums(t *testing.T) {
 // A second disbursement is refused.
 func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1902,7 +2113,7 @@ func TestDisburseTermLoanGeneratesSixtyRowSchedule(t *testing.T) {
 // refused without moving the drawn balance.
 func TestDrawPastCommitmentReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1931,7 +2142,7 @@ func TestDrawPastCommitmentReturns422(t *testing.T) {
 // credits the facility's drawn balance in the same request.
 func TestRepayFromDepositAccount(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1961,7 +2172,7 @@ func TestRepayFromDepositAccount(t *testing.T) {
 // nothing moves on either side.
 func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -1989,7 +2200,7 @@ func TestRepayExceedingAvailableBalanceReturns422(t *testing.T) {
 // minimum payment) is appended to the schedule.
 func TestChargeInterestOnRevolvingLine(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -2043,7 +2254,7 @@ func TestChargeInterestOnRevolvingLine(t *testing.T) {
 // empty body would report "nothing to charge" while the schedule gained a row.
 func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -2088,7 +2299,7 @@ func TestChargeInterestBillsACycleWithNothingToPost(t *testing.T) {
 // nothing is billed either.
 func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -2166,7 +2377,7 @@ func TestChargeOverdraftInterestEndpoint(t *testing.T) {
 // resolved-as-of-today fields still show the current terms, not the future ones.
 func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	prd := prdOf(t, h, pid)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","overdraftLimit":50000,"productId":"`+prd+`"}`, http.StatusCreated)["id"].(string)
 
@@ -2240,7 +2451,7 @@ func TestOverdraftTermsTimelineEndpoint(t *testing.T) {
 // this test is about both batches running, not about either figure.
 func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "GET", "/deposit-accounts/"+did, "", http.StatusOK)["glAccount"].(string)
 
@@ -2291,7 +2502,7 @@ func TestEndOfDayAccruesBothFacilityAndOverdraftInterest(t *testing.T) {
 // asset — no journal posts this number anywhere.
 func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	alice := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","overdraftLimit":100000,"productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
@@ -2326,7 +2537,7 @@ func TestTotalsReportsDerivedOverdraft(t *testing.T) {
 // follows.
 func TestUnknownFacilityReturns404(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	// A real, funded deposit account, so the repayments case below clears the
 	// available-funds check and 404s on the FACILITY lookup, not on the
 	// account or on insufficient funds.
@@ -2354,7 +2565,7 @@ func TestUnknownFacilityReturns404(t *testing.T) {
 // legs deliberately disagree.
 func TestEntryDTOCarriesItsOwnValueDate(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	gl := doJSON(t, bank(h, pid), "POST", "/ledgers", `{"name":"GL"}`, http.StatusCreated)["id"].(string)
 	slid := doJSON(t, bank(h, pid), "POST", "/ledgers/"+gl+"/subledgers", `{"name":"Sub"}`, http.StatusCreated)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/subledgers/"+slid+"/accounts", `{"name":"Cash","type":"Asset","asset":"EUR"}`, http.StatusCreated)["id"].(string)
@@ -2420,8 +2631,8 @@ func TestEntryDTOCarriesItsOwnValueDate(t *testing.T) {
 // and until entryDTO carried a value date the API reported one date for both.
 func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	h := newServer(t, nil)
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	// SCT addresses both legs by IBAN (payment.Scheme.AddressedBy), so both
 	// accounts need one before submission will accept them.
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-VD-ALICE-0001"}]}`, http.StatusCreated)
@@ -2496,7 +2707,7 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 // obligation is reachable and dischargeable from outside Go.
 func overpaidFacilityViaAPI(t *testing.T, h *Server) (pid, fid, did string, owed int64) {
 	t.Helper()
-	pid = admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid = admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	acct := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)
 	did = acct["id"].(string)
 	aliceGL := acct["glAccount"].(string)
@@ -2610,7 +2821,7 @@ func TestInterestRefundIsListedAndDischargeable(t *testing.T) {
 // reports no refund and no refund account.
 func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	loan := doJSON(t, bank(h, pid), "POST", "/facilities", `{
 		"kind":"TermLoan","name":"Bob Loan","asset":"EUR",
 		"commitment":500000,"rate":60000,"dayCount":"ACT/365",
@@ -2647,7 +2858,7 @@ func TestInterestRefundsPayableIsEmptyForAnOrdinaryBank(t *testing.T) {
 // cannot take any out.
 func TestFundingRespectsAccountStatus(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	open := func(name string) string {
 		return doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"`+name+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
@@ -2695,7 +2906,7 @@ func TestFundingRespectsAccountStatus(t *testing.T) {
 // account status transition", and it is a 422 like its frozen sibling.
 func TestDormantDebitNamesDormancy(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, pid), "POST", "/deposits", `{"account":"`+did+`","amount":100000}`, http.StatusOK)
 	fid := doJSON(t, bank(h, pid), "POST", "/facilities", `{
@@ -2722,7 +2933,7 @@ func TestDormantDebitNamesDormancy(t *testing.T) {
 // a malformed one.
 func TestProductCatalogueRoutes(t *testing.T) {
 	h := newServer(t, nil)
-	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 
 	created := doJSON(t, bank(h, pid), "POST", "/products", `{"name":"Basic Current Account","kind":"CurrentAccount"}`, http.StatusCreated)
 	prd := created["id"].(string)
@@ -2803,7 +3014,7 @@ func TestProductCatalogueRoutes(t *testing.T) {
 // section build on top of it rather than opening their own bare account.
 func someAccount(t *testing.T, h *Server) (pid, did string) {
 	t.Helper()
-	pid = admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
+	pid = admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
 	did = doJSON(t, bank(h, pid), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, pid)+`",`+
 		`"identifiers":[{"scheme":"IBAN","value":"XX00-SOME-0001"}]}`, http.StatusCreated)["id"].(string)
 	return pid, did
@@ -2822,8 +3033,8 @@ func anotherAccountAtSameBank(t *testing.T, h *Server, pid string) string {
 // participant, the account, its display name and its asset — everything a
 // caller needs to show who an address belongs to before paying it.
 func TestDirectoryResolvesAnIBAN(t *testing.T) {
-	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
-		p, err := testenv.Admit(ctx, net, "Aurora Bank", "BANKDEFFXXX", nil)
+	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
+		p, err := admitForPopulate(ctx, net, msh, "Aurora Bank", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -2894,7 +3105,7 @@ func TestAddAndRemoveIdentifierEndpoints(t *testing.T) {
 // a register: per-bank uniqueness cannot see across banks, which is exactly why
 // the network's sweep refuses rather than picking.
 func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
-	srv := newServer(t, func(ctx context.Context, net *payment.Network) error {
+	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
 		// A BIC each, because the mesh gives every bank an actor keyed by its
 		// address and refuses two banks on one. The ambiguity this test is about
 		// is in the two banks' IBANs, not in their BICs.
@@ -2902,7 +3113,7 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 			{"Aurora Bank", "AURODEFFXXX"},
 			{"Banca Verde", "VERDITMMXXX"},
 		} {
-			p, err := testenv.Admit(ctx, net, b.name, iso20022.BIC(b.bic), nil)
+			p, err := admitForPopulate(ctx, net, msh, b.name, iso20022.BIC(b.bic))
 			if err != nil {
 				return err
 			}
@@ -2962,8 +3173,8 @@ func TestDirectoryAmbiguousIdentifierIs409(t *testing.T) {
 func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	h := newServer(t, nil)
 
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-ADDR-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	// A creditor with no address at all: an SCT cannot reach it.
@@ -3148,8 +3359,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 // .superpowers/sdd/2026-08-02-task-14-message-carries-the-parties/final-fix-wave-report.md.
 func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	h := newServer(t, nil)
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts", `{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-ALICE-0001"}]}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, a), "POST", "/deposits", `{"account":"`+alice+`","amount":100000,"description":"opening"}`, http.StatusOK)

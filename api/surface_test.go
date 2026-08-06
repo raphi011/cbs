@@ -240,8 +240,8 @@ var preSplitRoutes = []string{
 // naming it.
 func TestABankCannotNameAnotherBank(t *testing.T) {
 	s := newServer(t, nil)
-	aurora := admitMember(t, s, `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusCreated)["id"].(string)
-	verde := admitMember(t, s, `{"bic":"VERDITMMXXX","name":"Banca Verde"}`, http.StatusCreated)["id"].(string)
+	aurora := admitMember(t, s, `{"bic":"AURODEFFXXX","name":"Aurora Bank"}`, http.StatusAccepted)["id"].(string)
+	verde := admitMember(t, s, `{"bic":"VERDITMMXXX","name":"Banca Verde"}`, http.StatusAccepted)["id"].(string)
 
 	h := bank(s, aurora)
 	assertStatus(t, h, "GET", "/participants/"+verde+"/deposit-accounts", "", http.StatusNotFound)
@@ -351,8 +351,8 @@ func TestTheCentralBankCanReadTheCycleItSettles(t *testing.T) {
 // and after the drain below this cycle is Settled.
 func settledCycle(t *testing.T, h *Server) string {
 	t.Helper()
-	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusCreated)["id"].(string)
-	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusCreated)["id"].(string)
+	a := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)["id"].(string)
+	b := admitMember(t, h, `{"bic":"BNKBDEFFXXX","name":"Bank B"}`, http.StatusAccepted)["id"].(string)
 	alice := doJSON(t, bank(h, a), "POST", "/deposit-accounts",
 		`{"name":"Alice","asset":"EUR","productId":"`+prdOf(t, h, a)+`","identifiers":[{"scheme":"IBAN","value":"SE89-SET-ALICE-0001"}]}`,
 		http.StatusCreated)["id"].(string)
@@ -436,7 +436,7 @@ func threeBanks(t *testing.T, h *Server) (a, b, c seededBank) {
 	// refuses two on one, so three banks that shared a BIC could not be admitted
 	// at all — let alone tell each other apart on the wire.
 	mk := func(name, bic, iban string) seededBank {
-		pid := admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusCreated)["id"].(string)
+		pid := admitMember(t, h, `{"bic":"`+bic+`","name":"`+name+`"}`, http.StatusAccepted)["id"].(string)
 		accountName := name + " customer"
 		did := doJSON(t, bank(h, pid), "POST", "/deposit-accounts",
 			`{"name":"`+accountName+`","asset":"EUR","productId":"`+prdOf(t, h, pid)+

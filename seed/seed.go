@@ -2,6 +2,7 @@ package seed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,9 +11,9 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
-	"github.com/raphi011/cbs/store/mem"
 )
 
 // baseDate anchors the deterministic seed timeline. Everything built before the
@@ -39,7 +40,26 @@ func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
 func (d *Dataset) Now() time.Time { return d.clock.now() }
 
 // Populate builds the full sample scenario (see the package doc) into the
-// network's store.
+// network's store, admitting its banks through the mesh it is given.
+//
+// # Why it takes a mesh
+//
+// Because admission is a conversation, and a bank that has not had one is not a
+// member: it holds no settlement account, so the very first thing this scenario
+// does after opening its accounts — paying an opening deposit in — has nowhere
+// to credit. The four acts used to be called here one after another, which is
+// the stand-in this replaces; the seeded dataset now goes through the mesh's own
+// door for its admissions and is answered by the same two actors that answer an
+// operator's POST /members.
+//
+// So the mesh must be RUNNING before this is called, which reverses the order
+// cmd/server used: the mesh is built and started over an unseeded store, and its
+// roster read finds nothing because the banks it would find are the ones this is
+// about to admit.
+//
+// It is not optional and there is no nil path. A Populate with no mesh could
+// found four banks and would leave every one of them Founded, which is a
+// scenario in which no payment in it can be made — see builder.admit.
 //
 // It is idempotent: a store that already holds participants is left alone. That
 // is what makes it safe to call on every boot — against a database that
@@ -80,11 +100,15 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // boundary, since its caller — the server's reset handler — has an error to
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
-func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error) {
+func (d *Dataset) Populate(ctx context.Context, net *payment.Network, msh *mesh.Mesh) (err error) {
 	// Registered first, so it runs last: whether the scenario was built now,
 	// was already there, or failed halfway, the clock is released before
 	// Populate returns.
 	defer d.clock.goLive()
+
+	if msh == nil {
+		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
+	}
 
 	existing, err := net.ListBanks(ctx)
 	if err != nil {
@@ -102,7 +126,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 
 	d.clock.rewind(baseDate)
 	b := &builder{
-		ctx: ctx, net: net, clock: d.clock,
+		ctx: ctx, net: net, mesh: msh, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
@@ -139,23 +163,22 @@ func recoverBuild(r any) error {
 	return fmt.Errorf("seed: %w", se.err)
 }
 
-// Network builds a fresh in-memory payment.Network populated with the sample
-// scenario. It is the convenience form of New plus Populate, for tests and
-// examples; the server wires the two together itself, because it needs to
-// repopulate the same network after a reset.
-func Network() *payment.Network {
-	d := New()
-	store := mem.New(d.Now)
-	net := payment.NewNetwork(store.Payment(), d.Now)
-	if err := d.Populate(context.Background(), net); err != nil {
-		panic(err.Error()) // already prefixed with "seed: "
-	}
-	return net
-}
+// There is no Network() convenience constructor any more, and the reason is
+// worth recording rather than rediscovering.
+//
+// It used to build a store, a network and the sample scenario in one call and
+// hand back the network, for tests and examples. Admission is a conversation
+// now, so building the scenario needs a running mesh — and a mesh is a set of
+// goroutines somebody has to stop. A function returning only the network would
+// leave them running for the life of the process with no handle to join them,
+// which is exactly the shutdown bug mesh.Stop's doc exists to prevent. Callers
+// build the four pieces themselves: cmd/server does, and so does this package's
+// own test helper.
 
 type builder struct {
 	ctx   context.Context
 	net   *payment.Network
+	mesh  *mesh.Mesh
 	clock *clock
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
@@ -185,45 +208,50 @@ func check(err error) {
 	}
 }
 
-// admit puts one bank through the four acts of an admission, one unit of work
-// each, with nothing carrying a message between them.
+// admit puts one bank through the mesh's own door and waits for the scheme to
+// answer.
 //
-// It is a STAND-IN for the conversation and says so rather than pretending
-// otherwise. Admission is three institutions and four commits with an acmt.007,
-// an acmt.010 and an acmt.011 between them (mesh.Mesh.Admit), and the seed has
-// no mesh: Populate takes a network and builds into its store. What this does is
-// call each institution's act in turn — the bank founds itself, the settlement
-// agent opens one account per asset, the clearing house writes the routing entry
-// from the answer, the bank records what it was told — which is exactly the
-// order the messages would produce and none of the isolation they would impose.
+// It is the whole conversation and no longer a stand-in for one: Mesh.Admit
+// founds the bank, gives it an actor and sends one acmt.007 per asset; the
+// central bank opens the settlement account and answers acmt.010; the clearing
+// house writes the routing entry and relays acmt.011; the bank records what it
+// was told. What comes back from Admit is a FOUNDED bank, because none of that
+// has happened yet, so this drains and re-reads the row — a bank that is still
+// Founded holds no settlement account, and the next thing this scenario does is
+// pay an opening deposit in, which is refused without one.
 //
-// Task 17e is what deletes it: Populate takes a mesh, the four calls below
-// become one Admit and one Drain, and the seeded dataset starts exercising the
-// mesh's own doors instead of going round them.
+// # One admission at a time, because the ids have to be reproducible
 //
-// The admission reference is derived from the BIC rather than left empty. There
-// is no process id because there is no process, and a value that is unique per
-// admission is still what the clearing house's refusal compares — an empty one
-// on every bank would make two banks on one address look like one admission. The
-// seed gives every bank an address of its own, so nothing here depends on that;
-// it is a reference that says what it is.
+// The drain is here, per bank, rather than once after all four — and that is a
+// property of the SEED rather than of admission. Every network id in this system
+// comes from one counter per book, so a conversation still running while the
+// next bank is founded draws its audit ids from the same sequence as that bank's
+// own id, and the dataset's participant ids move.
+//
+// Measured rather than argued: with a single drain after all four admissions,
+// twelve builds under GOMAXPROCS=2 with the race detector on produced
+// SOLEFRPPXXX as bank_7 eleven times and as bank_15 once. Twelve more at
+// GOMAXPROCS=1 and twelve at GOMAXPROCS=8 did not reproduce it, which is exactly
+// why one clean run is not evidence here. Draining per bank makes each
+// conversation finish before the next Admit begins, and the four sequential
+// calls this replaces had that for free.
+//
+// What it costs is a scenario built one bank at a time instead of four in
+// flight. Nothing wants the concurrency: this is a fixture, and the property it
+// must have is that two builds of it are the same dataset. TestDeterministicIDs
+// is the assertion of that property, and the numbers above are also a warning
+// about it: it compares two builds in one process, so a divergence that appears
+// in one build out of twelve is one it reports rarely rather than reliably.
 func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
-	bank := must(b.net.FoundBank(b.ctx, name, bic, assets))
-	ref := "seed-" + string(bic)
+	founded := must(b.mesh.Admit(b.ctx, name, bic, assets))
+	check(b.mesh.Drain(b.ctx))
 
-	// One request per asset, because one acmt.007 asks for one currency. Each
-	// answer carries the servicer's whole account set for the address, so the
-	// last is the one the other two acts read — which is true of the real
-	// conversation too: a bank's second acknowledgement lists both accounts.
-	var member payment.SettlementMember
-	for _, asset := range assets {
-		member = must(b.net.OpenSettlementAccount(b.ctx,
-			payment.AdmissionRequest{Name: name, BIC: bic, Asset: asset, Ref: ref}))
+	bank := must(b.net.GetBank(b.ctx, founded.ID))
+	if bank.Status != payment.BankMember {
+		check(fmt.Errorf("%s is %q after its admission conversation, want %q",
+			bank.BIC, bank.Status, payment.BankMember))
 	}
-
-	ack := payment.AdmissionAcknowledgement{BIC: bic, Accounts: member.Accounts, Ref: ref}
-	must(b.net.AdmitMember(b.ctx, ack))
-	return must(b.net.RecordMembership(b.ctx, bank.ID, ack))
+	return bank
 }
 
 // seedAsset is the asset the whole sample scenario is denominated in.
@@ -570,10 +598,11 @@ func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	// Each bank joins the network as a euro bank: founding opens its suspense
-	// and reserve accounts in its own book, and the admission that follows opens
-	// its settlement account in the central bank's and puts it in the roster.
-	// See builder.admit, which stands in for the conversation the mesh carries.
+	// Each bank joins the network as a euro bank, and joining is a conversation:
+	// founding opens its suspense and reserve accounts in its own book, the
+	// central bank opens its settlement account in the central bank's, and the
+	// clearing house puts it in the roster. See builder.admit, which waits for
+	// each one to finish before the next bank applies.
 	euro := []ledger.AssetCode{seedAsset}
 	aurora := b.admit("Aurora Bank", "AURODEFFXXX", euro)
 	verde := b.admit("Banca Verde", "VERDITMMXXX", euro)

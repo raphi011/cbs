@@ -14,37 +14,34 @@ import (
 
 // handleAddParticipant founds a bank and applies to the scheme for it.
 //
-// # The orphan is gone, and what replaced it is a bank that has not joined yet
+// # 202, and what an operator has when it answers
 //
-// This used to be two steps that could not be one: the participant row was
-// written, and the mesh was then asked for the address. The address is the only
-// thing in the whole operation that can clash, so the irreversible step ran
-// first and the refusable step second — and a refusal left a bank in the roster
-// that could neither pay nor be paid, with no way back. The four paragraphs that
-// used to stand here documented that consequence at length and did not say that
-// reversing the two would remove it.
+// A founded bank. Its book, its chart of accounts and its default product exist,
+// so it can open customer accounts straight away. It cannot pay or be paid — no
+// clearing house routes to it — and it cannot take a cash deposit either, since
+// funding raises a reserve and no settlement agent holds an account for it yet.
+// The DTO says which of the two states it is in: Founded here, and Member once
+// the scheme has answered.
 //
-// mesh.Mesh.Admit reverses them. The address is claimed at the mesh before
-// anything is written and released again if the write fails, so a clash now
-// costs nothing at all: no row, no actor, and an error the operator can act on.
+// Whether the scheme accepts is not this call's to report. It is decided at two
+// other institutions and arrives as a message, so the honest status code is 202
+// Accepted: the application has been made and nothing about its outcome is
+// known. POST /payments has the same shape for the same reason — a handler that
+// answered 201 Created would be naming a resource whose most important property
+// it had not waited for. An operator learns the answer by reading the bank back.
 //
-// What the caller gets back is a FOUNDED bank. Its book, its chart of accounts
-// and its default product exist and it can open customer accounts; it cannot pay
-// or be paid, because no settlement agent holds an account for it and no clearing
-// house routes to it yet. Whether the scheme accepts arrives later, at two other
-// institutions, as a message — the same shape POST /payments has, and for the
-// same reason.
+// # A clash costs nothing, and a re-drive is this same call
+//
+// The address is the only thing in the operation that can clash, and
+// mesh.Mesh.Admit claims it before anything is written and releases it again if
+// the write fails. So a refusal leaves no row, no actor and nothing to clean up
+// — which is the reverse of the ordering this endpoint used to have, where the
+// participant row was written first and a refused address left a bank in the
+// roster that could neither pay nor be paid.
 //
 // An interrupted admission therefore leaves a founded bank rather than an orphan,
 // and calling this again on the same name and BIC RE-DRIVES it: nothing is
 // founded twice and the application goes out again. See mesh.Mesh.Admit.
-//
-// # What is left for Task 17e
-//
-// The status code and the response body. This still answers 201 Created with a
-// participant DTO that does not carry the bank's status, which is the answer the
-// atomic call gave and is no longer the whole truth. The DTO, the status code
-// and the web types are 17e's, together and in one change.
 func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	var req createParticipantRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -65,6 +62,19 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	// already maps iso20022.ErrBICFormat to, not a 400 raised here.
 	p, err := s.mesh.Admit(r.Context(), req.Name, iso20022.BIC(req.BIC), assets)
 	if err != nil {
+		// The two refusals about the address, which need different advice.
+		//
+		// An admission ALREADY UNDER WAY on this BIC is checked first, because it
+		// is a case of the sentinel below and would otherwise be answered by it —
+		// wrongly on both clauses. Nothing is written YET rather than not at all,
+		// the address is not another institution's but this bank's own, and a
+		// second address would not help; what helps is waiting for the first
+		// application to be answered and reading the bank back.
+		if errors.Is(err, mesh.ErrAdmissionInFlight) {
+			writeUnprocessable(w, "an admission on this BIC is already under way and nothing has been written for this "+
+				"request; wait for it to be answered and read the bank back: "+err.Error())
+			return
+		}
 		if errors.Is(err, mesh.ErrAddressTaken) {
 			writeUnprocessable(w, "another institution already answers to this BIC, and nothing was written; "+
 				"admit this bank on an address of its own: "+err.Error())
@@ -73,7 +83,9 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toParticipantDTO(p))
+	// 202, not 201: what exists is a founded bank, and whether the scheme admits
+	// it is answered at two other institutions and arrives as a message.
+	writeJSON(w, http.StatusAccepted, toParticipantDTO(p))
 }
 
 func (s *Server) handleListParticipants(w http.ResponseWriter, r *http.Request) {
@@ -174,6 +186,30 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 
 // reserveRows reads one participant's reserve in each of its assets, in asset
 // order so the response does not reshuffle between identical requests.
+//
+// # A bank the central bank holds no account for reports NO ROW for that asset
+//
+// That is a state this system can be in for the first time: admission is a
+// conversation, so between founding and the scheme's answer there is a real bank
+// with a real book and no settlement account anywhere. ReserveBalance says so
+// with payment.ErrSettlementMemberNotFound, and it is not an error about this
+// request — the bank exists, the asset exists, and the settlement agent simply
+// holds nothing to report a balance from.
+//
+// Answering with a zero would be worse than answering with nothing: zero is a
+// balance, and a console that showed one would be reporting an account that has
+// not been opened. So the asset is skipped, GET on a founded bank's reserves is
+// an empty list, and the list route reports the members and passes over the
+// applicants. What tells an operator which is which is the bank's own status,
+// which participantDTO carries.
+//
+// Per ASSET rather than per bank, because the two sentinels are two different
+// facts and a partly admitted bank has one of each: the settlement agent holds
+// no member row at all (skipped here), or holds one without this asset in it —
+// payment.ErrParticipantAssetNotFound, which is left to surface, because the
+// bank's own row says it operates in an asset the agent has no account for and
+// that is a disagreement between two institutions rather than a bank waiting to
+// be admitted.
 func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {
@@ -184,6 +220,9 @@ func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, er
 	out := make([]reserveDTO, 0, len(codes))
 	for _, code := range codes {
 		bal, err := s.network().ReserveBalance(r.Context(), p.ID, ledger.AssetCode(code))
+		if errors.Is(err, payment.ErrSettlementMemberNotFound) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

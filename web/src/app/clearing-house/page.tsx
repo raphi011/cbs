@@ -37,6 +37,11 @@ export default function ClearingHouse() {
   const { data: settlements } = useSettlements();
   const isProvisioned = useIsProvisioned();
 
+  // Members, not banks. Admission is a conversation, so a bank can be in this
+  // list and not be a member of anything yet: the card below says which, and a
+  // stat labelled "Member banks" that counted applicants too would be the one
+  // number on this page that was not true.
+  const members = (participants ?? []).filter((p) => p.status === "Member").length;
   const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
   const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
   const settlementCount = (settlements ?? []).length;
@@ -53,7 +58,7 @@ export default function ClearingHouse() {
 
       {/* Network at a glance — degrades to zeros while the lists load. */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <Stat label="Member banks">{participants?.length ?? 0}</Stat>
+        <Stat label="Member banks">{members}</Stat>
         <Stat label="Open cycles" hint="netting">
           {openCycles}
         </Stat>
@@ -104,10 +109,17 @@ export default function ClearingHouse() {
   );
 }
 
-// One member-bank card: name and id. No reserve figure — see the file-level
-// comment above. Unprovisioned banks are shown, not linked: entering one
-// would mean a console whose every request 502s, the same rule the lobby and
-// the identity picker already follow.
+// One bank's card: name, id, and where it has got to. No reserve figure — see
+// the file-level comment above. Unprovisioned banks are shown, not linked:
+// entering one would mean a console whose every request 502s, the same rule the
+// lobby and the identity picker already follow.
+//
+// A FOUNDED bank says so instead of claiming membership. It is a bank whose
+// application the scheme has not answered — no settlement account, no routing
+// entry — and it is an ordinary state rather than a broken one, because
+// admission is a conversation between three institutions and this list is read
+// from one of them. The card used to say "Member of the network" for every bank
+// in it, which was true only while founding and joining were one commit.
 function ParticipantCard({
   participant: p,
   provisioned,
@@ -126,11 +138,13 @@ function ParticipantCard({
         <IdText id={p.id} />
       </CardHeader>
       <CardContent>
-        {provisioned ? (
-          <p className="text-sm text-muted-foreground">Member of the network.</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">Awaiting provisioning.</p>
-        )}
+        <p className="text-sm text-muted-foreground">
+          {p.status !== "Member"
+            ? "Founded. The scheme has not answered its application: it can open customer accounts, and it cannot pay or be paid."
+            : provisioned
+              ? "Member of the network."
+              : "Awaiting provisioning."}
+        </p>
       </CardContent>
     </Card>
   );

@@ -296,9 +296,24 @@ export interface ParticipantAccounts {
   settlement: string;
 }
 
+// A bank's place in the scheme. "Founded" is a bank with a book, a chart of
+// accounts and customers, that no settlement agent holds an account for and no
+// clearing house routes to: it can take deposits and it cannot clear a payment.
+// "Member" is one the scheme has admitted.
+//
+// Both are ordinary states. Admission is a conversation between three
+// institutions, so POST /members answers 202 with a founded bank and the
+// scheme's answer arrives afterwards — a bank read straight back may still be
+// Founded and be perfectly healthy.
+//
+// A string union of the backend's own values, so a state added there is a
+// compile error here rather than a screen quietly rendering nothing.
+export type ParticipantStatus = "Founded" | "Member";
+
 export interface Participant {
   id: string;
   name: string;
+  status: ParticipantStatus;
   // The bank's default deposit product, created with its chart of accounts at
   // onboarding. It is what the open-account form offers.
   productId: string;

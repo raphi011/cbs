@@ -45,6 +45,23 @@ var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 // and csm.relayAdmission.
 var ErrAddressTaken = errors.New("mesh: another actor already answers to this BIC")
 
+// ErrAdmissionInFlight is the one case of ErrAddressTaken where nobody answers
+// to the address yet: a second admission on a BIC whose first is still between
+// claiming it and registering its actor.
+//
+// It WRAPS ErrAddressTaken, so every caller that asks "was this address refused"
+// keeps its answer, and a caller that has different advice for the two can tell
+// them apart. api's handleAddParticipant is that caller, and the difference is
+// the whole reason this exists: the advice for a taken address is to admit the
+// bank somewhere else, and the advice here is to wait — the address is not
+// another institution's, it is this bank's own, a moment early.
+//
+// It is a value ErrAddressTaken does not cover on its own, and it is stated as
+// its own sentinel rather than matched on the message so the distinction cannot
+// be lost to a rewording. See Mesh.claimAddress, which is where the reservation
+// is made and where this is returned from.
+var ErrAdmissionInFlight = fmt.Errorf("%w: an admission on this BIC is already under way", ErrAddressTaken)
+
 // ErrOnUsPayment is a submission whose payer and payee bank at the SAME
 // institution.
 //
@@ -1460,6 +1477,11 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 // refusals about connectivity rather than about membership, which is the whole
 // of what the mesh's authority over an address amounts to.
 //
+// The second of those is ErrAdmissionInFlight, which wraps ErrAddressTaken so it
+// is still a taken address to anything that only asks that question. It is
+// separate because it is the one refusal here where NOBODY answers to the
+// address yet: the bank claiming it is the same bank, a moment early.
+//
 // It reads no store, which is why it can hold m.mu — see joinRoster on why that
 // combination is the one to avoid. A re-drive's bank row is read by the caller,
 // afterwards and unlocked, and the interval that opens is an operator racing
@@ -1473,7 +1495,7 @@ func (m *Mesh) claimAddress(bic iso20022.BIC) (payment.ParticipantID, error) {
 		return "", errors.New("mesh: stopping; a bank admitted now would have no goroutine to read its inbox")
 	}
 	if m.reserved[bic] {
-		return "", fmt.Errorf("%w: an admission on %s is already under way", ErrAddressTaken, bic)
+		return "", fmt.Errorf("%w: %s", ErrAdmissionInFlight, bic)
 	}
 	if _, taken := m.actors[bic]; taken {
 		for pid, b := range m.banks {
