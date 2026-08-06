@@ -243,7 +243,22 @@ Unchanged from the previous handoff except where marked:
 - **`resolveOwnPartyTx`'s unaddressed-party fallback.** 18d deletes it.
 - **NEW: a refused camt.025 leaves the lodging bank's reserve mirror
   overstated.** Unreachable behind `LodgeReservesTx`'s guard; logged at ERROR;
-  18e's harness is what would detect it.
+  18e's harness is what would detect it. *The whole-branch review narrowed this:
+  it used to be reachable by any STORE failure at the agent, because
+  `receiveLodgement` answered every non-duplicate error with a refusing receipt.
+  Only the four judgements in `mesh.lodgementRefusals` are answered now and
+  everything else is a dead letter, so what is left is the guarded case alone.*
+- **NEW: `ReceiveLodgementTx` accepts an instruction quoting no account.**
+  `payment/system.go`'s `in.Account != "" &&` lets an empty quoted account past a
+  check the doc calls a check. Unreachable through `ReadLodgement`, which refuses
+  one; reachable in principle because `ReceiveLodgement` is exported on
+  `settlementOps`. No misdirection either way — the account posted to is the
+  agent's own row, never the quoted one.
+- **NEW: `mandateAssets` reads a member bank's deposit register from the
+  CLEARING HOUSE's port.** `api/handlers_payment.go`'s `p.Deposit.ListAccounts`
+  on the mandate's debtor. It is the HTTP twin of `CreateMandateTx`'s crossing
+  above — same family, second layer — and it will not survive 18c, where the
+  `csm` shape has no deposit register at all.
 - **NEW: a cross-bank address collision is no longer observable by anything.**
   Two customers at two banks may hold one address and nothing in the system can
   notice, because no reader spans two registers. Recorded in `README.md` and
@@ -255,12 +270,52 @@ Unchanged from the previous handoff except where marked:
   unpaid debt `BankTransactionCode` carries; recorded on
   `iso20022.RequestHandling` and in `testdata/README.md`.
 
-## What has NOT run on this branch
+## The whole-branch review, and what it found
 
-**No whole-branch review**, and this is now 17 commits' worth of change plus an
-uncommitted 53-file one. Task 15's whole-branch review found a Critical money bug
-that per-task review structurally cannot see; Task 17's found four. **It should
-run before this merges.**
+**It has now run**, on all 19 commits against `origin/main` (48f2cdb), on three
+axes: standards, spec, and ledger/money correctness. The precedent held — it
+found a money defect per-task review had not, which is the third branch running.
+
+Fixed here:
+
+1. **A store failure at the settlement agent was answered as a REFUSAL.**
+   `receiveLodgement` answered every non-duplicate error with a refusing
+   camt.025. That is `receiveAdmission`'s shape and safe there, because an
+   applicant has posted nothing; a lodging member has already committed its leg,
+   so an exhausted retry budget came back to it as a judgement about its request.
+   `mesh.lodgementRefusals` is now the list of what the agent may JUDGE and
+   everything else is a dead letter. `TestAStoreFailureAtTheAgentIsNotARefusal`
+   and `TestALodgementRefusalIsAJudgement` are the pins — both watched failing,
+   in both directions, by forcing the predicate to each constant.
+2. **`VaultCash` reached no reader.** It was on the row and in no DTO, so
+   `buildKnownAccounts` could not name it and every deposit's contra leg rendered
+   as a bare account id — the most common transaction in the system. On
+   `participantAccountsDTO`, `ParticipantAccounts` and `statement.ts` now.
+3. **Six stale prose passages**, five in `README.md` and one in
+   `payment/system.go`. The Go one contradicted the code 240 lines below it:
+   `InitiatePaymentRequest` still said the agent on either side is ignored
+   because `SubmitPaymentTx` derives both from the roster. `README.md:855` said
+   the same, and `:857` still called the sweep open work. Also corrected: the
+   clearing-house endpoint table (`GET /directory` → `GET /roster`), the claim
+   that the roster is on no surface, the bank table's missing `POST /lodgements`
+   row, and *"a bank is a scheme participant with genuine directory access"* —
+   the exact sentence `api/surface.go` retires.
+
+Verdicts worth carrying rather than acting on:
+
+- **Bullet 4 of 18a is closed, contrary to the spec axis's first reading.**
+  `checkPartyTx` still calls `tx.GetBank(ref.Participant)`, but
+  `debtorSideTx`/`creditorSideTx` each run for the acting bank's own side only,
+  so on the payment path it reads its own row. What survives is
+  `CreateMandateTx` and its HTTP twin, both listed as carried defects above.
+- **`payment/system.go:1760`'s `Credit Reserve: <member> (asset)` is correct.**
+  Flagged as writing an Asset where the account is a Liability; `(asset)` is the
+  asset-code suffix in the account NAME, matching the account's construction.
+- **The SQL rewrite is faithful**, diffed statement-by-statement against
+  `git show 48f2cdb:store/pg/*` — the first thing to check on a branch whose
+  oracle was deleted. Amounts are INTEGER throughout, no predicate lost, entry
+  `ORDER BY` preserved, and the idempotency index is book-scoped, so the bank's
+  and the agent's `"lodge:"+Ref` keys cannot collide.
 
 The pacs family's and camt.053's builders still have no
 `ValidateAgainstTheSchema` coverage — `payment/schema_test.go` covers the three
