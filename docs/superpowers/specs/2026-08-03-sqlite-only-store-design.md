@@ -133,6 +133,51 @@ one writer. The rest of it — an applied-set table, `go:embed`ded `.sql` in
 filename order, one transaction each — is unchanged, including the limitation it
 documents about keying on filename with no checksum.
 
+### `busy_timeout` absorbs none of it, and `Update` retries instead (2026-08-06)
+
+Left as written above, per this repository's convention for pre-ruling wording,
+and corrected here rather than in the line.
+
+"`isTransient`'s `40001`/`40P01` → `SQLITE_BUSY`/`SQLITE_LOCKED`, **mostly
+absorbed by `busy_timeout`**" is filed under *Mechanical, and nothing to decide*.
+It is neither. Measured on `modernc.org/sqlite v1.56.0` (SQLite 3.53.3), two
+transactions opened, both reading a balance, both writing:
+
+| configuration | both open at once | the loser gets | code |
+|---|---|---|---|
+| `mode=memory&cache=shared` — the test store | yes | `database table is locked: database is deadlocked` | 6 (`SQLITE_LOCKED`) |
+| file + `journal_mode(WAL)` — the server | yes | `database is locked` | 5 (`SQLITE_BUSY`) |
+
+Both returned **immediately**, with `busy_timeout(5000)` set — the whole probe
+runs in under ten milliseconds. That is correct SQLite behaviour and not a
+misconfiguration: a transaction that already holds a read and needs to upgrade
+cannot succeed by waiting, because the holder is blocked behind it, so SQLite
+declines to sleep and answers at once. `busy_timeout` absorbs contention between
+transactions that have not yet read; it cannot absorb the write-upgrade, which is
+the shape every race in `store/storetest`'s `RunConcurrentTxRaces` has.
+
+**So `Store.Update` retries the unit of work on 5 and 6.** Not a workaround: it
+is what `store/pg` already does for `40001`/`40P01`, and it is what makes the
+domain's refusal the refusal that fires. Without it the *money* is still right —
+the probe left one winner and a balance of 400, not −200 — but the caller is told
+`database is locked` where `store/mem` and `store/pg` both say
+`ErrInsufficientBalance`. A caller that catches the sentinel does not catch a
+lock error, and a store that refuses correctly for the wrong reason is a store
+that has not been held to the same contract.
+
+This is the same cost the `SAVEPOINT`-per-sentinel rule was equalizing, and this
+document was right that the savepoint mechanism was Postgres's. It was wrong that
+the cost went with it. It reappears one level up, and what pays it here is a
+retry rather than a savepoint — which is why the row in *Rulings reversed* reads
+"the cost it was equalizing is not charged here" and should be read with this
+section beside it.
+
+One consequence for `store/mem`, recorded because it is the reason this was found
+before the port and not during it: `store/mem` cannot show any of this, and
+neither can a suite that only runs against it. The probe was possible because
+`store/pg` still exists, and `RunConcurrentTxRaces` exists because Task 17.0
+moved it out of `store/pg`'s own tests first.
+
 ## The schema
 
 **`STRICT` tables.** SQLite enforces no declared type otherwise, and a schema
@@ -175,6 +220,61 @@ in a schema dump". **This is verified first, in 17.1, before the translation is
 written.** If it does not hold, the ruling reverses for real and the sub-project
 needs a different answer for it — the reasoning does not simply move to a
 Markdown file, because the point was that it travels with the schema.
+
+### It holds, and the half it does not cover is the larger half (2026-08-06)
+
+Verified as this section requires, before the translation was written, against
+`modernc.org/sqlite v1.56.0` rather than a system CLI. A comment **inside** a
+statement's parentheses survives verbatim into `sqlite_master.sql` and into
+`.schema` — leading lines, trailing on-the-column-line comments, and the same
+inside a `CREATE INDEX`'s column list. The ruling holds and does not reverse.
+
+What this section does not say is that a comment **above** a statement is
+dropped, because it is outside the statement's span. That is where
+`0001_init.sql` keeps almost everything: **595 of its 612 comment lines sit at
+column 0**, and only 17 are already inside parentheses. So the translation is not
+"thirty-five `COMMENT ON COLUMN`s move inside the parentheses" — the count is 42,
+and they are the smaller half of the job.
+
+It is also the half that matters least. The arguments carrying the property
+`CLAUDE.md` protects — *a missing constraint is invisible in a schema dump* — are
+the top-level ones, because an absent constraint has no column to hang a
+`COMMENT ON` from. `0001_init.sql:38` opens "A note on what is NOT here:
+`UNIQUE (book_id, name)`" and runs twenty lines; under a naive translation it
+would be in the file and not in the database, which is the exact failure this
+section was written to prevent.
+
+**The ruling: every argument about something the schema does not do moves inside
+the statement it concerns.** An absent constraint's reasoning goes in the
+parentheses of the table it is absent from; an index's goes in its column list.
+What stays at column 0 is narrative belonging to no statement — the header's
+conventions list — and the file opens by saying which of its comments reach a
+dump and which do not, so that the next person to add one knows where to put it.
+
+Where an argument spans two tables it goes in the one whose absent constraint it
+is about and the other names it. Copying it is how one fact ends up in nine
+places, which is `2026-08-06-avoidable-review-cycles.md`'s second mechanism.
+
+### Three counts in this document were wrong (2026-08-06)
+
+Measured against the code, and recorded rather than silently edited because a
+count is the thing this repository keeps getting wrong:
+
+- "`COMMENT ON COLUMN`, thirty-five of them" — there are **42**, all `COLUMN`,
+  no `COMMENT ON TABLE`.
+- "**`inSavepoint` goes away — all thirteen uses**" — there is **one call site**,
+  `store/pg/tx_ledger.go:425`. The deletion is one statement. The rule it
+  implements is quoted from README:**1374**, not 1273.
+- "the module gains Go dependencies (`modernc.org/libc`, `/mathutil`, `/memory`,
+  `golang.org/x/sys`)" — **ten** modules are added, also `dustin/go-humanize`,
+  `google/uuid`, `mattn/go-isatty`, `ncruces/go-strftime` and
+  `remyoudompheng/bigfft`, with `golang.org/x/sync` upgraded. **The claim that
+  matters is unaffected: zero external dependencies.**
+
+And one that was right, checked because the sentinel mapping depends on it:
+`transactions_idempotency_key_idx` **is** the only unique constraint in the
+schema — exactly one `CREATE UNIQUE INDEX` in 1570 lines. The claim is at
+`tx_ledger.go:445` and not at `pg.go:281`.
 
 ## Rulings reversed
 
