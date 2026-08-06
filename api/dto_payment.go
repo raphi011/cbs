@@ -22,7 +22,16 @@ type participantAccountsDTO struct {
 	// it. It is exposed beside the other three because a balance sitting on it
 	// is a real operational queue — money the bank owes somebody it has not yet
 	// identified — and an account nothing renders is one nobody goes looking at.
-	Unclaimed  string `json:"unclaimed"`
+	Unclaimed string `json:"unclaimed"`
+	// VaultCash is the cash the bank is holding, and the only account here that
+	// is nobody else's promise. It is exposed for Unclaimed's reason and for a
+	// sharper one: since Task 18a it is the CONTRA LEG OF EVERY DEPOSIT, which is
+	// the most common transaction in this system. A statement renders a
+	// well-known account as a word and an unknown one as an opaque id, so leaving
+	// it out makes every customer's cash-in read as a bare account number — see
+	// buildKnownAccounts in web/src/lib/statement.ts, which is this field's only
+	// consumer and the reason it is on the wire at all.
+	VaultCash  string `json:"vaultCash"`
 	Settlement string `json:"settlement"`
 }
 
@@ -89,6 +98,7 @@ func toParticipantDTO(p *payment.Bank) participantDTO {
 			Suspense:   string(accts.Suspense),
 			Reserve:    string(accts.Reserve),
 			Unclaimed:  string(accts.Unclaimed),
+			VaultCash:  string(accts.VaultCash),
 			Settlement: string(accts.Settlement),
 		})
 	}

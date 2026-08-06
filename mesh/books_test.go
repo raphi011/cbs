@@ -765,10 +765,13 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // CreditTransferMessage take them from the payment instead of from the
 // directory. Task 14.2 did the carrying: Payment gained DebtorDetails and
 // CreditorDetails, filled at submission — the bank's own side from its own
-// register, the counterparty's NAME from the instruction and its BIC from the
-// roster (see TestAWrongCounterpartyAgentDoesNotMisroute, which is why the
-// second half of that sentence is not "from the instruction" too), with
-// SubmitPaymentTx refusing an unnamed counterparty outright. Task 14.3 did the
+// register, the counterparty's NAME from the instruction and, AT THE TIME, its
+// BIC from the roster. Task 18a reversed that second half: the BIC comes from
+// the instruction too, because a bank holds only its own row and there is
+// nothing left to derive it from. See
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, which is this
+// paragraph's old pin reversed and is what makes asserting it safe.
+// SubmitPaymentTx refuses an unnamed counterparty either way. Task 14.3 did the
 // taking:
 // partiesOf now reads nothing at all, partyTx is deleted, and
 // CreditTransferMessage/DirectDebitMessage take neither a context nor a Tx —

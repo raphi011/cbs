@@ -40,6 +40,12 @@ export function buildKnownAccounts(participant?: Participant): Record<string, st
     [a.suspense, "suspense"] as [string, string],
     [a.reserve, "reserve"] as [string, string],
     [a.unclaimed, "unclaimed"] as [string, string],
+    // The contra leg of every deposit since Task 18a, and therefore the most
+    // frequently rendered of these. Cash in used to debit `reserve`, which was
+    // already in this list, so omitting it did not fail a test — it silently
+    // turned the commonest row in a customer's statement back into an opaque
+    // account id.
+    [a.vaultCash, "vault cash"] as [string, string],
     [a.settlement, "settlement"] as [string, string],
   ]);
   const byAccount: Record<string, string[]> = {};

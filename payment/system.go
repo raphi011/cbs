@@ -2701,13 +2701,28 @@ type InitiatePaymentRequest struct {
 	// anything supplied for it is ignored, because a payer does not get to
 	// rename themselves on an instruction.
 	//
-	// The Agent on EITHER side is ignored by SubmitPaymentTx, which derives both
-	// from the roster: see PartyDetails.Agent for why routing is never the
-	// caller's to assert. The field is on the struct rather than removed from it
-	// because this same type is what CreditTransferRequest and DirectDebitRequest
-	// produce from a RECEIVED message, where the agent is the sender's assertion
-	// and is genuinely carried. api's initiatePaymentRequest, which only ever
-	// feeds the submitting path, has no agent field at all.
+	// The COUNTERPARTY's Agent is required, and this paragraph used to say the
+	// opposite — that the agent on either side is ignored because SubmitPaymentTx
+	// derives both from the roster, and that routing is never the caller's to
+	// assert. Task 18a reversed it: a bank holds only its own row from Task 18c,
+	// so there is nothing left to derive the counterparty's BIC FROM, and
+	// SubmitPaymentTx refuses an instruction that names no agent
+	// (ErrCounterpartyAgentNotNamed). The address here is an IBAN and a BIC, which
+	// is what SEPA was before 2016. See the long note in SubmitPaymentTx for what
+	// makes asserting it safe — narrowing the resolution, in the same commit.
+	//
+	// The SUBMITTING bank's own agent is still ignored, for the reason its name is:
+	// this bank is the authority on itself and fills its own side from its own
+	// register.
+	//
+	// The field is on the struct for a second reason as well, and that one is
+	// unchanged: this same type is what CreditTransferRequest and
+	// DirectDebitRequest produce from a RECEIVED message, where the agent is the
+	// sender's assertion and is genuinely carried.
+	//
+	// api's initiatePaymentRequest used to have no agent field at all, on the
+	// strength of the claim above; it has one again, and its doc records the
+	// there-then-not-then-here-again in full.
 	DebtorDetails   PartyDetails
 	CreditorDetails PartyDetails
 }

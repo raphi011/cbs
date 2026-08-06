@@ -600,12 +600,13 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 // and its Desc is free text. It is why payment's reasonTable gives these
 // sentinels the empty code. See iso20022.RequestHandling.
 //
-// # Everything the domain refuses is answered, and one thing is dead-lettered
+// # Everything the domain refuses is answered, and everything else is dead-lettered
 //
 // A member it holds no account for, an asset it holds no account for that member
 // in, and an account number that is not the one it holds are all answered with a
 // refusing receipt: each is a judgement about the request that the sender can act
 // on, and refusing to a counterparty is completed work rather than a defect.
+// lodgementRefusals is that list, by name.
 //
 // A REDELIVERED lodgement is not. The queue can deliver twice, and the second copy
 // names a request this agent has already posted; payment.ReceiveLodgementTx keys
@@ -614,6 +615,32 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 // would tell the member its lodgement was refused when in fact it happened, which
 // is receiveSettlement's discrimination about ErrCycleNotClosed exactly. Dead
 // letter, and no second receipt.
+//
+// NEITHER IS A STORE FAILURE, and this handler is the one place in the mesh where
+// getting that wrong costs money that nothing can recover. Every other refusing
+// handler answers a sender that has posted nothing: receiveAdmission's applicant
+// is waiting for an account to exist, and receiveReturn's is waiting to be told.
+// A lodging member has ALREADY COMMITTED ITS LEG — payment.LodgeReservesTx posts
+// Debit Reserve / Credit Vault Cash before the camt.050 goes out, because a
+// camt.025 carries no amount and the alternative was remembering the request in
+// the actor. So a refusal here is read by the member as "this did not happen",
+// and a camt.025 saying that because the agent's Store.Update exhausted its retry
+// budget is a lie about money: the member's mirror stays raised, the agent's book
+// never moved, and bank.receiveLodgementReceipt cannot unwind it because the
+// amount is not on the receipt.
+//
+// The discrimination is checkPartyTx's, one layer down and for the same reason —
+// a transient fault at the receiver must not come back to the sender as a
+// judgement about its request. It is made BY NAME rather than through
+// payment.ReasonFor, and that is forced rather than chosen: these sentinels carry
+// the empty code, so ReasonFor cannot tell them from an error it has never heard
+// of. payment.ReasonFor's own doc says the protection an empty code gives is the
+// caller's, made by name before it asks for a code at all. This is that caller.
+//
+// So anything not on the list is a dead letter, and the member is told nothing.
+// That leaves its mirror overstated too — the difference is that a dead letter is
+// a visible break an operator can re-drive, and a false refusal is a break that
+// looks like a completed conversation.
 //
 // # It answers the SENDER, and the sender is the member
 //
@@ -645,6 +672,11 @@ func (cb *centralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, 
 		if errors.Is(err, ledger.ErrDuplicateIdempotencyKey) {
 			return fmt.Errorf("mesh: %s was told to lodge %s again: %w", cb.bic, in.Ref, err)
 		}
+		if !isLodgementRefusal(err) {
+			return fmt.Errorf(
+				"mesh: %s could not carry out %s's lodgement %s and did not refuse it, so the member's reserve mirror is now overstated: %w",
+				cb.bic, from, in.Ref, err)
+		}
 		return cb.acknowledgeLodgement(from, payment.LodgementReceipt{
 			Ref:    in.Ref,
 			Status: iso20022.TransactionStatusRejected,
@@ -652,6 +684,42 @@ func (cb *centralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, 
 		})
 	}
 	return cb.acknowledgeLodgement(from, receipt)
+}
+
+// lodgementRefusals is everything a settlement agent may JUDGE about a lodgement,
+// and receiveLodgement answers exactly these with a refusing camt.025.
+//
+// It is payment.ReceiveLodgementTx's "What it refuses, and why each is answerable"
+// section as a list the compiler holds, and the two must agree: a sentinel that
+// section adds and this list does not becomes a dead letter, which is the safe
+// direction to be wrong in but is still wrong. TestALodgementRefusalIsAJudgement
+// is what stops the pair drifting.
+//
+// ErrInvalidPaymentAmount and the BIC check are on the list although
+// payment.ReadLodgement refuses both before this handler's act ever runs. They are
+// belt-and-braces on the domain call rather than dead code, and if a second reader
+// ever reaches ReceiveLodgement — settlementOps exports it — they are judgements
+// about the request, which is the only question this list asks.
+//
+// What is deliberately NOT here is anything the agent SUFFERED rather than
+// decided: a store failure, a cancelled context, a retry budget that ran out. See
+// receiveLodgement's doc for why answering one of those is a lie about money.
+var lodgementRefusals = []error{
+	payment.ErrInvalidPaymentAmount,
+	payment.ErrSettlementMemberNotFound,
+	payment.ErrParticipantAssetNotFound,
+	payment.ErrSettlementAccountReplaced,
+}
+
+// isLodgementRefusal unwraps, because payment wraps its sentinels with the BIC and
+// the account they are about and the prose is what travels as the receipt's Desc.
+func isLodgementRefusal(err error) bool {
+	for _, sentinel := range lodgementRefusals {
+		if errors.Is(err, sentinel) {
+			return true
+		}
+	}
+	return false
 }
 
 // acknowledgeLodgement sends the camt.025 back to the member that asked.

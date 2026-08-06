@@ -293,6 +293,15 @@ export interface ParticipantAccounts {
   // therefore terminal. The bank still owes the money, to whoever eventually
   // claims it, so it is a liability like a deposit.
   unclaimed: string;
+  // The cash the bank is holding, and the only account here that is nobody
+  // else's promise: reserve is a claim on the central bank, suspense is money
+  // owed to a counterparty's customer, unclaimed is owed to somebody
+  // unidentified. This is money.
+  //
+  // It is where cash paid in over the counter lands, so it is the contra leg of
+  // every deposit — which is why it must be in this list rather than merely on
+  // the wire. Moving it onto reserve is a LODGEMENT, a separate act.
+  vaultCash: string;
   settlement: string;
 }
 
