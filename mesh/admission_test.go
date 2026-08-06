@@ -344,7 +344,7 @@ func TestARefusedAdmissionLeavesAFoundedBank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
-	if err := h.mesh.AddBank(joiner); err != nil {
+	if err := h.mesh.AddBank(context.Background(), joiner); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
 	// An asset nobody issues. The message is well formed — the schema's Ccy is
@@ -481,8 +481,8 @@ func TestAnAdmissionAlreadyUnderWayIsItsOwnRefusal(t *testing.T) {
 
 	// An admission on this address is in flight: claimed, and not yet
 	// registered.
-	if redriving, err := h.mesh.claimAddress(joinerBIC); err != nil || redriving != "" {
-		t.Fatalf("claiming a free address: (%q, %v), want (\"\", nil)", redriving, err)
+	if redriving, err := h.mesh.claimAddress(joinerBIC); err != nil || redriving {
+		t.Fatalf("claiming a free address: (%v, %v), want (false, nil)", redriving, err)
 	}
 
 	before := h.bankCount(t)
@@ -878,7 +878,7 @@ func TestAFoundedBankIsNotAdmittedByARestart(t *testing.T) {
 
 	h.mesh.mu.Lock()
 	_, actor := h.mesh.actors[joinerBIC]
-	_, indexed := h.mesh.banks[joiner.ID]
+	_, indexed := h.mesh.banks[joiner.BIC]
 	_, incumbent := h.mesh.actors[h.debtorBIC]
 	h.mesh.mu.Unlock()
 
@@ -934,7 +934,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 		if err != nil {
 			t.Fatalf("FoundBank: %v", err)
 		}
-		if err := h.mesh.AddBank(b); err != nil {
+		if err := h.mesh.AddBank(context.Background(), b); err != nil {
 			t.Fatalf("AddBank: %v", err)
 		}
 		return b, h.openCustomer(t, b, "Nora", "EUR", harnessFunding, foundedIBAN)

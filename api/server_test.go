@@ -32,8 +32,20 @@ var fixedTime = time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC)
 func cb(s *Server) http.Handler  { return s.CentralBankRoutes() }
 func csm(s *Server) http.Handler { return s.ClearingHouseRoutes() }
 
+// bank binds one member bank's surface.
+//
+// It panics rather than taking a *testing.T, which it did not have to do before
+// the store split: binding a bank's surface now OPENS that bank's database and
+// can fail. Every one of the hundred-odd call sites is one expression inside an
+// assertion, and every pid they pass is a bank this test founded moments ago, so
+// a failure here is a broken fixture rather than an outcome worth reporting
+// through the test's own error path.
 func bank(s *Server, pid string) http.Handler {
-	return s.BankRoutes(payment.ParticipantID(pid))
+	h, err := s.BankRoutes(context.Background(), payment.ParticipantID(pid))
+	if err != nil {
+		panic("api_test: binding " + pid + "'s surface: " + err.Error())
+	}
+	return h
 }
 
 // newServer builds a Server over an empty ephemeral store, with a mesh running
@@ -58,21 +70,20 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Networks, *
 	return newServerOverStore(t, nil, populate)
 }
 
-// newServerOverStore is newServer with the payment store wrapped, for the one
-// test that needs to hold a unit of work open. gate may be nil, which is every
-// other caller.
-func newServerOverStore(t *testing.T, gate *gatedStore,
+// newServerOverStore is newServer with the store set wrapped, for the one test
+// that needs to hold a unit of work open. gate may be nil, which is every other
+// caller.
+func newServerOverStore(t *testing.T, gate *gatedStores,
 	populate func(context.Context, *payment.Networks, *mesh.Mesh) error) *Server {
 
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
-	store := testenv.New(t, clock)
-	var ps payment.Store = store.Payment()
+	var stores payment.Stores = testenv.NewSet(t, clock)
 	if gate != nil {
-		gate.Store = ps
-		ps = gate
+		gate.Stores = stores
+		stores = gate
 	}
-	nets := payment.NewNetworks(ps, clock)
+	nets := payment.NewNetworks(stores, clock)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	msh, err := mesh.New(nets, testMeshConfig, log)
 	if err != nil {
@@ -124,7 +135,11 @@ func admitForPopulate(ctx context.Context, nets *payment.Networks, msh *mesh.Mes
 	if err := msh.Drain(ctx); err != nil {
 		return nil, err
 	}
-	return nets.Bank(founded.ID).GetBank(ctx, founded.ID)
+	net, err := nets.Bank(ctx, founded.ID)
+	if err != nil {
+		return nil, err
+	}
+	return net.GetBank(ctx, founded.ID)
 }
 
 // drainServer waits for the mesh behind a Server built by newServer to go quiet.
@@ -562,7 +577,7 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 // request gets. Nothing here sleeps and nothing races — the goroutine reports
 // when it is inside the gate.
 func TestAdmittingABICWithAnAdmissionInFlightSaysToWait(t *testing.T) {
-	gate := newGatedStore()
+	gate := newGatedStores()
 	h := newServerOverStore(t, gate, nil)
 
 	entered, release := gate.armOneUpdate()
@@ -628,27 +643,42 @@ func assertBankCountByBIC(t *testing.T, h *Server, bic string, want int) {
 	}
 }
 
-// gatedStore is a payment.Store that can hold ONE writing unit of work open.
+// gatedStores is a payment.Stores whose BANK stores can hold ONE writing unit of
+// work open.
 //
 // It exists for a single test, and for a single reason: an admission reserves
 // its address for the length of its founding unit of work, and nothing outside
 // the mesh can otherwise observe that window. Reads are never held — the second
 // request has to be able to make its own — and only the first Update after
 // arming is, so the request that is meant to be blocked is the one that is.
-type gatedStore struct {
-	payment.Store
+//
+// It gates the BANKS' stores and not the two institutions', and that is the
+// store split showing through: founding is the applicant's own act, in the
+// applicant's own database, so the unit of work to hold open is one that this
+// set hands out per bank. Gating the whole set would also hold the clearing
+// house's roster read, which is the read the second request has to make.
+type gatedStores struct {
+	payment.Stores
 
 	mu      sync.Mutex
 	entered chan struct{}
 	release chan struct{}
 }
 
-func newGatedStore() *gatedStore { return &gatedStore{} }
+func newGatedStores() *gatedStores { return &gatedStores{} }
+
+func (g *gatedStores) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error) {
+	inner, err := g.Stores.Bank(ctx, bic)
+	if err != nil {
+		return nil, err
+	}
+	return gatedStore{Store: inner, gate: g}, nil
+}
 
 // armOneUpdate makes the next writing unit of work stop on entry. It returns a
 // channel that is closed once that has happened and the function that lets it
 // go.
-func (g *gatedStore) armOneUpdate() (<-chan struct{}, func()) {
+func (g *gatedStores) armOneUpdate() (<-chan struct{}, func()) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	g.mu.Lock()
 	g.entered, g.release = entered, release
@@ -656,11 +686,20 @@ func (g *gatedStore) armOneUpdate() (<-chan struct{}, func()) {
 	return entered, sync.OnceFunc(func() { close(release) })
 }
 
-func (g *gatedStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	g.mu.Lock()
-	entered, release := g.entered, g.release
-	g.entered, g.release = nil, nil
-	g.mu.Unlock()
+// gatedStore is one bank's store seen through the gate. It holds no state: the
+// arming is the SET's, so a bank whose store is opened after arming is gated
+// too — which is the case this test is about, since the applicant's database is
+// opened by the very admission being held.
+type gatedStore struct {
+	payment.Store
+	gate *gatedStores
+}
+
+func (g gatedStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	g.gate.mu.Lock()
+	entered, release := g.gate.entered, g.gate.release
+	g.gate.entered, g.gate.release = nil, nil
+	g.gate.mu.Unlock()
 	if entered != nil {
 		close(entered)
 		<-release

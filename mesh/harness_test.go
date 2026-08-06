@@ -82,7 +82,7 @@ type tappedMessage struct {
 
 // meshHarness is a seeded two-bank network with a mesh running over it.
 type meshHarness struct {
-	rec *recordingStore
+	rec *recordingStores
 
 	// nets mints one payment.Network per institution, and net is the CLEARING
 	// HOUSE's — the view the network-scoped reads below go through.
@@ -290,7 +290,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	clock := func() time.Time { return testTime }
 
 	h := &meshHarness{cfg: testConfig}
-	h.rec = newRecordingStore(testenv.New(t, clock).Payment())
+	h.rec = newRecordingStores(testenv.NewSet(t, clock))
 	h.nets = payment.NewNetworks(h.rec, clock)
 	h.net = h.nets.ClearingHouse()
 

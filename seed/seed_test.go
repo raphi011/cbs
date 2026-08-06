@@ -77,6 +77,19 @@ type testNets struct {
 // what a member's reserve balance is.
 func (n testNets) cb() *payment.Network { return n.nets.CentralBank() }
 
+// bank is one member bank's own view, over that bank's own database.
+//
+// It panics on a failure to open rather than taking a *testing.T, for the reason
+// seed's own builder.bank does: every bank a fixture here names is one Populate
+// founded moments ago in this process.
+func (n testNets) bank(pid payment.ParticipantID) *payment.Network {
+	net, err := n.nets.Bank(context.Background(), pid)
+	if err != nil {
+		panic("seed_test: opening " + string(pid) + "'s store: " + err.Error())
+	}
+	return net
+}
+
 func testNetwork(t *testing.T) testNets {
 	t.Helper()
 	net, _ := testNetworkAndClock(t)
@@ -88,7 +101,7 @@ func testNetwork(t *testing.T) testNets {
 func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
 	t.Helper()
 	d := New()
-	nets := payment.NewNetworks(testenv.New(t, d.Now).Payment(), d.Now)
+	nets := payment.NewNetworks(testenv.NewSet(t, d.Now), d.Now)
 	if err := d.Populate(context.Background(), nets, testMesh(t, nets)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
@@ -107,7 +120,7 @@ func TestNetworkShape(t *testing.T) {
 	// what the move to the bank's surface makes this test mean.
 	mandates := 0
 	for _, p := range listParticipants(t, ctx, net) {
-		mine, err := net.nets.Bank(p.ID).ListMandates(ctx)
+		mine, err := net.bank(p.ID).ListMandates(ctx)
 		if err != nil {
 			t.Fatalf("list %s's mandates: %v", p.ID, err)
 		}
@@ -241,7 +254,7 @@ func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
 	if target.ID == "" {
 		t.Fatal("no accepted payment with a posted leg in the seed data")
 	}
-	if err := net.nets.Bank(payment.ParticipantID(target.DebtorDetails.Agent)).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
+	if err := net.bank(payment.ParticipantID(target.DebtorDetails.Agent)).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the composite: %v", err)
 	}
 
@@ -525,7 +538,7 @@ func TestClockWentLive(t *testing.T) {
 	ref := payment.PartyRef{Account: accts[0].ID}
 
 	// A mutation after build must be timestamped in real time, not at baseDate.
-	m, err := net.nets.Bank(first.ID).CreateMandate(ctx, first.BIC, ref, ref, 0)
+	m, err := net.bank(first.ID).CreateMandate(ctx, first.BIC, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,8 +573,8 @@ func listPayments(t *testing.T, ctx context.Context, net testNets) []payment.Pay
 func TestPopulateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	d := New()
-	store := testenv.New(t, d.Now)
-	nets := payment.NewNetworks(store.Payment(), d.Now)
+	stores := testenv.NewSet(t, d.Now)
+	nets := payment.NewNetworks(stores, d.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets}
 	msh := testMesh(t, nets)
 
@@ -587,7 +600,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	// without releasing the clock, everything this process went on to write
 	// would be timestamped 2025-09-15.
 	second := New()
-	secondNets := payment.NewNetworks(store.Payment(), second.Now)
+	secondNets := payment.NewNetworks(stores, second.Now)
 	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets}
 	if err := second.Populate(ctx, secondNets, msh); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
@@ -687,8 +700,8 @@ func TestMustAndCheckPanicWithSeedErr(t *testing.T) {
 func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	ctx := context.Background()
 	d := New()
-	store := testenv.New(t, d.Now)
-	nets := payment.NewNetworks(store.Payment(), d.Now)
+	stores := testenv.NewSet(t, d.Now)
+	nets := payment.NewNetworks(stores, d.Now)
 	net := testNets{Network: nets.ClearingHouse(), nets: nets}
 	msh := testMesh(t, nets)
 
@@ -697,7 +710,7 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	}
 	before := listPayments(t, ctx, net)
 
-	if err := store.Reset(ctx); err != nil {
+	if err := stores.Reset(ctx); err != nil {
 		t.Fatalf("Reset: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, net)); got != 0 {

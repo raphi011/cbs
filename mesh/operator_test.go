@@ -169,7 +169,7 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 		t.Errorf("Submit refused with %v, want a refusal naming the missing actor", err)
 	}
 
-	if err := h.mesh.AddBank(joiner); err != nil {
+	if err := h.mesh.AddBank(context.Background(), joiner); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
 
@@ -221,7 +221,7 @@ func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FoundBank: %v", err)
 	}
-	if err := h.mesh.AddBank(clash); err == nil {
+	if err := h.mesh.AddBank(context.Background(), clash); err == nil {
 		t.Fatal("AddBank accepted a second bank on an address another bank already answers to")
 	}
 
@@ -313,7 +313,7 @@ func TestForgetBanksRemovesAnActorTheBankIndexDoesNotName(t *testing.T) {
 	}
 	// The address is usable again, which is the failure this closes: it stayed
 	// taken for the life of the process.
-	if err := h.mesh.AddBank(h.debtor); err != nil {
+	if err := h.mesh.AddBank(context.Background(), h.debtor); err != nil {
 		t.Errorf("re-admitting the stranded bank's address: %v", err)
 	}
 }
@@ -338,7 +338,7 @@ func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 	beside := &payment.Bank{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
-	if err := h.mesh.AddBank(beside); err != nil {
+	if err := h.mesh.AddBank(context.Background(), beside); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
 
@@ -373,7 +373,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 	}
 	// Somebody else answering to the payer's bank's address.
 	squatter := &payment.Bank{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
-	if err := h.mesh.AddBank(squatter); err != nil {
+	if err := h.mesh.AddBank(context.Background(), squatter); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
 

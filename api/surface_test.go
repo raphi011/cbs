@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -51,7 +52,7 @@ func surfaces(t *testing.T) map[string][]string {
 	return map[string][]string{
 		"central-bank":   s.centralBankRouter().Patterns(),
 		"clearing-house": s.clearingHouseRouter().Patterns(),
-		"bank":           s.forBank("bank_1").bankRouter().Patterns(),
+		"bank":           mustForBank(t, s, testBankBIC).bankRouter().Patterns(),
 	}
 }
 
@@ -712,8 +713,8 @@ func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 	// boundPID is what the handlers name in URLs and DTOs, the identity is what
 	// the domain acts through, and a listener whose two disagreed would answer
 	// about one bank out of another's register.
-	for _, pid := range []payment.ParticipantID{"bank_1", "bank_2", "bank_3"} {
-		b := srv.forBank(pid)
+	for _, pid := range []payment.ParticipantID{"BNKADEFFXXX", "BNKBDEFFXXX", "BNKCDEFFXXX"} {
+		b := mustForBank(t, srv, pid)
 		got, ok := b.network().Identity().Participant()
 		if !ok {
 			t.Fatalf("the listener for %s does not act as a member bank at all", pid)
@@ -725,4 +726,24 @@ func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
 			t.Errorf("the listener for %s names %s in its handlers", pid, b.boundPID)
 		}
 	}
+}
+
+// testBankBIC is the address the surface tests bind a bank's listener to.
+//
+// It is a BIC and no longer "bank_1", because a bank's ParticipantID IS its BIC
+// (payment.AsBank) and binding a listener now opens the database named by it.
+// Nothing about these tests depends on the bank existing — a router's patterns
+// are the same whether the database behind it holds a bank row or not — but the
+// value has to be a well-formed address, because that is what names a file.
+const testBankBIC payment.ParticipantID = "BNKADEFFXXX"
+
+// mustForBank binds a bank's surface, failing the test if its database will not
+// open. See api.Server.forBank.
+func mustForBank(t *testing.T, s *Server, pid payment.ParticipantID) *Server {
+	t.Helper()
+	b, err := s.forBank(context.Background(), pid)
+	if err != nil {
+		t.Fatalf("binding %s's surface: %v", pid, err)
+	}
+	return b
 }

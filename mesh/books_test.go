@@ -32,22 +32,34 @@ import (
 // The book-access recorder
 // ---------------------------------------------------------------------------
 
-// recordingStore wraps a payment.Store and records which ledger books each unit
-// of work touched.
+// recordingStores wraps the whole SET of stores and records which ledger books
+// each unit of work touched, across every institution's database.
 //
-// It is the second of this package's two boundary mechanisms, and the one that
-// bites today. The interfaces in ops.go narrow by METHOD: a bank handler that
-// calls SettleCycleTx does not compile. They cannot narrow by BOOK — a bank
-// handler still could not be stopped from reading another bank's ledger through
-// a method it legitimately holds, because a BookID is an ordinary argument and
-// one is as valid as another. This notices that.
+// It is the second of this package's two boundary mechanisms, and it did not
+// stop biting when the stores split — the two answer different questions and the
+// pair is stronger than either. The interfaces in ops.go narrow by METHOD: a
+// bank handler that calls SettleCycleTx does not compile. store/sqlite's
+// ErrNotThisStoresBook narrows by DATABASE: a store handed a book it does not
+// answer for refuses. Neither can say WHICH books an act reached, and "did this
+// bank's act touch exactly its own book" is the question this file exists to
+// answer.
 //
-// It is test-only, and deliberately so. In production the boundary is the
-// interfaces plus, from sub-project 8, one store per entity; this exists to
-// assert the boundary holds while the store is still shared, which is precisely
-// the window in which nothing else would notice a crossing.
-type recordingStore struct {
-	inner payment.Store
+// What it lost with the split is the crossing it was invented for — one bank
+// reading another's ledger through a method it legitimately holds — because
+// there is no longer a database in which that read could succeed. What it kept
+// is everything about attribution: a unit of work reaching two books, an
+// unfiltered audit read, an actor touching a book it has no business in even
+// within its own store.
+//
+// It is test-only, and deliberately so. The production boundary is the
+// interfaces plus one store per entity; this is what says the SHAPE of each act
+// is what the flows in doc.go claim.
+//
+// It is the store SET rather than one store because there is no longer one store
+// to wrap. Every handle it hands out shares this value's maps, so "which books
+// did this actor touch" is still one question with one answer.
+type recordingStores struct {
+	inner payment.Stores
 
 	mu    sync.Mutex
 	books map[ledger.BookID]bool
@@ -72,28 +84,64 @@ type recordingStore struct {
 	updates int
 }
 
-var _ payment.Store = (*recordingStore)(nil)
+var (
+	_ payment.Stores = (*recordingStores)(nil)
+	_ payment.Store  = (*recordingStore)(nil)
+)
 
-func newRecordingStore(inner payment.Store) *recordingStore {
-	return &recordingStore{
+func newRecordingStores(inner payment.Stores) *recordingStores {
+	return &recordingStores{
 		inner:   inner,
 		books:   map[ledger.BookID]bool{},
 		byActor: map[iso20022.BIC]map[ledger.BookID]bool{},
 	}
 }
 
+// The three institutions' stores, each wrapped so that whatever it is asked
+// about is noted against this one recorder.
+func (s *recordingStores) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error) {
+	inner, err := s.inner.Bank(ctx, bic)
+	if err != nil {
+		return nil, err
+	}
+	return &recordingStore{inner: inner, rec: s}, nil
+}
+
+func (s *recordingStores) Banks(ctx context.Context) ([]iso20022.BIC, error) {
+	return s.inner.Banks(ctx)
+}
+
+func (s *recordingStores) ClearingHouse() payment.Store {
+	return &recordingStore{inner: s.inner.ClearingHouse(), rec: s}
+}
+
+func (s *recordingStores) CentralBank() payment.Store {
+	return &recordingStore{inner: s.inner.CentralBank(), rec: s}
+}
+
+func (s *recordingStores) Reset(ctx context.Context) error { return s.inner.Reset(ctx) }
+func (s *recordingStores) Close() error                    { return s.inner.Close() }
+
+// recordingStore is one institution's store, seen through the recorder. It holds
+// no state of its own: every note goes to the set above, so an assertion about
+// which books an actor touched is one question over every database.
+type recordingStore struct {
+	inner payment.Store
+	rec   *recordingStores
+}
+
 func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
-	s.mu.Lock()
-	s.updates++
-	s.mu.Unlock()
+	s.rec.mu.Lock()
+	s.rec.updates++
+	s.rec.mu.Unlock()
 	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx)})
 	})
 }
 
 func (s *recordingStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
 	return s.inner.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
+		return fn(ctx, &recordingTx{Tx: tx, rec: s.rec.noterFor(ctx)})
 	})
 }
 
@@ -109,7 +157,7 @@ func (s *recordingStore) Close() error                    { return s.inner.Close
 // call site; it has to travel with the thing being called. A value, not a
 // pointer: it is two words and it is never mutated.
 type bookNoter struct {
-	store *recordingStore
+	store *recordingStores
 	actor iso20022.BIC
 }
 
@@ -117,7 +165,7 @@ func (n bookNoter) note(book ledger.BookID) { n.store.note(n.actor, book) }
 
 // noterFor reads the acting institution off the context the unit of work was
 // opened with.
-func (s *recordingStore) noterFor(ctx context.Context) bookNoter {
+func (s *recordingStores) noterFor(ctx context.Context) bookNoter {
 	who, _ := actorOf(ctx)
 	return bookNoter{store: s, actor: who}
 }
@@ -131,7 +179,7 @@ func (s *recordingStore) noterFor(ctx context.Context) bookNoter {
 // handler that read another bank's book and then failed still read it, and a
 // recorder that forgot such a read on rollback would hide exactly the crossings
 // that go wrong.
-func (s *recordingStore) note(actor iso20022.BIC, book ledger.BookID) {
+func (s *recordingStores) note(actor iso20022.BIC, book ledger.BookID) {
 	s.mu.Lock()
 	s.books[book] = true
 	if actor != "" {
@@ -145,14 +193,14 @@ func (s *recordingStore) note(actor iso20022.BIC, book ledger.BookID) {
 
 // touched is the set of books accessed since the last reset, sorted so that an
 // assertion on it is a stable string rather than a map's iteration order.
-func (s *recordingStore) touched() []ledger.BookID {
+func (s *recordingStores) touched() []ledger.BookID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return sortedBooks(s.books)
 }
 
 // touchedBy is touched, narrowed to one institution.
-func (s *recordingStore) touchedBy(actor iso20022.BIC) []ledger.BookID {
+func (s *recordingStores) touchedBy(actor iso20022.BIC) []ledger.BookID {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return sortedBooks(s.byActor[actor])
@@ -168,14 +216,14 @@ func sortedBooks(set map[ledger.BookID]bool) []ledger.BookID {
 }
 
 // unitsOfWork is how many writing units of work have been opened since the last
-// reset. See recordingStore.updates.
-func (s *recordingStore) unitsOfWork() int {
+// reset. See recordingStores.updates.
+func (s *recordingStores) unitsOfWork() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.updates
 }
 
-func (s *recordingStore) reset() {
+func (s *recordingStores) reset() {
 	s.mu.Lock()
 	s.books = map[ledger.BookID]bool{}
 	s.byActor = map[iso20022.BIC]map[ledger.BookID]bool{}

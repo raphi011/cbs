@@ -77,22 +77,37 @@ var testBICs = []iso20022.BIC{testBIC, testBIC2, "BANKFRPPXXX", "BANKESMMXXX"}
 //
 // The embedded network is the CLEARING HOUSE's, and that is a choice about which
 // reads stay unchanged rather than a claim that the clearing house may make
-// them. Payments, cycles, mandates and bank rows are network-scoped today — one
-// store, one NetworkBook — and Task 18d is what gives each entity its own and
-// turns the reads that cross into messages or errors. Until then a fixture has
-// to hold one of them, and holding the one whose acts need no book keeps the
-// two that do — bank() and cb() — visible at every call site that uses them.
+// them. Each institution holds its own database since Task 18d, so a read that
+// used to be "network-scoped" is now one of three institutions' — and the ones
+// that stayed on this handle are the ones that were the clearing house's all
+// along. bank() and cb() are the other two, and they are visible at every call
+// site that uses them.
 type testSystem struct {
 	*Network
 	nets *Networks
+	// stores is the set the networks are minted over, for the assertions that
+	// have to reach a database directly rather than through an institution.
+	stores Stores
 }
 
-// bank is one member's own view: the network its acts are performed through.
+// bank is one member's own view: the network its acts are performed through,
+// over that member's own database.
 //
 // Keyed by the BIC, because a bank's ParticipantID is its BIC since Task 18 (see
 // AsBank) and every caller here now holds an address: the agents on a payment,
 // the agent on a request, the agent on a settlement statement.
-func (s *testSystem) bank(bic iso20022.BIC) *Network { return s.nets.Bank(ParticipantID(bic)) }
+//
+// It panics on a failure to open, which is not the usual shape for a helper in
+// this file. Nothing here can recover from a bank's database refusing to open,
+// every caller is one expression deep inside an assertion, and the alternative
+// is a (t *testing.T) argument on a helper called several hundred times.
+func (s *testSystem) bank(bic iso20022.BIC) *Network {
+	net, err := s.nets.Bank(context.Background(), ParticipantID(bic))
+	if err != nil {
+		panic("payment_test: opening " + string(bic) + "'s store: " + err.Error())
+	}
+	return net
+}
 
 // cb is the settlement agent's view, and the only one holding the central
 // bank's book of accounts.
@@ -116,9 +131,9 @@ func (s *testSystem) cbBook(t *testing.T) *ledger.Book {
 func testNetwork(t *testing.T) *testSystem {
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
-	store := testenv.New(t, clock)
-	nets := NewNetworks(store.Payment(), clock)
-	return &testSystem{Network: nets.ClearingHouse(), nets: nets}
+	stores := testenv.NewSet(t, clock)
+	nets := NewNetworks(stores, clock)
+	return &testSystem{Network: nets.ClearingHouse(), nets: nets, stores: stores}
 }
 
 // accountsOf returns a participant's internal accounts in the test asset,

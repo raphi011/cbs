@@ -57,8 +57,7 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 	ctx := context.Background()
 
 	data := seed.New()
-	store := testenv.New(t, data.Now)
-	nets := payment.NewNetworks(store.Payment(), data.Now)
+	nets := payment.NewNetworks(testenv.NewSet(t, data.Now), data.Now)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := testMeshConfig
@@ -230,17 +229,24 @@ func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.Pa
 	t.Helper()
 	ctx := context.Background()
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
-	banks, err := s.network().ListBanks(ctx)
+	// Every bank in the system, which is every bank with a DATABASE — asked of
+	// the store set rather than of any institution, because no institution holds
+	// a list of the others. See payment.Stores.Banks.
+	bics, err := s.nets.Stores().Banks(ctx)
 	if err != nil {
 		t.Fatalf("listing the seed's banks: %v", err)
 	}
-	for _, b := range banks {
-		switch ref, err := s.nets.Bank(b.ID).ResolveIdentifier(ctx, ident); {
+	for _, bic := range bics {
+		net, err := s.nets.Bank(ctx, payment.ParticipantID(bic))
+		if err != nil {
+			t.Fatalf("opening %s's store: %v", bic, err)
+		}
+		switch ref, err := net.ResolveIdentifier(ctx, ident); {
 		case err == nil:
-			return b.BIC, ref
+			return bic, ref
 		case errors.Is(err, deposit.ErrIdentifierNotFound):
 		default:
-			t.Fatalf("asking %s about the seed's %s: %v", b.ID, iban, err)
+			t.Fatalf("asking %s about the seed's %s: %v", bic, iban, err)
 		}
 	}
 	t.Fatalf("no seeded bank holds %s", iban)
@@ -252,7 +258,11 @@ func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.Pa
 func payerRoutes(t *testing.T, s *Server) http.Handler {
 	t.Helper()
 	bic, _ := seededParty(t, s, aliceIBAN)
-	return s.BankRoutes(payment.ParticipantID(bic))
+	h, err := s.BankRoutes(context.Background(), payment.ParticipantID(bic))
+	if err != nil {
+		t.Fatalf("binding %s's surface: %v", bic, err)
+	}
+	return h
 }
 
 // The seed's two customers these tests move money between, named by address.

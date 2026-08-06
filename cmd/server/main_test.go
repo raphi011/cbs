@@ -46,8 +46,8 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 
 	// The store, the network and the seed, exactly as main builds them.
 	data := seed.New()
-	st := testenv.New(t, data.Now)
-	nets := payment.NewNetworks(st.Payment(), data.Now)
+	stores := testenv.NewSet(t, data.Now)
+	nets := payment.NewNetworks(stores, data.Now)
 	// The clearing house's view, for the network-scoped reads this test makes.
 	net := nets.ClearingHouse()
 	msh, err := mesh.New(nets, meshConfig, slog.New(slog.DiscardHandler))
@@ -101,9 +101,27 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		mid[sc.Asset()] += p.Amount
 	}
 
-	parts, err := net.ListBanks(ctx)
+	// Every bank in the system is every bank with a DATABASE, asked of the store
+	// set rather than of an institution: the clearing house holds a roster and no
+	// bank rows, and the roster omits a bank that was founded and never admitted.
+	// See payment.Stores.Banks, and cmd/server's own listener plan, which asks
+	// the same question for the same reason.
+	bics, err := stores.Banks(ctx)
 	if err != nil {
-		t.Fatalf("listing participants: %v", err)
+		t.Fatalf("listing the banks: %v", err)
+	}
+	parts := make([]*payment.Bank, 0, len(bics))
+	for _, bic := range bics {
+		pid := payment.ParticipantID(bic)
+		bankNet, err := nets.Bank(ctx, pid)
+		if err != nil {
+			t.Fatalf("opening %s's store: %v", bic, err)
+		}
+		part, err := bankNet.GetBank(ctx, pid)
+		if err != nil {
+			t.Fatalf("reading %s's own row: %v", bic, err)
+		}
+		parts = append(parts, part)
 	}
 	// Every asset either side knows about, so that money parked in an asset no
 	// payment is mid-clearing in is caught by the same comparison rather than
