@@ -1404,9 +1404,23 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // It is reachable only from a dead letter — every message of an admission is
 // carried exactly once and in order by this transport, so the acknowledgement
 // goes missing only if a handler could not act on it — and it is Task 19's, with
-// the rest of this system's half-finished conversations. That task's
-// reconciliation is what has to FIND it: the shape to look for is a bank whose
-// assets and the settlement agent's accounts for its BIC do not match. Closing
+// the rest of this system's half-finished conversations.
+//
+// That task's reconciliation is what has to FIND it, and the obvious comparison
+// does not. "A bank whose assets and the settlement agent's accounts for its BIC
+// do not match" is what this said, and in this state they MATCH: measured by
+// parking the second acmt.010 of a two-asset admission before the bank, the
+// bank's assets are {EUR, USD} and the agent's accounts for its BIC are
+// {EUR, USD}. They match for the reason the gap exists at all — the settlement
+// agent opens the account before it acknowledges (centralBank.receiveAdmission),
+// so what went missing is the bank's NOTE of the number and not the account.
+//
+// The discriminator is the one api.Server.reserveRows uses: an EMPTY settlement
+// reference on the bank's own row in an asset, TOGETHER WITH a reserve row the
+// agent answers for in that same asset. The same empty reference with NO reserve
+// row is the other half-finished admission — an acmt.007 that never arrived, or
+// one the agent refused — and the mismatch comparison does find THAT one, which
+// is the whole of why it looked right for this one. Closing
 // it needs a way to re-drive one asset of an existing admission, which means
 // quoting the reference the bank already recorded rather than minting one, and
 // that is a decision about the flow rather than about this function.

@@ -228,14 +228,27 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 //
 // # What that costs, and which stuck bank it is actually about
 //
-// One shape becomes indistinguishable from that window, and it is worth naming
-// exactly, because the obvious candidate is NOT it.
+// TWO shapes become indistinguishable from that window, and they are worth
+// naming exactly, because the obvious candidate is neither of them.
 //
-// The invisible one is an acmt.007 that never reached the settlement agent — a
+// The first is an acmt.007 that never reached the settlement agent — a
 // dead letter on the way out, so no account is opened in that asset and none
 // ever will be. The agent holds a row without the asset, permanently, which is
 // byte-identical to holding one without the asset for another millisecond. The
 // difference is TIME and nothing here watches a clock.
+//
+// The second is an acmt.007 the settlement agent REFUSED, and it is the one that
+// makes the recipe below a heuristic rather than a test.
+// mesh.bank.receiveAdmissionRejection writes NOTHING — there is nothing to
+// write, since nothing about a bank changes when it applies — so a refused asset
+// leaves the bank's own row carrying an empty reference and the agent holding no
+// account, which is the dead letter's state exactly. The difference is that this
+// applicant was TOLD, and the telling survives only as a log line. Reaching it
+// needs payment.OpenSettlementAccountTx to fail, so it is a store or a ledger
+// giving way rather than a state the flow produces; measured by making the
+// SECOND settlement account of a two-asset admission fail to write, the readings
+// are reserves = [EUR 0], status Member, own USD settlement account empty — the
+// same three the dead letter gives.
 //
 // mesh.Mesh.Admit's "partly admitted bank" is a DIFFERENT state and this
 // endpoint reports it fully. There the acmt.007 arrived and the acknowledgement
@@ -249,14 +262,21 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // reference was then cleared: reserves = [EUR 0, USD 0], status Member, its own
 // row carrying an empty USD settlement account.
 //
-// So the recipe for finding either is not "count the rows against the assets".
-// For the dead-lettered one it is a bank whose own row names an asset with NO
-// settlement reference and which has no reserve row in it; for Admit's it is the
-// same empty reference WITH a reserve row. Both comparisons need the bank's own
-// assets, which GET /members and GET /me carry and which no screen in this
-// repository renders today — so it is two API reads, not something the console
-// shows. Turning either into "will not finish" needs a clock, and that is Task
-// 19's reconciliation rather than this handler's.
+// So the recipe for finding any of them is not "count the rows against the
+// assets". For the two the agent answers nothing for it is a bank whose own row
+// names an asset with NO settlement reference and which has no reserve row in
+// it; for Admit's it is the same empty reference WITH a reserve row. What the
+// first recipe cannot do is what nothing here can: it returns the refused
+// applicant beside the dead-lettered one, because "nobody could tell it" and "it
+// was told no" leave the same rows, and the only record of the refusal is in a
+// log. A reconciliation that acts on that list has to expect a bank that is not
+// stuck at all.
+//
+// Both comparisons need the bank's own assets, which GET /members and GET /me
+// carry and which no screen in this repository renders today — so it is two API
+// reads, not something the console shows. Turning any of them into "will not
+// finish" needs a clock, and that is Task 19's reconciliation rather than this
+// handler's.
 func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {

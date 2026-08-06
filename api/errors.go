@@ -114,9 +114,24 @@ func errorStatus(err error) int {
 		// asset case above is: the request is well formed and the state refuses
 		// it. Unlike that one it reaches a caller from a single route —
 		// POST /participants/{pid}/deposits, whose customer account is fine and
-		// whose bank has nowhere to place the cash on reserve — and from nowhere
-		// else: every other site that can raise it is behind a mesh actor, and
-		// the reserve routes report a missing account as a missing row.
+		// whose bank has nowhere to place the cash on reserve.
+		//
+		// From nowhere else, and the reason is worth stating accurately because
+		// the tidy version of it is false. The other sites that raise it are the
+		// settlement ones — SettleCycleTx and SettleReturnTx, through
+		// payment.settlementAccountTx — and in the running system those are
+		// INSTRUCTED, so their refusal leaves as a pacs.002 and never as a status
+		// code. But they are not only reached that way: seed.builder calls
+		// Network.Deposit, SettleReturnTx and SettleCycleTx directly, and
+		// seed.Populate runs inside POST /admin/reset (see Server.Reset), whose
+		// error is written by this same function — so a seed that could produce
+		// this sentinel would produce a 422 from the reset route too. It cannot,
+		// and that is a property of the seed rather than of the code's shape:
+		// seed.builder.admit puts each bank through Mesh.Admit, drains the
+		// conversation, and refuses to build any further unless the bank came
+		// back a Member, so every reserve the scenario funds or settles already
+		// has an account behind it. The reserve routes are the remaining readers,
+		// and they report a missing account as a missing row.
 		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),

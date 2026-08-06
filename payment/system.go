@@ -1377,12 +1377,33 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	// was told "account not found" — which reads as the CUSTOMER's account, the
 	// one thing in the request that is certainly fine.
 	//
-	// The sentinel is the settlement agent's, because the fact is the settlement
-	// agent's: no account is held for this bank. What is read for it is the
-	// bank's own record rather than the agent's member row, for the reason this
-	// function's doc gives — a funding bank quotes its own account number — and
-	// the two cannot disagree here, since both are written by the same
-	// acknowledgement.
+	// The sentinel is the settlement agent's, because the fact this refusal is
+	// usually about is the settlement agent's: no account is held for this bank.
+	// What is read for it is the bank's own record rather than the agent's member
+	// row, for the reason this function's doc gives — a funding bank quotes its
+	// own account number.
+	//
+	// The two CAN disagree, and it used to say here that they could not, on the
+	// grounds that one acknowledgement writes both. It does not. The agent's
+	// account is opened when the acmt.007 is handled and BEFORE the acmt.010 is
+	// built (mesh.centralBank.receiveAdmission), and the bank's reference is
+	// written only when that acknowledgement comes back — so an admission whose
+	// acknowledgement goes missing leaves the agent holding an account this bank
+	// does not know the number of. Measured, by parking the second acmt.010 of a
+	// two-asset admission before the bank: GET /reserves reports two rows,
+	// [EUR 0, USD 0]; the bank is a Member; its own USD reference is empty; and a
+	// USD deposit is refused HERE with 422. That is exactly the inconsistency
+	// RecordMembershipTx describes and api.Server.reserveRows reports from the
+	// other side — a reserve the console can see and the bank cannot spend.
+	//
+	// Refusing is still right in that state: a bank that cannot name its own
+	// account cannot quote it, and posting to the empty string would be the "404
+	// account not found" this check exists to stop. What is imprecise there is
+	// only the sentence, which says the bank is founded and not yet admitted when
+	// it is a Member in another asset. The disagreement is one-directional —
+	// nothing writes the bank's reference before the agent's account exists — so
+	// an empty reference here never means the agent's book is missing something
+	// the bank knows about.
 	if accts.Settlement == "" {
 		return fmt.Errorf("%w: %s is founded and not yet admitted, so it has no reserve to fund in %s",
 			ErrSettlementMemberNotFound, p.BIC, asset)
