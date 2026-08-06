@@ -1,5 +1,11 @@
 # Handoff — Task 18a is complete, `spec/sqlite-only-store`
 
+> **Read `handoff-2026-08-06-task-18b.md` first.** This is 18a's completion
+> record, not the entry point: what it holds that the newer one deliberately does
+> not restate is the verification detail, the reversal list for 18e, and the
+> defect list. Two handoffs, two different tasks — but only one of them is where
+> to start.
+
 **All four of 18a's crossings are closed and nothing is committed.** 53 files
 modified plus 7 untracked, +3855/−1122, on top of `40f188c`. Everything below was
 verified against the working tree, not against a plan.
