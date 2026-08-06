@@ -377,6 +377,39 @@ and cannot pay or be paid — which is not a broken state but a true one, and it
 what makes the orphan defect go away rather than move. An interrupted admission
 leaves a founded bank; re-calling `Admit` re-applies rather than re-founds.
 
+##### "Cannot pay or be paid" is what the design says, not what the code does (2026-08-06)
+
+Left as written above, per this file's convention. Task 17f probed the claim
+rather than copying it, and **only half of it is enforced.**
+
+*Cannot pay* holds: `DepositTx` refuses a founded bank, so it has no funded
+customer to pay from, and `postDebtorLegTx` refuses an asset it holds no
+accounts in.
+
+*Cannot be paid* does not. Routing is the mesh's actor table, and a founded bank
+has an actor from the moment `Admit` reserves its address — so `GET /directory`
+resolves its IBAN network-wide with no membership filter, `SubmitPaymentTx`
+derives the counterparty's BIC from the bank row rather than the roster, and
+`POST /payments` to a founded bank answers **202**. Measured end to end over
+HTTP.
+
+**And the failure is not confined to that payment.** At cut-off,
+`csm.settlementLegs` turns net positions into BICs through the roster and cannot
+name a non-member, so the whole `pacs.009` fails: the cycle stays `Closed` with
+**every other member's payments in it**, their payees unpaid and their payers'
+money in clearing suspense. `POST /cycles/{cid}/settle` — the documented
+operator remedy — fails identically, and `Reject` on the offending payment is
+refused as an invalid state transition. The only exit is to admit the bank,
+after which the cycle settles whole. Nothing is lost; everything stops.
+
+This is a state **this sub-project created**: before it, a bank could not exist
+without its accounts, so there was no unadmitted bank to address. The roster is
+supposed to be exactly the answer here — *the routing directory says who may be
+addressed, not who exists* — and the code does not consult it on the way in.
+The fix belongs where Task 16 put the on-us refusal: at the door, where the
+payment enters the mesh. Recorded here rather than fixed inside a documentation
+sweep, which was the right call by the task that found it.
+
 The ordering closes the rest. The address is reserved at the mesh **before**
 anything is written, and the actor is dropped again if the write fails: an
 in-memory rollback is reliable, and a rollback of a committed unit of work is
