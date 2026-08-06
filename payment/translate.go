@@ -199,36 +199,43 @@ var reasonTable = []reasonMapping{
 	// --- The admission refusals, which are answered off this code set ---
 	//
 	// The rows below it are empty for a different reason from the block above,
-	// and the difference matters because one of them DOES reach a counterparty.
-	// An admission refusal travels as an acmt.011, whose reason is RjctnRsn:
-	// Max350Text, repeated, free prose. It is not a code, and the codes in this
+	// and the difference matters because a refusal here CAN reach a counterparty
+	// where nothing classified above ever does. An admission refusal travels as
+	// an acmt.011, whose reason is RjctnRsn: Max350Text, repeated, free prose. It is not a code, and the codes in this
 	// table are the pacs.002's external set — so there is nothing here for any of
 	// them to map to, and an entry with a code would put a payment status on an
 	// account-opening refusal. See iso20022.AccountRejectionReferences, which
 	// records that the standard itself makes this rejection prose where it makes
 	// a payment rejection a code.
 	//
-	// ErrBICAlreadyAdmitted is the one that reaches a counterparty. The clearing
-	// house makes it before it relays a request, and mesh.csm.relayAdmission
-	// turns it into an acmt.011 addressed to the applicant — carrying the words
-	// of the error itself, because RjctnRsn is where a reason goes on that
-	// message and it is prose.
+	// ErrBICAlreadyAdmitted is what reaches a counterparty. The clearing house
+	// makes it before it relays a request, and mesh.csm.relayAdmission turns it
+	// into an acmt.011 addressed to the applicant — carrying the words of the
+	// error itself, because RjctnRsn is where a reason goes on that message and
+	// it is prose.
 	//
 	// Everything the BANK refuses is never answered at all, whatever the code
 	// set, because a bank is the LAST hop of an admission and has nobody to tell:
-	// each becomes a dead letter. Two of those are a message that is not this
-	// bank's business — ErrNotThisBanksAdmission about which bank,
-	// ErrBankAlreadyAdmitted about which admission — which is a defect in the
-	// ROUTING rather than a judgement the sender can act on, and they take
+	// each becomes a dead letter. Those that say the message is not this bank's
+	// business — ErrNotThisBanksAdmission about which bank,
+	// ErrBankAlreadyAdmitted about which admission — are a defect in the ROUTING
+	// rather than a judgement the sender can act on, and they take
 	// ErrStatementNotForThisBank's classification for its reason. The rest are
 	// refusals a sender COULD act on, and go unanswered for the same structural
 	// reason: the counterparty who could be told is the applicant, and the
 	// applicant is this bank.
 	//
-	// No count in either paragraph, deliberately. Both carried one, both were
-	// right when written, and both were wrong by the next commit that added a
-	// sentinel — which is the defect this file's own reasonTable guards against
-	// for the ROWS and cannot guard against for the prose about them.
+	// No paragraph here says how many rows there are, deliberately. The
+	// phrasings this block has already retired were each falsified by a
+	// different kind of edit: "These three" was written with three rows in
+	// fc1a703 and went wrong at 55c6245, which REMOVED ErrBankNotFounded; "The
+	// bank's three" was written with three in 4dab4b7 and went wrong at 2c12dbb,
+	// which ADDED ErrAdmissionNotIdentified. So it is not additions a count has
+	// to survive. Any change to the thing counted falsifies it, in either
+	// direction, and the deletion is the one nobody rereads the prose for. The
+	// ROWS have a guard against exactly that — errors.go declares a sentinel,
+	// translate_test.go requires a row for it and refuses a row naming anything
+	// else — and the prose about them has none, so it describes instead.
 	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
 	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
 	{ErrAdmissionNotIdentified, "ErrAdmissionNotIdentified", ""},

@@ -1768,21 +1768,29 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 // act on.
 //
 // It is a table rather than a case per shape because the property is the
-// CORRESPONDENCE and not any one refusal. Three of these rows were added after
-// the fact, each of them a hole found by probing rather than by reading — the
-// admission reference, the BIC, and the empty account list — and each time the
-// missing row was the one nobody had set the two lists side by side to notice.
-// A refusal added to the reader with no row here is what this is meant to make
-// visible.
+// CORRESPONDENCE and not any one refusal. The owner rows and the
+// empty-account-list row were added after the fact, each of them a hole found
+// by probing rather than by reading, and each time the missing row was the one
+// nobody had set the two lists side by side to notice. The owner is two rows
+// because the reader's column is two — OrgId/AnyBIC absent, OrgId/AnyBIC
+// malformed — and both were measured writing a roster entry keyed by a BIC
+// nothing can address: keying a row by a value is not checking it. A refusal
+// added to the reader with no row here is what this is meant to make visible.
+//
+// The admission reference is a refusal of the same kind, and it is held next
+// door rather than here: TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs
+// is its test. Every row of this table quotes a reference, so that no case
+// tests that guard by accident and none of them is really about it.
 //
 // # The wedge is asserted, and it is the reason these are refusals rather than
 // no-ops
 //
-// Two of the shapes look harmless in isolation: an acknowledgement naming no
-// account writes a row with nothing in it. Measured, they are not. The bank
-// becomes a Member that settles through no account and the roster entry clears
-// in no scheme, and then the TRUE acknowledgement is refused for ever, by the
-// admission-reference guards those two rows now carry:
+// An acknowledgement naming no account is the shape that looks harmless in
+// isolation: the row it writes has nothing in it, which reads like doing
+// nothing. Measured, it is not. The bank becomes a Member that settles through
+// no account and the roster entry clears in no scheme, and then the TRUE
+// acknowledgement is refused for ever, by the admission-reference guard each of
+// those rows now carries:
 //
 //	PROBE6  bank, ack with NO accounts:   err=<nil> status="Member" ref="impostor-adm" settlement=""
 //	PROBE6b the REAL ack then arrives:    err=…recorded its membership under "impostor-adm"…
@@ -1791,6 +1799,18 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 //
 // So each case ends by driving the real acknowledgement through, which is what
 // says the refusal left both institutions able to finish the admission.
+//
+// # Every row names the error it expects, and not every one of them is ours
+//
+// "Some error came back" is not the property: a refusal arriving for an
+// unrelated reason — a bank in a state the act will not run from, a store that
+// failed — would satisfy it and hide the guard going missing. The test this one
+// replaced named ErrAdmittedAccountUnusable, and the expectation is per row here
+// rather than shared because the owner rows do not end in a sentinel of this
+// package at all. checkAcknowledgement asks iso20022.BIC.Validate and wraps what
+// it says, so the error to name there is iso20022.ErrBICFormat — another
+// package's sentinel, arriving under this one's wrapping, and errors.Is is what
+// lets the test ask through it.
 func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 	ctx := context.Background()
 	real := AdmissionAcknowledgement{
@@ -1801,16 +1821,22 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 	for _, tc := range []struct {
 		what string
 		in   AdmissionAcknowledgement
+		want error
 	}{
 		{"no account owner", AdmissionAcknowledgement{
-			Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}}},
+			Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			iso20022.ErrBICFormat},
 		{"a malformed account owner", AdmissionAcknowledgement{
-			BIC: "nonsense", Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}}},
-		{"no account at all", AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-x"}},
+			BIC: "nonsense", Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.009"}},
+			iso20022.ErrBICFormat},
+		{"no account at all", AdmissionAcknowledgement{BIC: testBIC, Ref: "adm-x"},
+			ErrAdmittedAccountUnusable},
 		{"an account naming no asset", AdmissionAcknowledgement{
-			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{"": "200.100.009"}}},
+			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{"": "200.100.009"}},
+			ErrAdmittedAccountUnusable},
 		{"an asset naming no account", AdmissionAcknowledgement{
-			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: ""}}},
+			BIC: testBIC, Ref: "adm-x", Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: ""}},
+			ErrAdmittedAccountUnusable},
 	} {
 		t.Run(tc.what, func(t *testing.T) {
 			// A network each, because a case that wrote something would otherwise
@@ -1825,14 +1851,14 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 				_, err := sys.AdmitMemberTx(ctx, tx, tc.in)
 				return err
-			}); err == nil {
-				t.Errorf("the clearing house admitted a member from an acknowledgement with %s", tc.what)
+			}); !errors.Is(err, tc.want) {
+				t.Errorf("the clearing house answered an acknowledgement with %s: %v, want %v", tc.what, err, tc.want)
 			}
 			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 				_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, tc.in)
 				return err
-			}); err == nil {
-				t.Errorf("the bank recorded a membership from an acknowledgement with %s", tc.what)
+			}); !errors.Is(err, tc.want) {
+				t.Errorf("the bank answered an acknowledgement with %s: %v, want %v", tc.what, err, tc.want)
 			}
 
 			// Neither institution wrote anything, and — the load-bearing half —
