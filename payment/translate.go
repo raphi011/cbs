@@ -198,6 +198,24 @@ var reasonTable = []reasonMapping{
 	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
 	{ErrNotAPartyToThisReturn, "ErrNotAPartyToThisReturn", ""},
 
+	// One institution's act reached through another's Network, and it is the
+	// only entry here that is not about a message at all.
+	//
+	// The three above are a message delivered to the wrong bank, which is a
+	// routing defect with a real sender behind it. This one has no sender: the
+	// caller and the callee are the same process, and what went wrong is that
+	// something held a handle belonging to one institution and asked it to
+	// perform another's act. It is a WIRING mistake — the same class as
+	// api.NewServer's missing mesh and NewNetwork's zero Identity, both of which
+	// panic — and it is a returned error here only because the entity a Network
+	// belongs to is decided far from where an act is called.
+	//
+	// So the empty code, for a sharper version of the reason the three above
+	// have it: there is not merely no truthful thing to tell a counterparty,
+	// there is no counterparty. MS03 would report a defect in this process as
+	// this agent's judgement about somebody's payment.
+	{ErrNotThisInstitutionsAct, "ErrNotThisInstitutionsAct", ""},
+
 	// Cycle lifecycle errors reach only the operator who drove the cycle into
 	// the wrong state; no counterparty ever sees one.
 	{ErrCycleNotClosed, "ErrCycleNotClosed", ""},
@@ -1197,9 +1215,11 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // somebody else's customer. See mesh's
 // TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
-// `by` is the bank reading the message. It is an argument for the reason
-// ResolveIdentifier's is — payment.Network has no identity until Task 18b — and
-// the actor passes its own id, exactly as PostReturnLeg's caller does.
+// The bank reading the message is this network's own identity, which is what
+// makes "its own register" a property of the handle rather than of what the
+// caller passed. A clearing house's network cannot read a pacs.008 into a
+// request at all — it has no register — and that is ErrNotThisInstitutionsAct
+// rather than a resolution that quietly finds nothing.
 //
 // The DEBTOR is not resolved at all. It is the sending bank's customer, this
 // bank's directory has no standing authority over whether that account exists,
@@ -1223,7 +1243,17 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
 // or posted. That is SubmitPaymentTx's job, and the separation is what lets the
 // mesh translate a message without a write and reject it before one.
-func (s *Network) CreditTransferRequest(ctx context.Context, by ParticipantID, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
+func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
+	// Before the message is read at all, and the placement is what makes the
+	// paragraph above exact rather than nearly true. The identity is reached
+	// otherwise only through localPartyIn, at the end, so a MALFORMED pacs.008
+	// handed to the clearing house came back as a parse error — a true statement
+	// about the message and a silence about the institution, which is the one
+	// thing this guard exists to say. Who is reading is not a question about
+	// what arrived.
+	if _, err := s.self(); err != nil {
+		return InitiatePaymentRequest{}, err
+	}
 	body := doc.FIToFICstmrCdtTrf
 	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
 	if err != nil {
@@ -1243,7 +1273,7 @@ func (s *Network) CreditTransferRequest(ctx context.Context, by ParticipantID, d
 	}
 	// The creditor is this bank's own customer on a push; the debtor is the
 	// sending bank's and is recorded, not resolved.
-	creditor, err := s.localPartyIn(ctx, by, cdtrID)
+	creditor, err := s.localPartyIn(ctx, cdtrID)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -1292,7 +1322,11 @@ func (s *Network) CreditTransferRequest(ctx context.Context, by ParticipantID, d
 // bank's customer's account, the mandate is the only thing that makes it
 // authorised, and the message that came with no mandate should not become a
 // request that looks like one.
-func (s *Network) DirectDebitRequest(ctx context.Context, by ParticipantID, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
+func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (InitiatePaymentRequest, error) {
+	// First, for CreditTransferRequest's reason.
+	if _, err := s.self(); err != nil {
+		return InitiatePaymentRequest{}, err
+	}
 	body := doc.FIToFICstmrDrctDbt
 	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
 	if err != nil {
@@ -1316,7 +1350,7 @@ func (s *Network) DirectDebitRequest(ctx context.Context, by ParticipantID, doc 
 	}
 	// The debtor is this bank's own customer on a pull; the creditor is the
 	// sending bank's and is recorded, not resolved.
-	debtor, err := s.localPartyIn(ctx, by, dbtrID)
+	debtor, err := s.localPartyIn(ctx, dbtrID)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
@@ -1467,14 +1501,14 @@ func amountIn(amt iso20022.ActiveCurrencyAndAmount) (ledger.Amount, ledger.Asset
 // it. Narrowing which PARTY was resolved did not narrow the resolution: the one
 // address that reached ResolveIdentifierTx was still looked for in every
 // member's register, so a receiving bank still read every bank's book to answer
-// a question about its own customer. `by` is what makes it local — the bank
-// asking — and ResolveIdentifierTx now answers out of that bank's register
-// alone.
-func (s *Network) localPartyIn(ctx context.Context, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
+// a question about its own customer. What makes it local is whose register is
+// searched, and that is now this network's own identity rather than an argument
+// the caller supplies — see ResolveIdentifier, which carries the difference.
+func (s *Network) localPartyIn(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var ref PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
-		ref, err = s.addressedPartyTx(ctx, tx, by, ident)
+		ref, err = s.addressedPartyTx(ctx, tx, ident)
 		return err
 	})
 	return ref, err
@@ -1507,8 +1541,8 @@ func (s *Network) localPartyIn(ctx context.Context, by ParticipantID, ident depo
 // TestCreditTransferRequestRefusesAnAddressTwoBanksClaim and
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure; both
 // fail on the collapsed shape.
-func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, by ParticipantID, ident deposit.Identifier) (PartyRef, error) {
-	ref, err := s.ResolveIdentifierTx(ctx, tx, by, ident)
+func (s *Network) addressedPartyTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
+	ref, err := s.ResolveIdentifierTx(ctx, tx, ident)
 	if errors.Is(err, deposit.ErrIdentifierNotFound) {
 		return PartyRef{}, fmt.Errorf("%w: %s", ErrAccountNotInParticipant, ident.Value)
 	}

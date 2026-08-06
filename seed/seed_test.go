@@ -36,9 +36,9 @@ var testMeshConfig = mesh.Config{
 // leaves Stop nothing to do but join. Both return dead letters and both are
 // reported — a build that swallowed a handler's failure would leave a test
 // asserting on a scenario that had not finished being built.
-func testMesh(t *testing.T, net *payment.Network) *mesh.Mesh {
+func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
 	t.Helper()
-	msh, err := mesh.New(net, testMeshConfig, slog.New(slog.DiscardHandler))
+	msh, err := mesh.New(nets, testMeshConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("mesh.New: %v", err)
 	}
@@ -64,7 +64,20 @@ func testMesh(t *testing.T, net *payment.Network) *mesh.Mesh {
 // status coverage) claims about the seed rather than about a store, and it is
 // the whole of what a caller of this package now assembles for itself: a store,
 // a network, a running mesh, and Populate over the three.
-func testNetwork(t *testing.T) *payment.Network {
+// testNets is what a seed fixture holds: the clearing house's view for the
+// network-scoped reads these tests make, plus the factory Populate and the mesh
+// both take. See payment.Networks; the reason it is two values rather than one
+// is Task 18b, and payment's own testSystem carries the same note.
+type testNets struct {
+	*payment.Network
+	nets *payment.Networks
+}
+
+// cb is the settlement agent's view, which is the only one that can be asked
+// what a member's reserve balance is.
+func (n testNets) cb() *payment.Network { return n.nets.CentralBank() }
+
+func testNetwork(t *testing.T) testNets {
 	t.Helper()
 	net, _ := testNetworkAndClock(t)
 	return net
@@ -72,14 +85,14 @@ func testNetwork(t *testing.T) *payment.Network {
 
 // testNetworkAndClock is testNetwork for the tests that also need to ask what
 // day it is, which after the catalogue is any test resolving a price.
-func testNetworkAndClock(t *testing.T) (*payment.Network, *Dataset) {
+func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
 	t.Helper()
 	d := New()
-	net := payment.NewNetwork(testenv.New(t, d.Now).Payment(), d.Now)
-	if err := d.Populate(context.Background(), net, testMesh(t, net)); err != nil {
+	nets := payment.NewNetworks(testenv.New(t, d.Now).Payment(), d.Now)
+	if err := d.Populate(context.Background(), nets, testMesh(t, nets)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return net, d
+	return testNets{Network: nets.ClearingHouse(), nets: nets}, d
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -221,11 +234,11 @@ func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
 	if target.ID == "" {
 		t.Fatal("no accepted payment with a posted leg in the seed data")
 	}
-	if err := net.ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
+	if err := net.nets.Bank(target.Debtor.Participant).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the composite: %v", err)
 	}
 
-	b := &builder{ctx: ctx, net: net}
+	b := &builder{ctx: ctx, nets: net.nets}
 	err = rejectErr(b, target.ID, iso20022.StatusReasonDuplication, "duplicate instruction")
 	if !errors.Is(err, ledger.ErrTransactionAlreadyReversed) {
 		t.Fatalf("reject = %v, want ErrTransactionAlreadyReversed", err)
@@ -280,7 +293,7 @@ func TestReservesConserved(t *testing.T) {
 	net := testNetwork(t)
 	var sum int64
 	for _, p := range listParticipants(t, ctx, net) {
-		bal, err := net.ReserveBalance(ctx, p.ID, "EUR")
+		bal, err := net.cb().ReserveBalance(ctx, p.ID, "EUR")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -516,7 +529,7 @@ func TestClockWentLive(t *testing.T) {
 
 // listParticipants and listPayments keep the ctx/error plumbing out of the
 // assertions above.
-func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Bank {
+func listParticipants(t *testing.T, ctx context.Context, net testNets) []*payment.Bank {
 	t.Helper()
 	parts, err := net.ListBanks(ctx)
 	if err != nil {
@@ -525,7 +538,7 @@ func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) [
 	return parts
 }
 
-func listPayments(t *testing.T, ctx context.Context, net *payment.Network) []payment.Payment {
+func listPayments(t *testing.T, ctx context.Context, net testNets) []payment.Payment {
 	t.Helper()
 	payments, err := net.ListPayments(ctx)
 	if err != nil {
@@ -541,15 +554,16 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	d := New()
 	store := testenv.New(t, d.Now)
-	net := payment.NewNetwork(store.Payment(), d.Now)
-	msh := testMesh(t, net)
+	nets := payment.NewNetworks(store.Payment(), d.Now)
+	net := testNets{Network: nets.ClearingHouse(), nets: nets}
+	msh := testMesh(t, nets)
 
-	if err := d.Populate(ctx, net, msh); err != nil {
+	if err := d.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("first Populate: %v", err)
 	}
 	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
 
-	if err := d.Populate(ctx, net, msh); err != nil {
+	if err := d.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("second Populate: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, net)); got != len(participants) {
@@ -566,8 +580,9 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	// without releasing the clock, everything this process went on to write
 	// would be timestamped 2025-09-15.
 	second := New()
-	secondNet := payment.NewNetwork(store.Payment(), second.Now)
-	if err := second.Populate(ctx, secondNet, msh); err != nil {
+	secondNets := payment.NewNetworks(store.Payment(), second.Now)
+	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets}
+	if err := second.Populate(ctx, secondNets, msh); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
@@ -666,10 +681,11 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	ctx := context.Background()
 	d := New()
 	store := testenv.New(t, d.Now)
-	net := payment.NewNetwork(store.Payment(), d.Now)
-	msh := testMesh(t, net)
+	nets := payment.NewNetworks(store.Payment(), d.Now)
+	net := testNets{Network: nets.ClearingHouse(), nets: nets}
+	msh := testMesh(t, nets)
 
-	if err := d.Populate(ctx, net, msh); err != nil {
+	if err := d.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
 	before := listPayments(t, ctx, net)
@@ -689,7 +705,7 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 
-	if err := d.Populate(ctx, net, msh); err != nil {
+	if err := d.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("Populate after reset: %v", err)
 	}
 	after := listPayments(t, ctx, net)

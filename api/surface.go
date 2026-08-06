@@ -23,13 +23,15 @@ import (
 // CentralBankRoutes is the settlement layer's surface: reserves, its own audit,
 // admission, and the reset that rebuilds the sample dataset.
 func (s *Server) CentralBankRoutes() http.Handler {
-	return s.withMiddleware(s.centralBankRouter().mux)
+	cb := s.as(s.nets.CentralBank())
+	return cb.withMiddleware(cb.centralBankRouter().mux)
 }
 
 // ClearingHouseRoutes is the CSM's surface: every payment in the network, the
 // clearing cycles, the schemes, the mandates and the directory.
 func (s *Server) ClearingHouseRoutes() http.Handler {
-	return s.withMiddleware(s.clearingHouseRouter().mux)
+	ch := s.as(s.nets.ClearingHouse())
+	return ch.withMiddleware(ch.clearingHouseRouter().mux)
 }
 
 // BankRoutes is one member bank's surface, bound to its identity.

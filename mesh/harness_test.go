@@ -82,8 +82,19 @@ type tappedMessage struct {
 
 // meshHarness is a seeded two-bank network with a mesh running over it.
 type meshHarness struct {
-	rec  *recordingStore
+	rec *recordingStore
+
+	// nets mints one payment.Network per institution, and net is the CLEARING
+	// HOUSE's — the view the network-scoped reads below go through.
+	//
+	// Task 18b is why there are two. A fixture cannot hold one Network and play
+	// every institution with it any more: a member's own act needs that member's
+	// network and the central bank's book is on the settlement agent's alone.
+	// See payment.Networks, and payment's testSystem, which carries the same
+	// split for the same reason.
+	nets *payment.Networks
 	net  *payment.Network
+
 	mesh *Mesh
 	cfg  Config
 
@@ -251,6 +262,23 @@ func (usdCT) Asset() ledger.AssetCode { return "USD" }
 // acmt.007 per asset, because the schema carries one currency per request.
 var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 
+// bank is one member's own view and cb is the settlement agent's. See the nets
+// field for why the harness needs all three.
+func (h *meshHarness) bank(pid payment.ParticipantID) *payment.Network { return h.nets.Bank(pid) }
+func (h *meshHarness) cb() *payment.Network                            { return h.nets.CentralBank() }
+
+// cbBook is the central bank's book of accounts. Network.CentralBank returns an
+// error since Task 18b — every other institution's network has no such book —
+// and here it cannot fire, so the assertion is what says so.
+func (h *meshHarness) cbBook(t *testing.T) *ledger.Book {
+	t.Helper()
+	book, err := h.cb().CentralBank()
+	if err != nil {
+		t.Fatalf("the central bank's book: %v", err)
+	}
+	return book
+}
+
 func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	t.Helper()
 	ctx := context.Background()
@@ -258,7 +286,8 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 
 	h := &meshHarness{cfg: testConfig}
 	h.rec = newRecordingStore(testenv.New(t, clock).Payment())
-	h.net = payment.NewNetwork(h.rec, clock)
+	h.nets = payment.NewNetworks(h.rec, clock)
+	h.net = h.nets.ClearingHouse()
 
 	assets := euroOnly
 	if opts.twoAssets {
@@ -272,7 +301,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// where the atomic call this replaces wrote three rows into a store and
 	// needed no transport at all.
 	var err error
-	if h.mesh, err = New(h.net, h.cfg, slog.New(slog.DiscardHandler)); err != nil {
+	if h.mesh, err = New(h.nets, h.cfg, slog.New(slog.DiscardHandler)); err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	// Set before Start, which is the only moment at which writing it is safe:
@@ -340,7 +369,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// option. A test that wants that state can lodge for itself — see
 	// TestABankCannotSettleOutOfVaultCash, which is the one that does.
 	if opts.fundTheDebtor {
-		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
 		h.lodge(t, h.debtor.ID, "EUR", harnessFunding)
@@ -353,7 +382,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		// account's OWN vault, and a lodgement moves one asset's vault onto that
 		// asset's reserve. A dollar cycle settles across dollar reserves and a euro
 		// balance is no use to it.
-		if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit USD: %v", err)
 		}
 		h.lodge(t, h.debtor.ID, "USD", harnessFunding)

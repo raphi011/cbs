@@ -13,7 +13,7 @@ import (
 
 // paymentAudit reads the network's own audit trail, optionally narrowed to one
 // entity.
-func paymentAudit(t *testing.T, sys *Network, entity string) []ledger.AuditEvent {
+func paymentAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	t.Helper()
 	events, err := sys.ListAudit(context.Background(), ledger.AuditFilter{
 		BookID:   ledger.NetworkBook,
@@ -182,7 +182,7 @@ func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 		t.Fatal("fixture produced no audit events")
 	}
 
-	if _, _, err := sys.SettleCycle(ctx, cycleID); err == nil {
+	if _, _, err := sys.cb().SettleCycle(ctx, cycleID); err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
 
@@ -320,7 +320,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := storetest.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
+	p, err := storetest.Admit(ctx, sys.nets, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	events := paymentAudit(t, sys, string(p.ID))
@@ -368,7 +368,7 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := storetest.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
+	p, err := storetest.Admit(ctx, sys.nets, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	assertEqual(t, "the whole admission's trail", eventTypes(paymentAudit(t, sys, "")),

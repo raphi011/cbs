@@ -3,6 +3,7 @@ package mesh
 import (
 	"context"
 
+	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
@@ -141,13 +142,19 @@ import (
 // saying what the reserve account did, and what arrives from the clearing house
 // is a pacs.002 saying one payment settled.
 //
-// Each takes the acting participant as an argument, as the two halves of a
-// payment do, and the domain refuses the one that is not this bank's business:
-// a statement about anybody else's reserve account
+// Neither takes an acting participant any more, and Task 18b is what took it.
+// Both used to, as the two halves of a payment did, and the actor passed its own
+// id: a loan the domain had no way to check, so what stopped a handler posting
+// another member's half was the SUBJECT guard behind it and nothing else — a
+// statement about anybody else's reserve account
 // (payment.ErrStatementNotForThisBank), a payment whose creditor banks somewhere
-// else (payment.ErrNotThisBanksPayment). The actor passes its own id — see
-// bank.pid — so neither can be used to post another member's half even though
-// nothing in the SIGNATURES stops a caller naming one.
+// else (payment.ErrNotThisBanksPayment).
+//
+// Those two guards are unchanged and still do all the work they ever did: two
+// member banks are both member banks, and only the payment says which one holds
+// this leg. What has gone is the assertion in front of them. The bank acting is
+// the identity of the network behind this interface, so there is no argument to
+// name somebody else with — see payment.Identity.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
@@ -172,17 +179,28 @@ type bankOps interface {
 	// payee's bank on a push, and the posting of the debtor leg for the payer's
 	// bank on a pull.
 	//
-	// Both take the ACTING participant, and Task 18a is what added it. The
-	// address is resolved in that bank's own register and in no other, which is
-	// what the resolution has always CLAIMED to do and did not: it swept every
-	// member's until this task, and that sweep is the crossing the recorder's
-	// receiver set has carried since it was first measured. The actor passes its
-	// own id — see bank.pid — exactly as the settlement and return methods below
-	// do; payment.Network has no identity of its own until Task 18b, which is
-	// what will take the argument away again.
-	CreditTransferRequest(ctx context.Context, by payment.ParticipantID, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
-	DirectDebitRequest(ctx context.Context, by payment.ParticipantID, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
-	AcceptInbound(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) error
+	// The address is resolved in this bank's own register and in no other, which
+	// is what the resolution has always CLAIMED to do and did not: it swept every
+	// member's until Task 18a, and that sweep is the crossing the recorder's
+	// receiver set carried from the first time it was measured. Task 18a narrowed
+	// it with an argument the actor filled in from bank.pid; Task 18b took the
+	// argument away, because the register searched is the one belonging to the
+	// network these methods are called on.
+	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
+	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
+	AcceptInbound(ctx context.Context, id payment.PaymentID) error
+
+	// ResolveIdentifier is the on-us check, and it is the one method here the
+	// mesh calls on the caller's goroutine rather than inside a handler: an
+	// instruction naming a payee this same bank holds is not a payment this
+	// transport carries, and the bank that would submit it is the only
+	// institution that can say so. See Mesh.Submit and payment.ErrOnUsPayment.
+	//
+	// It reaches THIS bank's register and no other, and that is a property of
+	// the network behind the interface rather than of what the caller passes —
+	// Task 18b's change, in the one place in this package where the difference
+	// is visible from outside a handler.
+	ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (payment.PartyRef, error)
 
 	// The payer's bank's half of a rejection: give the payer their money back.
 	// GetPayment is what establishes that there is a decision to act on — see
@@ -230,29 +248,30 @@ type bankOps interface {
 	// comes before the send: a bank that had only checked would have nothing to
 	// unwind. See bank.receiveReturnStatus.
 	//
-	// Both take the acting participant for PostSettlementAdvice's reason, and
-	// the domain refuses a bank that is neither side of the payment
-	// (payment.ErrNotAPartyToThisReturn). The actor passes its own id — see
-	// bank.pid — so neither can be used to post another member's leg even
-	// though nothing in the signatures stops a caller naming one.
-	PostReturnLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID, reason string) (payment.Payment, error)
-	ReverseReturnLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID, reason string) error
+	// Neither takes the acting participant, for PostSettlementAdvice's reason,
+	// and the domain still refuses a bank that is neither side of the payment
+	// (payment.ErrNotAPartyToThisReturn) — which is the guard that decides
+	// between two members and the only one that could.
+	PostReturnLeg(ctx context.Context, id payment.PaymentID, reason string) (payment.Payment, error)
+	ReverseReturnLeg(ctx context.Context, id payment.PaymentID, reason string) error
 
 	// The bank's half of settlement, and it is the half that used to be done TO
 	// it. A member books its own mirror leg from the statement the settlement
 	// agent sent; nothing else in this mesh may post in that book, and nothing
 	// on this interface lets this bank post in anybody else's.
-	PostSettlementAdvice(ctx context.Context, by payment.ParticipantID, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
+	PostSettlementAdvice(ctx context.Context, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
 
 	// The payee's bank's half of settlement: release one payment out of its own
 	// clearing suspense into its own customer's account.
 	//
-	// It takes the ACTING participant because both banks are told a payment
-	// settled and only one may post it — see payment.ErrNotThisBanksPayment. The
-	// domain refuses the other, rather than this package deciding: which bank a
-	// payment's creditor banks at is a fact about the payment, and a handler that
-	// decided it would be asserting something it cannot check.
-	PostCreditorLeg(ctx context.Context, by payment.ParticipantID, id payment.PaymentID) (payment.Payment, error)
+	// Both banks are told a payment settled and only one may post it — see
+	// payment.ErrNotThisBanksPayment. Which one is decided by comparing the
+	// payment's creditor against the acting bank, and the acting bank is now the
+	// network's identity rather than an argument. The domain refuses the other,
+	// rather than this package deciding: which bank a payment's creditor banks at
+	// is a fact about the payment, and a handler that decided it would be
+	// asserting something it cannot check.
+	PostCreditorLeg(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
 	// The bank's own liquidity management, and the second thing on this interface
 	// whose subject is this bank rather than a payment.
@@ -276,28 +295,28 @@ type bankOps interface {
 	// and for the same reason: crediting a reserve account is the account
 	// servicer's act, and no member may make it.
 	//
-	// It takes the acting participant, as the settlement and return methods above
-	// do, and the actor passes its own id (see bank.pid). What the domain refuses
-	// is a bank that cannot name its own reserve account
-	// (payment.ErrSettlementMemberNotFound) — the guard that used to sit on a
-	// deposit and was wrong there.
-	LodgeReserves(ctx context.Context, by payment.ParticipantID, asset ledger.AssetCode,
+	// The lodging member is the network's identity, as it is for the settlement
+	// and return methods above. What the domain refuses is a bank that cannot
+	// name its own reserve account (payment.ErrSettlementMemberNotFound) — the
+	// guard that used to sit on a deposit and was wrong there.
+	LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 		amount ledger.Amount, mc payment.MessageContext) (payment.LodgementInstruction, iso20022.Envelope, error)
 
 	// The bank's second act of its own admission: writing down the settlement
 	// account numbers the acknowledgement told it, and becoming a Member.
 	//
 	// It is the only method here a bank calls about ITSELF rather than about a
-	// payment, and it takes the acting participant for the reason the two
-	// settlement methods above do: the actor passes its own id (see bank.pid) and
-	// the domain refuses an acknowledgement addressed to anybody else
-	// (payment.ErrNotThisBanksAdmission).
+	// payment, and the bank it is about is the network's own identity. The domain
+	// still refuses an acknowledgement addressed to anybody else
+	// (payment.ErrNotThisBanksAdmission): which member is acting says nothing
+	// about which member the MESSAGE names, and the two disagreeing is exactly
+	// the misrouting that guard exists for.
 	//
 	// The bank's FIRST act is not here and cannot be. FoundBankTx runs before
 	// this bank has an actor at all — there is nothing to hold an interface — so
 	// it is reached through mesh.Mesh.Admit, on the caller's goroutine, exactly
 	// as the submitting half of a payment is.
-	RecordMembership(ctx context.Context, by payment.ParticipantID, in payment.AdmissionAcknowledgement) (*payment.Bank, error)
+	RecordMembership(ctx context.Context, in payment.AdmissionAcknowledgement) (*payment.Bank, error)
 }
 
 // csmOps is the clearing house's view: what a CSM handler may reach.

@@ -11,15 +11,42 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// Server holds the application state: one payment.Network, the root of the
-// whole object graph (each participant bank owns its own book of accounts and a
-// deposit register over it).
+// Server holds the application state. A bound Server holds ONE payment.Network
+// — the one belonging to the institution whose listener it is — plus the factory
+// that mints the others.
 //
-// The Network is a fixed handle rather than a swappable pointer, because it no
-// longer holds any data — every entity lives in the Store behind it. That is
-// also what turns Reset from a pointer swap into a store operation, which is
-// the only form of it that clears a database.
+// # One network per listener, and Task 18b is why
+//
+// There used to be one Network for the whole process, shared by all three
+// surfaces and by every bank's, with boundPID beside it telling the bank
+// listeners apart. That worked only while a bank's identity travelled as an
+// ARGUMENT: GET /directory on bank A's port and on bank B's port called the same
+// object and passed different participants.
+//
+// The moment the identity moved into the Network, one shared Network would have
+// meant both ports resolving in the same register — the crossing Task 18a closed,
+// reopened one layer up, where the recorder cannot see it because api is not an
+// actor. So the three surface methods each bind their own institution's Network
+// and forBank binds the bank's, which is Task 18d's first bullet arriving early.
+// It is a wiring change and not a split: the store underneath is still one.
+//
+// The Networks value is what holds more than one institution's view, and it is
+// the only thing here that does. Nothing reachable from a bound Server can act
+// as anybody but the entity it was bound to.
+//
+// The handles are fixed rather than swappable pointers, because a Network holds
+// no data — every entity lives in the Store behind it. That is also what turns
+// Reset from a pointer swap into a store operation, which is the only form of it
+// that clears a database.
 type Server struct {
+	// nets mints one Network per institution. It is what the three surface
+	// methods and forBank bind from, and what Reset clears the store through.
+	nets *payment.Networks
+
+	// net is THIS listener's own institution, and it is what every handler on
+	// this Server reaches the domain through. On an unbound Server — one that
+	// has been constructed but whose surface has not been chosen — it is nil,
+	// and the surface methods below are what fill it in.
 	net *payment.Network
 
 	// mesh is the message transport, and since sub-project 7b it is the only
@@ -47,27 +74,63 @@ type Server struct {
 	// value lives on a shallow copy of the Server (see forBank) rather than in
 	// the request context, which is what leaves all 58 bank handlers untouched
 	// — they call s.participant(w, r) exactly as before.
+	//
+	// It is the same id as net's identity and it is kept beside it rather than
+	// derived from it, because the two answer different questions. This one is
+	// what a HANDLER needs — which participant to name in a URL, in a DTO, in a
+	// comparison against a payment's parties — and payment.Identity deliberately
+	// does not hand out live handles or ids for that. forBank sets both from one
+	// value, so they cannot disagree.
 	boundPID payment.ParticipantID
 
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
 	//
-	// It is handed the MESH as well as the network, because admitting a bank is
+	// It is handed the MESH as well as the networks, because admitting a bank is
 	// now a conversation between three institutions and a reseed that founded its
 	// banks without one would rebuild a network in which nobody can be paid. Reset
 	// passes its own mesh rather than letting the builder close over one, so the
 	// mesh a reseed admits into cannot be a different mesh from the one the reset
 	// drained and forgot the old banks from.
-	populate func(context.Context, *payment.Network, *mesh.Mesh) error
+	//
+	// It takes the FACTORY and not this listener's own network, and that is the
+	// one place in this package where more than one institution is legitimately
+	// in view. Building the sample dataset is three institutions' work — banks
+	// are founded, reserve accounts opened, cycles closed and settled — and the
+	// seed says so act by act (see seed.builder). It is not an institution's act
+	// and there is no institution to perform it as.
+	populate func(context.Context, *payment.Networks, *mesh.Mesh) error
 
 	// resetMu serializes Reset. See the method for why one unit of work cannot
 	// do the job instead.
-	resetMu sync.Mutex
+	//
+	// It is a POINTER, and that is Task 18b's doing. It used to be a value, and
+	// what kept there being exactly one of it was that forBank copied the Server
+	// field by field and left this one behind — so the bank listeners had a zero
+	// mutex nothing could reach, and the central bank's listener WAS the original
+	// Server and so held the real one.
+	//
+	// Neither half of that survives: every listener is a copy now, including the
+	// central bank's, so "the original" is not something any request reaches. A
+	// value would give each copy a lock of its own, and two copies of the central
+	// bank's surface would then reset concurrently — the exact race this mutex
+	// exists for, reintroduced by a change that has nothing to do with resetting.
+	// One lock allocated once and shared by pointer is what makes the count one
+	// again, and it no longer depends on which copy a caller happens to hold.
+	resetMu *sync.Mutex
 
 	log *slog.Logger
 }
 
-// NewServer builds a Server over an existing network and a running mesh.
+// NewServer builds a Server over the process's networks and a running mesh.
+//
+// What comes back is UNBOUND: it has no institution and no handler on it will
+// work, because s.net is nil until one of the three surface methods below has
+// chosen one. That is deliberate rather than a stage to be tidied away — which
+// entity a Server is depends on which surface is asked for, and there is no
+// answer to give at construction. CentralBankRoutes, ClearingHouseRoutes and
+// BankRoutes are the only things that produce a Server anything can be served
+// from.
 //
 // populate is the sample-dataset builder, called again on every Reset; pass nil
 // for a server that resets to an empty system. If log is nil, the default slog
@@ -85,7 +148,7 @@ type Server struct {
 // NewServer performs no I/O — the caller populates the network before serving —
 // so a store that is unavailable fails where it can be reported rather than
 // inside a constructor with no error to return.
-func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Context, *payment.Network, *mesh.Mesh) error, log *slog.Logger) *Server {
+func NewServer(nets *payment.Networks, msh *mesh.Mesh, populate func(context.Context, *payment.Networks, *mesh.Mesh) error, log *slog.Logger) *Server {
 	if msh == nil {
 		panic("api: NewServer needs a mesh; without one this layer has no way to carry a payment past the bank it was handed to")
 	}
@@ -93,13 +156,34 @@ func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Conte
 		log = slog.Default()
 	}
 	if populate == nil {
-		populate = func(context.Context, *payment.Network, *mesh.Mesh) error { return nil }
+		populate = func(context.Context, *payment.Networks, *mesh.Mesh) error { return nil }
 	}
-	return &Server{net: net, mesh: msh, populate: populate, log: log}
+	return &Server{nets: nets, mesh: msh, populate: populate, log: log, resetMu: &sync.Mutex{}}
 }
 
-// network returns the live network. Cheap, lock-free, safe for concurrent use.
+// network returns this listener's own institution's network. Cheap, lock-free,
+// safe for concurrent use.
+//
+// It is nil on an unbound Server, and a handler reaching it there is a route
+// registered on a surface that was never chosen — a wiring mistake that will
+// panic at the first request rather than answer one quietly as somebody else.
 func (s *Server) network() *payment.Network { return s.net }
+
+// as returns a copy of this Server bound to one institution's network.
+//
+// The copy is shallow on purpose: every listener shares the one Networks, the
+// one mesh, the one populate func, the one reset lock and the one log. What it
+// does NOT share is which institution it acts as, which is the whole point.
+func (s *Server) as(net *payment.Network) *Server {
+	return &Server{
+		nets:     s.nets,
+		net:      net,
+		mesh:     s.mesh,
+		populate: s.populate,
+		resetMu:  s.resetMu,
+		log:      s.log,
+	}
+}
 
 // Reset discards all persisted state and rebuilds the sample dataset. It must
 // go through the store: swapping an in-memory object graph would leave every
@@ -208,31 +292,36 @@ func (s *Server) Reset(ctx context.Context) error {
 	if err := s.mesh.ForgetBanks(ctx); err != nil {
 		return fmt.Errorf("api: the mesh still holds banks the reset is about to delete: %w", err)
 	}
-	if err := s.net.Store().Reset(ctx); err != nil {
+	if err := s.nets.Store().Reset(ctx); err != nil {
 		return err
 	}
 	// Last, and it is what gives the reseeded banks their actors: each one is
 	// admitted through this mesh, so nothing has to re-register them afterwards.
-	return s.populate(ctx, s.net, s.mesh)
+	return s.populate(ctx, s.nets, s.mesh)
 }
 
-// forBank returns a view of this Server bound to one participant. The copy is
-// shallow on purpose: every listener shares the one Network, the one populate
-// func and the one log.
+// forBank returns a view of this Server bound to one participant, over THAT
+// BANK's own network.
 //
-// It is built field by field rather than as *s because a sync.Mutex copied by
-// value is a second, independent lock. resetMu therefore stays behind, on the
-// original Server — which is the one the central bank's listener uses, and the
-// central bank is the only operator with a reset route. So there is exactly one
-// resetMu in the process, guarding the only surface that can reach it.
+// This used to hand every listener the one shared Network and tell them apart
+// with boundPID alone, and Task 18b is what ended that. A bank's identity is
+// constructor state on payment.Network now, so a shared Network would make
+// GET /directory on bank A's port resolve in whichever register the one Network
+// belonged to — every bank reading one bank's customers, which is the crossing
+// Task 18a closed reappearing one layer above where the recorder can see it,
+// because api is not an actor and nothing here records a book.
+//
+// Minting the bank's network needs no I/O and no store read: a bank IS its own
+// book (payment.AsBank), so the participant is the whole of the identity. That
+// is what makes pulling this forward from Task 18d a wiring change rather than
+// a split — there is still one store behind all of them.
+//
+// The two values are set together and cannot disagree. boundPID is what the
+// handlers name in URLs and DTOs; the network is what the domain acts through.
 func (s *Server) forBank(pid payment.ParticipantID) *Server {
-	return &Server{
-		net:      s.net,
-		mesh:     s.mesh,
-		boundPID: pid,
-		populate: s.populate,
-		log:      s.log,
-	}
+	b := s.as(s.nets.Bank(pid))
+	b.boundPID = pid
+	return b
 }
 
 // participant resolves the listener's own participant. On failure it writes the

@@ -214,7 +214,7 @@ func TestAStatementAboutAnotherBanksAccountIsRefused(t *testing.T) {
 	// The domain's refusal, made where it lives. The movement is the payer
 	// bank's own, named by the payer bank's own reserve account, and the payee's
 	// bank is the one asking to book it.
-	_, err := h.net.PostSettlementAdvice(context.Background(), h.creditorPID, payment.AdvisedMovement{
+	_, err := h.bank(h.creditorPID).PostSettlementAdvice(context.Background(), payment.AdvisedMovement{
 		Account:        h.settlementAccountOf(t, h.debtorPID),
 		Asset:          "EUR",
 		Movement:       -harnessAmount,

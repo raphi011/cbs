@@ -47,8 +47,10 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	// The store, the network and the seed, exactly as main builds them.
 	data := seed.New()
 	st := testenv.New(t, data.Now)
-	net := payment.NewNetwork(st.Payment(), data.Now)
-	msh, err := mesh.New(net, meshConfig, slog.New(slog.DiscardHandler))
+	nets := payment.NewNetworks(st.Payment(), data.Now)
+	// The clearing house's view, for the network-scoped reads this test makes.
+	net := nets.ClearingHouse()
+	msh, err := mesh.New(nets, meshConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("building the mesh: %v", err)
 	}
@@ -68,7 +70,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 			t.Errorf("stopping: %v", err)
 		}
 	})
-	if err := data.Populate(ctx, net, msh); err != nil {
+	if err := data.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("populating the sample dataset: %v", err)
 	}
 

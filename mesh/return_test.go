@@ -569,7 +569,7 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 	}
 
 	// The reserve reversal is described as what it is, and carries no reason.
-	cb, err := h.net.CentralBank().GetTransactionByIdempotencyKey(context.Background(), string(p.ID)+":return-settle")
+	cb, err := h.cbBook(t).GetTransactionByIdempotencyKey(context.Background(), string(p.ID)+":return-settle")
 	if err != nil {
 		t.Fatalf("no reserve reversal for %s: %v", p.ID, err)
 	}
@@ -1084,7 +1084,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	// replenishes a RESERVE is a lodgement, because the reserve account is in the
 	// central bank's book and only the central bank can credit it. Nothing about
 	// the payment changes either way.
-	if err := h.net.Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
+	if err := h.bank(h.creditorPID).Deposit(ctx, h.creditorPID, h.creditorAcct.ID, harnessAmount, "cash in over the counter"); err != nil {
 		t.Fatalf("funding the biller's bank so the return can be retried: %v", err)
 	}
 	h.lodge(t, h.creditorPID, "EUR", harnessAmount)

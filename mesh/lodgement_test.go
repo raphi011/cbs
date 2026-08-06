@@ -42,10 +42,10 @@ func lodgementFor(t *testing.T, h *meshHarness, amount ledger.Amount, msgID stri
 
 	// A fresh deposit, so there is unlodged cash in the vault to move. The
 	// fixture has already lodged its own funding.
-	if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	_, env, err := h.net.LodgeReserves(ctx, h.debtor.ID, "EUR", amount, payment.MessageContext{
+	_, env, err := h.bank(h.debtor.ID).LodgeReserves(ctx, "EUR", amount, payment.MessageContext{
 		From:  h.debtorBIC,
 		To:    h.cfg.CentralBankBIC,
 		MsgID: msgID,
@@ -86,7 +86,7 @@ func TestAStoreFailureAtTheAgentIsNotARefusal(t *testing.T) {
 	broken := errors.New("store: the retry budget ran out")
 	cb := &centralBank{
 		m:   h.mesh,
-		ops: lodgementFails{settlementOps: h.net, err: broken},
+		ops: lodgementFails{settlementOps: h.cb(), err: broken},
 		bic: h.cfg.CentralBankBIC,
 	}
 
@@ -136,7 +136,7 @@ func TestALodgementRefusalIsAJudgement(t *testing.T) {
 			refusal := fmt.Errorf("payment: %s lodges EUR: %w", h.debtorBIC, sentinel)
 			cb := &centralBank{
 				m:   h.mesh,
-				ops: lodgementFails{settlementOps: h.net, err: refusal},
+				ops: lodgementFails{settlementOps: h.cb(), err: refusal},
 				bic: h.cfg.CentralBankBIC,
 			}
 

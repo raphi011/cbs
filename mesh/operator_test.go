@@ -143,12 +143,12 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := storetest.Admit(ctx, h.net, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	joiner, err := storetest.Admit(ctx, h.nets, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	if err != nil {
 		t.Fatalf("admitting Nordhaven: %v", err)
 	}
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
-	if err := h.net.Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+	if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 	out := payment.InitiatePaymentRequest{

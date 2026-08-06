@@ -605,4 +605,15 @@
 // CALL, and the recorder in books_test.go watches which books each one actually
 // reaches. The measurements are in TestWhichBooksEachBankActuallyReaches, and
 // one of them is a genuine crossing that this arrangement is what found.
+//
+// A third mechanism has since joined those two and it narrows neither method nor
+// book. Task 18b gave payment.Network an identity, so each actor here is built
+// over the network of the institution it IS (see Mesh.nets), and an act that
+// used to take "which bank is doing this" as an argument reads it from there.
+// What that removes is a bank acting as another bank — which neither of the
+// other two could see, because a handler naming somebody else's id called a
+// method it legitimately held and reached a book it was entitled to reach. What
+// it does not remove is either of their jobs, and the recorder's least of all:
+// an identity says which institution acts, and says nothing about which book a
+// posting names.
 package mesh

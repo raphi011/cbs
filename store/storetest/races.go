@@ -108,7 +108,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentAdmissionsAgreeOnOneCentralBank", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		net := payment.NewNetwork(s.Payment(), frozen)
+		nets := payment.NewNetworks(s.Payment(), frozen)
 
 		// One address each. The central bank keys its own member record by BIC,
 		// so three banks on one BIC would be one member holding one reserve
@@ -117,14 +117,15 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		names := []string{"Aurora Bank", "Banca Verde", "Nordkredit"}
 		bics := []iso20022.BIC{"AURODEFFXXX", "VERDITMMXXX", "NORDSESSXXX"}
 		errs := runConcurrently(len(names), func(i int) error {
-			_, err := Admit(ctx, net, names[i], bics[i], nil)
+			_, err := Admit(ctx, nets, names[i], bics[i], nil)
 			return err
 		})
 		for _, err := range errs {
 			assertNoError(t, err)
 		}
 
-		cb := net.CentralBank()
+		cb, err := nets.CentralBank().CentralBank()
+		assertNoError(t, err)
 		ledgers, err := cb.ListLedgers(ctx)
 		assertNoError(t, err)
 		assertEqual(t, "central bank ledgers", len(ledgers), 1)
@@ -137,7 +138,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		// This is the assertion that would fail on a divergence: with two
 		// "Member Reserves" subledgers each bank's reserves would be real, and
 		// invisible to the other's settlement.
-		participants, err := net.ListBanks(ctx)
+		participants, err := nets.ClearingHouse().ListBanks(ctx)
 		assertNoError(t, err)
 		assertEqual(t, "participants", len(participants), len(names))
 
@@ -187,12 +188,14 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentSubmissionsOfOneReferenceAcceptOne", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		net := payment.NewNetwork(s.Payment(), frozen)
+		nets := payment.NewNetworks(s.Payment(), frozen)
 
-		debtorBank, err := Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
+		debtorBank, err := Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", []ledger.AssetCode{"EUR"})
 		assertNoError(t, err)
-		creditorBank, err := Admit(ctx, net, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
+		creditorBank, err := Admit(ctx, nets, "Banca Verde", "VERDITMMXXX", []ledger.AssetCode{"EUR"})
 		assertNoError(t, err)
+		// The payer's bank, and the race below is eight of its own submissions.
+		debtorNet := nets.Bank(debtorBank.ID)
 
 		alice, err := debtorBank.Deposit.OpenAccount(ctx, debtorBank.CustomerSubledger, "Alice", "EUR", debtorBank.ProductID, 0,
 			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-DUP-ALICE-0001"})
@@ -203,7 +206,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 
 		const opening ledger.Amount = 1_000_000
 		const amount ledger.Amount = 1_000
-		assertNoError(t, net.Deposit(ctx, debtorBank.ID, alice.ID, opening, "opening"))
+		assertNoError(t, debtorNet.Deposit(ctx, debtorBank.ID, alice.ID, opening, "opening"))
 
 		req := payment.InitiatePaymentRequest{
 			Scheme:          payment.SchemeSEPACT,
@@ -215,7 +218,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		}
 
 		errs := runConcurrently(8, func(int) error {
-			_, err := net.SubmitPayment(ctx, req)
+			_, err := debtorNet.SubmitPayment(ctx, req)
 			return err
 		})
 		assertOneWinner(t, "SubmitPayment", errs, payment.ErrDuplicateEndToEndID)
@@ -226,7 +229,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 		assertNoError(t, err)
 		assertEqual(t, "Alice's balance after eight submissions of one reference", balance.Book, opening-amount)
 
-		payments, err := net.ListPayments(ctx)
+		payments, err := nets.ClearingHouse().ListPayments(ctx)
 		assertNoError(t, err)
 		assertEqual(t, "payment rows", len(payments), 1)
 	})
@@ -259,7 +262,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentAdmissionsOfOneBICAdmitOne", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		net := payment.NewNetwork(s.Payment(), frozen)
+		csm := payment.NewNetworks(s.Payment(), frozen).ClearingHouse()
 
 		// Several applicants, one address, a DIFFERENT admission reference each
 		// — which is the only case AdmitMemberTx refuses, and the case that must
@@ -307,7 +310,7 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 					},
 				}
 				return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-					_, err := net.AdmitMemberTx(ctx, tx, ack)
+					_, err := csm.AdmitMemberTx(ctx, tx, ack)
 					return err
 				})
 			})
@@ -354,12 +357,12 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 	t.Run("ConcurrentSettlementAccountOpeningsKeepEveryAsset", func(t *testing.T) {
 		s := newStore(t)
 		ctx := context.Background()
-		net := payment.NewNetwork(s.Payment(), frozen)
+		cb := payment.NewNetworks(s.Payment(), frozen).CentralBank()
 
 		assets := []ledger.AssetCode{"EUR", "USD"}
 		errs := runConcurrently(len(assets), func(i int) error {
 			return s.Payment().Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-				_, err := net.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
+				_, err := cb.OpenSettlementAccountTx(ctx, tx, payment.AdmissionRequest{
 					Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: assets[i], Ref: "adm-aurora",
 				})
 				return err

@@ -1671,7 +1671,9 @@ go run ./cmd/server        # :8081 central bank, :8082 clearing house, :8083+ on
 DATABASE_URL=./cbs.db go run ./cmd/server
 ```
 
-**One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports over one shared `payment.Network`.
+**One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports over one shared `Store`.
+
+What it no longer answers on is one shared `payment.Network`, and the correction is recent. A `Network` is **one institution's** handle now: it is built with an `Identity` saying which entity it is, and each listener holds the one belonging to its own — the bank whose port it is, or the clearing house, or the central bank. That is what lets an act ask "whose book?" and get an answer without being told; before it, every act about a particular bank took that bank as an argument, so the caller asserted who it was and the domain believed it. `payment.Networks` is the factory the process holds, and it is the only thing in the repository that holds more than one institution's view.
 
 That is not a convenience. `store/mem` was a map behind a mutex in one process's memory, so four bank *processes* would have been four disconnected universes: a payment from Aurora to Verde posting into an Aurora that Verde had never heard of. The swap to SQLite changed that in a direction nobody asked for and it is worth recording rather than acting on: a SQLite **file** under WAL is shared between processes, so an entity-per-process split no longer needs a server to make the state one universe. What it still needs is everything else below.
 

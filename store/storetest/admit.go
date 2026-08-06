@@ -25,8 +25,8 @@ import (
 // rather than a preference: RunRaces needs it, and this package must not import
 // an implementation, because the implementation's tests import this package.
 // Nothing about the composition itself is backend-specific — it takes a
-// payment.Network and never names a store — which is why the move was a move and
-// not a rewrite.
+// payment.Networks and never names a store — which is why the move was a move
+// and not a rewrite.
 //
 // The conversation itself is tested where it happens, in mesh: mesh's harness
 // drives Mesh.Admit and drains, and the tests in mesh/admission_test.go are what
@@ -53,10 +53,23 @@ import (
 // banks on one address look like one admission, which is exactly the case
 // payment.ErrBICAlreadyAdmitted exists for. A caller that wants two banks to
 // clash on one address gets the refusal, which is the truth about that request.
-func Admit(ctx context.Context, net *payment.Network, name string, bic iso20022.BIC,
+// # It names which institution performs each act, and Task 18b is why
+//
+// One *payment.Network used to play all four. It cannot now: opening a reserve
+// account needs the central bank's book and recording a membership needs the
+// joining bank's own register, and neither is reachable from the other's
+// network. So the acts below are spelled against the institution whose act each
+// is — which is what the four MESSAGES say too, and the closest this stand-in
+// gets to being honest about the conversation it is standing in for.
+//
+// Founding is the exception and it is named rather than smoothed over: it runs
+// before the joining bank has any handle of its own, so it goes through the
+// clearing house's, exactly as mesh.Mesh.Admit does. That is a crossing, it is
+// on Task 18d's list, and Mesh.clearingHouse carries the argument.
+func Admit(ctx context.Context, nets *payment.Networks, name string, bic iso20022.BIC,
 	assets []ledger.AssetCode) (*payment.Bank, error) {
 
-	bank, err := net.FoundBank(ctx, name, bic, assets)
+	bank, err := nets.ClearingHouse().FoundBank(ctx, name, bic, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -69,7 +82,7 @@ func Admit(ctx context.Context, net *payment.Network, name string, bic iso20022.
 	// nothing could assert on.
 	var member payment.SettlementMember
 	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
-		if member, err = net.OpenSettlementAccount(ctx, payment.AdmissionRequest{
+		if member, err = nets.CentralBank().OpenSettlementAccount(ctx, payment.AdmissionRequest{
 			Name: name, BIC: bic, Asset: asset, Ref: admissionRef(bic),
 		}); err != nil {
 			return nil, err
@@ -81,10 +94,10 @@ func Admit(ctx context.Context, net *payment.Network, name string, bic iso20022.
 	ack := payment.AdmissionAcknowledgement{
 		BIC: bic, Accounts: member.Accounts, Ref: admissionRef(bic),
 	}
-	if _, err := net.AdmitMember(ctx, ack); err != nil {
+	if _, err := nets.ClearingHouse().AdmitMember(ctx, ack); err != nil {
 		return nil, err
 	}
-	return net.RecordMembership(ctx, bank.ID, ack)
+	return nets.Bank(bank.ID).RecordMembership(ctx, ack)
 }
 
 // admissionRef is the process id this stand-in quotes. See Admit.

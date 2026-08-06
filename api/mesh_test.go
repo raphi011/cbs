@@ -58,13 +58,13 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 
 	data := seed.New()
 	store := testenv.New(t, data.Now)
-	net := payment.NewNetwork(store.Payment(), data.Now)
+	nets := payment.NewNetworks(store.Payment(), data.Now)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := testMeshConfig
 	gate := newMeshGate()
 	cfg.Observe = gate.observe
-	msh, err := mesh.New(net, cfg, log)
+	msh, err := mesh.New(nets, cfg, log)
 	if err != nil {
 		t.Fatalf("mesh.New: %v", err)
 	}
@@ -94,10 +94,15 @@ func newAPIHarness(t *testing.T) (*Server, *mesh.Mesh) {
 	// halfway would otherwise leave actor goroutines nobody joins. They pass the
 	// gate like every other message and go straight through, because no test has
 	// run yet and so no gate is held.
-	if err := data.Populate(ctx, net, msh); err != nil {
+	if err := data.Populate(ctx, nets, msh); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return NewServer(net, msh, data.Populate, log), msh
+	// Bound to the CLEARING HOUSE, which is what makes s.network() answer at all:
+	// NewServer returns an unbound Server since Task 18b, and the reads these
+	// tests make of it — payments, cycles, bank rows — are the network-scoped
+	// ones. A test that wants a bank's surface calls s.forBank, exactly as
+	// BankRoutes does.
+	return NewServer(nets, msh, data.Populate, log).as(nets.ClearingHouse()), msh
 }
 
 // The gate: how a test reads the world at a moment the mesh would otherwise
@@ -225,7 +230,7 @@ func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
 		t.Fatalf("listing the seed's banks: %v", err)
 	}
 	for _, b := range banks {
-		switch ref, err := s.network().ResolveIdentifier(ctx, b.ID, ident); {
+		switch ref, err := s.nets.Bank(b.ID).ResolveIdentifier(ctx, ident); {
 		case err == nil:
 			return ref
 		case errors.Is(err, deposit.ErrIdentifierNotFound):

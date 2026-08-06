@@ -65,11 +65,13 @@ func (s *Server) handleResolveIdentifier(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ident := deposit.Identifier{Scheme: deposit.IdentifierScheme(scheme), Value: value}
-	// The listener's own bank, and it is the whole of the scope. An unbound
-	// Server would ask about the participant "", which is a clean not-found —
-	// the failure mode worth having if this is ever registered on a surface that
-	// has no identity, as it was on the clearing house's until Task 18a.
-	ref, err := s.network().ResolveIdentifier(r.Context(), s.boundPID, ident)
+	// The listener's own bank, and it is the whole of the scope. It is not
+	// passed: this Server's network IS the bank's, so there is no argument here
+	// that could name another one. Registered on a surface with no bank — the
+	// clearing house's, as this route was until Task 18a — it answers
+	// payment.ErrNotThisInstitutionsAct rather than resolving in whichever
+	// register the shared object happened to belong to.
+	ref, err := s.network().ResolveIdentifier(r.Context(), ident)
 	if err != nil {
 		writeError(w, err)
 		return

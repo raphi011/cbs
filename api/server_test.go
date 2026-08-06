@@ -53,7 +53,7 @@ func bank(s *Server, pid string) http.Handler {
 //
 // Drain FIRST, then Stop, at cleanup, and both errors are reported. See
 // newAPIHarness in mesh_test.go, which says why at length.
-func newServer(t *testing.T, populate func(context.Context, *payment.Network, *mesh.Mesh) error) *Server {
+func newServer(t *testing.T, populate func(context.Context, *payment.Networks, *mesh.Mesh) error) *Server {
 	t.Helper()
 	return newServerOverStore(t, nil, populate)
 }
@@ -62,7 +62,7 @@ func newServer(t *testing.T, populate func(context.Context, *payment.Network, *m
 // test that needs to hold a unit of work open. gate may be nil, which is every
 // other caller.
 func newServerOverStore(t *testing.T, gate *gatedStore,
-	populate func(context.Context, *payment.Network, *mesh.Mesh) error) *Server {
+	populate func(context.Context, *payment.Networks, *mesh.Mesh) error) *Server {
 
 	t.Helper()
 	clock := func() time.Time { return fixedTime }
@@ -72,9 +72,9 @@ func newServerOverStore(t *testing.T, gate *gatedStore,
 		gate.Store = ps
 		ps = gate
 	}
-	net := payment.NewNetwork(ps, clock)
+	nets := payment.NewNetworks(ps, clock)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	msh, err := mesh.New(net, testMeshConfig, log)
+	msh, err := mesh.New(nets, testMeshConfig, log)
 	if err != nil {
 		t.Fatalf("mesh.New: %v", err)
 	}
@@ -92,11 +92,12 @@ func newServerOverStore(t *testing.T, gate *gatedStore,
 		}
 	})
 	if populate != nil {
-		if err := populate(context.Background(), net, msh); err != nil {
+		if err := populate(context.Background(), nets, msh); err != nil {
 			t.Fatalf("populate: %v", err)
 		}
 	}
-	return NewServer(net, msh, populate, log)
+	// Bound to the clearing house, for newAPIHarness's reason.
+	return NewServer(nets, msh, populate, log).as(nets.ClearingHouse())
 }
 
 // admitForPopulate is what a reseed here uses to make a bank: the mesh's own
@@ -113,7 +114,7 @@ func newServerOverStore(t *testing.T, gate *gatedStore,
 // It drains per bank, for the reason seed.builder.admit gives: network ids come
 // from one counter, and a conversation still running while the next bank is
 // founded moves that bank's id.
-func admitForPopulate(ctx context.Context, net *payment.Network, msh *mesh.Mesh,
+func admitForPopulate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh,
 	name string, bic iso20022.BIC) (*payment.Bank, error) {
 
 	founded, err := msh.Admit(ctx, name, bic, nil)
@@ -123,7 +124,7 @@ func admitForPopulate(ctx context.Context, net *payment.Network, msh *mesh.Mesh,
 	if err := msh.Drain(ctx); err != nil {
 		return nil, err
 	}
-	return net.GetBank(ctx, founded.ID)
+	return nets.Bank(founded.ID).GetBank(ctx, founded.ID)
 }
 
 // drainServer waits for the mesh behind a Server built by newServer to go quiet.
@@ -1259,15 +1260,15 @@ func TestAdminReset(t *testing.T) {
 func TestResetEmptiesState(t *testing.T) {
 	// The tests' sample dataset: one bank with one customer. Idempotent, like
 	// the real one, so booting and resetting are the same call.
-	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
-		existing, err := net.ListBanks(ctx)
+	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+		existing, err := nets.ClearingHouse().ListBanks(ctx)
 		if err != nil {
 			return err
 		}
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
+		p, err := admitForPopulate(ctx, nets, msh, "Bank A", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -1330,17 +1331,17 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 		populateRan bool
 		populateCtx error
 	)
-	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
+	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
 		populateRan = true
 		populateCtx = ctx.Err()
-		existing, err := net.ListBanks(ctx)
+		existing, err := nets.ClearingHouse().ListBanks(ctx)
 		if err != nil {
 			return err
 		}
 		if len(existing) > 0 {
 			return nil
 		}
-		_, err = admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
+		_, err = admitForPopulate(ctx, nets, msh, "Bank A", "BANKDEFFXXX")
 		return err
 	}
 
@@ -1382,15 +1383,15 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 // a single reset unsafe. Eight resets against a durable store produced twelve
 // participants where there should have been four.
 func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
-	baseline := func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
-		existing, err := net.ListBanks(ctx)
+	baseline := func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+		existing, err := nets.ClearingHouse().ListBanks(ctx)
 		if err != nil {
 			return err
 		}
 		if len(existing) > 0 {
 			return nil
 		}
-		p, err := admitForPopulate(ctx, net, msh, "Bank A", "BANKDEFFXXX")
+		p, err := admitForPopulate(ctx, nets, msh, "Bank A", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -3132,8 +3133,8 @@ func anotherAccountAtSameBank(t *testing.T, h *Server, pid string) string {
 // register for the payee's name.
 func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 	var pid payment.ParticipantID
-	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
-		p, err := admitForPopulate(ctx, net, msh, "Aurora Bank", "BANKDEFFXXX")
+	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+		p, err := admitForPopulate(ctx, nets, msh, "Aurora Bank", "BANKDEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -3175,8 +3176,8 @@ func TestDirectoryUnknownIBANIs404(t *testing.T) {
 // payment path.
 func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 	var asker payment.ParticipantID
-	srv := newServer(t, func(ctx context.Context, net *payment.Network, msh *mesh.Mesh) error {
-		holder, err := admitForPopulate(ctx, net, msh, "Aurora Bank", "AURODEFFXXX")
+	srv := newServer(t, func(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) error {
+		holder, err := admitForPopulate(ctx, nets, msh, "Aurora Bank", "AURODEFFXXX")
 		if err != nil {
 			return err
 		}
@@ -3184,7 +3185,7 @@ func TestDirectoryDoesNotAnswerForAnotherBanksCustomer(t *testing.T) {
 			deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}); err != nil {
 			return err
 		}
-		other, err := admitForPopulate(ctx, net, msh, "Banca Verde", "VERDITMMXXX")
+		other, err := admitForPopulate(ctx, nets, msh, "Banca Verde", "VERDITMMXXX")
 		if err != nil {
 			return err
 		}

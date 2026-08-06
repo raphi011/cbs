@@ -200,7 +200,35 @@ type actor struct {
 //
 // See the package doc for what this is deliberately not.
 type Mesh struct {
-	net *payment.Network
+	// nets mints one payment.Network per institution. It is what replaces the
+	// single *payment.Network this field used to be, and the replacement is the
+	// whole of Task 18b in this package: each actor below is built over the
+	// network of the institution it IS, so a bank handler's ops are a bank's
+	// view and the clearing house's are the clearing house's.
+	//
+	// Nothing here holds more than one institution's view at a time. This is a
+	// factory, not a collection: it opens nothing and remembers nothing, and
+	// each Network it mints goes straight into the one actor that is that
+	// institution.
+	nets *payment.Networks
+
+	// clearingHouse is the network the mesh's OWN reads go through — the ones
+	// made on the caller's goroutine, before an actor has been chosen or when
+	// none exists yet: is this address a member (Submit, Admit), which banks
+	// does the roster name (joinRoster), which bank submits this payment
+	// (Return), and which scheme is this.
+	//
+	// The clearing house is the right institution for the roster questions,
+	// which are its own rows. It is the WRONG one for two of them and they are
+	// named rather than hidden: joinRoster's ListBanks and Admit's
+	// GetBank/FoundBank read and write the banks table, which Task 18c gives to
+	// the bank shape, so a clearing house reaching them is a crossing. It is on
+	// Task 18d's list in as many words — every ListBanks and GetBank call site
+	// becomes a roster read at the clearing house, a message, or an error — and
+	// what stops it being invisible in the meantime is that they are all here,
+	// through this field, rather than spread over a network everybody shares.
+	clearingHouse *payment.Network
+
 	cfg Config
 	log *slog.Logger
 
@@ -313,10 +341,10 @@ type Mesh struct {
 // cost nothing, and the actor is what makes the bank reachable. See Mesh.Admit
 // and Mesh.reserved.
 //
-// net may be nil. A mesh with no network has no roster and therefore no member
+// nets may be nil. A mesh with no networks has no roster and therefore no member
 // banks; that is what the transport's own tests use, and it is the reason this
 // task needs no store at all.
-func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
+func New(nets *payment.Networks, cfg Config, log *slog.Logger) (*Mesh, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -330,7 +358,7 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	close(quiet)
 
 	m := &Mesh{
-		net:      net,
+		nets:     nets,
 		cfg:      cfg,
 		log:      log,
 		tap:      cfg.Observe,
@@ -351,10 +379,16 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	// goroutine. See Mesh.csm.
 	clearing := unhandled("clearing house")
 	settlement := unhandled("central bank")
-	if net != nil {
-		m.csm = &csm{m: m, ops: net, bic: cfg.ClearingHouseBIC, held: map[payment.PaymentID]heldReturn{}}
+	if nets != nil {
+		// Each institution over its own network, which is what makes the three
+		// interfaces in ops.go narrow by BOOK as well as by method: the central
+		// bank's is the only one holding the central bank's book of accounts,
+		// and a csmOps method reached through a bank's network would be refused
+		// by the domain rather than merely unwritable here.
+		m.clearingHouse = nets.ClearingHouse()
+		m.csm = &csm{m: m, ops: m.clearingHouse, bic: cfg.ClearingHouseBIC, held: map[payment.PaymentID]heldReturn{}}
 		clearing = m.csm.handle
-		settlement = (&centralBank{m: m, ops: net, bic: cfg.CentralBankBIC}).handle
+		settlement = (&centralBank{m: m, ops: nets.CentralBank(), bic: cfg.CentralBankBIC}).handle
 	}
 	if err := m.addActor(cfg.ClearingHouseBIC, "clearing house", clearing); err != nil {
 		return nil, err
@@ -569,10 +603,10 @@ func (m *Mesh) Start(ctx context.Context) error {
 // making it do so would serialise admission behind every reset for a race this
 // closes.
 func (m *Mesh) joinRoster(ctx context.Context) error {
-	if m.net == nil {
+	if m.nets == nil {
 		return nil
 	}
-	entries, err := m.net.ListRosterEntries(ctx)
+	entries, err := m.clearingHouse.ListRosterEntries(ctx)
 	if err != nil {
 		return fmt.Errorf("mesh: reading the clearing house's roster: %w", err)
 	}
@@ -583,7 +617,7 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 	for _, e := range entries {
 		members[e.BIC] = true
 	}
-	ps, err := m.net.ListBanks(ctx)
+	ps, err := m.clearingHouse.ListBanks(ctx)
 	if err != nil {
 		return fmt.Errorf("mesh: reading the banks behind the roster: %w", err)
 	}
@@ -593,7 +627,7 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 		if !members[p.BIC] {
 			continue
 		}
-		b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
+		b := &bank{m: m, ops: m.nets.Bank(p.ID), bic: p.BIC}
 		banks[p.ID] = b
 		specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
 	}
@@ -769,13 +803,13 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // cannot use this, because a batch registered and indexed under one lock would
 // hold m.mu across a whole roster.
 func (m *Mesh) AddBank(p *payment.Bank) error {
-	if m.net == nil {
+	if m.nets == nil {
 		return errors.New("mesh: no network, so there are no member banks to give actors to")
 	}
 	if err := p.BIC.Validate(); err != nil {
 		return fmt.Errorf("mesh: actor %q: %w", p.Name, err)
 	}
-	b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
+	b := &bank{m: m, ops: m.nets.Bank(p.ID), bic: p.BIC}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -978,7 +1012,7 @@ func (m *Mesh) dispatch(ctx context.Context, a *actor, it item) {
 //
 // It is only ever called from a handler or from Submit, both of which exist only
 // on a mesh that has a network.
-func (m *Mesh) now() time.Time { return m.net.Now() }
+func (m *Mesh) now() time.Time { return m.clearingHouse.Now() }
 
 // nextMsgID mints the identifier a message travels under: the sender's BIC and a
 // number nobody else in this mesh will use.
@@ -1303,7 +1337,7 @@ func (m *Mesh) takeDeadLetters() error {
 // place and for the same kind of reason — see payment.ErrBankNotAdmitted, which
 // records what it stops and why the clearing house refuses it a second time.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
-	scheme, ok := m.net.Scheme(req.Scheme)
+	scheme, ok := m.clearingHouse.Scheme(req.Scheme)
 	if !ok {
 		return payment.Payment{}, fmt.Errorf("mesh: no scheme %q, so no bank submits it: %w", req.Scheme, payment.ErrSchemeNotFound)
 	}
@@ -1382,7 +1416,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		if side.ref.Participant == "" {
 			continue
 		}
-		if _, err := m.net.GetRosterEntry(ctx, side.ref.Participant); err != nil {
+		if _, err := m.clearingHouse.GetRosterEntry(ctx, side.ref.Participant); err != nil {
 			if errors.Is(err, payment.ErrRosterEntryNotFound) {
 				return payment.Payment{}, fmt.Errorf("mesh: the %s, %s, is not a member of %s: %w",
 					side.role, side.ref.Participant, req.Scheme, payment.ErrBankNotAdmitted)
@@ -1431,7 +1465,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		counterparty = req.Debtor
 	}
 	if counterparty.Identifier != (deposit.Identifier{}) {
-		switch _, err := m.net.ResolveIdentifier(withActor(ctx, b.bic), submitter, counterparty.Identifier); {
+		switch _, err := b.ops.ResolveIdentifier(withActor(ctx, b.bic), counterparty.Identifier); {
 		case err == nil:
 			return payment.Payment{}, fmt.Errorf("mesh: %s holds both the payer's account and the payee's for this instruction: %w",
 				b.bic, ErrOnUsPayment)
@@ -1546,7 +1580,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // csm.relayReturn and centralBank.advise record their own version of the same
 // class of gap.
 func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
-	if m.net == nil {
+	if m.nets == nil {
 		return nil, errors.New("mesh: no network, so there is no bank to admit")
 	}
 	if err := bic.Validate(); err != nil {
@@ -1560,7 +1594,7 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 	// The roster read is OUTSIDE the lock, for joinRoster's reason. What it
 	// answers is the domain's question — is this address already a member's —
 	// and the lock below is what turns the answer into a decision.
-	_, err := m.net.GetRosterEntryByBIC(ctx, bic)
+	_, err := m.clearingHouse.GetRosterEntryByBIC(ctx, bic)
 	switch {
 	case err == nil:
 		return nil, fmt.Errorf("%w: %s is already a member of this scheme", ErrAddressTaken, bic)
@@ -1577,11 +1611,11 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 	if redriving != "" {
 		// A bank this mesh founded that the roster has no entry for. Its row is
 		// read OUTSIDE the lock, for joinRoster's reason, and nothing is founded.
-		if bank, err = m.net.GetBank(ctx, redriving); err != nil {
+		if bank, err = m.clearingHouse.GetBank(ctx, redriving); err != nil {
 			return nil, fmt.Errorf("mesh: %s is re-driving the admission of %s and cannot read it: %w", bic, redriving, err)
 		}
 	} else {
-		if bank, err = m.net.FoundBank(ctx, name, bic, assets); err != nil {
+		if bank, err = m.clearingHouse.FoundBank(ctx, name, bic, assets); err != nil {
 			// The reservation goes back before the caller is told, so a refused
 			// unit of work leaves the address exactly as free as it found it.
 			m.releaseAddress(bic)
@@ -1835,11 +1869,11 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 	// the scheme here — the answer is what CHOOSES the actor, so no actor can
 	// have made it. The read costs no book: a payment is a network-scoped row,
 	// and reading one records nothing at all (see books_test.go).
-	p, err := m.net.GetPayment(ctx, id)
+	p, err := m.clearingHouse.GetPayment(ctx, id)
 	if err != nil {
 		return err
 	}
-	scheme, ok := m.net.Scheme(p.Scheme)
+	scheme, ok := m.clearingHouse.Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("mesh: no scheme %q, so no bank returns %s: %w", p.Scheme, p.ID, payment.ErrSchemeNotFound)
 	}

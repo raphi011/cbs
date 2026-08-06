@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/raphi011/cbs/payment"
 )
 
 // The deliberate overlaps, as an allowlist rather than a tolerance, so a third
@@ -651,4 +653,57 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 		"amount":10000,
 		"endToEndId":"not-mine-to-send"
 	}`, http.StatusUnprocessableEntity)
+}
+
+// TestEachListenerActsAsItsOwnInstitution is the direct statement of the ruling
+// Task 18b's api half turns on, and the reason that half exists at all.
+//
+// Until this task api held ONE *payment.Network for the whole process and told
+// its bank listeners apart with boundPID alone. That was correct exactly while a
+// bank's identity travelled as an argument: two ports, one object, two
+// participants passed in. The moment payment.Network gained an identity it
+// stopped being correct, because one shared object has one register — and
+// GET /directory on two banks' ports would then resolve in the same one, which
+// is the crossing Task 18a closed reappearing one layer up, where the recorder
+// in mesh/books_test.go cannot see it because api is not an actor.
+//
+// So each surface binds its own institution. This reads that back off the
+// Servers the three surface methods build, rather than off a response, because
+// the response is the consequence and this is the cause;
+// TestDirectoryDoesNotAnswerForAnotherBanksCustomer is the consequence, and it
+// is what fails if forBank hands two banks one network.
+func TestEachListenerActsAsItsOwnInstitution(t *testing.T) {
+	srv := newServer(t, nil)
+
+	// The two entities that are not banks: neither has a participant.
+	for _, e := range []struct {
+		who string
+		srv *Server
+	}{
+		{"the central bank", srv.as(srv.nets.CentralBank())},
+		{"the clearing house", srv.as(srv.nets.ClearingHouse())},
+	} {
+		if pid, ok := e.srv.network().Identity().Participant(); ok {
+			t.Errorf("%s's listener acts as member bank %q; it is not a member bank", e.who, pid)
+		}
+	}
+
+	// And every bank's listener is its own bank, with boundPID agreeing. The two
+	// are set from one value in forBank and this is what says they cannot drift:
+	// boundPID is what the handlers name in URLs and DTOs, the identity is what
+	// the domain acts through, and a listener whose two disagreed would answer
+	// about one bank out of another's register.
+	for _, pid := range []payment.ParticipantID{"bank_1", "bank_2", "bank_3"} {
+		b := srv.forBank(pid)
+		got, ok := b.network().Identity().Participant()
+		if !ok {
+			t.Fatalf("the listener for %s does not act as a member bank at all", pid)
+		}
+		if got != pid {
+			t.Errorf("the listener for %s acts as %s in the domain", pid, got)
+		}
+		if b.boundPID != pid {
+			t.Errorf("the listener for %s names %s in its handlers", pid, b.boundPID)
+		}
+	}
 }

@@ -113,29 +113,25 @@ type bank struct {
 	// Mesh.banks.
 	bic iso20022.BIC
 
-	// pid is which participant this actor IS, which is the question a settlement
-	// advice asks: a statement is about one bank's reserve account and a payment
-	// advice is about one bank's customer, and the answer must be this actor's
-	// own identity rather than a lookup.
+	// There is no pid field, and its absence is Task 18b.
 	//
-	// It is now ALSO what narrows the domain's address resolution, and this note
-	// used to say in as many words that it was not.
+	// There was one, and it was passed down to nine of the methods on bankOps —
+	// which participant is posting this leg, whose register resolves this
+	// address, which member this statement is about. Its own doc called it "a
+	// loan and not the answer": Mesh.banks is keyed by ParticipantID, so the
+	// actor was being handed back something the mesh already knew, and nothing
+	// in payment refused an actor that named somebody else. The identity was the
+	// caller's assertion, on every call, in the layer that would have to be
+	// wrong for the domain's guards to matter.
 	//
-	// The distinction it drew was real: this is the mesh's own index turned
-	// around — Mesh.banks is keyed by ParticipantID, so the actor is being told
-	// something the mesh knew when it built it — whereas narrowing
-	// ResolveIdentifierTx needs the DOMAIN layer to know whose register is whose.
-	// What the note got wrong is the conclusion, that the two could not be the
-	// same value. Task 18a passes this one down: CreditTransferRequest,
-	// DirectDebitRequest and AcceptInbound all take it, and payment resolves in
-	// that bank's register and no other.
+	// It is the ops field now. Each bank actor is built over that bank's own
+	// payment.Network (see Mesh.nets), so which participant is acting is a
+	// property of the handle rather than an argument, and there is no argument
+	// left to name a different one with.
 	//
-	// It is a loan and not the answer. Nothing in payment refuses an actor that
-	// passes somebody else's id — the identity is still the caller's assertion,
-	// exactly as it is for PostSettlementAdvice and the two return legs. Task 18b
-	// gives payment.Network an identity of its own and takes every one of these
-	// arguments away again.
-	pid payment.ParticipantID
+	// What the actor still holds is its bic, because that is a fact about the
+	// WIRE — what it signs messages with and what a counterparty addresses —
+	// which the domain's identity is not.
 }
 
 // handle dispatches on the message that arrived.
@@ -343,7 +339,7 @@ func (b *bank) returnPayment(ctx context.Context, id payment.PaymentID, reason i
 
 	// This bank's own leg, described by what the message says. The refusal on a
 	// push happens here and costs nothing: the pacs.004 is built and dropped.
-	if _, err := b.ops.PostReturnLeg(ctx, b.pid, p.ID, returnReasonOf(env)); err != nil {
+	if _, err := b.ops.PostReturnLeg(ctx, p.ID, returnReasonOf(env)); err != nil {
 		return fmt.Errorf("mesh: %s cannot fund its own leg of the return of %s: %w", b.bic, p.ID, err)
 	}
 	if err := b.m.send(b.bic, to, env); err != nil {
@@ -398,8 +394,9 @@ func returnReasonOf(env iso20022.Envelope) string {
 // address that reached ResolveIdentifierTx was still looked for in every
 // member's register, so AC01 fired only when NOBODY in the network held the
 // creditor's IBAN and an address some other bank happened to hold still
-// resolved. Task 18a narrows the lookup, and the identity it needed is passed as
-// b.pid rather than waited for.
+// resolved. Task 18a narrowed the lookup and Task 18b removed the argument it
+// needed: the register searched is the one belonging to this actor's own
+// payment.Network.
 //
 // What that changes is not the happy path — a message correctly routed here is
 // about this bank's own customer either way — but the WRONGLY routed one. Since
@@ -436,7 +433,7 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 	// refer back by. More than one is refused below, by CreditTransferRequest.
 	ref := body.CdtTrfTxInf[0].PmtId
 
-	if _, err := b.ops.CreditTransferRequest(ctx, b.pid, doc); err != nil {
+	if _, err := b.ops.CreditTransferRequest(ctx, doc); err != nil {
 		return b.answer(from, orig, ref, err)
 	}
 	return b.accept(ctx, from, orig, ref)
@@ -484,7 +481,7 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 	// refer back by. More than one is refused below, by DirectDebitRequest.
 	ref := body.DrctDbtTxInf[0].PmtId
 
-	if _, err := b.ops.DirectDebitRequest(ctx, b.pid, doc); err != nil {
+	if _, err := b.ops.DirectDebitRequest(ctx, doc); err != nil {
 		return b.answer(from, orig, ref, err)
 	}
 	return b.accept(ctx, from, orig, ref)
@@ -495,7 +492,7 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 // because the direction changes what the half DOES and not what this actor does
 // about it.
 func (b *bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification) error {
-	if err := b.ops.AcceptInbound(ctx, b.pid, payment.PaymentID(ref.TxId)); err != nil {
+	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId)); err != nil {
 		// Already answered. A queue redelivers, so the same message can arrive
 		// twice — and the second time the payment is no longer Initiated, which
 		// is what this sentinel says. It must NOT become a rejection: payment's
@@ -630,7 +627,7 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 			// sent. The domain decides which this bank is;
 			// ErrNotThisBanksPayment is the ordinary case for one of the two
 			// recipients and is not a failure.
-			if _, err := b.ops.PostCreditorLeg(ctx, b.pid, payment.PaymentID(r.TxID)); err != nil {
+			if _, err := b.ops.PostCreditorLeg(ctx, payment.PaymentID(r.TxID)); err != nil {
 				if errors.Is(err, payment.ErrNotThisBanksPayment) {
 					continue
 				}
@@ -721,12 +718,12 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 // # Which leg, and whose business it is
 //
 // Neither this handler nor the clearing house decides. payment.PostReturnLegTx
-// takes the acting participant and works out from the PAYMENT which of the two
-// legs that bank owns — the clawback at the creditor's bank, the refund at the
-// payer's — and refuses a bank that is neither with
-// payment.ErrNotAPartyToThisReturn. This bank passes its own id (see bank.pid),
-// so a misrouted pacs.004 becomes a dead letter rather than a posting in
-// somebody else's return.
+// reads the acting bank off its own network and works out from the PAYMENT which
+// of the two legs that bank owns — the clawback at the creditor's bank, the
+// refund at the payer's — and refuses a bank that is neither with
+// payment.ErrNotAPartyToThisReturn. The acting bank is this actor and cannot be
+// another, so a misrouted pacs.004 becomes a dead letter rather than a posting
+// in somebody else's return.
 //
 // It cannot refuse the leg on its merits, and that is the other half of the
 // return's one rule: the returning bank posted before it sent and could say no;
@@ -754,7 +751,7 @@ func (b *bank) receiveReturn(ctx context.Context, from iso20022.BIC, doc *iso200
 		return fmt.Errorf("mesh: %s could not read the return %s sent it: %w", b.bic, from, err)
 	}
 	for _, in := range ins {
-		if _, err := b.ops.PostReturnLeg(ctx, b.pid, in.PaymentID, in.Reason); err != nil {
+		if _, err := b.ops.PostReturnLeg(ctx, in.PaymentID, in.Reason); err != nil {
 			return fmt.Errorf("mesh: %s could not post its leg of the return of %s: %w", b.bic, in.PaymentID, err)
 		}
 	}
@@ -812,7 +809,7 @@ func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) e
 		}
 		b.m.log.Error("mesh: return refused",
 			"bank", b.bic, "payment", r.TxID, "code", r.Code, "reason", r.Text)
-		if err := b.ops.ReverseReturnLeg(ctx, b.pid, payment.PaymentID(r.TxID), rejectionText(r)); err != nil {
+		if err := b.ops.ReverseReturnLeg(ctx, payment.PaymentID(r.TxID), rejectionText(r)); err != nil {
 			return fmt.Errorf("mesh: %s could not unwind its leg of the refused return of %s: %w", b.bic, r.TxID, err)
 		}
 	}
@@ -880,7 +877,7 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 		return fmt.Errorf("mesh: %s got a statement from %s carrying %d accounts; a member is told about its own",
 			b.bic, from, len(moves))
 	}
-	if _, err := b.ops.PostSettlementAdvice(ctx, b.pid, moves[0]); err != nil {
+	if _, err := b.ops.PostSettlementAdvice(ctx, moves[0]); err != nil {
 		return fmt.Errorf("mesh: %s could not book the settlement of %s: %w", b.bic, moves[0].Reference, err)
 	}
 	return nil
@@ -910,13 +907,13 @@ func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso
 // ledger. payment.DepositTx is what reads them back, and that read is legitimate
 // for exactly this reason. See payment.RecordMembershipTx.
 //
-// # Which bank it is, is this actor's own id and not the message's
+// # Which bank it is, is this actor's own identity and not the message's
 //
-// b.pid, as everywhere else in this type. Nothing in the signature of the domain
-// act stops a caller naming somebody else's bank, so the domain checks that the
-// address on the message is this bank's own
-// (payment.ErrNotThisBanksAdmission) — ErrStatementNotForThisBank's argument one
-// flow over.
+// This actor's own payment.Network, as everywhere else in this type. That says
+// which member is recording; it says nothing about which member the MESSAGE
+// names, so the domain still checks that the address on the acknowledgement is
+// this bank's own (payment.ErrNotThisBanksAdmission) — ErrStatementNotForThisBank's
+// argument one flow over.
 //
 // A SECOND acknowledgement of one admission is ordinary rather than exceptional:
 // one acmt.007 asks for one currency, so a bank joining in two assets is
@@ -927,7 +924,7 @@ func (b *bank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso
 	if err != nil {
 		return fmt.Errorf("mesh: %s could not read the admission acknowledgement %s sent it: %w", b.bic, from, err)
 	}
-	if _, err := b.ops.RecordMembership(ctx, b.pid, ack); err != nil {
+	if _, err := b.ops.RecordMembership(ctx, ack); err != nil {
 		return fmt.Errorf("mesh: %s could not record its own admission: %w", b.bic, err)
 	}
 	return nil
@@ -996,7 +993,7 @@ func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.
 	ctx = withActor(ctx, b.bic)
 
 	to := b.m.cfg.CentralBankBIC
-	in, env, err := b.ops.LodgeReserves(ctx, b.pid, asset, amount, payment.MessageContext{
+	in, env, err := b.ops.LodgeReserves(ctx, asset, amount, payment.MessageContext{
 		From:  b.bic,
 		To:    to,
 		MsgID: b.m.nextMsgID(b.bic),

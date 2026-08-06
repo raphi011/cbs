@@ -94,7 +94,7 @@ func main() {
 		}
 	}()
 
-	net := payment.NewNetwork(st.Payment(), data.Now)
+	nets := payment.NewNetworks(st.Payment(), data.Now)
 
 	// The mesh starts BEFORE the seed, and the order is load-bearing — it is the
 	// reverse of the order this process used until admission became a
@@ -108,7 +108,7 @@ func main() {
 	// founded. Against a database file that already holds the scenario the
 	// read finds the whole roster and the seed builds nothing, which is the same
 	// division of labour seen from the other side.
-	msh, err := mesh.New(net, meshConfig, log)
+	msh, err := mesh.New(nets, meshConfig, log)
 	if err != nil {
 		log.Error("building the mesh", "error", err)
 		os.Exit(1)
@@ -120,14 +120,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := data.Populate(context.Background(), net, msh); err != nil {
+	if err := data.Populate(context.Background(), nets, msh); err != nil {
 		log.Error("seeding the sample dataset", "error", err)
 		os.Exit(1)
 	}
 
-	srv := api.NewServer(net, msh, data.Populate, log)
+	srv := api.NewServer(nets, msh, data.Populate, log)
 
-	entities, err := plan(context.Background(), net, *basePort)
+	entities, err := plan(context.Background(), nets.ClearingHouse(), *basePort)
 	if err != nil {
 		log.Error("planning the listeners", "error", err)
 		os.Exit(1)

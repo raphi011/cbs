@@ -791,9 +791,11 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 //
 // Task 14 narrowed which PARTY was resolved and could not narrow the sweep,
 // because narrowing it needs the bank to know which register is its own and
-// payment.Network had no identity to answer with. Task 18a passes the identity
-// as an argument rather than waiting for it (payment.ResolveIdentifierTx), and
-// the receiving bank's set drops to its own book alone.
+// payment.Network had no identity to answer with. Task 18a passed the identity
+// in as an argument rather than waiting for it, and the receiving bank's set
+// dropped to its own book alone. Task 18b is what it was waiting for: the
+// register is the one belonging to this actor's own payment.Network, and there
+// is no argument left (payment.ResolveIdentifierTx).
 //
 // It is neither NetworkBook nor the central bank's, and the absence of the first
 // is worth a sentence: its half writes the payment row, which is network-scoped,
@@ -801,10 +803,18 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // lifecycle has two facts and not three — so nothing in it allocates a network
 // id.
 //
-// What is NOT here, and belongs to Task 18b: this is still a bank being TOLD
-// which register is its own by its caller. Nothing in payment refuses a bank
-// that passes somebody else's id. The recorder is what would see it, and this
-// assertion is where it would show.
+// This set no longer rests on a bank being TOLD which register is its own. It
+// did until Task 18b — nothing in payment refused a caller that passed somebody
+// else's id, and the recorder was the only thing that would have seen it, right
+// here. The identity is constructor state now (payment.Identity), so the
+// register a handler can reach is fixed before any message arrives.
+//
+// That does not make this assertion redundant, and the distinction is the one
+// ops.go draws between the two mechanisms. An identity narrows which BANK a
+// handler acts as; it narrows no BookID, because every ledger.Tx method still
+// takes the book as an ordinary argument. A handler that posted into another
+// member's book through a method it legitimately holds would still fail here and
+// nowhere else.
 func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 	h := newMeshHarness(t) // builds a seeded network + mesh over a recordingStore
 
@@ -1638,7 +1648,7 @@ func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 	// the fixture's keeps the call under test the only thing in the measurement.
 	const amount = ledger.Amount(100_000)
 	h.rec.reset()
-	if err := h.net.Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.ID).Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 
@@ -1708,13 +1718,13 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 	// The fixture has already lodged its own funding, which is what every other
 	// test in this package needs; this one wants an unlodged balance to move.
 	const amount = ledger.Amount(75_000)
-	if err := h.net.Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 
 	vaultBefore := h.vaultCash(t, h.debtor.ID)
 	mirrorBefore := h.reserveMirror(t, h.debtor.ID)
-	cbBefore, err := h.net.ReserveBalance(ctx, h.debtor.ID, "EUR")
+	cbBefore, err := h.cb().ReserveBalance(ctx, h.debtor.ID, "EUR")
 	if err != nil {
 		t.Fatalf("ReserveBalance: %v", err)
 	}
@@ -1742,7 +1752,7 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 	if got, want := h.reserveMirror(t, h.debtor.ID)-mirrorBefore, amount; got != want {
 		t.Errorf("the lodgement raised the bank's own reserve mirror by %d, want %d", got, want)
 	}
-	cbAfter, err := h.net.ReserveBalance(ctx, h.debtor.ID, "EUR")
+	cbAfter, err := h.cb().ReserveBalance(ctx, h.debtor.ID, "EUR")
 	if err != nil {
 		t.Fatalf("ReserveBalance: %v", err)
 	}
@@ -1817,7 +1827,7 @@ func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
 	}
 
 	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0, "DE89370400440532013099")
-	if err := h.net.Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
+	if err := h.bank(founded.ID).Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
 		t.Fatalf("Deposit at a founded bank: %v; a founded bank can open its doors and take money", err)
 	}
 	if got, want := h.balance(t, founded.ID, acct.ID), ledger.Amount(250_00); got != want {
@@ -2204,7 +2214,7 @@ func TestACrossBookAuditReadIsRecorded(t *testing.T) {
 func TestWritingANetworkRowRecordsTheNetworkBook(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	rec := newRecordingStore(testenv.New(t, clock).Payment())
-	net := payment.NewNetwork(rec, clock)
+	net := payment.NewNetworks(rec, clock).ClearingHouse()
 
 	if _, err := net.OpenCycle(context.Background(), payment.SchemeSEPACT); err != nil {
 		t.Fatalf("OpenCycle: %v", err)

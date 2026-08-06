@@ -157,6 +157,30 @@ var (
 	// ErrSettlementAdviceNotFound is a cut-off this bank was never told about.
 	ErrSettlementAdviceNotFound = errors.New("settlement advice not found")
 
+	// ErrNotThisInstitutionsAct is one institution's act reached through
+	// another's Network.
+	//
+	// It is the sentinel Task 18b's identity produces, and it is a different
+	// class from every other refusal in this file. The rest are about the
+	// SUBJECT of an act — a payment this bank is not a party to, a statement
+	// about another member's reserve account, an admission addressed to
+	// somebody else — and each is decided by comparing the act's subject
+	// against the bank performing it. This one is about the PERFORMER: a
+	// member bank's act on the clearing house's network, or the settlement
+	// agent's on a bank's, where there is no subject to compare against
+	// because there is no member and no book to be about.
+	//
+	// The two are not redundant. Every subject guard still fires, and still
+	// has to: two member banks are both members, so nothing here can tell one
+	// from the other, and "this payment's creditor banks elsewhere" is the
+	// only thing that ever could. What this adds is the case a subject guard
+	// cannot see, because until Task 18b it was not expressible — the acting
+	// institution was whatever the caller passed, so an institution acting as
+	// one it is not looked exactly like the real thing.
+	//
+	// See payment.Identity, Network.self and Network.centralBankBook.
+	ErrNotThisInstitutionsAct = errors.New("payment: this act belongs to another institution")
+
 	// ErrNotThisBanksPayment is a bank asked to post a leg for a payment whose
 	// party is somebody else's customer.
 	//

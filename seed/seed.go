@@ -100,7 +100,7 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // boundary, since its caller — the server's reset handler — has an error to
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
-func (d *Dataset) Populate(ctx context.Context, net *payment.Network, msh *mesh.Mesh) (err error) {
+func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mesh.Mesh) (err error) {
 	// Registered first, so it runs last: whether the scenario was built now,
 	// was already there, or failed halfway, the clock is released before
 	// Populate returns.
@@ -110,7 +110,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network, msh *mesh.
 		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
 	}
 
-	existing, err := net.ListBanks(ctx)
+	existing, err := nets.ClearingHouse().ListBanks(ctx)
 	if err != nil {
 		return err
 	}
@@ -126,7 +126,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network, msh *mesh.
 
 	d.clock.rewind(baseDate)
 	b := &builder{
-		ctx: ctx, net: net, mesh: msh, clock: d.clock,
+		ctx: ctx, nets: nets, mesh: msh, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
@@ -176,8 +176,18 @@ func recoverBuild(r any) error {
 // own test helper.
 
 type builder struct {
-	ctx   context.Context
-	net   *payment.Network
+	ctx context.Context
+	// nets mints one payment.Network per institution, and the builder below
+	// names which institution performs each act.
+	//
+	// It used to be one *payment.Network playing all of them, which stopped
+	// being expressible at Task 18b: a member's mirror leg needs that member's
+	// own network and a cut-off needs the central bank's. The composites here —
+	// initiate, reject, returnPayment, settle — still run several institutions'
+	// halves inside ONE unit of work, and that is unchanged and still the thing
+	// the mesh exists to model. What changed is that each half now says whose it
+	// is, which is a fixture reading closer to the conversation it stands in for.
+	nets  *payment.Networks
 	mesh  *mesh.Mesh
 	clock *clock
 	// cats holds each bank's product IDs, keyed by participant: the
@@ -188,6 +198,15 @@ type builder struct {
 
 // catalogue is the two product IDs the rest of the seed needs.
 type catalogue struct{ basic, premium product.ID }
+
+// bank, csm and cb are the three institutions' views, one call each.
+//
+// They are spelled out rather than cached because payment.Networks mints on
+// demand and the seed builds one scenario once; a field per bank would be a
+// second index over the banks this builder is in the middle of creating.
+func (b *builder) bank(pid payment.ParticipantID) *payment.Network { return b.nets.Bank(pid) }
+func (b *builder) csm() *payment.Network                           { return b.nets.ClearingHouse() }
+func (b *builder) cb() *payment.Network                            { return b.nets.CentralBank() }
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
 // deterministic, so any error is a programming bug that should fail loudly.
@@ -248,7 +267,7 @@ func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode
 	founded := must(b.mesh.Admit(b.ctx, name, bic, assets))
 	check(b.mesh.Drain(b.ctx))
 
-	bank := must(b.net.GetBank(b.ctx, founded.ID))
+	bank := must(b.csm().GetBank(b.ctx, founded.ID))
 	if bank.Status != payment.BankMember {
 		check(fmt.Errorf("%s is %q after its admission conversation, want %q",
 			bank.BIC, bank.Status, payment.BankMember))
@@ -377,7 +396,7 @@ func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
 // central bank and cannot happen inside a deposit. See lodge, which every funded
 // bank has to run before this scenario can settle anything.
 func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
-	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
+	check(b.bank(p.ID).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
 // lodge moves one bank's vault cash onto its reserve at the central bank, and
@@ -393,7 +412,7 @@ func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amou
 //
 // # It goes through the MESH and not through the domain
 //
-// b.net.LodgeReserves would post the bank's own leg and hand back a camt.050 that
+// a bank's own LodgeReserves would post the bank's own leg and hand back a camt.050 that
 // nobody sends, which is exactly half a lodgement: the bank's reserve mirror would
 // rise and the central bank's book would never hear about it. So this uses the
 // mesh's door, and the seed plays the operator asking for it.
@@ -435,24 +454,30 @@ func (b *builder) lodge(p *payment.Bank, amount ledger.Amount) {
 // conversation carried out at startup could not promise.
 func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	var out payment.Payment
-	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := b.net.SubmitPaymentTx(ctx, tx, req)
+	// The SUBMITTING bank, which the scheme's direction decides: the payer's
+	// bank pushes and the payee's bank pulls. The seed knows the request's
+	// scheme before it opens the unit of work, so this is settled here.
+	submitter := req.Debtor.Participant
+	if scheme, ok := b.csm().Scheme(req.Scheme); ok && scheme.Direction() == payment.Pull {
+		submitter = req.Creditor.Participant
+	}
+	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		p, err := b.bank(submitter).SubmitPaymentTx(ctx, tx, req)
 		if err != nil {
 			return err
 		}
-		// The RECEIVING bank answers, and which one that is follows the scheme's
-		// direction: the payee's bank on a push, the payer's on a pull. It is
-		// named here because AcceptInboundTx resolves the counterparty in the
-		// answering bank's own register since Task 18a — see its doc — and the
-		// seed is playing that bank as well as the submitting one.
+		// The RECEIVING bank answers, and it is the other one. Naming it is what
+		// picks the network AcceptInboundTx resolves the address in — its own
+		// register and no other, since Task 18a — and the seed is playing that
+		// bank as well as the submitting one.
 		receiver := p.Creditor.Participant
-		if scheme, ok := b.net.Scheme(p.Scheme); ok && scheme.Direction() == payment.Pull {
+		if receiver == submitter {
 			receiver = p.Debtor.Participant
 		}
-		if err := b.net.AcceptInboundTx(ctx, tx, receiver, p.ID); err != nil {
+		if err := b.bank(receiver).AcceptInboundTx(ctx, tx, p.ID); err != nil {
 			return err
 		}
-		out, err = b.net.AcceptAtCSMTx(ctx, tx, p.ID)
+		out, err = b.csm().AcceptAtCSMTx(ctx, tx, p.ID)
 		return err
 	}))
 	return out
@@ -467,12 +492,13 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 // the whole rejection or none of it — which in the mesh is exactly what the two
 // actors do not share. See RejectAtCSMTx on what that opens.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
-	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		rejected, err := b.net.RejectAtCSMTx(ctx, tx, id, code, reason)
+	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		rejected, err := b.csm().RejectAtCSMTx(ctx, tx, id, code, reason)
 		if err != nil {
 			return err
 		}
-		return b.net.ReverseDebtorLegTx(ctx, tx, rejected, reason)
+		// The payer's bank gives the money back, in its own book.
+		return b.bank(rejected.Debtor.Participant).ReverseDebtorLegTx(ctx, tx, rejected, reason)
 	}))
 }
 
@@ -506,12 +532,12 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 // payment.ReturnMessage writes these same two fields and payment.ReadReturn
 // reads them back — and the way they were obtained is the whole difference.
 func (b *builder) returnPayment(id payment.PaymentID, reason string) {
-	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
 		p, err := tx.GetPayment(ctx, id)
 		if err != nil {
 			return err
 		}
-		scheme, ok := b.net.Scheme(p.Scheme)
+		scheme, ok := b.csm().Scheme(p.Scheme)
 		if !ok {
 			return fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound)
 		}
@@ -520,10 +546,10 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 		if other == returner {
 			other = p.Creditor.Participant
 		}
-		if _, err := b.net.PostReturnLegTx(ctx, tx, returner, id, reason); err != nil {
+		if _, err := b.bank(returner).PostReturnLegTx(ctx, tx, id, reason); err != nil {
 			return err
 		}
-		statements, err := b.net.SettleReturnTx(ctx, tx, payment.ReturnInstruction{
+		statements, err := b.cb().SettleReturnTx(ctx, tx, payment.ReturnInstruction{
 			PaymentID:     p.ID,
 			EndToEndID:    p.EndToEndID,
 			DebtorAgent:   p.DebtorDetails.Agent,
@@ -536,7 +562,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 			return err
 		}
 		for _, st := range statements {
-			if _, err := b.net.PostSettlementAdviceTx(ctx, tx, st.Member, payment.AdvisedMovement{
+			if _, err := b.bank(st.Member).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
 				Account:        st.Account,
 				Asset:          st.Asset,
 				Movement:       st.Movement,
@@ -547,7 +573,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 				return err
 			}
 		}
-		_, err = b.net.PostReturnLegTx(ctx, tx, other, id, reason)
+		_, err = b.bank(other).PostReturnLegTx(ctx, tx, id, reason)
 		return err
 	}))
 }
@@ -575,13 +601,13 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 // three units of work with an unreconciled interval between them. The fixture is
 // the outcome, not the process.
 func (b *builder) settle(id payment.CycleID) {
-	check(b.net.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
-		_, statements, err := b.net.SettleCycleTx(ctx, tx, id)
+	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, statements, err := b.cb().SettleCycleTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}
 		for _, st := range statements {
-			if _, err := b.net.PostSettlementAdviceTx(ctx, tx, st.Member, payment.AdvisedMovement{
+			if _, err := b.bank(st.Member).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
 				Account:        st.Account,
 				Asset:          st.Asset,
 				Movement:       st.Movement,
@@ -606,7 +632,7 @@ func (b *builder) settle(id payment.CycleID) {
 			if err != nil {
 				return err
 			}
-			if _, err := b.net.PostCreditorLegTx(ctx, tx, p.Creditor.Participant, pid); err != nil {
+			if _, err := b.bank(p.Creditor.Participant).PostCreditorLegTx(ctx, tx, pid); err != nil {
 				return err
 			}
 		}
@@ -750,28 +776,28 @@ func (b *builder) build() {
 	check(verde.Deposit.Freeze(ctx, bianca.ID))      // Active -> Frozen
 
 	// --- Mandates for SEPA Direct Debit ------------------------------------
-	m1 := must(b.net.CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
-	m2 := must(b.net.CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
-	m3 := must(b.net.CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
-	check(b.net.RevokeMandate(b.ctx, m3.ID)) // revoked, for display
+	m1 := must(b.csm().CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
+	m2 := must(b.csm().CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
+	m3 := must(b.csm().CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
+	check(b.csm().RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
 	b.clock.advance(1 * time.Hour)
 
 	// --- Phase A: a fully settled SEPA Credit Transfer cycle ---------------
-	sct1 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
+	sct1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, nord, niklas, 25_000, "SCT-001", "Rent to N. Nyborg")
 	b.initSCT(nord, nora, verde, bella, 40_000, "SCT-002", "Invoice 2025-77")
 	b.initSCT(verde, bruno, soleil, chloe, 30_000, "SCT-003", "Consulting fee")
-	must(b.net.CloseCycle(b.ctx, sct1.ID))
+	must(b.csm().CloseCycle(b.ctx, sct1.ID))
 	b.settle(sct1.ID)
 
 	b.clock.advance(24 * time.Hour)
 
 	// --- Phase B: a settled SEPA Direct Debit cycle (one will be returned) --
-	sdd1 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPADD))
+	sdd1 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 20_000, m1.ID, "SDD-001", "Utility direct debit")
 	returned := b.initSDD(verde, bruno, aurora, aaron, 12_000, m2.ID, "SDD-002", "Gym membership")
-	must(b.net.CloseCycle(b.ctx, sdd1.ID))
+	must(b.csm().CloseCycle(b.ctx, sdd1.ID))
 	b.settle(sdd1.ID)
 
 	// --- Phase C: return the settled direct debit (an R-transaction) --------
@@ -780,13 +806,13 @@ func (b *builder) build() {
 	b.clock.advance(24 * time.Hour)
 
 	// --- Phase D: a closed-but-not-settled SCT cycle (payments stay Cleared) -
-	sct2 := must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
+	sct2 := must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, aaron, soleil, claude, 8_000, "SCT-010", "Book order")
 	b.initSCT(verde, bella, nord, niklas, 6_000, "SCT-011", "Shared dinner")
-	must(b.net.CloseCycle(b.ctx, sct2.ID))
+	must(b.csm().CloseCycle(b.ctx, sct2.ID))
 
 	// --- Phase E: an open SDD cycle with an accepted and a rejected payment --
-	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPADD))
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPADD))
 	b.initSDD(soleil, chloe, nord, nora, 5_000, m1.ID, "SDD-010", "Monthly subscription")
 	reject := b.initSDD(verde, bruno, aurora, aaron, 3_000, m2.ID, "SDD-011", "Disputed charge")
 	// An operator-initiated rejection carries no more specific reason code
@@ -800,7 +826,7 @@ func (b *builder) build() {
 	b.reject(reject.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "Insufficient mandate coverage")
 
 	// --- Phase F: an open SCT cycle with an accepted payment ----------------
-	must(b.net.OpenCycle(b.ctx, payment.SchemeSEPACT))
+	must(b.csm().OpenCycle(b.ctx, payment.SchemeSEPACT))
 	b.initSCT(aurora, alice, verde, bella, 7_000, "SCT-020", "Birthday gift")
 
 	// --- Lending: credit facilities across the network ---------------------

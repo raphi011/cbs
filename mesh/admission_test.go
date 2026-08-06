@@ -119,7 +119,7 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 	joiner = h.getBank(t, joiner.ID)
 
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
-	if err := h.net.Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+	if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("funding a bank admitted through the mesh: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 	joiner = h.getBank(t, joiner.ID)
 	for asset, iban := range map[ledger.AssetCode]string{"EUR": joinerIBAN, "USD": joinerUSDIBAN} {
 		acct := h.openCustomer(t, joiner, "Nora", asset, 0, iban)
-		if err := h.net.Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Errorf("funding the admitted bank in %s: %v", asset, err)
 		}
 	}

@@ -258,11 +258,11 @@ func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlemen
 // in memory — so this is the one listing that does not touch the store and the
 // one that is still ordered by ID.
 func (s *Network) ListSchemes() []Scheme {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.schemes.mu.RLock()
+	defer s.schemes.mu.RUnlock()
 
-	result := make([]Scheme, 0, len(s.schemes))
-	for _, sc := range s.schemes {
+	result := make([]Scheme, 0, len(s.schemes.m))
+	for _, sc := range s.schemes.m {
 		result = append(result, sc)
 	}
 	sort.Slice(result, func(i, j int) bool {

@@ -24,16 +24,16 @@ var euroOnly = []ledger.AssetCode{"EUR"}
 // the fixture: what these two tests are about is a mesh reading a roster that
 // was there before it started, so the banks have to exist before any actor does.
 // Mesh.Admit is the other door and is exercised in admission_test.go.
-func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Network {
+func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Networks {
 	t.Helper()
 	clock := func() time.Time { return testTime }
-	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
+	nets := payment.NewNetworks(testenv.New(t, clock).Payment(), clock)
 	for name, bic := range bics {
-		if _, err := storetest.Admit(context.Background(), net, name, bic, euroOnly); err != nil {
+		if _, err := storetest.Admit(context.Background(), nets, name, bic, euroOnly); err != nil {
 			t.Fatalf("admitting %s: %v", name, err)
 		}
 	}
-	return net
+	return nets
 }
 
 // The mesh is N+2: one actor per member bank, plus the clearing house and the
@@ -105,16 +105,16 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 // the roster and listing the banks were the same list.
 func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	clock := func() time.Time { return testTime }
-	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
+	nets := payment.NewNetworks(testenv.New(t, clock).Payment(), clock)
 	ctx := context.Background()
-	if _, err := storetest.Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
+	if _, err := storetest.Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
 		t.Fatalf("admitting Aurora: %v", err)
 	}
-	if _, err := net.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+	if _, err := nets.ClearingHouse().FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
-	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
+	m, err := New(nets, testConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

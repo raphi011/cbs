@@ -103,7 +103,7 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	// That the remedy needs both is the point rather than a detail of the fixture.
 	// A bank cannot settle out of cash in its own drawer; it settles out of central
 	// bank money, and getting some is a conversation.
-	if err := h.net.Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
+	if err := h.bank(h.debtorPID).Deposit(context.Background(), h.debtorPID, h.debtorAcct.ID, harnessAmount, "Reserve top-up"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 	h.lodge(t, h.debtorPID, "EUR", harnessAmount)
@@ -291,7 +291,7 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 		if advice.Movement != member.want {
 			t.Errorf("%s booked a movement of %d, want %d", member.name, advice.Movement, member.want)
 		}
-		reserve, err := h.net.ReserveBalance(context.Background(), member.pid, "EUR")
+		reserve, err := h.cb().ReserveBalance(context.Background(), member.pid, "EUR")
 		if err != nil {
 			t.Fatalf("ReserveBalance %s: %v", member.pid, err)
 		}
@@ -779,7 +779,7 @@ func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
 
 	// The payer's bank asking to post the payee's leg is refused, whatever else
 	// is true of the payment.
-	_, err := h.net.PostCreditorLeg(context.Background(), h.debtor.ID, p.ID)
+	_, err := h.bank(h.debtor.ID).PostCreditorLeg(context.Background(), p.ID)
 	if !errors.Is(err, payment.ErrNotThisBanksPayment) {
 		t.Errorf("the payer's bank got %v, want ErrNotThisBanksPayment", err)
 	}
