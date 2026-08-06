@@ -60,7 +60,29 @@ var ErrAddressTaken = errors.New("mesh: another actor already answers to this BI
 // its own sentinel rather than matched on the message so the distinction cannot
 // be lost to a rewording. See Mesh.claimAddress, which is where the reservation
 // is made and where this is returned from.
-var ErrAdmissionInFlight = fmt.Errorf("%w: an admission on this BIC is already under way", ErrAddressTaken)
+//
+// # It is a TYPE, and not fmt.Errorf("%w: …", ErrAddressTaken)
+//
+// That is the obvious spelling and it was the first one, and it puts the parent's
+// text into the child's message: the operator was told "another actor already
+// answers to this BIC" — the exact false statement this sentinel exists to
+// replace — because Error() on a wrapped error is the wrapper's text followed by
+// the wrapped one's. Wrapping is about the ERROR CHAIN and inheriting the
+// sentence is a side effect of the standard formatting, so the sentence is
+// declared here and the chain is left to Unwrap.
+var ErrAdmissionInFlight error = admissionInFlight{}
+
+// admissionInFlight is ErrAdmissionInFlight's type: its own sentence, and
+// ErrAddressTaken underneath it.
+//
+// An empty struct, so it is comparable and errors.Is finds it by equality the
+// way it finds any sentinel. Unwrap is what keeps every caller that only asks
+// "was the address refused" answered — mesh's own tests, and api's second
+// branch, which is the one this must not fall through to.
+type admissionInFlight struct{}
+
+func (admissionInFlight) Error() string { return "mesh: an admission on this BIC is already under way" }
+func (admissionInFlight) Unwrap() error { return ErrAddressTaken }
 
 // ErrOnUsPayment is a submission whose payer and payee bank at the SAME
 // institution.

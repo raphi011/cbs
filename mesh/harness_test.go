@@ -416,6 +416,25 @@ func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.B
 	return p
 }
 
+// centralBankTransactionCount is how many transactions stand in the settlement
+// agent's own book.
+//
+// It exists because the book recorder cannot tell a READ of a book from a
+// POSTING into it, and one measurement in this package needs to claim the
+// second. See TestFundingAReserveReachesTwoBooks.
+func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := h.net.Store().View(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+		txs, err := tx.ListTransactions(ctx, payment.CentralBankBook)
+		n = len(txs)
+		return err
+	}); err != nil {
+		t.Fatalf("counting the central bank's transactions: %v", err)
+	}
+	return n
+}
+
 // getSettlementMember is the CENTRAL BANK's own record of a member: the row a
 // settlement agent with its own database would post from, read by BIC because
 // that is the only identifier it has.

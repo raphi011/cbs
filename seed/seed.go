@@ -229,10 +229,11 @@ func check(err error) {
 // own id, and the dataset's participant ids move.
 //
 // Measured rather than argued: with a single drain after all four admissions,
-// twelve builds under GOMAXPROCS=2 with the race detector on produced
-// SOLEFRPPXXX as bank_7 eleven times and as bank_15 once. Twelve more at
+// twelve builds under GOMAXPROCS=2 with the race detector on gave the FOURTH
+// bank an id that differed from the other eleven builds' once. Twelve more at
 // GOMAXPROCS=1 and twelve at GOMAXPROCS=8 did not reproduce it, which is exactly
-// why one clean run is not evidence here. Draining per bank makes each
+// why one clean run is not evidence here. No id is quoted because none of the
+// ids in that experiment is one this code produces — that is the finding. Draining per bank makes each
 // conversation finish before the next Admit begins, and the four sequential
 // calls this replaces had that for free.
 //

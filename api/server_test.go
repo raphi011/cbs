@@ -518,13 +518,29 @@ func TestAdmittingABICWithAnAdmissionInFlightSaysToWait(t *testing.T) {
 		t.Fatalf("a second admission on an address in flight = %d, want 422 (body: %s)", rec.Code, rec.Body)
 	}
 	msg := rec.Body.String()
-	for _, want := range []string{"already under way", "wait"} {
+	for _, want := range []string{"already", "wait"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the refusal does not say %q: %s", want, msg)
 		}
 	}
-	if strings.Contains(msg, "another institution") || strings.Contains(msg, "address of its own") {
-		t.Errorf("the refusal sends the operator to a different address for an admission that is simply not finished: %s", msg)
+	// What it must NOT say, and the third of these is the one that got through.
+	//
+	// The first version of this test forbade the other branch's two phrases, and
+	// the body did not contain them and was wrong anyway: mesh.ErrAdmissionInFlight
+	// was fmt.Errorf("%w: …", ErrAddressTaken), so Error() carried the PARENT's
+	// sentence — "another actor already answers to this BIC" — into a message
+	// whose entire purpose is that nobody else answers to it. A test that lists
+	// the phrases of the branch it is not in cannot see that. This lists the claim
+	// itself, from whichever layer it arrives.
+	for _, forbidden := range []string{"another institution", "address of its own", "another actor"} {
+		if strings.Contains(msg, forbidden) {
+			t.Errorf("the refusal says %q about an address nobody else holds: %s", forbidden, msg)
+		}
+	}
+	// And says its own sentence once. Twice is what an appended err.Error() under
+	// a handler that repeats it produces, and it reads as two different problems.
+	if got := strings.Count(msg, "already under way"); got != 1 {
+		t.Errorf("the refusal says \"already under way\" %d times, want 1: %s", got, msg)
 	}
 
 	release()

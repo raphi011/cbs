@@ -298,8 +298,14 @@ export interface ParticipantAccounts {
 
 // A bank's place in the scheme. "Founded" is a bank with a book, a chart of
 // accounts and customers, that no settlement agent holds an account for and no
-// clearing house routes to: it can take deposits and it cannot clear a payment.
-// "Member" is one the scheme has admitted.
+// clearing house routes to. "Member" is one the scheme has admitted.
+//
+// What a founded bank can do is open customer accounts, and that is the whole
+// list. It cannot clear a payment, because nothing routes to it — and it cannot
+// take a cash deposit either, which is the one people guess wrong: funding a
+// customer raises the bank's reserve at the central bank in the same step, and
+// there is no reserve to raise until the scheme has answered. The API says so
+// with a 422 naming the membership, not the account.
 //
 // Both are ordinary states. Admission is a conversation between three
 // institutions, so POST /members answers 202 with a founded bank and the

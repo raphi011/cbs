@@ -1560,16 +1560,33 @@ func TestWhichBooksAdmissionReaches(t *testing.T) {
 // institution's book, inside the funding bank's own unit of work, and no
 // re-routing of a LOOKUP changes it — Task 17 moved DepositTx's account read
 // from the central bank's member row to the bank's own record of its account
-// number, and the posting stayed exactly where it was. See
-// Network.DepositTx, which says the same thing from the other side.
+// number, and the posting stayed exactly where it was. See Network.DepositTx,
+// which says the same thing from the other side. That the posting is a posting
+// and not that surviving lookup is what the transaction count below pins; see
+// the next section.
 //
-// The unit of work is counted rather than described, because "in one unit of
-// work" is the whole of what makes this a crossing and not two acts: two stores
-// cannot commit together, so the day the settlement agent has its own store this
-// call has to become a message and this count is what stops it being split
-// quietly first.
+// # Three assertions, because the book set alone cannot say "posting"
+//
+// The recorder notes which books a unit of work TOUCHED, and a read touches a
+// book exactly as a write does. Delete only the second PostTransactionTx from
+// DepositTx and CentralBankBook is still recorded — centralBankAssetsAccountTx
+// reads the settlement agent's chart of accounts a line earlier — so the book
+// set on its own is satisfied by a deposit that posts nothing there at all. That
+// is not a flaw in the recorder: a read of another institution's book is a
+// crossing too, and under split stores it fails the same way. It is a limit on
+// what one assertion can claim.
+//
+// So the posting is counted separately, as transactions appearing in the central
+// bank's book, and the unit of work is counted too. The three together are the
+// sentence this test's name makes: the settlement agent's book is REACHED, a
+// transaction lands IN it, and it lands in the same commit as the bank's own.
+// Drop any one leg of the crossing and one of the three fails.
 func TestFundingAReserveReachesTwoBooks(t *testing.T) {
 	h := newMeshHarness(t)
+
+	// Read before the recorder is cleared, so this fixture's own read is not part
+	// of the measurement.
+	before := h.centralBankTransactionCount(t)
 
 	// The fixture's payer, funded again. Which account it is does not matter to
 	// what this measures — every deposit takes the same two legs — and reusing
@@ -1579,11 +1596,18 @@ func TestFundingAReserveReachesTwoBooks(t *testing.T) {
 		t.Fatalf("Deposit: %v", err)
 	}
 
-	assertBooksTouched(t, "funding a reserve", h.rec.touched(),
+	// Both taken before anything else reads the store, for the same reason.
+	touched, units := h.rec.touched(), h.rec.unitsOfWork()
+
+	assertBooksTouched(t, "funding a reserve", touched,
 		[]ledger.BookID{h.debtorBook, payment.CentralBankBook})
-	if got := h.rec.unitsOfWork(); got != 1 {
+	if got := h.centralBankTransactionCount(t) - before; got != 1 {
+		t.Errorf("funding a reserve wrote %d transactions in the central bank's book, want 1; "+
+			"the crossing is a POSTING there and the book set alone cannot tell one from a read", got)
+	}
+	if units != 1 {
 		t.Errorf("funding a reserve opened %d units of work, want 1; the crossing is that both "+
-			"books move together, and two of them would mean it had already been split", got)
+			"books move together, and two of them would mean it had already been split", units)
 	}
 }
 

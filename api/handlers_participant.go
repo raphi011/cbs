@@ -70,9 +70,16 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 		// the address is not another institution's but this bank's own, and a
 		// second address would not help; what helps is waiting for the first
 		// application to be answered and reading the bank back.
+		//
+		// The advice is all this adds, and the sentence about the address comes
+		// from the error alone. Saying it here too is how the first version of
+		// this branch came out reading the same thing twice — and, before
+		// mesh.ErrAdmissionInFlight had a type of its own, saying "another actor
+		// already answers to this BIC" underneath, which is the statement the
+		// whole branch exists to stop making.
 		if errors.Is(err, mesh.ErrAdmissionInFlight) {
-			writeUnprocessable(w, "an admission on this BIC is already under way and nothing has been written for this "+
-				"request; wait for it to be answered and read the bank back: "+err.Error())
+			writeUnprocessable(w, "nothing has been written for this request; wait for the scheme to answer the "+
+				"application that is already out, then read the bank back: "+err.Error())
 			return
 		}
 		if errors.Is(err, mesh.ErrAddressTaken) {
@@ -203,13 +210,19 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // applicants. What tells an operator which is which is the bank's own status,
 // which participantDTO carries.
 //
-// Per ASSET rather than per bank, because the two sentinels are two different
-// facts and a partly admitted bank has one of each: the settlement agent holds
-// no member row at all (skipped here), or holds one without this asset in it —
-// payment.ErrParticipantAssetNotFound, which is left to surface, because the
-// bank's own row says it operates in an asset the agent has no account for and
-// that is a disagreement between two institutions rather than a bank waiting to
-// be admitted.
+// The skip is written inside the per-asset loop because that is where the
+// question is asked — one ReserveBalance per asset — and NOT because the state
+// it skips is per asset. payment.settlementAccountTx reads the member row before
+// it looks at the asset, so a bank the agent holds nothing for answers this
+// sentinel in every asset it operates in and loses all of its rows together,
+// which is right: a founded bank has no reserves at all, not some.
+//
+// What IS per asset is the OTHER sentinel, and it is left to surface as an
+// error. payment.ErrParticipantAssetNotFound means the agent holds a member row
+// without this asset in it while the bank's own row says it operates in it —
+// two institutions disagreeing about a member, which mesh.Mesh.Admit's doc
+// describes as reachable and Task 19 owns. That is not a bank waiting to be
+// admitted and must not be reported as an absence.
 func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {

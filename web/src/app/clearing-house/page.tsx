@@ -179,8 +179,13 @@ function Stat({
 // so a first-time visitor knows what to do.
 const STEPS: { title: string; body: string; hint: HintKey }[] = [
   {
+    // "Create" and not "Join", because founding and joining are two steps now
+    // and this one is the first: a bank is created, and what it does next is
+    // apply. The body used to say a member bank joins the network, which is the
+    // step after this one and is answered by two institutions that are not the
+    // bank.
     title: "Create",
-    body: "A member bank joins the network.",
+    body: "A bank is founded and applies to the scheme; the central bank and the clearing house answer.",
     hint: "double-entry",
   },
   {
