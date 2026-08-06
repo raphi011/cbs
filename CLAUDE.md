@@ -14,16 +14,22 @@ The banking/accounting/payments content is duplicated, by design, across:
 - `README.md` — the authoritative source.
 - `web/src/components/hint-content.ts` — distilled from the README.
 - `web/src/lib/quiz/chapters/*.ts` — the 18-chapter quiz.
-- `store/pg/schema/0001_init.sql` — the relational mapping, and the whole
+- `store/sqlite/schema/0001_init.sql` — the relational mapping, and the whole
   schema: there is one migration, because no database is deployed and the asset
   dimension was folded in rather than layered on. Its comments are domain
   content, not implementation notes: which key is composite and why, why no
   balance is stored, why `entries` needs an ordering column, why the audit table
-  has no foreign key, why the four `asset` columns carry no `CHECK` (recorded
-  with `COMMENT ON COLUMN`, in the database, because a missing constraint is
-  invisible in a schema dump). Chapters 15 and 16 and the README's _Persistence_
-  section teach exactly these claims, so a schema change is a documentation
-  change.
+  has no foreign key, why the four `asset` columns carry no `CHECK`. Chapters 15
+  and 16 and the README's _Persistence_ section teach exactly these claims, so a
+  schema change is a documentation change.
+
+  **Where a comment goes is load-bearing here and it was not under Postgres.**
+  SQLite stores a statement's text in `sqlite_master`, so a comment INSIDE the
+  parentheses reaches a schema dump and one ABOVE the statement is dropped
+  silently. Every argument about something the schema does NOT do therefore
+  lives inside the statement it concerns — that is what `COMMENT ON COLUMN` used
+  to buy for free, and an absent constraint has no column to hang one from.
+  `TestSchemaArgumentsReachSqliteMaster` fails if one moves back to column 0.
 
 When you correct a domain fact in one layer, check and fix the same claim in the
 others.

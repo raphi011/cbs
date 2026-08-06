@@ -2,8 +2,8 @@
 // pass: RunLedger for the ledger layer, RunDeposit for the deposit layer and
 // RunPayment for the payment layer.
 //
-// It is a normal package rather than a set of _test.go files, because
-// store/mem and store/pg both import it from their own tests.
+// It is a normal package rather than a set of _test.go files, because every
+// implementation imports it from its own tests.
 //
 // The conformance suites in this file, deposit.go, payment.go, product.go and
 // lending.go talk only to the Store and Tx interfaces — never to ledger.Book,
@@ -25,8 +25,8 @@
 //
 // Every listing is ORDER BY created_at, seq, where seq is a monotonic per-book,
 // per-table sequence assigned when a row is first inserted — a counter in
-// store/mem, a BIGSERIAL column in store/pg. An upsert must not reissue it, or
-// editing a row moves it to the end of the list.
+// store/mem, a column allocated MAX(seq)+1 in store/sqlite. An upsert must not
+// reissue it, or editing a row moves it to the end of the list.
 //
 // The tie-break is never the ID. IDs are counter-derived strings, so "tx_10"
 // sorts before "tx_8" and a listing silently reorders itself the moment a
