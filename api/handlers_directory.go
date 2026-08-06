@@ -48,7 +48,7 @@ func (s *Server) handleResolveIdentifier(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// The name and asset need the account itself; the ref only names it.
-	p, err := s.network().GetParticipant(r.Context(), ref.Participant)
+	p, err := s.network().GetBank(r.Context(), ref.Participant)
 	if err != nil {
 		writeError(w, err)
 		return

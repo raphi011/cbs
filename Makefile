@@ -123,9 +123,10 @@ test-pg: db-up ## Run the Go suite against the docker-compose Postgres
 # with it set, an absent tool or an absent schema FAILS instead of skipping. A
 # skip is not a pass, and without this target there was no way for anyone who
 # had the schemas to say so.
-test-schemas: ## Run the iso20022 golden-file schema check, requiring xmllint and testdata/xsd
+test-schemas: ## Run every XSD check, requiring xmllint and iso20022/testdata/xsd
 	set -euo pipefail
 	ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/ -run TestGoldenFilesValidateAgainstTheSchema -v
+	ISO20022_REQUIRE_SCHEMAS=1 go test ./payment/ -run TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema -v
 
 db-up: ## Start the Postgres container and wait until it accepts connections
 	set -euo pipefail

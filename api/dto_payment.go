@@ -37,6 +37,40 @@ type participantDTO struct {
 	// BIC is this bank's ISO 9362 business identifier code — what a
 	// counterparty addresses it by, and what the mesh routes on.
 	BIC string `json:"bic"`
+	// Status is "Founded" or "Member", and it is the field that says which of the
+	// two a client is holding.
+	//
+	// A founded bank has a book, a chart of accounts and a product, and that part
+	// of it is unrestricted: it opens customer accounts, publishes products, adds
+	// ledgers. What it cannot do is anything needing another institution. It
+	// cannot take a cash deposit — funding raises its reserve at the central bank
+	// in the same step and no settlement agent holds an account for it to raise —
+	// and the refusal is a 422 naming the membership rather than the account. Nor
+	// can any cut-off it takes part in settle, because the instruction turns net
+	// positions into addresses through a routing directory this bank is not in.
+	//
+	// This used to say the field says whether the bank "can be paid", and that no
+	// clearing house routes to it. Both were measured false, and the correction
+	// belongs in the DTO because a wire contract that names a mechanism is
+	// asserting one: the mesh routes on its ACTOR TABLE, which Mesh.Admit fills at
+	// founding, so a payment addressed to a founded bank is relayed, accepted and
+	// reaches Cleared like any other and the cut-off carrying it is what fails.
+	// payment.FoundBankTx and web/src/lib/types.ts — this DTO's TypeScript twin —
+	// carry the same retraction; mesh/doc.go has the measurement, and records that
+	// no test in THAT package pins it. The narrowing is deliberate: what was
+	// checked is the transport's own suite, and a wider claim about this
+	// repository is not one that comment made.
+	//
+	// It became a state a client can SEE when admission became a conversation: POST /members
+	// answers 202 with a founded bank, and the scheme's answer arrives at two
+	// other institutions afterwards. Before that the two were one commit and
+	// every bank a caller could read was a member.
+	//
+	// It is a string of the domain's own values rather than a boolean, because
+	// "not a member" is not one condition — Task 19's reconciliation is what
+	// finds the admissions that stopped halfway, and a bool would have to be
+	// widened on the day it names one.
+	Status string `json:"status"`
 	// ProductID is the bank's default deposit product, created with its chart
 	// of accounts at onboarding. Every deposit account is opened FROM a
 	// product, so a client that has just created a bank needs to be told which
@@ -46,7 +80,7 @@ type participantDTO struct {
 	Assets            []participantAccountsDTO `json:"assets"`
 }
 
-func toParticipantDTO(p *payment.Participant) participantDTO {
+func toParticipantDTO(p *payment.Bank) participantDTO {
 	assets := make([]participantAccountsDTO, 0, len(p.Assets))
 	for code, accts := range p.Assets {
 		assets = append(assets, participantAccountsDTO{
@@ -63,6 +97,7 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 		ID:                string(p.ID),
 		Name:              p.Name,
 		BIC:               string(p.BIC),
+		Status:            string(p.Status),
 		ProductID:         string(p.ProductID),
 		CustomerSubledger: string(p.CustomerSubledger),
 		Assets:            assets,
@@ -71,8 +106,8 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 
 // createParticipantRequest carries the participant's name and, optionally,
 // the set of assets it joins with. An absent or empty Assets defaults to
-// ["EUR"] — AddParticipant applies that default itself, so an empty slice is
-// forwarded unchanged rather than special-cased here.
+// ["EUR"] — payment applies that default itself, when the bank is founded, so
+// an empty slice is forwarded unchanged rather than special-cased here.
 //
 // This is the one deliberate default anywhere in the asset dimension: it
 // preserves existing behaviour for callers that do not care which assets a
@@ -81,9 +116,10 @@ func toParticipantDTO(p *payment.Participant) participantDTO {
 type createParticipantRequest struct {
 	Name string `json:"name"`
 	// BIC is required: a bank the mesh cannot address is not a member. It is
-	// validated by AddParticipant itself (iso20022.BIC.Validate), which is
-	// what turns a malformed value into a 422 rather than a 400 — the field is
-	// present and well-typed, and what is wrong with it is a business rule.
+	// validated by mesh.Mesh.Admit, before it claims the address
+	// (iso20022.BIC.Validate), which is what turns a malformed value into a 422
+	// rather than a 400 — the field is present and well-typed, and what is
+	// wrong with it is a business rule.
 	BIC    string   `json:"bic"`
 	Assets []string `json:"assets"`
 }
@@ -366,7 +402,7 @@ type initiatePaymentRequest struct {
 	// and it was a routing hole: the agent goes on the wire as CdtrAgt/DbtrAgt
 	// and the clearing house routes on it, so a payer who typed the wrong BIC
 	// chose which bank received the payment. Both agents are now derived from
-	// the roster row for the participant the request already names — see
+	// the bank row of the participant the request already names — see
 	// payment.SubmitPaymentTx — which is what a SEPA originating bank does, and
 	// is why this request carries an account holder's name and no bank
 	// identifier at all.
@@ -390,8 +426,8 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,
 		Metadata:    req.Metadata,
-		// No Agent on either side: SubmitPaymentTx derives both from the roster
-		// and would ignore anything set here.
+		// No Agent on either side: SubmitPaymentTx derives both from the named
+		// participants' own bank rows and would ignore anything set here.
 		DebtorDetails:   payment.PartyDetails{Name: req.DebtorName},
 		CreditorDetails: payment.PartyDetails{Name: req.CreditorName},
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/iso20022"
+	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
@@ -20,15 +21,68 @@ import (
 // wire — BankIdentifierIncorrect — which is exactly what it is.
 var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 
-// ErrAddressTaken is a registration for a BIC some other actor already answers
-// to. See addActors for why it is refused rather than absorbed.
+// ErrAddressTaken is a claim on a BIC some other actor already answers to, or
+// that another admission has already reserved. See addActors for why it is
+// refused rather than absorbed, and Mesh.reserved for the second half.
 //
 // It is a sentinel and not just a message because the layer above has a REMEDY
 // for it and none for the mesh's other refusals: a clashing address is fixed by
-// admitting the bank on one of its own, and an operator told that during a
-// shutdown — the other way AddBank can fail — would follow it into a second
-// orphaned row. See api's handleAddParticipant.
+// admitting the bank on an address of its own, and an operator told that during
+// a SHUTDOWN — the other way Admit can fail — would be sent to retry something
+// that will fail the same way whatever address they choose. Telling the two
+// apart is what api's handleAddParticipant uses it for.
+//
+// The consequence of following that advice used to be worse than a wasted
+// retry: every attempt left a participant row behind, so an operator working
+// through addresses accumulated orphans. Mesh.Admit claims the address before
+// anything is written, so a refusal on either branch now costs nothing at all.
+// The sentinel survives the fix because the ADVICE still differs, which is the
+// smaller of the two reasons it was introduced for.
+//
+// It is a statement about CONNECTIVITY and not about membership. The clearing
+// house's roster answers the second question, one institution over and keyed on
+// the admission rather than on the address; see payment.ErrBICAlreadyAdmitted
+// and csm.relayAdmission.
 var ErrAddressTaken = errors.New("mesh: another actor already answers to this BIC")
+
+// ErrAdmissionInFlight is the one case of ErrAddressTaken where nobody answers
+// to the address yet: a second admission on a BIC whose first is still between
+// claiming it and registering its actor.
+//
+// It WRAPS ErrAddressTaken, so every caller that asks "was this address refused"
+// keeps its answer, and a caller that has different advice for the two can tell
+// them apart. api's handleAddParticipant is that caller, and the difference is
+// the whole reason this exists: the advice for a taken address is to admit the
+// bank somewhere else, and the advice here is to wait — the address is not
+// another institution's, it is this bank's own, a moment early.
+//
+// It is a value ErrAddressTaken does not cover on its own, and it is stated as
+// its own sentinel rather than matched on the message so the distinction cannot
+// be lost to a rewording. See Mesh.claimAddress, which is where the reservation
+// is made and where this is returned from.
+//
+// # It is a TYPE, and not fmt.Errorf("%w: …", ErrAddressTaken)
+//
+// That is the obvious spelling and it was the first one, and it puts the parent's
+// text into the child's message: the operator was told "another actor already
+// answers to this BIC" — the exact false statement this sentinel exists to
+// replace — because Error() on a wrapped error is the wrapper's text followed by
+// the wrapped one's. Wrapping is about the ERROR CHAIN and inheriting the
+// sentence is a side effect of the standard formatting, so the sentence is
+// declared here and the chain is left to Unwrap.
+var ErrAdmissionInFlight error = admissionInFlight{}
+
+// admissionInFlight is ErrAdmissionInFlight's type: its own sentence, and
+// ErrAddressTaken underneath it.
+//
+// An empty struct, so it is comparable and errors.Is finds it by equality the
+// way it finds any sentinel. Unwrap is what keeps every caller that only asks
+// "was the address refused" answered — mesh's own tests, and api's second
+// branch, which is the one this must not fall through to.
+type admissionInFlight struct{}
+
+func (admissionInFlight) Error() string { return "mesh: an admission on this BIC is already under way" }
+func (admissionInFlight) Unwrap() error { return ErrAddressTaken }
 
 // ErrOnUsPayment is a submission whose payer and payee bank at the SAME
 // institution.
@@ -189,6 +243,25 @@ type Mesh struct {
 
 	mu     sync.Mutex
 	actors map[iso20022.BIC]*actor
+	// reserved is the addresses an admission has CLAIMED and not yet given an
+	// actor to, and it is the whole of the orphan defect's fix.
+	//
+	// A BIC is the only thing about an admission that can clash, and it used to
+	// be checked last: the row was written and the address asked for afterwards,
+	// so a refusal left a bank in the roster that could neither pay nor be paid.
+	// Reversed, the claim has to be made BEFORE the bank exists — and a bank that
+	// does not exist yet cannot have an actor, because an actor's handler is
+	// bound to the bank's own identity. So the claim is a set membership rather
+	// than an entry in the actor table.
+	//
+	// Everything that hands out an address consults it: addActors refuses a BIC
+	// reserved by an admission in flight, and Admit refuses one twice over. It is
+	// cleared in the same critical section that inserts the actor, so there is no
+	// instant at which the address is free between the two — a gap there would
+	// let a second Admit take the address out from under a bank that has already
+	// committed its row, which is the defect this exists to remove, reintroduced
+	// one lock apart.
+	reserved map[iso20022.BIC]bool
 	// banks is the member banks by participant, which is how Submit finds the
 	// actor that plays a payer's own bank. Keyed by ParticipantID and not by BIC
 	// because that is what an instruction names: a request says which
@@ -227,11 +300,17 @@ type Mesh struct {
 // New builds a mesh over a payment network, with an actor for each of the two
 // configured institutions and no goroutines running yet.
 //
-// The member banks are NOT created here: they come from the participant roster,
-// which is a store read, and a constructor that did I/O could not be called
-// before the store was ready. Start reads the roster, which is why cmd/server
-// seeds first and starts the mesh second; AddBank covers the banks that join
-// after that, which is every bank a human admits over HTTP.
+// The member banks are NOT created here: they come from the CLEARING HOUSE's
+// roster, which is a store read, and a constructor that did I/O could not be
+// called before the store was ready. Start reads the roster, which is why
+// cmd/server seeds first and starts the mesh second; Admit covers the banks that
+// join after that, which is every bank a human admits over HTTP.
+//
+// Admit claims the ADDRESS before it writes anything and registers the actor
+// once the bank's own unit of work has committed. The two are not the same step
+// and this sentence used to run them together: the claim is what makes a clash
+// cost nothing, and the actor is what makes the bank reachable. See Mesh.Admit
+// and Mesh.reserved.
 //
 // net may be nil. A mesh with no network has no roster and therefore no member
 // banks; that is what the transport's own tests use, and it is the reason this
@@ -250,14 +329,15 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 	close(quiet)
 
 	m := &Mesh{
-		net:    net,
-		cfg:    cfg,
-		log:    log,
-		tap:    cfg.Observe,
-		actors: make(map[iso20022.BIC]*actor),
-		banks:  make(map[payment.ParticipantID]*bank),
-		busy:   make(map[iso20022.BIC]string),
-		quiet:  quiet,
+		net:      net,
+		cfg:      cfg,
+		log:      log,
+		tap:      cfg.Observe,
+		actors:   make(map[iso20022.BIC]*actor),
+		reserved: make(map[iso20022.BIC]bool),
+		banks:    make(map[payment.ParticipantID]*bank),
+		busy:     make(map[iso20022.BIC]string),
+		quiet:    quiet,
 	}
 	// Both institutions get their behaviour here, because neither has a store
 	// row to wait for: they ARE the configuration. A mesh with no network keeps
@@ -295,7 +375,8 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 // which is the transport's own tests. Both institutions keep it there, because
 // clearing and settlement are things you do to payments and cycles and a mesh
 // with no store has neither. On a mesh with a network, every actor — both
-// institutions and every member bank — now has a real handler.
+// institutions and every bank this mesh has been told about — now has a real
+// handler.
 func unhandled(name string) handler {
 	return func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return fmt.Errorf("mesh: %s has no handler for the %d bytes %s sent it", name, len(raw), from)
@@ -319,8 +400,9 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 //
 // Registering into a running mesh is the normal case, not a convenience: a bank
 // admitted over HTTP joins a mesh whose other actors are already reading their
-// inboxes, and it has to be reachable before the request that admitted it has
-// answered. See TestAnActorAddedAfterStartReceives and AddBank.
+// inboxes, and it has to be reachable before it can send its own application —
+// which is the first message of the flow that admits it. See
+// TestAnActorAddedAfterStartReceives and Mesh.Admit.
 //
 // All or none, because the batch is a roster. A registration that failed
 // halfway would leave the mesh holding some banks and not others, unstarted,
@@ -345,10 +427,13 @@ func (m *Mesh) addActor(bic iso20022.BIC, name string, h handler) error {
 // after that snapshot is in neither list, so its inbox is never closed and its
 // goroutine is never joined — a permanent leak, plus the same black hole. It is
 // not hypothetical: a bank admitted over HTTP registers into a running mesh (see
-// AddBank), so that is the normal path, and a shutdown racing an admission is an
-// ordinary thing to get wrong. Refusing from the moment Stop begins, and
+// Mesh.Admit), so that is the normal path, and a shutdown racing an admission is
+// an ordinary thing to get wrong. Refusing from the moment Stop begins, and
 // setting that flag under the same lock Stop takes its snapshot under, closes
 // the window rather than narrowing it.
+// A BIC an admission has RESERVED is refused too, and for the same reason a
+// registered one is: an address claimed by an admission whose bank is being
+// written is an address a second registration cannot have. See Mesh.reserved.
 func (m *Mesh) addActors(specs ...actorSpec) error {
 	for _, s := range specs {
 		if err := s.bic.Validate(); err != nil {
@@ -358,12 +443,20 @@ func (m *Mesh) addActors(specs ...actorSpec) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.addActorsLocked(specs...)
+}
+
+// addActorsLocked is addActors with the lock already held and the BICs already
+// validated. It is split out for admitBank, which has to clear an address
+// reservation and register its actor in ONE critical section — see Mesh.reserved
+// for what a gap between the two would cost.
+func (m *Mesh) addActorsLocked(specs ...actorSpec) error {
 	if m.stopping || m.stopped {
 		return fmt.Errorf("mesh: stopping; %s would have no goroutine to read its inbox", specs[0].bic)
 	}
 	batch := make(map[iso20022.BIC]bool, len(specs))
 	for _, s := range specs {
-		if _, dup := m.actors[s.bic]; dup || batch[s.bic] {
+		if _, dup := m.actors[s.bic]; dup || batch[s.bic] || m.reserved[s.bic] {
 			return fmt.Errorf("%w: two actors for %s (%s)", ErrAddressTaken, s.bic, s.name)
 		}
 		batch[s.bic] = true
@@ -415,11 +508,36 @@ func (m *Mesh) Start(ctx context.Context) error {
 	return nil
 }
 
-// joinRoster gives every member bank in the participant roster an actor, in one
+// joinRoster gives every bank the CLEARING HOUSE routes to an actor, in one
 // batch.
 //
-// The roster read happens OUTSIDE m.mu, because it is store I/O and nothing else
-// may be blocked on the mesh while it runs. The whole roster is then registered
+// # It reads the roster and not the banks, and that is a behaviour change
+//
+// The roster is what says who is a member. A bank that has been founded and not
+// admitted has a row of its own and no entry there, and after a restart it gets
+// no actor — so this transport cannot reach it at all, which is a stronger thing
+// than a refusal and a narrower one: it is true of a restarted mesh and false in
+// the process that admitted the bank, where Mesh.Admit registers the actor at
+// founding so the applicant can receive its own acknowledgement.
+//
+// What is true of such a bank in both cases is that it cannot pay and cannot be
+// paid, and that is a REFUSAL and not a consequence of this read:
+// payment.ErrBankNotAdmitted, made at Mesh.Submit and again by the clearing
+// house. This paragraph asserted it as a property of the missing actor for two
+// tasks, and it was measurably false in-process for both of them. The state
+// itself is the truth about such a bank rather than a limitation — it has a
+// licence, a book and customers, and no scheme has admitted it — and the way in
+// is Mesh.Admit.
+//
+// It reads BOTH the roster and the bank rows, and the second read is a crossing
+// rather than a convenience: Mesh.banks is keyed by ParticipantID, because that
+// is what a payment instruction names, and only a bank's own row knows which id
+// belongs to which address. Task 18 is where a payment carries BICs and this
+// read goes; see payment.Network.GetRosterEntry, which records the same crossing
+// pointing the other way.
+//
+// Both reads happen OUTSIDE m.mu, because they are store I/O and nothing else
+// may be blocked on the mesh while they run. The whole roster is then registered
 // in one batch, so a bank the mesh cannot route to leaves the mesh as it found
 // it — see addActors on why all-or-none is the roster's shape and not a
 // convenience.
@@ -428,30 +546,52 @@ func (m *Mesh) Start(ctx context.Context) error {
 // interleaving and not for the ordinary case. Both callers run against an empty
 // index — Start on a new mesh, JoinRoster on one ForgetBanks has just emptied —
 // so on any sequential path the two are the same. What they are not the same
-// about is a bank admitted CONCURRENTLY: AddBank commits its actor and its index
-// entry between the roster read above and this write, and an assignment would
+// about is a bank admitted CONCURRENTLY: an admission commits its actor and its
+// index entry between the reads above and this write, and an assignment would
 // silently drop that entry while leaving its actor running. The result was an
 // actor no index named, which nothing could then reach and — before ForgetBanks
 // stopped forgetting by index — nothing could remove either.
 //
-// Nothing else is protected by that, and it is worth being exact: a reset racing
-// an admission is still a mess, and can still refuse the admission (its BIC is
-// taken by the roster read) or fail this call (the roster now holds a BIC the
-// admission already registered). What the merge removes is the SILENT outcome —
-// a bank that answers every read and carries no payment, with nothing anywhere
-// saying so. api.Server.resetMu does not cover POST /members, and making it do
-// so would serialise admission behind every reset for a race this closes.
+// This call is itself the other half of that shape, and it is why forgetting by
+// index is still wrong: addActors above and the copy below are two separate
+// critical sections, so between them an actor exists that the index does not
+// name. admitBank closes that window for the admission path and cannot close it
+// here, because a batch that registered and indexed under one lock would hold
+// m.mu across every bank in the roster.
+//
+// Nothing else is protected by the merge, and it is worth being exact: a reset
+// racing an admission is still a mess, and can still refuse the admission (its
+// BIC is taken by the roster read) or fail this call (the roster now holds a BIC
+// the admission already registered). What the merge removes is the SILENT
+// outcome — a bank that answers every read and carries no payment, with nothing
+// anywhere saying so. api.Server.resetMu does not cover POST /members, and
+// making it do so would serialise admission behind every reset for a race this
+// closes.
 func (m *Mesh) joinRoster(ctx context.Context) error {
 	if m.net == nil {
 		return nil
 	}
-	ps, err := m.net.ListParticipants(ctx)
+	entries, err := m.net.ListRosterEntries(ctx)
 	if err != nil {
-		return fmt.Errorf("mesh: reading the participant roster: %w", err)
+		return fmt.Errorf("mesh: reading the clearing house's roster: %w", err)
 	}
-	specs := make([]actorSpec, 0, len(ps))
-	banks := make(map[payment.ParticipantID]*bank, len(ps))
+	if len(entries) == 0 {
+		return nil
+	}
+	members := make(map[iso20022.BIC]bool, len(entries))
+	for _, e := range entries {
+		members[e.BIC] = true
+	}
+	ps, err := m.net.ListBanks(ctx)
+	if err != nil {
+		return fmt.Errorf("mesh: reading the banks behind the roster: %w", err)
+	}
+	specs := make([]actorSpec, 0, len(entries))
+	banks := make(map[payment.ParticipantID]*bank, len(entries))
 	for _, p := range ps {
+		if !members[p.BIC] {
+			continue
+		}
 		b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
 		banks[p.ID] = b
 		specs = append(specs, actorSpec{bic: p.BIC, name: p.Name, handle: b.handle})
@@ -485,8 +625,10 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 // TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken.
 func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) }
 
-// ForgetBanks removes every member bank's actor: closes its inbox, waits for its
-// goroutine to return, and drops it from the routing table and the bank index.
+// ForgetBanks removes every BANK's actor — every one in the index, which after
+// an in-process Admit includes a bank the scheme has not answered for yet:
+// closes its inbox, waits for its goroutine to return, and drops it from the
+// routing table and the bank index.
 // The two institutions are untouched.
 //
 // # Why a mesh needs this at all
@@ -525,8 +667,11 @@ func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) 
 // walk the bank index — is wrong in a way that took a reset to show: an actor
 // whose index entry is missing would be unforgettable, so its address would be
 // taken for the life of the process and every later reset would fail on it. That
-// state is reachable, because AddBank writes the actor and the index entry under
-// separate locks from a different goroutine than joinRoster. Reading the actor
+// state is reachable, because joinRoster writes the actors and the index entries
+// under separate locks and a bank can be admitted between the two. AddBank does
+// both under one lock and cannot produce it; joinRoster cannot use that, because
+// a batch registered and indexed under one lock would hold m.mu across a whole
+// roster. Reading the actor
 // table instead makes "forgotten" total: after this, m.actors holds exactly the
 // central bank and the clearing house, whatever the index said.
 //
@@ -589,43 +734,59 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 	return nil
 }
 
-// AddBank gives one member bank an actor, and is how a bank that joined after
-// Start becomes reachable.
+// AddBank gives one member bank an actor and an index entry, in one critical
+// section.
 //
-// Start reads the roster ONCE, which covers every bank that existed when it ran.
-// Admission is the other door: a bank admitted at runtime — the central bank's
-// POST /members — has a participant row, a chart of accounts and a reserve
-// account, and no actor. A bank with no actor is not a slow bank, it is an
-// unreachable one: Mesh.Submit refuses its customers' instructions outright, and
-// every pacs.008 addressed to it comes back RC01 from the clearing house,
-// because there is nothing in the routing table under its BIC. So the handler
-// that admits a bank is the handler that registers it, in that order, and
-// api.Server.handleAddParticipant is where that happens.
+// It is what makes a bank REACHABLE, and reachability is the whole of what it
+// says. A bank with no actor is not a slow bank: Mesh.Submit refuses its
+// customers' instructions outright because there is nobody to hand them to, and
+// every pacs.008 addressed to it comes back RC01 from the clearing house because
+// nothing in the routing table answers to its BIC. Two banks on one address are
+// not two banks in a mesh either, they are one routing-table entry and one
+// goroutine reading an inbox nobody can address, so a taken BIC is refused with
+// ErrAddressTaken.
 //
-// It refuses a BIC some other actor already answers to, for addActors' reason
-// and with the consequence that matters here: two participants on one address
-// are not two banks in a mesh, they are one routing-table entry and one
-// goroutine reading an inbox nobody can address. The refusal reaches the
-// operator as the failure of the admission that caused it.
+// # What it no longer is
 //
-// It is the caller's job to notice. There is no way for this to be retried
-// later: a bank the mesh refused stays in the roster and stays unreachable until
-// the process restarts and Start reads the roster again — at which point Start
-// refuses the whole roster instead. See api's handleAddParticipant, which says
-// so in the response.
-func (m *Mesh) AddBank(p *payment.Participant) error {
+// It used to be the second half of an admission over HTTP: api's handler wrote
+// the participant row and then asked the mesh for the address, which is the
+// ordering that left a bank in the roster that could neither pay nor be paid.
+// That ordering is gone. Mesh.Admit claims the address BEFORE anything is
+// written and turns the claim into this registration afterwards, so there is no
+// longer a moment at which a committed bank can be refused an address. This runs
+// in the middle of Admit — after the bank's unit of work commits and before the
+// first acmt.007 is sent, since a bank that cannot be reached is one whose
+// application nobody could answer. Its other callers are the mesh's own tests,
+// which use it to plant an actor without a conversation.
+//
+// The registration and the index entry are ONE critical section, and the
+// reservation an admission made is cleared inside it. Both matter: a gap before
+// the index write leaves an actor no index names — reachable by a message and
+// unable to submit — and a gap after clearing the reservation would let a second
+// admission take the address out from under a bank whose row is already
+// committed. joinRoster still has the first of those windows and says so; it
+// cannot use this, because a batch registered and indexed under one lock would
+// hold m.mu across a whole roster.
+func (m *Mesh) AddBank(p *payment.Bank) error {
 	if m.net == nil {
 		return errors.New("mesh: no network, so there are no member banks to give actors to")
 	}
+	if err := p.BIC.Validate(); err != nil {
+		return fmt.Errorf("mesh: actor %q: %w", p.Name, err)
+	}
 	b := &bank{m: m, ops: m.net, bic: p.BIC, pid: p.ID}
-	// The actor first, so that a BIC this mesh refuses leaves the bank index as
-	// it found it — the same ordering, for the same reason, as Start's.
-	if err := m.addActor(p.BIC, p.Name, b.handle); err != nil {
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// This bank's own reservation, consumed. Cleared before the duplicate check
+	// below, which would otherwise refuse the very address this admission
+	// claimed; and inside the same lock, so no other caller sees the address
+	// free in between.
+	delete(m.reserved, p.BIC)
+	if err := m.addActorsLocked(actorSpec{bic: p.BIC, name: p.Name, handle: b.handle}); err != nil {
 		return err
 	}
-	m.mu.Lock()
 	m.banks[p.ID] = b
-	m.mu.Unlock()
 	return nil
 }
 
@@ -1136,6 +1297,10 @@ func (m *Mesh) takeDeadLetters() error {
 // ErrOnUsPayment. That refusal is this system declining a ROUTE and not the
 // payment; a book transfer between two customers of one bank is a real product
 // and a task of its own.
+//
+// A payment to or from a bank the scheme has NOT ADMITTED is refused in the same
+// place and for the same kind of reason — see payment.ErrBankNotAdmitted, which
+// records what it stops and why the clearing house refuses it a second time.
 func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (payment.Payment, error) {
 	scheme, ok := m.net.Scheme(req.Scheme)
 	if !ok {
@@ -1163,6 +1328,58 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
 			req.Debtor.Participant, ErrOnUsPayment)
 	}
+	// And a payment one of whose banks the scheme has not admitted.
+	//
+	// Asked HERE, at the same door and of the same two parties, because the
+	// answer that matters is the one given before the submitting bank's half
+	// runs: that half posts the debtor leg, and every refusal downstream of it
+	// has a committed posting to unwind. The clearing house asks it again from
+	// its own row — payment.Network.bothBanksAreMembersTx — and that one is the
+	// judgement; this one is the door declining to carry the instruction at all,
+	// which is what makes the API answer a 422 rather than a 202 followed by a
+	// rejection nobody can be told about. See payment.ErrBankNotAdmitted.
+	//
+	// It goes through the ParticipantID crossing, which the clearing house's does
+	// not: a request names its parties by id and the roster is keyed by BIC, so
+	// each of these reads a bank's row to learn its address first. That is the
+	// crossing payment.Network.GetRosterEntry records on its ParticipantID
+	// argument, and Task 18 is what closes it.
+	//
+	// That crossing changed a status code on its way past, which is worth writing
+	// down because nothing about a membership guard predicts it. A party naming a
+	// participant NO BANK ROW EXISTS FOR fails the id half of this read, before
+	// the roster is reached, and comes back payment.ErrParticipantNotFound — a
+	// 404, and the truth about a request naming a bank that is not there. It used
+	// to fall through to the bank-actor map below, whose miss is a bare error with
+	// no case in api.errorStatus, so the caller was told 500 about its own typo.
+	// Only the clearing house's console sees the difference: a bank's own
+	// POST /payments refuses an unfamiliar submitter with a 422 of its own before
+	// the mesh is reached. Pinned by
+	// api.TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound, because what
+	// makes the 404 reach a caller is this read running FIRST.
+	for _, side := range []struct {
+		role string
+		ref  payment.PartyRef
+	}{
+		{"payer's bank", req.Debtor},
+		{"payee's bank", req.Creditor},
+	} {
+		// A side naming no bank is skipped rather than refused, exactly as the
+		// on-us guard above skips it: "not a member" is not the truth about a
+		// party the request did not name, and what IS wrong with such a request
+		// is SubmitPaymentTx's to say (ErrParticipantNotFound for the submitting
+		// side, ErrCounterpartyNotNamed for the other).
+		if side.ref.Participant == "" {
+			continue
+		}
+		if _, err := m.net.GetRosterEntry(ctx, side.ref.Participant); err != nil {
+			if errors.Is(err, payment.ErrRosterEntryNotFound) {
+				return payment.Payment{}, fmt.Errorf("mesh: the %s, %s, is not a member of %s: %w",
+					side.role, side.ref.Participant, req.Scheme, payment.ErrBankNotAdmitted)
+			}
+			return payment.Payment{}, err
+		}
+	}
 	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
 
 	m.mu.Lock()
@@ -1175,6 +1392,245 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 		return payment.Payment{}, fmt.Errorf("mesh: no bank actor for participant %s", submitter)
 	}
 	return b.submit(ctx, req)
+}
+
+// Admit brings a bank into being and applies to the scheme for it.
+//
+// Its synchronous half is Mesh.Submit's: the bank's own work, on the caller's
+// goroutine, marked as the bank's so the recorder attributes it correctly, and
+// committed before anything is sent. What it does NOT answer is whether the
+// scheme accepted — that arrives later, at two other actors, as a message. The
+// bank it returns is Founded, which is a working bank that can open customer
+// accounts and cannot fund one. See "A founded bank can neither pay nor be paid
+// is a REFUSAL now" in doc.go for where that is enforced, and why not here.
+//
+// # The address is reserved first, and that is the orphan defect's fix
+//
+// A BIC is the only thing about an admission that can clash, and it used to be
+// checked LAST: api.handleAddParticipant wrote the participant row and then
+// asked the mesh for the address, so a refusal left a bank in the roster that
+// could neither pay nor be paid, with no way back. Reversed here. The address is
+// claimed before the bank's unit of work runs and released again if that unit of
+// work fails, because an in-memory rollback is reliable and a rollback of a
+// committed transaction is not. See Mesh.reserved, and
+// TestNothingIsWrittenWhenTheAddressIsRefused, which is what makes the ordering
+// falsifiable.
+//
+// # A taken address is two situations
+//
+// If it belongs to a bank this mesh founded that the roster has no entry for,
+// the operator is re-driving an interrupted admission: nothing is founded twice
+// and the acmt.007 goes out again. If it belongs to anybody else — a member, an
+// actor that is not a bank, or an admission already in flight — it is refused.
+// Both directions of getting this wrong have a name: refuse the first and a
+// founded bank can never join, accept the second and admission overwrites an
+// institution.
+//
+// The roster is read for that decision and the actor table decides it, which is
+// the two authorities in one function: the roster is the DOMAIN's truth about
+// who holds an address, the actor table is the TRANSPORT's. They can disagree
+// only in one direction here — a bank in the roster with no actor is a mesh that
+// has not read the roster since it was admitted — and the lock is what makes the
+// answer one answer.
+//
+// # A re-drive asks for the assets the bank actually has
+//
+// One acmt.007 asks for one currency, so this sends one per asset the bank
+// operates in, in asset order. For a new bank that is exactly what the caller
+// named (with payment's joining default applied); for a RE-DRIVE it is the
+// bank's own chart of accounts, and the caller's list is ignored — the bank
+// exists and its internal accounts are what they are, and asking for a
+// settlement account in an asset it holds none of would produce a reference it
+// has nowhere to record.
+//
+// # It mints a new process id every time, including on a re-drive
+//
+// Refs/PrcId is the conversation's only correlator, and a re-drive gets a fresh
+// one rather than reusing what the interrupted attempt quoted. That is safe
+// exactly because a re-drive is only allowed when the roster has NO entry for
+// the address: the clearing house's refusal compares the request's reference
+// with the one on the entry it already holds, and there is none. The bank's own
+// row is in the same position — payment.Bank.AdmissionRef is empty until an
+// acknowledgement is recorded, so a bank that never got one has nothing to
+// disagree with.
+//
+// # A PARTLY admitted bank cannot be re-driven, and that is a gap with an owner
+//
+// The two conditions above are the same condition seen twice, and there is a
+// state that fails both: a bank that recorded a membership in one asset and
+// whose second asset's acknowledgement never arrived. It is a Member, so its row
+// carries a reference; it is in the roster, so this call refuses the address
+// outright — and a fresh admission would be refused by the clearing house and by
+// the bank alike, correctly, since it really is a different admission.
+//
+// So there is no door. The bank clears in one asset and holds a settlement
+// account at the central bank in a second that it does not know the number of,
+// which is the inconsistency RecordMembershipTx's own doc describes: a deposit
+// in that asset fails while the operator console reports the reserve, because
+// the console reads the central bank's row.
+//
+// It is reachable only from a dead letter — every message of an admission is
+// carried exactly once and in order by this transport, so the acknowledgement
+// goes missing only if a handler could not act on it — and it is Task 19's, with
+// the rest of this system's half-finished conversations.
+//
+// That task's reconciliation is what has to FIND it, and the obvious comparison
+// does not. "A bank whose assets and the settlement agent's accounts for its BIC
+// do not match" is what this said, and in this state they MATCH: measured by
+// parking the second acmt.010 of a two-asset admission before the bank, the
+// bank's assets are {EUR, USD} and the agent's accounts for its BIC are
+// {EUR, USD}. They match for the reason the gap exists at all — the settlement
+// agent opens the account before it acknowledges (centralBank.receiveAdmission),
+// so what went missing is the bank's NOTE of the number and not the account.
+//
+// The discriminator is the one api.Server.reserveRows uses: an EMPTY settlement
+// reference on the bank's own row in an asset, TOGETHER WITH a reserve row the
+// agent answers for in that same asset. The same empty reference with NO reserve
+// row is the other half-finished admission — an acmt.007 that never arrived, or
+// one the agent refused — and the mismatch comparison does find THAT one, which
+// is the whole of why it looked right for this one. Closing
+// it needs a way to re-drive one asset of an existing admission, which means
+// quoting the reference the bank already recorded rather than minting one, and
+// that is a decision about the flow rather than about this function.
+// csm.relayReturn and centralBank.advise record their own version of the same
+// class of gap.
+func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*payment.Bank, error) {
+	if m.net == nil {
+		return nil, errors.New("mesh: no network, so there is no bank to admit")
+	}
+	if err := bic.Validate(); err != nil {
+		return nil, fmt.Errorf("mesh: %q: %w", name, err)
+	}
+	// Everything below is the joining bank's work, and is recorded as its own.
+	// See withActor: the recorder has no other way to attribute a book, and the
+	// bank whose book this is has no actor yet.
+	ctx = withActor(ctx, bic)
+
+	// The roster read is OUTSIDE the lock, for joinRoster's reason. What it
+	// answers is the domain's question — is this address already a member's —
+	// and the lock below is what turns the answer into a decision.
+	_, err := m.net.GetRosterEntryByBIC(ctx, bic)
+	switch {
+	case err == nil:
+		return nil, fmt.Errorf("%w: %s is already a member of this scheme", ErrAddressTaken, bic)
+	case !errors.Is(err, payment.ErrRosterEntryNotFound):
+		return nil, fmt.Errorf("mesh: cannot tell whether %s is already admitted: %w", bic, err)
+	}
+
+	redriving, err := m.claimAddress(bic)
+	if err != nil {
+		return nil, err
+	}
+
+	var bank *payment.Bank
+	if redriving != "" {
+		// A bank this mesh founded that the roster has no entry for. Its row is
+		// read OUTSIDE the lock, for joinRoster's reason, and nothing is founded.
+		if bank, err = m.net.GetBank(ctx, redriving); err != nil {
+			return nil, fmt.Errorf("mesh: %s is re-driving the admission of %s and cannot read it: %w", bic, redriving, err)
+		}
+	} else {
+		if bank, err = m.net.FoundBank(ctx, name, bic, assets); err != nil {
+			// The reservation goes back before the caller is told, so a refused
+			// unit of work leaves the address exactly as free as it found it.
+			m.releaseAddress(bic)
+			return nil, err
+		}
+		if err := m.AddBank(bank); err != nil {
+			// Unreachable while the reservation holds — nothing else can have
+			// taken the address — but a bank that is committed and unreachable is
+			// the orphan again, so it is reported rather than assumed away.
+			m.releaseAddress(bic)
+			return bank, fmt.Errorf("mesh: %s was founded and could not be given an actor: %w", bic, err)
+		}
+	}
+
+	// The sends are OUTSIDE the unit of work, for Mesh.Submit's reason: a request
+	// enqueued from inside FoundBankTx would be one the scheme could act on
+	// against a bank the store then rolled back.
+	ref := m.nextProcessID(bic)
+	to := m.cfg.ClearingHouseBIC
+	for _, asset := range slices.Sorted(maps.Keys(bank.Assets)) {
+		env, err := payment.AdmissionMessage(
+			payment.AdmissionRequest{Name: bank.Name, BIC: bank.BIC, Asset: asset, Ref: ref},
+			m.cfg.CentralBankBIC,
+			payment.MessageContext{From: bank.BIC, To: to, MsgID: m.nextMsgID(bank.BIC), Now: m.now()},
+		)
+		if err != nil {
+			return bank, fmt.Errorf("mesh: %s could not compose its application in %s: %w", bank.BIC, asset, err)
+		}
+		if err := m.send(bank.BIC, to, env); err != nil {
+			return bank, fmt.Errorf("mesh: %s was founded and could not apply in %s: %w", bank.BIC, asset, err)
+		}
+	}
+	return bank, nil
+}
+
+// claimAddress takes a BIC for an admission that is about to run, or names the
+// bank whose interrupted admission is being re-driven.
+//
+// Three answers and one lock. A free address is RESERVED and the empty id comes
+// back. An address a bank of this mesh already answers to comes back as that
+// bank's id, no reservation is made, and the caller founds nothing — the roster
+// has already been asked and holds no entry for it, so this is a re-drive.
+// Anything else is ErrAddressTaken.
+//
+// "Anything else" is worth spelling out because two of its three cases have
+// nothing to do with banks: an address one of the two INSTITUTIONS answers to,
+// and an address another admission has reserved and not yet registered. Both are
+// refusals about connectivity rather than about membership, which is the whole
+// of what the mesh's authority over an address amounts to.
+//
+// The second of those is ErrAdmissionInFlight, which wraps ErrAddressTaken so it
+// is still a taken address to anything that only asks that question. It is
+// separate because it is the one refusal here where NOBODY answers to the
+// address yet: the bank claiming it is the same bank, a moment early.
+//
+// It reads no store, which is why it can hold m.mu — see joinRoster on why that
+// combination is the one to avoid. A re-drive's bank row is read by the caller,
+// afterwards and unlocked, and the interval that opens is an operator racing
+// their own retry: two re-drives of one address would each send a set of
+// requests. The domain is what serialises that, not this lock — see
+// payment.AdmitMemberTx, which draws an id before it decides.
+func (m *Mesh) claimAddress(bic iso20022.BIC) (payment.ParticipantID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stopping || m.stopped {
+		return "", errors.New("mesh: stopping; a bank admitted now would have no goroutine to read its inbox")
+	}
+	if m.reserved[bic] {
+		return "", fmt.Errorf("%w: %s", ErrAdmissionInFlight, bic)
+	}
+	if _, taken := m.actors[bic]; taken {
+		for pid, b := range m.banks {
+			if b.bic == bic {
+				return pid, nil
+			}
+		}
+		return "", fmt.Errorf("%w: %s", ErrAddressTaken, bic)
+	}
+	m.reserved[bic] = true
+	return "", nil
+}
+
+// releaseAddress gives a reservation back. See Mesh.reserved.
+func (m *Mesh) releaseAddress(bic iso20022.BIC) {
+	m.mu.Lock()
+	delete(m.reserved, bic)
+	m.mu.Unlock()
+}
+
+// nextProcessID mints the identifier one admission travels under: acmt
+// Refs/PrcId, echoed by every message of that admission.
+//
+// It is nextMsgID's sibling and shares its counter, so a process id and a
+// message id can never collide and both are unique under the frozen clock these
+// tests run on. What it is NOT is a message id: several messages carry this one
+// value, which is the whole reason the element exists — an acmt.010 carries no
+// back-reference to the request that caused it, so this is the only thing that
+// says two messages are one admission.
+func (m *Mesh) nextProcessID(from iso20022.BIC) string {
+	return fmt.Sprintf("%s-adm-%d", from, m.msgSeq.Add(1))
 }
 
 // CloseCycle reaches a cut-off: the clearing house nets the batch and then
@@ -1272,8 +1728,8 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 	return m.csm.reject(ctx, id, code, text)
 }
 
-// Return sends a settled payment back: the R-transaction, and the last of this
-// system's four flows.
+// Return sends a settled payment back: the R-transaction, and the last thing
+// that can happen to a payment.
 //
 // It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
 // goroutine, sending only after the returning bank's half has run — because a

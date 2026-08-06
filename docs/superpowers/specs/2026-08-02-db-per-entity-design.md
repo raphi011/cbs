@@ -377,6 +377,80 @@ and cannot pay or be paid — which is not a broken state but a true one, and it
 what makes the orphan defect go away rather than move. An interrupted admission
 leaves a founded bank; re-calling `Admit` re-applies rather than re-founds.
 
+##### "Cannot pay or be paid" is what the design says, not what the code does (2026-08-06)
+
+Left as written above, per this file's convention. Task 17f probed the claim
+rather than copying it, and **only half of it is enforced.**
+
+*Cannot pay* holds: `DepositTx` refuses a founded bank, so it has no funded
+customer to pay from, and `postDebtorLegTx` refuses an asset it holds no
+accounts in.
+
+*Cannot be paid* does not. Routing is the mesh's actor table, and a founded bank
+has an actor from the moment `Admit` reserves its address — so `GET /directory`
+resolves its IBAN network-wide with no membership filter, `SubmitPaymentTx`
+derives the counterparty's BIC from the bank row rather than the roster, and
+`POST /payments` to a founded bank answers **202**. Measured end to end over
+HTTP.
+
+**And the failure is not confined to that payment.** At cut-off,
+`csm.settlementLegs` turns net positions into BICs through the roster and cannot
+name a non-member, so the whole `pacs.009` fails: the cycle stays `Closed` with
+**every other member's payments in it**, their payees unpaid and their payers'
+money in clearing suspense. `POST /cycles/{cid}/settle` — the documented
+operator remedy — fails identically, and `Reject` on the offending payment is
+refused as an invalid state transition. The only exit is to admit the bank,
+after which the cycle settles whole. Nothing is lost; everything stops.
+
+This is a state **this sub-project created**: before it, a bank could not exist
+without its accounts, so there was no unadmitted bank to address. The roster is
+supposed to be exactly the answer here — *the routing directory says who may be
+addressed, not who exists* — and the code does not consult it on the way in.
+The fix belongs where Task 16 put the on-us refusal: at the door, where the
+payment enters the mesh. Recorded here rather than fixed inside a documentation
+sweep, which was the right call by the task that found it.
+
+###### Neither half held, and it is enforced now (2026-08-06, whole-branch review)
+
+Left as written above. The ruling's own *cannot pay* paragraph is wrong, and both
+of its reasons are:
+
+- `DepositTx` is one way of funding a customer and not the only one. An
+  **arranged overdraft** — `overdraftLimit` on `POST /deposit-accounts`, no
+  membership gate anywhere on that path — gives a founded bank's customer
+  spendable money, and `lending.DisburseTx` gives it more. Measured: the customer
+  went to −250,000 against its limit and the bank's clearing suspense to +250,000.
+- `postDebtorLegTx` never fires, because `FoundBankTx` opens a founded bank's
+  four internal accounts in **every** asset it is founded with. There is no asset
+  it "holds no accounts in".
+
+So a founded bank could pay as well as be paid, and the paying direction ended in
+the same stranded cycle plus one thing the other did not have: the `pacs.002`
+that would have told the submitter was addressed through the roster and
+**dead-lettered**, so nobody was told and the payment still reached `Cleared`.
+
+**Refused now, by `payment.ErrBankNotAdmitted`, in two places.** `Mesh.Submit`
+asks it of both parties at the door — beside `ErrOnUsPayment`, for that guard's
+own stated reason: `Submit` is synchronous, so a refusal any later has a
+committed debtor leg to unwind. `AcceptAtCSMTx` asks it again from the clearing
+house's own roster row, which is the institution whose judgement it is and the
+only one of the two whose read survives Task 18. Measured with the door guard
+removed, the clearing house's refusal alone leaves the paying direction's money
+in a suspense for exactly the dead-letter reason above — so "one refusal closes
+both" is true of the two DIRECTIONS and not of the two remedies.
+
+It also reads `RosterEntry.Assets`, which had no reader at all: a bank admitted
+in one asset of two — reachable, because one `acmt.007` asks for one currency and
+the two conversations commit separately — is refused in the other.
+
+A payment that is already `Cleared` against a non-member gets **no route out**,
+deliberately. Both doors now refuse before `Accepted`, so nothing this code can
+run produces one; a `Cleared` → `Rejected` transition added for it would be an
+operator remedy whose only reachable input is data this system can no longer
+write, which is the field-nothing-reads shape one state further on. Admitting the
+bank still settles such a cycle whole, and that remains the answer for a store
+written by an older build.
+
 The ordering closes the rest. The address is reserved at the mesh **before**
 anything is written, and the actor is dropped again if the write fails: an
 in-memory rollback is reliable, and a rollback of a committed unit of work is
@@ -414,6 +488,34 @@ entity, each already the shape of the store it moves into at Task 18:
 `SettleCycleTx`, `SettleReturnTx` and `ReserveBalance` read the central bank's
 own row instead of `p.Assets[].Settlement`. Routing and `ListParticipants` read
 the roster entry.
+
+##### The roster carries no name, and the schema is why (2026-08-06)
+
+Left as written above, per this file's convention for pre-ruling wording. The
+`RosterEntry` row says "BIC → name". Task 17d found that it cannot.
+
+`acmt.010` identifies the account owner with `OrganisationIdentification29` — a
+BIC, and no legal name, country or address. (The *request* carries
+`Organisation33`, which has `FullLglNm`; the acknowledgement does not, and the
+acknowledgement is what the clearing house writes its row from.) So a roster row
+carrying a name is a row asserting something no message delivered, and the
+implementer's first version bought it with a `csm.applicants` map holding the
+name across the relay.
+
+That is the wrong trade twice over. It contradicts **the clearing house holds
+nothing across the relay**, which is this section's deliberate counterpoint to
+Task 16's `csm.held` — and `csm.held` is carried on this branch as a *known
+defect*, because it does not survive a restart. And the name had **no production
+reader**: every `GetRosterEntry` caller in `mesh/bank.go` and `mesh/csm.go` takes
+a BIC off the entry and never touches the name, so the hold existed to fill a
+field that existed to be filled by the hold — the field-nothing-reads shape this
+sub-project has now refused three times.
+
+`RosterEntry` is `{BIC, Assets, AdmissionRef, AdmittedAt}`. The name was in the
+enumeration above, not in the principle beside it: **routing, and nothing
+else.** An operator console wanting a member's name reads the bank's own row or
+the settlement agent's, and it is outside the entity boundary by construction —
+which the paragraph under *The rows* already says.
 
 **The identifier between institutions is the BIC, and only the BIC.** The bank's
 own id is its own; neither of the other two rows carries it. The operator console
@@ -463,6 +565,48 @@ Scheme membership is contractual in life and is not messaged at all. What the
 `acmt.007` carries here is the settlement-account request; the routing entry
 falls out of its acknowledgement, which is why the clearing house writes that row
 from a message it did not originate.
+
+##### The schema carries one currency per request, and that decides the refusal (2026-08-05)
+
+Left as written above, per this file's convention for pre-ruling wording. Task
+17a read the three XSDs rather than trusting the plan's predicted structs, and
+the schema contradicted them in thirteen places. One of the thirteen changes
+this section's design.
+
+`acmt.007`'s `Acct/Ccy` is `minOccurs="1" maxOccurs="1"`: **one currency per
+request.** A bank clearing a euro and a dollar scheme sends two `acmt.007`s, not
+one naming two currencies. The acknowledgement is the asymmetric half —
+`AccountForAction1` is unbounded — so one `acmt.010` lists every account the
+servicer holds for that BIC. That is the standard's own shape: eBAM opens one
+account per request, and a bank with accounts in two currencies really does ask
+twice.
+
+The consequence is not the extra message. It is that **`Refs/PrcId` — mandatory
+on all three messages — is the conversation's only correlator**, because the
+acknowledgement carries no back-reference to the request at all (the rejection
+does, at `RjctdReqId`; the acknowledgement does not). One process id per
+admission, echoed by every message in it.
+
+**That is what makes the pre-relay refusal above implementable.** `Mesh.Admit`
+reserves the address at the mesh before anything is written or sent, so an
+impostor never gets a message onto the wire; the only requests that can reach
+the clearing house on a BIC already in its roster are **the same bank's second
+asset** and **an operator re-driving an interrupted admission**. A refusal keyed
+on "is this BIC in the roster" would therefore refuse exactly the two cases it
+must allow, and never fire on the one it exists for. Keyed on the admission's
+process id it separates them: same admission, relay; different admission,
+`acmt.011` before relaying.
+
+So `RosterEntry` carries the admission reference beside its routing fields. Its
+reader is the clearing house's refusal, which is what keeps it from being the
+field-nothing-reads this sub-project has twice refused. The alternative was to
+tell two institutions apart by the legal name on the message, which is a weaker
+claim than this system makes anywhere else.
+
+`AdmitMemberTx` writes-or-extends the roster entry rather than refusing every
+second acknowledgement, and `ErrBICAlreadyAdmitted` means *a different
+admission* on a taken BIC. A single-asset admission still puts four messages on
+the wire, which is what the flow above describes.
 
 #### `DepositTx` is re-routed and not fixed
 

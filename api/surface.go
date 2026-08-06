@@ -8,8 +8,9 @@ import (
 
 // The three operator surfaces.
 //
-// One binary, one process by default, one listener per entity: one per member
-// bank, one for the central bank, one for the clearing house. What a caller can
+// One binary, one process by default, one listener per entity: one per bank —
+// every bank, founded or admitted — one for the central bank, one for the
+// clearing house. What a caller can
 // reach is decided by which port they are talking to, and a bank's routes have
 // nowhere to name another bank — the port carries the identity, which is why
 // s.participant reads it off the Server rather than out of the path.
@@ -42,9 +43,23 @@ func (s *Server) centralBankRouter() *router {
 	mux.HandleFunc("GET /reserves", s.handleListReserves)
 	mux.HandleFunc("GET /reserves/{pid}", s.handleGetReserve)
 	mux.HandleFunc("GET /audit", s.handleCentralBankAudit)
-	// Admission opens the member's reserve and settlement accounts in the
-	// central bank's own book, which is what makes it the central bank's act
-	// and not the clearing house's.
+	// This route FOUNDS a bank and applies to the scheme for it. What it writes
+	// is the new bank's own book, its chart of accounts, one set of internal
+	// accounts per asset and the deposit product every customer account is
+	// opened from — every one of those accounts in that bank's own book — and
+	// then one acmt.007 goes out per asset, addressed to the CLEARING HOUSE,
+	// which relays it. Hence the
+	// 202: what the applicant gets back is a Founded bank, and the answer is two
+	// other institutions' to give (mesh.Mesh.Admit).
+	//
+	// So it opens nothing in the book this listener belongs to. The settlement
+	// account is this central bank's, and this central bank opens it later, in
+	// its own handler, when the relayed application reaches its actor
+	// (mesh.centralBank.receiveAdmission, payment.OpenSettlementAccountTx).
+	// What puts the route here is therefore not an act on the central bank's
+	// book — it is the same thing that puts /admin/reset here: founding the
+	// banks a network starts with is one operator's act, and this is that
+	// operator's console.
 	mux.HandleFunc("POST /members", s.handleAddParticipant)
 	// There is no POST here, and its absence is the shape of what the mesh
 	// changed. Settling used to be an operator's act — a human opened the
@@ -76,8 +91,20 @@ func (s *Server) centralBankRouter() *router {
 
 func (s *Server) clearingHouseRouter() *router {
 	mux := newRouter()
-	// The roster is the clearing house's because routing a payment is what
-	// needs to know who is reachable. Admission is the central bank's, above.
+	// This is NOT the roster, whatever the name suggests: handleListParticipants
+	// answers ListBanks, so every bank in the network is in it — founded ones
+	// included, each carrying its status. The routing directory this institution
+	// genuinely owns is roster_entries, written by payment.AdmitMemberTx from the
+	// settlement agent's acknowledgement, and it is on no surface at all; the mesh
+	// reads it and nothing in this package does. What puts the bank list on this
+	// listener is that this is the console the network's membership is watched
+	// from, and watching a bank become a member needs the banks that are not one
+	// yet.
+	//
+	// Founding is above, on the central bank's surface. Admission itself is no
+	// single institution's act, and this one's share of it is to relay a bank's
+	// application, refuse an address it has already admitted somebody else to, and
+	// write that routing entry from the answer (mesh.csm).
 	mux.HandleFunc("GET /members", s.handleListParticipants)
 	mux.HandleFunc("GET /schemes", s.handleListSchemes)
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)

@@ -2,6 +2,7 @@ package seed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,9 +11,9 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/product"
-	"github.com/raphi011/cbs/store/mem"
 )
 
 // baseDate anchors the deterministic seed timeline. Everything built before the
@@ -39,7 +40,26 @@ func New() *Dataset { return &Dataset{clock: newClock(baseDate)} }
 func (d *Dataset) Now() time.Time { return d.clock.now() }
 
 // Populate builds the full sample scenario (see the package doc) into the
-// network's store.
+// network's store, admitting its banks through the mesh it is given.
+//
+// # Why it takes a mesh
+//
+// Because admission is a conversation, and a bank that has not had one is not a
+// member: it holds no settlement account, so the very first thing this scenario
+// does after opening its accounts — paying an opening deposit in — has nowhere
+// to credit. The four acts used to be called here one after another, which is
+// the stand-in this replaces; the seeded dataset now goes through the mesh's own
+// door for its admissions and is answered by the same two actors that answer an
+// operator's POST /members.
+//
+// So the mesh must be RUNNING before this is called, which reverses the order
+// cmd/server used: the mesh is built and started over an unseeded store, and its
+// roster read finds nothing because the banks it would find are the ones this is
+// about to admit.
+//
+// It is not optional and there is no nil path. A Populate with no mesh could
+// found four banks and would leave every one of them Founded, which is a
+// scenario in which no payment in it can be made — see builder.admit.
 //
 // It is idempotent: a store that already holds participants is left alone. That
 // is what makes it safe to call on every boot — against a database that
@@ -80,13 +100,17 @@ func (d *Dataset) Now() time.Time { return d.clock.now() }
 // boundary, since its caller — the server's reset handler — has an error to
 // report and a request to answer. Any other panic is re-raised with its stack
 // intact; see recoverBuild.
-func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error) {
+func (d *Dataset) Populate(ctx context.Context, net *payment.Network, msh *mesh.Mesh) (err error) {
 	// Registered first, so it runs last: whether the scenario was built now,
 	// was already there, or failed halfway, the clock is released before
 	// Populate returns.
 	defer d.clock.goLive()
 
-	existing, err := net.ListParticipants(ctx)
+	if msh == nil {
+		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
+	}
+
+	existing, err := net.ListBanks(ctx)
 	if err != nil {
 		return err
 	}
@@ -102,7 +126,7 @@ func (d *Dataset) Populate(ctx context.Context, net *payment.Network) (err error
 
 	d.clock.rewind(baseDate)
 	b := &builder{
-		ctx: ctx, net: net, clock: d.clock,
+		ctx: ctx, net: net, mesh: msh, clock: d.clock,
 		cats: map[payment.ParticipantID]catalogue{},
 	}
 	b.build()
@@ -139,23 +163,22 @@ func recoverBuild(r any) error {
 	return fmt.Errorf("seed: %w", se.err)
 }
 
-// Network builds a fresh in-memory payment.Network populated with the sample
-// scenario. It is the convenience form of New plus Populate, for tests and
-// examples; the server wires the two together itself, because it needs to
-// repopulate the same network after a reset.
-func Network() *payment.Network {
-	d := New()
-	store := mem.New(d.Now)
-	net := payment.NewNetwork(store.Payment(), d.Now)
-	if err := d.Populate(context.Background(), net); err != nil {
-		panic(err.Error()) // already prefixed with "seed: "
-	}
-	return net
-}
+// There is no Network() convenience constructor any more, and the reason is
+// worth recording rather than rediscovering.
+//
+// It used to build a store, a network and the sample scenario in one call and
+// hand back the network, for tests and examples. Admission is a conversation
+// now, so building the scenario needs a running mesh — and a mesh is a set of
+// goroutines somebody has to stop. A function returning only the network would
+// leave them running for the life of the process with no handle to join them,
+// which is exactly the shutdown bug mesh.Stop's doc exists to prevent. Callers
+// build the four pieces themselves: cmd/server does, and so does this package's
+// own test helper.
 
 type builder struct {
 	ctx   context.Context
 	net   *payment.Network
+	mesh  *mesh.Mesh
 	clock *clock
 	// cats holds each bank's product IDs, keyed by participant: the
 	// catalogue is book-scoped, so every bank has its own Basic and Premium and
@@ -185,6 +208,54 @@ func check(err error) {
 	}
 }
 
+// admit puts one bank through the mesh's own door and waits for the scheme to
+// answer.
+//
+// It is the whole conversation and no longer a stand-in for one: Mesh.Admit
+// founds the bank, gives it an actor and sends one acmt.007 per asset; the
+// central bank opens the settlement account and answers acmt.010; the clearing
+// house writes the routing entry and relays acmt.011; the bank records what it
+// was told. What comes back from Admit is a FOUNDED bank, because none of that
+// has happened yet, so this drains and re-reads the row — a bank that is still
+// Founded holds no settlement account, and the next thing this scenario does is
+// pay an opening deposit in, which is refused without one.
+//
+// # One admission at a time, because the ids have to be reproducible
+//
+// The drain is here, per bank, rather than once after all four — and that is a
+// property of the SEED rather than of admission. Every network id in this system
+// comes from one counter per book, so a conversation still running while the
+// next bank is founded draws its audit ids from the same sequence as that bank's
+// own id, and the dataset's participant ids move.
+//
+// Measured rather than argued: with a single drain after all four admissions,
+// twelve builds under GOMAXPROCS=2 with the race detector on gave the FOURTH
+// bank an id that differed from the other eleven builds' once. Twelve more at
+// GOMAXPROCS=1 and twelve at GOMAXPROCS=8 did not reproduce it, which is exactly
+// why one clean run is not evidence here. No id is quoted because none of the
+// ids in that experiment is one this code produces — that is the finding.
+//
+// Draining per bank makes each conversation finish before the next Admit
+// begins, and the four sequential calls this replaces had that for free.
+//
+// What it costs is a scenario built one bank at a time instead of four in
+// flight. Nothing wants the concurrency: this is a fixture, and the property it
+// must have is that two builds of it are the same dataset. TestDeterministicIDs
+// is the assertion of that property, and the numbers above are also a warning
+// about it: it compares two builds in one process, so a divergence that appears
+// in one build out of twelve is one it reports rarely rather than reliably.
+func (b *builder) admit(name string, bic iso20022.BIC, assets []ledger.AssetCode) *payment.Bank {
+	founded := must(b.mesh.Admit(b.ctx, name, bic, assets))
+	check(b.mesh.Drain(b.ctx))
+
+	bank := must(b.net.GetBank(b.ctx, founded.ID))
+	if bank.Status != payment.BankMember {
+		check(fmt.Errorf("%s is %q after its admission conversation, want %q",
+			bank.BIC, bank.Status, payment.BankMember))
+	}
+	return bank
+}
+
 // seedAsset is the asset the whole sample scenario is denominated in.
 //
 // The scenario is a SEPA one, and SEPA is a euro scheme, so every account it
@@ -196,8 +267,8 @@ const seedAsset ledger.AssetCode = "EUR"
 // products prices a bank's catalogue: the Basic Current Account its onboarding
 // created, and a Premium one an account can be migrated to.
 //
-// Basic is the product AddParticipant already made — every bank gets one,
-// because a bank with no product cannot open an account — and its first
+// Basic is the product founding already made — every bank gets one, because a
+// bank with no product cannot open an account — and its first
 // published version is interest-free, which is what a bank that has not yet
 // decided a price has. This adds the two versions that give it one:
 //
@@ -208,7 +279,7 @@ const seedAsset ledger.AssetCode = "EUR"
 //     rows are untouched.
 //
 // Both are forward-dated, which is the only direction PublishVersion allows.
-func (b *builder) products(p *payment.Participant) {
+func (b *builder) products(p *payment.Bank) {
 	from := ledger.DayStart(b.clock.now())
 
 	b.publish(p, p.ProductID, from.AddDate(0, 0, 1), product.OverdraftPricing{
@@ -229,7 +300,7 @@ func (b *builder) products(p *payment.Participant) {
 // publish drafts and publishes in one step, which is what every seeded version
 // wants: the draft state is a thing an operator passes through, not a thing the
 // demo data should sit in.
-func (b *builder) publish(p *payment.Participant, id product.ID, from time.Time, pricing product.OverdraftPricing) {
+func (b *builder) publish(p *payment.Bank, id product.ID, from time.Time, pricing product.OverdraftPricing) {
 	must(p.Catalogue.DraftVersion(b.ctx, id, from, pricing))
 	must(p.Catalogue.PublishVersion(b.ctx, id, from))
 }
@@ -240,7 +311,7 @@ func (b *builder) publish(p *payment.Participant, id product.ID, from time.Time,
 // It goes through the register rather than p.OpenCustomerAccount because that
 // helper opens from the participant's configured default, and this seed has
 // retired that one in favour of a priced catalogue of its own.
-func (b *builder) open(p *payment.Participant, name, iban string) deposit.Account {
+func (b *builder) open(p *payment.Bank, name, iban string) deposit.Account {
 	return b.openOverdraft(p, name, iban, 0)
 }
 
@@ -251,14 +322,14 @@ func (b *builder) open(p *payment.Participant, name, iban string) deposit.Accoun
 // is per account and the PRICE is not: it comes from the Basic product, so the
 // day-30 reprice above reaches every account opened here without touching one
 // of them.
-func (b *builder) openOverdraft(p *payment.Participant, name, iban string, limit ledger.Amount) deposit.Account {
+func (b *builder) openOverdraft(p *payment.Bank, name, iban string, limit ledger.Amount) deposit.Account {
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
 	return must(p.Deposit.OpenAccount(b.ctx, p.CustomerSubledger, name, seedAsset, b.cats[p.ID].basic, limit, ident))
 }
 
 // openLoan opens a term loan and disburses it in full into the borrower's own
 // account, so the caller is left with a facility that has begun accruing.
-func (b *builder) openLoan(p *payment.Participant, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
+func (b *builder) openLoan(p *payment.Bank, borrower deposit.Account, name string, principal ledger.Amount, rate interest.Rate, termMonths int, firstDue time.Time, description string) lending.Facility {
 	loan := must(p.Lending.OpenTermLoan(b.ctx, p.CustomerSubledger, name, seedAsset, principal, rate, interest.ACT365, lending.Annuity, termMonths))
 	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
 	must(p.Lending.Disburse(b.ctx, loan.ID, borrowerGL, firstDue, description))
@@ -267,7 +338,7 @@ func (b *builder) openLoan(p *payment.Participant, borrower deposit.Account, nam
 
 // openLine opens a revolving line and draws it once into the borrower's own
 // account, so the caller is left with a facility carrying a balance.
-func (b *builder) openLine(p *payment.Participant, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
+func (b *builder) openLine(p *payment.Bank, borrower deposit.Account, name string, limit ledger.Amount, rate interest.Rate, minPayment interest.Fraction, draw ledger.Amount, description string) lending.Facility {
 	line := must(p.Lending.OpenRevolvingLine(b.ctx, p.CustomerSubledger, name, seedAsset, limit, rate, interest.ACT365, minPayment))
 	borrowerGL := must(p.Deposit.GetAccount(b.ctx, borrower.ID)).GLAccount
 	must(p.Lending.Draw(b.ctx, line.ID, borrowerGL, draw, description))
@@ -275,9 +346,9 @@ func (b *builder) openLine(p *payment.Participant, borrower deposit.Account, nam
 }
 
 // runDays advances the clock a day at a time, driving RunEndOfDay through each
-// one — the same entry point payment.Participant exposes to the API — so the
+// one — the same entry point payment.Bank exposes to the API — so the
 // seed's accrual and arrears move exactly as a running day would produce them.
-func (b *builder) runDays(p *payment.Participant, days int) {
+func (b *builder) runDays(p *payment.Bank, days int) {
 	for i := 0; i < days; i++ {
 		b.clock.advance(24 * time.Hour)
 		check(p.RunEndOfDay(b.ctx, b.clock.now()))
@@ -286,7 +357,7 @@ func (b *builder) runDays(p *payment.Participant, days int) {
 
 // ref builds a PartyRef for a customer deposit account from the account's own
 // IBAN identifier, so the same account always produces an identical PartyRef.
-func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.PartyRef {
+func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
 	ref := payment.PartyRef{Participant: p.ID, Account: acct.ID}
 	for _, ident := range acct.Identifiers {
 		if ident.Scheme == deposit.IdentifierIBAN {
@@ -298,7 +369,7 @@ func (b *builder) ref(p *payment.Participant, acct deposit.Account) payment.Part
 }
 
 // fund credits a deposit account with cash and raises the bank's reserve.
-func (b *builder) fund(p *payment.Participant, acct deposit.Account, amount ledger.Amount) {
+func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
 	check(b.net.Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
@@ -499,7 +570,7 @@ func (b *builder) settle(id payment.CycleID) {
 // and anything set here would be discarded, so setting it would be the seed
 // demonstrating an input this system does not accept — see
 // payment.PartyDetails.Agent.
-func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
+func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
 		Debtor:          b.ref(dp, d),
@@ -514,7 +585,7 @@ func (b *builder) initSCT(dp *payment.Participant, d deposit.Account, cp *paymen
 // initSDD submits a direct debit. It is the SUBMITTING (creditor's) bank, so
 // the request must name the counterparty: the name on the debtor's account,
 // and not the debtor's bank. See initSCT.
-func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *payment.Participant, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
+func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
 		Scheme:        payment.SchemeSEPADD,
 		Debtor:        b.ref(dp, d),
@@ -529,20 +600,22 @@ func (b *builder) initSDD(dp *payment.Participant, d deposit.Account, cp *paymen
 
 func (b *builder) build() {
 	// --- Banks -------------------------------------------------------------
-	// Each bank joins the network as a euro bank: AddParticipant registers EUR
-	// in its book and in the central bank's, and opens its suspense, reserve
-	// and settlement accounts in it.
+	// Each bank joins the network as a euro bank, and joining is a conversation:
+	// founding opens its suspense and reserve accounts in its own book, the
+	// central bank opens its settlement account in the central bank's, and the
+	// clearing house puts it in the roster. See builder.admit, which waits for
+	// each one to finish before the next bank applies.
 	euro := []ledger.AssetCode{seedAsset}
-	aurora := must(b.net.AddParticipant(b.ctx, "Aurora Bank", "AURODEFFXXX", euro))
-	verde := must(b.net.AddParticipant(b.ctx, "Banca Verde", "VERDITMMXXX", euro))
-	nord := must(b.net.AddParticipant(b.ctx, "Nordhaven Bank", "NORDSESSXXX", euro))
-	soleil := must(b.net.AddParticipant(b.ctx, "Crédit Soleil", "SOLEFRPPXXX", euro))
+	aurora := b.admit("Aurora Bank", "AURODEFFXXX", euro)
+	verde := b.admit("Banca Verde", "VERDITMMXXX", euro)
+	nord := b.admit("Nordhaven Bank", "NORDSESSXXX", euro)
+	soleil := b.admit("Crédit Soleil", "SOLEFRPPXXX", euro)
 
 	// --- Each bank's catalogue ---------------------------------------------
 	// Before any account, because every deposit account is opened FROM a
 	// product: a floating terms row with no product would have nothing to
 	// float to.
-	for _, p := range []*payment.Participant{aurora, verde, nord, soleil} {
+	for _, p := range []*payment.Bank{aurora, verde, nord, soleil} {
 		b.products(p)
 	}
 
@@ -669,7 +742,7 @@ func (b *builder) build() {
 // actually accruing rather than sitting at a limit that costs nothing. This is
 // the data the web app's facility pages, its arrears badge, and Bruno's
 // deposit page read.
-func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alice, bruno, bella, niklas deposit.Account) {
+func (b *builder) lendingShowcase(aurora, verde, nord *payment.Bank, alice, bruno, bella, niklas deposit.Account) {
 	ctx := b.ctx
 	b.clock.advance(1 * time.Hour)
 
@@ -824,7 +897,7 @@ func (b *builder) lendingShowcase(aurora, verde, nord *payment.Participant, alic
 // five account types (Asset, Liability, Equity, Revenue, Expense) and a manual
 // transaction + reversal appear in the data. Liability is already present via the
 // bank's customer-deposit and suspense GL accounts; this adds the other four.
-func (b *builder) glShowcase(p *payment.Participant, customer deposit.Account) {
+func (b *builder) glShowcase(p *payment.Bank, customer deposit.Account) {
 	ctx := b.ctx
 	glID := must(p.Ledger.GetSubledger(ctx, p.CustomerSubledger)).LedgerID
 

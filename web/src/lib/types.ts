@@ -296,9 +296,40 @@ export interface ParticipantAccounts {
   settlement: string;
 }
 
+// A bank's place in the scheme. "Founded" is a bank with a book, a chart of
+// accounts and customers, that no settlement agent holds an account for.
+// "Member" is one the scheme has admitted.
+//
+// A founded bank runs its own book, and that part is unrestricted: it opens
+// customer accounts, publishes products and adds ledgers, all measured against a
+// bank held in this state. What it cannot do is anything needing another
+// institution. It cannot take a cash deposit, which is the one people guess
+// wrong: funding a customer raises the bank's reserve at the central bank in the
+// same step, and there is no reserve to raise until the scheme has answered. The
+// API says so with a 422 naming the membership, not the account. And nothing it
+// takes part in can settle, because a settlement instruction names its members
+// through the routing directory this bank is not in.
+//
+// This comment used to say a founded bank cannot clear a payment "because
+// nothing routes to it", and that is not what happens: the backend routes on the
+// mesh's actor table rather than on the directory, so a payment addressed to a
+// founded bank clears like any other and the cut-off carrying it is what fails.
+// Nothing in this UI depends on the difference; it is corrected here because a
+// comment that names a mechanism is asserting one.
+//
+// Both are ordinary states. Admission is a conversation between three
+// institutions, so POST /members answers 202 with a founded bank and the
+// scheme's answer arrives afterwards — a bank read straight back may still be
+// Founded and be perfectly healthy.
+//
+// A string union of the backend's own values, so a state added there is a
+// compile error here rather than a screen quietly rendering nothing.
+export type ParticipantStatus = "Founded" | "Member";
+
 export interface Participant {
   id: string;
   name: string;
+  status: ParticipantStatus;
   // The bank's default deposit product, created with its chart of accounts at
   // onboarding. It is what the open-account form offers.
   productId: string;
@@ -520,13 +551,19 @@ export interface NameRequest {
   name: string;
 }
 
-// POST /participants. `bic` is required: the bank's ISO 9362 business
-// identifier code, what a counterparty addresses it by and what the mesh
-// routes on. `assets` is the set of assets the bank joins with — one
-// suspense, reserve and settlement account is provisioned per entry, and only
-// those assets can hold money at this bank afterwards. Omitting it (or sending
-// an empty array) means ["EUR"]; that is a default for the joining *set*, not
-// for the asset of any individual account.
+// POST /members, on the central bank's listener. `bic` is required: the bank's
+// ISO 9362 business identifier code, what a counterparty addresses it by and
+// what the mesh routes on.
+//
+// `assets` is the set the bank is FOUNDED in, and it is fixed there: one
+// suspense, reserve, unclaimed-balances and returns-receivable account is
+// created per entry, in the bank's own book, and only those assets can hold
+// money at this bank afterwards. The settlement account per entry is not part
+// of this call — the central bank opens that one when it answers the bank's
+// application, which is why a bank read straight back is Founded with an empty
+// settlement reference. Omitting `assets` (or sending an empty array) means
+// ["EUR"]; that is a default for the founding *set*, not for the asset of any
+// individual account.
 export interface AddParticipantRequest {
   name: string;
   bic: string;
@@ -670,7 +707,9 @@ export interface InitiatePaymentRequest {
   // register.
   //
   // There is deliberately no debtorAgent or creditorAgent. A party's BIC is
-  // derived by the bank from its own roster, not asserted by the payer: the
+  // derived by the submitting bank from the named party's own bank record —
+  // not from the clearing house's routing roster, which is keyed by the very
+  // BIC being derived — and never asserted by the payer: the
   // clearing house routes on that element, so a form that asked for it would
   // let a payer choose which bank got paid. The backend's decoder rejects
   // unknown fields, so sending one is a 400 rather than a value quietly

@@ -42,9 +42,11 @@ export function institutionUrl(key: Institution, cfg: BackendConfig): string {
 }
 
 // A bank's port depends on where it sits in the roster, which only the clearing
-// house can answer — and on nothing about its id. The seed's ids are bank_1,
-// bank_3, bank_5, bank_7: deliberately not contiguous, so an id-derived port
-// would be wrong on the very first dataset.
+// house can answer — and on nothing about its id. The seed's ids are not
+// contiguous and never have been: every id in the backend comes from one counter
+// per book, so the gaps between two banks are whatever else was allocated
+// between them, and they have widened twice as admission grew. An id-derived
+// port would have been wrong on the very first dataset.
 export function bankUrl(pid: string, roster: string[], cfg: BackendConfig): string {
   if (cfg.overrides[pid]) return cfg.overrides[pid];
   const index = roster.indexOf(pid);

@@ -89,6 +89,9 @@ func TestGoldenFilesValidateAgainstTheSchema(t *testing.T) {
 		"pacs004.xml": "pacs.004.001.09.xsd",
 		"pacs009.xml": "pacs.009.001.08.xsd",
 		"camt053.xml": "camt.053.001.08.xsd",
+		"acmt007.xml": "acmt.007.001.03.xsd",
+		"acmt010.xml": "acmt.010.001.03.xsd",
+		"acmt011.xml": "acmt.011.001.03.xsd",
 	}
 
 	// validate writes one fragment to a temporary file and runs xmllint over

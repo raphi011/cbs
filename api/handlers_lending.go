@@ -412,7 +412,7 @@ func (s *Server) handleCloseFacility(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleRunEndOfDay calls Participant.RunEndOfDay and nothing else.
+// handleRunEndOfDay calls Bank.RunEndOfDay and nothing else.
 //
 // It deliberately does not expose the deposit and lending batches separately:
 // they run in one unit of work so that a bank cannot end up with a day of

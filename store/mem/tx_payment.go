@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
@@ -28,42 +29,113 @@ import (
 var _ payment.Tx = (*tx)(nil)
 
 // ---------------------------------------------------------------------------
-// Participants
+// The three rows admission writes
 // ---------------------------------------------------------------------------
+//
+// One per institution: the bank's own record of itself, the settlement agent's
+// record of the account it opened, the clearing house's record of where to
+// route. They are three maps here and three tables in store/pg, which is what
+// makes them three stores at Task 18 without touching a caller.
+//
+// The two below the bank are keyed by BIC. That is not a convenience: neither
+// institution allocates or is ever told a ParticipantID, so a BIC is the only
+// key either of them could have.
 
-// PutParticipant stores a participant, dropping its live Ledger and Deposit
-// handles.
+// PutBank stores a bank, dropping its live Ledger and Deposit handles.
 //
 // Those two fields are derived, not data: they are handles over this very
 // store, and store/pg has no column to put a *ledger.Book in. Keeping them here
 // would let code work in memory and fail on Postgres, so mem throws them away
 // too and the Network rebinds them on the way out.
-func (t *tx) PutParticipant(ctx context.Context, p payment.Participant) error {
+func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	if err := t.write(); err != nil {
 		return err
 	}
-	p.Ledger = nil
-	p.Deposit = nil
-	t.state.insertSeq(ledger.NetworkBook, kindParticipant, string(p.ID))
-	t.state.participants[p.ID] = copyParticipant(p)
+	b.Ledger = nil
+	b.Deposit = nil
+	t.state.insertSeq(ledger.NetworkBook, kindBank, string(b.ID))
+	t.state.banks[b.ID] = copyBank(b)
 	return nil
 }
 
-func (t *tx) GetParticipant(ctx context.Context, id payment.ParticipantID) (payment.Participant, error) {
-	p, ok := t.state.participants[id]
+func (t *tx) GetBank(ctx context.Context, id payment.ParticipantID) (payment.Bank, error) {
+	b, ok := t.state.banks[id]
 	if !ok {
-		return payment.Participant{}, payment.ErrParticipantNotFound
+		return payment.Bank{}, payment.ErrParticipantNotFound
 	}
-	return copyParticipant(p), nil
+	return copyBank(b), nil
 }
 
-func (t *tx) ListParticipants(ctx context.Context) ([]payment.Participant, error) {
-	out := make([]payment.Participant, 0, len(t.state.participants))
-	for _, p := range t.state.participants {
-		out = append(out, copyParticipant(p))
+func (t *tx) ListBanks(ctx context.Context) ([]payment.Bank, error) {
+	out := make([]payment.Bank, 0, len(t.state.banks))
+	for _, b := range t.state.banks {
+		out = append(out, copyBank(b))
 	}
-	sortRows(t.state, out, ledger.NetworkBook, kindParticipant, func(p payment.Participant) (time.Time, string) {
-		return p.CreatedAt, string(p.ID)
+	sortRows(t.state, out, ledger.NetworkBook, kindBank, func(b payment.Bank) (time.Time, string) {
+		return b.CreatedAt, string(b.ID)
+	})
+	return out, nil
+}
+
+// PutSettlementMember stores the central bank's own record of one member.
+//
+// The map assignment REPLACES the row, accounts and all, which is what makes an
+// upsert drop an account for an asset the member no longer holds — the same
+// rule PutBank follows for Bank.Assets, and the one store/pg gets by deleting
+// its child rows before it rewrites them.
+func (t *tx) PutSettlementMember(ctx context.Context, m payment.SettlementMember) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	t.state.insertSeq(ledger.NetworkBook, kindSettlementMember, string(m.BIC))
+	t.state.settlementMembers[m.BIC] = copySettlementMember(m)
+	return nil
+}
+
+func (t *tx) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (payment.SettlementMember, error) {
+	m, ok := t.state.settlementMembers[bic]
+	if !ok {
+		return payment.SettlementMember{}, payment.ErrSettlementMemberNotFound
+	}
+	return copySettlementMember(m), nil
+}
+
+func (t *tx) ListSettlementMembers(ctx context.Context) ([]payment.SettlementMember, error) {
+	out := make([]payment.SettlementMember, 0, len(t.state.settlementMembers))
+	for _, m := range t.state.settlementMembers {
+		out = append(out, copySettlementMember(m))
+	}
+	sortRows(t.state, out, ledger.NetworkBook, kindSettlementMember, func(m payment.SettlementMember) (time.Time, string) {
+		return m.OpenedAt, string(m.BIC)
+	})
+	return out, nil
+}
+
+// PutRosterEntry stores the clearing house's routing row for one member.
+func (t *tx) PutRosterEntry(ctx context.Context, e payment.RosterEntry) error {
+	if err := t.write(); err != nil {
+		return err
+	}
+	t.state.insertSeq(ledger.NetworkBook, kindRosterEntry, string(e.BIC))
+	t.state.rosterEntries[e.BIC] = copyRosterEntry(e)
+	return nil
+}
+
+func (t *tx) GetRosterEntry(ctx context.Context, bic iso20022.BIC) (payment.RosterEntry, error) {
+	e, ok := t.state.rosterEntries[bic]
+	if !ok {
+		return payment.RosterEntry{}, payment.ErrRosterEntryNotFound
+	}
+	return copyRosterEntry(e), nil
+}
+
+func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, error) {
+	out := make([]payment.RosterEntry, 0, len(t.state.rosterEntries))
+	for _, e := range t.state.rosterEntries {
+		out = append(out, copyRosterEntry(e))
+	}
+	sortRows(t.state, out, ledger.NetworkBook, kindRosterEntry, func(e payment.RosterEntry) (time.Time, string) {
+		return e.AdmittedAt, string(e.BIC)
 	})
 	return out, nil
 }
@@ -254,7 +326,7 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 // SettlementAdvice is all scalars — an ID, a reference string, an asset code,
 // two amounts, a status, a transaction ID and two instants — so struct
 // assignment IS the deep copy the store contract asks for: there is no map or
-// slice for a caller to keep a reference into, unlike the participants,
+// slice for a caller to keep a reference into, unlike the banks,
 // payments, cycles and settlements copied at the bottom of this file.
 func (t *tx) PutSettlementAdvice(ctx context.Context, book ledger.BookID, a payment.SettlementAdvice) error {
 	if err := t.write(); err != nil {
@@ -304,25 +376,54 @@ func adviceSeqID(k adviceKey) string {
 // Copying
 // ---------------------------------------------------------------------------
 //
-// Participants, payments, cycles and settlements carry maps and slices, so they
-// are copied in both directions: neither the store nor its caller may end up
-// holding a reference into the other's data.
+// Banks, settlement members, roster entries, payments, cycles and settlements
+// carry maps and slices, so they are copied in both directions: neither the
+// store nor its caller may end up holding a reference into the other's data. A
+// stored row a caller can still mutate in place is not stored.
 
-// copyParticipant copies the per-asset account map, which is the one reference
-// a Participant carries.
+// copyBank copies the per-asset account map, which is the one reference a Bank
+// carries.
 //
 // An empty map becomes nil, because store/pg cannot tell the two apart: the
 // accounts live in a child table, and no rows is no rows. A store that
 // answered "empty map" where the other answers nil would be a difference the
 // conformance suite exists to prevent.
-func copyParticipant(p payment.Participant) payment.Participant {
-	cp := p
+func copyBank(b payment.Bank) payment.Bank {
+	cp := b
 	cp.Assets = nil
-	if len(p.Assets) > 0 {
-		cp.Assets = make(map[ledger.AssetCode]payment.ParticipantAccounts, len(p.Assets))
-		for k, v := range p.Assets {
+	if len(b.Assets) > 0 {
+		cp.Assets = make(map[ledger.AssetCode]payment.BankAccounts, len(b.Assets))
+		for k, v := range b.Assets {
 			cp.Assets[k] = v
 		}
+	}
+	return cp
+}
+
+// copySettlementMember copies the per-asset account map, on the same empty-is-
+// nil rule as copyBank and for the same reason: in store/pg those accounts are
+// a child table, so a member with no accounts comes back with no map.
+func copySettlementMember(m payment.SettlementMember) payment.SettlementMember {
+	cp := m
+	cp.Accounts = nil
+	if len(m.Accounts) > 0 {
+		cp.Accounts = make(map[ledger.AssetCode]ledger.AccountID, len(m.Accounts))
+		for k, v := range m.Accounts {
+			cp.Accounts[k] = v
+		}
+	}
+	return cp
+}
+
+// copyRosterEntry copies the asset slice. Empty becomes nil here too: the
+// assets are a child table in store/pg, and a roster entry listing no asset
+// reads back with no slice from both stores.
+func copyRosterEntry(e payment.RosterEntry) payment.RosterEntry {
+	cp := e
+	cp.Assets = nil
+	if len(e.Assets) > 0 {
+		cp.Assets = make([]ledger.AssetCode, len(e.Assets))
+		copy(cp.Assets, e.Assets)
 	}
 	return cp
 }

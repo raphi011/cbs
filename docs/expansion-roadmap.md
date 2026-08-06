@@ -71,11 +71,11 @@ conformance, API, web and documentation changes.
 
 A follow-up removed the book-scoped `assets` *table* it had shipped with. The
 table was writable at runtime and nothing downstream could honour a runtime
-asset — a bank's plumbing accounts are provisioned when it joins the network —
-so it promised a capability the system could not deliver, and the mismatch
-surfaced as a reachable 404 on funding. The definitions moved into Go, where
-schemes already live. What stayed per bank is `participant_assets`: which assets
-a bank operates in.
+asset — a bank's plumbing accounts are provisioned once and never extended,
+its own at founding and its settlement account when the scheme answers — so it
+promised a capability the system could not deliver, and the mismatch surfaced as
+a reachable 404 on funding. The definitions moved into Go, where schemes already
+live. What stayed per bank is `bank_assets`: which assets a bank operates in.
 
 Foundational — it touched `ledger.Account`, `Book.PostTransaction`,
 `deposit.OpenAccount`, the participant account triple, both stores,

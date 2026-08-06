@@ -267,11 +267,11 @@ type unaddressable struct {
 	who payment.ParticipantID
 }
 
-func (u unaddressable) GetParticipant(ctx context.Context, id payment.ParticipantID) (*payment.Participant, error) {
+func (u unaddressable) GetRosterEntry(ctx context.Context, id payment.ParticipantID) (payment.RosterEntry, error) {
 	if id == u.who {
-		return nil, errors.New("mesh: the roster is unavailable")
+		return payment.RosterEntry{}, errors.New("mesh: the roster is unavailable")
 	}
-	return u.csmOps.GetParticipant(ctx, id)
+	return u.csmOps.GetRosterEntry(ctx, id)
 }
 
 // A second copy of a collection the debtor's bank has already answered is

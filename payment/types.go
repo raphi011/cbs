@@ -12,6 +12,20 @@ import (
 // these are defined types (not aliases) so the compiler prevents mixing up,
 // say, a MandateID and a PaymentID.
 type (
+	// ParticipantID names a bank, and the row it keys is called Bank. The
+	// mismatch is deliberate, and it is written down here so that the next
+	// reader does not take it for an oversight left behind by the split.
+	//
+	// It is on both of a payment's PartyRefs, on every bank path in the API, in
+	// the store conformance suite and in the web types. Renaming it is a
+	// mechanical diff across the whole repository for no behavioural change, and
+	// it would bury the content of the task that split the row.
+	//
+	// It is also the one identifier of the three rows that is not a BIC, and
+	// that is what it is for: the network numbers its members, and a bank's own
+	// id is its own. Neither the settlement agent's row nor the clearing house's
+	// carries it — see SettlementMember and RosterEntry, which are keyed by BIC
+	// because a BIC is all either institution is ever told.
 	ParticipantID string
 	PaymentID     string
 	MandateID     string
@@ -226,8 +240,9 @@ type PartyDetails struct {
 	// Agent is the BIC of the bank holding this party's account.
 	//
 	// On a SUBMISSION it is never taken from the instruction, on either side.
-	// Both come from the roster — the participant row for the party the payment
-	// already names — because this element ROUTES: it goes out as
+	// Both come from the BANK ROW of the party the payment already names — not
+	// from the clearing house's roster, which is keyed by the very BIC being
+	// derived — because this element ROUTES: it goes out as
 	// CdtrAgt/DbtrAgt and the clearing house relays on it without a store read
 	// of its own. A payer allowed to assert it is a payer allowed to choose
 	// which bank receives their payment, which was measured doing exactly that
@@ -271,8 +286,9 @@ type Payment struct {
 
 	// DebtorDetails and CreditorDetails are what a message says about each side.
 	// The submitting bank fills its OWN side from its own register; for the
-	// counterparty it is TOLD the name and derives the agent from the roster —
-	// see PartyDetails.Agent, PartyDetails.Name, and SubmitPaymentTx.
+	// counterparty it is TOLD the name and derives the agent from that
+	// counterparty's own bank row — see PartyDetails.Agent, PartyDetails.Name,
+	// and SubmitPaymentTx.
 	DebtorDetails   PartyDetails
 	CreditorDetails PartyDetails
 

@@ -90,14 +90,49 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrSchemeUnsupportedReturn),
 		errors.Is(err, payment.ErrAssetMismatch),
 		// The bank exists and the asset exists; this bank simply holds no
-		// accounts in it. 404 would read as "participant not found" on
-		// POST /participants/{pid}/deposits and GET /central-bank/reserves/
-		// {pid}. 422 matches the sibling underfunded-member failure. It no
-		// longer reaches a settlement route, because there is none: settling is
-		// performed on instruction now (mesh.centralBank), so this error comes
-		// back to the clearing house as a pacs.002 rather than to a caller as a
-		// status code.
+		// accounts in it. 404 would read as "participant not found", and 422
+		// matches the sibling underfunded-member failure.
+		//
+		// Two routes answer with it. POST /participants/{pid}/deposits, where the
+		// funded account is in an asset its bank does not operate in; and
+		// POST /payments, where the scheme's asset is — Mesh.Submit runs the
+		// submitting bank's half on the caller's goroutine, so Bank.AccountsFor's
+		// refusal comes back as a status code rather than as a message. Measured
+		// on a bank admitted in dollars only, paying in a euro scheme: 422,
+		// "participant does not hold accounts in this asset: EUR in Bank A".
+		//
+		// It no longer reaches a settlement route, because there is none:
+		// settling is performed on instruction now (mesh.centralBank), so that
+		// refusal goes back to the clearing house as a pacs.002. And it no longer
+		// reaches the reserve routes, which report a missing account as a missing
+		// row (see Server.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
+		// A bank the settlement agent holds no account for is a bank that has
+		// founded itself and not yet joined — a legitimate state since admission
+		// became a conversation, and a refusal about that bank's membership
+		// rather than about anything in the request. 422 for the same reason the
+		// asset case above is: the request is well formed and the state refuses
+		// it. Unlike that one it reaches a caller from a single route —
+		// POST /participants/{pid}/deposits, whose customer account is fine and
+		// whose bank has nowhere to place the cash on reserve.
+		//
+		// From nowhere else, and the reason is worth stating accurately because
+		// the tidy version of it is false. The other sites that raise it are the
+		// settlement ones — SettleCycleTx and SettleReturnTx, through
+		// payment.settlementAccountTx — and in the running system those are
+		// INSTRUCTED, so their refusal leaves as a pacs.002 and never as a status
+		// code. But they are not only reached that way: seed.builder calls
+		// Network.Deposit, SettleReturnTx and SettleCycleTx directly, and
+		// seed.Populate runs inside POST /admin/reset (see Server.Reset), whose
+		// error is written by this same function — so a seed that could produce
+		// this sentinel would produce a 422 from the reset route too. It cannot,
+		// and that is a property of the seed rather than of the code's shape:
+		// seed.builder.admit puts each bank through Mesh.Admit, drains the
+		// conversation, and refuses to build any further unless the bank came
+		// back a Member, so every reserve the scenario funds or settles already
+		// has an account behind it. The reserve routes are the remaining readers,
+		// and they report a missing account as a missing row.
+		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),
 		errors.Is(err, lending.ErrLimitExceeded),
@@ -150,7 +185,17 @@ func errorStatus(err error) int {
 		// account, and the reason it is mapped here rather than in the handler
 		// (as mesh.ErrAddressTaken is): two handlers submit through Mesh.Submit,
 		// and a rule written twice is a rule that can differ by route.
-		errors.Is(err, mesh.ErrOnUsPayment):
+		errors.Is(err, mesh.ErrOnUsPayment),
+		// A payment to or from a bank the scheme has not admitted is the same
+		// category again: the request is well formed, both accounts are real, and
+		// what refuses it is that this route does not carry it — a founded bank
+		// has a licence and a book and no place in a clearing scheme. It is
+		// mapped here rather than in the handler for mesh.ErrOnUsPayment's stated
+		// reason, and it arrives here from Mesh.Submit; the clearing house's own
+		// copy of the refusal is asked after the 202 has been answered and is
+		// reported as a rejected payment, not as a status. See
+		// payment.ErrBankNotAdmitted.
+		errors.Is(err, payment.ErrBankNotAdmitted):
 		return http.StatusUnprocessableEntity
 
 	case errors.Is(err, ledger.ErrEmptyTransaction),

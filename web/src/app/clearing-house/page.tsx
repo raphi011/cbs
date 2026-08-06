@@ -37,6 +37,11 @@ export default function ClearingHouse() {
   const { data: settlements } = useSettlements();
   const isProvisioned = useIsProvisioned();
 
+  // Members, not banks. Admission is a conversation, so a bank can be in this
+  // list and not be a member of anything yet: the card below says which, and a
+  // stat labelled "Member banks" that counted applicants too would be the one
+  // number on this page that was not true.
+  const members = (participants ?? []).filter((p) => p.status === "Member").length;
   const openCycles = (cycles ?? []).filter((c) => c.status === "Open").length;
   const inFlight = (payments ?? []).filter((p) => IN_FLIGHT.has(p.status)).length;
   const settlementCount = (settlements ?? []).length;
@@ -46,14 +51,14 @@ export default function ClearingHouse() {
       <PageHeader
         title="Clearing house"
         hint="clearing-vs-settlement"
-        description="An interbank payment network running on a double-entry ledger. Each participant is a member bank; they meet at the central bank to settle."
+        description="An interbank payment network running on a double-entry ledger. The banks it clears for meet at the central bank to settle. A bank founded and not yet admitted is listed here as well, and is not one of them yet."
       />
 
       <HowMoneyMoves />
 
       {/* Network at a glance — degrades to zeros while the lists load. */}
       <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <Stat label="Member banks">{participants?.length ?? 0}</Stat>
+        <Stat label="Member banks">{members}</Stat>
         <Stat label="Open cycles" hint="netting">
           {openCycles}
         </Stat>
@@ -66,9 +71,10 @@ export default function ClearingHouse() {
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">
-          Member banks
-        </h2>
+        {/* Banks, not members. The STAT above counts members and this list does
+            not filter: a founded bank belongs on the console the network's
+            membership is watched from, and its card says what it is. */}
+        <h2 className="text-sm font-medium text-muted-foreground">Banks</h2>
         {error ? (
           <ErrorState error={error} onRetry={() => refetch()} />
         ) : isLoading ? (
@@ -80,12 +86,15 @@ export default function ClearingHouse() {
         ) : participants && participants.length === 0 ? (
           <Card>
             <CardContent className="py-10 text-sm text-muted-foreground">
-              {/* Admission is the central bank's act: opening a member's
-                  reserve and settlement accounts happens in its own book, so
-                  there is no "create participant" button here — see
-                  /central-bank. */}
-              No participants yet. A member bank is admitted at the central
-              bank, not here.
+              {/* No "create participant" button, because founding a bank is
+                  not this institution's act and it has no route for one:
+                  POST /members is served by the central bank's listener alone.
+                  What this one does in an admission is decide whether to relay
+                  the application and write its routing entry from the
+                  settlement agent's answer — see /central-bank. */}
+              No participants yet. A bank is founded at the central bank&rsquo;s
+              console, not here; this list is where it is seen becoming a
+              member.
             </CardContent>
           </Card>
         ) : (
@@ -104,10 +113,17 @@ export default function ClearingHouse() {
   );
 }
 
-// One member-bank card: name and id. No reserve figure — see the file-level
-// comment above. Unprovisioned banks are shown, not linked: entering one
-// would mean a console whose every request 502s, the same rule the lobby and
-// the identity picker already follow.
+// One bank's card: name, id, and where it has got to. No reserve figure — see
+// the file-level comment above. Unprovisioned banks are shown, not linked:
+// entering one would mean a console whose every request 502s, the same rule the
+// lobby and the identity picker already follow.
+//
+// A FOUNDED bank says so instead of claiming membership. It is a bank whose
+// application the scheme has not answered — no settlement account, no routing
+// entry — and it is an ordinary state rather than a broken one, because
+// admission is a conversation between three institutions and this list is read
+// from one of them. The card used to say "Member of the network" for every bank
+// in it, which was true only while founding and joining were one commit.
 function ParticipantCard({
   participant: p,
   provisioned,
@@ -126,11 +142,13 @@ function ParticipantCard({
         <IdText id={p.id} />
       </CardHeader>
       <CardContent>
-        {provisioned ? (
-          <p className="text-sm text-muted-foreground">Member of the network.</p>
-        ) : (
-          <p className="text-sm text-muted-foreground">Awaiting provisioning.</p>
-        )}
+        <p className="text-sm text-muted-foreground">
+          {p.status !== "Member"
+            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and a payment to or from it is refused until the answer arrives."
+            : provisioned
+              ? "Member of the network."
+              : "Awaiting provisioning."}
+        </p>
       </CardContent>
     </Card>
   );
@@ -165,8 +183,13 @@ function Stat({
 // so a first-time visitor knows what to do.
 const STEPS: { title: string; body: string; hint: HintKey }[] = [
   {
+    // "Create" and not "Join", because founding and joining are two steps now
+    // and this one is the first: a bank is created, and what it does next is
+    // apply. The body used to say a member bank joins the network, which is the
+    // step after this one and is answered by two institutions that are not the
+    // bank.
     title: "Create",
-    body: "A member bank joins the network.",
+    body: "A bank is founded and applies to the scheme; the central bank and the clearing house answer.",
     hint: "double-entry",
   },
   {

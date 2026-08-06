@@ -16,23 +16,33 @@ import (
 // euroOnly is the asset set a SEPA bank joins with.
 var euroOnly = []ledger.AssetCode{"EUR"}
 
-// rosterNetwork is a payment network holding exactly the banks it is given.
+// rosterNetwork is a payment network holding exactly the banks it is given,
+// each already admitted.
+//
+// It builds them WITHOUT a mesh, through testenv.Admit, which is the point of
+// the fixture: what these two tests are about is a mesh reading a roster that
+// was there before it started, so the banks have to exist before any actor does.
+// Mesh.Admit is the other door and is exercised in admission_test.go.
 func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Network {
 	t.Helper()
 	clock := func() time.Time { return testTime }
 	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
 	for name, bic := range bics {
-		if _, err := net.AddParticipant(context.Background(), name, bic, euroOnly); err != nil {
-			t.Fatalf("AddParticipant %s: %v", name, err)
+		if _, err := testenv.Admit(context.Background(), net, name, bic, euroOnly); err != nil {
+			t.Fatalf("admitting %s: %v", name, err)
 		}
 	}
 	return net
 }
 
 // The mesh is N+2: one actor per member bank, plus the clearing house and the
-// central bank. The banks come from the roster, which is the store, which is
-// why this is the one test in the package that needs one — and why it runs
-// against Postgres too when TEST_DATABASE_URL is set.
+// central bank. The banks come from the CLEARING HOUSE's roster, which is the
+// store, which is why this is the one test in the package that needs one — and
+// why it runs against Postgres too when TEST_DATABASE_URL is set.
+//
+// The roster and not the bank rows, and TestStartGivesAFoundedBankNoActor is the
+// other half of that: a bank that exists and has not been admitted gets nothing
+// here.
 func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	net := rosterNetwork(t, map[string]iso20022.BIC{
 		"Aurora Bank": "AURODEFFXXX",
@@ -80,11 +90,62 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	}
 }
 
+// A bank that has been founded and never admitted gets no actor at startup.
+//
+// The roster is what says who is a member, and this bank is in no roster: the
+// settlement agent holds no account for it and the clearing house routes nothing
+// to it. So it cannot pay and cannot be paid, which is the truth about it rather
+// than a limitation — it has a licence, a book, a product and customers, and no
+// scheme has admitted it.
+//
+// It is a behaviour change and it is measured rather than asserted: while
+// founding and joining were one call there was no such bank to have, so joining
+// the roster and listing the banks were the same list.
+func TestStartGivesAFoundedBankNoActor(t *testing.T) {
+	clock := func() time.Time { return testTime }
+	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
+	ctx := context.Background()
+	if _, err := testenv.Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
+		t.Fatalf("admitting Aurora: %v", err)
+	}
+	if _, err := net.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+		t.Fatalf("FoundBank Nordhaven: %v", err)
+	}
+
+	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := m.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = m.Stop(context.Background()) })
+
+	if _, ok := m.actors["AURODEFFXXX"]; !ok {
+		t.Error("the admitted bank has no actor")
+	}
+	if _, ok := m.actors["NORDSESSXXX"]; ok {
+		t.Error("a founded, unadmitted bank was given an actor; the roster is what says who is a member")
+	}
+	// And its address is free, which is what makes the state recoverable: an
+	// actor answering to it would make the admission that finishes it
+	// unroutable for the life of the process.
+	if _, err := m.Admit(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+		t.Errorf("re-driving the founded bank's admission: %v", err)
+	}
+}
+
 // Two banks sharing a BIC is a routing table that cannot say which one a
-// message is for. The store permits it — participants.bic has no unique
+// message is for. The store permits it — banks.bic has no unique
 // constraint, because a BIC identifies an institution and not a row — so the
 // mesh is where it has to be refused, and it refuses at startup rather than at
 // the first payment that goes to the wrong bank.
+//
+// Both are in the roster under ONE entry, which is what the clearing house's own
+// act does with a second acknowledgement quoting the same admission reference:
+// it extends rather than refusing (payment.AdmitMemberTx). So the roster says
+// one address is a member and two bank rows claim it, and the mesh is the first
+// thing that has to choose.
 func TestStartRefusesTwoParticipantsWithOneBIC(t *testing.T) {
 	net := rosterNetwork(t, map[string]iso20022.BIC{
 		"Aurora Bank":   "AURODEFFXXX",

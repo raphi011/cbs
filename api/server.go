@@ -51,7 +51,14 @@ type Server struct {
 
 	// populate rebuilds the sample dataset. It must be idempotent: the process
 	// calls it at boot and Reset calls it again after clearing the store.
-	populate func(context.Context, *payment.Network) error
+	//
+	// It is handed the MESH as well as the network, because admitting a bank is
+	// now a conversation between three institutions and a reseed that founded its
+	// banks without one would rebuild a network in which nobody can be paid. Reset
+	// passes its own mesh rather than letting the builder close over one, so the
+	// mesh a reseed admits into cannot be a different mesh from the one the reset
+	// drained and forgot the old banks from.
+	populate func(context.Context, *payment.Network, *mesh.Mesh) error
 
 	// resetMu serializes Reset. See the method for why one unit of work cannot
 	// do the job instead.
@@ -78,7 +85,7 @@ type Server struct {
 // NewServer performs no I/O — the caller populates the network before serving —
 // so a store that is unavailable fails where it can be reported rather than
 // inside a constructor with no error to return.
-func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Context, *payment.Network) error, log *slog.Logger) *Server {
+func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Context, *payment.Network, *mesh.Mesh) error, log *slog.Logger) *Server {
 	if msh == nil {
 		panic("api: NewServer needs a mesh; without one this layer has no way to carry a payment past the bank it was handed to")
 	}
@@ -86,7 +93,7 @@ func NewServer(net *payment.Network, msh *mesh.Mesh, populate func(context.Conte
 		log = slog.Default()
 	}
 	if populate == nil {
-		populate = func(context.Context, *payment.Network) error { return nil }
+		populate = func(context.Context, *payment.Network, *mesh.Mesh) error { return nil }
 	}
 	return &Server{net: net, mesh: msh, populate: populate, log: log}
 }
@@ -161,16 +168,35 @@ func (s *Server) network() *payment.Network { return s.net }
 // admit the same BIC — and the 422 it produced said the new bank had no actor
 // while the old one was still running and still routable.
 //
-// ForgetBanks runs BEFORE the truncate and JoinRoster AFTER the reseed, which
-// leaves a window in which the mesh routes to no member bank at all. That is the
-// right window to leave: a submission during it is refused for a reason that is
-// true — there is no bank actor, because the network is being replaced — where
-// the alternative is a message delivered to an actor whose bank is being deleted
-// underneath it.
+// ForgetBanks runs BEFORE the truncate, which leaves a window in which the mesh
+// routes to no member bank at all. That is the right window to leave: a
+// submission during it is refused for a reason that is true — there is no bank
+// actor, because the network is being replaced — where the alternative is a
+// message delivered to an actor whose bank is being deleted underneath it.
 //
 // Neither institution is forgotten. The clearing house and the central bank have
 // no participant row, so a reset does not touch them; they are the configuration
 // rather than the data.
+//
+// # The reseed ends that window itself, and JoinRoster is gone from here
+//
+// It used to call mesh.JoinRoster last, because the reseed wrote member rows
+// directly and the actors behind them had to be registered in a second step.
+// Admission is a conversation now: populate is handed this mesh and admits
+// through its door, so a reseeded bank gets its actor in the same call that
+// founds it and the window closes bank by bank as the scenario is rebuilt.
+//
+// Calling JoinRoster after that would not merely be redundant, it would FAIL the
+// reset. It registers the whole roster and expects to find no member bank
+// already registered — the state ForgetBanks used to leave and the reseed no
+// longer does — so it would refuse all-or-none on the first address, over work
+// that had entirely succeeded, and answer 5xx for a system that was rebuilt.
+//
+// What that asks of populate is one thing, and it is worth stating because
+// nothing here can check it: a reseed must make its banks REACHABLE, which means
+// admitting them through the mesh it is given rather than writing their rows.
+// One that founds them some other way leaves banks that answer every read and
+// carry no payment, and no error anywhere says so.
 func (s *Server) Reset(ctx context.Context) error {
 	s.resetMu.Lock()
 	defer s.resetMu.Unlock()
@@ -185,12 +211,9 @@ func (s *Server) Reset(ctx context.Context) error {
 	if err := s.net.Store().Reset(ctx); err != nil {
 		return err
 	}
-	if err := s.populate(ctx, s.net); err != nil {
-		return err
-	}
-	// Last, and not skippable: until this runs the reseeded banks are rows with
-	// no actor, so the system would answer every read and carry no payment.
-	return s.mesh.JoinRoster(ctx)
+	// Last, and it is what gives the reseeded banks their actors: each one is
+	// admitted through this mesh, so nothing has to re-register them afterwards.
+	return s.populate(ctx, s.net, s.mesh)
 }
 
 // forBank returns a view of this Server bound to one participant. The copy is
@@ -219,8 +242,8 @@ func (s *Server) forBank(pid payment.ParticipantID) *Server {
 // An unbound Server reaching here asks the network for the participant "",
 // which is a clean not-found rather than some other bank's data — the failure
 // mode worth having if a route is ever registered on the wrong surface.
-func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Participant, bool) {
-	p, err := s.network().GetParticipant(r.Context(), s.boundPID)
+func (s *Server) participant(w http.ResponseWriter, r *http.Request) (*payment.Bank, bool) {
+	p, err := s.network().GetBank(r.Context(), s.boundPID)
 	if err != nil {
 		writeError(w, err)
 		return nil, false

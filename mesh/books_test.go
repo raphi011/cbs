@@ -62,6 +62,14 @@ type recordingStore struct {
 	// right default: attributing it to an institution would put work no actor did
 	// into that actor's ledger of crossings.
 	byActor map[iso20022.BIC]map[ledger.BookID]bool
+	// updates counts the WRITING units of work opened since the last reset.
+	//
+	// It is what lets a test say "both books moved together" rather than "both
+	// books moved", which for a crossing is the whole of the claim: two entities
+	// with two stores cannot commit as one, so an act that reaches two books
+	// inside one Update is an act that has to become a message before they split.
+	// Views are not counted — a read crosses nothing that has to commit.
+	updates int
 }
 
 var _ payment.Store = (*recordingStore)(nil)
@@ -75,6 +83,9 @@ func newRecordingStore(inner payment.Store) *recordingStore {
 }
 
 func (s *recordingStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	s.mu.Lock()
+	s.updates++
+	s.mu.Unlock()
 	return s.inner.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
 		return fn(ctx, &recordingTx{Tx: tx, rec: s.noterFor(ctx)})
 	})
@@ -156,10 +167,19 @@ func sortedBooks(set map[ledger.BookID]bool) []ledger.BookID {
 	return out
 }
 
+// unitsOfWork is how many writing units of work have been opened since the last
+// reset. See recordingStore.updates.
+func (s *recordingStore) unitsOfWork() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updates
+}
+
 func (s *recordingStore) reset() {
 	s.mu.Lock()
 	s.books = map[ledger.BookID]bool{}
 	s.byActor = map[iso20022.BIC]map[ledger.BookID]bool{}
+	s.updates = 0
 	s.mu.Unlock()
 }
 
@@ -565,8 +585,8 @@ type structCarriedBook struct {
 //     ListAudit(ctx, f AuditFilter) selects rows by f.BookID — store/mem/tx.go
 //     compares e.BookID against f.BookID, store/pg's tx_audit.go writes book_id
 //     and adds `book_id = $n`. The field IS the scope.
-//   - payment.PutParticipant(ctx, p Participant) writes a network-scoped row
-//     under ledger.NetworkBook whatever p.BookID says. p.BookID is a column on
+//   - payment.PutBank(ctx, b Bank) writes a network-scoped row
+//     under ledger.NetworkBook whatever b.BookID says. b.BookID is a column on
 //     that row — the name of the book this bank owns — not the book being
 //     written to. Recording it would make a clearing-house handler that admits a
 //     member look like it had reached into that member's ledger, and Task 10's
@@ -584,11 +604,14 @@ type structCarriedBook struct {
 var structCarriedBooks = map[string]structCarriedBook{
 	"AppendAudit": {Scoping: true},
 	"ListAudit":   {Scoping: true},
-	"PutParticipant": {
+	"PutBank": {
 		Scoping: false,
-		Why: "payment/store.go: participants are network-scoped and stored under ledger.NetworkBook. " +
-			"Participant.BookID names the book the bank owns; it does not scope this write. " +
-			"TestWritingAParticipantTouchesNoBankBook is the evidence.",
+		Why: "payment/store.go: banks are network-scoped and stored under ledger.NetworkBook. " +
+			"Bank.BookID names the book the bank owns; it does not scope this write. " +
+			"TestWritingAParticipantTouchesNoBankBook is the evidence. " +
+			"The other two rows admission writes are not candidates at all and that is worth knowing " +
+			"rather than rediscovering: SettlementMember and RosterEntry carry no BookID, because " +
+			"neither the settlement agent nor the clearing house holds a book of the bank's.",
 	},
 	// A PASSENGER, and the only one: the book argument scopes this write and
 	// SettlementAdvice.Book is the row's record of where it landed.
@@ -611,7 +634,7 @@ var structCarriedBooks = map[string]structCarriedBook{
 // through a posting.
 //
 // The Put* methods for network-scoped rows — PutPayment, PutCycle,
-// PutSettlement, PutMandate, PutParticipant — take no book and record nothing
+// PutSettlement, PutMandate, PutBank — take no book and record nothing
 // themselves. But no network row is written on its own: the domain allocates its
 // id first, with NextID(ctx, ledger.NetworkBook, …), and writes an audit event
 // under BookID: ledger.NetworkBook. Both of those ARE recorded — NextID
@@ -1057,14 +1080,18 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 // the settlement conversation that follows it.
 //
 // Same set, and that is the finding. The clearing house now nets a batch, builds
-// a pacs.009, reads two participants to name them in it, and fans the answer out
+// a pacs.009, reads two members to name them in it, and fans the answer out
 // to the bank that submitted each payment — and none of that leaves NetworkBook,
 // because none of it posts and every row it reads belongs to no single bank.
-// GetParticipant is the one that could have gone the other way: it returns a
-// value with the named bank's Ledger, Deposit and Catalogue handles attached
-// (Network.bind), so a handler holding it can reach that bank's book through a
-// method it legitimately has. This measures that this one does not — it takes
-// the BIC off the value and nothing else.
+//
+// The member lookup is the one that could have gone the other way, and until
+// Task 17 it did more than it needed to: GetParticipant returned a value with
+// the named bank's Ledger, Deposit and Catalogue handles attached
+// (Network.bind), so a handler holding it could reach that bank's book through
+// a method it legitimately had. It is GetRosterEntry now and there is no handle
+// on what comes back. This measurement did not move, and that is the point: it
+// was already measuring that this handler took the BIC and nothing else, which
+// is why the narrowing changed no expectation in this file.
 //
 // That is the whole reason the recorder exists beside the interfaces in ops.go.
 // csmOps could not have expressed this: the method is on it, and must be.
@@ -1222,8 +1249,8 @@ func TestWhichBooksTheCentralBankReachesWhenItSettles(t *testing.T) {
 // and the reason is the recorder's and not this test's: a network-scoped row
 // reaches touched() through the id its write allocated and the audit event that
 // write appended, never through the read itself (see the note above the tests).
-// So GetPayment and GetParticipant record nothing at all. The claim here is about
-// BOOKS — no bank reads or writes any book but its own while a cycle settles —
+// So GetPayment and GetRosterEntry record nothing at all. The claim here is
+// about BOOKS — no bank reads or writes any book but its own while a cycle settles —
 // and it is not a claim that a bank learns nothing.
 //
 // It measures over the cut-off ONLY, resetting after the submission has drained,
@@ -1287,11 +1314,12 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // follows from the message DEFINITION. The third reads none either: the other
 // bank is whichever of OrgnlTxRef's two agents the message did not come from,
 // which is on the message. The middle one reads the payment, its scheme and a
-// participant, and none of those is a book access: payments are network-scoped
-// rows, and a read records nothing. GetParticipant is the one that could have
-// gone the other way — it hands back the named bank's live Ledger and Deposit
-// handles — and this measures that this handler takes the BIC off it and nothing
-// else.
+// roster entry, and none of those is a book access: payments are network-scoped
+// rows, and a read records nothing. The member lookup is the one that could have
+// gone the other way — until Task 17 it handed back the named bank's live Ledger
+// and Deposit handles — and this was already measuring that the handler took the
+// BIC off it and nothing else, which is why the narrowing to GetRosterEntry left
+// this expectation where it was.
 //
 // What an empty set here does NOT say is that the clearing house learned
 // nothing: it read the payment, and it is now the only actor in this package
@@ -1300,7 +1328,15 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 // An actor that DID reach into a bank's ledger over this window is not
 // invisible to these assertions, and that is measured rather than assumed: a
 // clearing-house half that listed the returning bank's ledgers before
-// forwarding the answer comes out [bank_3] and fails the second assertion below.
+// forwarding the answer comes out holding that BANK's book and fails the second
+// assertion below.
+//
+// It used to name the book — "comes out [bank_3]" — and that had gone stale
+// twice over: the harness's second bank is numbered differently every time an
+// allocation moves in the network's shared id counter, most recently when
+// admission became four acts. A book id here is a fact about the seed's
+// arithmetic and not about what this test measures, which is WHOSE book was
+// reached.
 //
 // The two banks have moved to TestEachBankBooksItsOwnReturnAndNoOtherBooks,
 // which is where the assertion that they touch nothing turned into an assertion
@@ -1387,6 +1423,192 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 		h.booksTouchedBy(h.creditorBIC), []ledger.BookID{h.creditorBook})
 	assertBooksTouched(t, "the payer's bank, refunding its own customer after finality",
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook, ledger.NetworkBook})
+}
+
+// TestWhichBooksAdmissionReaches is the counterpart the sub-project's Tasks
+// table asks for, and the one measurement in this file whose subject is not a
+// payment.
+//
+// One call used to reach three books: the bank's own, the central bank's and the
+// network's, all inside a single unit of work at a caller that was no
+// institution at all. Three institutions reach three sets now, and the point is
+// not that the total is the same — it is that no actor is in more than one
+// bank's book, and that the two institutions that used to be reached INTO now
+// reach their own.
+//
+// # The measured want-lists, and where the plan for this task was wrong
+//
+// The plan predicted:
+//
+//	the joining bank    [its own book, NetworkBook]
+//	the central bank    [CentralBankBook]
+//	the clearing house  [NetworkBook]
+//
+// Two of the three are what the recorder says. The CENTRAL BANK's is not: it is
+// [CentralBankBook, NetworkBook], and the reason is the note above the tests in
+// this file. A network-scoped write reaches this recorder through the id it
+// ALLOCATED and the audit event it APPENDED, never through the row itself — and
+// OpenSettlementAccountTx does both: it draws an id before the read its
+// idempotency is decided from (payment.admissionSequenceTx) and appends
+// settlement_account.opened afterwards. Neither is optional. Drop the id and the
+// act's idempotency stops holding on store/pg; drop the event and the settlement
+// account exists in no immutable record.
+//
+// So the correction is the plan's and not the domain's, exactly as Task 16's
+// return measurement was — that one predicted [CentralBankBook, NetworkBook] and
+// measured [CentralBankBook], for the mirror-image reason. Both times the
+// question is the same one: does this act write a row of the network's, or not.
+//
+// # What each set says
+//
+// The JOINING BANK reaches its own book and NetworkBook. Its own, because
+// founding builds a chart of accounts, four internal accounts per asset and a
+// product; NetworkBook, because the bank's id and two audit events are drawn
+// there. That is Mesh.Admit's synchronous half plus the handler that records the
+// acknowledgement, and the two are the same actor.
+//
+// The CENTRAL BANK reaches CentralBankBook and NetworkBook, and never a bank's.
+// It opens a Liability in its own book and writes its own member row; the
+// settlement reference it produces reaches the bank as a MESSAGE, which is the
+// whole of what changed.
+//
+// The CLEARING HOUSE reaches NetworkBook alone. It writes one roster row and
+// posts nothing, which is what it does on every other flow in this package.
+//
+// # And no institution reaches another bank's book
+//
+// Asserted separately, because that is the invariant the sub-project is for and
+// the set equalities above do not state it in a form that survives a third bank
+// in the fixture.
+func TestWhichBooksAdmissionReaches(t *testing.T) {
+	h := newMeshHarness(t)
+
+	// After the fixture's own two admissions, so what is measured is one
+	// admission and not three.
+	h.rec.reset()
+	joiner, err := h.mesh.Admit(context.Background(), "Nordhaven Bank", joinerBIC, euroOnly)
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	h.drain(t)
+	if got := h.getBank(t, joiner.ID); got.Status != payment.BankMember {
+		t.Fatalf("the bank is %q; this test measures an admission that finished", got.Status)
+	}
+
+	assertBooksTouched(t, "the joining bank, founding itself and recording what it was told",
+		h.booksTouchedBy(joinerBIC), []ledger.BookID{joiner.BookID, ledger.NetworkBook})
+	assertBooksTouched(t, "the central bank, opening a settlement account in its own book",
+		h.booksTouchedBy(h.cfg.CentralBankBIC), []ledger.BookID{payment.CentralBankBook, ledger.NetworkBook})
+	assertBooksTouched(t, "the clearing house, writing a routing entry",
+		h.booksTouchedBy(h.cfg.ClearingHouseBIC), []ledger.BookID{ledger.NetworkBook})
+
+	// No institution went near a bank's book but that bank itself. The two
+	// incumbents are in the fixture and are not party to this admission at all,
+	// so their books are the sharpest form of the claim.
+	for _, who := range []iso20022.BIC{h.cfg.CentralBankBIC, h.cfg.ClearingHouseBIC, joinerBIC} {
+		for _, book := range []ledger.BookID{h.debtorBook, h.creditorBook} {
+			if slices.Contains(h.booksTouchedBy(who), book) {
+				t.Errorf("%s reached %s during an admission it is not a party to", who, book)
+			}
+		}
+	}
+	if slices.Contains(h.booksTouchedBy(joinerBIC), payment.CentralBankBook) {
+		t.Error("the joining bank reached the central bank's book; the settlement account is opened for it, not by it")
+	}
+}
+
+// TestFundingAReserveReachesTwoBooks pins crossing 6 as a fact rather than a
+// note.
+//
+// It is the one measurement in this file that is expected to PASS today and to
+// FAIL the day the stores split, and that is what it is for. Network.DepositTx
+// posts the funding bank's reserve mirror and the central bank's leg in one unit
+// of work, and it is the only way a reserve is funded in this system: cash paid
+// in raises a customer's balance and the bank's reserve together, because that
+// is what a deposit IS here. There is no vault and no lodgement to route it
+// through — modelling one is what closes this crossing, and the spec gives that
+// its own task rather than folding it into the task that made admission a
+// conversation.
+//
+// # No instrument this sub-project had could have found it
+//
+// The recorder attributes a book to the actor whose unit of work reached it, and
+// funding never becomes a message: it arrives at Network.Deposit from an
+// operator or from a fixture, with no institution behind it. So booksTouchedBy
+// has nothing to narrow by and every assertion built on it — every other
+// measurement in this file — is blind to this call by construction. It drives
+// the recorder directly instead, the way TestWritingAParticipantTouchesNoBankBook
+// does, and reads the whole-store set.
+//
+// # The measured set is [the bank's book, CentralBankBook], and the plan said three
+//
+// This task's plan predicted NetworkBook in the set too, on the reasoning the
+// note above the tests gives: a network-scoped write reaches this recorder
+// through the id it allocated and the audit event it appended. The measurement
+// says otherwise, and the reason is that a deposit writes NO network row. It
+// allocates no network id and appends no audit event; its whole record is the
+// two ledger transactions, one in each of the two books below. That is the same
+// correction Task 16's return measurement made — the question both times is
+// whether the act writes a row of the network's, and here it does not.
+//
+// # What the two books mean
+//
+// The bank's own book takes the funded account's credit and the debit to its
+// Reserve at Central Bank. CentralBankBook takes the matching pair in the
+// settlement agent's ledger: its Settlement Assets debited, this bank's
+// settlement account credited. The second is a bank posting in another
+// institution's book, inside the funding bank's own unit of work, and no
+// re-routing of a LOOKUP changes it — Task 17 moved DepositTx's account read
+// from the central bank's member row to the bank's own record of its account
+// number, and the posting stayed exactly where it was. See Network.DepositTx,
+// which says the same thing from the other side. That the posting is a posting
+// and not that surviving lookup is what the transaction count below pins; see
+// the next section.
+//
+// # Three assertions, because the book set alone cannot say "posting"
+//
+// The recorder notes which books a unit of work TOUCHED, and a read touches a
+// book exactly as a write does. Delete only the second PostTransactionTx from
+// DepositTx and CentralBankBook is still recorded — centralBankAssetsAccountTx
+// reads the settlement agent's chart of accounts a line earlier — so the book
+// set on its own is satisfied by a deposit that posts nothing there at all. That
+// is not a flaw in the recorder: a read of another institution's book is a
+// crossing too, and under split stores it fails the same way. It is a limit on
+// what one assertion can claim.
+//
+// So the posting is counted separately, as transactions appearing in the central
+// bank's book, and the unit of work is counted too. The three together are the
+// sentence this test's name makes: the settlement agent's book is REACHED, a
+// transaction lands IN it, and it lands in the same commit as the bank's own.
+// Drop any one leg of the crossing and one of the three fails.
+func TestFundingAReserveReachesTwoBooks(t *testing.T) {
+	h := newMeshHarness(t)
+
+	// Read before the recorder is cleared, so this fixture's own read is not part
+	// of the measurement.
+	before := h.centralBankTransactionCount(t)
+
+	// The fixture's payer, funded again. Which account it is does not matter to
+	// what this measures — every deposit takes the same two legs — and reusing
+	// the fixture's keeps the call under test the only thing in the measurement.
+	h.rec.reset()
+	if err := h.net.Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, 100_000, "cash in"); err != nil {
+		t.Fatalf("Deposit: %v", err)
+	}
+
+	// Both taken before anything else reads the store, for the same reason.
+	touched, units := h.rec.touched(), h.rec.unitsOfWork()
+
+	assertBooksTouched(t, "funding a reserve", touched,
+		[]ledger.BookID{h.debtorBook, payment.CentralBankBook})
+	if got := h.centralBankTransactionCount(t) - before; got != 1 {
+		t.Errorf("funding a reserve wrote %d transactions in the central bank's book, want 1; "+
+			"the crossing is a POSTING there and the book set alone cannot tell one from a read", got)
+	}
+	if units != 1 {
+		t.Errorf("funding a reserve opened %d units of work, want 1; the crossing is that both "+
+			"books move together, and two of them would mean it had already been split", units)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,12 +1723,12 @@ func TestEveryStructCarriedBookIsDecided(t *testing.T) {
 // TestWritingAParticipantTouchesNoBankBook is the evidence behind the one
 // exclusion in structCarriedBooks, made falsifiable rather than asserted.
 //
-// The claim is that Participant.BookID is a column on a network-scoped row, not
+// The claim is that Bank.BookID is a column on a network-scoped row, not
 // the scope of the write. So writing a participant that NAMES a bank's book must
 // leave that book empty — and this reads the book back through the store to say
 // so, rather than trusting the recorder that is itself under test.
 //
-// If PutParticipant ever did write into p.BookID, this fails and the entry in
+// If PutBank ever did write into p.BookID, this fails and the entry in
 // structCarriedBooks becomes wrong at the same moment, which is what makes the
 // exclusion a claim about the code rather than about the author's confidence.
 func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
@@ -1516,7 +1738,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	victim := ledger.BookID("bank_verde")
 
 	if err := rec.Update(ctx, func(ctx context.Context, tx payment.Tx) error {
-		return tx.PutParticipant(ctx, payment.Participant{
+		return tx.PutBank(ctx, payment.Bank{
 			ID:        "p_aurora",
 			Name:      "Aurora Bank",
 			BIC:       "AURODEFFXXX",
@@ -1524,7 +1746,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 			CreatedAt: testTime,
 		})
 	}); err != nil {
-		t.Fatalf("PutParticipant: %v", err)
+		t.Fatalf("PutBank: %v", err)
 	}
 
 	// Nothing landed in the book the row names.
@@ -1551,7 +1773,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 	// And the row itself is readable without naming any book at all, which is
 	// what "network-scoped" means.
 	if err := rec.View(ctx, func(ctx context.Context, tx payment.Tx) error {
-		p, err := tx.GetParticipant(ctx, "p_aurora")
+		p, err := tx.GetBank(ctx, "p_aurora")
 		if err != nil {
 			return err
 		}
@@ -1560,7 +1782,7 @@ func TestWritingAParticipantTouchesNoBankBook(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("GetParticipant: %v", err)
+		t.Fatalf("GetBank: %v", err)
 	}
 }
 
@@ -2127,7 +2349,7 @@ type Tx interface {
 //
 // A book behind an unexported field is not a blind spot, it is out of reach —
 // recordingTx is written in package mesh and cannot name it. Refusing it would
-// be noise, and expensive noise: payment.Participant reaches four books this
+// be noise, and expensive noise: payment.Bank reaches four books this
 // way, through the live handles whose types keep their book unexported, and a
 // parser that refused those would refuse the real repository on every run.
 //
@@ -2239,7 +2461,7 @@ const (
 	// bookIsTheArg: `book ledger.BookID` — 50 of the 53 candidates.
 	bookIsTheArg
 	// bookInsideTheArg: a struct with a BookID field, as AuditEvent,
-	// AuditFilter and Participant have.
+	// AuditFilter and Bank have.
 	bookInsideTheArg
 )
 
@@ -2466,7 +2688,7 @@ func (w *chainWalk) walk(dir string) {
 // It is not waved through either. Whether the row's field is merely a record of
 // the book the argument chose, or a second book the store actually reads, is a
 // claim about the STORE that no signature makes; it is the same question
-// AppendAudit and PutParticipant pose, and it gets the same answer: it is
+// AppendAudit and PutBank pose, and it gets the same answer: it is
 // recorded as a PASSENGER and must be decided in structCarriedBooks with
 // evidence. Waving it through here is what would turn that registry into a rule
 // nobody consults, and the next PutX(ctx, book, x) of this shape would be
@@ -2628,7 +2850,7 @@ func (w *chainWalk) carriesBook(ref typeRef, visited map[string]bool) bool {
 // reachable only through one is not a path the recorder could ever take — there
 // is nothing to "decide", which is what a refusal is for.
 //
-// Nor is it a crossing left open, and payment.Participant is the case that
+// Nor is it a crossing left open, and payment.Bank is the case that
 // proves it. Its Ledger, Deposit, Lending and Catalogue fields are live handles
 // whose types keep the book in an unexported field (ledger/book.go: `id
 // BookID`), so the transitive scan reaches four books through them. But a

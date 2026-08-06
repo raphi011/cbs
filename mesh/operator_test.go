@@ -12,6 +12,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // The two entry points Task 14 needed and no message provokes: an operator
@@ -73,10 +74,12 @@ func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.
 	// The refund was posted by the payer's BANK and by nobody else. The clearing
 	// house reached the network book, where a payment row lives, and no bank's.
 	//
-	// What that catches, exactly: a clearing house that WROTE in a member's book,
-	// which is reachable through GetParticipant's live handles and is the hole
-	// ops.go says no interface can close. Adding a write to the payer's bank in
-	// csm.reject fails this line with [bank_1 network].
+	// What that catches, exactly: a clearing house that WROTE in a member's
+	// book. That used to be one method away — GetParticipant's live handles,
+	// the hole ops.go named — and Task 17 closed that particular door; what it
+	// did not close, and what no interface can, is that any posting method
+	// takes its book as an ordinary argument. Adding a write to the payer's
+	// bank in csm.reject fails this line with [bank_1 network].
 	//
 	// What it does not catch is a reject that forgot withActor. The clearing
 	// house's own goroutine has already written the network book carrying this
@@ -116,16 +119,22 @@ func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing
 	}
 }
 
-// A bank admitted after the mesh started is reachable in BOTH directions, and
-// only once AddBank has been called.
+// A bank the mesh does not know about is reachable in BOTH directions once
+// AddBank has been called, and unreachable until then.
 //
-// Start reads the participant roster once. Every bank that joins later — which
-// in a running system is every bank a human admits, and after a reseed is every
-// bank there is — has a participant row, a chart of accounts and a reserve
-// account, and no actor. That bank is not slow, it is unreachable: it cannot
-// pay, because Mesh.Submit has no actor to hand its customer's instruction to,
-// and it cannot be paid, because the clearing house has nothing under its BIC to
-// route a pacs.008 to.
+// # Why the fixture builds it without the mesh
+//
+// Mesh.Admit registers the actor itself, before it writes anything, so a bank
+// admitted through the mesh's own door is never in this state. What is, is a
+// bank the mesh has not READ: api.Server.Reset truncates the store and rebuilds
+// it underneath a live mesh, and every bank in the new roster is one no actor
+// answers to until JoinRoster runs. testenv.Admit builds exactly that — three
+// institutions' rows, no transport — which is why this test uses it rather than
+// Admit.
+//
+// Such a bank is not slow, it is unreachable: it cannot pay, because Mesh.Submit
+// has no actor to hand its customer's instruction to, and it cannot be paid,
+// because the clearing house has nothing under its BIC to route a pacs.008 to.
 //
 // Both directions are asserted, because they fail for different reasons and one
 // of them can be fixed without the other: the bank index answers "can it pay"
@@ -134,9 +143,9 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := h.net.AddParticipant(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	joiner, err := testenv.Admit(ctx, h.net, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	if err != nil {
-		t.Fatalf("AddParticipant: %v", err)
+		t.Fatalf("admitting Nordhaven: %v", err)
 	}
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
 	if err := h.net.Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
@@ -203,9 +212,13 @@ func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	clash, err := h.net.AddParticipant(ctx, "Aurora Bank (again)", h.debtorBIC, euroOnly)
+	// FOUNDED and not admitted, because the clearing house would refuse to admit
+	// a second institution on an address it already routes to
+	// (payment.ErrBICAlreadyAdmitted) and this test is about the mesh's refusal
+	// rather than the domain's. A founded bank is all AddBank needs.
+	clash, err := h.net.FoundBank(ctx, "Aurora Bank (again)", h.debtorBIC, euroOnly)
 	if err != nil {
-		t.Fatalf("AddParticipant: %v", err)
+		t.Fatalf("FoundBank: %v", err)
 	}
 	if err := h.mesh.AddBank(clash); err == nil {
 		t.Fatal("AddBank accepted a second bank on an address another bank already answers to")
@@ -323,7 +336,7 @@ func TestJoinRosterKeepsABankRegisteredBesideIt(t *testing.T) {
 	if err := h.mesh.ForgetBanks(ctx); err != nil {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
-	beside := &payment.Participant{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
+	beside := &payment.Bank{ID: "bank_beside", Name: "Beside Bank", BIC: "BSDEDEFFXXX"}
 	if err := h.mesh.AddBank(beside); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}
@@ -358,7 +371,7 @@ func TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken(t *testing.T) {
 		t.Fatalf("ForgetBanks: %v", err)
 	}
 	// Somebody else answering to the payer's bank's address.
-	squatter := &payment.Participant{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
+	squatter := &payment.Bank{ID: "bank_squatter", Name: "Squatter", BIC: h.debtorBIC}
 	if err := h.mesh.AddBank(squatter); err != nil {
 		t.Fatalf("AddBank: %v", err)
 	}

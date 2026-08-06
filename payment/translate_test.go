@@ -251,8 +251,8 @@ func TestReasonForUnwraps(t *testing.T) {
 // described at the top of that one.
 
 // readNow is the instant these tests write their messages at. It is not the
-// network's clock, for the reason messageNow is not: a message is created when
-// it is sent, not when the thing it reports on happened.
+// network's clock, for the reason message_test.go's messageNow is not: a message
+// is created when it is sent, not when the thing it reports on happened.
 var readNow = time.Date(2026, 8, 1, 9, 0, 0, 0, time.UTC)
 
 // ReadStatus separates what the report says about the GROUP from what it says
@@ -769,4 +769,301 @@ func contains(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// The admission messages
+// ---------------------------------------------------------------------------
+//
+// Three messages and two readers, tested here rather than in message_test.go
+// because none of them touches a store: everything on the wire comes off the
+// value handed in and the context beside it. See that file's package comment for
+// why the two halves of this package's tests are split at all.
+
+// admissionNow is the instant these tests stamp their headers at.
+//
+// It is declared here rather than shared with message_test.go's messageNow
+// because that file is package payment_test and this one is package payment —
+// see message_test.go's own package comment for why the two halves cannot see
+// each other. The value is the same instant and nothing depends on that.
+var admissionNow = time.Date(2025, 1, 15, 11, 30, 0, 0, time.UTC)
+
+// admissionRequest is the request these tests build from and read back.
+func admissionRequest() AdmissionRequest {
+	return AdmissionRequest{Name: "Nordhaven Bank", BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"}
+}
+
+func admissionContext() MessageContext {
+	return MessageContext{From: "NORDSESSXXX", To: "CSMXFRPPXXX", MsgID: "nord-1", Now: admissionNow}
+}
+
+// TestAnAdmissionRequestSurvivesTheRoundTrip is the pair of conversions this
+// flow rests on: what the applicant said is what the settlement agent reads.
+//
+// The SERVICER is not among the fields checked, and that is not an omission. It
+// goes on the wire as AcctSvcrId — the schema makes it mandatory — and nothing
+// in this system reads it back, because the destination of the relay follows
+// from the message definition rather than from an element. See AdmissionMessage.
+func TestAnAdmissionRequestSurvivesTheRoundTrip(t *testing.T) {
+	in := admissionRequest()
+	env, err := AdmissionMessage(in, "CBXXDEFFXXX", admissionContext())
+	if err != nil {
+		t.Fatalf("AdmissionMessage: %v", err)
+	}
+	doc, ok := env.Document.(*iso20022.Acmt007)
+	if !ok {
+		t.Fatalf("AdmissionMessage built a %T, want an *iso20022.Acmt007", env.Document)
+	}
+	if got := env.AppHdr.MsgDefIdr; got != "acmt.007.001.03" {
+		t.Errorf("the header names %q, want acmt.007.001.03", got)
+	}
+	// The country is derived from the BIC, which is the only thing this system
+	// knows about where a bank is. Characters five and six of a BIC are its ISO
+	// 3166 country code.
+	if got := doc.AcctOpngReq.Org.CtryOfOpr; got != "SE" {
+		t.Errorf("the applicant's country is %q; NORDSESSXXX is a Swedish address", got)
+	}
+	if got := doc.AcctOpngReq.Org.LglAdr.Ctry; got != "SE" {
+		t.Errorf("the applicant's legal address names %q, want the same country", got)
+	}
+	if got := doc.AcctOpngReq.AcctSvcrId.FinInstnId.BICFI; got != "CBXXDEFFXXX" {
+		t.Errorf("the account servicer is %q, want the settlement agent the request is FOR", got)
+	}
+
+	back, err := ReadAdmissionRequest(doc)
+	if err != nil {
+		t.Fatalf("ReadAdmissionRequest: %v", err)
+	}
+	if back != in {
+		t.Errorf("the request came back as %+v, want %+v", back, in)
+	}
+}
+
+// TestReadAdmissionRequestRefusesWhatWouldKeyARowByNothing is the reader's
+// guard, and it is defence in depth rather than the only line: the same three
+// elements are refused by the acts downstream, and the document has been
+// through iso20022's own validate if it arrived on the wire.
+//
+// It is here anyway for ReadReturn's reason. A document handed to this function
+// need not have come from Unmarshal at all, and the cost of being wrong is a row
+// in ANOTHER institution's store keyed by an address nothing can address:
+// settlement_members.bic is the settlement agent's primary key, and
+// OpenSettlementAccountTx names this reader as what has to run before it.
+//
+// The BIC is checked STRUCTURALLY and not only for presence, because a
+// malformed address is as unaddressable as an absent one — and because the two
+// downstream institutions key their rows by it without looking at it again.
+func TestReadAdmissionRequestRefusesWhatWouldKeyARowByNothing(t *testing.T) {
+	for _, tc := range []struct {
+		what   string
+		break_ func(*iso20022.Acmt007)
+		want   string
+	}{
+		{"no applicant at all", func(d *iso20022.Acmt007) { d.AcctOpngReq.Org.OrgId.AnyBIC = "" }, "AnyBIC"},
+		{"a malformed address", func(d *iso20022.Acmt007) { d.AcctOpngReq.Org.OrgId.AnyBIC = "NORD" }, "AnyBIC"},
+		{"no legal name", func(d *iso20022.Acmt007) { d.AcctOpngReq.Org.FullLglNm = "" }, "FullLglNm"},
+		{"no currency", func(d *iso20022.Acmt007) { d.AcctOpngReq.Acct.Ccy = "" }, "Ccy"},
+		{"no process id", func(d *iso20022.Acmt007) { d.AcctOpngReq.Refs.PrcId.Id = "" }, "PrcId"},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			env, err := AdmissionMessage(admissionRequest(), "CBXXDEFFXXX", admissionContext())
+			if err != nil {
+				t.Fatalf("AdmissionMessage: %v", err)
+			}
+			doc := env.Document.(*iso20022.Acmt007)
+			tc.break_(doc)
+			_, err = ReadAdmissionRequest(doc)
+			if err == nil {
+				t.Fatalf("a request with %s was read", tc.what)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal reads %q; it must name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnAdmissionAcknowledgementSurvivesTheRoundTrip is the answer's pair of
+// conversions, and it carries the whole account set rather than the one asset
+// that was asked for.
+//
+// There is no NAME on either side, and there cannot be: acmt.010 identifies the
+// account owner with an OrganisationIdentification29 — a BIC, an LEI, generic
+// identifiers — and has no legal name, country or address anywhere on it. The Go
+// type has no Name field for exactly that reason, and this test's fixture is the
+// evidence that everything the message is FOR still round-trips without one: an
+// address, a set of accounts and the admission they belong to.
+func TestAnAdmissionAcknowledgementSurvivesTheRoundTrip(t *testing.T) {
+	in := AdmissionAcknowledgement{
+		BIC: "NORDSESSXXX",
+		Accounts: map[ledger.AssetCode]ledger.AccountID{
+			"USD": "acc_usd",
+			"EUR": "acc_eur",
+		},
+		Ref: "adm-1",
+	}
+	env, err := AdmissionAcknowledgementMessage(in, MessageContext{
+		From: "CBXXDEFFXXX", To: "CSMXFRPPXXX", MsgID: "cb-1", Now: admissionNow,
+	})
+	if err != nil {
+		t.Fatalf("AdmissionAcknowledgementMessage: %v", err)
+	}
+	doc, ok := env.Document.(*iso20022.Acmt010)
+	if !ok {
+		t.Fatalf("AdmissionAcknowledgementMessage built a %T, want an *iso20022.Acmt010", env.Document)
+	}
+	// Asset order, because Accounts is a map and Go randomises its iteration: two
+	// identical answers must be two identical documents.
+	if got := []string{doc.AcctReqAck.AcctId[0].Ccy, doc.AcctReqAck.AcctId[1].Ccy}; got[0] != "EUR" || got[1] != "USD" {
+		t.Errorf("the accounts are emitted as %v, want asset order", got)
+	}
+	if got := doc.AcctReqAck.Refs.ReqTp; got != iso20022.UseCaseAccountOpening {
+		t.Errorf("the acknowledgement acknowledges %q, want an account opening", got)
+	}
+
+	back, err := ReadAdmissionAcknowledgement(doc)
+	if err != nil {
+		t.Fatalf("ReadAdmissionAcknowledgement: %v", err)
+	}
+	if back.BIC != in.BIC || back.Ref != in.Ref {
+		t.Errorf("the acknowledgement came back for %q under %q, want %q under %q", back.BIC, back.Ref, in.BIC, in.Ref)
+	}
+	if len(back.Accounts) != 2 || back.Accounts["EUR"] != "acc_eur" || back.Accounts["USD"] != "acc_usd" {
+		t.Errorf("the accounts came back as %v, want both of %v", back.Accounts, in.Accounts)
+	}
+}
+
+// TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile is the second
+// reader's guard, and the currency is the load-bearing one.
+//
+// Both readers of this value key on the currency: the clearing house records
+// which assets a member clears in, and the bank records a settlement reference
+// against its own internal accounts FOR THAT ASSET. An account with an empty
+// currency would be filed under the empty asset in both — a reserve nothing
+// settles through and a reference nothing quotes.
+func TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile(t *testing.T) {
+	build := func(t *testing.T) *iso20022.Acmt010 {
+		t.Helper()
+		env, err := AdmissionAcknowledgementMessage(AdmissionAcknowledgement{
+			BIC:      "NORDSESSXXX",
+			Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "acc_eur"},
+			Ref:      "adm-1",
+		}, MessageContext{From: "CBXXDEFFXXX", To: "CSMXFRPPXXX", MsgID: "cb-1", Now: admissionNow})
+		if err != nil {
+			t.Fatalf("AdmissionAcknowledgementMessage: %v", err)
+		}
+		return env.Document.(*iso20022.Acmt010)
+	}
+	for _, tc := range []struct {
+		what   string
+		break_ func(*iso20022.Acmt010)
+		want   string
+	}{
+		{"no currency on the account", func(d *iso20022.Acmt010) { d.AcctReqAck.AcctId[0].Ccy = "" }, "Ccy"},
+		{"no identifier on the account", func(d *iso20022.Acmt010) { d.AcctReqAck.AcctId[0].Id.Othr = nil }, "Othr/Id"},
+		{"no account at all", func(d *iso20022.Acmt010) { d.AcctReqAck.AcctId = nil }, "AcctId"},
+		{"no account owner", func(d *iso20022.Acmt010) { d.AcctReqAck.OrgId.AnyBIC = "" }, "AnyBIC"},
+		{"no process id", func(d *iso20022.Acmt010) { d.AcctReqAck.Refs.PrcId.Id = "" }, "PrcId"},
+		{"two accounts in one currency", func(d *iso20022.Acmt010) {
+			d.AcctReqAck.AcctId = append(d.AcctReqAck.AcctId, d.AcctReqAck.AcctId[0])
+		}, "one settlement account per asset"},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			doc := build(t)
+			tc.break_(doc)
+			_, err := ReadAdmissionAcknowledgement(doc)
+			if err == nil {
+				t.Fatalf("an acknowledgement with %s was read", tc.what)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the refusal reads %q; it must name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnAdmissionRejectionNamesTheRequestItRefuses pins the element the
+// acknowledgement does not have.
+//
+// RjctdReqId is mandatory on a rejection and absent from an acknowledgement,
+// which is exactly why PrcId is the conversation's correlator rather than a
+// back-reference: only one of the two answers can point at what it is answering.
+// Both are on this message, and they say different things.
+//
+// The reason is PROSE. References6 makes RjctnRsn a repeated Max350Text, where a
+// payment rejection carries an external code — so an admission refusal cannot be
+// classified into payment's reasonTable and the words of the error itself are
+// what travel. A blank one is refused, because Max350Text has minLength 1 and a
+// refusal that says nothing is one nobody can act on.
+func TestAnAdmissionRejectionNamesTheRequestItRefuses(t *testing.T) {
+	refused := iso20022.MessageIdentification{Id: "nord-1", CreDtTm: iso20022.ISODateTime{Time: admissionNow}}
+	env, err := AdmissionRejectionMessage(admissionRequest(), refused, "this BIC is already admitted",
+		MessageContext{From: "CSMXFRPPXXX", To: "NORDSESSXXX", MsgID: "csm-9", Now: admissionNow})
+	if err != nil {
+		t.Fatalf("AdmissionRejectionMessage: %v", err)
+	}
+	doc, ok := env.Document.(*iso20022.Acmt011)
+	if !ok {
+		t.Fatalf("AdmissionRejectionMessage built a %T, want an *iso20022.Acmt011", env.Document)
+	}
+	refs := doc.AcctReqRjctn.Refs
+	if refs.RjctdReqId.Id != "nord-1" {
+		t.Errorf("the rejection refuses request %q, want the one it was handed", refs.RjctdReqId.Id)
+	}
+	if refs.PrcId.Id != "adm-1" {
+		t.Errorf("the rejection quotes admission %q, want the request's own process id", refs.PrcId.Id)
+	}
+	if len(refs.RjctnRsn) != 1 || refs.RjctnRsn[0] != "this BIC is already admitted" {
+		t.Errorf("the rejection reads %v, want the reason it was given", refs.RjctnRsn)
+	}
+	if doc.AcctReqRjctn.OrgId.AnyBIC != "NORDSESSXXX" {
+		t.Errorf("the rejection names %q as the applicant, want the request's own", doc.AcctReqRjctn.OrgId.AnyBIC)
+	}
+
+	if _, err := AdmissionRejectionMessage(admissionRequest(), refused, "",
+		MessageContext{From: "CSMXFRPPXXX", To: "NORDSESSXXX", MsgID: "csm-9", Now: admissionNow}); err == nil {
+		t.Error("a rejection with no reason was built; Max350Text has minLength 1 and a silent refusal is unactionable")
+	}
+}
+
+// TestAnAdmissionMessageRefusesWhatTheSchemaMakesMandatory is the builders'
+// half of the guards above.
+//
+// A message this system cannot build is a failure its own operator can be told
+// about; a message it builds invalidly is a failure at a counterparty's parser,
+// about a document nobody can attribute. That is the same choice ibanOf and
+// amountOf make, and it is why these are refused here rather than at Marshal.
+func TestAnAdmissionMessageRefusesWhatTheSchemaMakesMandatory(t *testing.T) {
+	mc := admissionContext()
+	for _, tc := range []struct {
+		what string
+		in   AdmissionRequest
+	}{
+		{"no applicant", AdmissionRequest{Name: "N", Asset: "EUR", Ref: "adm-1"}},
+		{"a malformed applicant", AdmissionRequest{Name: "N", BIC: "NORD", Asset: "EUR", Ref: "adm-1"}},
+		{"no legal name", AdmissionRequest{BIC: "NORDSESSXXX", Asset: "EUR", Ref: "adm-1"}},
+		{"no currency", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Ref: "adm-1"}},
+		{"no process id", AdmissionRequest{Name: "N", BIC: "NORDSESSXXX", Asset: "EUR"}},
+	} {
+		if _, err := AdmissionMessage(tc.in, "CBXXDEFFXXX", mc); err == nil {
+			t.Errorf("a request with %s was built", tc.what)
+		}
+	}
+	if _, err := AdmissionMessage(admissionRequest(), "CB", mc); err == nil {
+		t.Error("a request naming a malformed account servicer was built")
+	}
+	for _, tc := range []struct {
+		what string
+		in   AdmissionAcknowledgement
+	}{
+		{"no account owner", AdmissionAcknowledgement{Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}, Ref: "r"}},
+		{"no process id", AdmissionAcknowledgement{BIC: "NORDSESSXXX", Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": "a"}}},
+		{"no account", AdmissionAcknowledgement{BIC: "NORDSESSXXX", Ref: "r"}},
+		{"an account with no identifier", AdmissionAcknowledgement{
+			BIC: "NORDSESSXXX", Ref: "r", Accounts: map[ledger.AssetCode]ledger.AccountID{"EUR": ""}}},
+	} {
+		if _, err := AdmissionAcknowledgementMessage(tc.in, mc); err == nil {
+			t.Errorf("an acknowledgement with %s was built", tc.what)
+		}
+	}
 }

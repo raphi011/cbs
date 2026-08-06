@@ -39,7 +39,7 @@ func (s *Server) mandateAssets(ctx context.Context, mandates []payment.Mandate) 
 		if _, done := byParticipant[m.Debtor.Participant]; done {
 			continue
 		}
-		p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+		p, err := s.network().GetBank(ctx, m.Debtor.Participant)
 		if err != nil {
 			return nil, err
 		}
@@ -61,7 +61,7 @@ func (s *Server) mandateAssets(ctx context.Context, mandates []payment.Mandate) 
 			// The mandate names an account that is not in its debtor's book.
 			// GetAccount is what says so, in the vocabulary the rest of the
 			// package maps to a status code.
-			p, err := s.network().GetParticipant(ctx, m.Debtor.Participant)
+			p, err := s.network().GetBank(ctx, m.Debtor.Participant)
 			if err != nil {
 				return nil, err
 			}

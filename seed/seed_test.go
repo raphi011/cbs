@@ -3,6 +3,7 @@ package seed
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -10,18 +11,60 @@ import (
 	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
-// testNetwork is seed.Network() with an injectable store: it builds the sample
-// scenario over store/mem by default and over store/pg when TEST_DATABASE_URL is
-// set.
+// testMeshConfig names the two institutions that answer this scenario's
+// admissions. Both addresses are real-shaped and neither is a bank's: one BIC is
+// one actor, so an institution sharing an address with a seeded bank would be a
+// routing table with an entry missing, which mesh.Config.validate refuses.
+var testMeshConfig = mesh.Config{
+	CentralBankBIC:   "CBSEDEFFXXX",
+	ClearingHouseBIC: "CSMXFRPPXXX",
+}
+
+// testMesh starts a mesh over a network and stops it when the test ends.
 //
-// Network() itself is hard-wired to store/mem, and has to be — it is ordinary
-// code, and ordinary code may not import testing. Routing the suite through this
-// helper instead is what makes the seed assertions (deterministic IDs, conserved
-// reserves, status coverage) hold on both backends rather than only in memory.
+// Every seed test needs one now, because Populate admits its banks through the
+// mesh's own door and a bank that has not had its conversation holds no
+// settlement account.
+//
+// Drain FIRST, then Stop. Stop closes every inbox in one step before it joins
+// anybody, so a conversation still in flight when it runs is cut; draining
+// leaves Stop nothing to do but join. Both return dead letters and both are
+// reported — a build that swallowed a handler's failure would leave a test
+// asserting on a scenario that had not finished being built.
+func testMesh(t *testing.T, net *payment.Network) *mesh.Mesh {
+	t.Helper()
+	msh, err := mesh.New(net, testMeshConfig, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("mesh.New: %v", err)
+	}
+	if err := msh.Start(context.Background()); err != nil {
+		t.Fatalf("mesh.Start: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := msh.Drain(ctx); err != nil {
+			t.Errorf("draining at shutdown: %v", err)
+		}
+		if err := msh.Stop(ctx); err != nil {
+			t.Errorf("stopping: %v", err)
+		}
+	})
+	return msh
+}
+
+// testNetwork builds the sample scenario over store/mem by default and over
+// store/pg when TEST_DATABASE_URL is set.
+//
+// It is what makes the seed assertions (deterministic IDs, conserved reserves,
+// status coverage) hold on both backends rather than only in memory, and it is
+// the whole of what a caller of this package now assembles for itself: a store,
+// a network, a running mesh, and Populate over the three.
 func testNetwork(t *testing.T) *payment.Network {
 	t.Helper()
 	net, _ := testNetworkAndClock(t)
@@ -34,7 +77,7 @@ func testNetworkAndClock(t *testing.T) (*payment.Network, *Dataset) {
 	t.Helper()
 	d := New()
 	net := payment.NewNetwork(testenv.New(t, d.Now).Payment(), d.Now)
-	if err := d.Populate(context.Background(), net); err != nil {
+	if err := d.Populate(context.Background(), net, testMesh(t, net)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 	return net, d
@@ -137,7 +180,7 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 		t.Fatal("the rejected collection has no debtor leg; the fixture no longer covers a reversal")
 	}
 
-	bank, err := net.GetParticipant(ctx, rejected.Debtor.Participant)
+	bank, err := net.GetBank(ctx, rejected.Debtor.Participant)
 	if err != nil {
 		t.Fatalf("get participant: %v", err)
 	}
@@ -267,7 +310,7 @@ func TestBrunoOverdraftRepricing(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
-	var verde *payment.Participant
+	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
 		if p.Name == "Banca Verde" {
 			verde = p
@@ -325,7 +368,7 @@ func TestSeededCatalogueShowsAllThreePricingCases(t *testing.T) {
 	ctx := context.Background()
 	net, data := testNetworkAndClock(t)
 
-	var verde *payment.Participant
+	var verde *payment.Bank
 	for _, p := range listParticipants(t, ctx, net) {
 		if p.Name == "Banca Verde" {
 			verde = p
@@ -474,9 +517,9 @@ func TestClockWentLive(t *testing.T) {
 
 // listParticipants and listPayments keep the ctx/error plumbing out of the
 // assertions above.
-func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Participant {
+func listParticipants(t *testing.T, ctx context.Context, net *payment.Network) []*payment.Bank {
 	t.Helper()
-	parts, err := net.ListParticipants(ctx)
+	parts, err := net.ListBanks(ctx)
 	if err != nil {
 		t.Fatalf("list participants: %v", err)
 	}
@@ -500,13 +543,14 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	d := New()
 	store := testenv.New(t, d.Now)
 	net := payment.NewNetwork(store.Payment(), d.Now)
+	msh := testMesh(t, net)
 
-	if err := d.Populate(ctx, net); err != nil {
+	if err := d.Populate(ctx, net, msh); err != nil {
 		t.Fatalf("first Populate: %v", err)
 	}
 	participants, payments := listParticipants(t, ctx, net), listPayments(t, ctx, net)
 
-	if err := d.Populate(ctx, net); err != nil {
+	if err := d.Populate(ctx, net, msh); err != nil {
 		t.Fatalf("second Populate: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, net)); got != len(participants) {
@@ -524,7 +568,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	// would be timestamped 2025-09-15.
 	second := New()
 	secondNet := payment.NewNetwork(store.Payment(), second.Now)
-	if err := second.Populate(ctx, secondNet); err != nil {
+	if err := second.Populate(ctx, secondNet, msh); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
 	if got := len(listParticipants(t, ctx, secondNet)); got != len(participants) {
@@ -624,8 +668,9 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	d := New()
 	store := testenv.New(t, d.Now)
 	net := payment.NewNetwork(store.Payment(), d.Now)
+	msh := testMesh(t, net)
 
-	if err := d.Populate(ctx, net); err != nil {
+	if err := d.Populate(ctx, net, msh); err != nil {
 		t.Fatalf("Populate: %v", err)
 	}
 	before := listPayments(t, ctx, net)
@@ -636,8 +681,16 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	if got := len(listParticipants(t, ctx, net)); got != 0 {
 		t.Fatalf("participants after reset = %d, want 0", got)
 	}
+	// The mesh outlives the truncate, so the actors of the banks it just deleted
+	// are still answering to their addresses — and the reseed admits those same
+	// addresses again. Forgetting them is what api.Server.Reset does between the
+	// two for exactly this reason; without it the second Populate is refused the
+	// first bank's BIC.
+	if err := msh.ForgetBanks(ctx); err != nil {
+		t.Fatalf("ForgetBanks: %v", err)
+	}
 
-	if err := d.Populate(ctx, net); err != nil {
+	if err := d.Populate(ctx, net, msh); err != nil {
 		t.Fatalf("Populate after reset: %v", err)
 	}
 	after := listPayments(t, ctx, net)

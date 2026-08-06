@@ -238,15 +238,21 @@ export const chapter: Chapter = {
         "The [[payment-lifecycle]] state for a failed payment before clearing is **Rejected**. The debtor-leg posting is reversed — a compensating entry credits the payer's account back and clears Clearing Suspense to zero. Note that this is **two acts by two institutions**: the clearing house marks the payment Rejected, and the payer's own bank reverses the leg when the rejection reaches it, because nobody else may post in that bank's suspense. The **Returned** state is distinct: it applies *after* a payment has already settled.",
     },
     {
-      kind: "truefalse",
+      kind: "mc",
       id: "ch11-q16",
-      difficulty: "challenge",
-      concept: "settlement-model-gross",
+      difficulty: "core",
+      concept: "bank-founding",
       prompt:
-        "UK Faster Payments is a gross settlement scheme because customers experience near-instant transfers.",
-      answer: false,
+        "A new bank is created and the API answers 202 with its status reading Founded — the scheme has not answered its application yet. What can that bank do in the meantime?",
+      options: [
+        "Nothing. Founded is a half-written record, and the bank only becomes usable once the scheme answers",
+        "Open customer accounts, publish products and add ledgers — but not fund a customer account, because funding raises a reserve at the central bank and no settlement agent holds one for it yet",
+        "Everything a member can do. Founded only records that an operator has not ticked the bank off yet",
+        "Take cash deposits, but not open the accounts that would hold them",
+      ],
+      answer: 1,
       explanation:
-        "[[settlement-model-gross]] means each payment settles individually and immediately at the central bank. UK Faster Payments *feels* instant to customers but actually settles on a **deferred net basis** behind the scenes. Instant customer experience and gross settlement are independent properties — a scheme can be one without the other.",
+        "**A bank exists before it joins a scheme.** [[bank-founding|Founding]] gives it a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product, and its own book is then unrestricted. What it lacks is everything belonging to somebody else: no central bank holds a [[settlement-account|settlement account]] for it and no clearing house holds a [[routing-roster|routing entry]], so nothing it takes part in can settle. Funding is the trap, and the API refuses it with a `422` naming the *membership* rather than the account: cash paid in raises the bank's reserve at the central bank in the same [[unit-of-work|unit of work]], and there is no reserve to raise. Paying is refused for the same reason and in the same way, of both parties — a payment to or from such a bank could otherwise be cleared and then stop the whole cut-off, because the clearing house cannot name a non-member in the settlement instruction. The answer that calls Founded a **half-written record** is the ruling this system reversed — admission used to be one transaction writing all three institutions' records at once, \"so a bank can never exist without the accounts it needs\", and no real admission has that guarantee. Both states are ordinary: [[bank-admission|admission is a conversation]], so a bank read straight back may still be `Founded` and perfectly healthy.",
     },
     {
       kind: "multi",

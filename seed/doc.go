@@ -9,7 +9,15 @@
 //
 // The scenario is built on a deterministic clock so IDs and dates are
 // reproducible across runs; the clock is switched to real wall-clock time before
-// the network is returned, so operations performed afterwards (for example via
-// the API after a reset) are timestamped live. It is the factory the server boots
-// from and resets to.
+// Populate returns, so operations performed afterwards (for example via the API
+// after a reset) are timestamped live. It is the dataset the server boots from
+// and resets to.
+//
+// It builds into a network AND through a mesh, and needs both running. Admitting
+// a bank is a conversation between three institutions, so the four banks here
+// apply through the mesh's own door and wait for the scheme to answer, exactly
+// as a bank admitted over HTTP does. Everything else — accounts, payments,
+// cycles, settlements — is composed directly, one unit of work at a time, and
+// deliberately so: a fixture is an outcome, and a conversation carried out at
+// startup could not promise a fixed one.
 package seed

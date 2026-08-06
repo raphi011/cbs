@@ -301,9 +301,9 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.net.GetParticipant(ctx, id)
+	p, err := h.net.GetBank(ctx, id)
 	if err != nil {
-		t.Fatalf("GetParticipant %s: %v", id, err)
+		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	var out payment.SettlementAdvice
 	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {

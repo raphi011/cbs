@@ -7,22 +7,22 @@ import (
 	. "github.com/raphi011/cbs/payment"
 )
 
-func TestListParticipantsAndLookup(t *testing.T) {
+func TestListBanksAndLookup(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, _, _ := setupTwoBanks(t, sys)
 
-	parts, err := sys.ListParticipants(ctx)
+	parts, err := sys.ListBanks(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "participant count", len(parts), 2)
 
-	got, err := sys.GetParticipant(ctx, a.ID)
+	got, err := sys.GetBank(ctx, a.ID)
 	assertNoError(t, err)
 	assertEqual(t, "lookup returns Bank A", got.ID, a.ID)
-	// GetParticipant returns a bound participant, so its Ledger is usable.
+	// GetBank returns a bound bank, so its Ledger is usable.
 	assertEqual(t, "live ledger reachable", accountsOf(t, got).Reserve, accountsOf(t, a).Reserve)
 
-	_, err = sys.GetParticipant(ctx, "nope")
+	_, err = sys.GetBank(ctx, "nope")
 	assertError(t, err, ErrParticipantNotFound)
 
 	_ = b

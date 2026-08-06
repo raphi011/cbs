@@ -56,7 +56,10 @@ export default function Lobby() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">Member banks</h2>
+        {/* Every bank the network lists, which is not the same as every MEMBER:
+            a bank founded and not yet admitted is in here too. The card below says
+            which, so the heading says the wider of the two truths. */}
+        <h2 className="text-sm font-medium text-muted-foreground">Banks</h2>
         {isLoading && banks.length === 0 ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Skeleton className="h-24" />
@@ -158,10 +161,11 @@ function InstitutionCard({
   );
 }
 
-// A bank admitted at runtime has reserve accounts and no listener until the
-// server restarts — admission is an operational act, and modelling it as an API
-// call that instantly yields a running bank teaches the wrong thing. It is shown
-// and not offered: a console whose every request 502s is worse than a sentence.
+// A bank founded at runtime has a store row and a book of its own and no
+// listener until the server restarts — joining a network is an operational act,
+// and modelling it as an API call that instantly yields a running bank teaches
+// the wrong thing. It is shown and not offered: a console whose every request
+// 502s is worse than a sentence.
 function BankCard({
   participant,
   provisioned,
@@ -210,8 +214,8 @@ function BankCard({
         ) : (
           <p className="text-sm text-muted-foreground">
             <span className="font-medium text-foreground">Awaiting provisioning.</span> It was
-            admitted to the network and has its reserve accounts, but no listener of its own
-            until the server restarts.
+            founded and the clearing house lists it, but it has no listener of its own until
+            the server restarts.
           </p>
         )}
       </CardContent>

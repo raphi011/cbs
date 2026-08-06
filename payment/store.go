@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
 	"github.com/raphi011/cbs/product"
@@ -27,20 +28,61 @@ type Store interface {
 
 // Tx embeds deposit.Tx — and, through it, ledger.Tx — plus lending.Tx, so one
 // concrete transaction spans every layer a participant drives. That is what
-// lets Participant.RunEndOfDay accrue an overdraft and a loan in a single unit
+// lets Bank.RunEndOfDay accrue an overdraft and a loan in a single unit
 // of work: two batches, one commit, so a failure halfway cannot leave a bank
 // with a day of interest on its loans and none on its overdrafts.
 //
-// Network-scoped entities — participants, payments, mandates, cycles,
-// settlements — belong to no single bank and are stored under
-// ledger.NetworkBook.
+// Network-scoped entities — banks, payments, mandates, cycles, settlements —
+// belong to no single bank and are stored under ledger.NetworkBook.
 type Tx interface {
 	deposit.Tx
 	lending.Tx
 
-	PutParticipant(ctx context.Context, p Participant) error
-	GetParticipant(ctx context.Context, id ParticipantID) (Participant, error)
-	ListParticipants(ctx context.Context) ([]Participant, error)
+	// The three rows admission writes, one per institution that acts in it.
+	//
+	// They are three rows and not one because each has exactly one writer and
+	// each will live in a different store at Task 18: the bank's own record of
+	// itself, the settlement agent's record of the account it opened, the
+	// clearing house's record of where to send a message. What made that split
+	// necessary is that the settlement agent used to have no record of its own
+	// members at all — it read the account it was to post to off the clearing
+	// house's row, which is a read no isolated institution could make.
+	//
+	// The two BIC-keyed rows are keyed that way because the BIC is the only
+	// identifier that crosses an institutional boundary in this system. Neither
+	// carries a ParticipantID: an id the network allocates is not something a
+	// message ever tells anybody.
+	PutBank(ctx context.Context, b Bank) error
+	GetBank(ctx context.Context, id ParticipantID) (Bank, error)
+	ListBanks(ctx context.Context) ([]Bank, error)
+
+	PutSettlementMember(ctx context.Context, m SettlementMember) error
+	GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error)
+	ListSettlementMembers(ctx context.Context) ([]SettlementMember, error)
+
+	// Which of these has a production caller, exactly, because the alternative
+	// is a reader guessing from the placement.
+	//
+	// PutSettlementMember and GetSettlementMember are the settlement agent's,
+	// called by OpenSettlementAccountTx and by settlementAccountTx — which is
+	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
+	// and ReserveBalance all resolve their account through it. PutRosterEntry
+	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and
+	// by Network.GetRosterEntry and GetRosterEntryByBIC, which is what the mesh's
+	// handlers ask instead of being handed a whole bank — the second of those
+	// being the admission relay's refusal, which starts from the BIC an acmt.007
+	// carries and so reads no bank row on the way.
+	//
+	// ListSettlementMembers is called by nothing but storetest. It is declared
+	// for the reason ListSettlementAdvices below is: the rows exist, and adding
+	// a listing later would be a second occasion to get the ordering contract
+	// wrong in two stores independently. ListRosterEntries has had a caller
+	// since admission became a conversation — mesh.Mesh.joinRoster, which asks
+	// WHO IS A MEMBER rather than which banks exist, so that a founded and
+	// unadmitted bank gets no actor at startup.
+	PutRosterEntry(ctx context.Context, e RosterEntry) error
+	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
+	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
 
 	PutPayment(ctx context.Context, p Payment) error
 	GetPayment(ctx context.Context, id PaymentID) (Payment, error)
@@ -63,7 +105,7 @@ type Tx interface {
 	ListSettlements(ctx context.Context) ([]Settlement, error)
 
 	// The advice rows are BOOK-SCOPED, unlike every other method in this block.
-	// Participants, payments, mandates, cycles and settlements belong to no
+	// Banks, payments, mandates, cycles and settlements belong to no
 	// single bank and live under ledger.NetworkBook; an advice is one member
 	// bank's record of what it was told, so it is keyed by that bank's book —
 	// which is also what makes the recorder in mesh/books_test.go see a bank
@@ -86,17 +128,33 @@ type Tx interface {
 // Contract notes for implementers. Each of these is asserted by
 // storetest.RunPayment; the named subtest is what pins it.
 //
-//   - Not-found sentinels. GetParticipant -> ErrParticipantNotFound, GetPayment
+//   - Not-found sentinels. GetBank -> ErrParticipantNotFound, GetPayment
 //     and GetPaymentByEndToEndID -> ErrPaymentNotFound, GetMandate ->
 //     ErrMandateNotFound, GetCycle and GetOpenCycle -> ErrCycleNotFound,
 //     GetSettlement -> ErrSettlementNotFound. errors.Is is used, so wrapping is
 //     fine. (GetOnMissingPaymentRowsReturnsSentinels.)
 //
-//   - Participant.Ledger and Participant.Deposit are NOT persisted. They are
+//     The three admission rows have a sentinel each and not one between them:
+//     GetSettlementMember -> ErrSettlementMemberNotFound
+//     (SettlementMemberIsKeyedByBIC), GetRosterEntry ->
+//     ErrRosterEntryNotFound (RosterEntryCarriesNoAccountIdentifiers). A bank
+//     the settlement agent holds no account for and a bank the clearing house
+//     does not route to are different institutions' answers, and a founded bank
+//     is legitimately both.
+//
+//   - Bank.Ledger and Bank.Deposit are NOT persisted. They are
 //     live handles over the store, not data; store/pg has no column to put them
 //     in, so store/mem must not keep them either — otherwise code that works in
 //     memory breaks on Postgres. The Network rebinds them on the way out.
-//     (ParticipantRoundTripsAndDropsLiveHandles.)
+//     Bank.Status IS data and must survive: a bank read back with Status ""
+//     is neither Founded nor a Member.
+//     (BankRoundTripsAndDropsLiveHandles.)
+//
+//   - The BIC-keyed rows are keyed by BIC in both stores, and their collections
+//     replace rather than merge on an upsert — SettlementMember.Accounts and
+//     RosterEntry.Assets both, for the reason Bank.Assets does: a stale entry
+//     is an account or an asset the institution has given up and would still be
+//     acted on. (SettlementMemberKeepsOneAccountPerAsset.)
 //
 //   - Put* are upserts on the primary key, which is how a status change is
 //     written, and they deep-copy: a caller that mutates the slice or map it
@@ -115,8 +173,9 @@ type Tx interface {
 //
 //   - Listing order is the creation instant ascending, ties broken by the row's
 //     monotonic insertion sequence — never by ID. The creation instant is
-//     Participant.CreatedAt, Payment.CreatedAt, Mandate.CreatedAt,
-//     ClearingCycle.OpenedAt and Settlement.SettledAt.
+//     Bank.CreatedAt, Payment.CreatedAt, Mandate.CreatedAt,
+//     ClearingCycle.OpenedAt, Settlement.SettledAt, SettlementMember.OpenedAt
+//     and RosterEntry.AdmittedAt.
 //     (PaymentListOrderingIsCreatedAtThenSeq.)
 //
 //   - Rollback spans all three layers: a failed Update undoes payment rows,

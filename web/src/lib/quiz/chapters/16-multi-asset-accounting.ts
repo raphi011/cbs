@@ -78,7 +78,7 @@ export const chapter: Chapter = {
       ],
       answers: [0, 1, 4],
       explanation:
-        "[[participant-assets|Internal accounts exist once per asset]] the bank operates in, and that is *every* one of them — suspense, reserve, [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and the bank's settlement account in the central bank's own book. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not give a smaller number — it gives a meaningless one. There is no rate in the system to net them with, and there should not be. They are a child row keyed by `(participant, asset)` rather than a column apiece on the participant, which is what made adding returns receivable cheap when the return path needed it: one column there is one account per asset automatically, where a column on `participants` would have needed one per asset the bank could ever operate in.",
+        "[[participant-assets|Internal accounts exist once per asset]] the bank operates in, and that is *every* one of them — suspense, reserve, [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and the bank's settlement account in the central bank's own book. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not give a smaller number — it gives a meaningless one. There is no rate in the system to net them with, and there should not be. They are a child row keyed by `(bank, asset)` rather than a column apiece on the bank, which is what made adding returns receivable cheap when the return path needed it: one column there is one account per asset automatically, where a column on `banks` would have needed one per asset the bank could ever operate in. All but one of them are created in the bank's own book at founding; the [[settlement-account|settlement account]] is the exception, and the central bank opens that one.",
       explore: { href: "/central-bank", label: "Central-bank reserves" },
     },
     {
@@ -304,6 +304,24 @@ export const chapter: Chapter = {
       tolerance: 0,
       explanation:
         "**21000** satoshi: 0.00021 × 10⁸. The conversion is the asset's scale and nothing else — [[minor-units|there is no default scale]] anywhere in the frontend, and assuming 2 is precisely the bug this codebase once had, rendering 1 BTC (100000000 satoshi) as '1,000,000.00'. Every formatter takes the [[asset]] it is rendering.",
+    },
+    {
+      kind: "mc",
+      id: "ch16-q21",
+      difficulty: "core",
+      concept: "settlement-account",
+      prompt:
+        "A bank joining in both euro and dollars needs a settlement account in each. Who opens those accounts, in whose book, and what does the joining bank end up holding?",
+      options: [
+        "The bank opens them in its own book, one per asset, and tells the central bank the numbers",
+        "The central bank opens one per asset in its own book, and the bank ends up holding only their numbers — the way an account holder knows their IBAN",
+        "The clearing house opens them, because it is the institution that admits members to the scheme",
+        "One account is opened covering both assets, with the euro and dollar balances tracked separately inside it",
+      ],
+      answer: 1,
+      explanation:
+        "A [[settlement-account|settlement account]] is `Reserve: <Bank> (<asset>)` — a [[account-type-liability|liability]] of the **central bank's**, in the **central bank's own book**, numbered in the central bank's chart of accounts. The bank does not hold it; what it holds is the number, which it learns from the acknowledgement and quotes for the rest of its life at that agent. **One per [[asset]]**, for the reason every [[participant-assets|internal account]] is per asset: a reserve in euro says nothing about a reserve in dollars, and the two must never be added up. That is also why a two-asset bank applies *twice* — the account-opening request carries a single currency — and is answered twice. The answer naming the **clearing house** confuses the two institutions: it holds no account for any member in any asset, and its [[routing-roster|routing entry]] carries no account identifier at all.",
+      explore: { href: "/central-bank", label: "Central-bank reserves" },
     },
   ],
 };

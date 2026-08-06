@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"time"
 
@@ -35,11 +37,20 @@ type reasonMapping struct {
 
 // reasonTable is the mapping sub-project 7a decided, made undriftable here.
 //
-// EVERY sentinel in errors.go must appear. An error that cannot reach a
-// counterparty is mapped to the empty code with a comment saying why, rather
-// than omitted — omission is indistinguishable from an oversight, which is the
-// exact failure this table exists to prevent. TestReasonTableCoversEverySentinel
-// parses errors.go and fails on any gap.
+// EVERY sentinel in errors.go must appear. An error that gets no code is mapped
+// to the empty one with a comment saying why, rather than omitted — omission is
+// indistinguishable from an oversight, which is the exact failure this table
+// exists to prevent. TestReasonTableCoversEverySentinel parses errors.go and
+// fails on any gap.
+//
+// The empty code means two different things and the comment on each entry is
+// what says which. Most of them are errors that CANNOT reach a counterparty:
+// this system's own bookkeeping failing, with nothing truthful to tell a sender.
+// The admission refusals are the other kind — one of them does reach a
+// counterparty, on an acmt.011, whose reason is free prose rather than a code.
+// The codes here are the pacs.002's external set, so there is nothing in it for
+// an account-opening refusal either way. Both blocks are below, each under its
+// own heading.
 var reasonTable = []reasonMapping{
 	// --- Rejections a counterparty actually receives ---
 
@@ -60,6 +71,18 @@ var reasonTable = []reasonMapping{
 	{ErrMandateExceeded, "ErrMandateExceeded", iso20022.StatusReasonNotSpecifiedAgentGenerated},
 
 	{ErrParticipantNotFound, "ErrParticipantNotFound", iso20022.StatusReasonBankIdentifierIncorrect},
+
+	// The same code for a narrower fact, and the code set's own gloss covers
+	// both: RC01 is "the BIC does not identify a reachable participant", which
+	// is true of a bank that does not exist and equally true of one this scheme
+	// has not admitted. It is classified in this block rather than below because
+	// it does reach a counterparty — when the PAYEE's bank is the non-member,
+	// csm.clear turns AcceptAtCSMTx's refusal into the RJCT its submitter
+	// reverses on. In the other direction the answer dead-letters, because the
+	// bank to be told is the non-member itself; that direction is refused at
+	// Mesh.Submit's door instead, before any message exists. See
+	// ErrBankNotAdmitted, which sets out both.
+	{ErrBankNotAdmitted, "ErrBankNotAdmitted", iso20022.StatusReasonBankIdentifierIncorrect},
 	{ErrUnaddressableAccount, "ErrUnaddressableAccount", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrIdentifierMismatch, "ErrIdentifierMismatch", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
 	{ErrAmbiguousAddress, "ErrAmbiguousAddress", iso20022.StatusReasonMissingDebtorAccountOrIdentification},
@@ -96,9 +119,9 @@ var reasonTable = []reasonMapping{
 	// ReasonFor itself still cannot tell one of these apart from an error the
 	// table has never heard of at all — both come back MS03 through the same
 	// fallback path, and TestReasonForEmptyCodeEntriesFallToMS03 pins that. So
-	// the discrimination is the CALLER's, made by name, and THREE of the nine
-	// are discriminated that way because three are reached on paths nothing is
-	// wrong with:
+	// the discrimination is the CALLER's, made by name, and the ones
+	// discriminated that way are the ones reached on paths nothing is wrong
+	// with:
 	//
 	//   - ErrInvalidStateTransition, an ordinary redelivery, in four places:
 	//     bank.accept (which is where bank.receiveCreditTransfer and
@@ -112,17 +135,19 @@ var reasonTable = []reasonMapping{
 	//     settled is not a rejection to answer. Discriminated in
 	//     centralBank.receiveSettlement.
 	//
-	// This paragraph used to say "the one of the nine" and "the other eight",
-	// and the counts were right while the list held six. Both halves are wrong
-	// now, and the second half was the more misleading of the two: it read as a
-	// claim that the remaining sentinels arise only from malformed messages,
-	// when two of them are on the busiest path in the system.
+	// This paragraph used to count them — "the one of the nine", then "the
+	// other eight", then "THREE of the nine" — and every one of those numbers
+	// was wrong within a task or two of being written, because a sentinel added
+	// to errors.go adds a row here. So it says which errors and not how many,
+	// and the misreading the old wording invited is worth naming: "the others
+	// arise only from malformed messages" was never true, since two of them are
+	// on the busiest path in the system.
 	//
-	// The other six are not produced by the halves those handlers call, except
-	// through a message quoting an identifier this network has never issued,
-	// which answers MS03. That residue is stated rather than hidden; closing it
-	// needs a two-valued ReasonFor, which is a change to this signature and to
-	// every caller of it.
+	// The errors NOT in the list above are not produced by the halves those
+	// handlers call, except through a message quoting an identifier this
+	// network has never issued, which answers MS03. That residue is stated
+	// rather than hidden; closing it needs a two-valued ReasonFor, which is a
+	// change to this signature and to every caller of it.
 
 	// A lookup for an id this system generated and then could not find is a
 	// bug here, not a defect in the message.
@@ -134,6 +159,24 @@ var reasonTable = []reasonMapping{
 	// missing one is a question this bank asked itself and got no answer to.
 	// There is no counterparty in the conversation to tell.
 	{ErrSettlementAdviceNotFound, "ErrSettlementAdviceNotFound", ""},
+
+	// The two rows admission gives the other institutions, missing.
+	//
+	// Both are an institution asking about its OWN record and not finding it,
+	// which is this system's own inconsistency rather than a judgement about
+	// anybody's instruction: the settlement agent holds no account for a BIC it
+	// is asked to settle for, the clearing house routes to no address for a
+	// bank the network numbers. Nothing writes one of the three admission rows
+	// without the other two, so reaching either means the store disagrees with
+	// itself — and RC01, which is what ErrParticipantNotFound answers, would say
+	// the SENDER quoted a bank that does not exist. It did not.
+	//
+	// A bank that is founded and not yet a member will make the second of these
+	// an ordinary state rather than an inconsistency, and what it will be
+	// answered with is an acmt.011 refusing the admission — not a payment
+	// status. So this classification is the right one either way.
+	{ErrSettlementMemberNotFound, "ErrSettlementMemberNotFound", ""},
+	{ErrRosterEntryNotFound, "ErrRosterEntryNotFound", ""},
 
 	// All three mean a message arrived at the wrong bank — a settled-payment
 	// advice for somebody else's customer, a reserve statement about somebody
@@ -164,6 +207,58 @@ var reasonTable = []reasonMapping{
 	// answering RJCT would tell the returning bank that a return which in fact
 	// completed was refused. Dead-letter it.
 	{ErrReturnAlreadySettled, "ErrReturnAlreadySettled", ""},
+
+	// --- The admission refusals, which are answered off this code set ---
+	//
+	// The rows below it are empty for a different reason from the block above,
+	// and the difference matters because a refusal here CAN reach a counterparty
+	// where nothing classified above ever does. An admission refusal travels as
+	// an acmt.011, whose reason is RjctnRsn: Max350Text, repeated, free prose. It is not a code, and the codes in this
+	// table are the pacs.002's external set — so there is nothing here for any of
+	// them to map to, and an entry with a code would put a payment status on an
+	// account-opening refusal. See iso20022.AccountRejectionReferences, which
+	// records that the standard itself makes this rejection prose where it makes
+	// a payment rejection a code.
+	//
+	// What reaches a counterparty is what the CLEARING HOUSE refuses, because it
+	// refuses a request while its sender is still waiting: mesh.csm.relayAdmission
+	// turns each into an acmt.011 carrying the words of the error itself, because
+	// RjctnRsn is where a reason goes on that message and it is prose.
+	// ErrBICAlreadyAdmitted is answered to the applicant. ErrNotThisBanksAdmission
+	// is answered to the SENDER when that actor makes it, which is the one message
+	// on the path addressed to somebody other than the applicant — the applicant
+	// named by an impostor's request never asked for anything.
+	//
+	// Everything the BANK refuses is never answered at all, whatever the code
+	// set, because a bank is the LAST hop of an admission and has nobody to tell:
+	// each becomes a dead letter. Those that say the message is not this bank's
+	// business — ErrNotThisBanksAdmission again, about which bank, and
+	// ErrBankAlreadyAdmitted about which admission — are a defect in the ROUTING
+	// rather than a judgement the sender can act on, and they take
+	// ErrStatementNotForThisBank's classification for its reason. The rest are
+	// refusals a sender COULD act on, and go unanswered for the same structural
+	// reason: the counterparty who could be told is the applicant, and the
+	// applicant is this bank. So one sentinel here is answered at one institution
+	// and dead-lettered at the other, which the empty code accommodates and a
+	// code would not.
+	//
+	// No paragraph here says how many rows there are, deliberately. The
+	// phrasings this block has already retired were each falsified by a
+	// different kind of edit: "These three" was written with three rows in
+	// fc1a703 and went wrong at 55c6245, which REMOVED ErrBankNotFounded; "The
+	// bank's three" was written with three in 4dab4b7 and went wrong at 2c12dbb,
+	// which ADDED ErrAdmissionNotIdentified. So it is not additions a count has
+	// to survive. Any change to the thing counted falsifies it, in either
+	// direction, and the deletion is the one nobody rereads the prose for. The
+	// ROWS have a guard against exactly that — errors.go declares a sentinel,
+	// translate_test.go requires a row for it and refuses a row naming anything
+	// else — and the prose about them has none, so it describes instead.
+	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
+	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
+	{ErrAdmissionNotIdentified, "ErrAdmissionNotIdentified", ""},
+	{ErrAdmittedAccountUnusable, "ErrAdmittedAccountUnusable", ""},
+	{ErrSettlementAccountReplaced, "ErrSettlementAccountReplaced", ""},
+	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
 }
 
 // borrowedReasons classifies the errors an actor's half produces that this
@@ -2073,4 +2168,376 @@ func closingBalanceIn(bals []iso20022.CashBalance) (ledger.Amount, bool, error) 
 		return value, true, nil
 	}
 	return 0, false, nil
+}
+
+// ---------------------------------------------------------------------------
+// Admission
+// ---------------------------------------------------------------------------
+//
+// Three messages, and between them they carry a whole admission: the bank asks
+// for a settlement account, the settlement agent says which accounts it now
+// holds, or it refuses. Nothing here says anything about SCHEME MEMBERSHIP,
+// which is contractual and travels on no message at all — the clearing house's
+// routing entry falls out of the acknowledgement, which is why that institution
+// writes a row from a message it did not originate and is not addressed on. See
+// iso20022's Acmt007, which records the whole of that framing and the fact that
+// this is not how a real RTGS account is opened.
+//
+// ONE CURRENCY PER REQUEST, and every asymmetry below follows from it.
+// acmt.007's Acct/Ccy is minOccurs="1" maxOccurs="1", so a bank clearing a euro
+// scheme and a dollar scheme sends two requests; acmt.010's AccountForAction1 is
+// unbounded, so one acknowledgement lists every account the servicer holds for
+// that address. The consequence is not the extra message: it is that
+// Refs/PrcId — the process id, mandatory on all three — is the conversation's
+// ONLY correlator, because the acknowledgement carries no back-reference to the
+// request that caused it. AdmissionRequest.Ref and
+// AdmissionAcknowledgement.Ref are that value on this side of the wire.
+
+// countryOf is the country an institution is addressed in, read out of its own
+// BIC.
+//
+// Characters five and six of a BIC are its ISO 3166 country code — that is what
+// ISO 9362 puts there — so a bank that has told this system its address has
+// already told it its country. The acmt.007's Org is an Organisation33, which
+// makes CtryOfOpr and a legal address mandatory because eBAM was written for a
+// corporate opening an account at its bank; this system holds no address for a
+// bank and will not invent one, so the country is derived and the rest of
+// PostalAddress24 is absent rather than empty (see iso20022.PostalAddress).
+//
+// It is only ever called on a BIC that has been through Validate, which
+// guarantees six leading letters, so the slice cannot be out of range. Every
+// caller below validates first for exactly that reason.
+func countryOf(b iso20022.BIC) string { return string(b)[4:6] }
+
+// AdmissionMessage renders one asset's half of an admission as the acmt.007 a
+// bank sends to apply for a settlement account.
+//
+// ONE message per asset, because the schema carries one currency per request.
+// A bank joining in two assets sends two of these under one process id, and it
+// is the process id — not any back-reference — that says they are one
+// admission.
+//
+// servicer is separate from mc.To because the two are different questions on
+// this hop. The header says who this message is being handed to, which is the
+// CLEARING HOUSE, because a member bank in this system addresses the clearing
+// house and nothing else; AcctSvcrId says which institution is being asked to
+// open the account, which is the settlement agent the clearing house relays it
+// to. That element is written and never read back — nothing in this system acts
+// on it — for the reason the legal name and the country are: the schema makes
+// it mandatory. See ReadAdmissionRequest, which says what a receiver does take
+// off this message.
+//
+// It is a free function and not a method on Network because it reads no store
+// and needs no scheme: everything on the wire is on the request or in the
+// context. SettlementMessage and StatusMessage are free for the same reason.
+func AdmissionMessage(in AdmissionRequest, servicer iso20022.BIC, mc MessageContext) (iso20022.Envelope, error) {
+	if err := in.BIC.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: the applicant's own address: %w", err)
+	}
+	if err := servicer.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: AcctSvcrId: %w", err)
+	}
+	if in.Name == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Org/FullLglNm", iso20022.ErrMissingElement)
+	}
+	if in.Asset == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Acct/Ccy", iso20022.ErrMissingElement)
+	}
+	if in.Ref == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/PrcId/Id", iso20022.ErrMissingElement)
+	}
+	country := countryOf(in.BIC)
+	doc := &iso20022.Acmt007{AcctOpngReq: iso20022.AccountOpeningRequest{
+		Refs: iso20022.AccountRequestReferences{
+			MsgId: iso20022.MessageIdentification{Id: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+			// The process id is echoed and its instant is stamped now, because
+			// this system keeps no record of when an admission began — the
+			// correlator is the Id, and MessageIdentification1 makes the instant
+			// mandatory beside it. Said here rather than left to look like the
+			// process's own creation time.
+			PrcId: iso20022.MessageIdentification{Id: in.Ref, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+		},
+		Acct:       iso20022.RequestedAccount{Ccy: string(in.Asset)},
+		AcctSvcrId: agentOf(servicer),
+		Org: iso20022.AccountOwner{
+			FullLglNm: in.Name,
+			CtryOfOpr: country,
+			LglAdr:    iso20022.PostalAddress{Ctry: country},
+			OrgId:     iso20022.OrganisationIdentification{AnyBIC: in.BIC},
+		},
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// ReadAdmissionRequest reads a received acmt.007 as the request it carries: who
+// is applying, in which asset, and which admission this is one turn of.
+//
+// # The BIC is the load-bearing element and is checked here
+//
+// It is what the settlement agent keys its own member row by
+// (settlement_members.bic in store/pg) and what the clearing house keys its
+// routing entry by. A request carrying an empty or malformed address would open
+// an account for a bank nobody can address and file it under a key no later
+// message can reach — OpenSettlementAccountTx says so in as many words and names
+// this reader as what has to run Validate before it. So this refuses both, and
+// it does the STRUCTURAL check rather than only the presence one, because a
+// malformed BIC is as unaddressable as an absent one.
+//
+// The asset is the second: it decides which account is being asked for, and a
+// request with no currency is one an account servicer cannot act on.
+//
+// The process id is the third, and it is about the refusal rather than the
+// account. The clearing house's ErrBICAlreadyAdmitted is keyed on it, so a
+// request quoting nothing would make every admission of a taken address look
+// like the same one.
+//
+// # It does not assume validate() ran
+//
+// iso20022.Unmarshal validates, so a document that arrived on the wire has been
+// through AccountOpeningRequest.validate and every check below has already
+// passed. This checks anyway, for ReadReturn's reason: a document handed to this
+// function need not have come from Unmarshal at all, and the cost of being wrong
+// is a row keyed by nothing in another institution's store.
+//
+// AcctSvcrId, the legal name's country and the address are read by nothing. The
+// name IS read — the settlement agent names the account it opens after the
+// member it opened it for — so an empty one is refused too.
+func ReadAdmissionRequest(doc *iso20022.Acmt007) (AdmissionRequest, error) {
+	req := doc.AcctOpngReq
+	bic := req.Org.OrgId.AnyBIC
+	if bic == "" {
+		return AdmissionRequest{}, fmt.Errorf(
+			"payment: Org/OrgId/AnyBIC is absent; this request names no applicant and its account would be keyed by nothing")
+	}
+	if err := bic.Validate(); err != nil {
+		return AdmissionRequest{}, fmt.Errorf("payment: Org/OrgId/AnyBIC: %w", err)
+	}
+	if req.Org.FullLglNm == "" {
+		return AdmissionRequest{}, fmt.Errorf("%w: Org/FullLglNm", iso20022.ErrMissingElement)
+	}
+	if req.Acct.Ccy == "" {
+		return AdmissionRequest{}, fmt.Errorf(
+			"%w: Acct/Ccy; this request says which bank and not which account", iso20022.ErrMissingElement)
+	}
+	if req.Refs.PrcId.Id == "" {
+		return AdmissionRequest{}, fmt.Errorf(
+			"%w: Refs/PrcId/Id; nothing else in this family correlates one admission", iso20022.ErrMissingElement)
+	}
+	return AdmissionRequest{
+		Name:  req.Org.FullLglNm,
+		BIC:   bic,
+		Asset: ledger.AssetCode(req.Acct.Ccy),
+		Ref:   req.Refs.PrcId.Id,
+	}, nil
+}
+
+// AdmissionAcknowledgementMessage renders an account servicer's answer as the
+// acmt.010 that says which accounts it now holds for an address.
+//
+// EVERY account, not the one this request asked for. AccountForAction1 is
+// unbounded and the servicer's row carries its whole set, so a bank's second
+// acknowledgement lists both of its accounts — which is what lets the two
+// readers on the far side of the relay each take what they need in one pass.
+//
+// The accounts are emitted in ASSET ORDER. Accounts is a map, Go randomises its
+// iteration, and a message whose transactions came out in a different order on
+// every identical build would be two byte sequences for one answer — the same
+// argument csm.settlementLegs makes about a settlement instruction's legs, and
+// the same one AdmitMemberTx makes about the assets it appends to a roster
+// entry.
+//
+// # It names NOBODY, and that is the schema's doing
+//
+// acmt.010 identifies the account owner with an OrganisationIdentification29 —
+// a BIC, an LEI and generic identifiers — and there is no legal name, no country
+// and no address anywhere on the message. The request names the applicant with
+// an Organisation33 and the acknowledgement does not.
+//
+// So nothing downstream of this message can learn a member's NAME from it, and
+// nothing downstream needs to. The clearing house writes routing; the joining
+// bank writes its own row and knows its own name. AdmissionAcknowledgement has
+// no Name field for the same reason — it briefly did, and RosterEntry records
+// why both went.
+func AdmissionAcknowledgementMessage(ack AdmissionAcknowledgement, mc MessageContext) (iso20022.Envelope, error) {
+	if err := ack.BIC.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: the account owner's address: %w", err)
+	}
+	if ack.Ref == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/PrcId/Id", iso20022.ErrMissingElement)
+	}
+	if len(ack.Accounts) == 0 {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"%w: AcctId; an acknowledgement naming no account would admit a bank to nothing", iso20022.ErrMissingElement)
+	}
+	accounts := make([]iso20022.OpenedAccount, 0, len(ack.Accounts))
+	for _, asset := range slices.Sorted(maps.Keys(ack.Accounts)) {
+		id := ack.Accounts[asset]
+		if id == "" {
+			return iso20022.Envelope{}, fmt.Errorf("%w: AcctId/Id/Othr/Id for %s", iso20022.ErrMissingElement, asset)
+		}
+		accounts = append(accounts, iso20022.OpenedAccount{
+			// The generic arm, not the IBAN one, for camt.053's reason one
+			// message over: a reserve account at a central bank is not a payment
+			// address and no customer ever quotes it.
+			Id:  iso20022.AccountIdentification4Choice{Othr: &iso20022.GenericAccountIdentification{Id: string(id)}},
+			Ccy: string(asset),
+		})
+	}
+
+	doc := &iso20022.Acmt010{AcctReqAck: iso20022.AccountRequestAcknowledgement{
+		Refs: iso20022.AccountAcknowledgementReferences{
+			// What this acknowledges. An AcctReqAck's element name says it
+			// acknowledges something without saying what, which is why
+			// References5 makes ReqTp mandatory where References4 has no such
+			// element at all.
+			ReqTp: iso20022.UseCaseAccountOpening,
+			MsgId: iso20022.MessageIdentification{Id: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+			PrcId: iso20022.MessageIdentification{Id: ack.Ref, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+		},
+		AcctId:     accounts,
+		OrgId:      iso20022.OrganisationIdentification{AnyBIC: ack.BIC},
+		AcctSvcrId: agentOf(mc.From),
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
+}
+
+// ReadAdmissionAcknowledgement reads a received acmt.010 as what the account
+// servicer says it holds: whose address, which accounts, and which admission.
+//
+// # An account with no currency is refused, and that is the guard
+//
+// The currency is what decides which asset's account this is, and both readers
+// of this value key on it: the clearing house records the assets a member
+// clears in, and the bank records a settlement reference against its own
+// internal accounts for that asset. An account with an empty currency would be
+// filed under the empty asset in both — a reserve nothing settles through and a
+// reference nothing quotes. It is the same shape of hole ReadReturn's empty
+// OrgnlTxId was, which would have moved real reserves under the key
+// ":return-settle".
+//
+// Two accounts in ONE currency are refused as well, whole rather than
+// last-wins. This system's servicer opens one account per (BIC, asset) and
+// cannot produce such a message; a message that carried one would be a servicer
+// saying it holds two reserves in one asset for one member, which no reader here
+// has a rule for.
+//
+// # It cannot answer "whose bank is this", and nothing asks it to
+//
+// There is no legal name on an acmt.010 — see AdmissionAcknowledgementMessage —
+// so what this reader produces is an ADDRESS, a set of accounts and an admission
+// reference. Both acts driven from it get on with exactly that: AdmitMemberTx
+// writes routing, and RecordMembershipTx is a bank writing its own row.
+func ReadAdmissionAcknowledgement(doc *iso20022.Acmt010) (AdmissionAcknowledgement, error) {
+	ack := doc.AcctReqAck
+	bic := ack.OrgId.AnyBIC
+	if bic == "" {
+		return AdmissionAcknowledgement{}, fmt.Errorf(
+			"payment: OrgId/AnyBIC is absent; this acknowledgement names no account owner")
+	}
+	if err := bic.Validate(); err != nil {
+		return AdmissionAcknowledgement{}, fmt.Errorf("payment: OrgId/AnyBIC: %w", err)
+	}
+	if ack.Refs.PrcId.Id == "" {
+		return AdmissionAcknowledgement{}, fmt.Errorf(
+			"%w: Refs/PrcId/Id; nothing else in this family correlates one admission", iso20022.ErrMissingElement)
+	}
+	if len(ack.AcctId) == 0 {
+		return AdmissionAcknowledgement{}, fmt.Errorf(
+			"%w: AcctId; an acknowledgement naming no account would admit a bank to nothing", iso20022.ErrMissingElement)
+	}
+	accounts := make(map[ledger.AssetCode]ledger.AccountID, len(ack.AcctId))
+	for i, a := range ack.AcctId {
+		if a.Ccy == "" {
+			return AdmissionAcknowledgement{}, fmt.Errorf(
+				"%w: AcctId[%d]/Ccy; without it nothing says which asset's account this is", iso20022.ErrMissingElement, i)
+		}
+		if a.Id.Othr == nil || a.Id.Othr.Id == "" {
+			return AdmissionAcknowledgement{}, fmt.Errorf(
+				"%w: AcctId[%d]/Id/Othr/Id; a reserve account has no IBAN and this one has no identifier either",
+				iso20022.ErrMissingElement, i)
+		}
+		asset := ledger.AssetCode(a.Ccy)
+		if _, dup := accounts[asset]; dup {
+			return AdmissionAcknowledgement{}, fmt.Errorf(
+				"payment: AcctId names two %s accounts; a servicer holds one settlement account per asset per member", asset)
+		}
+		accounts[asset] = ledger.AccountID(a.Id.Othr.Id)
+	}
+	return AdmissionAcknowledgement{
+		BIC:      bic,
+		Accounts: accounts,
+		Ref:      ack.Refs.PrcId.Id,
+	}, nil
+}
+
+// AdmissionRejectionMessage renders a refusal as the acmt.011 that ends an
+// admission the other way.
+//
+// It carries no account, because none was opened, and the applicant stays
+// whatever it was before it asked — Founded, in this system, which is a working
+// bank with no place in a scheme: it opens customer accounts, it cannot fund
+// one, and a payment to or from it is refused with ErrBankNotAdmitted. That last
+// clause used to read "a bank that cannot pay" and was a description of what
+// nobody enforced; it is a refusal now.
+//
+// # The reason is PROSE, and that is the standard's decision rather than this
+// system's
+//
+// References6 makes RjctnRsn a repeated Max350Text: an account-management
+// refusal is free text where a payment rejection is an external code set. That
+// is why payment's reasonTable gives the admission sentinels the EMPTY code —
+// there is nothing on this message for a StatusReason to go in — and why the
+// refusal a counterparty reads here is the Go error's own words. See
+// iso20022.AccountRejectionReferences, which records the contrast.
+//
+// It is refused if the reason is blank, because Max350Text has minLength 1 and a
+// refusal that says nothing is one nobody can act on.
+//
+// # rejected is the request being refused, quoted back
+//
+// RjctdReqId is the back-reference the ACKNOWLEDGEMENT does not have: on a
+// rejection the schema makes naming the refused request mandatory. It is passed
+// in whole — the identifier and the instant the sender stamped on it — rather
+// than rebuilt here, so the element says what the request said instead of what
+// this message's clock says.
+func AdmissionRejectionMessage(in AdmissionRequest, rejected iso20022.MessageIdentification,
+	reason string, mc MessageContext) (iso20022.Envelope, error) {
+
+	if err := in.BIC.Validate(); err != nil {
+		return iso20022.Envelope{}, fmt.Errorf("payment: the refused applicant's address: %w", err)
+	}
+	if in.Ref == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/PrcId/Id", iso20022.ErrMissingElement)
+	}
+	if reason == "" {
+		return iso20022.Envelope{}, fmt.Errorf(
+			"%w: Refs/RjctnRsn; a refusal that says nothing is one nobody can act on", iso20022.ErrMissingElement)
+	}
+	if rejected.Id == "" {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/RjctdReqId/Id", iso20022.ErrMissingElement)
+	}
+	if rejected.CreDtTm.IsZero() {
+		return iso20022.Envelope{}, fmt.Errorf("%w: Refs/RjctdReqId/CreDtTm", iso20022.ErrMissingElement)
+	}
+	doc := &iso20022.Acmt011{AcctReqRjctn: iso20022.AccountRequestRejection{
+		Refs: iso20022.AccountRejectionReferences{
+			RjctdReqTp: iso20022.UseCaseAccountOpening,
+			RjctnRsn:   []string{reason},
+			RjctdReqId: rejected,
+			MsgId:      iso20022.MessageIdentification{Id: mc.MsgID, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+			PrcId:      iso20022.MessageIdentification{Id: in.Ref, CreDtTm: iso20022.ISODateTime{Time: mc.Now}},
+		},
+		AcctSvcrId: agentOf(mc.From),
+		OrgId:      iso20022.OrganisationIdentification{AnyBIC: in.BIC},
+	}}
+	return iso20022.Envelope{
+		AppHdr:   mc.header(doc.MessageDefinitionIdentifier()),
+		Document: doc,
+	}, nil
 }

@@ -648,7 +648,7 @@ The reserve account is the ultimate destination of all [[net-positions|net settl
   },
   "central-bank-reserves": {
     title: "Central-bank reserves",
-    body: `The **central bank** holds one **reserve liability** per participant **per [[asset]]** — what it owes each member bank, in each kind of money it issues. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
+    body: `The **central bank** holds one **reserve liability** per **admitted member** **per [[asset]]** — what it owes each member bank, in each kind of money it issues. It opens each one itself, in its own book, when it answers that bank's [[bank-admission|application to join]]; a [[bank-founding|founded]] bank has none. This is the only place where commercial banks actually "meet" and where [[clearing-vs-settlement|settlement]] happens.
 
 \`\`\`
 Central-bank ledger:
@@ -755,7 +755,7 @@ This is the classic **nostro/vostro** check — the bank's reserve asset against
   },
   "unclaimed-balances": {
     title: "Unclaimed balances",
-    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every participant gets one per [[asset]] it operates in, created when it joins the network.
+    body: `**Unclaimed Balances (\<asset\>)** is where a bank puts money that arrives for an account that cannot receive it. It is a **[[account-type-liability|liability]]**, because the bank still owes it — to whoever eventually claims it — exactly as it owes a deposit. Every bank gets one per [[asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it.
 
 The case it exists for: a payee closes their account between their bank's acceptance of the payment and the cut-off. [[account-status|Closed]] is the one status that refuses a credit, and crediting it anyway leaves money no withdrawal can reach and no second close can clear.
 
@@ -783,7 +783,7 @@ The payment still reaches **Settled**, because it did: the reserves moved and th
 | Direction | the bank **owes** this | the bank **is owed** this |
 | Counterparty | a payee it cannot identify | a biller it has identified perfectly well |
 
-Same kind of event — a credit reversed after the bank has already paid out — landing on opposite sides of the balance sheet according to whether the bank knows who owes whom. Every participant gets one per [[asset|asset]] it operates in, created when it joins the network.
+Same kind of event — a credit reversed after the bank has already paid out — landing on opposite sides of the balance sheet according to whether the bank knows who owes whom. Every bank gets one per [[asset|asset]] it operates in, created in its own book when it is [[bank-founding|founded]] — before any scheme has heard of it.
 
 It is reached in exactly one case: the clawback is **forced** *and* the biller's account is **closed**.
 
@@ -811,13 +811,13 @@ A payment records the address it was reached by whether or not the caller quoted
 
 **An address is compared canonically, not literally.** An IBAN is transmitted without separators and *displayed* with them, and this system stores the readable \`SE89-AURORA-1001\` while a \`pacs.008\` for that account carries \`SE89AURORA1001\`. One address, and compaction cannot be undone, so the lookup strips separators from **both** sides — \`deposit.Identifier.MatchValue\`, used by both stores and pinned by \`storetest\` so they cannot drift. Without it a bank emits an address it then cannot resolve. IBAN only: nothing else here has a display form, and stripping punctuation from a card PAN would merge addresses a scheme keeps apart. Nothing stored changes; only the comparison.
 
-**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every member bank at read time and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
+**Uniqueness stops at the bank.** A \`deposit.Register\` spans one book — the correct boundary, not a shortcut: a bank-issued identifier is globally unique by construction (an IBAN carries its bank's code, a PAN its BIN) while a proxy alias like a phone number carries no issuer, which is why proxy lookup needs its own central service and this system has none. \`Register.checkIdentifierFreeTx\` enforces it at write time, within one bank, deliberately with no \`UNIQUE\` constraint behind it, since one only \`store/pg\` could hold would let it disagree with \`store/mem\`. It runs through the same lookup, so it inherits the same comparison rule whole: \`SE89-AURORA-1001\` and \`SE89AURORA1001\` are one address, and the second spelling is refused (\`ErrIdentifierTaken\`). That is the point rather than a side effect — an account holding two spellings of one address resolves either way, so no lookup would ever complain about it. \`payment.Network.ResolveIdentifier\` is what makes that safe **for routing**: it sweeps every bank at read time — every bank the network has founded, not only the scheme's members — and answers \`ErrIdentifierAmbiguous\` rather than guessing, catching both a duplicate the missing constraint let a race create within one bank and a collision across two banks that no single register could ever see. For routing only, though — \`SubmitPaymentTx\` is handed an account id and never resolves, so two accounts sharing an address both stay payable by id. The accounts are distinct and real; what is ambiguous is the address.`,
   },
   "counterparty-details": {
     title: "Counterparty details",
     body: `A payment names two parties, and the submitting bank treats them differently. Its **own** side is overwritten unconditionally, in \`SubmitPaymentTx\` — its own BIC, and the account holder's name straight off its own deposit register — because it is the authority on its own customer; nothing is compared, the value the request quoted is simply replaced. The **counterparty's NAME** is not overwritten: it is asserted on the instruction (\`payment.PartyDetails{Agent, Name}\`, stored on the payment as \`DebtorDetails\`/\`CreditorDetails\`) and carried through as given.
 
-**The counterparty's BANK is neither asserted nor compared — it is derived.** \`SubmitPaymentTx\` reads the roster row for the participant the payment already names and takes the BIC from there, discarding whatever the caller supplied. That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who could type it could choose which bank got paid. Measured before it was closed — a push whose creditor agent named the payer's own bank came back to its sender, and a pull whose debtor agent named the collector had the collecting bank post the debit in the payer's bank's book (\`mesh.TestAWrongCounterpartyAgentDoesNotMisroute\`). Real SEPA works the same way: IBAN-only since 2016, the payer gives an address and a name and the originating bank derives the routing. The roster is network-scoped — participants belong to no single bank — so deriving it crosses nothing. **Routing needs the bank; the payer supplies the name.**
+**The counterparty's BANK is neither asserted nor compared — it is derived.** \`SubmitPaymentTx\` reads the bank row of the participant the payment already names and takes the BIC from there, discarding whatever the caller supplied. The bank's own row and not the clearing house's [[routing-roster|routing roster]] — that table is keyed by the BIC being derived, so it could not answer the question, and what it decides instead is whether the payment is carried at all. That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who could type it could choose which bank got paid. Measured before it was closed — a push whose creditor agent named the payer's own bank came back to its sender, and a pull whose debtor agent named the collector had the collecting bank post the debit in the payer's bank's book (\`mesh.TestAWrongCounterpartyAgentDoesNotMisroute\`). Real SEPA works the same way: IBAN-only since 2016, the payer gives an address and a name and the originating bank derives the routing. A bank row is network-scoped — banks belong to no single bank — so deriving it crosses nothing. **Routing needs the bank; the payer supplies the name.**
 
 \`SubmitPaymentTx\` — the SUBMITTING bank, before either leg posts — refuses an unnamed counterparty outright (\`ErrCounterpartyNotNamed\`). The RECEIVING bank's half, \`AcceptInboundTx\`, runs no check on either field at all. For its own side — the creditor's account on a push, the debtor's on a pull — it does read that account (\`creditorSideTx\`/\`debtorSideTx\`) and could in principle compare the name it finds there against what the other bank asserted, but it does not: overwriting \`CreditorDetails\`/\`DebtorDetails\` there would desynchronise the stored payment from the message that already went out on the wire. That is a deliberate restraint, not an inability.
 
@@ -831,7 +831,7 @@ Events recorded, grouped by the layer (**scope**) that produced them:
 
 - **ledger** — ledger/subledger/account creation, transaction posting, [[reversal]]
 - **deposit** — account opened/frozen/closed, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[snapshot|end-of-day snapshot]]
-- **payment** — participant added, [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
+- **payment** — the four acts of an admission (participant added, settlement account opened, member admitted, membership recorded), [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
 
 Each event is written **inside the transaction of the operation it describes**, so an operation that rolls back leaves no record claiming it happened. The log is unbounded, so the API pages it: **limit** (default 100, max 1000) and **before**, an exclusive cursor on the event's sequence number.
 
@@ -1094,7 +1094,7 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its settlement account in the central bank's own book — exist **once per [[asset]] it operates in**.
+    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
@@ -1106,11 +1106,92 @@ Bank A
          returns receivable, settlement
 \`\`\`
 
-They are a child row keyed \`(participant, asset)\` rather than a column apiece on the participant, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
+They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
+
+All but one of them are created in the bank's own book when it is [[bank-founding|founded]]. The settlement account is the exception: the central bank opens that one, in its own book, when it answers the bank's application — so on a founded bank the column is empty.
 
 [[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.
 
 There is deliberately **no fallback** to a default asset. Defaulting to euro would settle a dollar cycle in the wrong money, quietly, in the one place in the system where money becomes final.`,
+  },
+  "bank-founding": {
+    title: "Founded, and not yet a member",
+    body: `**Founding a bank and admitting it to a scheme are two different things.** Founding is the bank's own act: it gets a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product to sell. It comes out **Founded**, which is a working bank that is in no scheme.
+
+Its own book is unrestricted — it opens customer accounts, publishes products, adds ledgers. What it cannot do is anything needing another institution:
+
+\`\`\`
+Founded
+  book, chart of accounts, product
+  opens customer accounts
+  CANNOT fund one          → 422
+  CANNOT pay or be paid    → 422
+
+Member — the above, plus
+  a settlement account at the central bank
+  a row in the routing directory
+  can be funded, can settle
+\`\`\`
+
+**Funding is the one people guess wrong.** Cash paid in raises the bank's reserve at the central bank in the same [[unit-of-work|unit of work]], and there is no reserve to raise until a settlement agent has opened one. The API answers \`422\` naming the *membership*, not the account.
+
+**Paying is a refusal, not an inability.** For a while it was only an intention — an [[overdraft|arranged overdraft]] gives a customer spendable money with no deposit, and the network's [[account-addressing|address lookup]] resolves a founded bank's addresses like anyone else's, so such a bank could both pay and be paid. What that cost is why it is now refused of BOTH parties, at the mesh's door and again at the clearing house: the cut-off cannot name a non-member in the settlement instruction, so one such payment stopped the **whole cycle**, with every other member's payments in it.
+
+**This reverses an earlier ruling, and the reversal is the lesson.** Admission used to be one transaction that wrote the bank's accounts, the central bank's and the clearing house's together — "so a bank can never exist without the accounts it needs". No real admission has that guarantee. A bank is licensed and built long before any scheme has heard of it, and joining a scheme is an application to somebody else that can be refused. See [[bank-admission]].`,
+  },
+  "settlement-account": {
+    title: "The settlement account is the central bank's",
+    body: `A bank's **settlement account** is opened **by the central bank, in the central bank's own book**. It is \`Reserve: <Bank> (<asset>)\` — a [[account-type-liability|liability]] of the central bank's, numbered in the central bank's chart of accounts. The bank does not hold it.
+
+What the bank holds is its **number**, the way an account holder knows their IBAN without holding the bank's ledger. Two records, two owners:
+
+\`\`\`
+The central bank's row
+  SettlementMember, keyed by BIC
+  one account id per asset,
+  allocated in its own book
+
+The bank's own row
+  BankAccounts.Settlement
+  the number it was told, quoted
+  whenever it funds a reserve
+\`\`\`
+
+One account **per asset**, because a reserve in euro says nothing about a reserve in dollars. That is also why a bank joining in two assets applies twice: the account-opening request carries one currency, so it asks once per asset and is answered once per asset.
+
+The central bank's row is keyed by **BIC** and by nothing else — a settlement agent holds no roster and allocates no bank ids, so the only identifier it is ever told is the one on the message. It knows which account it holds for whom, and nothing about how the member runs: not its book, not its subledgers, not its product.`,
+  },
+  "routing-roster": {
+    title: "The routing directory says who may be addressed",
+    body: `The scheme's **routing directory** belongs to the clearing house, and it answers one question: **where do I send a message addressed to this member?** It is not a register of banks. A bank absent from it exists perfectly well — it is simply not somewhere this scheme will send anything.
+
+Each entry carries a **BIC**, the assets that member clears in, and the reference of the admission that put it there. What it does *not* carry is the point:
+
+- **no account of any kind** — no account id, no subledger, no product, no book. A clearing house holding one would be holding the means to reach into a bank's ledger. The row this replaced carried the central bank's account ids, and readers in three institutions resolved their postings through it.
+- **no name** — the acknowledgement the row is written from identifies the account owner with a BIC and has no name element at all. Routing is an address; a name here could only be the clearing house remembering something no message delivered.
+
+It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.`,
+  },
+  "bank-admission": {
+    title: "Admission is a conversation, in order",
+    body: `Admitting a bank to a scheme takes **three institutions**, and none of them can do another's part. The order is the content: **the settlement account is opened first and the routing entry is written second**, because a scheme will not route to a member that cannot settle.
+
+\`\`\`
+1  bank            --acmt.007-->  clearing house
+2  clearing house  --acmt.007-->  central bank
+3  central bank    --acmt.010-->  clearing house
+4  clearing house  --acmt.010-->  bank
+\`\`\`
+
+1. The **bank** founds itself first — see [[bank-founding]] — and then applies, one request per [[asset]], all quoting one process id so the scheme can tell they are one admission.
+2. The **clearing house** relays and holds nothing. The only thing it refuses before relaying is a BIC already in its directory under a *different* admission.
+3. The **central bank** opens one [[settlement-account|settlement account]] per asset in its own book, records its own member row, and answers — or refuses, in prose rather than a code, because this message family carries no code set.
+4. The **clearing house** writes its [[routing-roster|routing entry]] from that acknowledgement and only *then* forwards it, so a bank told it is a member is one the scheme can already route to.
+5. The **bank** records the account numbers it has been told and becomes a member.
+
+Four units of work at three institutions, so the API answers **202 Accepted** with a founded bank rather than 201 with a member: the scheme's answer is decided elsewhere and arrives later.
+
+**Two things here are not the real thing.** Scheme membership is *contractual* — an adherence agreement, signed — and travels on no message at all; what travels is the settlement-account request, and the routing entry falls out of its acknowledgement. And a real central bank does not open an RTGS account by message either: it is reference data (in TARGET, CRDM static data and \`reda\`). What is real is the **sequence and the ownership** — who may open which account, in whose book, and in what order.`,
   },
   "credit-facility": {
     title: "Credit facility",

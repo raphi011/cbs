@@ -73,7 +73,7 @@ type store interface {
 }
 
 func main() {
-	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per member bank")
+	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per bank")
 	database := flag.String("database", os.Getenv("DATABASE_URL"), "Postgres DSN; empty uses the in-memory store")
 	flag.Parse()
 
@@ -92,16 +92,19 @@ func main() {
 	}()
 
 	net := payment.NewNetwork(st.Payment(), data.Now)
-	if err := data.Populate(context.Background(), net); err != nil {
-		log.Error("seeding the sample dataset", "error", err)
-		os.Exit(1)
-	}
 
-	// The mesh starts AFTER the seed, and the order is load-bearing. Start reads
-	// the participant roster once and gives every bank in it an actor, so a mesh
-	// started over an unseeded store would have no member banks at all and every
-	// seeded bank would be unreachable. Banks admitted later — POST /members —
-	// register themselves through api's handler; see mesh.AddBank.
+	// The mesh starts BEFORE the seed, and the order is load-bearing — it is the
+	// reverse of the order this process used until admission became a
+	// conversation. The seed admits its banks through the mesh's own door, the
+	// same door POST /members goes through, so the two institutions that answer
+	// an application have to be running before there is anything to answer.
+	//
+	// What that costs is Start's roster read, which finds an empty roster on a
+	// fresh store: the banks it would have registered are the ones the seed is
+	// about to admit, and each of those gets its actor from Mesh.Admit as it is
+	// founded. Against a Postgres database that already holds the scenario the
+	// read finds the whole roster and the seed builds nothing, which is the same
+	// division of labour seen from the other side.
 	msh, err := mesh.New(net, meshConfig, log)
 	if err != nil {
 		log.Error("building the mesh", "error", err)
@@ -111,6 +114,11 @@ func main() {
 	// with this context and Stop is what cancels it.
 	if err := msh.Start(context.Background()); err != nil {
 		log.Error("starting the mesh", "error", err)
+		os.Exit(1)
+	}
+
+	if err := data.Populate(context.Background(), net, msh); err != nil {
+		log.Error("seeding the sample dataset", "error", err)
 		os.Exit(1)
 	}
 

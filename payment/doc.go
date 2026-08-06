@@ -2,17 +2,19 @@
 // deposit and ledger packages. It exists to make the mechanics of payment
 // clearing and settlement concrete and testable.
 //
-// Like the layers below it, the package holds no state of its own: participants,
-// payments, mandates, clearing cycles and settlements all live in a Store
-// (store/mem in-process, store/pg on Postgres) behind the payment.Store and
-// payment.Tx interfaces declared here.
+// Like the layers below it, the package holds no state of its own: banks, the
+// two rows the other institutions keep about them, payments, mandates, clearing
+// cycles and settlements all live in a Store (store/mem in-process, store/pg on
+// Postgres) behind the payment.Store and payment.Tx interfaces declared here.
 //
 // # The model
 //
 // Several participant banks each keep their own book of accounts (a
 // ledger.Book, their general ledger) with a deposit.Register layered on top for
 // their customer accounts. A separate central-bank book holds a reserve account
-// for every participant. The books all live in one Store and are told apart by
+// per asset for every bank the scheme has ADMITTED — the central bank opens each
+// one itself, when it answers that bank's application, so a founded bank has
+// none. The books all live in one Store and are told apart by
 // their ledger.BookID, so chart-of-accounts numbers and ID counters stay per
 // bank while a single transaction can still span several of them. Banks only
 // meet at the central bank — which is exactly what makes the distinction
@@ -81,10 +83,45 @@
 // IT BEFORE IT SENDS. The returning bank posts first, so its refusal costs
 // nothing and is an error to its caller rather than a message. The other bank
 // posts after the reserves have moved and cannot refuse, which is why
-// ParticipantAccounts.ReturnsReceivable is reached on one side and not the
-// other: every participant is opened one per asset, and the bank that must
-// force a posting into it is the one that first hears about the return when it
-// is already final.
+// BankAccounts.ReturnsReceivable is reached on one side and not the other:
+// every bank is opened one per asset, and the bank that must force a posting
+// into it is the one that first hears about the return when it is already
+// final.
+//
+// # One admission, three institutions
+//
+// The same split a fourth time, about a bank rather than a payment, and it is
+// the one that dissolved this package's central type. Participant used to carry
+// the bank's own record, the central bank's settlement account and the clearing
+// house's routing entry on one row — so the settlement agent read the account it
+// was to post to off the CLEARING HOUSE's row, which is a read no isolated
+// institution could make. Three rows now, one writer each: Bank,
+// SettlementMember, RosterEntry.
+//
+// Four acts follow from that, and each is one institution's unit of work:
+//
+//   - FoundBankTx is the BANK building itself — its book, its chart of
+//     accounts, its internal accounts per asset, its default deposit product.
+//     It comes out Founded, which is a bank with a licence and no place in a
+//     scheme: it can open customer accounts, and it cannot FUND one, because
+//     funding raises a reserve no settlement agent holds for it.
+//   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
+//     one asset, in its own book, and recording that it holds it. Idempotent
+//     per (BIC, asset), because one acmt.007 asks for one currency and a
+//     re-driven admission must not be given a second account.
+//   - AdmitMemberTx is the CLEARING HOUSE writing where to send a message
+//     addressed to this member — from an acknowledgement it did not originate,
+//     because scheme membership follows the settlement account.
+//   - RecordMembershipTx is the BANK's second act: writing down the account
+//     numbers it has been told, and becoming a Member.
+//
+// Nothing in this package composes them. What runs them in order is a
+// CONVERSATION — mesh.Mesh.Admit and the three handlers the acmt.007 and
+// acmt.010 reach — and the guarantee that went with the composition is the
+// reversal this sub-project set out to make: a bank could never exist without
+// the accounts it needs, and no real admission ever had that. A bank is
+// licensed and built before any scheme has heard of it, and what follows is a
+// request that can be refused.
 //
 // # Schemes
 //
@@ -120,32 +157,43 @@
 //
 // This is a learning model, not a production payment processor:
 //
-//   - Five ISO 20022 messages, and no more. pacs.008, pacs.003, pacs.002,
-//     pacs.004 and pacs.009 are implemented — translate.go now renders and
-//     reads all five. ReadReturn is the newest of the five readers and is now
-//     wired: mesh/centralbank.go turns an arriving pacs.004 into a
-//     ReturnInstruction and hands it to SettleReturnTx, which reads no payment
-//     row at all, and mesh/bank.go reads the relayed copy the same way to post
-//     its own customer leg. That pair is what it exists to mean — a settlement
-//     agent resolving accounts from OrgnlTxRef instead of from a payment row it
-//     may no longer hold. Package mesh is what carries messages between the
-//     institutions as marshalled bytes, so they are parsed on arrival rather
-//     than passed as structs. What is absent is
-//     pain.001/pain.008 customer initiation (an instruction arrives over this
-//     repository's REST API instead), the camt reporting family — including
-//     camt.054 and the admi.002 a real receiver answers an unreadable file
-//     with — camt.056/pacs.007 recalls and reversals, runtime XSD validation
-//     (a golden-file check against the real schemas exists — `make
-//     test-schemas` — but it cannot be run as the tree stands:
-//     iso20022/testdata holds no xsd directory, because the schemas are ISO's
-//     to redistribute rather than this repository's to vendor. So a plain `go
-//     test` skips every one of its subtests, and `make test-schemas`, which
-//     sets ISO20022_REQUIRE_SCHEMAS=1 to turn each skip into a failure, fails.
-//     Until someone fetches the schemas, nothing here is checked against a
-//     real one) and message signing. Nor is there any batching of customer
-//     payments: a pacs.008 or pacs.003 built here carries exactly one
-//     transaction and one arriving with several is refused, which is why
-//     pacs.002's PART group status is built and never produced.
+//   - Only the message definitions this system's flows need, and translate.go
+//     renders and reads every one of them: the payment family (pacs.008,
+//     pacs.003, pacs.002, pacs.004, pacs.009), the statement a settlement agent
+//     sends its members (camt.053), and the account-management family an
+//     admission is carried on (acmt.007, acmt.010, acmt.011). Package mesh is
+//     what carries them between the institutions as marshalled bytes, so they
+//     are parsed on arrival rather than passed as structs.
+//
+//     Two readers are worth naming for what they are FOR rather than for what
+//     they parse. ReadReturn is read by two actors — mesh/centralbank.go turns
+//     an arriving pacs.004 into a ReturnInstruction for SettleReturnTx, which
+//     reads no payment row at all, and mesh/bank.go reads the relayed copy the
+//     same way to post its own customer leg — and that pair is a settlement
+//     agent resolving accounts from OrgnlTxRef instead of from a row it may no
+//     longer hold. ReadAdmissionAcknowledgement is read by two more, for the
+//     same kind of reason: the clearing house takes a routing entry out of it
+//     and the joining bank takes the settlement account numbers it will quote
+//     for the rest of its life at that agent, and neither of them could have
+//     known either before the message arrived.
+//
+//     What is absent is pain.001/pain.008 customer initiation (an instruction
+//     arrives over this repository's REST API instead), the rest of the camt
+//     reporting family — including camt.054 and the admi.002 a real receiver
+//     answers an unreadable file with — camt.056/pacs.007 recalls and
+//     reversals, runtime XSD validation, and message signing. There IS a
+//     golden-file check against the real schemas — `make test-schemas`, which
+//     sets ISO20022_REQUIRE_SCHEMAS=1 so that a missing schema fails rather
+//     than skips — but the schemas themselves are gitignored, because they are
+//     ISO's to redistribute rather than this repository's to vendor. So it
+//     passes where somebody has fetched them into iso20022/testdata/xsd and
+//     skips everywhere else, and no document is validated at RUNTIME on any
+//     machine.
+//
+//     Nor is there any batching of customer payments: a pacs.008 or pacs.003
+//     built here carries exactly one transaction and one arriving with several
+//     is refused, which is why pacs.002's PART group status is built and never
+//     produced.
 //
 //   - No identifier format validation: an IBAN's check digit, length and
 //     country code go unchecked, and a participant's BIC is checked for

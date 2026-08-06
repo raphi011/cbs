@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
 	"github.com/raphi011/cbs/store/mem"
@@ -69,15 +71,18 @@ func TestRedactNeverEchoesAPassword(t *testing.T) {
 // and waits — and Initiated is the status that names it: money gone from the
 // payer, no institution having yet said accept or reject.
 //
-// The property holds by CONSTRUCTION, and this test does not drain anything.
-// The seed is not a mesh participant: it drives payment.Network directly and
-// synchronously, playing every institution itself, and it composes each
-// payment's halves inside ONE unit of work (seed.builder.initiate, and
-// seed.builder.reject for the rejection's two). A unit of work has no
-// observable middle, so there is no instant at which a seeded payment is
-// half-processed — not merely no instant after some drain. main then starts the
-// mesh and binds the listeners only after Populate has returned, so nothing the
-// seed did is in flight when the first request can arrive.
+// The property holds by CONSTRUCTION, and this test drains nothing of its own.
+// Every PAYMENT in the scenario is composed inside ONE unit of work
+// (seed.builder.initiate, and seed.builder.reject for the rejection's two), with
+// the seed playing each institution in turn rather than sending anything: a unit
+// of work has no observable middle, so there is no instant at which a seeded
+// payment is half-processed — not merely no instant after some drain.
+//
+// The seed IS a mesh participant for one thing, and only one: admitting its
+// banks, which is a conversation and cannot be composed. It drains each
+// admission before the next bank applies (seed.builder.admit), so nothing from
+// that is in flight either by the time Populate returns — and main binds the
+// listeners only afterwards, so no request can arrive during it.
 //
 // Two things are checked, because a status is only half the story. Money is the
 // other half: a rejection that transitioned the payment but never reversed the
@@ -92,7 +97,27 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 	data := seed.New()
 	st := mem.New(data.Now)
 	net := payment.NewNetwork(st.Payment(), data.Now)
-	if err := data.Populate(ctx, net); err != nil {
+	msh, err := mesh.New(net, meshConfig, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("building the mesh: %v", err)
+	}
+	if err := msh.Start(ctx); err != nil {
+		t.Fatalf("starting the mesh: %v", err)
+	}
+	// Drain then Stop, as main does at shutdown, and neither error is discarded:
+	// the seed's admissions are the only conversations this test has, and one
+	// that failed would leave the scenario it asserts on half built.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), meshShutdown)
+		defer cancel()
+		if err := msh.Drain(ctx); err != nil {
+			t.Errorf("draining at shutdown: %v", err)
+		}
+		if err := msh.Stop(ctx); err != nil {
+			t.Errorf("stopping: %v", err)
+		}
+	})
+	if err := data.Populate(ctx, net, msh); err != nil {
 		t.Fatalf("populating the sample dataset: %v", err)
 	}
 
@@ -123,7 +148,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 		mid[sc.Asset()] += p.Amount
 	}
 
-	parts, err := net.ListParticipants(ctx)
+	parts, err := net.ListBanks(ctx)
 	if err != nil {
 		t.Fatalf("listing participants: %v", err)
 	}

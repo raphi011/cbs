@@ -142,7 +142,7 @@ GET  /assets
 **Clearing house** (`:8082`)
 
 ```
-GET  /members                  the routing roster
+GET  /members                  every bank in the network
 GET  /payments                 every leg in the network
 GET  /payments/{payid}         POST /payments
 POST /payments/{payid}/reject  POST /payments/{payid}/return
