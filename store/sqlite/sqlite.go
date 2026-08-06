@@ -81,6 +81,12 @@ import (
 
 	sqlite3 "modernc.org/sqlite"
 	sqlite3lib "modernc.org/sqlite/lib"
+
+	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/ledger"
+	"github.com/raphi011/cbs/lending"
+	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/product"
 )
 
 // ErrReadOnly is returned when a write is attempted inside View, mirroring
@@ -242,13 +248,55 @@ func dsn(path string) (string, bool) {
 	return "file:" + url.PathEscape(path) + "?" + strings.Join(pragmas, "&"), false
 }
 
-// inUpdate runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
-// fn returns an error. It retries on the transient failures isTransient names.
+// Update runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
+// fn returns an error.
 //
-// Task 17.1c wraps this in the exported Update and View that hand out a
-// ledger.Tx. It is separate from them because the retry, the nesting guard and
-// the transient classification are testable — and worth watching fail — before
-// any statement of the port is written.
+// It retries, with a delay, on the transient failures isTransient names. See
+// isTransient for why a retry is needed at all and backoff for why it is not
+// enough on its own.
+func (s *Store) Update(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return s.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// View runs fn in a read-only unit of work. Writes through the Tx it provides
+// fail with ErrReadOnly.
+func (s *Store) View(ctx context.Context, fn func(context.Context, ledger.Tx) error) error {
+	return s.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// update and view are the shared bodies the five Store interfaces' Update and
+// View methods delegate to. Go allows one Update method per type and the
+// interfaces declare it with five different callback types, so the adapters at
+// the foot of this file re-type these rather than reimplementing them — the
+// callback gets the very same *tx, which is what lets a Register and a Book over
+// one store share a transaction.
+func (s *Store) update(ctx context.Context, fn func(context.Context, *tx) error) error {
+	return s.inUpdate(ctx, func(ctx context.Context, dbtx *sql.Tx) error {
+		return fn(ctx, s.newTx(dbtx, false))
+	})
+}
+
+func (s *Store) view(ctx context.Context, fn func(context.Context, *tx) error) error {
+	return s.inView(ctx, func(ctx context.Context, dbtx *sql.Tx) error {
+		return fn(ctx, s.newTx(dbtx, true))
+	})
+}
+
+// newTx wraps one database transaction as the value that implements all five Tx
+// interfaces. A fresh books set per attempt is deliberate: a retried unit of
+// work has rolled its books rows back, so remembering them across attempts would
+// skip the insert that the foreign keys need.
+func (s *Store) newTx(dbtx *sql.Tx, readOnly bool) *tx {
+	return &tx{store: s, tx: dbtx, readOnly: readOnly, books: make(map[ledger.BookID]struct{})}
+}
+
+// inUpdate runs fn in one atomic unit of work over the raw *sql.Tx, retrying on
+// the transient failures isTransient names.
+//
+// It is separate from Update because the retry, the nesting guard and the
+// transient classification were testable — and worth watching fail — before any
+// statement of the port existed, and the tests that pin them still drive this
+// directly rather than through a ledger.Tx.
 func (s *Store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -422,3 +470,154 @@ func isTransient(err error) bool {
 		return false
 	}
 }
+
+// isUniqueViolation reports whether err is a conflict on a unique INDEX.
+//
+// store/pg asked isUniqueViolationOn(err, "transactions_idempotency_key_idx"),
+// because SQLSTATE 23505 carries the constraint's name. SQLite names nothing, so
+// what identifies the index here is the extended code alone:
+// SQLITE_CONSTRAINT_UNIQUE (2067) for a unique index, and
+// SQLITE_CONSTRAINT_PRIMARYKEY (1555) for a primary key, which is a different
+// answer and stays out.
+//
+// That is exactly as targeted as matching the name, and it is targeted for a
+// reason outside this function: the idempotency index is the only non-primary-key
+// unique index in the schema. TestExactlyOneUniqueIndex reads sqlite_master and
+// fails if a second one appears, because a second one would silently make
+// ErrDuplicateIdempotencyKey the answer to an unrelated collision. The one call
+// site is PutTransaction, and it is the guard that lets it be written this way.
+func isUniqueViolation(err error) bool {
+	var serr *sqlite3.Error
+	if !errors.As(err, &serr) {
+		return false
+	}
+	return serr.Code() == sqlite3lib.SQLITE_CONSTRAINT_UNIQUE
+}
+
+// ---------------------------------------------------------------------------
+// Reset
+// ---------------------------------------------------------------------------
+
+// tables is every table Reset empties. The order is irrelevant: every REFERENCES
+// in the schema is ON DELETE CASCADE, so a parent takes its children with it and
+// a child emptied first is a no-op when its parent follows.
+var tables = []string{
+	"books", "ledgers", "subledgers", "accounts", "transactions", "entries",
+	"deposit_accounts", "deposit_account_identifiers", "holds", "snapshots", "overdraft_terms",
+	"products", "product_versions",
+	"facilities", "installments", "facility_terms",
+	"banks", "bank_assets",
+	"settlement_members", "settlement_member_accounts",
+	"roster_entries", "roster_entry_assets",
+	"mandates", "payments", "cycles", "cycle_payments",
+	"settlements", "settlement_positions", "settlement_advices",
+	"audit_events", "id_sequences",
+}
+
+// Reset discards all state, so a reset store behaves exactly like a freshly
+// migrated one.
+//
+// store/pg needed TRUNCATE … RESTART IDENTITY to put its BIGSERIALs back to 1.
+// Nothing here does: every seq is allocated MAX(seq)+1 over the table it belongs
+// to (see nextRowSeq), so a table with no rows starts at 1 again on its own. The
+// counters in id_sequences are ordinary rows and go with the delete.
+//
+// The schema itself survives; only rows are removed.
+func (s *Store) Reset(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var stmt strings.Builder
+	for _, table := range tables {
+		stmt.WriteString("DELETE FROM ")
+		stmt.WriteString(table)
+		stmt.WriteString(";\n")
+	}
+	if _, err := s.db.ExecContext(ctx, stmt.String()); err != nil {
+		return fmt.Errorf("sqlite: reset: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// The four other shapes of the same store
+// ---------------------------------------------------------------------------
+
+// Deposit returns this store as a deposit.Store.
+//
+// It is an adapter rather than a second implementation for the same reason
+// store/mem's is: Go allows one Update method per type, and the Store interfaces
+// declare Update with different callback types. The adapter holds no state and
+// hands the callback the very same *tx, so a Register and a Book built over one
+// Store share a database transaction.
+func (s *Store) Deposit() deposit.Store { return depositStore{s} }
+
+type depositStore struct{ *Store }
+
+var _ deposit.Store = depositStore{}
+
+func (d depositStore) Update(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
+	return d.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (d depositStore) View(ctx context.Context, fn func(context.Context, deposit.Tx) error) error {
+	return d.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Product returns this store as a product.Store.
+func (s *Store) Product() product.Store { return productStore{s} }
+
+// productStore re-types Store's update and view; Reset and Close are promoted
+// unchanged from the embedded *Store.
+type productStore struct{ *Store }
+
+// compile-time check that the adapter satisfies the interface it exists for.
+var _ product.Store = productStore{}
+
+func (p productStore) Update(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (p productStore) View(ctx context.Context, fn func(context.Context, product.Tx) error) error {
+	return p.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Lending returns this store as a lending.Store.
+//
+// Like Deposit, it is an adapter over the same *tx rather than a second
+// implementation: a facility write and its GL posting share one transaction
+// because both go through the same value.
+func (s *Store) Lending() lending.Store { return lendingStore{s} }
+
+type lendingStore struct{ *Store }
+
+var _ lending.Store = lendingStore{}
+
+func (l lendingStore) Update(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (l lendingStore) View(ctx context.Context, fn func(context.Context, lending.Tx) error) error {
+	return l.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// Payment returns this store as a payment.Store. It is the handle a
+// payment.Network takes, and the only one it needs: the Network derives its own
+// ledger and deposit views from it.
+func (s *Store) Payment() payment.Store { return paymentStore{s} }
+
+type paymentStore struct{ *Store }
+
+var _ payment.Store = paymentStore{}
+
+func (p paymentStore) Update(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	return p.Store.update(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+func (p paymentStore) View(ctx context.Context, fn func(context.Context, payment.Tx) error) error {
+	return p.Store.view(ctx, func(ctx context.Context, t *tx) error { return fn(ctx, t) })
+}
+
+// compile-time check that the store satisfies the interface it is written
+// against; the other four are checked on the adapters above.
+var _ ledger.Store = (*Store)(nil)

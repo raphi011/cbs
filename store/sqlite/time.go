@@ -12,12 +12,21 @@ import "time"
 //
 // Both halves of the layout are load-bearing and neither is obvious:
 //
-//   - UTC, always. A value written at +02:00 sorts by its digits, not by its
-//     instant, so one row stored with an offset puts a listing silently out of
-//     order — the row is not wrong, the ORDER BY is.
-//   - Nine fractional digits, always, including the zeros. Go's RFC3339Nano
-//     drops trailing zeros, so "…:00.5Z" and "…:00.45Z" compare in the wrong
-//     order as strings. A fixed width is what makes the digits comparable.
+//   - UTC, always, which formatTime imposes rather than the layout: the same
+//     instant written at +02:00 renders with a later hour, and it sorts by its
+//     digits and not by its instant, so one row stored with an offset puts a
+//     listing silently out of order — the row is not wrong, the ORDER BY is.
+//   - Nine fractional digits, always, INCLUDING when they are all zero. This is
+//     the half that is easy to get wrong twice over, so it is worth stating what
+//     the hazard is and is not. Go's RFC3339Nano drops trailing zeros, and for
+//     two values that both HAVE a fraction that is harmless — ".45" sorts before
+//     ".5" correctly, because a decimal fraction written without trailing zeros
+//     still compares lexicographically as it does numerically. What breaks is a
+//     whole second, which RFC3339Nano renders with no fraction at all:
+//     "…:00Z" against "…:00.045Z" compares 'Z' with '.', and 'Z' is the larger
+//     byte, so the EARLIER instant sorts last. A fixed width has no such seam.
+//     Measured: TestOrderingIsChronologicalWithinOneSecond fails on exactly that
+//     pair and on nothing else.
 //
 // Nullability is unchanged from store/pg: NULL is Go's zero time.Time, which
 // several fields use as "unset". SQLite sorts NULL first in an ASC ordering,
