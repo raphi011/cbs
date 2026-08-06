@@ -8,7 +8,7 @@ import (
 
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/product"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // mutableClock lets a test move time forward, which the forward-only
@@ -20,8 +20,7 @@ func (c *mutableClock) set(t time.Time) { c.at = t }
 
 func newTestCatalogue(t *testing.T, clock func() time.Time) *Catalogue {
 	t.Helper()
-	s := mem.New(clock)
-	t.Cleanup(func() { _ = s.Close() })
+	s := testenv.New(t, clock)
 	book := ledger.NewBook(s, "bank", clock)
 	return NewCatalogue(s.Product(), book, "bank", clock)
 }

@@ -39,7 +39,7 @@ func frozen() time.Time { return time.Unix(0, 0).UTC() }
 // the property store/mem existed for and the reason this backend can replace it.
 func newStore(t *testing.T) *sqlite.Store {
 	t.Helper()
-	return testenv.OpenSQLite(t, frozen)
+	return testenv.New(t, frozen)
 }
 
 // TestConformance runs all five shared conformance suites against SQLite.

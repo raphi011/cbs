@@ -9,7 +9,7 @@ import (
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 // TestTheSeedLeavesNoPaymentHalfProcessed pins what a reader sees on the first
@@ -46,7 +46,7 @@ func TestTheSeedLeavesNoPaymentHalfProcessed(t *testing.T) {
 
 	// The store, the network and the seed, exactly as main builds them.
 	data := seed.New()
-	st := mem.New(data.Now)
+	st := testenv.New(t, data.Now)
 	net := payment.NewNetwork(st.Payment(), data.Now)
 	msh, err := mesh.New(net, meshConfig, slog.New(slog.DiscardHandler))
 	if err != nil {

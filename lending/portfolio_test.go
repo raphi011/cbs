@@ -9,7 +9,7 @@ import (
 	"github.com/raphi011/cbs/interest"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/lending"
-	"github.com/raphi011/cbs/store/mem"
+	"github.com/raphi011/cbs/store/testenv"
 )
 
 const bookID ledger.BookID = "bank"
@@ -38,7 +38,7 @@ func newTestPortfolioOn(t *testing.T, clock func() time.Time) (*lending.Portfoli
 	t.Helper()
 	ctx := context.Background()
 
-	store := mem.New(clock)
+	store := testenv.New(t, clock)
 	book := ledger.NewBook(store, bookID, clock)
 	portfolio := lending.NewPortfolio(store.Lending(), book, bookID, clock)
 
