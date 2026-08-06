@@ -106,7 +106,8 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, err.Error())
 		return
 	}
-	m, err := s.network().CreateMandate(r.Context(), req.Debtor.toDomain(), req.Creditor.toDomain(), ledger.Amount(req.MaxAmount))
+	m, err := s.network().CreateMandate(r.Context(), iso20022.BIC(req.DebtorAgent),
+		req.Debtor.toDomain(), req.Creditor.toDomain(), ledger.Amount(req.MaxAmount))
 	if err != nil {
 		writeError(w, err)
 		return

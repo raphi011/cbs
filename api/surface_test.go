@@ -401,12 +401,11 @@ func settledCycle(t *testing.T, h *Server) string {
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SET-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"settle-e2e",
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -493,12 +492,11 @@ func sct(t *testing.T, h *Server, from, to seededBank, e2e string) string {
 	t.Helper()
 	id := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+from.pid+`","account":"`+from.account+`"},
-		"creditor":{"participant":"`+to.pid+`","account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
+		"debtorAgent":"`+from.pid+`","debtor":{"account":"`+from.account+`"},
+		"creditorAgent":"`+to.pid+`","creditor":{"account":"`+to.account+`","identifier":{"scheme":"IBAN","value":"`+to.iban+`"}},
 		"amount":10000,
 		"endToEndId":"`+e2e+`",
-		"creditorName":"`+to.accountName+`",
-		"creditorAgent":"`+bicOf(t, h, to.pid)+`"
+		"creditorName":"`+to.accountName+`"
 	}`, http.StatusAccepted)["id"].(string)
 	// The payment is Initiated when the 202 is written and the counterparty has
 	// not seen it. Callers of this helper assert on what became of it, so the
@@ -517,12 +515,11 @@ func TestABankAcceptsItsOwnCustomersInstruction(t *testing.T) {
 
 	instruction := `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"` + a.pid + `","account":"` + a.account + `"},
-		"creditor":{"participant":"` + b.pid + `","account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
+		"debtorAgent":"` + a.pid + `","debtor":{"account":"` + a.account + `"},
+		"creditorAgent":"` + b.pid + `","creditor":{"account":"` + b.account + `","identifier":{"scheme":"IBAN","value":"` + b.iban + `"}},
 		"amount":10000,
 		"endToEndId":"retail-1",
-		"creditorName":"` + b.accountName + `",
-		"creditorAgent":"` + bicOf(t, h, b.pid) + `"
+		"creditorName":"` + b.accountName + `"
 	}`
 
 	got := doJSON(t, bank(h, a.pid), "POST", "/payments", instruction, http.StatusAccepted)
@@ -557,20 +554,19 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	// Recorded at the CREDITOR's bank, which on a pull is the collecting bank —
 	// the same bank that submits below, and the only one that may hold the row.
 	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
-		"debtor":{"participant":"`+payerBank.pid+`","account":"`+payerBank.account+`"},
-		"creditor":{"participant":"`+payeeBank.pid+`","account":"`+payeeBank.account+`"},
+		"debtorAgent":"`+payerBank.pid+`","debtor":{"account":"`+payerBank.account+`"},
+		"creditorAgent":"`+payeeBank.pid+`","creditor":{"account":"`+payeeBank.account+`"},
 		"maxAmount":0
 	}`, http.StatusCreated)["id"].(string)
 
 	collection := `{
 		"scheme":"sepa.dd",
-		"debtor":{"participant":"` + payerBank.pid + `","account":"` + payerBank.account + `","identifier":{"scheme":"IBAN","value":"` + payerBank.iban + `"}},
-		"creditor":{"participant":"` + payeeBank.pid + `","account":"` + payeeBank.account + `"},
+		"debtorAgent":"` + payerBank.pid + `","debtor":{"account":"` + payerBank.account + `","identifier":{"scheme":"IBAN","value":"` + payerBank.iban + `"}},
+		"creditorAgent":"` + payeeBank.pid + `","creditor":{"account":"` + payeeBank.account + `"},
 		"amount":10000,
 		"mandateId":"` + mandate + `",
 		"endToEndId":"collection-1",
-		"debtorName":"` + payerBank.accountName + `",
-		"debtorAgent":"` + bicOf(t, h, payerBank.pid) + `"
+		"debtorName":"` + payerBank.accountName + `"
 	}`
 
 	// The payee's bank submits it, and is the right bank to.
@@ -580,8 +576,8 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	// not collect on somebody else's behalf.
 	doJSON(t, bank(h, payerBank.pid), "POST", "/payments", `{
 		"scheme":"sepa.dd",
-		"debtor":{"participant":"`+payerBank.pid+`","account":"`+payerBank.account+`"},
-		"creditor":{"participant":"`+payeeBank.pid+`","account":"`+payeeBank.account+`"},
+		"debtorAgent":"`+payerBank.pid+`","debtor":{"account":"`+payerBank.account+`"},
+		"creditorAgent":"`+payeeBank.pid+`","creditor":{"account":"`+payeeBank.account+`"},
 		"amount":10000,
 		"mandateId":"`+mandate+`",
 		"endToEndId":"collection-2"
@@ -602,8 +598,8 @@ func TestAnUnknownSchemeIsRefusedAsAnUnknownScheme(t *testing.T) {
 	// 422 if it ran first. It must not run first.
 	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"nope",
-		"debtor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
-		"creditor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
+		"debtorAgent":"`+b.pid+`","debtor":{"account":"`+b.account+`"},
+		"creditorAgent":"`+a.pid+`","creditor":{"account":"`+a.account+`"},
 		"amount":10000,
 		"endToEndId":"no-such-scheme"
 	}`, http.StatusNotFound)
@@ -631,7 +627,7 @@ func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 	push := do(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"account":"`+a.account+`"},
-		"creditor":{"participant":"`+b.pid+`","account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
+		"creditorAgent":"`+b.pid+`","creditor":{"account":"`+b.account+`","identifier":{"scheme":"IBAN","value":"`+b.iban+`"}},
 		"amount":10000
 	}`)
 	if push.Code != http.StatusUnprocessableEntity {
@@ -642,14 +638,14 @@ func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 	}
 
 	mandate := doJSON(t, bank(h, b.pid), "POST", "/mandates", `{
-		"debtor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
-		"creditor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
+		"debtorAgent":"`+a.pid+`","debtor":{"account":"`+a.account+`"},
+		"creditorAgent":"`+b.pid+`","creditor":{"account":"`+b.account+`"},
 		"maxAmount":0
 	}`, http.StatusCreated)["id"].(string)
 
 	pull := do(t, bank(h, b.pid), "POST", "/payments", `{
 		"scheme":"sepa.dd",
-		"debtor":{"participant":"`+a.pid+`","account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
+		"debtorAgent":"`+a.pid+`","debtor":{"account":"`+a.account+`","identifier":{"scheme":"IBAN","value":"`+a.iban+`"}},
 		"creditor":{"account":"`+b.account+`"},
 		"amount":10000,
 		"mandateId":"`+mandate+`"
@@ -671,8 +667,8 @@ func TestABankRefusesAnInstructionItIsNotTheDebtorFor(t *testing.T) {
 	// Bank A's listener, asked to debit Bank B's customer.
 	doJSON(t, bank(h, a.pid), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
-		"creditor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
+		"debtorAgent":"`+b.pid+`","debtor":{"account":"`+b.account+`"},
+		"creditorAgent":"`+a.pid+`","creditor":{"account":"`+a.account+`"},
 		"amount":10000,
 		"endToEndId":"not-mine-to-send"
 	}`, http.StatusUnprocessableEntity)

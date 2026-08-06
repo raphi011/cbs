@@ -199,7 +199,7 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 		t.Fatal("the rejected collection has no debtor leg; the fixture no longer covers a reversal")
 	}
 
-	bank, err := net.GetBank(ctx, rejected.Debtor.Participant)
+	bank, err := net.GetBank(ctx, payment.ParticipantID(rejected.DebtorDetails.Agent))
 	if err != nil {
 		t.Fatalf("get participant: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
 	if target.ID == "" {
 		t.Fatal("no accepted payment with a posted leg in the seed data")
 	}
-	if err := net.nets.Bank(target.Debtor.Participant).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
+	if err := net.nets.Bank(payment.ParticipantID(target.DebtorDetails.Agent)).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the composite: %v", err)
 	}
 
@@ -522,10 +522,10 @@ func TestClockWentLive(t *testing.T) {
 	if len(accts) == 0 {
 		t.Fatal("first participant has no accounts")
 	}
-	ref := payment.PartyRef{Participant: first.ID, Account: accts[0].ID}
+	ref := payment.PartyRef{Account: accts[0].ID}
 
 	// A mutation after build must be timestamped in real time, not at baseDate.
-	m, err := net.nets.Bank(first.ID).CreateMandate(ctx, ref, ref, 0)
+	m, err := net.nets.Bank(first.ID).CreateMandate(ctx, first.BIC, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

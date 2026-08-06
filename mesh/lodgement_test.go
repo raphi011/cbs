@@ -42,10 +42,10 @@ func lodgementFor(t *testing.T, h *meshHarness, amount ledger.Amount, msgID stri
 
 	// A fresh deposit, so there is unlodged cash in the vault to move. The
 	// fixture has already lodged its own funding.
-	if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
-	_, env, err := h.bank(h.debtor.ID).LodgeReserves(ctx, "EUR", amount, payment.MessageContext{
+	_, env, err := h.bank(h.debtor.BIC).LodgeReserves(ctx, "EUR", amount, payment.MessageContext{
 		From:  h.debtorBIC,
 		To:    h.cfg.CentralBankBIC,
 		MsgID: msgID,

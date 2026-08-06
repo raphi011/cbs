@@ -119,12 +119,12 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 	joiner = h.getBank(t, joiner.ID)
 
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
-	if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+	if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("funding a bank admitted through the mesh: %v", err)
 	}
 
 	out := h.creditTransferRequest(t)
-	out.Debtor = payment.PartyRef{Participant: joiner.ID, Account: acct.ID, Identifier: acct.Identifiers[0]}
+	out.Debtor = payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]}
 	sent, err := h.mesh.Submit(ctx, out)
 	if err != nil {
 		t.Fatalf("the admitted bank could not submit: %v", err)
@@ -135,7 +135,7 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 	}
 
 	in := h.creditTransferRequest(t)
-	in.Creditor = payment.PartyRef{Participant: joiner.ID, Account: acct.ID, Identifier: acct.Identifiers[0]}
+	in.Creditor = payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	received, err := h.mesh.Submit(ctx, in)
 	if err != nil {
@@ -217,7 +217,7 @@ func TestATwoAssetAdmissionRecordsBothSettlementAccounts(t *testing.T) {
 	joiner = h.getBank(t, joiner.ID)
 	for asset, iban := range map[ledger.AssetCode]string{"EUR": joinerIBAN, "USD": joinerUSDIBAN} {
 		acct := h.openCustomer(t, joiner, "Nora", asset, 0, iban)
-		if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Errorf("funding the admitted bank in %s: %v", asset, err)
 		}
 	}
@@ -955,7 +955,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 				return payment.InitiatePaymentRequest{
 					Scheme: payment.SchemeSEPACT,
 					Debtor: payment.PartyRef{
-						Participant: b.ID, Account: acct.ID,
+						Account:    acct.ID,
 						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
 					},
 					Creditor:        h.creditorRef(creditorIBAN),
@@ -974,7 +974,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					Scheme: payment.SchemeSEPACT,
 					Debtor: h.debtorRef(),
 					Creditor: payment.PartyRef{
-						Participant: b.ID, Account: acct.ID,
+						Account:    acct.ID,
 						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
 					},
 					Amount:          harnessAmount,

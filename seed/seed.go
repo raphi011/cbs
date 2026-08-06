@@ -204,9 +204,18 @@ type catalogue struct{ basic, premium product.ID }
 // They are spelled out rather than cached because payment.Networks mints on
 // demand and the seed builds one scenario once; a field per bank would be a
 // second index over the banks this builder is in the middle of creating.
-func (b *builder) bank(pid payment.ParticipantID) *payment.Network { return b.nets.Bank(pid) }
-func (b *builder) csm() *payment.Network                           { return b.nets.ClearingHouse() }
-func (b *builder) cb() *payment.Network                            { return b.nets.CentralBank() }
+// bank is one member bank's own view, keyed by its ADDRESS.
+//
+// It took a payment.ParticipantID, which is the same value under the other type
+// (see payment.AsBank), and it takes the BIC because that is what every caller
+// here now holds: the seed reads a submitter, a receiver, a returner and a
+// statement's member off agents and off the central bank's own records, all of
+// which are BICs. Converting once here beats converting at eleven call sites.
+func (b *builder) bank(bic iso20022.BIC) *payment.Network {
+	return b.nets.Bank(payment.ParticipantID(bic))
+}
+func (b *builder) csm() *payment.Network { return b.nets.ClearingHouse() }
+func (b *builder) cb() *payment.Network  { return b.nets.CentralBank() }
 
 // must returns v, panicking on a non-nil error. Seed data is hardcoded and
 // deterministic, so any error is a programming bug that should fail loudly.
@@ -376,8 +385,14 @@ func (b *builder) runDays(p *payment.Bank, days int) {
 
 // ref builds a PartyRef for a customer deposit account from the account's own
 // IBAN identifier, so the same account always produces an identical PartyRef.
-func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
-	ref := payment.PartyRef{Participant: p.ID, Account: acct.ID}
+//
+// It took the account's BANK as well, to fill the ref's participant. A PartyRef
+// names no bank now (see payment.PartyRef), and which bank an account is at
+// travels beside the ref as an agent BIC — on the request's PartyDetails for a
+// payment, and as CreateMandate's own argument for a mandate. The call sites say
+// it once rather than twice.
+func (b *builder) ref(acct deposit.Account) payment.PartyRef {
+	ref := payment.PartyRef{Account: acct.ID}
 	for _, ident := range acct.Identifiers {
 		if ident.Scheme == deposit.IdentifierIBAN {
 			ref.Identifier = ident
@@ -396,7 +411,7 @@ func (b *builder) ref(p *payment.Bank, acct deposit.Account) payment.PartyRef {
 // central bank and cannot happen inside a deposit. See lodge, which every funded
 // bank has to run before this scenario can settle anything.
 func (b *builder) fund(p *payment.Bank, acct deposit.Account, amount ledger.Amount) {
-	check(b.bank(p.ID).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
+	check(b.bank(p.BIC).Deposit(b.ctx, p.ID, acct.ID, amount, "Opening deposit"))
 }
 
 // lodge moves one bank's vault cash onto its reserve at the central bank, and
@@ -457,9 +472,9 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	// The SUBMITTING bank, which the scheme's direction decides: the payer's
 	// bank pushes and the payee's bank pulls. The seed knows the request's
 	// scheme before it opens the unit of work, so this is settled here.
-	submitter := req.Debtor.Participant
+	submitter := req.DebtorDetails.Agent
 	if scheme, ok := b.csm().Scheme(req.Scheme); ok && scheme.Direction() == payment.Pull {
-		submitter = req.Creditor.Participant
+		submitter = req.CreditorDetails.Agent
 	}
 	check(b.nets.Store().Update(b.ctx, func(ctx context.Context, tx payment.Tx) error {
 		p, err := b.bank(submitter).SubmitPaymentTx(ctx, tx, req)
@@ -470,9 +485,9 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 		// picks the network AcceptInboundTx resolves the address in — its own
 		// register and no other, since Task 18a — and the seed is playing that
 		// bank as well as the submitting one.
-		receiver := p.Creditor.Participant
+		receiver := p.CreditorDetails.Agent
 		if receiver == submitter {
-			receiver = p.Debtor.Participant
+			receiver = p.DebtorDetails.Agent
 		}
 		if err := b.bank(receiver).AcceptInboundTx(ctx, tx, p.ID); err != nil {
 			return err
@@ -498,7 +513,7 @@ func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reaso
 			return err
 		}
 		// The payer's bank gives the money back, in its own book.
-		return b.bank(rejected.Debtor.Participant).ReverseDebtorLegTx(ctx, tx, rejected, reason)
+		return b.bank(rejected.DebtorDetails.Agent).ReverseDebtorLegTx(ctx, tx, rejected, reason)
 	}))
 }
 
@@ -541,10 +556,10 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 		if !ok {
 			return fmt.Errorf("seed: no scheme %q to return %s under: %w", p.Scheme, id, payment.ErrSchemeNotFound)
 		}
-		returner := payment.ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
-		other := p.Debtor.Participant
+		returner := payment.ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+		other := p.DebtorDetails.Agent
 		if other == returner {
-			other = p.Creditor.Participant
+			other = p.CreditorDetails.Agent
 		}
 		if _, err := b.bank(returner).PostReturnLegTx(ctx, tx, id, reason); err != nil {
 			return err
@@ -562,7 +577,7 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 			return err
 		}
 		for _, st := range statements {
-			if _, err := b.bank(st.Member).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
+			if _, err := b.bank(st.Agent).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
 				Account:        st.Account,
 				Asset:          st.Asset,
 				Movement:       st.Movement,
@@ -607,7 +622,7 @@ func (b *builder) settle(id payment.CycleID) {
 			return err
 		}
 		for _, st := range statements {
-			if _, err := b.bank(st.Member).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
+			if _, err := b.bank(st.Agent).PostSettlementAdviceTx(ctx, tx, payment.AdvisedMovement{
 				Account:        st.Account,
 				Asset:          st.Asset,
 				Movement:       st.Movement,
@@ -632,7 +647,7 @@ func (b *builder) settle(id payment.CycleID) {
 			if err != nil {
 				return err
 			}
-			if _, err := b.bank(p.Creditor.Participant).PostCreditorLegTx(ctx, tx, pid); err != nil {
+			if _, err := b.bank(p.CreditorDetails.Agent).PostCreditorLegTx(ctx, tx, pid); err != nil {
 				return err
 			}
 		}
@@ -656,12 +671,19 @@ func (b *builder) settle(id payment.CycleID) {
 // not — cp is a bank this builder founded itself, in this process.
 func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
-		Scheme:          payment.SchemeSEPACT,
-		Debtor:          b.ref(dp, d),
-		Creditor:        b.ref(cp, c),
-		Amount:          amount,
-		EndToEndID:      e2e,
-		Description:     desc,
+		Scheme:      payment.SchemeSEPACT,
+		Debtor:      b.ref(d),
+		Creditor:    b.ref(c),
+		Amount:      amount,
+		EndToEndID:  e2e,
+		Description: desc,
+		// BOTH sides, where an instruction from a customer would name only the
+		// counterparty's. The submitting bank's own agent is discarded and
+		// refilled from its own row either way (payment.SubmitPaymentTx), so
+		// naming it changes nothing about the payment — what it buys is that the
+		// seed's requests still say which bank submits, which is what initiate
+		// below reads and what mesh.Mesh.Submit's on-us guard compares.
+		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
 		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})
 }
@@ -671,14 +693,16 @@ func (b *builder) initSCT(dp *payment.Bank, d deposit.Account, cp *payment.Bank,
 // the debtor's bank. See initSCT.
 func (b *builder) initSDD(dp *payment.Bank, d deposit.Account, cp *payment.Bank, c deposit.Account, amount ledger.Amount, mandate payment.MandateID, e2e, desc string) payment.Payment {
 	return b.initiate(payment.InitiatePaymentRequest{
-		Scheme:        payment.SchemeSEPADD,
-		Debtor:        b.ref(dp, d),
-		Creditor:      b.ref(cp, c),
-		Amount:        amount,
-		MandateID:     mandate,
-		EndToEndID:    e2e,
-		Description:   desc,
-		DebtorDetails: payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
+		Scheme:      payment.SchemeSEPADD,
+		Debtor:      b.ref(d),
+		Creditor:    b.ref(c),
+		Amount:      amount,
+		MandateID:   mandate,
+		EndToEndID:  e2e,
+		Description: desc,
+		// Both sides; see initSCT.
+		DebtorDetails:   payment.PartyDetails{Agent: dp.BIC, Name: d.Name},
+		CreditorDetails: payment.PartyDetails{Agent: cp.BIC, Name: c.Name},
 	})
 }
 
@@ -781,10 +805,10 @@ func (b *builder) build() {
 	// mandate in SEPA and the only one this system lets record one. Reading the
 	// second argument as "who may collect" is what says which bank() each call
 	// goes through.
-	m1 := must(b.bank(nord.ID).CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
-	m2 := must(b.bank(aurora.ID).CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
-	m3 := must(b.bank(soleil.ID).CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
-	check(b.bank(soleil.ID).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
+	m1 := must(b.bank(nord.BIC).CreateMandate(b.ctx, soleil.BIC, b.ref(chloe), b.ref(nora), 100_000))
+	m2 := must(b.bank(aurora.BIC).CreateMandate(b.ctx, verde.BIC, b.ref(bruno), b.ref(aaron), 0))
+	m3 := must(b.bank(soleil.BIC).CreateMandate(b.ctx, nord.BIC, b.ref(niklas), b.ref(claude), 25_000))
+	check(b.bank(soleil.BIC).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
 	b.clock.advance(1 * time.Hour)
 

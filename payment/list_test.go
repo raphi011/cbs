@@ -36,11 +36,11 @@ func TestListPaymentsCyclesSettlements(t *testing.T) {
 	st := runCycle(t, sys, SchemeSEPACT, func() {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme:          SchemeSEPACT,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			Amount:          30000,
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 
@@ -73,14 +73,15 @@ func TestListMandates(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	_, err := sys.bank(b.ID).CreateMandate(ctx,
-		PartyRef{Participant: a.ID, Account: alice},
-		PartyRef{Participant: b.ID, Account: bob},
+	_, err := sys.bank(b.BIC).CreateMandate(ctx,
+		a.BIC,
+		PartyRef{Account: alice},
+		PartyRef{Account: bob},
 		50000,
 	)
 	assertNoError(t, err)
 
-	mandates, err := sys.bank(b.ID).ListMandates(ctx)
+	mandates, err := sys.bank(b.BIC).ListMandates(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "mandate count", len(mandates), 1)
 }

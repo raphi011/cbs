@@ -88,7 +88,11 @@ type testSystem struct {
 }
 
 // bank is one member's own view: the network its acts are performed through.
-func (s *testSystem) bank(pid ParticipantID) *Network { return s.nets.Bank(pid) }
+//
+// Keyed by the BIC, because a bank's ParticipantID is its BIC since Task 18 (see
+// AsBank) and every caller here now holds an address: the agents on a payment,
+// the agent on a request, the agent on a settlement statement.
+func (s *testSystem) bank(bic iso20022.BIC) *Network { return s.nets.Bank(ParticipantID(bic)) }
 
 // cb is the settlement agent's view, and the only one holding the central
 // bank's book of accounts.
@@ -144,7 +148,12 @@ func accountsOf(t *testing.T, p *Bank) BankAccounts {
 func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) (Payment, error) {
 	var out Payment
 	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		p, err := sys.SubmitPaymentTx(ctx, tx, req)
+		// The SUBMITTING bank's own network, and it used to be sys — the clearing
+		// house's. That worked while a payment's refs named their own banks and
+		// checkPartyTx read the named one; the submitting side is resolved in this
+		// network's own register now, so the institution has to be right. See
+		// submitterOfReq.
+		p, err := sys.bank(submitterOfReq(sys, req)).SubmitPaymentTx(ctx, tx, req)
 		if err != nil {
 			return err
 		}
@@ -337,7 +346,7 @@ func lodgeReserves(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, 
 		MsgID: fmt.Sprintf("%s-lodge-%s-%d", p.ID, asset, lodgementSeq.Add(1)),
 		Now:   sys.Now(),
 	}
-	_, env, err := sys.bank(p.ID).LodgeReserves(ctx, asset, amount, mc)
+	_, env, err := sys.bank(p.BIC).LodgeReserves(ctx, asset, amount, mc)
 	assertNoError(t, err)
 
 	doc, ok := env.Document.(*iso20022.Camt050)
@@ -456,10 +465,10 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 	if !ok || !scheme.AllowsReturn() {
 		return Payment{}, ErrSchemeUnsupportedReturn
 	}
-	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
-	other := p.Debtor.Participant
+	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	other := p.DebtorDetails.Agent
 	if other == returner {
-		other = p.Creditor.Participant
+		other = p.CreditorDetails.Agent
 	}
 	if _, err := sys.bank(returner).PostReturnLeg(ctx, id, reason); err != nil {
 		return Payment{}, err
@@ -477,7 +486,7 @@ func returnWholePayment(ctx context.Context, sys *testSystem, id PaymentID, reas
 		return Payment{}, err
 	}
 	for _, st := range statements {
-		if _, err := sys.bank(st.Member).PostSettlementAdvice(ctx, AdvisedMovement{
+		if _, err := sys.bank(st.Agent).PostSettlementAdvice(ctx, AdvisedMovement{
 			Account:        st.Account,
 			Asset:          st.Asset,
 			Movement:       st.Movement,
@@ -501,7 +510,7 @@ func bookTheAdvices(t *testing.T, sys *testSystem, statements []SettlementStatem
 	t.Helper()
 	ctx := context.Background()
 	for _, st := range statements {
-		_, err := sys.bank(st.Member).PostSettlementAdvice(ctx, AdvisedMovement{
+		_, err := sys.bank(st.Agent).PostSettlementAdvice(ctx, AdvisedMovement{
 			Account:        st.Account,
 			Asset:          st.Asset,
 			Movement:       st.Movement,
@@ -534,7 +543,7 @@ func payTheCreditors(t *testing.T, sys *testSystem, id CycleID) {
 	for _, pid := range cyc.PaymentIDs {
 		p, err := sys.GetPayment(ctx, pid)
 		assertNoError(t, err)
-		_, err = sys.bank(p.Creditor.Participant).PostCreditorLeg(ctx, pid)
+		_, err = sys.bank(p.CreditorDetails.Agent).PostCreditorLeg(ctx, pid)
 		assertNoError(t, err)
 	}
 }
@@ -551,9 +560,9 @@ func bookBalance(t *testing.T, l *ledger.Book, acct ledger.AccountID) ledger.Amo
 // looked up by participant id. It is where a payer's money sits between the
 // debtor leg and settlement, so it is the balance that says whether an actor
 // touched the debtor bank's own book.
-func suspenseBalance(t *testing.T, n *testSystem, id ParticipantID) ledger.Amount {
+func suspenseBalance(t *testing.T, n *testSystem, bic iso20022.BIC) ledger.Amount {
 	t.Helper()
-	p, err := n.GetBank(context.Background(), id)
+	p, err := n.GetBank(context.Background(), ParticipantID(bic))
 	assertNoError(t, err)
 	return bookBalance(t, p.Ledger, accountsOf(t, p).Suspense)
 }
@@ -591,12 +600,12 @@ func TestSCT_HappyPath(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme:          SchemeSEPACT,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			Amount:          30000,
 			Description:     "Invoice 42",
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 		assertEqual(t, "status after initiation", pay.Status, Accepted)
 		// Debtor leg is value-dated to settlement (T+1).
@@ -642,9 +651,9 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	assertNoError(t, err)
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
 	// Bob closes after his bank has already accepted the payment and the
@@ -662,7 +671,7 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	//    pay its own customer.
 	_, _, err = sys.cb().SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	_, err = sys.bank(b.ID).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
 	assertNoError(t, err)
 
 	// 2. The payment settled, because it did: the reserves moved and Bob's bank
@@ -717,9 +726,9 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	assertNoError(t, err)
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
@@ -785,9 +794,9 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 	assertNoError(t, err)
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 	closeCreditorAccount(t, sys, pay)
 
@@ -796,7 +805,7 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 	_, statements, err := sys.cb().SettleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
-	_, err = sys.bank(b.ID).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
 	assertNoError(t, err)
 
 	// Where the money is before the return, and it is not with Bob.
@@ -838,12 +847,12 @@ func TestInitiateValueDatesTheCustomerLegToTheDebit(t *testing.T) {
 	assertNoError(t, err)
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: a.ID, Account: alice},
-		Creditor:        PartyRef{Participant: b.ID, Account: bob},
+		Debtor:          PartyRef{Account: alice},
+		Creditor:        PartyRef{Account: bob},
 		Amount:          10000,
 		Description:     "Rent",
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
 	posted, err := a.Ledger.GetTransaction(ctx, p.DebtorLegTx)
@@ -891,21 +900,21 @@ func TestSCT_Netting(t *testing.T) {
 	st := runCycle(t, sys, SchemeSEPACT, func() {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
-			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
+			Debtor: PartyRef{Account: bob}, Creditor: PartyRef{Account: alice},
 			CreditorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			DebtorDetails:   PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 	})
 
 	// Net: A owes 30000, receives 10000 => net -20000; B is the mirror +20000.
-	assertEqual(t, "net A", st.NetPositions[a.ID], -20000)
-	assertEqual(t, "net B", st.NetPositions[b.ID], 20000)
+	assertEqual(t, "net A", st.NetPositions[a.BIC], -20000)
+	assertEqual(t, "net B", st.NetPositions[b.BIC], 20000)
 
 	// Gross customer movements still apply: Alice -30000 +10000, Bob -10000 +30000.
 	assertEqual(t, "alice", customerBalance(t, a, alice), 80000)
@@ -926,9 +935,9 @@ func TestSCT_InsufficientFunds(t *testing.T) {
 	assertNoError(t, err)
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 150000, // more than Alice has
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertError(t, err, deposit.ErrInsufficientAvailable)
 }
 
@@ -941,9 +950,9 @@ func TestSDD_HappyPath(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: biller}
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
@@ -967,14 +976,14 @@ func TestSDD_MandateValidation(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: biller}
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: biller}
 
-	limited, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 5000)
+	limited, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 5000)
 	assertNoError(t, err)
-	revoked, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	revoked, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
-	assertNoError(t, sys.bank(creditor.Participant).RevokeMandate(ctx, revoked.ID))
+	assertNoError(t, sys.bank(b.BIC).RevokeMandate(ctx, revoked.ID))
 
 	cases := []struct {
 		name      string
@@ -1009,9 +1018,9 @@ func TestSDD_Return(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: biller}
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
@@ -1239,16 +1248,16 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*testSystem, CycleID) {
 	// Bank B pays 20000 it has the reserves for.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 20000,
-		Debtor: PartyRef{Participant: b.ID, Account: bob.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		Debtor: PartyRef{Account: bob.ID}, Creditor: PartyRef{Account: alice.ID},
 		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: b.BIC}})
 	assertNoError(t, err)
 	// Bank C pays 60000 its customer can afford on overdraft and it cannot.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 60000,
-		Debtor: PartyRef{Participant: c.ID, Account: carol.ID}, Creditor: PartyRef{Participant: a.ID, Account: alice.ID},
+		Debtor: PartyRef{Account: carol.ID}, Creditor: PartyRef{Account: alice.ID},
 		CreditorDetails: PartyDetails{Agent: a.BIC, Name: alice.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: c.BIC}})
 	assertNoError(t, err)
 
 	_, err = sys.CloseCycle(ctx, cyc.ID)
@@ -1302,10 +1311,10 @@ func TestSettlementEntryOrderIsDeterministic(t *testing.T) {
 				j := (i + 1) % len(banks)
 				_, err := initiate(ctx, sys, InitiatePaymentRequest{
 					Scheme: SchemeSEPACT, Amount: ledger.Amount(1000 * (i + 1)),
-					Debtor:          PartyRef{Participant: banks[i].ID, Account: accounts[i].ID},
-					Creditor:        PartyRef{Participant: banks[j].ID, Account: accounts[j].ID},
+					Debtor:          PartyRef{Account: accounts[i].ID},
+					Creditor:        PartyRef{Account: accounts[j].ID},
 					CreditorDetails: PartyDetails{Agent: banks[j].BIC, Name: accounts[j].Name},
-				})
+					DebtorDetails:   PartyDetails{Agent: banks[i].BIC}})
 				assertNoError(t, err)
 			}
 		})
@@ -1342,9 +1351,9 @@ func TestStateMachineGuards(t *testing.T) {
 		assertNoError(t, err)
 		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 		return p, cyc.ID
 	}
@@ -1395,9 +1404,9 @@ func TestRejectionReversesTheDebtorLeg(t *testing.T) {
 	assertNoError(t, err)
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 40000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 	assertEqual(t, "alice debited", customerBalance(t, a, alice), 60000)
 
@@ -1416,9 +1425,9 @@ func TestDuplicateEndToEndID(t *testing.T) {
 	assertNoError(t, err)
 	req := InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 1000, EndToEndID: "e2e-1",
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	}
+		DebtorDetails:   PartyDetails{Agent: a.BIC}}
 	_, err = initiate(ctx, sys, req)
 	assertNoError(t, err)
 	_, err = initiate(ctx, sys, req)
@@ -1435,23 +1444,25 @@ func TestInitiatePayment_Validation(t *testing.T) {
 	t.Run("unknown scheme", func(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: "nope", Amount: 1000,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
-		})
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
+			DebtorDetails:   PartyDetails{Agent: a.BIC},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertError(t, err, ErrSchemeNotFound)
 	})
 	t.Run("non-positive amount", func(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 0,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
-		})
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
+			DebtorDetails:   PartyDetails{Agent: a.BIC},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertError(t, err, ErrInvalidPaymentAmount)
 	})
 	t.Run("account not in participant", func(t *testing.T) {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 1000,
-			Debtor: PartyRef{Participant: a.ID, Account: "999.999.999"}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			Debtor: PartyRef{Account: "999.999.999"}, Creditor: PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertError(t, err, ErrAccountNotInParticipant)
 	})
 	t.Run("no open cycle", func(t *testing.T) {
@@ -1460,16 +1471,17 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		// collection they are perfectly happy with, and AcceptAtCSMTx is what
 		// finds no window open for sepa.dd. A mandate is needed to get that
 		// far at all — without one the creditor's own bank refuses first.
-		m, err := sys.bank(b.ID).CreateMandate(ctx,
-			PartyRef{Participant: a.ID, Account: alice},
-			PartyRef{Participant: b.ID, Account: bob}, 0)
+		m, err := sys.bank(b.BIC).CreateMandate(ctx,
+			a.BIC,
+			PartyRef{Account: alice},
+			PartyRef{Account: bob}, 0)
 		assertNoError(t, err)
 
 		_, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 1000, MandateID: m.ID, // no SDD cycle open
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
-			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
+			DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertError(t, err, ErrCycleNotOpen)
 	})
 }
@@ -1821,7 +1833,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	}
 	// A bank with nothing recorded takes the first that names it.
 	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, ack)
+		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
 	recorded := mustGetBank(t, ctx, sys, bank.ID)
@@ -1834,7 +1846,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
 	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, second)
+		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, second)
 		return err
 	})
 
@@ -1844,7 +1856,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	forged.Ref = "adm-someone-else"
 	forged.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "acc_bogus"}
 	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, forged)
+		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, forged)
 		return err
 	})
 	if !errors.Is(err, ErrBankAlreadyAdmitted) {
@@ -1900,7 +1912,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 	}
 	record := func(sys *testSystem, id ParticipantID, ack AdmissionAcknowledgement) error {
 		return sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-			_, err := sys.bank(id).RecordMembershipTx(ctx, tx, ack)
+			_, err := sys.bank(iso20022.BIC(id)).RecordMembershipTx(ctx, tx, ack)
 			return err
 		})
 	}
@@ -2019,7 +2031,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	// The BANK. A membership recorded under no admission is a Member whose row
 	// reads as "accepted nothing", which is the reset.
 	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, noRef)
+		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, noRef)
 		return err
 	})
 	if !errors.Is(err, ErrAdmissionNotIdentified) {
@@ -2051,7 +2063,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	real := noRef
 	real.Ref = "adm-1"
 	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, real)
+		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 		return err
 	})
 	assertEqual(t, "the admission the bank recorded", mustGetBank(t, ctx, sys, bank.ID).AdmissionRef, "adm-1")
@@ -2150,7 +2162,7 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 				t.Errorf("the clearing house answered an acknowledgement with %s: %v, want %v", tc.what, err, tc.want)
 			}
 			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-				_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, tc.in)
+				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, tc.in)
 				return err
 			}); !errors.Is(err, tc.want) {
 				t.Errorf("the bank answered an acknowledgement with %s: %v, want %v", tc.what, err, tc.want)
@@ -2166,7 +2178,7 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 				if _, err := sys.AdmitMemberTx(ctx, tx, real); err != nil {
 					return err
 				}
-				_, err := sys.bank(bank.ID).RecordMembershipTx(ctx, tx, real)
+				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 				return err
 			})
 			admitted := mustGetBank(t, ctx, sys, bank.ID)
@@ -2199,7 +2211,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 		Ref:      "adm-1",
 	}
 	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(verde.ID).RecordMembershipTx(ctx, tx, ack)
+		_, err := sys.bank(verde.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
 	if !errors.Is(err, ErrNotThisBanksAdmission) {
@@ -2219,7 +2231,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 
 	// And the bank the acknowledgement IS addressed to records it.
 	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
-		_, err := sys.bank(aurora.ID).RecordMembershipTx(ctx, tx, ack)
+		_, err := sys.bank(aurora.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
 	got := mustGetBank(t, ctx, sys, aurora.ID)
@@ -2250,9 +2262,9 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	assertNoError(t, err)
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
@@ -2315,10 +2327,10 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
 		Amount:          1000,
-		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		Debtor:          PartyRef{Account: from.ID},
+		Creditor:        PartyRef{Account: to.ID},
 		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: alpha.BIC}})
 	assertError(t, err, ErrAssetMismatch)
 }
 
@@ -2351,10 +2363,10 @@ func TestPaymentRejectsDebtorAccountNotInSchemeAsset(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
 		Amount:          1000,
-		Debtor:          PartyRef{Participant: alpha.ID, Account: from.ID},
-		Creditor:        PartyRef{Participant: beta.ID, Account: to.ID},
+		Debtor:          PartyRef{Account: from.ID},
+		Creditor:        PartyRef{Account: to.ID},
 		CreditorDetails: PartyDetails{Agent: beta.BIC, Name: to.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: alpha.BIC}})
 	assertError(t, err, ErrAssetMismatch)
 }
 
@@ -2383,9 +2395,9 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	creditorAcct, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
 	assertNoError(t, err)
 
-	debtor := PartyRef{Participant: alpha.ID, Account: debtorAcct.ID}
-	creditor := PartyRef{Participant: beta.ID, Account: creditorAcct.ID}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: debtorAcct.ID}
+	creditor := PartyRef{Account: creditorAcct.ID}
+	m, err := sys.bank(beta.BIC).CreateMandate(ctx, alpha.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPADD)
@@ -2436,13 +2448,14 @@ func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 
 	// Created, and it records the CREDITOR's asset, because that is the account
 	// the bank recording it holds.
-	m, err := sys.bank(beta.ID).CreateMandate(ctx,
-		PartyRef{Participant: alpha.ID, Account: debtorAcct.ID},
-		PartyRef{Participant: beta.ID, Account: creditorAcct.ID}, 50000)
+	m, err := sys.bank(beta.BIC).CreateMandate(ctx,
+		alpha.BIC,
+		PartyRef{Account: debtorAcct.ID},
+		PartyRef{Account: creditorAcct.ID}, 50000)
 	assertNoError(t, err)
 	assertEqual(t, "the mandate's asset", string(m.Asset), "BTC")
 
-	mandates, err := sys.bank(beta.ID).ListMandates(ctx)
+	mandates, err := sys.bank(beta.BIC).ListMandates(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "mandates recorded", len(mandates), 1)
 
@@ -2450,13 +2463,13 @@ func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 	// does not match the scheme's asset.
 	openCycle(t, ctx, sys, SchemeSEPADD)
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme:        SchemeSEPADD,
-		Amount:        1000,
-		MandateID:     m.ID,
-		Debtor:        PartyRef{Participant: alpha.ID, Account: debtorAcct.ID},
-		Creditor:      PartyRef{Participant: beta.ID, Account: creditorAcct.ID},
-		DebtorDetails: PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
-	})
+		Scheme:          SchemeSEPADD,
+		Amount:          1000,
+		MandateID:       m.ID,
+		Debtor:          PartyRef{Account: debtorAcct.ID},
+		Creditor:        PartyRef{Account: creditorAcct.ID},
+		DebtorDetails:   PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
+		CreditorDetails: PartyDetails{Agent: beta.BIC}})
 	assertError(t, err, ErrAssetMismatch)
 }
 
@@ -2472,45 +2485,66 @@ func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 //
 // The DEBTOR is not refused here and is not checked either: it is another bank's
 // customer, recorded from what the creditor said, exactly as a payment's
-// counterparty is since Task 14.
+// counterparty is since Task 14. Its BANK is recorded, as an address — see
+// Mandate.DebtorAgent.
+//
+// # What this test lost at Task 18, and what has to give it back
+//
+// It used to assert two more things: that the debtor's bank READING the mandate
+// was refused with ErrNotThisBanksMandate, and that its listing held none. Both
+// were decided by comparing the mandate's creditor participant against the
+// asking bank, and a mandate carries no creditor bank any more — it cannot,
+// because every mandate in a creditor bank's database is that bank's, so the
+// column would hold one value for ever (see the mandates statement in the bank
+// schema).
+//
+// What is supposed to make those two true is the STORE: another bank's mandate
+// is not a row this database holds, so the read is a not-found and the listing is
+// empty by construction. The wiring that gives each entity a database has not
+// landed, so both are asserted here as the transitional truth rather than as the
+// intended one — a shared store answers about rows it should not see. See
+// Network.ListMandates, which names the same gap, and restore these two
+// assertions as isolation claims when the split lands.
 func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: bob}
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: bob}
 
-	// The DEBTOR's bank cannot record it, and neither can the clearing house.
-	_, err := sys.bank(a.ID).CreateMandate(ctx, debtor, creditor, 0)
-	assertError(t, err, ErrNotThisBanksMandate)
-	_, err = sys.CreateMandate(ctx, debtor, creditor, 0)
+	// The DEBTOR's bank cannot record it — not because it is told whose mandate
+	// this is, but because the creditor account named is not one of its own, and
+	// a mandate's creditor is checked against the recording bank's own register.
+	// That is the same refusal from the only table that can still answer it.
+	_, err := sys.bank(a.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
+	assertError(t, err, ErrAccountNotInParticipant)
+	// The clearing house cannot either, and that refusal is unchanged: it is not
+	// a member bank, so this is not its act at all.
+	_, err = sys.CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertError(t, err, ErrNotThisInstitutionsAct)
 
-	// The creditor's bank can, and the row carries its own account's asset.
-	m, err := sys.bank(b.ID).CreateMandate(ctx, debtor, creditor, 0)
+	// The creditor's bank can, and the row carries its own account's asset and
+	// the debtor's bank as an address.
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 	assertEqual(t, "the mandate's asset", string(m.Asset), string(testAsset))
+	assertEqual(t, "the mandate's debtor agent", string(m.DebtorAgent), string(a.BIC))
 
-	// Reading and revoking are the creditor bank's too. The debtor's bank gets a
-	// refusal naming the boundary rather than a not-found: the row exists, and
-	// what is wrong is who asked.
-	if _, err := sys.bank(a.ID).GetMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
-		t.Errorf("the debtor's bank read a mandate it does not hold: %v", err)
-	}
-	if err := sys.bank(a.ID).RevokeMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
-		t.Errorf("the debtor's bank revoked a mandate it does not hold: %v", err)
+	// Revoking is still refused to anything that is not a member bank, which is
+	// the whole of what the row can now decide on its own.
+	if err := sys.RevokeMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
+		t.Errorf("the clearing house revoked a mandate: %v", err)
 	}
 
-	// And the listing is this bank's own. The debtor's bank holds none, which is
-	// what stops GET /mandates on a bank's port being every member's
-	// authorisations on one page.
-	mine, err := sys.bank(b.ID).ListMandates(ctx)
+	// The creditor's bank sees its own. The debtor's bank sees it too, today,
+	// and that is the transitional gap named above rather than a rule.
+	mine, err := sys.bank(b.BIC).ListMandates(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "the creditor bank's mandates", len(mine), 1)
-	theirs, err := sys.bank(a.ID).ListMandates(ctx)
+	theirs, err := sys.bank(a.BIC).ListMandates(ctx)
 	assertNoError(t, err)
-	assertEqual(t, "the debtor bank's mandates", len(theirs), 0)
+	assertEqual(t, "the debtor bank's mandates, until each bank has a store", len(theirs), 1)
 }
 
 // What the ledger does and does not catch about a euro-to-bitcoin payment.
@@ -2554,9 +2588,9 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 	assertNoError(t, err)
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 30000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
 	// The debtor leg is already posted and already balanced — in EUR, on its
@@ -2584,7 +2618,7 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 	bookTheAdvices(t, sys, statements)
 
 	// The refusal arrives at the payee's bank, when it comes to pay.
-	_, err = sys.bank(b.ID).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
 	assertError(t, err, ledger.ErrUnbalancedAsset)
 
 	// The one payment fails, not the batch: the cycle settled, and this payment
@@ -2753,19 +2787,22 @@ func TestResolveIdentifierAnswersOnlyForTheAskingBanksOwnRegister(t *testing.T) 
 	alicesIBAN := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}
 
 	// The bank that holds the account answers about it.
-	ref, err := net.bank(aurora.ID).ResolveIdentifier(ctx, alicesIBAN)
+	ref, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, alicesIBAN)
 	if err != nil {
 		t.Fatalf("Aurora resolving its own customer: %v", err)
 	}
-	if ref.Participant != aurora.ID || ref.Account != alice.ID {
-		t.Fatalf("resolved %s/%s, want %s/%s", ref.Participant, ref.Account, aurora.ID, alice.ID)
+	// The ref names the account and not the bank: a resolution answers about THIS
+	// bank's own register, so the only bank it could name is the one that asked.
+	// See PartyRef, and ResolveIdentifierTx.
+	if ref.Account != alice.ID {
+		t.Fatalf("resolved %s, want %s", ref.Account, alice.ID)
 	}
 
 	// And the bank that does not hold it has no answer — not the account, and
 	// not "it is at Aurora" either. That second thing is what a directory
 	// SERVICE would say and what the sweep used to say; a bank saying it would
 	// be reading another bank's register, which is the crossing.
-	if _, err := net.bank(verde.ID).ResolveIdentifier(ctx, alicesIBAN); !errors.Is(err, deposit.ErrIdentifierNotFound) {
+	if _, err := net.bank(verde.BIC).ResolveIdentifier(ctx, alicesIBAN); !errors.Is(err, deposit.ErrIdentifierNotFound) {
 		t.Fatalf("Verde resolving Aurora's customer = %v, want ErrIdentifierNotFound", err)
 	}
 }
@@ -2775,7 +2812,7 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 	net := testNetwork(t)
 	aurora := addParticipant(t, ctx, net, "Aurora Bank")
 
-	_, err := net.bank(aurora.ID).ResolveIdentifier(ctx, deposit.Identifier{
+	_, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, deposit.Identifier{
 		Scheme: deposit.IdentifierIBAN, Value: "NOBODY-0001",
 	})
 	if !errors.Is(err, deposit.ErrIdentifierNotFound) {
@@ -2813,7 +2850,7 @@ func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
 		bank *Bank
 		want deposit.AccountID
 	}{{aurora, alice.ID}, {verde, bruno.ID}} {
-		ref, err := net.bank(c.bank.ID).ResolveIdentifier(ctx, shared)
+		ref, err := net.bank(c.bank.BIC).ResolveIdentifier(ctx, shared)
 		if err != nil {
 			t.Fatalf("%s resolving the shared address: %v", c.bank.Name, err)
 		}
@@ -2852,7 +2889,7 @@ func TestResolveIdentifierRefusesAWithinBankCollision(t *testing.T) {
 		return tx.PutDepositAccount(ctx, aurora.Deposit.BookID(), a)
 	}))
 
-	if _, err := net.bank(aurora.ID).ResolveIdentifier(ctx, shared); !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
+	if _, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, shared); !errors.Is(err, deposit.ErrIdentifierAmbiguous) {
 		t.Fatalf("ResolveIdentifier = %v, want ErrIdentifierAmbiguous", err)
 	}
 }
@@ -2875,11 +2912,11 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Debtor:          PartyRef{Account: alice.ID},
+		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrUnaddressableAccount) {
 		t.Fatalf("initiation = %v, want ErrUnaddressableAccount", err)
 	}
@@ -2920,9 +2957,9 @@ func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
-		Debtor: PartyRef{Participant: aurora.ID, Account: alice.ID},
+		Debtor: PartyRef{Account: alice.ID},
 		Creditor: PartyRef{
-			Participant: verde.ID, Account: bruno.ID,
+			Account: bruno.ID,
 			// Somebody else's address, pointing at Bruno's account. Verde does
 			// not hold it, and that — not the disagreement with the ref — is what
 			// it answers about.
@@ -2930,7 +2967,7 @@ func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 		},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Fatalf("initiation = %v, want ErrAccountNotInParticipant", err)
 	}
@@ -2953,11 +2990,11 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT,
 		Debtor: PartyRef{
-			Participant: aurora.ID, Account: alice.ID,
+			Account: alice.ID,
 			// Bruno's address, pointing at Alice's account.
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"},
 		},
-		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 	})
@@ -2998,11 +3035,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	// Creditor leg.
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: brunoPAN},
+		Debtor:          PartyRef{Account: alice.ID},
+		Creditor:        PartyRef{Account: bruno.ID, Identifier: brunoPAN},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("creditor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
 	}
@@ -3010,11 +3047,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	// Debtor leg.
 	_, err = initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alicePAN},
-		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Debtor:          PartyRef{Account: alice.ID, Identifier: alicePAN},
+		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrIdentifierMismatch) {
 		t.Fatalf("debtor quoting a PAN for an SCT = %v, want ErrIdentifierMismatch", err)
 	}
@@ -3025,11 +3062,11 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 	runCycle(t, net, SchemeSEPACT, func() {
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
 			Scheme:          SchemeSEPACT,
-			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Debtor:          PartyRef{Account: alice.ID},
+			Creditor:        PartyRef{Account: bruno.ID},
 			Amount:          10_00,
 			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-		})
+			DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 		assertNoError(t, err)
 	})
 	assertEqual(t, "back-filled debtor address", pay.Debtor.Identifier,
@@ -3058,11 +3095,11 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, net, InitiatePaymentRequest{
 			Scheme:          SchemeSEPACT,
-			Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
-			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Debtor:          PartyRef{Account: alice.ID},
+			Creditor:        PartyRef{Account: bruno.ID},
 			Amount:          10_00,
 			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-		})
+			DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 		assertNoError(t, err)
 	})
 
@@ -3099,11 +3136,11 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 
 	_, err := initiate(ctx, net, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: aurora.ID, Account: alice.ID},
-		Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+		Debtor:          PartyRef{Account: alice.ID},
+		Creditor:        PartyRef{Account: bruno.ID},
 		Amount:          10_00,
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
-	})
+		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	if !errors.Is(err, ErrAmbiguousAddress) {
 		t.Fatalf("initiation = %v, want ErrAmbiguousAddress", err)
 	}
@@ -3114,10 +3151,10 @@ func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 		pay, err := initiate(ctx, net, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT,
 			Debtor: PartyRef{
-				Participant: aurora.ID, Account: alice.ID,
+				Account:    alice.ID,
 				Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1002"},
 			},
-			Creditor:        PartyRef{Participant: verde.ID, Account: bruno.ID},
+			Creditor:        PartyRef{Account: bruno.ID},
 			Amount:          10_00,
 			CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		})
@@ -3140,9 +3177,9 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: biller}
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	old := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0001"}
@@ -3179,9 +3216,9 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, biller := setupTwoBanks(t, sys)
 
-	debtor := PartyRef{Participant: a.ID, Account: alice}
-	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: alice}
+	creditor := PartyRef{Account: biller}
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	// A second customer at Alice's own bank, funded, addressable, and party to
@@ -3198,7 +3235,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	// Someone else's account, drawn on under Alice's mandate.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
-		Debtor: PartyRef{Participant: a.ID, Account: carla.ID}, Creditor: creditor,
+		Debtor: PartyRef{Account: carla.ID}, Creditor: creditor,
 		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Carla"},
 	})
 	if !errors.Is(err, ErrMandateMismatch) {
@@ -3208,9 +3245,9 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	// Alice's account, collected by a creditor she never authorised.
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
-		Debtor: debtor, Creditor: PartyRef{Participant: b.ID, Account: other.ID},
-		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-	})
+		Debtor: debtor, Creditor: PartyRef{Account: other.ID},
+		DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+		CreditorDetails: PartyDetails{Agent: b.BIC}})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted creditor = %v, want ErrMandateMismatch", err)
 	}
@@ -3248,12 +3285,19 @@ func networkWithTwoBanks(t *testing.T) (*testSystem, InitiatePaymentRequest) {
 	return sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPACT,
 		Amount:      25000,
-		Debtor:      PartyRef{Participant: a.ID, Account: alice},
-		Creditor:    PartyRef{Participant: b.ID, Account: bob},
+		Debtor:      PartyRef{Account: alice},
+		Creditor:    PartyRef{Account: bob},
 		Description: "Invoice 42",
 		// Push: the creditor is the counterparty, so the request must name it —
 		// the NAME and the BIC. Neither is derived: Task 18a took the derivation
 		// out, because the row it read is the counterparty's own.
+		//
+		// The DEBTOR's agent is named too, and it is not derived from the ref any
+		// more because a ref names no bank (see PartyRef). SubmitPaymentTx
+		// discards and refills it from the submitting bank's own row, so what it
+		// is for here is the same thing the seed uses it for: saying which bank
+		// submits.
+		DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
 	}
 }
@@ -3280,9 +3324,12 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*testSystem, Init
 	if fund > 0 {
 		fundAccount(t, ctx, sys, a, payer, fund)
 	}
-	debtor := PartyRef{Participant: a.ID, Account: payer.ID}
-	creditor := PartyRef{Participant: b.ID, Account: payee.ID}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: payer.ID}
+	creditor := PartyRef{Account: payee.ID}
+	// The mandate is the CREDITOR bank's row, so it is created through that
+	// bank's network and names the debtor's bank as an address. See
+	// Mandate.DebtorAgent.
+	m, err := sys.bank(b.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 	return sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPADD,
@@ -3292,8 +3339,9 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*testSystem, Init
 		Creditor:    creditor,
 		Description: "Electricity bill",
 		// Pull: the debtor is the counterparty, so the request must name it. See
-		// networkWithTwoBanks on why the Agent is the caller's to supply.
-		DebtorDetails: PartyDetails{Agent: a.BIC, Name: payer.Name},
+		// networkWithTwoBanks on why both agents are the caller's to supply.
+		DebtorDetails:   PartyDetails{Agent: a.BIC, Name: payer.Name},
+		CreditorDetails: PartyDetails{Agent: b.BIC, Name: payee.Name},
 	}, m.ID
 }
 
@@ -3308,7 +3356,7 @@ func networkWithARevokedMandate(t *testing.T) (*testSystem, InitiatePaymentReque
 	sys, req, id := networkWithACollection(t, 100000)
 	// The creditor's bank revokes: a mandate is its row. On a pull the creditor
 	// is the SUBMITTING bank, so this is req's submitter.
-	assertNoError(t, sys.bank(req.Creditor.Participant).RevokeMandate(context.Background(), id))
+	assertNoError(t, sys.bank(req.CreditorDetails.Agent).RevokeMandate(context.Background(), id))
 	return sys, req
 }
 
@@ -3335,7 +3383,7 @@ func networkWithASubmittedPayment(t *testing.T) (*testSystem, Payment) {
 func closeCreditorAccount(t *testing.T, n *testSystem, p Payment) {
 	t.Helper()
 	ctx := context.Background()
-	bank, err := n.GetBank(ctx, p.Creditor.Participant)
+	bank, err := n.GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
 	assertNoError(t, err)
 	assertNoError(t, bank.Deposit.Close(ctx, p.Creditor.Account))
 }
@@ -3408,14 +3456,14 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 		req := InitiatePaymentRequest{
 			Scheme:          SchemeSEPACT,
 			Amount:          25000,
-			Debtor:          PartyRef{Participant: member.ID, Account: memberAcct.ID},
-			Creditor:        PartyRef{Participant: founded.ID, Account: foundedAcct.ID},
+			Debtor:          PartyRef{Account: memberAcct.ID},
+			Creditor:        PartyRef{Account: foundedAcct.ID},
 			Description:     "Invoice 42",
 			CreditorDetails: PartyDetails{Agent: founded.BIC, Name: "Nora"},
-		}
+			DebtorDetails:   PartyDetails{Agent: member.BIC}}
 		if foundedPays {
-			req.Debtor = PartyRef{Participant: founded.ID, Account: foundedAcct.ID}
-			req.Creditor = PartyRef{Participant: member.ID, Account: memberAcct.ID}
+			req.Debtor = PartyRef{Account: foundedAcct.ID}
+			req.Creditor = PartyRef{Account: memberAcct.ID}
 			req.CreditorDetails = PartyDetails{Agent: member.BIC, Name: "Alice"}
 		}
 		return sys, req
@@ -3516,7 +3564,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	ack := AdmissionAcknowledgement{BIC: half.BIC, Accounts: member.Accounts, Ref: ref}
 	_, err = sys.AdmitMember(ctx, ack)
 	assertNoError(t, err)
-	half, err = sys.bank(half.ID).RecordMembership(ctx, ack)
+	half, err = sys.bank(half.BIC).RecordMembership(ctx, ack)
 	assertNoError(t, err)
 	if half.Status != BankMember {
 		t.Fatalf("the half-admitted bank is %v; this test needs a Member", half.Status)
@@ -3539,11 +3587,11 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	p, err := sys.SubmitPayment(ctx, InitiatePaymentRequest{
 		Scheme:          dollarPush{}.ID(),
 		Amount:          25000,
-		Debtor:          PartyRef{Participant: payer.ID, Account: payerAcct.ID},
-		Creditor:        PartyRef{Participant: half.ID, Account: payeeAcct.ID},
+		Debtor:          PartyRef{Account: payerAcct.ID},
+		Creditor:        PartyRef{Account: payeeAcct.ID},
 		Description:     "a dollar this member does not clear",
 		CreditorDetails: PartyDetails{Agent: half.BIC, Name: "Nora"},
-	})
+		DebtorDetails:   PartyDetails{Agent: payer.BIC}})
 	assertNoError(t, err)
 	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID))
 
@@ -3614,7 +3662,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	// The agent is whatever the fixture's creditor bank is; this test is about
 	// the NAME, and the agent only has to be present and well formed.
-	creditorBank, err := n.GetBank(ctx, req.Creditor.Participant)
+	creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 	assertNoError(t, err)
 	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
 	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
@@ -3636,7 +3684,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	if p.DebtorDetails.Name != "Alice" {
 		t.Errorf("debtor name is %q, want the submitting bank's own register value %q, not what the request carried", p.DebtorDetails.Name, "Alice")
 	}
-	debtorBank, err := n.GetBank(ctx, req.Debtor.Participant)
+	debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 	assertNoError(t, err)
 	if p.DebtorDetails.Agent != debtorBank.BIC {
 		t.Errorf("debtor agent is %q, want the submitting bank's own BIC %q", p.DebtorDetails.Agent, debtorBank.BIC)
@@ -3711,7 +3759,7 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 	t.Run("push: the creditor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()
 		n, req := networkWithTwoBanks(t)
-		debtorBank, err := n.GetBank(ctx, req.Debtor.Participant)
+		debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 		assertNoError(t, err)
 		// The payer names the WRONG bank — their own. Nothing here corrects it.
 		req.CreditorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payer Typed"}
@@ -3735,7 +3783,7 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 	t.Run("pull: the debtor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()
 		n, req, _ := networkWithACollection(t, 100000)
-		creditorBank, err := n.GetBank(ctx, req.Creditor.Participant)
+		creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 		assertNoError(t, err)
 		// The collector names ITSELF as the payer's bank.
 		req.DebtorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Biller Typed"}
@@ -3777,7 +3825,7 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 // back as a message and reverses it.
 func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
-	req.Creditor.Participant = "no-such-bank"
+	req.CreditorDetails.Agent = "no-such-bank"
 
 	if _, err := n.SubmitPayment(context.Background(), req); err != nil {
 		t.Errorf("SubmitPayment = %v, want it accepted — a submitting bank does not check the counterparty's registry", err)
@@ -3794,7 +3842,7 @@ func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 // which is also what AcceptInboundTx runs on the receiving side.
 func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
-	req.Debtor.Participant = "no-such-bank"
+	req.DebtorDetails.Agent = "no-such-bank"
 
 	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
 		t.Errorf("got %v, want ErrParticipantNotFound", err)
@@ -3834,7 +3882,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 	t.Run("push", func(t *testing.T) {
 		ctx := context.Background()
 		n, req := networkWithTwoBanks(t)
-		creditorBank, err := n.GetBank(ctx, req.Creditor.Participant)
+		creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 		assertNoError(t, err)
 		// Deliberately NOT "Bob" — the real name on the creditor's own
 		// register (setupTwoBanks). If AcceptInboundTx's creditorSideTx (the
@@ -3867,7 +3915,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 	t.Run("pull", func(t *testing.T) {
 		ctx := context.Background()
 		n, req, _ := networkWithACollection(t, 100000)
-		debtorBank, err := n.GetBank(ctx, req.Debtor.Participant)
+		debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 		assertNoError(t, err)
 		// Deliberately NOT "Alice" — the real name on the debtor's own
 		// register (networkWithACollection). If AcceptInboundTx's
@@ -4003,7 +4051,7 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 					Store:          n.Store(),
 					participantErr: tc.participantErr,
 					accountErr:     tc.accountErr,
-				}, func() time.Time { return fixedTime }, AsBank(receiverOf(n, p)))
+				}, func() time.Time { return fixedTime }, AsBank(ParticipantID(receiverOf(n, p))))
 
 				err = broken.AcceptInbound(ctx, p.ID)
 				if !errors.Is(err, dropped) {
@@ -4100,7 +4148,7 @@ func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 // the payment is Rejected and the customer's money is still in suspense.
 func TestRejectionIsTwoHalvesAndTheFirstHalfLeavesMoneyInSuspense(t *testing.T) {
 	n, p := networkWithASubmittedPayment(t)
-	before := suspenseBalance(t, n, p.Debtor.Participant)
+	before := suspenseBalance(t, n, p.DebtorDetails.Agent)
 
 	rejected, err := n.RejectAtCSM(context.Background(), p.ID, "AC01", "no such account")
 	if err != nil {
@@ -4109,14 +4157,14 @@ func TestRejectionIsTwoHalvesAndTheFirstHalfLeavesMoneyInSuspense(t *testing.T) 
 	if rejected.Status != Rejected || rejected.RejectCode != "AC01" {
 		t.Fatalf("got %v/%q, want Rejected/AC01", rejected.Status, rejected.RejectCode)
 	}
-	if got := suspenseBalance(t, n, p.Debtor.Participant); got != before {
+	if got := suspenseBalance(t, n, p.DebtorDetails.Agent); got != before {
 		t.Error("the CSM's half moved money; only the debtor's bank may touch its own book")
 	}
 
 	if err := n.ReverseDebtorLeg(context.Background(), rejected, "no such account"); err != nil {
 		t.Fatalf("ReverseDebtorLeg: %v", err)
 	}
-	if got := suspenseBalance(t, n, p.Debtor.Participant); got != before-p.Amount {
+	if got := suspenseBalance(t, n, p.DebtorDetails.Agent); got != before-p.Amount {
 		t.Errorf("suspense = %d after the reversal, want %d", got, before-p.Amount)
 	}
 }
@@ -4134,9 +4182,9 @@ func TestRejectAtCSMDropsThePaymentFromItsCycle(t *testing.T) {
 
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 	before, err := sys.GetCycle(ctx, cyc.ID)
 	assertNoError(t, err)
@@ -4197,7 +4245,7 @@ func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
 	rejected, err := n.RejectAtCSM(ctx, p.ID, iso20022.StatusReasonNoMandate, "no usable mandate")
 	assertNoError(t, err)
 
-	bank, err := n.GetBank(ctx, p.Debtor.Participant)
+	bank, err := n.GetBank(ctx, ParticipantID(p.DebtorDetails.Agent))
 	assertNoError(t, err)
 	before := customerBalance(t, bank, p.Debtor.Account)
 
@@ -4223,7 +4271,7 @@ func TestReverseDebtorLegRefusesToRunTwice(t *testing.T) {
 		t.Fatalf("second ReverseDebtorLeg = %v, want ErrTransactionAlreadyReversed", err)
 	}
 	assertEqual(t, "suspense after the refused second reversal",
-		suspenseBalance(t, n, p.Debtor.Participant), 0)
+		suspenseBalance(t, n, p.DebtorDetails.Agent), 0)
 }
 
 // The reason text is stored by one half and only described by the other, and
@@ -4250,7 +4298,7 @@ func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
 		t.Fatalf("ReverseDebtorLeg with an unprintable reason = %v, want ErrInvalidText", err)
 	}
 	assertEqual(t, "suspense after the refused reversal",
-		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
+		suspenseBalance(t, n, p.DebtorDetails.Agent), p.Amount)
 }
 
 // A queue redelivers, so the debtor's bank sees the same pacs.003 twice while
@@ -4270,7 +4318,7 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 
 	answered, err := n.GetPayment(ctx, p.ID)
 	assertNoError(t, err)
-	bank, err := n.GetBank(ctx, p.Debtor.Participant)
+	bank, err := n.GetBank(ctx, ParticipantID(p.DebtorDetails.Agent))
 	assertNoError(t, err)
 	balance := customerBalance(t, bank, p.Debtor.Account)
 
@@ -4283,7 +4331,7 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	assertNoError(t, err)
 	assertEqual(t, "debtor leg after the redelivery", again.DebtorLegTx, answered.DebtorLegTx)
 	assertEqual(t, "suspense after the redelivery",
-		suspenseBalance(t, n, p.Debtor.Participant), p.Amount)
+		suspenseBalance(t, n, p.DebtorDetails.Agent), p.Amount)
 }
 
 // ---------------------------------------------------------------------------
@@ -4311,10 +4359,10 @@ func TestSettlingAReturnReadsNoPayment(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 	assertEqual(t, "bank A reserve at the central bank after the cut-off", reserveAt(t, sys, a), 70000)
@@ -4344,11 +4392,11 @@ func TestSettlingAReturnReadsNoPayment(t *testing.T) {
 	if len(statements) != 2 {
 		t.Fatalf("a return produced %d statements, want 2 — one per member", len(statements))
 	}
-	assertEqual(t, "the first statement's member", statements[0].Member, b.ID)
+	assertEqual(t, "the first statement's member", statements[0].Agent, b.BIC)
 	assertEqual(t, "the creditor bank's movement", statements[0].Movement, -30000)
 	assertEqual(t, "the creditor bank's closing balance", statements[0].ClosingBalance, 0)
 	assertEqual(t, "the creditor bank's agent", statements[0].Agent, b.BIC)
-	assertEqual(t, "the second statement's member", statements[1].Member, a.ID)
+	assertEqual(t, "the second statement's member", statements[1].Agent, a.BIC)
 	assertEqual(t, "the debtor bank's movement", statements[1].Movement, 30000)
 	assertEqual(t, "the debtor bank's closing balance", statements[1].ClosingBalance, 100000)
 	for _, st := range statements {
@@ -4497,10 +4545,10 @@ func spendTheCredit(t *testing.T, sys *testSystem, from *Bank, fromAcct deposit.
 	runCycle(t, sys, SchemeSEPACT, func() {
 		_, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: amount,
-			Debtor:          PartyRef{Participant: from.ID, Account: fromAcct},
-			Creditor:        PartyRef{Participant: to.ID, Account: toAcct},
+			Debtor:          PartyRef{Account: fromAcct},
+			Creditor:        PartyRef{Account: toAcct},
 			CreditorDetails: PartyDetails{Agent: to.BIC, Name: "the payee"},
-		})
+			DebtorDetails:   PartyDetails{Agent: from.BIC}})
 		assertNoError(t, err)
 	})
 }
@@ -4530,10 +4578,10 @@ func TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 	assertEqual(t, "bob after the credit transfer arrived", customerBalance(t, b, bob), 30000)
@@ -4543,7 +4591,7 @@ func TestAPayeeWhoSpentTheMoneyStopsTheReturnBeforeItIsSent(t *testing.T) {
 
 	// Bob's bank is the returner here, so this is the call that would have
 	// produced the pacs.004.
-	_, err := sys.bank(b.ID).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
+	_, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
 	assertError(t, err, deposit.ErrInsufficientAvailable)
 
 	// And nothing at all was written. Bob is not overdrawn, the clearing
@@ -4589,7 +4637,7 @@ func TestAPullRefundIsHonouredEvenWhenTheBillerCannotFundIt(t *testing.T) {
 	spendTheCredit(t, sys, b, biller, a, alice, 25000)
 	assertNoError(t, b.Deposit.Close(ctx, biller))
 
-	got, err := sys.bank(b.ID).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
+	got, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
 	assertNoError(t, err)
 
 	// The refund is funded out of a claim on the biller, and the money is in
@@ -4630,7 +4678,7 @@ func TestAForcedClawbackOverdrawsAnOpenBillerRatherThanBookingAReceivable(t *tes
 
 	spendTheCredit(t, sys, b, biller, a, alice, 25000)
 
-	_, err := sys.bank(b.ID).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
+	_, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
 	assertNoError(t, err)
 
 	assertEqual(t, "the biller's overdrawn account", customerBalance(t, b, biller), -25000)
@@ -4685,14 +4733,14 @@ func TestAPullRefundIsHonouredWhenOneBankIsBothParties(t *testing.T) {
 
 	// The clawback, which on a pull is forced. Bank A is the returner AND the
 	// creditor's bank here, so this is the call the old rule refused.
-	got, err := sys.bank(a.ID).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
+	got, err := sys.bank(a.BIC).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
 	assertNoError(t, err)
 	assertEqual(t, "the biller after the forced clawback", customerBalance(t, a, biller), -25000)
 
 	// And then the refund, which is the same bank's other leg. Two calls, not
 	// one, because a bank posts one leg at a time; the second is what carries the
 	// payment to Returned.
-	got, err = sys.bank(a.ID).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
+	got, err = sys.bank(a.BIC).PostReturnLeg(ctx, pay.ID, "MD06: refund requested by the payer")
 	assertNoError(t, err)
 	assertEqual(t, "the payment after both legs", got.Status, Returned)
 	assertEqual(t, "the payer after the refund", customerBalance(t, a, alice), 100000)
@@ -4709,9 +4757,9 @@ func settledCollection(t *testing.T, sys *testSystem, debtorBank *Bank, debtorAc
 ) Payment {
 	t.Helper()
 	ctx := context.Background()
-	debtor := PartyRef{Participant: debtorBank.ID, Account: debtorAcct}
-	creditor := PartyRef{Participant: creditorBank.ID, Account: creditorAcct}
-	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
+	debtor := PartyRef{Account: debtorAcct}
+	creditor := PartyRef{Account: creditorAcct}
+	m, err := sys.bank(creditorBank.BIC).CreateMandate(ctx, debtorBank.BIC, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
@@ -4746,18 +4794,18 @@ func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) 
 	if !ok {
 		t.Fatalf("payment %s is under unregistered scheme %s", p.ID, p.Scheme)
 	}
-	returner := ReturnerOf(scheme, p.Debtor, p.Creditor).Participant
-	other := p.Debtor.Participant
+	returner := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+	other := p.DebtorDetails.Agent
 	if other == returner {
-		other = p.Creditor.Participant
+		other = p.CreditorDetails.Agent
 	}
 
 	_, err := sys.bank(returner).PostReturnLeg(ctx, p.ID, reason)
 	assertNoError(t, err)
 
-	debtorBank, err := sys.GetBank(ctx, p.Debtor.Participant)
+	debtorBank, err := sys.GetBank(ctx, ParticipantID(p.DebtorDetails.Agent))
 	assertNoError(t, err)
-	creditorBank, err := sys.GetBank(ctx, p.Creditor.Participant)
+	creditorBank, err := sys.GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
 	assertNoError(t, err)
 	statements, err := sys.cb().SettleReturn(ctx, ReturnInstruction{
 		PaymentID:     p.ID,
@@ -4806,10 +4854,10 @@ func TestARefundIntoAClosedPayersAccountGoesToUnclaimedBalances(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 
@@ -4872,15 +4920,15 @@ func TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances(t *testing.
 			var err error
 			pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 				Scheme: SchemeSEPACT, Amount: 30000,
-				Debtor:          PartyRef{Participant: a.ID, Account: alice},
-				Creditor:        PartyRef{Participant: b.ID, Account: bob},
+				Debtor:          PartyRef{Account: alice},
+				Creditor:        PartyRef{Account: bob},
 				CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-			})
+				DebtorDetails:   PartyDetails{Agent: a.BIC}})
 			assertNoError(t, err)
 		})
 		// The clawback first, over the sound store: this is the payer's bank's
 		// own unit of work, and the failure under test is its alone.
-		_, err := sys.bank(b.ID).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
+		_, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
 		assertNoError(t, err)
 
 		broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
@@ -4942,20 +4990,20 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 
-	posted, err := sys.bank(b.ID).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
+	posted, err := sys.bank(b.BIC).PostReturnLeg(ctx, pay.ID, "AC04: account closed")
 	assertNoError(t, err)
 	assertEqual(t, "bob after the clawback", customerBalance(t, b, bob), 0)
 	assertEqual(t, "bank B suspense holding the clawback",
 		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 30000)
 
-	assertNoError(t, sys.bank(b.ID).ReverseReturnLeg(ctx, pay.ID, "AM04: the settlement agent could not cover it"))
+	assertNoError(t, sys.bank(b.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: the settlement agent could not cover it"))
 	assertEqual(t, "bob after the unwind", customerBalance(t, b, bob), 30000)
 	assertEqual(t, "bank B suspense after the unwind",
 		bookBalance(t, b.Ledger, accountsOf(t, b).Suspense), 0)
@@ -4966,13 +5014,13 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 	assertEqual(t, "the clawback's status after the unwind", original.Status, ledger.Reversed)
 
 	// Unwinding twice does not pay Bob twice.
-	assertError(t, sys.bank(b.ID).ReverseReturnLeg(ctx, pay.ID, "AM04: told again"), ledger.ErrTransactionAlreadyReversed)
+	assertError(t, sys.bank(b.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: told again"), ledger.ErrTransactionAlreadyReversed)
 	assertEqual(t, "bob after the second unwind", customerBalance(t, b, bob), 30000)
 
 	// A bank that is neither side of the payment has no leg to unwind.
 	c, err := storetest.Admit(ctx, sys.nets, "Bank C", "BANKFRPPXXX", euroOnly)
 	assertNoError(t, err)
-	assertError(t, sys.bank(c.ID).ReverseReturnLeg(ctx, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
+	assertError(t, sys.bank(c.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
 }
 
 // TestACompletedReturnCannotBeUnwound is the guard on the unwind, and the case
@@ -5005,10 +5053,10 @@ func TestACompletedReturnCannotBeUnwound(t *testing.T) {
 		var err error
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor:          PartyRef{Participant: a.ID, Account: alice},
-			Creditor:        PartyRef{Participant: b.ID, Account: bob},
+			Debtor:          PartyRef{Account: alice},
+			Creditor:        PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 	})
 	returned := returnTheWholeWay(t, sys, pay, "AC04: account closed")
@@ -5017,7 +5065,7 @@ func TestACompletedReturnCannotBeUnwound(t *testing.T) {
 	assertEqual(t, "bob clawed back", customerBalance(t, b, bob), 0)
 
 	// Both banks are refused, because either one alone would break the pair.
-	for _, by := range []ParticipantID{b.ID, a.ID} {
+	for _, by := range []iso20022.BIC{b.BIC, a.BIC} {
 		assertError(t, sys.bank(by).ReverseReturnLeg(ctx, pay.ID, "AM04: told too late"), ErrInvalidStateTransition)
 	}
 
@@ -5039,10 +5087,29 @@ func TestACompletedReturnCannotBeUnwound(t *testing.T) {
 // has to be told which bank it is. The direction decides which side that is, and
 // nothing else does; a helper that guessed "the creditor" would work for every
 // credit transfer and post the wrong bank's debit on every collection.
-func receiverOf(n *testSystem, p Payment) ParticipantID {
+// receiverOf is the bank that ANSWERS a payment: the payee's on a push, the
+// payer's on a pull. It reads the agents, because a PartyRef stopped naming a
+// bank at Task 18 — see PartyRef — and it returns a BIC, which is what
+// testSystem.bank now takes.
+func receiverOf(n *testSystem, p Payment) iso20022.BIC {
 	scheme, ok := n.Scheme(p.Scheme)
 	if ok && scheme.Direction() == Pull {
-		return p.Debtor.Participant
+		return p.DebtorDetails.Agent
 	}
-	return p.Creditor.Participant
+	return p.CreditorDetails.Agent
+}
+
+// submitterOfReq is the bank that SUBMITS one, which is the other side.
+//
+// It exists because the fixtures below build a request and then have to pick the
+// network to submit it through, and submission became a bank's own act: since
+// Task 18 checkPartyTx resolves the submitting side's account in THIS network's
+// own register, so a request submitted through the clearing house's network —
+// which is what the initiate helper used to do — resolves nothing.
+func submitterOfReq(n *testSystem, req InitiatePaymentRequest) iso20022.BIC {
+	scheme, ok := n.Scheme(req.Scheme)
+	if ok && scheme.Direction() == Pull {
+		return req.CreditorDetails.Agent
+	}
+	return req.DebtorDetails.Agent
 }

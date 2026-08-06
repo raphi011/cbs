@@ -152,16 +152,24 @@ func toIdentifierDTOs(idents []deposit.Identifier) []identifierDTO {
 	return out
 }
 
+// partyRefDTO is one side of a payment or a mandate: the account, and the
+// address quoted to reach it.
+//
+// It carried a `participant` naming the bank, and does not, for the reason
+// payment.PartyRef does not: a bank's id is its BIC now, so that field and the
+// agent beside it were one value spelled twice. Which bank a party is at travels
+// as `debtorAgent`/`creditorAgent` on the enclosing payment or mandate — the same
+// names an instruction already used on the way IN, so the two directions finally
+// agree.
 type partyRefDTO struct {
-	Participant string `json:"participant"`
-	Account     string `json:"account"`
+	Account string `json:"account"`
 	// Identifier is the external address quoted for this party — an IBAN today.
 	// Absent for a party addressed only by its ids.
 	Identifier *identifierDTO `json:"identifier,omitempty"`
 }
 
 func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
-	out := partyRefDTO{Participant: string(r.Participant), Account: string(r.Account)}
+	out := partyRefDTO{Account: string(r.Account)}
 	if r.Identifier != (deposit.Identifier{}) {
 		out.Identifier = &identifierDTO{Scheme: string(r.Identifier.Scheme), Value: r.Identifier.Value}
 	}
@@ -169,10 +177,7 @@ func toPartyRefDTO(r payment.PartyRef) partyRefDTO {
 }
 
 func (r partyRefDTO) toDomain() payment.PartyRef {
-	out := payment.PartyRef{
-		Participant: payment.ParticipantID(r.Participant),
-		Account:     deposit.AccountID(r.Account),
-	}
+	out := payment.PartyRef{Account: deposit.AccountID(r.Account)}
 	if r.Identifier != nil {
 		out.Identifier = deposit.Identifier{
 			Scheme: deposit.IdentifierScheme(r.Identifier.Scheme),
@@ -183,11 +188,15 @@ func (r partyRefDTO) toDomain() payment.PartyRef {
 }
 
 type paymentDTO struct {
-	ID            string            `json:"id"`
-	Scheme        string            `json:"scheme"`
-	Asset         string            `json:"asset"`
-	Debtor        partyRefDTO       `json:"debtor"`
-	Creditor      partyRefDTO       `json:"creditor"`
+	ID       string      `json:"id"`
+	Scheme   string      `json:"scheme"`
+	Asset    string      `json:"asset"`
+	Debtor   partyRefDTO `json:"debtor"`
+	Creditor partyRefDTO `json:"creditor"`
+	// DebtorAgent and CreditorAgent are the BICs of the two banks, and they are
+	// what says where each party banks now that a partyRefDTO does not.
+	DebtorAgent   string            `json:"debtorAgent,omitempty"`
+	CreditorAgent string            `json:"creditorAgent,omitempty"`
 	Amount        int64             `json:"amount"`
 	MandateID     string            `json:"mandateId,omitempty"`
 	EndToEndID    string            `json:"endToEndId,omitempty"`
@@ -224,6 +233,8 @@ func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
 		Asset:         asset,
 		Debtor:        toPartyRefDTO(p.Debtor),
 		Creditor:      toPartyRefDTO(p.Creditor),
+		DebtorAgent:   string(p.DebtorDetails.Agent),
+		CreditorAgent: string(p.CreditorDetails.Agent),
 		Amount:        int64(p.Amount),
 		MandateID:     string(p.MandateID),
 		EndToEndID:    p.EndToEndID,
@@ -242,13 +253,18 @@ func toPaymentDTO(p payment.Payment, schemes []payment.Scheme) paymentDTO {
 }
 
 type mandateDTO struct {
-	ID        string      `json:"id"`
-	Debtor    partyRefDTO `json:"debtor"`
-	Creditor  partyRefDTO `json:"creditor"`
-	Asset     string      `json:"asset"`
-	MaxAmount int64       `json:"maxAmount"`
-	Status    string      `json:"status"`
-	CreatedAt time.Time   `json:"createdAt"`
+	ID     string      `json:"id"`
+	Debtor partyRefDTO `json:"debtor"`
+	// DebtorAgent is the bank a collection under this mandate is sent to. There
+	// is no creditorAgent beside it and there is no row to fill one from: a
+	// mandate is the creditor's bank's, so the creditor's agent is whichever bank
+	// this listener is bound to. See payment.Mandate.DebtorAgent.
+	DebtorAgent string      `json:"debtorAgent,omitempty"`
+	Creditor    partyRefDTO `json:"creditor"`
+	Asset       string      `json:"asset"`
+	MaxAmount   int64       `json:"maxAmount"`
+	Status      string      `json:"status"`
+	CreatedAt   time.Time   `json:"createdAt"`
 }
 
 // toMandateDTO renders a mandate, including the asset its MaxAmount is
@@ -262,13 +278,14 @@ type mandateDTO struct {
 // in api/handlers_payment.go.
 func toMandateDTO(m payment.Mandate) mandateDTO {
 	return mandateDTO{
-		ID:        string(m.ID),
-		Debtor:    toPartyRefDTO(m.Debtor),
-		Creditor:  toPartyRefDTO(m.Creditor),
-		Asset:     string(m.Asset),
-		MaxAmount: int64(m.MaxAmount),
-		Status:    m.Status.String(),
-		CreatedAt: m.CreatedAt,
+		ID:          string(m.ID),
+		Debtor:      toPartyRefDTO(m.Debtor),
+		DebtorAgent: string(m.DebtorAgent),
+		Creditor:    toPartyRefDTO(m.Creditor),
+		Asset:       string(m.Asset),
+		MaxAmount:   int64(m.MaxAmount),
+		Status:      m.Status.String(),
+		CreatedAt:   m.CreatedAt,
 	}
 }
 
@@ -345,7 +362,7 @@ func toSettlementDTO(s payment.Settlement, asset string) settlementDTO {
 	}
 }
 
-func positionsToMap(in map[payment.ParticipantID]ledger.Amount) map[string]int64 {
+func positionsToMap(in map[iso20022.BIC]ledger.Amount) map[string]int64 {
 	if in == nil {
 		return nil
 	}
@@ -388,9 +405,15 @@ type reserveDTO struct {
 }
 
 type createMandateRequest struct {
-	Debtor    partyRefDTO `json:"debtor"`
-	Creditor  partyRefDTO `json:"creditor"`
-	MaxAmount int64       `json:"maxAmount"`
+	Debtor partyRefDTO `json:"debtor"`
+	// DebtorAgent is required: it is the address the collection is sent to, and
+	// the creditor's bank has no way to derive it — the debtor's account is in
+	// the debtor bank's own register. It is the mandate's version of
+	// initiatePaymentRequest's counterparty agent, and it arrived for the same
+	// reason. See payment.CreateMandateTx.
+	DebtorAgent string      `json:"debtorAgent"`
+	Creditor    partyRefDTO `json:"creditor"`
+	MaxAmount   int64       `json:"maxAmount"`
 }
 
 type initiatePaymentRequest struct {

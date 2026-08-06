@@ -16,8 +16,12 @@ import (
 // isParty reports whether this listener's bank is one end of the payment.
 // Either end: a bank's own payments are the ones it sent AND the ones it
 // received, not just the debits.
+//
+// Compared against the AGENTS, because a payment names each side's bank there
+// and no longer on the ref — see payment.PartyRef. The values are the same ones
+// this comparison always used; what changed is which field holds them.
 func (s *Server) isParty(p payment.Payment) bool {
-	return p.Debtor.Participant == s.boundPID || p.Creditor.Participant == s.boundPID
+	return p.DebtorDetails.Agent == s.boundBIC() || p.CreditorDetails.Agent == s.boundBIC()
 }
 
 func (s *Server) handleListBankPayments(w http.ResponseWriter, r *http.Request) {
@@ -127,27 +131,30 @@ func (s *Server) handleSubmitPayment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, payment.ErrSchemeNotFound)
 		return
 	}
-	submitter := dom.Debtor.Participant
+	submitter := dom.DebtorDetails.Agent
 	if sc.Direction() == payment.Pull {
-		submitter = dom.Creditor.Participant
+		submitter = dom.CreditorDetails.Agent
 	}
-	// An OMITTED participant is a missing required field, and it is refused as
-	// one — for the reason the unregistered scheme above is refused as one. It
-	// decodes to "", which never equals a non-empty boundPID, so it would fall
-	// through to the direction rule and be answered "this bank does not submit
-	// this payment: a credit transfer is submitted by the payer's bank…" — a
-	// diagnosis of a direction violation about a request that names no direction
-	// to violate. The caller then goes looking for the wrong bug.
-	if submitter == "" {
-		side := "debtor"
-		if sc.Direction() == payment.Pull {
-			side = "creditor"
-		}
-		writeUnprocessable(w, "this instruction names no "+side+" participant, and the "+side+
-			"'s bank is the one that submits a "+string(dom.Scheme))
-		return
-	}
-	if submitter != s.boundPID {
+	// An OMITTED submitting agent is the ORDINARY case, and this used to refuse it
+	// as a missing required field.
+	//
+	// The field it read was the submitter's own PARTICIPANT, which an instruction
+	// had to name because that is what the payment recorded. A payment records
+	// agents now (payment.PartyRef), and the submitting bank's own agent is
+	// discarded and refilled from its own row — a payer does not get to rename
+	// their own bank — so an instruction that leaves it out is a correct
+	// instruction and refusing it would refuse every one a customer hands in.
+	//
+	// What the refusal was FOR has not gone anywhere; it has stopped needing to be
+	// asked. The scoping is structural: this listener's network is its bank's, and
+	// the submitting side's account is resolved in that bank's own register
+	// (payment.checkPartyTx), so an instruction whose payer banks elsewhere finds
+	// no account rather than being caught here.
+	//
+	// So the check survives only for a caller that DID name its own side — the
+	// seed and this package's fixtures do — where the diagnosis is still worth
+	// more than what the domain would say two frames further in.
+	if submitter != "" && submitter != s.boundBIC() {
 		writeUnprocessable(w, "this bank does not submit this payment: a credit transfer is submitted by the payer's bank and a direct debit by the payee's")
 		return
 	}

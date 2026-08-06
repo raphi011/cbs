@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 )
 
@@ -100,10 +101,25 @@ type SchemeContext struct {
 // Network.creditorSideTx, before any scheme's Validate is reached, so it
 // applies to every scheme rather than only the ones whose Validate happens to
 // call this helper.
+//
+// The bank it reads is THIS one, and it used to be p.Debtor.Participant. That
+// was the same bank on every path this can succeed on — a push runs it at the
+// submitting bank, which is the payer's, and a pull runs it at the receiving
+// bank, which is also the payer's — and it stopped being a field a PartyRef
+// carries; see PartyRef. A network that is not a member bank's is now a refusal
+// rather than a lookup.
+//
+// A failure to read that row is returned unchanged rather than flattened into
+// ErrParticipantNotFound, which is what this did. The store's own not-found
+// already IS that sentinel, so nothing is lost on the case the flattening was
+// for, and what it cost was the discipline checkPartyTx spells out: this runs on
+// the money path, a receiving bank's answer becomes a pacs.002 through ReasonFor,
+// and a dropped connection returned as RC01 tells the sending bank its
+// counterparty's bank identifier is wrong.
 func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
-	part, err := sc.Network.bankTx(ctx, sc.Tx, p.Debtor.Participant)
+	part, err := sc.Network.selfBankTx(ctx, sc.Tx)
 	if err != nil {
-		return ErrParticipantNotFound
+		return err
 	}
 	if _, err := sc.Tx.GetDepositAccount(ctx, part.BookID, p.Debtor.Account); err != nil {
 		return ErrAccountNotInParticipant
@@ -126,10 +142,16 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // And a party who is both — a payment from a bank to itself — would make a
 // negation ambiguous, while these two rules stay total.
 //
-// It takes the two refs rather than a Payment, which is how mesh.submitterOf —
+// It takes the two AGENTS rather than a Payment, which is how mesh.submitterOf —
 // its counterpart in both senses, the other party and the other role — is
 // written, and that one has to be: mesh.Mesh.Submit chooses a submitter from a
 // request, and a request is not yet a payment.
+//
+// It took the two PartyRefs until Task 18. Every caller then took .Participant
+// off the answer, because what all four of them want is a bank to address, and a
+// PartyRef stopped naming one (see PartyRef). Returning the address directly is
+// what the callers were doing by hand; the accounts on those refs were never read
+// through this.
 //
 // # Why it lives here and not in mesh
 //
@@ -142,11 +164,11 @@ func validateFunds(ctx context.Context, p *Payment, sc SchemeContext) error {
 // and a mesh that sent a return from one bank while the domain let the other
 // refuse is a payment nobody can finish. mesh.returnerOf is a one-line
 // delegation now.
-func ReturnerOf(scheme Scheme, debtor, creditor PartyRef) PartyRef {
+func ReturnerOf(scheme Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == Pull {
-		return debtor
+		return debtorAgent
 	}
-	return creditor
+	return creditorAgent
 }
 
 // ---------------------------------------------------------------------------

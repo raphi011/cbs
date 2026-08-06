@@ -52,9 +52,14 @@ func (s *Server) registerBankIdentifierRoutes(mux *router) {
 // something this system will tell it by any route at all. What a payer knows
 // about a payee is what the payer typed — see payment.PartyDetails.
 type directoryEntryDTO struct {
-	Participant string        `json:"participant"`
-	Account     string        `json:"account"`
-	Identifier  identifierDTO `json:"identifier"`
+	// Agent is the BIC of the bank the address resolves at, and it is always this
+	// listener's own — the lookup searches this bank's register and no other, so
+	// there is no other answer it could carry. It was `participant`, off the ref
+	// the domain returned; a payment.PartyRef names no bank now, and this is the
+	// asking bank naming itself. See payment.ResolveIdentifierTx.
+	Agent      string        `json:"agent"`
+	Account    string        `json:"account"`
+	Identifier identifierDTO `json:"identifier"`
 }
 
 func (s *Server) handleResolveIdentifier(w http.ResponseWriter, r *http.Request) {
@@ -77,9 +82,9 @@ func (s *Server) handleResolveIdentifier(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, directoryEntryDTO{
-		Participant: string(ref.Participant),
-		Account:     string(ref.Account),
-		Identifier:  identifierDTO{Scheme: scheme, Value: value},
+		Agent:      string(s.boundBIC()),
+		Account:    string(ref.Account),
+		Identifier: identifierDTO{Scheme: scheme, Value: value},
 	})
 }
 

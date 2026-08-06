@@ -264,8 +264,13 @@ var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 
 // bank is one member's own view and cb is the settlement agent's. See the nets
 // field for why the harness needs all three.
-func (h *meshHarness) bank(pid payment.ParticipantID) *payment.Network { return h.nets.Bank(pid) }
-func (h *meshHarness) cb() *payment.Network                            { return h.nets.CentralBank() }
+// bank is one member's own network, keyed by its ADDRESS — a bank's
+// ParticipantID is its BIC since Task 18 (see payment.AsBank), and every caller
+// here holds an address.
+func (h *meshHarness) bank(bic iso20022.BIC) *payment.Network {
+	return h.nets.Bank(payment.ParticipantID(bic))
+}
+func (h *meshHarness) cb() *payment.Network { return h.nets.CentralBank() }
 
 // cbBook is the central bank's book of accounts. Network.CentralBank returns an
 // error since Task 18b — every other institution's network has no such book —
@@ -369,7 +374,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// option. A test that wants that state can lodge for itself — see
 	// TestABankCannotSettleOutOfVaultCash, which is the one that does.
 	if opts.fundTheDebtor {
-		if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit: %v", err)
 		}
 		h.lodge(t, h.debtor.ID, "EUR", harnessFunding)
@@ -382,7 +387,7 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 		// account's OWN vault, and a lodgement moves one asset's vault onto that
 		// asset's reserve. A dollar cycle settles across dollar reserves and a euro
 		// balance is no use to it.
-		if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
+		if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorUSDAcct.ID, harnessFunding, "Opening deposit"); err != nil {
 			t.Fatalf("Deposit USD: %v", err)
 		}
 		h.lodge(t, h.debtor.ID, "USD", harnessFunding)
@@ -397,11 +402,11 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// compares them party by party and a mandate over a different account is a
 	// mismatch rather than an authority. MaxAmount 0 is unlimited, so the amount
 	// is never what refuses a collection here.
-	if h.mandate, err = h.bank(h.creditor.ID).CreateMandate(ctx, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
+	if h.mandate, err = h.bank(h.creditor.BIC).CreateMandate(ctx, h.debtorBIC, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
 		t.Fatalf("CreateMandate: %v", err)
 	}
 	if opts.revokeMandate {
-		if err := h.bank(h.creditor.ID).RevokeMandate(ctx, h.mandate.ID); err != nil {
+		if err := h.bank(h.creditor.BIC).RevokeMandate(ctx, h.mandate.ID); err != nil {
 			t.Fatalf("RevokeMandate: %v", err)
 		}
 	}
@@ -640,14 +645,13 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 // collection's parties separately could drift into a mismatch that looked like a
 // revoked mandate.
 func (h *meshHarness) debtorRef() payment.PartyRef {
-	return payment.PartyRef{Participant: h.debtorPID, Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]}
+	return payment.PartyRef{Account: h.debtorAcct.ID, Identifier: h.debtorAcct.Identifiers[0]}
 }
 
 func (h *meshHarness) creditorRef(iban string) payment.PartyRef {
 	return payment.PartyRef{
-		Participant: h.creditorPID,
-		Account:     h.creditorAcct.ID,
-		Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban},
+		Account:    h.creditorAcct.ID,
+		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban},
 	}
 }
 
@@ -716,17 +720,16 @@ func (h *meshHarness) submitCreditTransferInUSD(t *testing.T) payment.Payment {
 	p, err := h.mesh.Submit(context.Background(), payment.InitiatePaymentRequest{
 		Scheme: schemeUSDCT,
 		Debtor: payment.PartyRef{
-			Participant: h.debtorPID,
-			Account:     h.debtorUSDAcct.ID,
-			Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: debtorUSDIBAN},
+			Account:    h.debtorUSDAcct.ID,
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: debtorUSDIBAN},
 		},
 		Creditor: payment.PartyRef{
-			Participant: h.creditorPID,
-			Account:     h.creditorUSDAcct.ID,
-			Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: creditorUSDIBAN},
+			Account:    h.creditorUSDAcct.ID,
+			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: creditorUSDIBAN},
 		},
-		Amount:      harnessAmount,
-		Description: "invoice 43",
+		DebtorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorUSDAcct.Name},
+		Amount:        harnessAmount,
+		Description:   "invoice 43",
 		// Push: the creditor is the counterparty, so the request must name it. See
 		// creditTransferRequest on why there is no Agent beside the name.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorUSDAcct.Name},
@@ -875,12 +878,12 @@ func (h *meshHarness) spendTheCredit(t *testing.T) {
 	}
 	p, err := h.mesh.Submit(ctx, payment.InitiatePaymentRequest{
 		Scheme:          payment.SchemeSEPACT,
-		Debtor:          payment.PartyRef{Participant: h.creditorPID, Account: h.creditorAcct.ID, Identifier: h.creditorAcct.Identifiers[0]},
+		Debtor:          payment.PartyRef{Account: h.creditorAcct.ID, Identifier: h.creditorAcct.Identifiers[0]},
 		Creditor:        h.debtorRef(),
 		Amount:          harnessAmount,
 		Description:     "spending what arrived",
 		CreditorDetails: payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
-	})
+		DebtorDetails:   payment.PartyDetails{Agent: h.creditorBIC}})
 	if err != nil {
 		t.Fatalf("the payee could not spend the credit: %v", err)
 	}

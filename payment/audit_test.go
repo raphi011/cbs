@@ -2,6 +2,7 @@ package payment_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,17 +12,90 @@ import (
 	"github.com/raphi011/cbs/store/storetest"
 )
 
-// paymentAudit reads the network's own audit trail, optionally narrowed to one
-// entity.
+// paymentAudit reads the payment-scope audit trail of the WHOLE SYSTEM,
+// optionally narrowed to one entity.
+//
+// It used to be one read of one book. ledger.NetworkBook was the book every
+// payment-scope event was written under — participants, payments, mandates,
+// cycles and settlements, one log shared by everybody — and it is deleted,
+// because each of those rows turned out to have exactly one owner and each owner
+// now has a book of its own (payment.Network.book, and ClearingHouseBook's doc,
+// which is where the constant's meaning is recorded).
+//
+// So the trail these tests are about is spread across three logs, and this reads
+// all three and merges them. That keeps every assertion below meaning what it
+// meant — "these events happened, in this order" — rather than quietly narrowing
+// each one to whichever institution happened to write it.
+//
+// Merged by Seq, which is a store-GLOBAL total order and not a per-book one; see
+// store/storetest, whose AuditPagingIsScopedToItsFilter is written against
+// exactly that property. So the merge is a sort and not an interleave, and it
+// reproduces the single log's order exactly.
+//
+// What it deliberately does NOT assert is which of the three books each event
+// landed in. That is a real claim and a per-event one — a mandate is its
+// creditor bank's, a cut-off is the clearing house's, a settlement account is the
+// central bank's — and it wants a store per entity to be worth pinning, because
+// until then all three logs are rows in one table. See the handoff.
 func paymentAudit(t *testing.T, sys *testSystem, entity string) []ledger.AuditEvent {
 	t.Helper()
-	events, err := sys.ListAudit(context.Background(), ledger.AuditFilter{
-		BookID:   ledger.NetworkBook,
-		Scope:    ledger.ScopePayment,
-		EntityID: entity,
-	})
-	assertNoError(t, err)
+	var events []ledger.AuditEvent
+	for _, r := range auditReaders(t, sys) {
+		got, err := r.net.ListAudit(context.Background(), ledger.AuditFilter{
+			BookID:   r.book,
+			Scope:    ledger.ScopePayment,
+			EntityID: entity,
+		})
+		assertNoError(t, err)
+		events = append(events, got...)
+	}
+	slices.SortFunc(events, func(a, b ledger.AuditEvent) int { return int(a.Seq - b.Seq) })
 	return events
+}
+
+// auditReader is one institution's log: the network to ask, and the book its own
+// rows are written under.
+//
+// The book is carried rather than derived because Network.book is unexported and
+// this is an external test package — which is the right way round for a test:
+// naming the three books here means a change to that three-way answer breaks
+// this file instead of silently narrowing what these assertions read.
+type auditReader struct {
+	net  *Network
+	book ledger.BookID
+}
+
+// auditReaders is every institution whose payment-scope log is part of the
+// system's trail: the clearing house, the settlement agent, and every member
+// bank that exists at the moment it is called.
+//
+// The banks come from the clearing house's ListBanks, which is a read that does
+// not survive the store split — a clearing house holds no banks table. What
+// replaces it is the roster, and the reason it is not used here yet is that a
+// FOUNDED bank has no roster entry and does have a log: TestFoundingABankIsAudited
+// is about exactly that bank.
+func auditReaders(t *testing.T, sys *testSystem) []auditReader {
+	t.Helper()
+	banks, err := sys.ListBanks(context.Background())
+	assertNoError(t, err)
+	out := []auditReader{
+		{net: sys.Network, book: ClearingHouseBook},
+		{net: sys.cb(), book: CentralBankBook},
+	}
+	for _, b := range banks {
+		out = append(out, auditReader{net: sys.bank(b.BIC), book: b.BookID})
+	}
+	return out
+}
+
+// auditBooks is just the books, for the membership check on each event.
+func auditBooks(t *testing.T, sys *testSystem) []ledger.BookID {
+	t.Helper()
+	var out []ledger.BookID
+	for _, r := range auditReaders(t, sys) {
+		out = append(out, r.book)
+	}
+	return out
 }
 
 func eventTypes(events []ledger.AuditEvent) string {
@@ -60,15 +134,15 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	st := runCycle(t, sys, SchemeSEPACT, func() {
 		p1, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 30000,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 			CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC}})
 		assertNoError(t, err)
 		p2, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPACT, Amount: 10000,
-			Debtor: PartyRef{Participant: b.ID, Account: bob}, Creditor: PartyRef{Participant: a.ID, Account: alice},
+			Debtor: PartyRef{Account: bob}, Creditor: PartyRef{Account: alice},
 			CreditorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			DebtorDetails:   PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 		payments = []PaymentID{p1.ID, p2.ID}
 	})
@@ -119,9 +193,14 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 	assertEqual(t, "trail for the cycle", eventTypes(paymentAudit(t, sys, string(st.CycleID))),
 		strings.Join([]string{ledger.EventCycleOpened, ledger.EventCycleClosed, ledger.EventCycleSettled}, " "))
 
-	// Payment-scope events are network-scoped and carry a payload snapshot.
+	// Payment-scope events carry a payload snapshot, and each is written under the
+	// book of the institution whose act it was — one of the three, never a shared
+	// one, because there is no shared book left. See paymentAudit.
+	books := auditBooks(t, sys)
 	for _, e := range paymentAudit(t, sys, "") {
-		assertEqual(t, "book of "+e.Type, e.BookID, ledger.NetworkBook)
+		if !slices.Contains(books, e.BookID) {
+			t.Fatalf("%s is logged under %q, which is no institution's book", e.Type, e.BookID)
+		}
 		assertEqual(t, "scope of "+e.Type, e.Scope, ledger.ScopePayment)
 		if len(e.Payload) == 0 {
 			t.Fatalf("%s carries no payload", e.Type)
@@ -212,9 +291,9 @@ func TestRejectedPaymentIsAudited(t *testing.T) {
 	assertNoError(t, err)
 	p, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 5000,
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
 	_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonDuplication, "AM05")
@@ -241,9 +320,9 @@ func TestFailedInitiationLeavesNoAuditTrail(t *testing.T) {
 	before := len(paymentAudit(t, sys, ""))
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPACT, Amount: 999999, // more than Alice has
-		Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
+		Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
 		CreditorDetails: PartyDetails{Agent: b.BIC, Name: "Bob"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	if err == nil {
 		t.Fatal("initiation succeeded, want an insufficient-funds failure")
 	}
@@ -263,11 +342,12 @@ func TestMandateEventsAreAudited(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	m, err := sys.bank(b.ID).CreateMandate(ctx,
-		PartyRef{Participant: a.ID, Account: alice},
-		PartyRef{Participant: b.ID, Account: bob}, 50000)
+	m, err := sys.bank(b.BIC).CreateMandate(ctx,
+		a.BIC,
+		PartyRef{Account: alice},
+		PartyRef{Account: bob}, 50000)
 	assertNoError(t, err)
-	assertNoError(t, sys.bank(b.ID).RevokeMandate(ctx, m.ID))
+	assertNoError(t, sys.bank(b.BIC).RevokeMandate(ctx, m.ID))
 
 	assertEqual(t, "mandate trail", eventTypes(paymentAudit(t, sys, string(m.ID))),
 		strings.Join([]string{ledger.EventMandateCreated, ledger.EventMandateRevoked}, " "))
@@ -279,18 +359,19 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	m, err := sys.bank(b.ID).CreateMandate(ctx,
-		PartyRef{Participant: a.ID, Account: alice},
-		PartyRef{Participant: b.ID, Account: bob}, 0)
+	m, err := sys.bank(b.BIC).CreateMandate(ctx,
+		a.BIC,
+		PartyRef{Account: alice},
+		PartyRef{Account: bob}, 0)
 	assertNoError(t, err)
 
 	var payID PaymentID
 	runCycle(t, sys, SchemeSEPADD, func() {
 		p, err := initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 20000, MandateID: m.ID,
-			Debtor: PartyRef{Participant: a.ID, Account: alice}, Creditor: PartyRef{Participant: b.ID, Account: bob},
-			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			Debtor: PartyRef{Account: alice}, Creditor: PartyRef{Account: bob},
+			DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 		payID = p.ID
 	})

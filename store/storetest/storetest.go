@@ -65,9 +65,19 @@ import (
 // Books used throughout the suite. Two of them, because almost every
 // store-level guarantee is per book and the interesting failure mode is a
 // implementation that leaks state across books.
+//
+// bookC is a third and is used by one case, AuditPagingIsScopedToItsFilter,
+// which needs a book whose events are payment-scoped so that the pager has gaps
+// to step over. That case named ledger.NetworkBook, which is deleted: the
+// constant meant "belongs to no single institution", and each of the row kinds
+// sequenced under it turned out to have exactly one owner (see
+// payment.ClearingHouseBook). A name from this package rather than that one,
+// because this file talks to ledger.Store and ledger.Tx and to nothing above
+// them — the case is about a filter's predicates, not about who owns a book.
 const (
 	bookA ledger.BookID = "book-a"
 	bookB ledger.BookID = "book-b"
+	bookC ledger.BookID = "book-c"
 )
 
 // RunLedger runs the ledger-layer suite against a store.
@@ -1521,7 +1531,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 					{BookID: bookA, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
 					{BookID: bookA, Scope: ledger.ScopeDeposit, Type: ledger.EventAccountOpened},
 					{BookID: bookB, Scope: ledger.ScopeLedger, Type: ledger.EventAccountCreated},
-					{BookID: ledger.NetworkBook, Scope: ledger.ScopePayment, Type: ledger.EventPaymentAccepted},
+					{BookID: bookC, Scope: ledger.ScopePayment, Type: ledger.EventPaymentAccepted},
 				} {
 					e.ID = fmt.Sprintf("evt_%s_%d", e.Type, round)
 					e.EntityID = fmt.Sprintf("ent_%d", round)
@@ -1533,7 +1543,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 			return nil
 		})
 
-		filter := ledger.AuditFilter{BookID: ledger.NetworkBook, Scope: ledger.ScopePayment}
+		filter := ledger.AuditFilter{BookID: bookC, Scope: ledger.ScopePayment}
 		all := audit(t, s, filter)
 		assertEqual(t, "payment events", len(all), 3)
 

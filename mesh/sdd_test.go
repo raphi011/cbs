@@ -3,7 +3,6 @@ package mesh
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/raphi011/cbs/iso20022"
@@ -196,6 +195,20 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 // The submitter is made unaddressable rather than the payer's bank, because
 // that is the direction the ordering has to survive. Both are attempted and both
 // errors come back joined, so the dead letter still names what went wrong.
+//
+// # How the submitter is made unaddressable, and what stopped working
+//
+// By taking its ACTOR away, so the send is refused with ErrUnknownBIC. It used
+// to be by taking its ROSTER ENTRY away, through a csmOps that failed the lookup
+// for one participant — and there is no lookup left: tell reads both banks'
+// addresses off the payment itself, because a payment names its parties by BIC
+// (see payment.PartyRef). That stand-in also covered a store failure, which is
+// now equally unreachable on this path, and Reset's ForgetBanks/JoinRoster window
+// — which is exactly what removing the actor reproduces.
+//
+// It is a narrower provocation than the one it replaces and it is the honest one:
+// the clearing house can no longer fail to KNOW where a bank is, only fail to
+// REACH it.
 func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)
@@ -219,15 +232,21 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 		t.Fatalf("RejectAtCSM: %v", err)
 	}
 
-	// A clearing house that cannot look up the bank that submitted. Everything
-	// else about it is the real one.
-	broken := &csm{
-		m:   h.mesh,
-		ops: unaddressable{csmOps: h.net, who: h.creditorPID},
-		bic: h.cfg.ClearingHouseBIC,
-	}
+	// The submitter is made unreachable by moving it to an address this mesh has
+	// no actor for, so the clearing house's message to it is refused by the
+	// transport with ErrUnknownBIC.
+	//
+	// On the local COPY of the payment, which is all tell is given and all it
+	// reads. Nothing is written, so the payer's bank is still the real one and
+	// still the bank the refund has to reach — which is the ordering under test.
+	rejected.CreditorDetails.Agent = "NOSUCHBKXXX"
+	relay := &csm{m: h.mesh, ops: h.net, bic: h.cfg.ClearingHouseBIC}
 	before := h.statusesSentTo(h.debtorBIC)
-	err = broken.tell(context.Background(), rejected,
+	// payerAccepted is true: this collection was answered ACCP by the payer's
+	// bank, which is what posted the debtor leg asserted above. It is an argument
+	// now rather than a read of p.DebtorLegTx, because that column is the bank's
+	// and is not in the clearing house's schema — see csm.tell.
+	err = relay.tell(context.Background(), rejected,
 		payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided},
 		payment.TransactionStatusReport{
 			EndToEndID: endToEndOf(rejected),
@@ -235,12 +254,12 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 			Status:     iso20022.TransactionStatusRejected,
 			Code:       iso20022.StatusReasonNotSpecifiedAgentGenerated,
 			Text:       "operator",
-		})
+		}, true)
 
 	// The failure is reported — it is not swallowed to make the refund look
 	// clean.
-	if err == nil || !strings.Contains(err.Error(), "cannot address the bank that submitted") {
-		t.Fatalf("tell = %v, want the submitter's lookup reported", err)
+	if err == nil || !errors.Is(err, ErrUnknownBIC) {
+		t.Fatalf("tell = %v, want the submitter's send reported", err)
 	}
 
 	// And the refund went out anyway. Counted after the drain, because the tap
@@ -258,21 +277,12 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 	}
 }
 
-// unaddressable is a clearing house's view of the network in which one
-// participant cannot be looked up. It stands in for the two ways that really
-// happens — a store failure, and Reset's window in which the roster is empty —
-// neither of which a test can provoke on one participant at a time.
-type unaddressable struct {
-	csmOps
-	who payment.ParticipantID
-}
-
-func (u unaddressable) GetRosterEntry(ctx context.Context, id payment.ParticipantID) (payment.RosterEntry, error) {
-	if id == u.who {
-		return payment.RosterEntry{}, errors.New("mesh: the roster is unavailable")
-	}
-	return u.csmOps.GetRosterEntry(ctx, id)
-}
+// The `unaddressable` stub stood here: a clearing house's view of the network in
+// which one participant's roster entry could not be read. It is deleted with the
+// lookup it faked. csmOps has no GetRosterEntry any more — a status is addressed
+// from the payment's own agent BICs — so there is nothing on that interface a
+// stub could fail, and the failure the test is about is the SEND. See
+// TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed.
 
 // A second copy of a collection the debtor's bank has already answered is
 // dead-lettered, not answered again — and above all not answered TWICE with two

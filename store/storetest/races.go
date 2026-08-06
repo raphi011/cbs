@@ -210,8 +210,8 @@ func RunRaces(t *testing.T, newStore func(*testing.T) Store) {
 
 		req := payment.InitiatePaymentRequest{
 			Scheme:          payment.SchemeSEPACT,
-			Debtor:          payment.PartyRef{Participant: debtorBank.ID, Account: alice.ID, Identifier: alice.Identifiers[0]},
-			Creditor:        payment.PartyRef{Participant: creditorBank.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]},
+			Debtor:          payment.PartyRef{Account: alice.ID, Identifier: alice.Identifiers[0]},
+			Creditor:        payment.PartyRef{Account: bruno.ID, Identifier: bruno.Identifiers[0]},
 			Amount:          amount,
 			EndToEndID:      "one-and-only",
 			CreditorDetails: payment.PartyDetails{Agent: creditorBank.BIC, Name: bruno.Name},

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 )
@@ -323,6 +324,17 @@ func (s *Server) forBank(pid payment.ParticipantID) *Server {
 	b.boundPID = pid
 	return b
 }
+
+// boundBIC is this listener's bank as an ADDRESS: the identifier a payment names
+// its parties by, and what every comparison against a payment's two sides now
+// needs.
+//
+// The conversion is total and lossless because the two are one value — a bank's
+// ParticipantID is its BIC since Task 18, see payment.AsBank — and it is a method
+// so that this layer says so in one place, exactly as payment.Network.selfBIC
+// does one layer down. It is empty on the two institution surfaces, where
+// boundPID is, and the handlers that use it are all a bank's own.
+func (s *Server) boundBIC() iso20022.BIC { return iso20022.BIC(s.boundPID) }
 
 // participant resolves the listener's own participant. On failure it writes the
 // appropriate error response and returns false, so callers can simply `return`

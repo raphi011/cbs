@@ -211,14 +211,15 @@ type bankOps interface {
 	// the submitter waiting for an answer, or the bank holding money it must
 	// give back. For a push those are one bank and for a pull they are two.
 	//
-	// GetRosterEntry is what tells this bank whether a rejection it was sent is
-	// about a payment whose payer banks somewhere else — a comparison of two
-	// BICs, its own against the one the roster holds for the payment's payer.
-	// The whole of what it needs is the address, and the whole of what it gets
-	// is the address: see payment.RosterEntry, and the note above on the hole
-	// this replaced.
+	// A GetRosterEntry sat here, and it was what told this bank whether a
+	// rejection it was sent is about a payment whose payer banks somewhere else —
+	// a comparison of two BICs, its own against the one the CLEARING HOUSE's
+	// roster held for the payment's payer. It is gone: the payment carries both
+	// agents' BICs itself, so the comparison is made against a value already in
+	// hand, and a member bank asking the clearing house who its own payment's
+	// payer is was a read across an entity boundary to learn something it had been
+	// told. See payment.PartyRef.
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
-	GetRosterEntry(ctx context.Context, id payment.ParticipantID) (payment.RosterEntry, error)
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 	ReverseDebtorLeg(ctx context.Context, p payment.Payment, reason string) error
 
@@ -361,17 +362,20 @@ type csmOps interface {
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
 
-	// GetRosterEntry is how a status is addressed back to the bank that
-	// submitted the payment, and it is the clearing house reading its OWN row —
-	// the roster is this institution's record, which is what makes this the one
-	// lookup here that survives the split intact.
+	// Scheme is what says which bank a status goes back to: the payer's for a
+	// push, the payee's for a pull. Reading it off the payment's own scheme rather
+	// than off the message means the clearing house answers the instructing agent
+	// even when the message it is acting on came from the other one, which on a
+	// pull it always does.
 	//
-	// Scheme is what says which bank that is: the payer's for a push, the payee's
-	// for a pull. Reading it off the payment's own scheme rather than off the
-	// message means the clearing house answers the instructing agent even when
-	// the message it is acting on came from the other one, which on a pull it
-	// always does.
-	GetRosterEntry(ctx context.Context, id payment.ParticipantID) (payment.RosterEntry, error)
+	// A GetRosterEntry sat beside it, turning that answer into an address, and the
+	// doc here called it the one lookup on this actor that survived the split
+	// intact — the roster IS this institution's own row. It survived and stopped
+	// being needed, which is a different thing: the payment names both agents by
+	// BIC, so scheme.Direction picks between two values the clearing house is
+	// already holding. What is lost with it is a membership check nobody was
+	// making on this path; the roster read would have failed for a non-member, and
+	// a non-member's payment cannot be in a cycle to be answered about.
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 
 	// The cut-off, and what it now has to say afterwards.

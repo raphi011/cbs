@@ -319,12 +319,11 @@ func TestSCTEndToEnd(t *testing.T) {
 	// register, and the pacs.008 it is about to build has to carry one.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SCT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SCT-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	// Initiated, not Accepted: the payee's bank has not seen it yet. Draining is
 	// what carries the conversation to its end.
@@ -856,11 +855,10 @@ func TestCrossAssetPaymentReturns422(t *testing.T) {
 
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 }
 
@@ -894,8 +892,8 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	// same either way — the field it is asserting on is the row's now, not a
 	// join onto the debtor's register.
 	mandate := doJSON(t, bank(h, b), "POST", "/mandates", `{
-		"debtor":{"participant":"`+a+`","account":"`+aliceUSD+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bobUSD+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aliceUSD+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bobUSD+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)
 	assertEqual(t, "created mandate asset", mandate["asset"].(string), "USD")
@@ -940,11 +938,10 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+aliceEUR+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-DTO-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aliceEUR+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-DTO-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -1082,12 +1079,11 @@ func TestARefusedSettlementIsRecoverableOverHTTP(t *testing.T) {
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-SHORT-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"short-reserve",
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1556,11 +1552,10 @@ func auditFixture(t *testing.T, h *Server) (bankA, bankB, payID string) {
 	cyc := doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)["id"].(string)
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":25000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertStatus(t, csm(h), "POST", "/cycles/"+cyc+"/close", "", http.StatusOK)
@@ -1582,12 +1577,12 @@ func auditTypes(events []auditEventDTO) []string {
 func TestAuditFilterParsesAndCapsLimits(t *testing.T) {
 	filterFor := func(query string) ledger.AuditFilter {
 		r := httptest.NewRequest("GET", "/payments/audit"+query, nil)
-		return auditFilter(r, ledger.NetworkBook, ledger.ScopePayment)
+		return auditFilter(r, payment.ClearingHouseBook, ledger.ScopePayment)
 	}
 
 	// The route decides the book and the scope; the client never can.
 	base := filterFor("")
-	assertEqual(t, "book", base.BookID, ledger.NetworkBook)
+	assertEqual(t, "book", base.BookID, payment.ClearingHouseBook)
 	assertEqual(t, "scope", base.Scope, ledger.ScopePayment)
 	assertEqual(t, "default limit", base.Limit, 100)
 	assertEqual(t, "default before", base.Before, int64(0))
@@ -1699,11 +1694,10 @@ func TestAuditRejectedAndReturnedPayments(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	second := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	doJSON(t, csm(h), "POST", "/payments/"+second+"/reject", `{"reason":"AM05"}`, http.StatusAccepted)
@@ -1736,11 +1730,10 @@ func TestRejectPaymentRendersItsCode(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -1782,11 +1775,10 @@ func TestRejectPaymentGivesThePayerTheirMoneyBack(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 	assertEqual(t, "payer's book balance after submission", bookOf(), before-1000)
@@ -1825,11 +1817,10 @@ func TestARejectionWhoseRefundFailsStandsAndIsDeadLettered(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	payID := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`","identifier":{"scheme":"IBAN","value":"SE89-AUDIT-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["id"].(string)
 	drainServer(t, h)
 
@@ -1873,8 +1864,8 @@ func TestAuditMandateEvents(t *testing.T) {
 	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
 
 	mid := doJSON(t, bank(h, b), "POST", "/mandates", `{
-		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+aAccounts[0].ID+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bAccounts[0].ID+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)["id"].(string)
 	doJSON(t, bank(h, b), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
@@ -2733,12 +2724,11 @@ func TestSEPADebtorLegsValueDateApart(t *testing.T) {
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 	doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice["id"].(string)+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-VD-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice["id"].(string)+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-VD-BOB-0001"}},
 		"amount":25000,
 		"endToEndId":"e2e-1",
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	drainServer(t, h)
 
@@ -3146,12 +3136,15 @@ func TestDirectoryResolvesItsOwnCustomer(t *testing.T) {
 		return err
 	})
 
+	// The response names the bank as an AGENT and no longer as a participant: a
+	// resolved party is an account plus the address of the bank holding it, and
+	// the two fields were one value written twice. See api.directoryEntryDTO.
 	var got struct {
-		Participant string `json:"participant"`
-		Account     string `json:"account"`
+		Agent   string `json:"agent"`
+		Account string `json:"account"`
 	}
 	getJSON(t, bank(srv, string(pid)), "/directory?scheme=IBAN&value=SE89-AURORA-1001", &got)
-	if got.Participant != string(pid) || got.Account == "" {
+	if got.Agent != string(pid) || got.Account == "" {
 		t.Fatalf("directory response = %#v, want this bank's own account", got)
 	}
 }
@@ -3353,22 +3346,20 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// payee's BIC is derived from that payee's own bank row, never sent.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+nobody+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+nobody+`"},
 		"amount":1000,
-		"creditorName":"Nobody",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Nobody"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a payee with no address at all")
 
 	// ErrIdentifierMismatch — the creditor's own address, on the debtor leg.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the payee's address quoted on the payer's leg")
 
@@ -3380,11 +3371,10 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// the address was filled in later by the bank at the other end.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after a push that quoted no payee address")
 
@@ -3393,11 +3383,10 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// sends, and the one a retrying app would send again.
 	assertStatus(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`"},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`"},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 	assertAliceUntouched("after the same refusal on the payer's own bank surface")
 
@@ -3422,11 +3411,10 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// already in the request.
 	pay := doJSON(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)
 	assertEqual(t, "back-filled debtor address",
 		pay["debtor"].(map[string]any)["identifier"].(map[string]any)["value"].(string), "SE89-ADDR-ALICE-0001")
@@ -3438,11 +3426,10 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	doJSON(t, bank(h, a), "POST", "/deposit-accounts/"+alice+"/identifiers", `{"scheme":"IBAN","value":"SE89-ADDR-ALICE-0002"}`, http.StatusNoContent)
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"SE89-ADDR-BOB-0001"}},
 		"amount":1000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusUnprocessableEntity)
 
 	// The aggregate, and the only thing covering the ErrAmbiguousAddress case
@@ -3518,8 +3505,8 @@ func TestPostPaymentRequiresTheCounterpartyName(t *testing.T) {
 	fundAndLodge(t, h, a, alice, 100000)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.ct"}`, http.StatusCreated)
 
-	parties := `"debtor":{"participant":"` + a + `","account":"` + alice + `"},` +
-		`"creditor":{"participant":"` + b + `","account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
+	parties := `"debtorAgent":"` + a + `","debtor":{"account":"` + alice + `"},` +
+		`"creditorAgent":"` + b + `","creditor":{"account":"` + bob + `","identifier":{"scheme":"IBAN","value":"SE89-CPTY-BOB-0001"}},`
 
 	for _, tc := range []struct {
 		name       string

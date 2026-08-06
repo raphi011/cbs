@@ -1648,7 +1648,7 @@ func TestTakingCashInReachesOnlyTheBanksOwnBook(t *testing.T) {
 	// the fixture's keeps the call under test the only thing in the measurement.
 	const amount = ledger.Amount(100_000)
 	h.rec.reset()
-	if err := h.bank(h.debtor.ID).Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.BIC).Deposit(context.Background(), h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 
@@ -1718,7 +1718,7 @@ func TestALodgementIsTwoBooksInTwoUnitsOfWork(t *testing.T) {
 	// The fixture has already lodged its own funding, which is what every other
 	// test in this package needs; this one wants an unlodged balance to move.
 	const amount = ledger.Amount(75_000)
-	if err := h.bank(h.debtor.ID).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
+	if err := h.bank(h.debtor.BIC).Deposit(ctx, h.debtor.ID, h.debtorAcct.ID, amount, "cash in"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 
@@ -1827,7 +1827,7 @@ func TestAFoundedBankCanTakeCashBeforeItHasJoinedAnything(t *testing.T) {
 	}
 
 	acct := h.openCustomer(t, founded, "Sole Depositor", "EUR", 0, "DE89370400440532013099")
-	if err := h.bank(founded.ID).Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
+	if err := h.bank(founded.BIC).Deposit(ctx, founded.ID, acct.ID, 250_00, "cash over the counter"); err != nil {
 		t.Fatalf("Deposit at a founded bank: %v; a founded bank can open its doors and take money", err)
 	}
 	if got, want := h.balance(t, founded.ID, acct.ID), ledger.Amount(250_00); got != want {

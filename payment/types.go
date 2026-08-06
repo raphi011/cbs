@@ -173,28 +173,59 @@ func (s CycleStatus) String() string {
 	}
 }
 
-// PartyRef identifies one side of a payment: a customer deposit account at a
-// specific participant bank, and the external address that was quoted to reach
-// it.
+// PartyRef identifies one side of a payment: a customer deposit account, and the
+// external address that was quoted to reach it.
+//
+// # It does not name the bank, and it used to
+//
+// The field was Participant, a ParticipantID, and it sat beside a
+// PartyDetails.Agent naming the same bank by BIC. Task 18 made a bank's id its
+// BIC (see AsBank), so the two could no longer differ, and two values that cannot
+// differ are not two facts. The agent is the survivor because it is what ROUTES:
+// it goes out as DbtrAgt/CdtrAgt and the clearing house relays on it, which is
+// something an id nobody puts on the wire never did.
+//
+// So one side of a payment is now read as a PAIR — this ref says which account,
+// and the PartyDetails beside it says at which bank. Payment.Debtor and
+// Payment.DebtorDetails are that pair, and neither half answers "who is this" on
+// its own. See SameParty, which stops being a whole identity comparison for
+// exactly that reason, and store/sqlite/schema/bank/0001_init.sql's payments,
+// where the two dropped columns are argued at length.
+//
+// One consequence is worth naming rather than discovering: a WRONG counterparty
+// agent and a wrong counterparty are no longer distinguishable, because there is
+// one value to be wrong. Nothing is weakened — the instruction still reaches the
+// bank it names, which resolves the address in its own register and answers AC01
+// — but a test constructing a DISAGREEMENT between the two has nothing to build.
 //
 // The identifier is STORED rather than derived, because identifiers are
 // mutable: an account that later has its IBAN withdrawn must not retroactively
 // change what a settled payment says it was sent to. What a payment records is
 // the address actually used.
 type PartyRef struct {
-	Participant ParticipantID
-	Account     deposit.AccountID // the customer deposit account within that bank
-	Identifier  deposit.Identifier
+	Account    deposit.AccountID // the customer deposit account at the agent's bank
+	Identifier deposit.Identifier
 }
 
-// SameParty reports whether two refs name the same account at the same bank,
-// ignoring the address quoted to reach it.
+// SameParty reports whether two refs name the same ACCOUNT, ignoring the address
+// quoted to reach it.
 //
-// Identity is the (participant, account) pair and NOTHING else, because the
-// identifier is a record of how a party was reached on one occasion, not part
-// of who that party is. Anything comparing two refs to decide whether they mean
-// the same counterparty — a mandate against the payment claiming it — must use
-// this rather than ==.
+// It is HALF of an identity comparison and not the whole of one. An account id is
+// unique within the bank that issued it and nowhere else, so a caller comparing
+// two records that could name accounts at different banks must compare the agent
+// BIC beside each ref as well. SDD.ValidateMandate is the one that has to —
+// against Mandate.DebtorAgent — and it is the only caller for which the question
+// arises, because both of its refs are the creditor bank's own rows.
+//
+// It was the whole comparison while a ref carried its own Participant, and it is
+// named as half rather than quietly narrowed because the missing half is now a
+// thing a caller can forget. See PartyRef.
+//
+// What it deliberately still ignores is the identifier, because the identifier is
+// a record of how a party was reached on one occasion, not part of who that party
+// is. Anything comparing two refs to decide whether they mean the same
+// counterparty — a mandate against the payment claiming it — must use this rather
+// than ==.
 //
 // The reason is that identifiers are mutable by design: reissuing a card is a
 // RemoveIdentifier plus an AddIdentifier against an account whose balance and
@@ -206,7 +237,7 @@ type PartyRef struct {
 // UpdateMandate, so there would be no way back.
 // TestMandateSurvivesAReissuedDebtorIdentifier pins it.
 func (r PartyRef) SameParty(o PartyRef) bool {
-	return r.Participant == o.Participant && r.Account == o.Account
+	return r.Account == o.Account
 }
 
 // PartyDetails is what a MESSAGE says about one side of a payment: which bank
@@ -398,7 +429,22 @@ type Payment struct {
 // creditor's bank that checks one at submission — and CreateMandateTx is what
 // makes the storage agree with the rule.
 type Mandate struct {
-	ID       MandateID
+	ID MandateID
+
+	// DebtorAgent is the BIC of the bank a collection under this mandate is sent
+	// to, and it is the whole of what this row records about the other side.
+	//
+	// It is here rather than on Debtor because a PartyRef stopped naming a bank —
+	// see PartyRef — and because there is nothing to pair it with on the creditor
+	// side. A mandate is the CREDITOR's bank's row, so the creditor's agent is
+	// always this institution; a field holding the same value in every mandate it
+	// ever writes records nothing, and CreateMandateTx's ErrNotThisBanksMandate is
+	// the guard such a field would have looked like it was supporting.
+	//
+	// Recorded rather than resolved, for the reason the whole row is: that bank's
+	// register is in that bank's database.
+	DebtorAgent iso20022.BIC
+
 	Debtor   PartyRef
 	Creditor PartyRef
 
@@ -437,7 +483,16 @@ type ClearingCycle struct {
 	// means the participant is a net receiver (its reserves increase at
 	// settlement); a negative value means it is a net payer. The values
 	// always sum to zero.
-	NetPositions map[ParticipantID]ledger.Amount
+	//
+	// Keyed by BIC, and it was keyed by ParticipantID. The difference was
+	// invisible while one database held both a roster and a banks table to
+	// convert between them, and it is not invisible now: these figures are
+	// computed by the clearing house and sent to the settlement agent, whose
+	// settlement_members are keyed by BIC and by nothing else. A position naming a
+	// participant id would have been a set of figures about banks the recipient
+	// could not identify — which is what mesh.csm.settlementLegs' id-to-BIC lookup
+	// was for, and it is gone. See cycles in store/sqlite/schema/csm/0001_init.sql.
+	NetPositions map[iso20022.BIC]ledger.Amount
 
 	OpenedAt     time.Time
 	ClosedAt     time.Time
@@ -447,9 +502,12 @@ type ClearingCycle struct {
 // Settlement is the record of a closed cycle's net positions being moved
 // across participants' reserve accounts at the central bank.
 type Settlement struct {
-	ID           SettlementID
-	CycleID      CycleID
-	NetPositions map[ParticipantID]ledger.Amount
+	ID      SettlementID
+	CycleID CycleID
+	// Keyed by BIC, for ClearingCycle.NetPositions' reason and because this is
+	// the institution that could least afford the other key: the settlement agent
+	// holds no banks table to resolve one against.
+	NetPositions map[iso20022.BIC]ledger.Amount
 	SettlementTx ledger.TransactionID // the transaction in the central-bank ledger
 	ValueDate    time.Time
 	SettledAt    time.Time
@@ -559,8 +617,13 @@ type SettlementAdvice struct {
 // Reference to a payment id and StatementRef to a value that is NOT a row's key
 // (see AdvisedMovement's doc), which is why StatementRef is a plain string and
 // not a typed SettlementID.
+//
+// It carried a Member beside Agent — the same bank as an id and as an address —
+// until Task 18 made the two one value. Agent is the survivor for the reason the
+// payments table's agent columns are: it is what goes on the wire, and the
+// settlement agent that builds these holds no table that could turn one into the
+// other. See payment.PartyRef, which is the same collapse on a payment's parties.
 type SettlementStatement struct {
-	Member       ParticipantID
 	Agent        iso20022.BIC
 	Account      ledger.AccountID
 	Asset        ledger.AssetCode

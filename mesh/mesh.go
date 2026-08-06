@@ -292,11 +292,17 @@ type Mesh struct {
 	// one lock apart.
 	reserved map[iso20022.BIC]bool
 	// banks is the member banks by participant, which is how Submit finds the
-	// actor that plays a payer's own bank. Keyed by ParticipantID and not by BIC
-	// because that is what an instruction names: a request says which
-	// participant holds the payer's account, and turning that into a BIC to look
-	// up an actor would be a store read to answer a question the roster already
-	// answered at startup.
+	// actor that plays a payer's own bank.
+	//
+	// Keyed by ParticipantID and not by BIC, on the argument that a request said
+	// which PARTICIPANT held the payer's account and turning that into a BIC to
+	// find an actor would be a store read answering a question the roster already
+	// answered at startup. Task 18 made the two one value (see payment.PartyRef),
+	// so the argument is spent and the key is a BIC wearing the other type — which
+	// is why the two lookups that arrive from submitterOf/returnerOf convert.
+	// Re-keying it is the store split's, along with claimAddress's sweep for the
+	// pid behind an address and Lodge's participant argument; all three are the
+	// same edit and none of them belongs in the middle of this one.
 	banks    map[payment.ParticipantID]*bank
 	inFlight int
 	// quiet is closed when inFlight reaches zero and replaced when it leaves
@@ -1360,17 +1366,24 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// both answers are the same institution; a guard that read the submitter
 	// would be comparing a bank with itself.
 	//
-	// The two participants are compared where an instruction names both, and the
-	// counterparty's ADDRESS is compared against the submitter's own further
-	// down — see the BIC check after the actor lookup. Two guards for one rule,
-	// and the reason is that they cover different instructions rather than the
-	// same one twice: since Task 18a a payer's bank cannot know the payee's
-	// internal participant id (payment.ResolveIdentifier), so an ordinary
-	// instruction from a customer names one side and this comparison cannot
-	// fire. What every instruction does name is the counterparty's BIC.
-	if req.Debtor.Participant != "" && req.Debtor.Participant == req.Creditor.Participant {
+	// The two AGENTS are compared where an instruction names both, and the
+	// counterparty's address is RESOLVED against the submitter's own register
+	// further down — see the check after the actor lookup. Two guards for one
+	// rule, and the reason is that they cover different instructions rather than
+	// the same one twice: an instruction from a customer names its own side's bank
+	// nowhere, because the submitting bank fills that in from its own row
+	// (payment.SubmitPaymentTx), so this comparison cannot fire on one. What it
+	// catches is a caller that names both — the seed, and this package's fixtures.
+	//
+	// It compared the two PARTICIPANTS until Task 18, on the argument that a
+	// payer's bank cannot know the payee's internal participant id and so an
+	// ordinary instruction names one side. The id is the BIC now (see
+	// payment.PartyRef), so what an instruction leaves unnamed is its own side
+	// rather than the other's — the same guard, firing on the same requests, for a
+	// reason that has turned around.
+	if req.DebtorDetails.Agent != "" && req.DebtorDetails.Agent == req.CreditorDetails.Agent {
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
-			req.Debtor.Participant, ErrOnUsPayment)
+			req.DebtorDetails.Agent, ErrOnUsPayment)
 	}
 	// And a payment one of whose banks the scheme has not admitted.
 	//
@@ -1383,51 +1396,53 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// which is what makes the API answer a 422 rather than a 202 followed by a
 	// rejection nobody can be told about. See payment.ErrBankNotAdmitted.
 	//
-	// It goes through the ParticipantID crossing, which the clearing house's does
-	// not: a request names its parties by id and the roster is keyed by BIC, so
-	// each of these reads a bank's row to learn its address first. That is the
-	// crossing payment.Network.GetRosterEntry records on its ParticipantID
-	// argument, and Task 18 is what closes it.
+	// It is a roster read and nothing else, and it used to be two reads. A request
+	// named its parties by participant id while the roster is keyed by BIC, so
+	// each side's bank row had to be read first to learn its address — the
+	// clearing house reaching into a member's database to answer a question about
+	// its own roster. Task 18 made the id the BIC, so what a request names is what
+	// the roster is keyed by; this is the ONE of that crossing's eight callers that
+	// still calls anything, because it is the only one asking a question about
+	// membership rather than about an address. See payment.Network.GetRosterEntryByBIC.
 	//
-	// That crossing changed a status code on its way past, which is worth writing
+	// A STATUS CODE went with the read that disappeared, and it is worth writing
 	// down because nothing about a membership guard predicts it. A party naming a
-	// participant NO BANK ROW EXISTS FOR fails the id half of this read, before
-	// the roster is reached, and comes back payment.ErrParticipantNotFound — a
-	// 404, and the truth about a request naming a bank that is not there. It used
-	// to fall through to the bank-actor map below, whose miss is a bare error with
-	// no case in api.errorStatus, so the caller was told 500 about its own typo.
-	// Only the clearing house's console sees the difference: a bank's own
-	// POST /payments refuses an unfamiliar submitter with a 422 of its own before
-	// the mesh is reached. Pinned by
-	// api.TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound, because what
-	// makes the 404 reach a caller is this read running FIRST.
+	// participant no bank row existed for used to fail the id half here and come
+	// back payment.ErrParticipantNotFound — a 404. There is no id half left: a BIC
+	// nobody has been admitted on is not a member, which is a 422 and
+	// ErrBankNotAdmitted. That is the more honest answer of the two — the clearing
+	// house has never been able to tell "no such institution" from "an institution
+	// I have not admitted", and answering 404 was it reporting a bank row it should
+	// not have been reading. api's
+	// TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound is about the old
+	// answer.
 	for _, side := range []struct {
-		role string
-		ref  payment.PartyRef
+		role  string
+		agent iso20022.BIC
 	}{
-		{"payer's bank", req.Debtor},
-		{"payee's bank", req.Creditor},
+		{"payer's bank", req.DebtorDetails.Agent},
+		{"payee's bank", req.CreditorDetails.Agent},
 	} {
 		// A side naming no bank is skipped rather than refused, exactly as the
 		// on-us guard above skips it: "not a member" is not the truth about a
 		// party the request did not name, and what IS wrong with such a request
 		// is SubmitPaymentTx's to say (ErrParticipantNotFound for the submitting
 		// side, ErrCounterpartyNotNamed for the other).
-		if side.ref.Participant == "" {
+		if side.agent == "" {
 			continue
 		}
-		if _, err := m.clearingHouse.GetRosterEntry(ctx, side.ref.Participant); err != nil {
+		if _, err := m.clearingHouse.GetRosterEntryByBIC(ctx, side.agent); err != nil {
 			if errors.Is(err, payment.ErrRosterEntryNotFound) {
 				return payment.Payment{}, fmt.Errorf("mesh: the %s, %s, is not a member of %s: %w",
-					side.role, side.ref.Participant, req.Scheme, payment.ErrBankNotAdmitted)
+					side.role, side.agent, req.Scheme, payment.ErrBankNotAdmitted)
 			}
 			return payment.Payment{}, err
 		}
 	}
-	submitter := submitterOf(scheme, req.Debtor, req.Creditor).Participant
+	submitter := submitterOf(scheme, req.DebtorDetails.Agent, req.CreditorDetails.Agent)
 
 	m.mu.Lock()
-	b, ok := m.banks[submitter]
+	b, ok := m.banks[payment.ParticipantID(submitter)]
 	m.mu.Unlock()
 	if !ok {
 		// The mesh has no actor to play this bank, so nothing it submitted could
@@ -1877,10 +1892,10 @@ func (m *Mesh) Return(ctx context.Context, id payment.PaymentID, reason iso20022
 	if !ok {
 		return fmt.Errorf("mesh: no scheme %q, so no bank returns %s: %w", p.Scheme, p.ID, payment.ErrSchemeNotFound)
 	}
-	returner := returnerOf(scheme, p.Debtor, p.Creditor).Participant
+	returner := returnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 
 	m.mu.Lock()
-	b, ok := m.banks[returner]
+	b, ok := m.banks[payment.ParticipantID(returner)]
 	m.mu.Unlock()
 	if !ok {
 		// Same refusal Submit makes, for the same reason: a return this mesh
@@ -1938,13 +1953,16 @@ func (m *Mesh) Lodge(ctx context.Context, id payment.ParticipantID, asset ledger
 // back to. Written once because the two must agree — an answer addressed to a
 // bank that did not submit is a message nobody was waiting for.
 //
-// It takes the two refs rather than a Payment, because Submit has only a request
-// and a request is not yet a payment.
-func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
+// It takes the two AGENTS rather than a Payment, because Submit has only a
+// request and a request is not yet a payment. It took the two PartyRefs and every
+// caller then took .Participant off the answer; a PartyRef stopped naming a bank
+// at Task 18, and what all four callers want is an address to send to. See
+// payment.PartyRef.
+func submitterOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == payment.Pull {
-		return creditor
+		return creditorAgent
 	}
-	return debtor
+	return debtorAgent
 }
 
 // returnerOf is the party whose bank sends a settled payment back: submitterOf's
@@ -1957,8 +1975,8 @@ func submitterOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payme
 // disagree about who the returner is. This stays as a delegation so that the
 // call sites in this package, which read as mesh-local rules beside
 // submitterOf, do not have to.
-func returnerOf(scheme payment.Scheme, debtor, creditor payment.PartyRef) payment.PartyRef {
-	return payment.ReturnerOf(scheme, debtor, creditor)
+func returnerOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
+	return payment.ReturnerOf(scheme, debtorAgent, creditorAgent)
 }
 
 // returnMsgDef is the pacs.004's message name, which two actors here dispatch a

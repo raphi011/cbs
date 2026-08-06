@@ -13,6 +13,18 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
+// The two banks this suite's fixtures are about.
+//
+// They are BICs and they used to be "bank_1" and "bank_2", which is a change
+// this suite could not opt out of: a bank's ParticipantID is its BIC since Task
+// 18, so a fixture id that is not a well-formed address is a bank no message
+// could reach. See bankRow, which fills a bank's three identifiers from this one
+// value because the store writes one column and derives the rest.
+const (
+	auroraBIC iso20022.BIC = "AURODEFFXXX"
+	verdeBIC  iso20022.BIC = "VERDITMMXXX"
+)
+
 // RunPayment runs the payment-layer suite against a store.
 //
 // It talks only to payment.Store and payment.Tx — never to payment.Network,
@@ -31,12 +43,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 	t.Run("BankRoundTripsAndDropsLiveHandles", func(t *testing.T) {
 		s := openPayment(t, newStore)
 
-		p := bankRow("bank_1", "Aurora Bank", early)
+		p := bankRow(auroraBIC, "Aurora Bank", early)
 		// A Network hands the store a fully bound Bank. Ledger and Deposit are
 		// handles over the store, not data: there is no column that could hold a
 		// *ledger.Book, and a store that kept them would hand back a Bank wired
 		// to whatever it was wired to when it was written.
-		p.Ledger = ledger.NewBook(nil, "bank_1", nil)
+		p.Ledger = ledger.NewBook(nil, ledger.BookID(auroraBIC), nil)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			return tx.PutBank(ctx, p)
@@ -46,7 +58,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		var listed []payment.Bank
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			var err error
-			if got, err = tx.GetBank(ctx, "bank_1"); err != nil {
+			if got, err = tx.GetBank(ctx, payment.ParticipantID(auroraBIC)); err != nil {
 				return err
 			}
 			listed, err = tx.ListBanks(ctx)
@@ -54,7 +66,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		assertEqual(t, "name", got.Name, "Aurora Bank")
-		assertEqual(t, "book id", string(got.BookID), "bank_1")
+		assertEqual(t, "book id", string(got.BookID), string(auroraBIC))
 		assertEqual(t, "customer subledger", string(got.CustomerSubledger), "100")
 		// The product OpenCustomerAccount opens from. It is data like the
 		// subledger above, not a handle like Ledger below, so it has to survive
@@ -63,12 +75,15 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// several layers away from the store that lost it.
 		assertEqual(t, "product id", string(got.ProductID), "prd_basic")
 		assertEqual(t, "product id in listings", string(listed[0].ProductID), "prd_basic")
-		// The BIC is what the mesh routes on. A store that drops it leaves
-		// every bank unreachable, and the failure surfaces as an unroutable
-		// message rather than as a store that lost a column — which is why it
-		// is asserted here and in the listing, not only here.
-		assertEqual(t, "bic", string(got.BIC), "AURODEFFXXX")
-		assertEqual(t, "bic in listings", string(listed[0].BIC), "AURODEFFXXX")
+		// The BIC is what the mesh routes on, and it is DERIVED from the id rather
+		// than stored beside it: a bank's id IS its address since Task 18, so
+		// there is no bic column and nothing for a store to drop. What is asserted
+		// is that the derivation happens on both read paths — a store that filled
+		// it in GetBank and not in ListBanks would leave every bank in a listing
+		// unroutable, which surfaces as an unanswered message rather than as a
+		// store that skipped a line. The book id above is the same claim.
+		assertEqual(t, "bic", string(got.BIC), string(auroraBIC))
+		assertEqual(t, "bic in listings", string(listed[0].BIC), string(auroraBIC))
 		assertEqual(t, "suspense account", string(got.Assets["EUR"].Suspense), "200.200.001")
 		assertEqual(t, "reserve account", string(got.Assets["EUR"].Reserve), "100.200.001")
 		assertEqual(t, "settlement account", string(got.Assets["EUR"].Settlement), "200.100.001")
@@ -88,8 +103,8 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// every member accepting an acknowledgement from any admission at all —
 		// which was measured to move a bank's settlement reference onto an
 		// invented account. See payment.Bank.AdmissionRef.
-		assertEqual(t, "admission reference", got.AdmissionRef, "adm-bank_1")
-		assertEqual(t, "admission reference in listings", listed[0].AdmissionRef, "adm-bank_1")
+		assertEqual(t, "admission reference", got.AdmissionRef, "adm-"+string(auroraBIC))
+		assertEqual(t, "admission reference in listings", listed[0].AdmissionRef, "adm-"+string(auroraBIC))
 
 		assertEqual(t, "Ledger is not persisted", got.Ledger == nil, true)
 		assertEqual(t, "Deposit is not persisted", got.Deposit == nil, true)
@@ -522,7 +537,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// Seed one row of every kind, so the not-found path is exercised on a
 		// populated store rather than only on an empty one.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "e2e-1", early)); err != nil {
@@ -707,17 +722,21 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 
 		// The same three rules the ledger and deposit fixtures use, because the
 		// same two mistakes are available here: a CreatedAt tie only the
-		// insertion sequence can break, IDs spanning the 9 -> 10 boundary so
-		// lexicographic ID order disagrees with insertion order, and the row
-		// inserted FIRST carrying the LATEST creation instant. Ordering by
-		// (CreatedAt, ID) fails on this fixture, and so does ordering by
-		// sequence alone.
+		// insertion sequence can break, IDs whose lexicographic order disagrees
+		// with insertion order, and the row inserted FIRST carrying the LATEST
+		// creation instant. Ordering by (CreatedAt, ID) fails on this fixture, and
+		// so does ordering by sequence alone.
+		//
+		// The banks cannot use the 9 -> 10 boundary the other four do, because a
+		// bank's id is its BIC and a BIC has a fixed shape. Four addresses whose
+		// alphabetical order is not their insertion order make the same two
+		// mistakes available, which is all the boundary was ever for.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			for _, p := range []struct {
 				id string
 				at time.Time
-			}{{"bank_10", late}, {"bank_8", early}, {"bank_20", early}, {"bank_9", early}} {
-				if err := tx.PutBank(ctx, bankRow(payment.ParticipantID(p.id), p.id, p.at)); err != nil {
+			}{{"ZULUDEFFXXX", late}, {"NORDSESSXXX", early}, {"AURODEFFXXX", early}, {"VERDITMMXXX", early}} {
+				if err := tx.PutBank(ctx, bankRow(iso20022.BIC(p.id), p.id, p.at)); err != nil {
 					return err
 				}
 			}
@@ -780,7 +799,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		})
 
 		assertOrder(t, "ListBanks", ids(banks, func(b payment.Bank) string { return string(b.ID) }),
-			"bank_8", "bank_20", "bank_9", "bank_10")
+			"NORDSESSXXX", "AURODEFFXXX", "VERDITMMXXX", "ZULUDEFFXXX")
 		assertOrder(t, "ListPayments", ids(payments, func(p payment.Payment) string { return string(p.ID) }),
 			"pay_8", "pay_20", "pay_9", "pay_10")
 		assertOrder(t, "ListMandates", ids(mandates, func(m payment.Mandate) string { return string(m.ID) }),
@@ -956,16 +975,16 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// rule has to be stated rather than left to the backend.
 		c := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleClosed, early)
 		c.PaymentIDs = []payment.PaymentID{"pay_1"}
-		c.NetPositions = map[payment.ParticipantID]ledger.Amount{"bank_1": 100}
+		c.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
 
 		p := samplePayment("pay_1", "SCT-001", early)
 		p.Metadata = map[string]string{"scheme": "sepa.ct"}
 
 		st := settlement("set_1", "cyc_1", early)
-		st.NetPositions = map[payment.ParticipantID]ledger.Amount{"bank_1": 100}
+		st.NetPositions = map[iso20022.BIC]ledger.Amount{auroraBIC: 100}
 
 		// A bank carries one too: the accounts it holds per asset.
-		bank := bankRow("bank_1", "Aurora Bank", early)
+		bank := bankRow(auroraBIC, "Aurora Bank", early)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			if err := tx.PutCycle(ctx, c); err != nil {
@@ -982,9 +1001,9 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 
 		// Mutate the caller's copies after the write.
 		c.PaymentIDs[0] = "pay_tampered"
-		c.NetPositions["bank_1"] = 999
+		c.NetPositions[auroraBIC] = 999
 		p.Metadata["scheme"] = "tampered"
-		st.NetPositions["bank_1"] = 999
+		st.NetPositions[auroraBIC] = 999
 		bank.Assets["EUR"] = payment.BankAccounts{Suspense: "tampered"}
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
@@ -993,7 +1012,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				return err
 			}
 			assertEqual(t, "cycle payment id after caller mutation", string(gotCycle.PaymentIDs[0]), "pay_1")
-			assertEqual(t, "cycle net position after caller mutation", gotCycle.NetPositions["bank_1"], ledger.Amount(100))
+			assertEqual(t, "cycle net position after caller mutation", gotCycle.NetPositions[auroraBIC], ledger.Amount(100))
 
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
@@ -1001,7 +1020,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			}
 			assertEqual(t, "payment metadata after caller mutation", gotPayment.Metadata["scheme"], "sepa.ct")
 
-			gotBank, err := tx.GetBank(ctx, "bank_1")
+			gotBank, err := tx.GetBank(ctx, payment.ParticipantID(auroraBIC))
 			if err != nil {
 				return err
 			}
@@ -1012,12 +1031,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 			if err != nil {
 				return err
 			}
-			assertEqual(t, "settlement net position after caller mutation", gotSettlement.NetPositions["bank_1"], ledger.Amount(100))
+			assertEqual(t, "settlement net position after caller mutation", gotSettlement.NetPositions[auroraBIC], ledger.Amount(100))
 
 			// And the other direction: mutating what a Get returned must not
 			// reach back into the store.
 			gotCycle.PaymentIDs[0] = "pay_tampered"
-			gotCycle.NetPositions["bank_1"] = 999
+			gotCycle.NetPositions[auroraBIC] = 999
 			gotPayment.Metadata["scheme"] = "tampered"
 			return nil
 		})
@@ -1028,7 +1047,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 				return err
 			}
 			assertEqual(t, "cycle payment id after reader mutation", string(gotCycle.PaymentIDs[0]), "pay_1")
-			assertEqual(t, "cycle net position after reader mutation", gotCycle.NetPositions["bank_1"], ledger.Amount(100))
+			assertEqual(t, "cycle net position after reader mutation", gotCycle.NetPositions[auroraBIC], ledger.Amount(100))
 
 			gotPayment, err := tx.GetPayment(ctx, "pay_1")
 			if err != nil {
@@ -1084,12 +1103,12 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		// payment rows, posts through the ledger and reads the deposit layer in
 		// one unit of work, so a failure must undo all of it.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			return tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early))
+			return tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early))
 		})
 
 		boom := errors.New("storetest: deliberate failure")
 		err := s.Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutBank(ctx, bankRow("bank_2", "Banca Verde", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow(verdeBIC, "Banca Verde", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
@@ -1120,7 +1139,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		assertErrorIs(t, "Update return", err, boom)
 
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			_, err := tx.GetBank(ctx, "bank_2")
+			_, err := tx.GetBank(ctx, payment.ParticipantID(verdeBIC))
 			assertErrorIs(t, "bank from the failed unit of work", err, payment.ErrParticipantNotFound)
 
 			_, err = tx.GetPayment(ctx, "pay_1")
@@ -1156,7 +1175,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 
 			// The bank written before the failed unit of work survived:
 			// a rollback undoes its own transaction, not the store.
-			survivor, err := tx.GetBank(ctx, "bank_1")
+			survivor, err := tx.GetBank(ctx, payment.ParticipantID(auroraBIC))
 			if err != nil {
 				return err
 			}
@@ -1169,7 +1188,7 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 		s := openPayment(t, newStore)
 
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			if err := tx.PutBank(ctx, bankRow("bank_1", "Aurora Bank", early)); err != nil {
+			if err := tx.PutBank(ctx, bankRow(auroraBIC, "Aurora Bank", early)); err != nil {
 				return err
 			}
 			if err := tx.PutPayment(ctx, samplePayment("pay_1", "SCT-001", early)); err != nil {
@@ -1261,12 +1280,18 @@ func RunPayment(t *testing.T, newStore func(*testing.T) payment.Store) {
 // bankRow is a bank's own record of itself, admitted: Member rather than
 // Founded, because that is what every bank in this suite's other cases is and
 // the status a store drops has to be a status it was given.
-func bankRow(id payment.ParticipantID, name string, createdAt time.Time) payment.Bank {
+// bankRow is one bank's own record of itself, keyed by the only identifier it
+// has: since Task 18 a bank's ParticipantID, its BIC and its BookID are one
+// value, so this takes one and fills all three. A fixture that set them
+// independently could not be round-tripped — the store writes the key alone and
+// derives the other two back out of it.
+func bankRow(bic iso20022.BIC, name string, createdAt time.Time) payment.Bank {
+	id := payment.ParticipantID(bic)
 	return payment.Bank{
 		ID:                id,
 		Name:              name,
-		BIC:               "AURODEFFXXX",
-		BookID:            ledger.BookID(id),
+		BIC:               bic,
+		BookID:            ledger.BookID(bic),
 		CustomerSubledger: "100",
 		ProductID:         "prd_basic",
 		Status:            payment.BankMember,
@@ -1305,18 +1330,21 @@ func samplePayment(id payment.PaymentID, endToEndID string, createdAt time.Time)
 	return payment.Payment{
 		ID:     id,
 		Scheme: payment.SchemeSEPACT,
-		Debtor: payment.PartyRef{Participant: "bank_1", Account: "dep_1",
+		Debtor: payment.PartyRef{Account: "dep_1",
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}},
-		Creditor: payment.PartyRef{Participant: "bank_2", Account: "dep_2",
+		Creditor: payment.PartyRef{Account: "dep_2",
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}},
-		Amount:      2500,
-		EndToEndID:  endToEndID,
-		Status:      payment.Accepted,
-		CycleID:     "cyc_1",
-		BookingDate: createdAt,
-		ValueDate:   createdAt.Add(24 * time.Hour),
-		Description: string(id),
-		CreatedAt:   createdAt,
+		// Which bank each party is at, which a PartyRef stopped saying at Task 18.
+		DebtorDetails:   payment.PartyDetails{Agent: auroraBIC, Name: "Alice"},
+		CreditorDetails: payment.PartyDetails{Agent: verdeBIC, Name: "Bruno"},
+		Amount:          2500,
+		EndToEndID:      endToEndID,
+		Status:          payment.Accepted,
+		CycleID:         "cyc_1",
+		BookingDate:     createdAt,
+		ValueDate:       createdAt.Add(24 * time.Hour),
+		Description:     string(id),
+		CreatedAt:       createdAt,
 	}
 }
 
@@ -1742,9 +1770,13 @@ func advicesAreKeyedByReferenceNotByCycle(t *testing.T, st payment.Store) {
 func mandate(id payment.MandateID, createdAt time.Time) payment.Mandate {
 	return payment.Mandate{
 		ID: id,
-		Debtor: payment.PartyRef{Participant: "bank_1", Account: "dep_1",
+		// The debtor's bank is an address on the row and the creditor's is not
+		// stored at all: a mandate is the creditor bank's own. See
+		// payment.Mandate.DebtorAgent.
+		DebtorAgent: auroraBIC,
+		Debtor: payment.PartyRef{Account: "dep_1",
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-AURORA-1001"}},
-		Creditor: payment.PartyRef{Participant: "bank_2", Account: "dep_2",
+		Creditor: payment.PartyRef{Account: "dep_2",
 			Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "IT60-VERDE-2001"}},
 		MaxAmount: 100000,
 		Status:    payment.MandateActive,
@@ -1757,7 +1789,7 @@ func cycle(id payment.CycleID, scheme payment.SchemeID, status payment.CycleStat
 		ID:           id,
 		Scheme:       scheme,
 		Status:       status,
-		NetPositions: map[payment.ParticipantID]ledger.Amount{},
+		NetPositions: map[iso20022.BIC]ledger.Amount{},
 		OpenedAt:     openedAt,
 	}
 }
@@ -1766,7 +1798,7 @@ func settlement(id payment.SettlementID, cycleID payment.CycleID, settledAt time
 	return payment.Settlement{
 		ID:           id,
 		CycleID:      cycleID,
-		NetPositions: map[payment.ParticipantID]ledger.Amount{},
+		NetPositions: map[iso20022.BIC]ledger.Amount{},
 		SettlementTx: "tx_1",
 		ValueDate:    settledAt,
 		SettledAt:    settledAt,

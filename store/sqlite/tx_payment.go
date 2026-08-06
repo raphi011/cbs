@@ -60,20 +60,27 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	if err := t.write(); err != nil {
 		return err
 	}
+	// bic and book_id are NOT written, and there are no columns for them. A bank's
+	// id IS its BIC and IS its book (see payment.AsBank and the banks statement in
+	// the schema), so the two fields on the record are derivations of the primary
+	// key rather than data — scanBank fills them back in.
+	//
+	// A record whose BIC or BookID disagrees with its id is silently normalised
+	// rather than refused, which is the same stance PutBank has always taken on
+	// the live handles it drops: this is a serialiser, and the place that refuses
+	// an inconsistent bank is FoundBankTx, which is the only thing that mints one.
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO banks
-			(id, name, bic, book_id, customer_subledger, product_id, status, admission_ref, created_at, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("banks")+`)
+			(id, name, customer_subledger, product_id, status, admission_ref, created_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("banks")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			name               = EXCLUDED.name,
-			bic                = EXCLUDED.bic,
-			book_id            = EXCLUDED.book_id,
 			customer_subledger = EXCLUDED.customer_subledger,
 			product_id         = EXCLUDED.product_id,
 			status             = EXCLUDED.status,
 			admission_ref      = EXCLUDED.admission_ref,
 			created_at         = EXCLUDED.created_at`,
-		string(b.ID), b.Name, string(b.BIC), string(b.BookID), string(b.CustomerSubledger),
+		string(b.ID), b.Name, string(b.CustomerSubledger),
 		string(b.ProductID), string(b.Status), b.AdmissionRef, nullTime{b.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put bank %s: %w", b.ID, err)
@@ -103,18 +110,24 @@ func (t *tx) PutBank(ctx context.Context, b payment.Bank) error {
 	return nil
 }
 
-const bankColumns = `id, name, bic, book_id, customer_subledger, product_id, status, admission_ref, created_at`
+const bankColumns = `id, name, customer_subledger, product_id, status, admission_ref, created_at`
 
 func scanBank(row interface{ Scan(...any) error }) (payment.Bank, error) {
 	var (
 		b         payment.Bank
 		createdAt nullTime
 	)
-	err := row.Scan(&b.ID, &b.Name, &b.BIC, &b.BookID, &b.CustomerSubledger, &b.ProductID,
+	err := row.Scan(&b.ID, &b.Name, &b.CustomerSubledger, &b.ProductID,
 		&b.Status, &b.AdmissionRef, &createdAt)
 	if err != nil {
 		return payment.Bank{}, err
 	}
+	// Both derived from the key, because both ARE the key: a bank is its own book
+	// and its id is its address. See PutBank, which writes neither, and
+	// storetest's BankRoundTripsAndDropsLiveHandles, which is what says a bank
+	// must come back carrying them.
+	b.BIC = iso20022.BIC(b.ID)
+	b.BookID = ledger.BookID(b.ID)
 	b.CreatedAt = createdAt.Time
 	return b, nil
 }
@@ -504,8 +517,8 @@ func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, erro
 // ---------------------------------------------------------------------------
 
 const paymentColumns = `id, scheme,
-	debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
-	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
+	debtor_account, debtor_identifier_scheme, debtor_identifier_value,
+	creditor_account, creditor_identifier_scheme, creditor_identifier_value,
 	debtor_agent, debtor_name, creditor_agent, creditor_name,
 	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code, cycle_id,
 	booking_date, value_date, description, metadata, created_at,
@@ -525,14 +538,12 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	}
 	_, err = t.tx.ExecContext(ctx, `
 		INSERT INTO payments (`+paymentColumns+`, seq)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("payments")+`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("payments")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			scheme                     = EXCLUDED.scheme,
-			debtor_participant         = EXCLUDED.debtor_participant,
 			debtor_account             = EXCLUDED.debtor_account,
 			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
 			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
-			creditor_participant       = EXCLUDED.creditor_participant,
 			creditor_account           = EXCLUDED.creditor_account,
 			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
 			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
@@ -558,8 +569,8 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 			return_clawback_tx         = EXCLUDED.return_clawback_tx,
 			return_refund_tx           = EXCLUDED.return_refund_tx`,
 		string(p.ID), string(p.Scheme),
-		string(p.Debtor.Participant), string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
-		string(p.Creditor.Participant), string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
+		string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
+		string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
 		string(p.DebtorDetails.Agent), p.DebtorDetails.Name, string(p.CreditorDetails.Agent), p.CreditorDetails.Name,
 		int64(p.Amount), string(p.MandateID), p.EndToEndID, int64(p.Status), p.RejectReason, string(p.RejectCode), string(p.CycleID),
 		nullTime{p.BookingDate}, nullTime{p.ValueDate}, p.Description, metadata, nullTime{p.CreatedAt},
@@ -579,8 +590,8 @@ func scanPayment(row interface{ Scan(...any) error }) (payment.Payment, error) {
 		metadata                  []byte
 	)
 	err := row.Scan(&p.ID, &p.Scheme,
-		&p.Debtor.Participant, &p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
-		&p.Creditor.Participant, &p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
+		&p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
+		&p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
 		&p.DebtorDetails.Agent, &p.DebtorDetails.Name, &p.CreditorDetails.Agent, &p.CreditorDetails.Name,
 		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.RejectCode, &p.CycleID,
 		&booking, &value, &p.Description, &metadata, &createdAt,
@@ -662,8 +673,8 @@ func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
 // Mandates
 // ---------------------------------------------------------------------------
 
-const mandateColumns = `id, debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
-	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
+const mandateColumns = `id, debtor_agent, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
+	creditor_account, creditor_identifier_scheme, creditor_identifier_value,
 	asset, max_amount, status, created_at`
 
 func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
@@ -675,13 +686,12 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	}
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO mandates (`+mandateColumns+`, seq)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("mandates")+`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("mandates")+`)
 		ON CONFLICT (id) DO UPDATE SET
-			debtor_participant         = EXCLUDED.debtor_participant,
+			debtor_agent               = EXCLUDED.debtor_agent,
 			debtor_account             = EXCLUDED.debtor_account,
 			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
 			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
-			creditor_participant       = EXCLUDED.creditor_participant,
 			creditor_account           = EXCLUDED.creditor_account,
 			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
 			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
@@ -690,8 +700,8 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 			status                     = EXCLUDED.status,
 			created_at                 = EXCLUDED.created_at`,
 		string(m.ID),
-		string(m.Debtor.Participant), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
-		string(m.Creditor.Participant), string(m.Creditor.Account), string(m.Creditor.Identifier.Scheme), m.Creditor.Identifier.Value,
+		string(m.DebtorAgent), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
+		string(m.Creditor.Account), string(m.Creditor.Identifier.Scheme), m.Creditor.Identifier.Value,
 		string(m.Asset), int64(m.MaxAmount), int64(m.Status), nullTime{m.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put mandate %s: %w", m.ID, err)
@@ -706,8 +716,8 @@ func scanMandate(row interface{ Scan(...any) error }) (payment.Mandate, error) {
 		createdAt nullTime
 	)
 	err := row.Scan(&m.ID,
-		&m.Debtor.Participant, &m.Debtor.Account, &m.Debtor.Identifier.Scheme, &m.Debtor.Identifier.Value,
-		&m.Creditor.Participant, &m.Creditor.Account, &m.Creditor.Identifier.Scheme, &m.Creditor.Identifier.Value,
+		&m.DebtorAgent, &m.Debtor.Account, &m.Debtor.Identifier.Scheme, &m.Debtor.Identifier.Value,
+		&m.Creditor.Account, &m.Creditor.Identifier.Scheme, &m.Creditor.Identifier.Value,
 		&m.Asset, &m.MaxAmount, &status, &createdAt)
 	if err != nil {
 		return payment.Mandate{}, err
@@ -921,7 +931,7 @@ func (t *tx) PutSettlement(ctx context.Context, s payment.Settlement) error {
 	}
 	for participant, amount := range s.NetPositions {
 		if _, err := t.tx.ExecContext(ctx,
-			"INSERT INTO settlement_positions (settlement_id, participant_id, amount) VALUES (?, ?, ?)",
+			"INSERT INTO settlement_positions (settlement_id, bic, amount) VALUES (?, ?, ?)",
 			string(s.ID), string(participant), int64(amount)); err != nil {
 			return fmt.Errorf("sqlite: put settlement %s position %s: %w", s.ID, participant, err)
 		}
@@ -956,7 +966,7 @@ func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) 
 // cannot tell an empty map from an absent one, and every settlement the domain
 // writes carries positions.
 func (t *tx) querySettlements(ctx context.Context, where, order string, args ...any) ([]payment.Settlement, error) {
-	query := "SELECT s.id, s.cycle_id, s.settlement_tx, s.value_date, s.settled_at, sp.participant_id, sp.amount " +
+	query := "SELECT s.id, s.cycle_id, s.settlement_tx, s.value_date, s.settled_at, sp.bic, sp.amount " +
 		"FROM settlements s LEFT JOIN settlement_positions sp ON sp.settlement_id = s.id " + where
 	if order != "" {
 		query += " ORDER BY " + order
@@ -971,25 +981,25 @@ func (t *tx) querySettlements(ctx context.Context, where, order string, args ...
 	index := make(map[payment.SettlementID]int)
 	for rows.Next() {
 		var (
-			s             payment.Settlement
-			value, at     nullTime
-			participantID sql.NullString
-			amount        sql.NullInt64
+			s         payment.Settlement
+			value, at nullTime
+			bic       sql.NullString
+			amount    sql.NullInt64
 		)
-		if err := rows.Scan(&s.ID, &s.CycleID, &s.SettlementTx, &value, &at, &participantID, &amount); err != nil {
+		if err := rows.Scan(&s.ID, &s.CycleID, &s.SettlementTx, &value, &at, &bic, &amount); err != nil {
 			return nil, fmt.Errorf("sqlite: query settlements: %w", err)
 		}
 		pos, seen := index[s.ID]
 		if !seen {
 			s.ValueDate = value.Time
 			s.SettledAt = at.Time
-			s.NetPositions = make(map[payment.ParticipantID]ledger.Amount)
+			s.NetPositions = make(map[iso20022.BIC]ledger.Amount)
 			pos = len(out)
 			index[s.ID] = pos
 			out = append(out, s)
 		}
-		if participantID.Valid {
-			out[pos].NetPositions[payment.ParticipantID(participantID.String)] = ledger.Amount(amount.Int64)
+		if bic.Valid {
+			out[pos].NetPositions[iso20022.BIC(bic.String)] = ledger.Amount(amount.Int64)
 		}
 	}
 	return out, rows.Err()
@@ -1107,7 +1117,7 @@ func (t *tx) ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]p
 // is NULL and an empty one is {}: an open cycle carries an empty map and the API
 // renders the two differently, so the distinction has to survive the round trip.
 // A string and not a []byte, for jsonParam's reason.
-func marshalPositions(m map[payment.ParticipantID]ledger.Amount) (any, error) {
+func marshalPositions(m map[iso20022.BIC]ledger.Amount) (any, error) {
 	if m == nil {
 		return nil, nil
 	}
@@ -1122,7 +1132,7 @@ func marshalPositions(m map[payment.ParticipantID]ledger.Amount) (any, error) {
 	return string(raw), nil
 }
 
-func unmarshalPositions(raw []byte) (map[payment.ParticipantID]ledger.Amount, error) {
+func unmarshalPositions(raw []byte) (map[iso20022.BIC]ledger.Amount, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -1130,9 +1140,9 @@ func unmarshalPositions(raw []byte) (map[payment.ParticipantID]ledger.Amount, er
 	if err := json.Unmarshal(raw, &flat); err != nil {
 		return nil, err
 	}
-	out := make(map[payment.ParticipantID]ledger.Amount, len(flat))
+	out := make(map[iso20022.BIC]ledger.Amount, len(flat))
 	for k, v := range flat {
-		out[payment.ParticipantID(k)] = ledger.Amount(v)
+		out[iso20022.BIC(k)] = ledger.Amount(v)
 	}
 	return out, nil
 }

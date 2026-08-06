@@ -651,26 +651,22 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		// reverse a debit in somebody else's ledger, so the answer decides
 		// everything below.
 		//
-		// It asks for a roster entry and uses the BIC on it, which is the whole
-		// of what this comparison needs. The id-to-BIC step inside it reads the
-		// bank's own row — a crossing Task 18 closes and this one does not; see
-		// payment.Network.GetRosterEntry, on its ParticipantID argument. It
-		// applies to the submitter lookup below too.
-		debtor, err := b.ops.GetRosterEntry(ctx, p.Debtor.Participant)
-		if err != nil {
-			return fmt.Errorf("mesh: %s cannot tell whose payment %s is: %w", b.bic, p.ID, err)
-		}
-		if debtor.BIC != b.bic {
+		// It is read off the PAYMENT, and it used to be read out of the clearing
+		// house's roster — GetRosterEntry, keyed by the payer's participant id,
+		// which had to read that bank's own row to reach its address. Both steps
+		// are gone: a payment carries each side's agent BIC, which is the whole of
+		// what this comparison needs and is a value this bank was TOLD rather than
+		// one it has to ask another institution for. It applies to the submitter
+		// below too.
+		debtor := p.DebtorDetails.Agent
+		if debtor != b.bic {
 			// Not the payer's bank. The only other party with any business
 			// receiving this is the one that submitted and is waiting for an
 			// answer, and it has nothing to give back.
-			submitter, err := b.ops.GetRosterEntry(ctx, submitterOf(scheme, p.Debtor, p.Creditor).Participant)
-			if err != nil {
-				return fmt.Errorf("mesh: %s cannot tell who submitted %s: %w", b.bic, p.ID, err)
-			}
-			if submitter.BIC != b.bic {
+			submitter := submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+			if submitter != b.bic {
 				return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s and which %s submitted",
-					b.bic, p.ID, debtor.BIC, submitter.BIC)
+					b.bic, p.ID, debtor, submitter)
 			}
 			continue
 		}

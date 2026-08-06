@@ -724,6 +724,13 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 		}
 		id := payment.PaymentID(r.TxID)
 
+		// What the ANSWERING BANK said, kept before this actor decides anything,
+		// because clear rewrites r on the path where the clearing house turns an
+		// acceptance into its own rejection. An ACCP from the payer's bank is what
+		// says its debtor leg is posted; see tell, which used to read the leg id
+		// off a column this institution's schema does not have.
+		payerAccepted := r.Status == iso20022.TransactionStatusAccepted
+
 		var decided payment.Payment
 		var err error
 		if r.Status == iso20022.TransactionStatusRejected {
@@ -746,7 +753,7 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 			return err
 		}
 
-		if err := c.tell(ctx, decided, orig, r); err != nil {
+		if err := c.tell(ctx, decided, orig, r, payerAccepted); err != nil {
 			return err
 		}
 	}
@@ -765,53 +772,83 @@ func (c *csm) receiveStatus(ctx context.Context, from iso20022.BIC, doc *iso2002
 // collection and nothing else — is what makes it give a customer their money
 // back. Sending the informational one first and returning on its error left the
 // refund unattempted, and that is reachable: the send is answered with
-// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window, and
-// GetRosterEntry fails on a store error. A payer whose money is in a suspense
-// against a payment this network records as Rejected has nobody left to
-// notice.
+// ErrUnknownBIC during Reset's ForgetBanks/JoinRoster window. A payer whose money
+// is in a suspense against a payment this network records as Rejected has nobody
+// left to notice.
 //
 // So the refund message is attempted first and both are attempted regardless,
 // with the failures joined. Two banks that cannot be addressed produce two
 // errors and one dead letter carrying both, which is more than the caller could
 // have learnt before.
-func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
+//
+// # How it knows the payer's bank is holding money, now that it cannot see
+//
+// It read p.DebtorLegTx, the id of the transaction the payer's bank posted. That
+// column is the BANK's and is not in this institution's schema — the clearing
+// house posts nothing and holds no book of accounts, so csm/0001_init.sql has no
+// leg columns at all, and on this actor's copy the field is empty for every
+// payment. Read as it stood, no rejected collection would ever reach the payer's
+// bank and every rejected pull would strand a customer's money.
+//
+// What replaces it is the fact the column was standing in for: HAS THE PAYER'S
+// BANK ACCEPTED THIS COLLECTION. A payer's bank posts the debtor leg when it
+// accepts one and not before — that is what accepting one means, and its own
+// funds check (AM04) runs first — so the two are the same question, and the
+// second is one this actor can answer about itself.
+//
+// It is passed in rather than derived here, because the two callers WITNESS it
+// differently and neither witness is available to the other:
+//
+//   - receiveStatus has the payer's bank's own pacs.002 in hand. ACCP means the
+//     leg is posted and this actor is the one refusing (see clear, the only path
+//     that turns an acceptance into a rejection); RJCT means the bank refused
+//     itself, before posting.
+//   - reject has no message at all — an operator provoked it — and reads its own
+//     copy's status instead. Accepted means the payer's bank has already answered
+//     and posted; Initiated means it has not.
+//
+// The status on this actor's copy cannot serve the first case: clear rejects
+// after AcceptAtCSM has rolled back, so the copy still says Initiated while the
+// bank's leg is posted. That asymmetry is why this is an argument.
+//
+// The direction is the other conjunct, and it is what says the payer's bank is
+// not the submitter — so on a push this is one bank and one message, unchanged.
+// What no longer has to hold at all is a THIRD thing, that the address is in the
+// roster, because nothing here is looked up any more.
+func (c *csm) tell(ctx context.Context, p payment.Payment, orig payment.OriginalMessage, r payment.TransactionStatusReport, payerAccepted bool) error {
 	scheme, ok := c.ops.Scheme(p.Scheme)
 	if !ok {
 		return fmt.Errorf("mesh: %s decided %s and holds no %q scheme to say who submitted it: %w",
 			c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 	}
-	submitterID := submitterOf(scheme, p.Debtor, p.Creditor).Participant
+	submitter := submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 
 	var errs []error
-	// Both lookups below ask the ROSTER, which is this institution's own row,
-	// and take the BIC off it. Each one turns a ParticipantID into a BIC by
-	// reading the bank's row first, and that step is a crossing Task 18 closes
-	// and this one does not — see payment.Network.GetRosterEntry, on its
-	// ParticipantID argument.
+	// Both addresses below are read off the PAYMENT. They used to be read out of
+	// this institution's roster, keyed by a participant id that had to be turned
+	// into a BIC by reading the named bank's own row first — a clearing house
+	// reaching into a member's database, twice, on the answer to every payment.
+	// A payment names both agents by BIC and always has; see payment.PartyRef.
 	//
 	// The payer's bank, when it is holding money against a payment that has just
 	// been rejected and is not the bank waiting for the answer. Only a pull
-	// reaches this — on a push the two are one participant and one message.
+	// reaches this — on a push the two are one bank and one message.
 	var refunded iso20022.BIC
-	if r.Status == iso20022.TransactionStatusRejected && p.DebtorLegTx != "" && p.Debtor.Participant != submitterID {
-		if debtor, err := c.ops.GetRosterEntry(ctx, p.Debtor.Participant); err != nil {
-			errs = append(errs, fmt.Errorf("mesh: %s cannot address the payer's bank for %s: %w", c.bic, p.ID, err))
-		} else {
-			refunded = debtor.BIC
-			if err := c.forward(debtor.BIC, orig, r); err != nil {
-				errs = append(errs, err)
-			}
+	if r.Status == iso20022.TransactionStatusRejected &&
+		payerAccepted &&
+		p.DebtorDetails.Agent != submitter {
+		refunded = p.DebtorDetails.Agent
+		if err := c.forward(refunded, orig, r); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
-	// The bank that submitted, which is always told. The BIC comparison is a
-	// second guard behind the participant one above: two participants on one
-	// address cannot be admitted (Mesh.AddBank refuses it), and a duplicate
-	// pacs.002 would be a second acceptance at a bank that already has one.
-	if submitter, err := c.ops.GetRosterEntry(ctx, submitterID); err != nil {
-		errs = append(errs, fmt.Errorf("mesh: %s cannot address the bank that submitted %s: %w", c.bic, p.ID, err))
-	} else if submitter.BIC != refunded {
-		if err := c.forward(submitter.BIC, orig, r); err != nil {
+	// The bank that submitted, which is always told. The comparison against
+	// `refunded` is what stops a push, where the two are one bank, being sent the
+	// same status twice — a duplicate pacs.002 would be a second acceptance at a
+	// bank that already has one.
+	if submitter != refunded {
+		if err := c.forward(submitter, orig, r); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -919,6 +956,24 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 	// clearing house's. See withActor.
 	ctx = withActor(ctx, c.bic)
 
+	// Read BEFORE rejecting, because what tell needs is the status this payment
+	// was at when the operator refused it, and RejectAtCSM overwrites exactly
+	// that. Accepted means the payer's bank has already answered the collection
+	// and posted its debtor leg, which is the money tell has to make sure reaches
+	// somebody; Initiated means it has not. See tell, which took the leg's
+	// transaction id off the payment until that column turned out to be the
+	// bank's and not this institution's.
+	//
+	// Two reads of one row in two units of work, and a status that changed between
+	// them would be another actor rejecting or accepting this payment
+	// concurrently — in which case RejectAtCSM below fails the transition and
+	// there is nothing to tell anybody.
+	before, err := c.ops.GetPayment(ctx, id)
+	if err != nil {
+		return payment.Payment{}, err
+	}
+	payerAccepted := before.Status == payment.Accepted
+
 	p, err := c.ops.RejectAtCSM(ctx, id, code, text)
 	if err != nil {
 		return payment.Payment{}, err
@@ -934,7 +989,7 @@ func (c *csm) reject(ctx context.Context, id payment.PaymentID, code iso20022.St
 	// back BESIDE the error rather than being swallowed — closeCycle's shape, and
 	// the same half-happened outcome: a payment that is Rejected and whose payer
 	// has not been given their money back.
-	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r); err != nil {
+	if err := c.tell(ctx, p, payment.OriginalMessage{MsgID: notProvided, MsgDefIdr: notProvided}, r, payerAccepted); err != nil {
 		return p, fmt.Errorf("mesh: %s rejected %s and could not say so: %w", c.bic, p.ID, err)
 	}
 	return p, nil
@@ -1110,7 +1165,7 @@ func (c *csm) instructSettlement(ctx context.Context, closed payment.ClearingCyc
 // The reference on every leg is the CYCLE, which is what the central bank reads
 // to know what it is being asked to discharge. See payment.SettlementLeg.
 //
-// Members are visited in sorted id order rather than map order. The legs are the
+// Members are visited in sorted BIC order rather than map order. The legs are the
 // message's transactions, so map iteration would put a different byte sequence
 // on the wire on every run for no reason — the same argument settlementLegsTx
 // makes one layer down for the entries of the stored transaction, arrived at
@@ -1123,29 +1178,27 @@ func (c *csm) instructSettlement(ctx context.Context, closed payment.ClearingCyc
 func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, asset ledger.AssetCode) ([]payment.SettlementLeg, error) {
 	cb := c.m.cfg.CentralBankBIC
 	legs := make([]payment.SettlementLeg, 0, len(closed.NetPositions))
-	for _, pid := range slices.Sorted(maps.Keys(closed.NetPositions)) {
-		net := closed.NetPositions[pid]
+	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there
+	// is nothing between the two. There was: the positions were keyed by
+	// ParticipantID, and turning one into the other meant reading the named bank's
+	// own row through the clearing house's roster — a crossing the spec named
+	// twice, because the same turn happened again inside SettleCycleTx. Task 18
+	// made a bank's id its BIC and the positions were re-keyed with it; see
+	// payment.ClearingCycle.NetPositions.
+	for _, bic := range slices.Sorted(maps.Keys(closed.NetPositions)) {
+		net := closed.NetPositions[bic]
 		if net == 0 {
 			continue
 		}
-		// A cycle's positions are keyed by participant and a leg is addressed by
-		// BIC, so this is the id-to-BIC step, and it reads the bank's row to
-		// make it — the crossing payment.Network.GetRosterEntry's ParticipantID
-		// argument records, left open for Task 18. The spec names this one
-		// twice: the same turn happens inside SettleCycleTx.
-		p, err := c.ops.GetRosterEntry(ctx, pid)
-		if err != nil {
-			return nil, fmt.Errorf("mesh: %s closed %s and cannot name the bank behind %s: %w", c.bic, closed.ID, pid, err)
-		}
 		leg := payment.SettlementLeg{
-			From:      p.BIC,
+			From:      bic,
 			To:        cb,
 			Amount:    -net,
 			Asset:     asset,
 			Reference: string(closed.ID),
 		}
 		if net > 0 {
-			leg.From, leg.To, leg.Amount = cb, p.BIC, net
+			leg.From, leg.To, leg.Amount = cb, bic, net
 		}
 		legs = append(legs, leg)
 	}
@@ -1270,19 +1323,17 @@ func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.
 		// The submitter first, so a push's two messages go out in the order the
 		// banks have reason to expect them: the answer to the instruction, then
 		// the advice to act on. On a pull the two ids are equal and there is one.
-		recipients := []payment.ParticipantID{submitterOf(scheme, p.Debtor, p.Creditor).Participant}
-		if creditor := p.Creditor.Participant; creditor != recipients[0] {
+		// Both recipients are addresses the payment already carries. They were
+		// participant ids, and each was turned into a BIC by reading that bank's
+		// own row through this institution's roster — a read into a database this
+		// one does not hold, made once per recipient per payment in a settled
+		// cycle. See payment.PartyRef.
+		recipients := []iso20022.BIC{submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)}
+		if creditor := p.CreditorDetails.Agent; creditor != recipients[0] {
 			recipients = append(recipients, creditor)
 		}
 		for _, recipient := range recipients {
-			// The roster's own row, reached through the bank's — see
-			// payment.Network.GetRosterEntry on its ParticipantID argument for
-			// the crossing that costs and who closes it.
-			member, err := c.ops.GetRosterEntry(ctx, recipient)
-			if err != nil {
-				return fmt.Errorf("mesh: %s cannot address a bank %s settled for: %w", c.bic, p.ID, err)
-			}
-			if err := c.forward(member.BIC, orig, payment.TransactionStatusReport{
+			if err := c.forward(recipient, orig, payment.TransactionStatusReport{
 				EndToEndID: endToEndOf(p),
 				TxID:       string(p.ID),
 				Status:     r.Status,
@@ -1371,17 +1422,14 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 			return fmt.Errorf("mesh: %s was told about the return of %s and holds no %q scheme to say who asked: %w",
 				c.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 		}
-		// Same id-to-BIC step as everywhere else on this actor, and the same
-		// note applies: payment.Network.GetRosterEntry, on its ParticipantID
-		// argument.
-		returner, err := c.ops.GetRosterEntry(ctx, returnerOf(scheme, p.Debtor, p.Creditor).Participant)
-		if err != nil {
-			return fmt.Errorf("mesh: %s cannot address the bank that returned %s: %w", c.bic, p.ID, err)
-		}
+		// The returner's address is on the payment, as every address on this actor
+		// now is. It was a participant id turned into a BIC by reading that bank's
+		// own row; see payment.PartyRef.
+		returner := returnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
 		// The SETTLEMENT AGENT decided this, not the clearing house, and the
 		// message says so. It is the one hop in this system where the sender and
 		// the originator are different institutions; see forwardDecision.
-		errs := []error{c.forwardDecision(returner.BIC, from, orig, r)}
+		errs := []error{c.forwardDecision(returner, from, orig, r)}
 
 		held, holding := c.held[id]
 		delete(c.held, id)

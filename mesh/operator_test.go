@@ -148,19 +148,19 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 		t.Fatalf("admitting Nordhaven: %v", err)
 	}
 	acct := h.openCustomer(t, joiner, "Nora", "EUR", 0, joinerIBAN)
-	if err := h.bank(joiner.ID).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
+	if err := h.bank(joiner.BIC).Deposit(ctx, joiner.ID, acct.ID, harnessFunding, "Opening deposit"); err != nil {
 		t.Fatalf("Deposit: %v", err)
 	}
 	out := payment.InitiatePaymentRequest{
 		Scheme:      payment.SchemeSEPACT,
-		Debtor:      payment.PartyRef{Participant: joiner.ID, Account: acct.ID, Identifier: acct.Identifiers[0]},
+		Debtor:      payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]},
 		Creditor:    h.creditorRef(creditorIBAN),
 		Amount:      harnessAmount,
 		Description: "invoice 44",
 		// Push: the creditor is the counterparty, so the request must name it —
 		// name and BIC both, as everywhere else since Task 18a.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
-	}
+		DebtorDetails:   payment.PartyDetails{Agent: joiner.BIC}}
 
 	// In the roster, not in the mesh.
 	if _, err := h.mesh.Submit(ctx, out); err == nil {
@@ -186,10 +186,10 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	// inbox to land in, and the bank answers it.
 	in := h.creditTransferRequest(t)
 	in.Creditor = payment.PartyRef{
-		Participant: joiner.ID,
-		Account:     acct.ID,
-		Identifier:  deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: joinerIBAN},
+		Account:    acct.ID,
+		Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: joinerIBAN},
 	}
+	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	in.CreditorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	received, err := h.mesh.Submit(ctx, in)
 	if err != nil {

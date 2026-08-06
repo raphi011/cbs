@@ -29,9 +29,9 @@ import (
 // table from this call at start-up, so a bank that was founded before the
 // process started gets a listener whether or not the scheme ever answered for
 // it. (A bank founded at RUNTIME gets none until the next restart, which is a
-// fact about the static table rather than about this list.) GetRosterEntry below
-// is the narrower question, answered from the table admission writes rather than
-// from this one.
+// fact about the static table rather than about this list.) GetRosterEntryByBIC
+// below is the narrower question, answered from the table admission writes rather
+// than from this one.
 //
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
@@ -71,9 +71,9 @@ func (s *Network) ListBanks(ctx context.Context) ([]*Bank, error) {
 // bank's books directly off the id on the mandate and is not on the spec's
 // table at all. See Bank.Ledger, which sets both out.
 //
-// GetRosterEntry below is the answer to the narrower question — "who is this
-// bank, so I can address it" — and it is what the mesh asks. It exists because
-// that question was being answered with this method.
+// GetRosterEntryByBIC below is the answer to the narrower question — "is this
+// address a member, and what does the scheme hold about it" — and it is what the
+// mesh asks. It exists because that question was being answered with this method.
 func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) {
 	var out *Bank
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -87,84 +87,52 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 	return out, nil
 }
 
-// GetRosterEntry returns what the clearing house holds about one member: its
-// address, the assets that address clears in, the admission it was admitted
+// GetRosterEntryByBIC returns what the clearing house holds about the member at
+// one ADDRESS: the assets that address clears in, the admission it was admitted
 // under, and when. Nothing else — and in particular no NAME, which an acmt.010
 // does not carry and this row therefore cannot hold; see RosterEntry.
 //
 // The admission reference is on that list rather than left off it as
 // bookkeeping. It is what the clearing house's refusal of a second institution
 // on a taken address is decided from, so a description of this row that stopped
-// at "address and assets" would omit the field the refusal is made of.
+// at "assets" would omit the field the refusal is made of.
 //
-// It is what a handler asking about SOMEBODY ELSE gets, and the whole of it. A
-// bank deciding whether a rejection is about a payment whose payer banks here
-// needs a BIC; a clearing house addressing a status back to the bank that
-// submitted a payment needs a BIC. Neither needs a ledger handle, and until
-// this existed both got one — mesh/ops.go carried GetParticipant on two of its
-// three interfaces and every caller of it took the BIC off a value carrying the
-// named bank's live Ledger, Deposit and Catalogue.
+// It is what a handler asking about SOMEBODY ELSE gets, and the whole of it.
+// Nothing about it is a ledger handle, and until it existed the callers all got
+// one — mesh/ops.go carried GetParticipant on two of its three interfaces and
+// every caller of it took the BIC off a value carrying the named bank's live
+// Ledger, Deposit and Catalogue.
 //
-// # It is keyed by the network's id and the store's method is keyed by the BIC
+// # There was a second method here, keyed by ParticipantID, and it was a crossing
 //
-// The two are not the same lookup and the difference is a crossing this task
-// does NOT close. A payment names its parties by ParticipantID, so a caller
-// holding one has to turn it into a BIC before the roster can be asked — and
-// the only thing that knows the mapping is the bank's own row. So this reads a
-// bank's row to learn its address and then reads the roster.
+// GetRosterEntry took a bank id, read that bank's own row to learn its address,
+// and then read the roster. Under one store that is a read like any other; under
+// Task 18's stores it is the clearing house reaching into a bank's database, and
+// it had eight callers in the mesh, each pointing back at a paragraph here that
+// said the crossing was Task 18's to close.
 //
-// Under one store that is a read like any other. Under Task 18's stores it is a
-// clearing house reading a bank's database, and it does not survive: what
-// closes it is a payment that carries BICs rather than ids, which is that
-// task's to do because it is the task where a payment row stops being one row
-// the whole network shares. It is written down here rather than laundered
-// behind a method name, and each of the seven call sites in mesh points back at
-// this paragraph — the call site is where the next reader will be standing.
+// What closed it is not a narrowing of the lookup. It is the ruling that a bank's
+// ParticipantID IS its BIC (see AsBank): a caller that held an id already held an
+// address, so the conversion had nothing left to convert. Seven of the eight
+// callers stopped calling anything at all — they read the agent BIC that was
+// already beside them on the payment, or the BIC a cycle's positions are now
+// keyed by — and the eighth is Mesh.Submit checking that a counterparty it has
+// been NAMED is a member, which is this method and was always this question.
 //
-// # Two rows read, and one error it can return that GetParticipant could not
+// # One error it can return that GetParticipant could not
 //
 // A bank whose row exists and whose roster entry does not comes back
 // ErrRosterEntryNotFound, where the method this replaced returned the bank. That
-// is now a state the domain can produce rather than a stated impossibility: a
-// bank founded by FoundBankTx and not yet admitted has a row and no entry, which
-// is a founded bank waiting for an admission — legitimate, and the whole point
-// of splitting founding from joining. It is REACHED in production, which it was
-// not while one call did both: mesh.Mesh.Admit founds a bank and the scheme
-// answers later, so between the two commits this is what the clearing house's
-// own row says about that address. GetRosterEntryByBIC below is what asks
-// without a bank row in the way.
-func (s *Network) GetRosterEntry(ctx context.Context, id ParticipantID) (RosterEntry, error) {
-	var out RosterEntry
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		bank, err := tx.GetBank(ctx, id)
-		if err != nil {
-			return err
-		}
-		out, err = tx.GetRosterEntry(ctx, bank.BIC)
-		return err
-	})
-	if err != nil {
-		return RosterEntry{}, err
-	}
-	return out, nil
-}
-
-// GetRosterEntryByBIC returns what the clearing house holds about the member at
-// one ADDRESS, asked by the only identifier a message carries.
+// is a state the domain can produce rather than a stated impossibility: a bank
+// founded by FoundBankTx and not yet admitted has a row and no entry, which is a
+// founded bank waiting for an admission — legitimate, and the whole point of
+// splitting founding from joining. It is REACHED in production: mesh.Mesh.Admit
+// founds a bank and the scheme answers later, so between the two commits this is
+// what the clearing house's own row says about that address.
 //
-// It is GetRosterEntry with the crossing taken out, and the difference is which
-// question is being asked. GetRosterEntry starts from a ParticipantID — what a
-// payment names its parties by — so it has to read the bank's own row to learn
-// its address before it can read the roster, and that read is a clearing house
-// reaching into a bank's database under Task 18's stores. This one starts from
-// the BIC, which is the clearing house's own key, so it reads the roster and
-// nothing else.
-//
-// Its caller is the admission relay: an acmt.007 names its applicant by BIC and
-// by nothing else, and the clearing house's refusal of a second institution on a
-// taken address is decided from what this returns. A BIC in no roster is
-// ErrRosterEntryNotFound, which on that path is the ORDINARY answer — it is what
-// an address nobody has been admitted on looks like.
+// On the admission relay it is the ORDINARY answer rather than a fault — an
+// acmt.007 names its applicant by BIC and by nothing else, and a BIC in no roster
+// is what an address nobody has been admitted on looks like.
 func (s *Network) GetRosterEntryByBIC(ctx context.Context, bic iso20022.BIC) (RosterEntry, error) {
 	var out RosterEntry
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -215,29 +183,37 @@ func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
 // member's authorisations — which is the crossing this route was moved off the
 // clearing house's port to avoid, arriving by a different door.
 //
-// It is a filter in Go and not a WHERE clause, and that is deliberate: under
-// Task 18d each bank's store holds its own mandates and there is nothing to
-// filter, so a store method taking a participant would be one this task adds and
-// the next one removes. What the filter costs today is a full listing at four
-// banks, which is what the row count makes it.
+// It used to be a filter in Go — every mandate in the store, kept when its
+// creditor was this participant — and Task 18b's version of this doc said the
+// filter was temporary because "under Task 18d each bank's store holds its own
+// mandates and there is nothing to filter". This is that: a mandate is the
+// creditor's bank's row, it carries no creditor participant to filter ON (see
+// Mandate.DebtorAgent, and the mandates statement in the bank schema, which
+// argues the absent column), and the row set is this institution's by
+// construction.
+//
+// It is a refusal on the other two institutions rather than an empty list,
+// because a clearing house listing mandates is not an institution with none — it
+// is an act that is not its. The `csm` shape has no mandates table at all.
+//
+// # By construction, and not yet
+//
+// The construction is the store split, and the store split is the wiring this
+// task has not reached: until testenv and the composition root open one database
+// per entity, every network still shares one, and this listing returns whatever
+// mandates that shared store holds. That is a transitional gap and it is named
+// here rather than papered over with a per-row probe of this bank's own register,
+// which would be a workaround the next step deletes. What closes it is
+// store/testenv opening N+2 stores, not another guard here.
 func (s *Network) ListMandates(ctx context.Context) ([]Mandate, error) {
-	self, err := s.self()
-	if err != nil {
+	if _, err := s.self(); err != nil {
 		return nil, err
 	}
 	var out []Mandate
-	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		all, err := tx.ListMandates(ctx)
-		if err != nil {
-			return err
-		}
-		out = make([]Mandate, 0, len(all))
-		for _, m := range all {
-			if m.Creditor.Participant == self {
-				out = append(out, m)
-			}
-		}
-		return nil
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListMandates(ctx)
+		return err
 	})
 	return out, err
 }

@@ -221,7 +221,12 @@ var testMeshConfig = mesh.Config{
 // standing outside the network and looking at all of it, which is a thing a test
 // may do and no institution may — the same standing Task 18e's reconciliation
 // harness is built on.
-func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
+//
+// It returns the BANK as well as the ref, because a payment.PartyRef stopped
+// naming one at Task 18 (see payment.PartyRef) and every caller here needs both:
+// the account to quote on an instruction, and the address to bind a listener to
+// or to put in an agent field. The sweep already knows which bank answered.
+func seededParty(t *testing.T, s *Server, iban string) (iso20022.BIC, payment.PartyRef) {
 	t.Helper()
 	ctx := context.Background()
 	ident := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: iban}
@@ -232,21 +237,22 @@ func seededParty(t *testing.T, s *Server, iban string) payment.PartyRef {
 	for _, b := range banks {
 		switch ref, err := s.nets.Bank(b.ID).ResolveIdentifier(ctx, ident); {
 		case err == nil:
-			return ref
+			return b.BIC, ref
 		case errors.Is(err, deposit.ErrIdentifierNotFound):
 		default:
 			t.Fatalf("asking %s about the seed's %s: %v", b.ID, iban, err)
 		}
 	}
 	t.Fatalf("no seeded bank holds %s", iban)
-	return payment.PartyRef{}
+	return "", payment.PartyRef{}
 }
 
 // payerRoutes is the bank router of whichever bank holds the seed's Alice — the
 // payer every submission below is made by.
 func payerRoutes(t *testing.T, s *Server) http.Handler {
 	t.Helper()
-	return s.BankRoutes(seededParty(t, s, aliceIBAN).Participant)
+	bic, _ := seededParty(t, s, aliceIBAN)
+	return s.BankRoutes(payment.ParticipantID(bic))
 }
 
 // The seed's two customers these tests move money between, named by address.
@@ -266,27 +272,29 @@ const (
 // scenario has already taken out of her account.
 func validSubmission(t *testing.T, s *Server) string {
 	t.Helper()
-	payer, payee := seededParty(t, s, aliceIBAN), seededParty(t, s, bellaIBAN)
+	payerBIC, payer := seededParty(t, s, aliceIBAN)
+	payeeBIC, payee := seededParty(t, s, bellaIBAN)
 	// creditorAgent, because since Task 18a the instruction carries the routing
 	// element — see api's initiatePaymentRequest and payment.SubmitPaymentTx.
 	// The fixture reads it off the payee's bank the way a payer reads it off an
 	// invoice; nothing on the submitting path looks it up.
-	payeeBank, err := s.network().GetBank(context.Background(), payee.Participant)
-	if err != nil {
-		t.Fatalf("reading the payee's bank: %v", err)
-	}
+	//
+	// A party object carries no "participant" any more: which bank a side is at
+	// is the agent, and the two used to be the same value written twice. See
+	// api.partyRefDTO.
 	return fmt.Sprintf(`{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
-		"creditor":{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
+		"debtor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
+		"creditor":{"account":%q,"identifier":{"scheme":"IBAN","value":%q}},
 		"amount":1000,
 		"description":"mesh handoff",
 		"creditorName":"Bella Bruno",
+		"debtorAgent":%q,
 		"creditorAgent":%q
 	}`,
-		payer.Participant, payer.Account, aliceIBAN,
-		payee.Participant, payee.Account, bellaIBAN,
-		payeeBank.BIC)
+		payer.Account, aliceIBAN,
+		payee.Account, bellaIBAN,
+		payerBIC, payeeBIC)
 }
 
 func postJSON(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -596,22 +604,18 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 			`"identifiers":[{"scheme":"IBAN","value":"`+zIBAN+`"}]}`,
 		http.StatusCreated)["id"].(string)
 
-	alice := seededParty(t, srv, aliceIBAN)
+	aliceBIC, alice := seededParty(t, srv, aliceIBAN)
 	party := func(ref payment.PartyRef, iban string) string {
-		return fmt.Sprintf(`{"participant":%q,"account":%q,"identifier":{"scheme":"IBAN","value":%q}}`,
-			ref.Participant, ref.Account, iban)
+		return fmt.Sprintf(`{"account":%q,"identifier":{"scheme":"IBAN","value":%q}}`,
+			ref.Account, iban)
 	}
-	nora := payment.PartyRef{Participant: payment.ParticipantID(pid), Account: deposit.AccountID(acct)}
-	aliceBank, err := srv.network().GetBank(context.Background(), alice.Participant)
-	if err != nil {
-		t.Fatalf("reading the seeded payer's bank: %v", err)
-	}
+	nora := payment.PartyRef{Account: deposit.AccountID(acct)}
 	toBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
 		`"description":"to a bank no scheme has admitted","creditorName":"Nora","creditorAgent":%q}`,
 		party(alice, aliceIBAN), party(nora, zIBAN), "BNKZDEFFXXX")
 	fromBankZ := fmt.Sprintf(`{"scheme":"sepa.ct","debtor":%s,"creditor":%s,"amount":1000,`+
 		`"description":"from a bank no scheme has admitted","creditorName":"Alice Andersson","creditorAgent":%q}`,
-		party(nora, zIBAN), party(alice, aliceIBAN), aliceBank.BIC)
+		party(nora, zIBAN), party(alice, aliceIBAN), aliceBIC)
 
 	directions := []struct {
 		name  string
@@ -653,29 +657,40 @@ func TestAFoundedBankIsRefusedAsAPaymentPartyInEitherDirection(t *testing.T) {
 // one was never founded and the id is a typo. Nothing on this route looked such
 // an id up before Task 17 — the first thing to notice was Mesh.Submit's
 // bank-actor map, whose miss is a bare error with no case in errorStatus, so the
-// answer was 500. The membership read asks first, and it asks through
-// payment.Network.GetRosterEntry, which reads the bank's row before the roster:
-// no row is payment.ErrParticipantNotFound, which errorStatus maps to 404 and
-// did before this guard existed.
+// answer was 500. The membership read asks first, and it used to ask through a
+// roster lookup keyed by PARTICIPANT — which read the bank's own row before the
+// roster, so no row was payment.ErrParticipantNotFound and errorStatus mapped it
+// to 404.
 //
-// So what is asserted here is an ORDER and not a mapping. The sentinel's status
-// was never in doubt; what makes it reach a caller at all is that the membership
+// # The answer is 422 now, and the 404 was the clearing house reading a bank's row
+//
+// Task 18 made a bank's id its BIC, so a request names its parties by the very
+// key the roster is keyed by and there is no bank row in the way — see
+// payment.Network.GetRosterEntryByBIC. An address nobody has been admitted on is
+// ErrBankNotAdmitted, which is a 422.
+//
+// That is the more honest of the two answers rather than a regression. The
+// clearing house has never been able to tell "no such institution" from "an
+// institution I have not admitted": both are an address absent from its roster,
+// and the only thing that could once distinguish them was a read into a database
+// belonging to somebody else. What is lost is a distinction the reader was not
+// entitled to make.
+//
+// So what is asserted here is still an ORDER and not a mapping. The membership
 // read runs BEFORE the actor lookup, and anything that moves it later restores
-// the 500 silently. Measured both ways while this was written: with the guard,
-// 404 "participant not found"; with it removed, 500 "mesh: no bank actor for
-// participant bank_nobody".
+// the bare "no bank actor" error, which has no case in errorStatus and comes back
+// 500. Measured both ways: with the guard, 422; with it removed, 500.
 //
 // It is asked of the clearing house's console because that is the only surface
-// that can ask it. A bank's own POST /payments compares the submitter with the
-// bank it is bound to first, so an id no bank holds is refused there as the
-// wrong submitter, 422, before the mesh is reached.
-func TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound(t *testing.T) {
+// that can ask it. A bank's own POST /payments is bound to one bank and fills its
+// own side in from that binding, so it has no way to name a stranger as the payer.
+func TestAPaymentNamingABankNoSchemeHasAdmittedIsUnprocessable(t *testing.T) {
 	srv, _ := newAPIHarness(t)
-	body := strings.Replace(validSubmission(t, srv),
-		string(seededParty(t, srv, aliceIBAN).Participant), "bank_nobody", 1)
+	payerBIC, _ := seededParty(t, srv, aliceIBAN)
+	body := strings.Replace(validSubmission(t, srv), string(payerBIC), "NOSUCHBKXXX", 1)
 	rec := postJSON(t, csm(srv), "/payments", body)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("a payment whose payer's bank has no row = %d, want 404 (body: %s)", rec.Code, rec.Body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a payment whose payer's bank is in no roster = %d, want 422 (body: %s)", rec.Code, rec.Body)
 	}
 }
 
@@ -765,11 +780,10 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	// registered would have made it RC01 at the clearing house.
 	pay := doJSON(t, bank(h, a), "POST", "/payments", `{
 		"scheme":"sepa.ct",
-		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
-		"creditor":{"participant":"`+b+`","account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
+		"debtorAgent":"`+a+`","debtor":{"account":"`+alice+`"},
+		"creditorAgent":"`+b+`","creditor":{"account":"`+bob+`","identifier":{"scheme":"IBAN","value":"IT60-AFTER-RESET-01"}},
 		"amount":25000,
-		"creditorName":"Bob",
-		"creditorAgent":"`+bicOf(t, h, b)+`"
+		"creditorName":"Bob"
 	}`, http.StatusAccepted)["paymentId"].(string)
 	drainServer(t, h)
 	if got := doJSON(t, csm(h), "GET", "/payments/"+pay, "", http.StatusOK); got["status"].(string) != "Accepted" {
@@ -1102,7 +1116,7 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 	// A handler that called the domain directly would describe it with the text
 	// alone: there would have been no message to put a code on.
 	var txns []transactionDTO
-	getJSON(t, bank(srv, string(settled.Debtor.Participant)), "/transactions", &txns)
+	getJSON(t, bank(srv, settled.DebtorAgent), "/transactions", &txns)
 	want := settled.ID + ":return-refund"
 	for _, tx := range txns {
 		if tx.IdempotencyKey != want {
@@ -1119,8 +1133,8 @@ func TestReturningThroughTheAPIGoesRoundTheMesh(t *testing.T) {
 // aliceBalance is the seeded payer's book balance, read through her own bank.
 func aliceBalance(t *testing.T, s *Server) int64 {
 	t.Helper()
-	alice := seededParty(t, s, aliceIBAN)
-	bal := doJSON(t, bank(s, string(alice.Participant)), "GET",
+	aliceBIC, alice := seededParty(t, s, aliceIBAN)
+	bal := doJSON(t, bank(s, string(aliceBIC)), "GET",
 		"/deposit-accounts/"+string(alice.Account)+"/balance", "", http.StatusOK)
 	return int64(bal["book"].(float64))
 }

@@ -67,11 +67,12 @@ type Tx interface {
 	// called by OpenSettlementAccountTx and by settlementAccountTx — which is
 	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
 	// and ReserveBalance all resolve their account through it. PutRosterEntry
-	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and
-	// by Network.GetRosterEntry and GetRosterEntryByBIC, which is what the mesh's
-	// handlers ask instead of being handed a whole bank — the second of those
-	// being the admission relay's refusal, which starts from the BIC an acmt.007
-	// carries and so reads no bank row on the way.
+	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and by
+	// Network.GetRosterEntryByBIC, which is what the mesh's admission relay asks
+	// instead of being handed a whole bank. It starts from the BIC an acmt.007
+	// carries and so reads no bank row on the way — there was a second, id-keyed
+	// wrapper that did, and Task 18 deleted it along with the seven other callers
+	// that turned out to be holding an address already.
 	//
 	// ListSettlementMembers is called by nothing but storetest. It is declared
 	// for the reason ListSettlementAdvices below is: the rows exist, and adding

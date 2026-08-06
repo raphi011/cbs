@@ -54,11 +54,11 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 	openCycle(t, ctx, sys, SchemeSEPACT)
 	pay, err := initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme:          SchemeSEPACT,
-		Debtor:          PartyRef{Participant: a.ID, Account: alice},
-		Creditor:        PartyRef{Participant: a.ID, Account: alice},
+		Debtor:          PartyRef{Account: alice},
+		Creditor:        PartyRef{Account: alice},
 		Amount:          1,
 		CreditorDetails: PartyDetails{Agent: testBIC, Name: "Alice"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC}})
 	assertNoError(t, err)
 
 	acts := []struct {
@@ -179,7 +179,7 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 		net *Network
 	}{
 		{"the clearing house", sys.Network},
-		{"a member bank", sys.bank(a.ID)},
+		{"a member bank", sys.bank(a.BIC)},
 	} {
 		for _, act := range acts {
 			t.Run(act.name+" as "+imposter.who, func(t *testing.T) {
