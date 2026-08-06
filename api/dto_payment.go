@@ -37,13 +37,29 @@ type participantDTO struct {
 	// BIC is this bank's ISO 9362 business identifier code — what a
 	// counterparty addresses it by, and what the mesh routes on.
 	BIC string `json:"bic"`
-	// Status is "Founded" or "Member", and it is the field that says whether this
-	// bank can be paid.
+	// Status is "Founded" or "Member", and it is the field that says which of the
+	// two a client is holding.
 	//
-	// A founded bank has a book, a chart of accounts and a product, and can open
-	// customer accounts; no settlement agent holds an account for it and no
-	// clearing house routes to it, so nothing it submits can clear. It became a
-	// state a client can SEE when admission became a conversation: POST /members
+	// A founded bank has a book, a chart of accounts and a product, and that part
+	// of it is unrestricted: it opens customer accounts, publishes products, adds
+	// ledgers. What it cannot do is anything needing another institution. It
+	// cannot take a cash deposit — funding raises its reserve at the central bank
+	// in the same step and no settlement agent holds an account for it to raise —
+	// and the refusal is a 422 naming the membership rather than the account. Nor
+	// can any cut-off it takes part in settle, because the instruction turns net
+	// positions into addresses through a routing directory this bank is not in.
+	//
+	// This used to say the field says whether the bank "can be paid", and that no
+	// clearing house routes to it. Both were measured false, and the correction
+	// belongs in the DTO because a wire contract that names a mechanism is
+	// asserting one: the mesh routes on its ACTOR TABLE, which Mesh.Admit fills at
+	// founding, so a payment addressed to a founded bank is relayed, accepted and
+	// reaches Cleared like any other and the cut-off carrying it is what fails.
+	// payment.FoundBankTx and web/src/lib/types.ts — this DTO's TypeScript twin —
+	// carry the same retraction; mesh/doc.go has the measurement, and says no test
+	// pins it.
+	//
+	// It became a state a client can SEE when admission became a conversation: POST /members
 	// answers 202 with a founded bank, and the scheme's answer arrives at two
 	// other institutions afterwards. Before that the two were one commit and
 	// every bank a caller could read was a member.

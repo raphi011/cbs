@@ -45,8 +45,9 @@ func (s *Server) centralBankRouter() *router {
 	// This route FOUNDS a bank and applies to the scheme for it. What it writes
 	// is the new bank's own book, its chart of accounts, one set of internal
 	// accounts per asset and the deposit product every customer account is
-	// opened from — all of it in that bank's book — and then one acmt.007 goes
-	// out per asset, addressed to the CLEARING HOUSE, which relays it. Hence the
+	// opened from — every one of those accounts in that bank's own book — and
+	// then one acmt.007 goes out per asset, addressed to the CLEARING HOUSE,
+	// which relays it. Hence the
 	// 202: what the applicant gets back is a Founded bank, and the answer is two
 	// other institutions' to give (mesh.Mesh.Admit).
 	//
@@ -89,12 +90,20 @@ func (s *Server) centralBankRouter() *router {
 
 func (s *Server) clearingHouseRouter() *router {
 	mux := newRouter()
-	// The roster is the clearing house's because routing a payment is what
-	// needs to know who is reachable. Founding is above, on the central bank's
-	// surface; admission itself is no single institution's act, and this one's
-	// share of it is to relay a bank's application, refuse an address it has
-	// already admitted somebody else to, and write its routing entry from the
-	// settlement agent's answer (mesh.csm).
+	// This is NOT the roster, whatever the name suggests: handleListParticipants
+	// answers ListBanks, so every bank in the network is in it — founded ones
+	// included, each carrying its status. The routing directory this institution
+	// genuinely owns is roster_entries, written by payment.AdmitMemberTx from the
+	// settlement agent's acknowledgement, and it is on no surface at all; the mesh
+	// reads it and nothing in this package does. What puts the bank list on this
+	// listener is that this is the console the network's membership is watched
+	// from, and watching a bank become a member needs the banks that are not one
+	// yet.
+	//
+	// Founding is above, on the central bank's surface. Admission itself is no
+	// single institution's act, and this one's share of it is to relay a bank's
+	// application, refuse an address it has already admitted somebody else to, and
+	// write that routing entry from the answer (mesh.csm).
 	mux.HandleFunc("GET /members", s.handleListParticipants)
 	mux.HandleFunc("GET /schemes", s.handleListSchemes)
 	mux.HandleFunc("GET /directory", s.handleResolveIdentifier)

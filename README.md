@@ -1662,7 +1662,7 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 
 | Method & path | Operation |
 |---|---|
-| `GET /members` | the routing roster |
+| `GET /members` | every bank in the network, and the state each is in |
 | `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
 | `POST` / `GET /cycles`, `POST /cycles/{id}/close` | clearing cycles |
 | `POST /cycles/{id}/settle` | re-send the `pacs.009` for a cycle the central bank refused |
@@ -1671,7 +1671,9 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 | `GET /schemes`, `GET /directory`, `GET /assets` | schemes, address resolution, known assets |
 | `GET /payments/audit` | the payment layer's log |
 
-`GET /members` here is the **routing roster** — who this clearing house will send a message to — and it is a different question from the `POST /members` on the central bank's listener, which founds a bank and applies to the scheme for it. A single `POST`/`GET /participants` used to make the two look like one. The roster is now written by this institution, from the settlement agent's acknowledgement, and it answers "who may be addressed" rather than "who exists": a founded bank is absent from it and is a perfectly real bank.
+`GET /members` here is a different question from the `POST /members` on the central bank's listener, which founds a bank and applies to the scheme for it; a single `POST`/`GET /participants` used to make the two look like one. What this one answers, though, is worth being exact about, because its name and its listener both suggest something narrower than it is: it serves `ListBanks`, so **every bank is in it, founded ones included, each carrying its status**. That is what lets this console show a bank *becoming* a member — and it is what the static port table reads too, so a bank gets a listener from having been founded rather than from having been admitted.
+
+The routing directory this institution really does own is a different table and is on **no surface at all**. `roster_entries` is written by `AdmitMemberTx` from the settlement agent's acknowledgement, it answers "who may be addressed" rather than "who exists", and a founded bank is absent from it — which is a fact about the mesh's reads (`GetRosterEntryByBIC`, and `csm`'s address lookups) rather than about anything an operator can `GET`. Nothing in `api` reads it.
 
 **`POST /cycles/{id}/settle` does not settle**, and it is on this operator rather than the central bank for that reason. It rebuilds the closed cycle's `pacs.009` from its stored net positions and sends it again; the settlement agent decides, with the reserves as they are now. It exists because a refusal was otherwise terminal — a cycle stays `Closed` with no settlement, its payments `Cleared`, every payer debited into their own bank's clearing suspense and every payee unpaid, and no other route moves any of it: closing wants an open cycle, rejecting wants an `Initiated` or `Accepted` payment, returning wants a settled one. The operator funds the short member and asks again. Asking twice is safe: a cycle that is not `Closed` is refused here before a message is built, and a second instruction that got past that is refused by the settlement agent's own guard.
 

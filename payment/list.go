@@ -20,7 +20,14 @@ import (
 // contract notes in store.go.
 // ---------------------------------------------------------------------------
 
-// ListBanks returns all member banks in registration order.
+// ListBanks returns every bank in the network, in registration order.
+//
+// Every bank, and not every member: founding is what writes the row, so a bank
+// the scheme has not answered for is in this list carrying Status Founded.
+// Callers depend on that rather than working around it — api's GET /members is
+// how a console watches a bank become a member, and cmd/server's port table
+// gives a founded bank a listener. GetRosterEntry below is the narrower
+// question, answered from the table admission writes rather than from this one.
 //
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
