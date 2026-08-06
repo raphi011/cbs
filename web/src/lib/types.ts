@@ -303,11 +303,19 @@ export interface ParticipantAccounts {
 // A founded bank runs its own book, and that part is unrestricted: it opens
 // customer accounts, publishes products and adds ledgers, all measured against a
 // bank held in this state. What it cannot do is anything needing another
-// institution. It cannot clear a payment, because nothing routes to it — and it
-// cannot take a cash deposit either, which is the one people guess wrong:
-// funding a customer raises the bank's reserve at the central bank in the same
-// step, and there is no reserve to raise until the scheme has answered. The API
-// says so with a 422 naming the membership, not the account.
+// institution. It cannot take a cash deposit, which is the one people guess
+// wrong: funding a customer raises the bank's reserve at the central bank in the
+// same step, and there is no reserve to raise until the scheme has answered. The
+// API says so with a 422 naming the membership, not the account. And nothing it
+// takes part in can settle, because a settlement instruction names its members
+// through the routing directory this bank is not in.
+//
+// This comment used to say a founded bank cannot clear a payment "because
+// nothing routes to it", and that is not what happens: the backend routes on the
+// mesh's actor table rather than on the directory, so a payment addressed to a
+// founded bank clears like any other and the cut-off carrying it is what fails.
+// Nothing in this UI depends on the difference; it is corrected here because a
+// comment that names a mechanism is asserting one.
 //
 // Both are ordinary states. Admission is a conversation between three
 // institutions, so POST /members answers 202 with a founded bank and the

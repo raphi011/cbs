@@ -692,11 +692,20 @@ func (s *Network) RecordMembership(ctx context.Context, by ParticipantID, in Adm
 // unpriced deposit account, and a bank that cannot open one is not yet a bank.
 //
 // The bank comes out Founded, and that is a whole state rather than half of
-// one. It can take deposits; it cannot pay or be paid, because no settlement
-// agent holds an account for it and no clearing house routes to it. That is
-// what a bank is between its licence and its scheme membership, and it is what
-// an interrupted admission leaves behind — which is why the guarantee the
-// deleted atomic call gave up is one no real admission ever had.
+// one. Its own book is unrestricted — it opens customer accounts, publishes
+// products, adds ledgers. What it cannot do is FUND one: DepositTx raises the
+// bank's reserve at the central bank in the same unit of work, and no settlement
+// agent holds an account for it to raise, so the deposit is refused by name
+// (ErrSettlementMemberNotFound). Nor is it in any routing directory, so nothing
+// it takes part in can settle. That is what a bank is between its licence and
+// its scheme membership, and it is what an interrupted admission leaves behind —
+// which is why the guarantee the deleted atomic call gave up is one no real
+// admission ever had.
+//
+// This used to say "it can take deposits", which is the one thing it cannot do,
+// and "no clearing house routes to it", which is not a refusal anybody makes:
+// mesh routes on its actor table rather than on the roster. mesh/doc.go's
+// admission section records what that costs, measured.
 //
 // Assets[asset].Settlement is EMPTY on every set of accounts it writes. The
 // settlement account is another institution's to open and its number is

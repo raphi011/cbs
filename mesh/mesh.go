@@ -1334,7 +1334,9 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // committed before anything is sent. What it does NOT answer is whether the
 // scheme accepted — that arrives later, at two other actors, as a message. The
 // bank it returns is Founded, which is a working bank that can open customer
-// accounts and cannot pay or be paid.
+// accounts and cannot fund one. See "A founded bank cannot be paid is the
+// intent" in doc.go for what this transport does and does not enforce about the
+// rest of it.
 //
 // # The address is reserved first, and that is the orphan defect's fix
 //

@@ -98,16 +98,21 @@ func (a PostalAddress) validate(element string) error {
 // to open it an account. Here it is a bank asking a settlement agent for the
 // settlement account its admission to a scheme depends on.
 //
-// # Nothing in this repository sends one yet
+// # This file is the documents; the conversation is elsewhere
 //
-// This file is the three documents and their validation, and no caller. The
-// conversation that carries them — who composes the request, who relays it, who
-// writes what down when the answer comes back — is the mesh and payment layers',
-// and it lands after this. Where the docs below say what a reader does with an
-// element, they are saying what the element is FOR, which is what decided the
-// shape; they are not describing code that exists. The claims that are checked
-// are the ones the tests in acmt_test.go and the xmllint run in xmllint_test.go
-// make.
+// It carries the three documents and their validation, and no caller. Who
+// composes the request, who relays it and who writes what down when the answer
+// comes back are the mesh and payment layers' — payment/translate.go builds and
+// reads all three, and mesh carries them between the joining bank, the clearing
+// house and the settlement agent.
+//
+// This paragraph said "nothing in this repository sends one yet", which was true
+// when the documents landed a sub-task before their callers and stopped being
+// true the moment those callers existed. Where the docs below say what a reader
+// does with an element they now describe code, and the code is the authority on
+// them; what remains checked HERE is what the tests in acmt_test.go and the
+// xmllint run in xmllint_test.go check, which is the documents' shape and
+// nothing about who acts on them.
 //
 // # This is not how the real thing works
 //
@@ -250,8 +255,16 @@ func (a RequestedAccount) validate() error {
 //
 // Every field here is mandatory in Organisation33, and all but one is here only
 // because of that. FullLglNm, CtryOfOpr and LglAdr describe a corporate
-// applicant — which is what eBAM was written for and what this use of it is not
-// — and nothing in this repository reads any of them.
+// applicant, which is what eBAM was written for and what this use of it is not.
+//
+// One of those three is read after all, and the reason is worth having. An
+// account servicer names an account after the member it opens it for, so
+// payment.ReadAdmissionRequest takes FullLglNm and the settlement agent's own
+// member row keeps it — which makes this the only element on the family that
+// delivers a legal name anywhere, since the acknowledgement carries none (see
+// AccountRequestAcknowledgement). CtryOfOpr and LglAdr are read by nothing: this
+// system knows a bank's BIC and its name and nothing about where its offices
+// are.
 //
 // OrgId/AnyBIC is the load-bearing one, and the standard leaves it OPTIONAL:
 // AnyBIC is minOccurs="0" in OrganisationIdentification29. This package requires
@@ -290,8 +303,9 @@ func (o AccountOwner) validate() error {
 // house takes the routing entry — the bank is reachable from that moment — and
 // the bank takes the settlement references it will quote for the rest of its
 // life at this agent. Neither is the sender, and neither had the information
-// before the message arrived. See Acmt007 on the fact that neither reader is
-// written yet.
+// before the message arrived. Both readers exist: payment's
+// ReadAdmissionAcknowledgement is what they share, and mesh's csm and bank
+// handlers are what take the two different things out of it.
 //
 // # What the schema said that the plan for this file did not
 //

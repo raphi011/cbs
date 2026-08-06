@@ -140,7 +140,7 @@ function ParticipantCard({
       <CardContent>
         <p className="text-sm text-muted-foreground">
           {p.status !== "Member"
-            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and it cannot pay or be paid."
+            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and no cut-off it takes part in can settle."
             : provisioned
               ? "Member of the network."
               : "Awaiting provisioning."}

@@ -2,17 +2,19 @@
 // deposit and ledger packages. It exists to make the mechanics of payment
 // clearing and settlement concrete and testable.
 //
-// Like the layers below it, the package holds no state of its own: participants,
-// payments, mandates, clearing cycles and settlements all live in a Store
-// (store/mem in-process, store/pg on Postgres) behind the payment.Store and
-// payment.Tx interfaces declared here.
+// Like the layers below it, the package holds no state of its own: banks, the
+// two rows the other institutions keep about them, payments, mandates, clearing
+// cycles and settlements all live in a Store (store/mem in-process, store/pg on
+// Postgres) behind the payment.Store and payment.Tx interfaces declared here.
 //
 // # The model
 //
 // Several participant banks each keep their own book of accounts (a
 // ledger.Book, their general ledger) with a deposit.Register layered on top for
 // their customer accounts. A separate central-bank book holds a reserve account
-// for every participant. The books all live in one Store and are told apart by
+// per asset for every bank the scheme has ADMITTED — the central bank opens each
+// one itself, when it answers that bank's application, so a founded bank has
+// none. The books all live in one Store and are told apart by
 // their ledger.BookID, so chart-of-accounts numbers and ID counters stay per
 // bank while a single transaction can still span several of them. Banks only
 // meet at the central bank — which is exactly what makes the distinction
@@ -101,7 +103,8 @@
 //   - FoundBankTx is the BANK building itself — its book, its chart of
 //     accounts, its internal accounts per asset, its default deposit product.
 //     It comes out Founded, which is a bank with a licence and no place in a
-//     scheme: it can open customer accounts and it can neither pay nor be paid.
+//     scheme: it can open customer accounts, and it cannot FUND one, because
+//     funding raises a reserve no settlement agent holds for it.
 //   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
 //     one asset, in its own book, and recording that it holds it. Idempotent
 //     per (BIC, asset), because one acmt.007 asks for one currency and a

@@ -121,18 +121,19 @@ export const chapter: Chapter = {
       kind: "mc",
       id: "ch9-q8",
       difficulty: "core",
-      concept: "settlement-delay",
-      prompt: "Which payment type achieves settlement at T+0 (same day)?",
+      concept: "bank-admission",
+      prompt:
+        "A bank applies to join the scheme. Two things have to come into existence: its settlement account at the central bank, and its entry in the clearing house's routing directory. In which order, and why?",
       options: [
-        "Check",
-        "ACH / direct debit",
-        "Domestic wire (RTGS)",
-        "International wire",
+        "The routing entry first — the scheme has to be able to reach the bank before anyone can open an account for it",
+        "The settlement account first; the clearing house then writes its routing entry from the account servicer's acknowledgement, because a scheme will not route to a member that cannot settle",
+        "Both at once, in the single transaction that admits the bank, so it can never exist without the accounts it needs",
+        "The bank opens both itself — one in each institution's book — and tells the two institutions afterwards",
       ],
-      answer: 2,
+      answer: 1,
       explanation:
-        "Domestic wire transfers using an RTGS (Real-Time Gross Settlement) system settle at T+0 — each payment is individually and immediately finalized. [[settlement-delay]] for ACH is T+1 to T+2, checks T+1 to T+5, and international wires T+1 to T+3.",
-      explore: { label: "View settlement cycles", href: "/clearing-house/cycles" },
+        "[[bank-admission|Admission is a sequence]], and the order carries the meaning. The central bank opens the [[settlement-account|settlement account]] in its own book **first**, then acknowledges; the clearing house writes its [[routing-roster|routing entry]] out of that acknowledgement and only *then* forwards it on, so a bank told it is a member is one the scheme can already route to. Scheme membership follows the settlement account, not the other way round: routing to a bank the settlement agent will not hold an account for would produce net positions nobody could discharge. Option C is what this system used to do and no longer does — one transaction writing three institutions' records so that \"a bank can never exist without the accounts it needs\". No real admission has that guarantee: a bank is [[bank-founding|licensed and built]] before any scheme has heard of it, and an application that cannot be refused is not an application. Option D is the one thing none of them may do — no institution writes in another's book.",
+      explore: { label: "View central bank", href: "/central-bank" },
     },
     {
       kind: "truefalse",

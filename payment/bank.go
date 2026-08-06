@@ -23,9 +23,12 @@ type BankStatus string
 
 const (
 	// BankFounded is a bank with a licence, a book and a chart of accounts, and
-	// no place in a scheme. It can open customer accounts; it cannot pay or be
-	// paid, because no clearing house routes to it and no settlement agent holds
-	// an account for it.
+	// no place in a scheme. It can open customer accounts; it cannot FUND one,
+	// because funding raises a reserve at the central bank and no settlement
+	// agent holds an account for it to raise (DepositTx, ErrSettlementMemberNotFound).
+	// It is in no routing directory either, so nothing it takes part in can
+	// settle — what a transport does and does not enforce about that is measured
+	// in mesh/doc.go's admission section rather than asserted here.
 	//
 	// It is a legitimate state and not a broken one — a bank exists before it
 	// joins a scheme — and it is what an interrupted admission leaves behind.
@@ -196,7 +199,7 @@ type Bank struct {
 	ProductID product.ID
 
 	// Status is how far through admission this bank is. See BankStatus: a
-	// Founded bank can open customer accounts and cannot pay or be paid.
+	// Founded bank can open customer accounts and cannot fund one.
 	//
 	// The zero value is neither, which is why every writer sets it explicitly
 	// and storetest asserts it survives the round trip: a bank read back with

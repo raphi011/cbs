@@ -217,16 +217,21 @@ export const chapter: Chapter = {
         "[[relational-mapping|Ordering by ID is a lexicographic sort of a numeric counter]]: `dep_10` < `dep_8` as text. The list looks right until the ninth account is opened. `seq` is a monotonic integer assigned on insert and deliberately left alone by updates, so editing a row does not move it to the end of its list.",
     },
     {
-      kind: "numeric",
+      kind: "mc",
       id: "ch15-q15",
       difficulty: "core",
-      concept: "book-scoped-id",
+      concept: "routing-roster",
       prompt:
-        "Five clients concurrently retry the same posting, all sending the identical idempotency key against a unique index on (book_id, idempotency_key). How many transaction rows exist afterwards?",
+        "Admitting a bank writes three rows — the bank's own, the central bank's record of the account it opened, and the clearing house's routing entry — where a single `participants` row used to carry all of it. What forced the split?",
+      options: [
+        "Row width: one row carrying every institution's fields had grown past what the store could index",
+        "The settlement agent resolved the account it was about to post to through a row it did not own, so an institution given a database of its own would have had nothing to settle from",
+        "A composite primary key cannot span three institutions in Postgres, and the in-memory store could not express one either",
+        "Each institution needed its own copy of the same data, so the row is now duplicated three ways",
+      ],
       answer: 1,
-      tolerance: 0,
       explanation:
-        "Exactly **one**. The index is scoped per book ([[book-scoped-id]]), and the first insert to reach it wins; the other four raise a unique violation that becomes the domain's 'idempotency key already used'. No amount of concurrency changes the count, because the database — not application logic — is deciding. See [[idempotency-race]].",
+        "One row belonging to three institutions is a shared-store artefact, and the reserve postings were reading straight through it. Splitting it gives each institution a record it could hold **alone**, which is the whole test: `banks` is the bank's own (its status, and the admission it accepted), `settlement_members` is the [[settlement-account|central bank's record of an account it opened]], and `roster_entries` is the [[routing-roster|clearing house's record of where to send a message]]. Each has exactly one writer. The two that are not the bank's are keyed by **BIC** rather than by a bank id, because neither institution allocates or is ever told one — what a message carries is a BIC — so a bank id there would be an identifier its owner had no way to have learnt and no way to check. Option D is the opposite of what happened: the rows hold *different* things, and the clearing house's deliberately holds no account identifier at all.",
     },
     {
       kind: "multi",
@@ -317,7 +322,7 @@ export const chapter: Chapter = {
       ],
       answer: 2,
       explanation:
-        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. (`participants` carries a `book_id` column too, but as data rather than as part of its key.) `reference` holds a cycle id on the cut-off path and a payment id when a single settled payment is returned, and a member bank can no more resolve one than the other. A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same movement write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
+        "Each institution holds only what its own job needs. A cycle is the clearing house's row and a settlement is the central bank's; a bank never reads either. It learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record is this row, keyed `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. (`banks` carries a `book_id` column too, but as data — which book that bank owns — rather than as part of its key.) `reference` holds a cycle id on the cut-off path and a payment id when a single settled payment is returned, and a member bank can no more resolve one than the other. A foreign key would encode exactly the sharing that per-entity stores remove. Two banks advised of the same movement write their rows independently, which is not redundancy: [[settlement-finality|settlement is final]] at the central bank, so \"this bank has booked it and that one has not\" is a state the schema must be able to represent — as one row present and the other **absent**, since each row commits with the mirror leg it records. See [[unreconciled-position]].",
     },
     {
       kind: "mc",

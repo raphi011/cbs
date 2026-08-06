@@ -137,16 +137,18 @@
 //     settlement agent for the settlement account its admission depends on.
 //   - acmt.010.001.03 AcctReqAck — the agent's acknowledgement, naming the
 //     accounts it opened. It is the message the clearing house's routing entry
-//     is to be written from, by an institution that neither sent it nor was
-//     addressed on it.
+//     is written from, by an institution that neither sent it nor was addressed
+//     on it.
 //   - acmt.011.001.03 AcctReqRjctn — the agent's refusal, and the same
 //     conversation ending the other way.
 //
 // The three acmt messages are one conversation and are read as one. Acmt007
-// carries the family's documentation, including the fact that nothing in this
-// repository sends or receives one yet, and why this use of eBAM is not how
+// carries the family's documentation, including why this use of eBAM is not how
 // a central-bank account is really opened, and they are the messages that
-// reverse the second ruling below.
+// reverse the second ruling below. They have callers now — payment/translate.go
+// builds and reads all three, and mesh carries them between the joining bank,
+// the clearing house and the settlement agent — which the first version of that
+// documentation, written a sub-task before those callers, said they did not.
 //
 // Deliberately absent: pain.001 and pain.008 (the customer-to-bank layer),
 // camt.056 recalls and pacs.007 reversals, message signing, and runtime XSD

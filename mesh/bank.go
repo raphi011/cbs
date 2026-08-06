@@ -908,8 +908,8 @@ func (b *bank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso
 // refused.
 //
 // There is nothing to write. The bank stays Founded — which is a working bank
-// that can open customer accounts and cannot pay or be paid — and that is
-// already what it is, because nothing about a bank changes when it applies. The
+// that can open customer accounts and cannot fund one — and that is already what
+// it is, because nothing about a bank changes when it applies. The
 // state an operator re-drives is exactly the state this message leaves.
 //
 // So the refusal is LOGGED and nothing else, for the reason

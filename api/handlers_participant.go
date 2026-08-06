@@ -17,11 +17,13 @@ import (
 // # 202, and what an operator has when it answers
 //
 // A founded bank. Its book, its chart of accounts and its default product exist,
-// so it can open customer accounts straight away. It cannot pay or be paid — no
-// clearing house routes to it — and it cannot take a cash deposit either, since
-// funding raises a reserve and no settlement agent holds an account for it yet.
-// The DTO says which of the two states it is in: Founded here, and Member once
-// the scheme has answered.
+// so it can open customer accounts straight away. What it cannot do is take a
+// cash deposit, since funding raises a reserve and no settlement agent holds an
+// account for it yet — 422, naming the membership. It is in no routing
+// directory either, so nothing it takes part in can settle; mesh/doc.go records
+// what that does and does not stop, measured, because "no clearing house routes
+// to it" is not a check anybody makes. The DTO says which of the two states it
+// is in: Founded here, and Member once the scheme has answered.
 //
 // Whether the scheme accepts is not this call's to report. It is decided at two
 // other institutions and arrives as a message, so the honest status code is 202

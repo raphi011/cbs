@@ -409,9 +409,36 @@
 // Mesh.Admit's synchronous half is Mesh.Submit's: the bank's own unit of work,
 // on the caller's goroutine, marked as the bank's, committed before a message
 // exists. What it returns is a FOUNDED bank — a licence, a book, a chart of
-// accounts and a product, able to open customer accounts and unable to pay or be
-// paid — and what the scheme thinks arrives later, at two other actors, as a
-// message.
+// accounts and a product, able to open customer accounts and unable to FUND one
+// — and what the scheme thinks arrives later, at two other actors, as a message.
+//
+// # "A founded bank cannot be paid" is the intent, and this transport does not
+// enforce it
+//
+// Routing here is the ACTOR TABLE, not the roster: m.send looks a BIC up in
+// m.actors, and Admit registers the actor at founding so that the bank can
+// receive its own acknowledgement. A payment addressed to a founded bank is
+// therefore relayed, accepted by that bank and taken into the cycle exactly like
+// any other, and it reaches Cleared. Where it fails is the CUT-OFF, and it fails
+// wide. csm.settlementLegs turns each net position into a BIC through the
+// roster, so a non-member in the batch means the pacs.009 cannot be built at all
+// — "no member is routed to under this BIC" — and the whole cycle stays Closed
+// with no settlement against it, every other member's payments included.
+//
+// That was measured, with a throwaway probe, and NO TEST IN THIS PACKAGE PINS
+// IT. It is written down rather than asserted because the alternative was
+// leaving "no clearing house routes to it" standing in six files, none of which
+// was describing a check. Closing it is a decision about where the refusal
+// belongs — the clearing house declining to clear for a non-member, at
+// AcceptAtCSMTx — and it is nobody's yet.
+//
+// What actually makes a founded bank unreachable is losing its actor, which a
+// restart does: joinRoster builds actors from the ROSTER, so a bank that was
+// founded and never admitted comes back with none
+// (TestAFoundedBankIsNotAdmittedByARestart). That is a property of this
+// transport rather than a refusal any institution makes, and it is recorded
+// here rather than asserted away because several files used to say "no clearing
+// house routes to it" and none of them was describing a check.
 //
 // Founded and not a member is a legitimate state and not half of one, which is
 // what makes the orphan-participant defect go away rather than move. That defect

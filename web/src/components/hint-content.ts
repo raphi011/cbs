@@ -1094,7 +1094,7 @@ The general rule: an invariant is enforceable where the whole of it is visible, 
   },
   "participant-assets": {
     title: "Internal accounts, one set per asset",
-    body: `A participant bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its settlement account in the central bank's own book — exist **once per [[asset]] it operates in**.
+    body: `A bank's internal accounts — [[clearing-suspense|clearing suspense]], [[reserve-account|reserve at the central bank]], [[unclaimed-balances|unclaimed balances]], [[returns-receivable|returns receivable]], and its [[settlement-account|settlement account]] in the central bank's own book — exist **once per [[asset]] it operates in**.
 
 A bank clearing both a euro scheme and a dollar one holds two suspense accounts and two reserve accounts, not two currencies inside one. Partly because [[asset|an account is bound to a single asset]], and partly because [[net-positions|netting]] a euro position against a dollar one does not produce a smaller number, it produces a meaningless one.
 
@@ -1106,11 +1106,89 @@ Bank A
          returns receivable, settlement
 \`\`\`
 
-They are a child row keyed \`(participant, asset)\` rather than a column apiece on the participant, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
+They are a child row keyed \`(bank, asset)\` rather than a column apiece on the bank, which also makes adding a *kind* of account cheap: returns receivable joined the row when the return path needed somewhere to book a forced clawback, and one column there is one account per asset automatically.
+
+All but one of them are created in the bank's own book when it is [[bank-founding|founded]]. The settlement account is the exception: the central bank opens that one, in its own book, when it answers the bank's application — so on a founded bank the column is empty.
 
 [[clearing-vs-settlement|Settlement]] resolves the set from the **cycle's** asset — which comes from the cycle's [[scheme-asset|scheme]] — once for the whole batch. A member holding a net position but no accounts in that asset fails the entire settlement before anything posts, exactly as an underfunded member does.
 
 There is deliberately **no fallback** to a default asset. Defaulting to euro would settle a dollar cycle in the wrong money, quietly, in the one place in the system where money becomes final.`,
+  },
+  "bank-founding": {
+    title: "Founded, and not yet a member",
+    body: `**Founding a bank and admitting it to a scheme are two different things.** Founding is the bank's own act: it gets a book, a chart of accounts, its [[participant-assets|per-asset plumbing accounts]] and a deposit product to sell. It comes out **Founded**, which is a working bank that is in no scheme.
+
+Its own book is unrestricted — it opens customer accounts, publishes products, adds ledgers. What it cannot do is anything needing another institution:
+
+\`\`\`
+Founded
+  book, chart of accounts, product
+  opens customer accounts
+  CANNOT fund one          → 422
+
+Member — the above, plus
+  a settlement account at the central bank
+  a row in the routing directory
+  can be funded, can settle
+\`\`\`
+
+**Funding is the one people guess wrong.** Cash paid in raises the bank's reserve at the central bank in the same [[unit-of-work|unit of work]], and there is no reserve to raise until a settlement agent has opened one. The API answers \`422\` naming the *membership*, not the account.
+
+**This reverses an earlier ruling, and the reversal is the lesson.** Admission used to be one transaction that wrote the bank's accounts, the central bank's and the clearing house's together — "so a bank can never exist without the accounts it needs". No real admission has that guarantee. A bank is licensed and built long before any scheme has heard of it, and joining a scheme is an application to somebody else that can be refused. See [[bank-admission]].`,
+  },
+  "settlement-account": {
+    title: "The settlement account is the central bank's",
+    body: `A bank's **settlement account** is opened **by the central bank, in the central bank's own book**. It is \`Reserve: <Bank> (<asset>)\` — a [[account-type-liability|liability]] of the central bank's, numbered in the central bank's chart of accounts. The bank does not hold it.
+
+What the bank holds is its **number**, the way an account holder knows their IBAN without holding the bank's ledger. Two records, two owners:
+
+\`\`\`
+The central bank's row
+  SettlementMember, keyed by BIC
+  one account id per asset,
+  allocated in its own book
+
+The bank's own row
+  BankAccounts.Settlement
+  the number it was told, quoted
+  whenever it funds a reserve
+\`\`\`
+
+One account **per asset**, because a reserve in euro says nothing about a reserve in dollars. That is also why a bank joining in two assets applies twice: the account-opening request carries one currency, so it asks once per asset and is answered once per asset.
+
+The central bank's row is keyed by **BIC** and by nothing else — a settlement agent holds no roster and allocates no bank ids, so the only identifier it is ever told is the one on the message. It knows which account it holds for whom, and nothing about how the member runs: not its book, not its subledgers, not its product.`,
+  },
+  "routing-roster": {
+    title: "The routing directory says who may be addressed",
+    body: `The scheme's **routing directory** belongs to the clearing house, and it answers one question: **where do I send a message addressed to this member?** It is not a register of banks. A bank absent from it exists perfectly well — it is simply not somewhere this scheme will send anything.
+
+Each entry carries a **BIC**, the assets that member clears in, and the reference of the admission that put it there. What it does *not* carry is the point:
+
+- **no account of any kind** — no account id, no subledger, no product, no book. A clearing house holding one would be holding the means to reach into a bank's ledger. The row this replaced carried the central bank's account ids, and readers in three institutions resolved their postings through it.
+- **no name** — the acknowledgement the row is written from identifies the account owner with a BIC and has no name element at all. Routing is an address; a name here could only be the clearing house remembering something no message delivered.
+
+It is keyed by BIC because a clearing house routes what a message addresses, and a message addresses a BIC. See [[bank-admission]] for how the row comes to be written, and by whom.`,
+  },
+  "bank-admission": {
+    title: "Admission is a conversation, in order",
+    body: `Admitting a bank to a scheme takes **three institutions**, and none of them can do another's part. The order is the content: **the settlement account is opened first and the routing entry is written second**, because a scheme will not route to a member that cannot settle.
+
+\`\`\`
+1  bank            --acmt.007-->  clearing house
+2  clearing house  --acmt.007-->  central bank
+3  central bank    --acmt.010-->  clearing house
+4  clearing house  --acmt.010-->  bank
+\`\`\`
+
+1. The **bank** founds itself first — see [[bank-founding]] — and then applies, one request per [[asset]], all quoting one process id so the scheme can tell they are one admission.
+2. The **clearing house** relays and holds nothing. The only thing it refuses before relaying is a BIC already in its directory under a *different* admission.
+3. The **central bank** opens one [[settlement-account|settlement account]] per asset in its own book, records its own member row, and answers — or refuses, in prose rather than a code, because this message family carries no code set.
+4. The **clearing house** writes its [[routing-roster|routing entry]] from that acknowledgement and only *then* forwards it, so a bank told it is a member is one the scheme can already route to.
+5. The **bank** records the account numbers it has been told and becomes a member.
+
+Four units of work at three institutions, so the API answers **202 Accepted** with a founded bank rather than 201 with a member: the scheme's answer is decided elsewhere and arrives later.
+
+**Two things here are not the real thing.** Scheme membership is *contractual* — an adherence agreement, signed — and travels on no message at all; what travels is the settlement-account request, and the routing entry falls out of its acknowledgement. And a real central bank does not open an RTGS account by message either: it is reference data (in TARGET, CRDM static data and \`reda\`). What is real is the **sequence and the ownership** — who may open which account, in whose book, and in what order.`,
   },
   "credit-facility": {
     title: "Credit facility",

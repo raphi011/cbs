@@ -25,8 +25,8 @@ import { describeError } from "@/lib/api/errors";
 // rather than reporting an admission. The application is answered by two other
 // institutions and arrives afterwards, so at the moment this dialog closes the
 // bank has its own book and its own customers and no settlement account
-// anywhere: it cannot pay or be paid, and the clearing house's list is where it
-// is seen becoming a member.
+// anywhere: it cannot fund a customer account, and the clearing house's list is
+// where it is seen becoming a member.
 //
 // It does not navigate to the new bank's console: a bank founded at runtime has
 // no listener until the server restarts, so that console would 502 on every
