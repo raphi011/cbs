@@ -100,6 +100,57 @@ suite run against".
 flag keeps its name and its meaning changes: empty is still ephemeral and still
 needs no setup, so `make dev` and `make run` are untouched.
 
+### The test store is `memdb`, not shared cache (2026-08-06)
+
+Left as written above, and corrected here.
+
+"**Tests use `file:<unique>?mode=memory&cache=shared`**" is right about what it
+rejects and wrong about what it chooses. Its argument against a bare `:memory:`
+holds exactly as stated, and so does its consequence — the database is discarded
+when its last connection closes, so the store retains one for its lifetime, and
+the name has to be unique per store.
+
+What it does not account for is that shared cache is a **locking model**, not
+just a way of sharing a handle. Connections in a shared cache take table-level
+locks held until the transaction ends, so a read-then-write pair raises
+`SQLITE_LOCKED` where a file raises `SQLITE_BUSY`. Two consequences, and the
+second is the disqualifying one:
+
+- The code differs from the file-backed path's, so one retry classification would
+  have to know which mechanism it is running on.
+- **`modernc` does not return `SQLITE_LOCKED_SHAREDCACHE` to the caller.** It
+  diverts into `sqlite3_unlock_notify` and waits on a mutex with no deadline and
+  no context (`conn.retry`, `conn.go:435-455` in v1.56.0). Nothing in that
+  function ends the wait if the blocking transaction stays open — and a suite
+  that holds transactions open at a barrier is precisely what `RunRaces` and
+  `RunConcurrentTxRaces` are. Read rather than measured here; recorded as such.
+
+SQLite's own documentation calls shared-cache mode obsolete and names WAL as the
+replacement.
+
+**So an empty path is `file:/<random>?vfs=memdb`.** The `memdb` VFS shares one
+in-memory database between a pool's connections — the leading `/` is what makes
+it shared rather than private per connection — with ordinary locking and
+`SQLITE_BUSY` losers, so one classification covers it and the file path alike. It
+is compiled into `modernc`'s build. The retained connection and the random name
+both survive from the paragraph above, for its reasons.
+
+**No in-memory database can be WAL.** `journal_mode` on any of them is pinned to
+`MEMORY` or `OFF` and a request for `WAL` is ignored without an error, so the
+file case keeps `journal_mode(WAL)` and the ephemeral case does not ask.
+
+**`_txlock=immediate` was considered and rejected.** It is SQLite's canonical
+answer to the write-upgrade problem, and it takes the write lock at `BEGIN` —
+which means two write transactions can never be open at once, and the barrier
+`RunConcurrentTxRaces` holds its racers at never releases. Measured at zero runs
+out of twenty on every configuration. It is also **per-connection only** in
+`modernc`, read from the DSN, with `driver.TxOptions.Isolation` ignored
+entirely — so it could not have been a per-call choice even if the barrier
+allowed it.
+
+One thing the reversal does not change: under Task 18 this becomes N+2 named
+databases per test, and the naming scheme still belongs to `store/testenv`.
+
 ## Errors, and one deletion
 
 **`inSavepoint` goes away — all thirteen uses.** SQLite does not abort a
@@ -177,6 +228,53 @@ before the port and not during it: `store/mem` cannot show any of this, and
 neither can a suite that only runs against it. The probe was possible because
 `store/pg` still exists, and `RunConcurrentTxRaces` exists because Task 17.0
 moved it out of `store/pg`'s own tests first.
+
+#### The retry needs a backoff, and its budget is load-bearing (2026-08-06)
+
+The section above says `Update` retries and stops there. Retrying is necessary
+and not sufficient, and the gap cost a wrong commit message before it was found.
+
+**`store/pg` retries with no delay and is right to.** Postgres detects a deadlock
+after `deadlock_timeout`, about a second, so the database spaces the attempts
+whether the caller thinks about it or not. **SQLite answers immediately**, so
+undelayed attempts all finish inside the winner's commit window. The delay is
+`store/sqlite`'s to supply, and the jitter with it: racers that back off by the
+same amount re-collide on the same schedule.
+
+**The budget — attempts × window — has to exceed the longest write transaction
+the system runs.** This is a *file's* problem and not the ephemeral store's, and
+the asymmetry is worth knowing rather than guessing at:
+
+- On `memdb` a retry's `SELECT` **blocks** until the winner commits, so the loser
+  reaches the domain guard however small the budget is.
+- Under **WAL** a reader runs past an uncommitted writer, so the retry re-reads a
+  stale value, passes the domain's check on it, and fails at the write again. It
+  converges only once an attempt begins *after* the commit.
+
+Measured on a file with a writer holding its lock 120ms: at five attempts from a
+1ms doubling window the loser exhausted every attempt and surfaced `SQLITE_BUSY`,
+three runs of three. At ten attempts from 2ms — worst case near two seconds,
+against a `busy_timeout` of five — it reaches the domain's refusal, twenty runs of
+twenty.
+
+**A guard for this must open a file.** Its first draft ran on the ephemeral store,
+where it passed with the old budget and pinned nothing. Two tests, not one:
+`TestUpdateRetriesUntilTheDomainGuardDecides` pins that a retry happens at all
+(five runs, five failures with `isTransient` stubbed false);
+`TestTheRetryBudgetOutlastsASlowWriter` opens a file and pins the delay and its
+size.
+
+**A correction to how the previous section was arrived at.** An earlier writing of
+this ruling asserted that shared-cache memory livelocked both racers "with and
+without backoff", and reversed the in-memory ruling on that basis. The *with*
+half was never measured: the probe that produced it called `runInTx` directly
+under a hand-rolled loop that never reached the backoff. Two independent
+investigations put shared-cache memory at twenty runs of twenty with a real
+backoff loop. **The in-memory ruling above was not wrong when it was written**;
+what replaces it is `memdb`, for the reasons in *The test store is `memdb`*, and
+not for that one. Recorded because a reversal resting on a measurement nobody
+took is the exact failure mode `2026-08-06-avoidable-review-cycles.md` names as
+its fifth mechanism.
 
 ## The schema
 
