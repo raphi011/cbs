@@ -448,8 +448,12 @@ func TestCreateParticipantBICIsValidatedAndRendered(t *testing.T) {
 // of the bank's own; how the row came to look like that is not something the
 // handler can see, which is exactly why writing it is honest here.
 //
-// It is also the STUCK bank's state, since the two differ by time and not by
-// state — see Server.reserveRows, which says what that costs and who owns it.
+// It is also the state of the one stuck bank this endpoint cannot see: an
+// acmt.007 that never reached the agent leaves exactly this, permanently, and
+// the difference from the window is time rather than state. It is NOT
+// mesh.Mesh.Admit's "partly admitted bank" — that one had its account opened
+// before the acknowledgement went missing, so the agent holds it and this
+// reports a row for it. See Server.reserveRows, which sets both out.
 func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	h := newServer(t, nil)
 	p := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["EUR","USD"]}`, http.StatusAccepted)
@@ -462,17 +466,30 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 		t.Fatalf("a two-asset member reports %v, want a row per asset", full)
 	}
 
-	// The settlement agent's record, put back as the window between the two
-	// acknowledgements leaves it: euro answered, dollars not.
+	// Both records put back as the window between the two acknowledgements
+	// leaves them: euro answered, dollars not. The agent has opened one account,
+	// and the bank has recorded the reference for that one and holds none for
+	// the other — which is what founding leaves and what the second
+	// acknowledgement would have filled in.
 	if err := h.net.Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		member, err := tx.GetSettlementMember(ctx, "BNKADEFFXXX")
 		if err != nil {
 			return err
 		}
 		member.Accounts = map[ledger.AssetCode]ledger.AccountID{"EUR": member.Accounts["EUR"]}
-		return tx.PutSettlementMember(ctx, member)
+		if err := tx.PutSettlementMember(ctx, member); err != nil {
+			return err
+		}
+		b, err := tx.GetBank(ctx, payment.ParticipantID(pid))
+		if err != nil {
+			return err
+		}
+		usd := b.Assets["USD"]
+		usd.Settlement = ""
+		b.Assets["USD"] = usd
+		return tx.PutBank(ctx, b)
 	}); err != nil {
-		t.Fatalf("rewinding the settlement agent's record: %v", err)
+		t.Fatalf("rewinding to the window between the two acknowledgements: %v", err)
 	}
 
 	// One row, not a refusal — and the bank still says it operates in both,

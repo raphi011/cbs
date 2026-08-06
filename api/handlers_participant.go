@@ -213,10 +213,12 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // asset in it, and that one really is per asset. It is not exotic and it is not
 // broken: one acmt.007 asks for one currency, so a bank joining in euro and
 // dollars has two applications answered in two commits, and between them the
-// agent holds euro and not dollars while the bank's own row says both. A
-// two-asset admission passes through that window every time — measured at 319 of
-// 8000 reads taken during 200 concurrent admissions, with no dead letter and
-// nothing wrong.
+// agent holds euro and not dollars while the bank's own row says both. Every
+// two-asset admission passes through that window. No rate is quoted for it,
+// because a rate here is a fact about when the reads were taken and not about
+// the system — the window is as wide as one unit of work at one actor, and a
+// probe can miss it entirely or find it repeatedly without either result saying
+// anything.
 //
 // Which is why it is skipped rather than surfaced, and the change is deliberate:
 // reporting it turned the LIST route into a 422 for every bank on it because one
@@ -224,20 +226,37 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // endpoint was fixed for. An empty list from a whole route is not a truer answer
 // than a missing row.
 //
-// # What that costs, and who owns it
+// # What that costs, and which stuck bank it is actually about
 //
-// The genuinely stuck case — an admission whose second asset was never
-// acknowledged, mesh.Mesh.Admit's "partly admitted bank", which has no re-drive
-// and is Task 19's — now looks exactly like one still in flight: a missing row.
-// This endpoint cannot tell them apart, because the difference is TIME and not
-// state, and nothing here is watching a clock.
+// One shape becomes indistinguishable from that window, and it is worth naming
+// exactly, because the obvious candidate is NOT it.
 //
-// It is not hidden, though. The bank's own row says which assets it operates in
-// and this says which of them the agent holds an account for, and a console
-// holds both: a bank listing EUR and USD with one reserve row has an admission
-// that has not finished. Task 19's reconciliation is what turns "has not
-// finished" into "will not finish", and that is the shape its sweep is looking
-// for — see payment.RecordMembershipTx.
+// The invisible one is an acmt.007 that never reached the settlement agent — a
+// dead letter on the way out, so no account is opened in that asset and none
+// ever will be. The agent holds a row without the asset, permanently, which is
+// byte-identical to holding one without the asset for another millisecond. The
+// difference is TIME and nothing here watches a clock.
+//
+// mesh.Mesh.Admit's "partly admitted bank" is a DIFFERENT state and this
+// endpoint reports it fully. There the acmt.007 arrived and the acknowledgement
+// went missing, and the agent opens the account before it acknowledges
+// (mesh.centralBank.receiveAdmission), so the agent's row has both assets and
+// this reports two rows — with the second showing a reserve the bank cannot
+// spend, since payment.DepositTx resolves through the BANK's record and that one
+// has no reference. That is precisely what payment.RecordMembershipTx describes:
+// a deposit in that asset fails while the operator console cheerfully reports
+// the reserve. Measured, on a bank admitted in both assets whose own USD
+// reference was then cleared: reserves = [EUR 0, USD 0], status Member, its own
+// row carrying an empty USD settlement account.
+//
+// So the recipe for finding either is not "count the rows against the assets".
+// For the dead-lettered one it is a bank whose own row names an asset with NO
+// settlement reference and which has no reserve row in it; for Admit's it is the
+// same empty reference WITH a reserve row. Both comparisons need the bank's own
+// assets, which GET /members and GET /me carry and which no screen in this
+// repository renders today — so it is two API reads, not something the console
+// shows. Turning either into "will not finish" needs a clock, and that is Task
+// 19's reconciliation rather than this handler's.
 func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {

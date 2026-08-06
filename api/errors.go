@@ -90,24 +90,33 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrSchemeUnsupportedReturn),
 		errors.Is(err, payment.ErrAssetMismatch),
 		// The bank exists and the asset exists; this bank simply holds no
-		// accounts in it. 404 would read as "participant not found" on
-		// POST /participants/{pid}/deposits, which is where it reaches a caller.
-		// 422 matches the sibling underfunded-member failure. It no longer
-		// reaches a settlement route, because there is none: settling is
-		// performed on instruction now (mesh.centralBank), so this error comes
-		// back to the clearing house as a pacs.002 rather than to a caller as a
-		// status code — and it no longer reaches the reserve routes either, which
-		// report a missing account as a missing row (see Server.reserveRows).
+		// accounts in it. 404 would read as "participant not found", and 422
+		// matches the sibling underfunded-member failure.
+		//
+		// Two routes answer with it. POST /participants/{pid}/deposits, where the
+		// funded account is in an asset its bank does not operate in; and
+		// POST /payments, where the scheme's asset is — Mesh.Submit runs the
+		// submitting bank's half on the caller's goroutine, so Bank.AccountsFor's
+		// refusal comes back as a status code rather than as a message. Measured
+		// on a bank admitted in dollars only, paying in a euro scheme: 422,
+		// "participant does not hold accounts in this asset: EUR in Bank A".
+		//
+		// It no longer reaches a settlement route, because there is none:
+		// settling is performed on instruction now (mesh.centralBank), so that
+		// refusal goes back to the clearing house as a pacs.002. And it no longer
+		// reaches the reserve routes, which report a missing account as a missing
+		// row (see Server.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		// A bank the settlement agent holds no account for is a bank that has
 		// founded itself and not yet joined — a legitimate state since admission
 		// became a conversation, and a refusal about that bank's membership
 		// rather than about anything in the request. 422 for the same reason the
 		// asset case above is: the request is well formed and the state refuses
-		// it. Like that one it reaches a caller from
+		// it. Unlike that one it reaches a caller from a single route —
 		// POST /participants/{pid}/deposits, whose customer account is fine and
-		// whose bank has nowhere to place the cash on reserve, and from nowhere
-		// else — the reserve routes report a missing account as a missing row.
+		// whose bank has nowhere to place the cash on reserve — and from nowhere
+		// else: every other site that can raise it is behind a mesh actor, and
+		// the reserve routes report a missing account as a missing row.
 		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),
