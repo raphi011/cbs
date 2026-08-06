@@ -28,12 +28,17 @@
 //
 // # The flows, listed once
 //
-// A push, a pull, a cut-off, a return and an admission — the five sections
-// below, in that order. They are listed here and counted nowhere, because the
-// count is what goes stale: three separate files called admission "the fourth
-// flow" while a fourth called it the clearing house's "fifth job" and a fifth
-// still said this system had four, all of them true when written and none of
-// them together. What each flow IS does not change when another arrives.
+// A push, a pull, a cut-off, a return and an admission — the sections below, in
+// that order. They are listed here and counted nowhere, because the count is
+// what goes stale: five files disagreed about it at once, each of them right
+// when it was written and none of them right together — admission was "the
+// fourth flow" in some and the clearing house's "fifth job" in another, while
+// elsewhere this system still had four flows in total. What each flow IS does
+// not change when another arrives, and how many there are is a fact about the
+// list rather than about any of them.
+//
+// The sentence that replaced those counts carried a tally of its own and got it
+// wrong, which is the same defect one layer up. Hence no number here either.
 //
 // # Bytes, not structs
 //

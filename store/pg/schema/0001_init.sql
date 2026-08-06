@@ -71,9 +71,19 @@ CREATE TABLE books (
 -- payment.admissionSequenceTx, which every admission act that decides from a
 -- read takes before it reads, and which that function documents. The warning
 -- this paragraph replaces is worth keeping in its general form: there is no
--- constraint behind the find-or-create, so any NEW caller of it must draw a
--- network-scoped ID first, and a reader who does not know that will not learn
--- it from this table.
+-- constraint behind the find-or-create, so any NEW caller of it that could reach
+-- it FIRST must draw a network-scoped ID before it does, and a reader who does
+-- not know that will not learn it from this table.
+--
+-- One caller reaches it without drawing one, and the qualifier above is why that
+-- is not a live hole rather than an exception nobody noticed:
+-- payment.DepositTx, through centralBankAssetsAccountTx. It is pre-existing and
+-- it cannot race the creation, because funding a deposit requires a settlement
+-- account, which requires an admission, which built the Central Bank ledger
+-- before any deposit could be made. It would become live the day something
+-- funds a reserve for a bank the settlement agent has never opened an account
+-- for — which the domain refuses — so what protects it is an ordering in the
+-- flows rather than anything in this schema.
 
 -- Also not here: a CHECK on the text columns.
 --
@@ -769,14 +779,18 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
     'an operator re-driving an interrupted admission. A refusal keyed on the '
     'BIC alone would refuse exactly those two and never fire on the impostor '
     'it exists for. '
-    'NOT NULL, and every row a running system writes now carries a real one: '
+    'NOT NULL, and never empty in a row any act writes: payment''s '
+    'AdmitMemberTx refuses an acknowledgement quoting no admission, because "" '
+    'compares equal to every other "" and two institutions on one address '
+    'would then extend a single entry instead of the second being refused. '
     'mesh.Mesh.Admit mints one process id per admission and every message of '
-    'it echoes that value. It can still be empty, and that is honest rather '
-    'than a placeholder — a caller that composes no messages has no process id '
-    'to quote, which is what the seed and the test suites do (see '
-    'store/testenv.Admit). Two such admissions on one address would quote the '
-    'same reference and extend one entry rather than refusing, which is why a '
-    'fixture whose banks settle gives each of them an address of its own.';
+    'it echoes that value; the seed and the test suites compose no messages '
+    'and derive a reference from the BIC instead (see store/testenv.Admit), '
+    'which means two of THEIR admissions on one address share one reference '
+    'and extend one entry — why a fixture whose banks settle gives each of '
+    'them an address of its own. The column stays nullable-free rather than '
+    'CHECK-constrained for accounts.asset''s reason: the rule lives in Go, and '
+    'a constraint here would refuse in Postgres what store/mem accepts.';
 
 -- The assets a member clears in, one row each.
 --

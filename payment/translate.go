@@ -221,12 +221,13 @@ var reasonTable = []reasonMapping{
 	// about which admission — which is a defect in the ROUTING rather than a
 	// judgement the sender can act on, and they take
 	// ErrStatementNotForThisBank's classification for its reason.
-	// ErrAdmittedAccountUnusable is the one of the three a sender COULD act on,
-	// and it is answered by nobody for the same structural reason; the
-	// counterparty that can be told is the applicant, and the applicant is this
-	// bank.
+	// ErrAdmissionNotIdentified and ErrAdmittedAccountUnusable are the two a
+	// sender COULD act on, and they are answered by nobody for the same
+	// structural reason; the counterparty that can be told is the applicant, and
+	// the applicant is this bank.
 	{ErrBICAlreadyAdmitted, "ErrBICAlreadyAdmitted", ""},
 	{ErrBankAlreadyAdmitted, "ErrBankAlreadyAdmitted", ""},
+	{ErrAdmissionNotIdentified, "ErrAdmissionNotIdentified", ""},
 	{ErrAdmittedAccountUnusable, "ErrAdmittedAccountUnusable", ""},
 	{ErrNotThisBanksAdmission, "ErrNotThisBanksAdmission", ""},
 }

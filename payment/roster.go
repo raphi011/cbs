@@ -164,13 +164,21 @@ type RosterEntry struct {
 	// mesh.Mesh.Admit is what mints the value: one process id per admission,
 	// echoed by every message of it.
 	//
-	// It can still be empty, and that is honest rather than a placeholder: a
-	// caller that composes no messages has no process id to quote. Nothing in a
-	// running system is such a caller any more — the seed and the test suites
-	// are, and each of them derives a reference from the BIC instead (see
-	// store/testenv.Admit). Two admissions quoting one reference extend a single
-	// entry rather than refusing, which is why a fixture whose banks settle has
-	// to give each of them an address of its own.
+	// It cannot be EMPTY, and that is a refusal rather than a convention.
+	// AdmitMemberTx will not write an entry from an acknowledgement quoting no
+	// admission (checkAcknowledgement, ErrAdmissionNotIdentified), because ""
+	// compares equal to every other "": two institutions on one address both
+	// quoting nothing would extend one entry instead of the second being
+	// refused, which is the one case this field exists to catch. The bank's own
+	// Bank.AdmissionRef is the same value guarded the same way for the same
+	// reason, from the other end.
+	//
+	// So every caller supplies one. mesh.Mesh.Admit mints a process id per
+	// admission; the seed and the test suites compose no messages and have no
+	// process to name, so they derive a reference from the BIC (see
+	// store/testenv.Admit) — which also means two of THEIR admissions on one
+	// address quote one reference and extend a single entry, which is why a
+	// fixture whose banks settle gives each of them an address of its own.
 	AdmissionRef string
 
 	// AdmittedAt is when the scheme admitted this bank, which is when this row

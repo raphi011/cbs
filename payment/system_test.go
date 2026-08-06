@@ -1674,6 +1674,94 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	assertEqual(t, "the admission after the refusal", after.AdmissionRef, "adm-1")
 }
 
+// TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs is the guard on the
+// value that BOTH admission guards are made of, and the one whose absence
+// reopened the hole Bank.AdmissionRef was added to close.
+//
+// # "" is a sentinel on this side of the wire, not a value
+//
+// An empty Bank.AdmissionRef means "this bank has accepted nothing yet", which
+// is what lets a founded bank take the first acknowledgement that names it and
+// an operator re-drive under a fresh process id. An empty
+// RosterEntry.AdmissionRef compares equal to any other empty one. So an
+// acknowledgement carrying no reference does not merely fail to identify itself:
+// it defeats both guards, from opposite ends.
+//
+// Measured on the acts, with the four lines this test exists for removed:
+//
+//	PROBE1 after an ack with no ref: err=<nil> status="Member" ref="" settlement="200.100.001"
+//	PROBE2 forged ack err=<nil> -> settlement="acc_bogus" ref="someone-elses-admission"
+//	PROBE3 second institution quoting an empty ref on the same BIC: err=<nil>
+//
+// The first line is the reset — a Member indistinguishable from a bank that has
+// accepted nothing — and the second is the overwrite it reopens, which is
+// exactly what TestABankRefusesAnAcknowledgementOfAnotherAdmission stops when
+// the reference is real. The third is the same hole seen by the clearing house:
+// two institutions on one BIC, both quoting nothing, comparing equal.
+//
+// # Why the reader is not enough
+//
+// ReadAdmissionAcknowledgement refuses an empty Refs/PrcId/Id on the way in from
+// the wire, so none of this is reachable through a message. The acts are
+// separately callable — which is this file's own premise for testing them at all
+// — so a reader's guard that is the only line is not defence in depth. Same
+// reachability profile as the currency hole beside it, and the same fix.
+func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+
+	var bank *Bank
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+		return err
+	})
+
+	noRef := AdmissionAcknowledgement{
+		BIC:      testBIC,
+		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
+	}
+
+	// The BANK. A membership recorded under no admission is a Member whose row
+	// reads as "accepted nothing", which is the reset.
+	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, noRef)
+		return err
+	})
+	if !errors.Is(err, ErrAdmissionNotIdentified) {
+		t.Errorf("the bank recorded a membership under no admission: %v, want ErrAdmissionNotIdentified", err)
+	}
+	got := mustGetBank(t, ctx, sys, bank.ID)
+	if got.Status == BankMember && got.AdmissionRef == "" {
+		t.Error("the bank is a Member with no reference; its own guard reads that as having accepted nothing")
+	}
+
+	// The CLEARING HOUSE. Two institutions on one address, both quoting nothing,
+	// compare equal — so the refusal that row exists for never fires.
+	err = sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		_, err := sys.AdmitMemberTx(ctx, tx, noRef)
+		return err
+	})
+	if !errors.Is(err, ErrAdmissionNotIdentified) {
+		t.Errorf("the clearing house admitted a member under no admission: %v, want ErrAdmissionNotIdentified", err)
+	}
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+		if _, err := tx.GetRosterEntry(ctx, testBIC); !errors.Is(err, ErrRosterEntryNotFound) {
+			t.Errorf("an acknowledgement quoting no admission put %s in the roster: %v", testBIC, err)
+		}
+		return nil
+	}))
+
+	// And a real one still works, which is what says the guard refuses the
+	// SENTINEL rather than the field.
+	real := noRef
+	real.Ref = "adm-1"
+	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+		_, err := sys.RecordMembershipTx(ctx, tx, bank.ID, real)
+		return err
+	})
+	assertEqual(t, "the admission the bank recorded", mustGetBank(t, ctx, sys, bank.ID).AdmissionRef, "adm-1")
+}
+
 // TestAnAcknowledgementNamingNoAssetIsRefusedByBothActs is the doubling of the
 // currency guard.
 //

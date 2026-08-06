@@ -226,8 +226,7 @@ type Bank struct {
 	// The argument this replaces said a bank has no contender, because the
 	// acknowledgement has already been checked to name this bank's own BIC. That
 	// check answers WHICH BANK and not WHICH ADMISSION, and RosterEntry.AdmissionRef
-	// exists three hundred lines up precisely because two admissions can quote
-	// one BIC.
+	// exists, in roster.go, precisely because two admissions can quote one BIC.
 	//
 	// # It is not a duplicate of the roster's
 	//

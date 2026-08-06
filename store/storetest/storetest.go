@@ -1712,9 +1712,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// counter is locked until the transaction ends, so the second caller
 		// blocks there and, when it gets through, either sees the first
 		// caller's committed row or finds the first rolled back and the id with
-		// it. The same serialization each of payment's admission acts relies on
-		// — see payment.admissionSequenceTx, which draws an id for the lock and
-		// throws the number away.
+		// it. The same serialization every admission act that decides from a READ
+		// relies on — see payment.admissionSequenceTx, which draws an id for the
+		// lock and throws the number away. FoundBankTx is the one that does not
+		// call it, and does not need to: it allocates the bank's own id before it
+		// touches anything, which is this same ordering under a different name.
 		//
 		// The claim is exactly that and no wider. It does NOT say a store makes
 		// read-then-write atomic on its own; it says this ORDERING admits one

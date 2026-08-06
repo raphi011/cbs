@@ -153,19 +153,40 @@ var (
 	// an operator re-drive an interrupted admission under a new process id.
 	ErrBankAlreadyAdmitted = errors.New("payment: this bank recorded its membership under another admission")
 
+	// ErrAdmissionNotIdentified is an acknowledgement quoting no admission.
+	//
+	// Refs/PrcId is the conversation's only correlator, and on this side of the
+	// wire "" is not a value but a SENTINEL: an empty Bank.AdmissionRef means
+	// "this bank has accepted nothing yet", and an empty RosterEntry.AdmissionRef
+	// would compare equal to any other empty one. So an acknowledgement carrying
+	// none defeats both admission guards at once — measured, on the acts:
+	//
+	//   - the bank records a membership with no reference, and the NEXT
+	//     acknowledgement, from any admission at all, moves its settlement
+	//     reference. That is the overwrite ErrBankAlreadyAdmitted exists to stop,
+	//     reopened through the guard's own empty case.
+	//   - two institutions on one BIC both quoting "" compare equal, so
+	//     AdmitMemberTx extends the first's entry instead of refusing the second.
+	//
+	// ReadAdmissionAcknowledgement refuses it on the way in from the wire and
+	// checkAcknowledgement refuses it in the acts, which are separately callable.
+	ErrAdmissionNotIdentified = errors.New("payment: this acknowledgement quotes no admission")
+
 	// ErrAdmittedAccountUnusable is an acknowledgement carrying an account this
-	// system cannot file: one naming no asset, or no account.
+	// system cannot file: one naming no asset, or an asset naming no account.
 	//
 	// The asset is what decides which of a bank's internal account sets a
 	// settlement reference belongs to and which schemes a member clears in, so an
 	// account with none would be filed under the empty asset by both readers — a
-	// reserve nothing settles through and a reference nothing quotes.
+	// reserve nothing settles through and a reference nothing quotes. An account
+	// identifier that is empty is the same hole from the other end: a settlement
+	// reference nothing can post to.
 	//
 	// ReadAdmissionAcknowledgement refuses both on the way in from the wire. This
 	// is the same refusal in the acts, so that the reader's is defence in depth
 	// rather than the only line — the rule Task 16e arrived at for ReadReturn and
 	// SettleReturnTx after an implementer found the hole outside its brief.
-	ErrAdmittedAccountUnusable = errors.New("payment: this acknowledgement carries an account that names no asset")
+	ErrAdmittedAccountUnusable = errors.New("payment: this acknowledgement carries an account this system cannot file")
 
 	// ErrNotThisBanksAdmission is a bank recording an acknowledgement addressed
 	// to another bank's BIC.
