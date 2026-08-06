@@ -23,30 +23,44 @@
 // anywhere in this repository except the one written for it — see
 // TestForeignKeysAreEnforced.
 //
-// # There is no memory database, and that reverses a design ruling
+// # The ephemeral database is memdb, not shared cache
 //
-// The spec for this sub-project says tests use
-// file:<unique>?mode=memory&cache=shared rather than a bare ":memory:", and the
-// argument it gives is right as far as it goes: ":memory:" hands every pooled
-// connection a database of its own, which presents as a store that forgets
-// writes at random rather than as an error.
+// An empty path means memory, which is the spec's intent, but not by the
+// mechanism the spec names. It says file:<unique>?mode=memory&cache=shared, and
+// the argument it gives against a bare ":memory:" is right: ":memory:" hands
+// every pooled connection a database of its own, which presents as a store that
+// forgets writes at random rather than as an error.
 //
-// What it does not account for is that shared-cache mode has locking semantics
-// of its OWN. Connections in a shared cache take table-level locks, and two
-// transactions that each hold a read on one table and then try to write it do
-// not produce a winner and a loser — they produce SQLITE_LOCKED for both, and
-// retrying re-collides. Measured on two racers reading and then writing one row:
-// under shared-cache memory BOTH exhausted every attempt, with and without
-// backoff, and the row still held its opening value. The same shape on a file
-// under WAL resolves the way store/mem and store/pg resolve it — one winner, and
-// the loser's retry reads the winner's write and gets the DOMAIN's refusal.
+// Shared cache fixes that and brings a locking model of its own. Connections in
+// a shared cache take TABLE-level locks that are held until the transaction
+// ends, so a read-then-write pair returns SQLITE_LOCKED rather than SQLITE_BUSY.
+// Two things follow and the second is disqualifying:
 //
-// So the store is always a file, and an empty path is a temporary one removed
-// when the store closes. The property store/mem existed for — a fresh checkout
-// needs no setup — is kept, because a temp file needs no setup either. What is
-// gained is that the configuration under test is the configuration that runs:
-// one journal mode, one set of locking rules, no second concurrency model
-// reachable only from the tests.
+//   - The code differs from the file-backed path's, so one retry classification
+//     would have to know which mechanism it is running on.
+//   - modernc does not return that code to the caller. It diverts into
+//     sqlite3_unlock_notify and waits on a mutex with no deadline and no
+//     context (conn.retry, conn.go:435-455 in v1.56.0) — read, not measured
+//     here, but there is nothing in that function to end the wait if the
+//     blocking transaction stays open. A suite that holds transactions open at
+//     a barrier is the shape that would find out. SQLite's own documentation
+//     calls shared-cache mode obsolete and names WAL as the replacement.
+//
+// memdb is the in-memory VFS that shares one database between connections
+// without any of that: the name must begin with "/", the locking is the ordinary
+// kind, and a loser gets SQLITE_BUSY exactly as it would on a file — so one
+// classification covers both. Twenty runs of the read-then-write race on memdb
+// and twenty of the slow-writer race on a WAL file both give one winner and a
+// loser that reaches the domain's own refusal.
+//
+// Two obligations come with it, both measured rather than assumed: the database
+// is destroyed when its LAST connection closes, so the store holds one for its
+// lifetime; and the name is process-wide, so it is random per store or two
+// stores would share rows.
+//
+// A named path is an ordinary file under WAL, which no in-memory database can
+// be — journal_mode on any of them is pinned to MEMORY or OFF and an attempt to
+// set WAL is ignored without an error.
 //
 // # Update retries with backoff
 //
@@ -58,11 +72,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -93,8 +106,34 @@ var ErrNestedTransaction = errors.New("sqlite: a unit of work is already open on
 // still be driven from one context — only re-entering the same store is refused.
 type inUnitOfWork struct{}
 
-// maxAttempts bounds Update's retry loop. See isTransient.
-const maxAttempts = 5
+// maxAttempts and backoffBase bound Update's retry loop, and between them they
+// set the RETRY BUDGET: the longest a losing unit of work will keep trying
+// before it gives up and returns the lock error to the caller.
+//
+// The budget has to exceed the longest write transaction the system runs, and
+// that is not a tuning preference. It is a FILE's problem rather than an
+// ephemeral store's, and the difference is worth knowing: on memdb a retry's
+// SELECT blocks until the winner commits, so the loser reaches the domain guard
+// however small the budget is. Under WAL a reader does not block on a writer, so
+// the retry re-reads the value the winner has not committed yet, passes the
+// domain's check on stale data, and fails at the write again — converging only
+// once an attempt starts AFTER the commit.
+//
+// Measured on a file, with a writer holding its lock for 120ms: at the previous
+// budget of five attempts from a 1ms window the loser exhausted every attempt
+// and surfaced SQLITE_BUSY, three runs out of three. At the budget below it
+// reaches the domain's refusal, twenty runs out of twenty.
+// TestTheRetryBudgetOutlastsASlowWriter is that case, and it opens a file for
+// exactly this reason.
+//
+// So: ten attempts over a doubling window from 2ms is a worst case near two
+// seconds and an expected wait near one, against a busy_timeout of five. That is
+// generous for the transactions this system runs today and cheap when nothing
+// contends, because a unit of work that does not lose never waits at all.
+const (
+	maxAttempts = 10
+	backoffBase = 2 * time.Millisecond
+)
 
 // maxOpenConns is how many connections a CALLER may hold at once.
 //
@@ -114,44 +153,50 @@ type Store struct {
 	db    *sql.DB
 	clock func() time.Time
 
-	// ephemeral is the directory holding a temporary database, removed by Close.
-	// It is empty for a store the caller named a path for, whose file is the
-	// caller's to keep.
-	ephemeral string
+	// keep is one connection held for an ephemeral store's lifetime. A memdb
+	// database is destroyed when its last connection closes, and database/sql
+	// retires idle connections when it likes, so without this a store loses
+	// everything between two calls with nothing in either error to say so. It is
+	// nil for a file, which has nothing to lose.
+	keep *sql.Conn
 }
 
 // Open opens the database at path, applies the embedded migrations and returns a
 // store reading time from clock.
 //
-// An empty path means a temporary database, in a directory of its own, removed
-// when the store closes. Two stores opened with an empty path never see each
-// other's rows. That is what a test suite wants and it is what `cmd/server` with
-// no -database means: ephemeral, and needing no setup, which is the property
-// store/mem existed for.
+// An empty path means an ephemeral in-memory database of its own: the name is
+// random, so two stores opened with an empty path never see each other's rows.
+// That is what a test suite wants and it is what `cmd/server` with no -database
+// means — ephemeral, and needing no setup, which is the property store/mem
+// existed for.
 func Open(ctx context.Context, path string, clock func() time.Time) (*Store, error) {
-	s := &Store{clock: clock}
+	dsn, ephemeral := dsn(path)
 
-	if path == "" {
-		dir, err := os.MkdirTemp("", "cbs-sqlite-")
-		if err != nil {
-			return nil, fmt.Errorf("sqlite: temporary database: %w", err)
-		}
-		s.ephemeral = dir
-		path = filepath.Join(dir, "cbs.db")
-	}
-
-	db, err := sql.Open("sqlite", dsn(path))
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		s.removeEphemeral()
 		return nil, fmt.Errorf("sqlite: open: %w", err)
 	}
-	db.SetMaxOpenConns(maxOpenConns)
-	db.SetMaxIdleConns(maxOpenConns)
+	limit := maxOpenConns
+	if ephemeral {
+		limit++ // the retained connection, which never returns to the pool
+	}
+	db.SetMaxOpenConns(limit)
+	db.SetMaxIdleConns(limit)
 	// Never retire a connection: reopening one costs a fresh set of pragmas for
-	// nothing.
+	// nothing, and retiring the last one destroys an ephemeral database.
 	db.SetConnMaxLifetime(0)
 	db.SetConnMaxIdleTime(0)
-	s.db = db
+
+	s := &Store{db: db, clock: clock}
+
+	if ephemeral {
+		conn, err := db.Conn(ctx)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("sqlite: retain connection: %w", err)
+		}
+		s.keep = conn
+	}
 
 	if err := db.PingContext(ctx); err != nil {
 		_ = s.Close()
@@ -165,30 +210,36 @@ func Open(ctx context.Context, path string, clock func() time.Time) (*Store, err
 }
 
 // dsn builds the connection string, and every setting the store depends on is in
-// it rather than issued afterwards.
-func dsn(path string) string {
+// it rather than issued afterwards. It reports whether the database is
+// ephemeral.
+func dsn(path string) (string, bool) {
 	pragmas := []string{
 		// SQLite ignores REFERENCES without this, per connection, silently.
 		"_pragma=foreign_keys(1)",
-		// Wait rather than fail when another connection holds the write lock and
-		// can still make progress. It does NOT cover a transaction that holds a
-		// read and needs to upgrade — see isTransient.
+		// Wait rather than fail when another connection holds a lock it will
+		// release. It does NOT cover a transaction that holds a read and needs to
+		// upgrade — see isTransient.
 		"_pragma=busy_timeout(5000)",
-		// Readers run while a writer holds the lock, and the locking rules are
-		// the ones the races were measured against.
-		"_pragma=journal_mode(WAL)",
 	}
-	return "file:" + url.PathEscape(path) + "?" + strings.Join(pragmas, "&")
-}
 
-// removeEphemeral deletes a temporary database's directory, if this store owns
-// one. The WAL and shared-memory files sit beside the database, which is why a
-// directory is removed rather than a file.
-func (s *Store) removeEphemeral() {
-	if s.ephemeral != "" {
-		_ = os.RemoveAll(s.ephemeral)
-		s.ephemeral = ""
+	if path == "" {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			panic("sqlite: " + err.Error())
+		}
+		// The leading slash is what makes the name shared between this pool's
+		// connections rather than private to each; without it every connection
+		// gets a database of its own, which is the ":memory:" failure again under
+		// another name. Random, because the name is process-wide.
+		name := "/cbs_" + hex.EncodeToString(b[:])
+		return "file:" + name + "?vfs=memdb&" + strings.Join(pragmas, "&"), true
 	}
+
+	// Readers run while a writer holds the lock. Only a file can be WAL: an
+	// in-memory database's journal_mode is pinned to MEMORY or OFF and a request
+	// for WAL is ignored without an error.
+	pragmas = append(pragmas, "_pragma=journal_mode(WAL)")
+	return "file:" + url.PathEscape(path) + "?" + strings.Join(pragmas, "&"), false
 }
 
 // inUpdate runs fn in one atomic unit of work: BEGIN, fn, COMMIT, or ROLLBACK if
@@ -228,20 +279,20 @@ func (s *Store) inUpdate(ctx context.Context, fn func(context.Context, *sql.Tx) 
 // immediately, so five undelayed attempts all finish inside the winner's commit
 // window and the loser exhausts them without ever seeing the winner's write.
 //
-// Measured, before this existed, on two racers reading and then writing one row:
-// shared-cache memory livelocked BOTH racers — every attempt of both read the
-// stale value and failed, and the balance was still the opening one; a WAL file
-// let one racer through on its first attempt while the other spent all five and
-// ended holding SQLITE_BUSY. In every configuration the loser's error was a lock
-// error and not the domain's refusal, which is the outcome the retry exists to
-// prevent.
+// The delay is what a file needs. Measured on two racers reading and then
+// writing one row under WAL: with the sleep removed one racer won on its first
+// attempt and the other spent every attempt and ended holding SQLITE_BUSY, so
+// the loser's error was a lock error and not the domain's refusal. On the
+// ephemeral store the same removal changes nothing, because there the retry's
+// read blocks until the winner commits — five runs, no failures. See maxAttempts
+// for why the SIZE of the budget matters as much as its existence.
 //
 // The jitter is not decoration either. Symmetric racers that back off by the
 // same amount re-collide on the same schedule, which is the livelock again one
 // step slower. Each waiter needs its own delay, so the wait is a random point in
 // a doubling window rather than the window's width.
 func backoff(ctx context.Context, attempt int) error {
-	window := time.Millisecond << (attempt - 1)
+	window := backoffBase << (attempt - 1)
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic("sqlite: " + err.Error())
@@ -303,19 +354,22 @@ func (s *Store) checkNotNested(ctx context.Context) error {
 	return nil
 }
 
-// Close releases the pool and, for a store opened with no path, removes the
-// temporary database with it: a closed ephemeral store's rows are not something
-// a later store should find.
+// Close releases the retained connection and the pool. An ephemeral database
+// goes with them, which is the point: a closed store's rows are not something a
+// later store should find.
 //
 // It is idempotent, because store/testenv closes a store the suite it hands it
 // to also closes.
 func (s *Store) Close() error {
+	if s.keep != nil {
+		_ = s.keep.Close()
+		s.keep = nil
+	}
 	var err error
 	if s.db != nil {
 		err = s.db.Close()
 		s.db = nil
 	}
-	s.removeEphemeral()
 	return err
 }
 

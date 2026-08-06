@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -197,12 +198,16 @@ func TestNestedUnitOfWorkIsRefused(t *testing.T) {
 // A read-then-write race is refused by the domain's own guard, not by a lock
 // error, because Update retries the unit of work.
 //
-// This is the case the spec got wrong twice over. busy_timeout does not cover a
-// transaction that holds a read and needs to upgrade — it cannot succeed by
-// waiting — so the loser gets SQLITE_BUSY where store/mem and store/pg both
-// return the domain's refusal. And retrying without a delay does not fix it:
-// five undelayed attempts finish inside the winner's commit window, so the loser
-// re-reads the stale value every time and exhausts them. See backoff.
+// This is the case the spec got wrong. busy_timeout does not cover a transaction
+// that holds a read and needs to upgrade — it cannot succeed by waiting — so
+// without a retry the loser gets SQLITE_BUSY where store/mem and store/pg both
+// return the domain's refusal. With isTransient stubbed to false this fails five
+// runs out of five.
+//
+// What it pins is the retry, not its BACKOFF: on the ephemeral store a retry's
+// read blocks until the winner commits, so removing the delay changes nothing
+// here (measured, five runs, no failures). The delay is pinned by
+// TestTheRetryBudgetOutlastsASlowWriter, which opens a file for that reason.
 //
 // What the retry buys is the LOSER'S REASON. The winner count is right either
 // way, which is precisely why this needs its own test: storetest's
@@ -268,6 +273,113 @@ func TestUpdateRetriesUntilTheDomainGuardDecides(t *testing.T) {
 		case errors.Is(err, errInsufficient):
 		default:
 			t.Errorf("racer %d lost for the wrong reason: %v — the retry did not reach the domain guard", i, err)
+		}
+	}
+	if winners != 1 {
+		t.Errorf("winners = %d, want exactly 1", winners)
+	}
+
+	var bal int
+	if err := s.db.QueryRowContext(ctx, "SELECT bal FROM acct WHERE id = 'a'").Scan(&bal); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if bal != 400 {
+		t.Errorf("balance = %d, want 400", bal)
+	}
+}
+
+// The retry budget outlasts a slow writer.
+//
+// The case above races two units of work that both commit at once, which the
+// budget covers however small it is. This one makes the winner HOLD its write
+// lock well past the old budget before committing, which is the shape that
+// exposed the size as load-bearing rather than arbitrary.
+//
+// Why holding matters: a reader does not block on a writer, so a retry that
+// starts before the winner commits re-reads the stale value, passes the domain's
+// check on it, and fails at the write again. The loop converges only once an
+// attempt begins AFTER the commit. With the previous budget of about 15ms and a
+// 20ms hold, the loser exhausted every attempt and surfaced SQLITE_BUSY —
+// twenty runs out of twenty — where what the caller was owed is the domain's
+// refusal.
+//
+// It runs against a FILE and not against the ephemeral store, and that is the
+// point rather than an accident. On memdb the retry's SELECT blocks until the
+// winner commits, so the loser reaches the domain guard whatever the budget is
+// and this case cannot fail — measured: it passes on memdb with the old budget.
+// Only WAL lets a reader past an uncommitted writer, so only a file can show
+// whether the budget is big enough.
+//
+// The hold is far longer than any single statement here and far shorter than the
+// budget, so this fails if the budget is cut and passes if it is kept.
+func TestTheRetryBudgetOutlastsASlowWriter(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, filepath.Join(t.TempDir(), "budget.db"), frozen)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+
+	if _, err := s.db.ExecContext(ctx, `
+		CREATE TABLE acct (id TEXT PRIMARY KEY, bal INTEGER NOT NULL) STRICT;
+		INSERT INTO acct VALUES ('a', 1000);`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	errInsufficient := errors.New("insufficient balance")
+	const hold = 120 * time.Millisecond
+
+	const n = 2
+	var opened sync.WaitGroup
+	opened.Add(n)
+	release := make(chan struct{})
+	errs := make([]error, n)
+	var done sync.WaitGroup
+
+	for i := range n {
+		done.Add(1)
+		go func() {
+			defer done.Done()
+			first := true
+			errs[i] = s.inUpdate(ctx, func(ctx context.Context, tx *sql.Tx) error {
+				var bal int
+				if err := tx.QueryRowContext(ctx, "SELECT bal FROM acct WHERE id = 'a'").Scan(&bal); err != nil {
+					return err
+				}
+				if first {
+					first = false
+					opened.Done()
+					<-release
+				}
+				if bal < 600 {
+					return errInsufficient
+				}
+				if _, err := tx.ExecContext(ctx, "UPDATE acct SET bal = bal - 600 WHERE id = 'a'"); err != nil {
+					return err
+				}
+				// Whoever got the write lock keeps it, so the loser's early
+				// retries all read a value that has not been committed yet.
+				time.Sleep(hold)
+				return nil
+			})
+		}()
+	}
+	opened.Wait()
+	close(release)
+	done.Wait()
+
+	winners := 0
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			winners++
+		case errors.Is(err, errInsufficient):
+		default:
+			t.Errorf("racer %d lost for the wrong reason: %v — the retry budget is shorter than the writer it has to outlast", i, err)
 		}
 	}
 	if winners != 1 {
