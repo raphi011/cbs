@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -516,14 +517,114 @@ func (t *tx) ListRosterEntries(ctx context.Context) ([]payment.RosterEntry, erro
 // Payments
 // ---------------------------------------------------------------------------
 
-const paymentColumns = `id, scheme,
+// A payment row is not the same set of columns in every shape, and it is the one
+// place in this store where two schemas hold one table differently.
+//
+// The bank keeps the LEGS — what it posted in its own book — and no cycle id,
+// because a bank never sees a cut-off. The clearing house keeps the CYCLE id and
+// no legs, because it posts nothing and holds no book of accounts. Each argument
+// is written out inside the payments statement of the schema it belongs to; what
+// is here is the mechanism that keeps the Go side agreeing with both.
+//
+// The column list, the bound values and the scan targets are built from one
+// description in the same order, rather than being three parallel literals a
+// reader has to line up by eye. Three literals is what this was, and a column
+// added to the middle of one of them is a silently transposed row.
+const paymentSharedColumns = `id, scheme,
 	debtor_account, debtor_identifier_scheme, debtor_identifier_value,
 	creditor_account, creditor_identifier_scheme, creditor_identifier_value,
 	debtor_agent, debtor_name, creditor_agent, creditor_name,
-	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code, cycle_id,
-	booking_date, value_date, description, metadata, created_at,
-	debtor_leg_tx, creditor_leg_tx, creditor_leg_account,
+	amount, mandate_id, end_to_end_id, status, reject_reason, reject_code,
+	booking_date, value_date, description, metadata, created_at`
+
+// The two per-shape tails. They go at the END of the list so that the shared
+// prefix's positions never move.
+const (
+	paymentLegColumns = `debtor_leg_tx, creditor_leg_tx, creditor_leg_account,
 	return_clawback_tx, return_refund_tx`
+	paymentCycleColumn = `cycle_id`
+)
+
+// paymentColumns is the column list for this store's shape, in the order the
+// values and the scan targets below use.
+func (t *tx) paymentColumns() string {
+	cols := paymentSharedColumns
+	if t.store.shape.paymentLegs {
+		cols += ", " + paymentLegColumns
+	}
+	if t.store.shape.paymentCycle {
+		cols += ", " + paymentCycleColumn
+	}
+	return cols
+}
+
+// paymentValues is the bound values for this store's shape, in paymentColumns'
+// order.
+func (t *tx) paymentValues(p payment.Payment, metadata any) []any {
+	vals := []any{
+		string(p.ID), string(p.Scheme),
+		string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
+		string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
+		string(p.DebtorDetails.Agent), p.DebtorDetails.Name, string(p.CreditorDetails.Agent), p.CreditorDetails.Name,
+		int64(p.Amount), string(p.MandateID), p.EndToEndID, int64(p.Status), p.RejectReason, string(p.RejectCode),
+		nullTime{p.BookingDate}, nullTime{p.ValueDate}, p.Description, metadata, nullTime{p.CreatedAt},
+	}
+	if t.store.shape.paymentLegs {
+		vals = append(vals,
+			string(p.DebtorLegTx), string(p.CreditorLegTx), string(p.CreditorLegAccount),
+			string(p.ReturnClawbackTx), string(p.ReturnRefundTx))
+	}
+	if t.store.shape.paymentCycle {
+		vals = append(vals, string(p.CycleID))
+	}
+	return vals
+}
+
+// paymentTargets is the scan targets for this store's shape, in the same order.
+//
+// A field this shape has no column for is left at its zero value, and that is
+// the point rather than data loss: a bank's copy of a payment HAS no cycle, so
+// reading one back with an empty CycleID is the truth about that row. Anything
+// above the store that needed the other institution's half has to ask for it,
+// which in this system means a message.
+func (t *tx) paymentTargets(p *payment.Payment, status *int64, booking, value, createdAt *nullTime, metadata *[]byte) []any {
+	targets := []any{
+		&p.ID, &p.Scheme,
+		&p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
+		&p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
+		&p.DebtorDetails.Agent, &p.DebtorDetails.Name, &p.CreditorDetails.Agent, &p.CreditorDetails.Name,
+		&p.Amount, &p.MandateID, &p.EndToEndID, status, &p.RejectReason, &p.RejectCode,
+		booking, value, &p.Description, metadata, createdAt,
+	}
+	if t.store.shape.paymentLegs {
+		targets = append(targets,
+			&p.DebtorLegTx, &p.CreditorLegTx, &p.CreditorLegAccount,
+			&p.ReturnClawbackTx, &p.ReturnRefundTx)
+	}
+	if t.store.shape.paymentCycle {
+		targets = append(targets, &p.CycleID)
+	}
+	return targets
+}
+
+// upsertSet is the ON CONFLICT assignment list for a column list: every column
+// but the primary key, set from EXCLUDED.
+func upsertSet(columns string, pk string) string {
+	var b strings.Builder
+	for _, c := range strings.Split(columns, ",") {
+		c = strings.TrimSpace(c)
+		if c == "" || c == pk {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(c)
+		b.WriteString(" = EXCLUDED.")
+		b.WriteString(c)
+	}
+	return b.String()
+}
 
 func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	if err := t.inShape("payments"); err != nil {
@@ -536,74 +637,33 @@ func (t *tx) PutPayment(ctx context.Context, p payment.Payment) error {
 	if err != nil {
 		return fmt.Errorf("sqlite: put payment %s: %w", p.ID, err)
 	}
+	cols := t.paymentColumns()
+	vals := t.paymentValues(p, metadata)
 	_, err = t.tx.ExecContext(ctx, `
-		INSERT INTO payments (`+paymentColumns+`, seq)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("payments")+`)
-		ON CONFLICT (id) DO UPDATE SET
-			scheme                     = EXCLUDED.scheme,
-			debtor_account             = EXCLUDED.debtor_account,
-			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
-			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
-			creditor_account           = EXCLUDED.creditor_account,
-			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
-			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
-			debtor_agent               = EXCLUDED.debtor_agent,
-			debtor_name                = EXCLUDED.debtor_name,
-			creditor_agent             = EXCLUDED.creditor_agent,
-			creditor_name              = EXCLUDED.creditor_name,
-			amount                     = EXCLUDED.amount,
-			mandate_id                 = EXCLUDED.mandate_id,
-			end_to_end_id              = EXCLUDED.end_to_end_id,
-			status                     = EXCLUDED.status,
-			reject_reason              = EXCLUDED.reject_reason,
-			reject_code                = EXCLUDED.reject_code,
-			cycle_id                   = EXCLUDED.cycle_id,
-			booking_date               = EXCLUDED.booking_date,
-			value_date                 = EXCLUDED.value_date,
-			description                = EXCLUDED.description,
-			metadata                   = EXCLUDED.metadata,
-			created_at                 = EXCLUDED.created_at,
-			debtor_leg_tx              = EXCLUDED.debtor_leg_tx,
-			creditor_leg_tx            = EXCLUDED.creditor_leg_tx,
-			creditor_leg_account       = EXCLUDED.creditor_leg_account,
-			return_clawback_tx         = EXCLUDED.return_clawback_tx,
-			return_refund_tx           = EXCLUDED.return_refund_tx`,
-		string(p.ID), string(p.Scheme),
-		string(p.Debtor.Account), string(p.Debtor.Identifier.Scheme), p.Debtor.Identifier.Value,
-		string(p.Creditor.Account), string(p.Creditor.Identifier.Scheme), p.Creditor.Identifier.Value,
-		string(p.DebtorDetails.Agent), p.DebtorDetails.Name, string(p.CreditorDetails.Agent), p.CreditorDetails.Name,
-		int64(p.Amount), string(p.MandateID), p.EndToEndID, int64(p.Status), p.RejectReason, string(p.RejectCode), string(p.CycleID),
-		nullTime{p.BookingDate}, nullTime{p.ValueDate}, p.Description, metadata, nullTime{p.CreatedAt},
-		string(p.DebtorLegTx), string(p.CreditorLegTx), string(p.CreditorLegAccount),
-		string(p.ReturnClawbackTx), string(p.ReturnRefundTx))
+		INSERT INTO payments (`+cols+`, seq)
+		VALUES (`+placeholders(len(vals))+`, `+nextRowSeq("payments")+`)
+		ON CONFLICT (id) DO UPDATE SET `+upsertSet(cols, "id"), vals...)
 	if err != nil {
 		return fmt.Errorf("sqlite: put payment %s: %w", p.ID, err)
 	}
 	return nil
 }
 
-func scanPayment(row interface{ Scan(...any) error }) (payment.Payment, error) {
+func (t *tx) scanPayment(row interface{ Scan(...any) error }) (payment.Payment, error) {
 	var (
 		p                         payment.Payment
 		status                    int64
 		booking, value, createdAt nullTime
 		metadata                  []byte
 	)
-	err := row.Scan(&p.ID, &p.Scheme,
-		&p.Debtor.Account, &p.Debtor.Identifier.Scheme, &p.Debtor.Identifier.Value,
-		&p.Creditor.Account, &p.Creditor.Identifier.Scheme, &p.Creditor.Identifier.Value,
-		&p.DebtorDetails.Agent, &p.DebtorDetails.Name, &p.CreditorDetails.Agent, &p.CreditorDetails.Name,
-		&p.Amount, &p.MandateID, &p.EndToEndID, &status, &p.RejectReason, &p.RejectCode, &p.CycleID,
-		&booking, &value, &p.Description, &metadata, &createdAt,
-		&p.DebtorLegTx, &p.CreditorLegTx, &p.CreditorLegAccount,
-		&p.ReturnClawbackTx, &p.ReturnRefundTx)
-	if err != nil {
+	if err := row.Scan(t.paymentTargets(&p, &status, &booking, &value, &createdAt, &metadata)...); err != nil {
 		return payment.Payment{}, err
 	}
 	p.Status = payment.PaymentStatus(status)
 	p.BookingDate = booking.Time
 	p.ValueDate = value.Time
 	p.CreatedAt = createdAt.Time
+	var err error
 	if p.Metadata, err = unmarshalStringMap(metadata); err != nil {
 		return payment.Payment{}, err
 	}
@@ -614,8 +674,8 @@ func (t *tx) GetPayment(ctx context.Context, id payment.PaymentID) (payment.Paym
 	if err := t.inShape("payments"); err != nil {
 		return payment.Payment{}, err
 	}
-	p, err := scanPayment(t.tx.QueryRowContext(ctx,
-		"SELECT "+paymentColumns+" FROM payments WHERE id = ?", string(id)))
+	p, err := t.scanPayment(t.tx.QueryRowContext(ctx,
+		"SELECT "+t.paymentColumns()+" FROM payments WHERE id = ?", string(id)))
 	if errors.Is(err, sql.ErrNoRows) {
 		return payment.Payment{}, payment.ErrPaymentNotFound
 	}
@@ -636,8 +696,8 @@ func (t *tx) GetPaymentByEndToEndID(ctx context.Context, endToEndID string) (pay
 	if endToEndID == "" {
 		return payment.Payment{}, payment.ErrPaymentNotFound
 	}
-	p, err := scanPayment(t.tx.QueryRowContext(ctx,
-		"SELECT "+paymentColumns+" FROM payments WHERE end_to_end_id = ? ORDER BY seq LIMIT 1", endToEndID))
+	p, err := t.scanPayment(t.tx.QueryRowContext(ctx,
+		"SELECT "+t.paymentColumns()+" FROM payments WHERE end_to_end_id = ? ORDER BY seq LIMIT 1", endToEndID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return payment.Payment{}, payment.ErrPaymentNotFound
 	}
@@ -652,7 +712,7 @@ func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
 		return nil, err
 	}
 	rows, err := t.tx.QueryContext(ctx,
-		"SELECT "+paymentColumns+" FROM payments ORDER BY created_at ASC NULLS FIRST, seq")
+		"SELECT "+t.paymentColumns()+" FROM payments ORDER BY created_at ASC NULLS FIRST, seq")
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: list payments: %w", err)
 	}
@@ -660,7 +720,7 @@ func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
 
 	out := make([]payment.Payment, 0)
 	for rows.Next() {
-		p, err := scanPayment(rows)
+		p, err := t.scanPayment(rows)
 		if err != nil {
 			return nil, fmt.Errorf("sqlite: list payments: %w", err)
 		}
@@ -684,25 +744,22 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	if err := t.write(); err != nil {
 		return err
 	}
-	_, err := t.tx.ExecContext(ctx, `
-		INSERT INTO mandates (`+mandateColumns+`, seq)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("mandates")+`)
-		ON CONFLICT (id) DO UPDATE SET
-			debtor_agent               = EXCLUDED.debtor_agent,
-			debtor_account             = EXCLUDED.debtor_account,
-			debtor_identifier_scheme   = EXCLUDED.debtor_identifier_scheme,
-			debtor_identifier_value    = EXCLUDED.debtor_identifier_value,
-			creditor_account           = EXCLUDED.creditor_account,
-			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
-			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
-			asset                      = EXCLUDED.asset,
-			max_amount                 = EXCLUDED.max_amount,
-			status                     = EXCLUDED.status,
-			created_at                 = EXCLUDED.created_at`,
+	// The values and the placeholders are counted from ONE list, which is not
+	// tidiness: the hand-written "?,?,?…" here was one short from the moment
+	// debtor_agent was added at Task 18b, and nothing noticed until the shapes
+	// split, because the case that would have caught it wrote a mandate through
+	// a path that never reached this statement. See paymentSharedColumns for the
+	// same treatment applied for the same reason.
+	vals := []any{
 		string(m.ID),
 		string(m.DebtorAgent), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
 		string(m.Creditor.Account), string(m.Creditor.Identifier.Scheme), m.Creditor.Identifier.Value,
-		string(m.Asset), int64(m.MaxAmount), int64(m.Status), nullTime{m.CreatedAt})
+		string(m.Asset), int64(m.MaxAmount), int64(m.Status), nullTime{m.CreatedAt},
+	}
+	_, err := t.tx.ExecContext(ctx, `
+		INSERT INTO mandates (`+mandateColumns+`, seq)
+		VALUES (`+placeholders(len(vals))+`, `+nextRowSeq("mandates")+`)
+		ON CONFLICT (id) DO UPDATE SET `+upsertSet(mandateColumns, "id"), vals...)
 	if err != nil {
 		return fmt.Errorf("sqlite: put mandate %s: %w", m.ID, err)
 	}

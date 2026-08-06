@@ -125,6 +125,24 @@ type Shape struct {
 	// a named sentinel rather than "no such table: cycles", which is a driver
 	// string and not something a caller can match on.
 	holds map[string]struct{}
+
+	// paymentLegs and paymentCycle are the two places where two shapes hold the
+	// SAME table with different columns, and they are the only such places.
+	//
+	// A crossing at table granularity is ErrNotInThisShape and needs nothing
+	// here. These two are finer than that: both the bank and the clearing house
+	// keep a copy of every payment they are a party to, and each copy carries
+	// what that institution KNOWS. A bank has no cycles — it never sees a
+	// cut-off, only a settlement advice quoting a reference it cannot resolve —
+	// and the clearing house posts nothing, so it has no legs and no book to post
+	// them in. Both arguments are written out in the schema files, on the
+	// payments statement of each.
+	//
+	// They are fields rather than a test on dir because the alternative is a
+	// string comparison against "bank" in the middle of an INSERT, which is the
+	// kind of thing that survives a rename.
+	paymentLegs  bool
+	paymentCycle bool
 }
 
 // String names the shape, for the refusals.
@@ -141,14 +159,14 @@ var (
 		"products", "product_versions",
 		"facilities", "installments", "facility_terms",
 		"banks", "bank_assets", "mandates", "payments", "settlement_advices",
-		"audit_events", "id_sequences")
+		"audit_events", "id_sequences").withPaymentLegs()
 
 	// CSM is the clearing house: a roster, cycles, its own copy of each payment
 	// it carries, and no book of accounts of any kind.
 	CSM = shape("csm",
 		"roster_entries", "roster_entry_assets",
 		"payments", "cycles", "cycle_payments",
-		"audit_events", "id_sequences")
+		"audit_events", "id_sequences").withPaymentCycle()
 
 	// CentralBank is the settlement agent: a ledger holding the members' reserve
 	// accounts, its own member register, the settlements it discharged, and no
@@ -167,6 +185,11 @@ func shape(dir string, tables ...string) Shape {
 	}
 	return Shape{dir: dir, holds: holds}
 }
+
+// withPaymentLegs and withPaymentCycle mark the two columns sets that are one
+// shape's and not another's. See Shape.
+func (s Shape) withPaymentLegs() Shape  { s.paymentLegs = true; return s }
+func (s Shape) withPaymentCycle() Shape { s.paymentCycle = true; return s }
 
 // ErrNotInThisShape is returned by a method whose table this store's schema does
 // not create: PutCycle on a bank, PutBank on the clearing house, PutPayment on
