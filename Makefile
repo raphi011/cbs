@@ -19,15 +19,17 @@ APP_URL      ?= http://localhost:3000
 # registration order. One binary, one process — what multiplies is listeners.
 BASE_PORT    ?= 8081
 
-# The docker-compose Postgres. Only the `-pg` targets and `db-up`/`db-down` use
-# it; everything else runs on the in-memory store and needs no database at all.
-DB_URL       ?= postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable
-
-# The DSN the server is started with. Empty — the default — is the in-memory
-# store, which is the whole point: `make dev` and `make run` need no database.
+# The database file the server is started with. Empty — the default — is an
+# ephemeral in-memory database, which is the whole point: `make dev` and
+# `make run` need no setup and leave nothing behind. Give it a path and the state
+# outlives the process.
+#
 # It is passed to the binary as an explicit -database flag rather than left to
 # the environment so that `make dev DATABASE_URL=…` works the same way whether
-# the value arrives from your shell or from the command line.
+# the value arrives from your shell or from the command line. It kept its name
+# through the store swap; what changed is that the value is a PATH rather than a
+# Postgres DSN, and that there is no longer a pair of `-pg` targets beside it,
+# because there is no longer a second store to point them at.
 DATABASE_URL ?=
 
 # Pick the OS default-browser opener.
@@ -38,7 +40,7 @@ else
 OPEN := xdg-open
 endif
 
-.PHONY: help install build run run-pg dev dev-pg clean test test-pg test-schemas db-up db-down
+.PHONY: help install build run dev clean test test-schemas
 
 help: ## Show this help
 	@echo "CBS — make targets:"
@@ -76,43 +78,23 @@ dev: install ## Run backend + frontend in watch mode, open browser
 	$(open_when_ready)
 	cd $(WEB) && npm run dev
 
-# The two above, against the docker-compose Postgres instead of store/mem: start
-# the container, wait for it to accept connections, then hand off with a DSN.
-#
-# These exist for convenience only, and the convenience is the whole risk: the
-# property worth protecting is that `dev` and `run` need no database, so the
-# database belongs in a target you have to ask for by name rather than in a
-# default anyone can trip over.
-#
-# `db-up` is a prerequisite rather than a step, so the container is already
-# healthy before the server dials it; the recursive call is what exports
-# DATABASE_URL into the recipe.
-dev-pg: db-up ## Like `dev`, but on the docker-compose Postgres (state persists)
-	$(MAKE) dev DATABASE_URL="$(DB_URL)"
+# `dev-pg` and `run-pg` used to sit here, starting a docker-compose Postgres and
+# handing the server its DSN. They are gone with the store they pointed at, and
+# so is the reason they were kept out of `dev` and `run`: the property worth
+# protecting was that the ordinary targets need no database, and it is now
+# unconditional rather than defended.
 
-run-pg: db-up ## Like `run`, but on the docker-compose Postgres (state persists)
-	$(MAKE) run DATABASE_URL="$(DB_URL)"
-
-test: ## Run the Go and web suites against the in-memory store (no setup)
+test: ## Run the Go and web suites (no setup)
 	set -euo pipefail
 	go build ./... && go vet ./...
 	test -z "$$(gofmt -l .)" || { echo "gofmt: $$(gofmt -l .)"; exit 1; }
-	# TEST_DATABASE_URL is cleared, not merely unset by default: store/testenv
-	# reads it from the environment, and the README tells anyone working on
-	# store/pg to export it. Inheriting it here would silently turn this target
-	# into a second copy of `make test-pg` — for exactly the developers who need
-	# the two runs to differ — and "both stores stay green" would become one
-	# store, twice.
-	TEST_DATABASE_URL= go test ./...
+	# One run, and nothing to clear from the environment before it. This recipe
+	# used to unset TEST_DATABASE_URL explicitly, because store/testenv read it and
+	# an inherited value would have turned this target into a second copy of
+	# `make test-pg` for exactly the developers who needed the two runs to differ.
+	# Nothing reads it now.
+	go test ./...
 	cd $(WEB) && npm run typecheck && npm run lint && npm run test
-
-# The same suites, on the other store. TEST_DATABASE_URL is what store/testenv
-# reads; every test then runs in a Postgres schema of its own. This is the only
-# run in which "these writes commit or roll back together" is a claim about the
-# code — under store/mem's single process-wide mutex it is true either way.
-test-pg: db-up ## Run the Go suite against the docker-compose Postgres
-	set -euo pipefail
-	TEST_DATABASE_URL="$(DB_URL)" go test ./...
 
 # The one check that iso20022's golden documents are really schema-valid rather
 # than merely round-trip-stable. It is not part of `test`, because it needs
@@ -127,13 +109,6 @@ test-schemas: ## Run every XSD check, requiring xmllint and iso20022/testdata/xs
 	set -euo pipefail
 	ISO20022_REQUIRE_SCHEMAS=1 go test ./iso20022/ -run TestGoldenFilesValidateAgainstTheSchema -v
 	ISO20022_REQUIRE_SCHEMAS=1 go test ./payment/ -run TestTheAdmissionMessagesThisSystemEmitsValidateAgainstTheSchema -v
-
-db-up: ## Start the Postgres container and wait until it accepts connections
-	set -euo pipefail
-	docker compose up -d --wait postgres
-
-db-down: ## Stop the Postgres container and delete its data
-	docker compose down -v
 
 clean: ## Remove build outputs
 	rm -rf bin $(WEB)/.next

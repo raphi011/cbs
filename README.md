@@ -2,7 +2,7 @@
 
 A simplified but functionally complete Go library modeling the core accounting engine of a bank. Intended as a reference implementation for learning and prototyping — not for production use.
 
-State lives behind a store interface with two implementations: `store/mem`, an in-memory reference implementation that needs no setup, and `store/pg`, which persists everything to Postgres. The Postgres backend is entirely optional — with no `DATABASE_URL` the server runs on `store/mem` — and it exists mostly as *curriculum*: it is where a double-entry ledger meets relational tables, and where a single process-wide mutex stops doing your concurrency control for you. See [Persistence](#persistence) for what that turns out to involve.
+State lives behind a store interface with two implementations: `store/mem`, an in-memory reference implementation that is a Go map behind a mutex, and `store/sqlite`, which persists everything to SQLite — real SQLite transpiled to Go, so it needs no server, no Docker and no C toolchain. Neither needs setup, which is new: the relational backend used to be Postgres and used to be opt-in. It exists mostly as *curriculum*: it is where a double-entry ledger meets relational tables, and where a single process-wide mutex stops doing your concurrency control for you. See [Persistence](#persistence) for what that turns out to involve.
 
 ## Four-Layer Architecture
 
@@ -1343,24 +1343,23 @@ In the model this document describes, a statement's opening and closing figures 
 
 Every layer reaches state through a **store interface** — `ledger.Store`, `deposit.Store`, `payment.Store` — never through a map it owns. There are two implementations:
 
-| | `store/mem` | `store/pg` |
+| | `store/mem` | `store/sqlite` |
 |---|---|---|
-| State | Go maps behind one `sync.RWMutex` | Postgres tables |
-| Setup | none | a `DATABASE_URL` |
-| Survives a restart | no | yes |
-| Dependencies | stdlib only | `jackc/pgx` |
+| State | Go maps behind one `sync.RWMutex` | SQLite tables |
+| Setup | none | none |
+| Survives a restart | no | with a `DATABASE_URL` file path |
+| Dependencies | stdlib only | `modernc.org/sqlite`, and no external one |
 
-`store/mem` is the reference implementation: where the two ever disagree, `mem` is right by definition and `pg` is wrong. That is not a preference — it is what makes the pair teachable, because it means every difference between them is a *database* concern rather than a domain one.
+`store/mem` is the reference implementation: where the two ever disagree, `mem` is right by definition and the other is wrong. That is not a preference — it is what makes the pair teachable, because it means every difference between them is a *database* concern rather than a domain one.
 
-> **On dependencies.** The library core — `ledger`, `deposit`, `payment`, `api`, `seed`, `store/mem` — is standard library only. `store/pg` is the single exception, and it is why the module has a dependency at all. The driver is compiled into the binary either way, but with no `DATABASE_URL` it is never dialed: the default build needs no setup whatsoever.
+> **On dependencies.** The library core — `ledger`, `deposit`, `payment`, `api`, `seed`, `store/mem` — is standard library only. The relational store is the single exception, and it is why the module has a dependency at all. What changed with the swap is what KIND of dependency: `store/pg` needed a driver *and* a server, a container and a DSN; `store/sqlite` needs ten Go modules and nothing outside the process. More modules, zero external dependencies.
 
 ### Two Stores, One Conformance Suite
 
-`store/storetest` is a single suite that both implementations must pass. It is the only thing standing between "two backends" and "two subtly different systems", and it is run twice:
+`store/storetest` is a single suite that both implementations must pass. It is the only thing standing between "two backends" and "two subtly different systems". It used to be run twice, because reaching the relational store meant exporting `TEST_DATABASE_URL` and having a Postgres to point it at; now both are in one run, on a fresh checkout, with nothing exported:
 
 ```bash
-go test ./...                          # store/mem — zero setup
-TEST_DATABASE_URL=… go test ./...      # the same suites, on store/pg
+go test ./...                          # both stores, one run, zero setup
 ```
 
 The rule it enforces is sharper than "both work": **`store/pg` must never accept or refuse a write that `store/mem` handles differently.** That rule has real consequences in the schema. There is no `UNIQUE (book_id, name)` on ledgers, subledgers or accounts, however tempting it looks — the domain does not hold a uniqueness invariant on names (two customers called "John Smith" at one bank is not an error), so the constraint would make Postgres reject a write the in-memory store accepts. Validation belongs in the domain layer; the store is a per-table key/value store that happens to be relational.
@@ -1515,31 +1514,20 @@ All three are the same rule: **never read a value, decide, and then write the de
 
 It has one limitation worth stating plainly: **the applied-set keys on filename, with no checksum.** A file whose name is already in `schema_migrations` is skipped without being read, so editing a shipped `.sql` file in place changes nothing on a database that has already run it, and the two silently disagree from then on. A production tool stores a hash of every file and refuses to start when one no longer matches. This one does not, because there are no deployed databases here — every Postgres it meets is a throwaway container or a per-test schema, both of which migrate from empty. The rule that keeps it harmless is the ordinary one: **a shipped migration is immutable**; a schema change is a new file with the next number, never an edit to an old one.
 
-### Running Against Postgres
+### Keeping State Across a Restart
 
 ```bash
-make dev-pg                                    # container + backend + frontend, on Postgres
-make test-pg                                   # the whole Go suite, on Postgres
-make db-down                                   # stop it, delete the data
+go run ./cmd/server                            # ephemeral; state resets on restart
+DATABASE_URL=./cbs.db go run ./cmd/server      # a file; state outlives the process
 ```
 
-`dev-pg` (and `run-pg`, its production-build twin) starts the container, waits
-for it to accept connections, and then runs the ordinary `dev` target with a
-DSN. The pieces are still there to be used directly:
+`-database` (or `DATABASE_URL`) is a **file path**. Empty means an in-memory database of its own, which is the default and needs nothing at all; a path means an ordinary SQLite file under WAL. `sqlite.Open` applies the embedded migrations either way, so a fresh file is usable immediately. Seeding is **idempotent** — `seed.Populate` builds the sample scenario against an empty system and returns without touching a populated one — which is what makes a restart against a file a no-op rather than a second copy of every bank. `POST /admin/reset` clears the store and rebuilds the scenario.
 
-```bash
-make db-up                                     # postgres:16 via docker-compose
-DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
-```
+There is nothing to redact from the log line that records which database was opened, and there used to be. `-database` was a Postgres DSN, which routinely arrives from the environment carrying a real credential, and a log line is the easiest place in a system to leak one; a filesystem path carries no secret, so the function that hid it is gone rather than kept for a value that cannot contain one.
 
-`pg.Open` connects and then applies the embedded migrations, so a fresh database is usable immediately. Seeding is **idempotent** — `seed.Populate` builds the sample scenario against an empty system and returns without touching a populated one — which is what makes a restart against Postgres a no-op rather than a second copy of every bank. `POST /admin/reset` clears the store and rebuilds the scenario, on either backend.
+One property is deliberately kept, and it is easier to hold than it was:
 
-The DSN is redacted before it is logged. A connection string arrives from the environment with a real credential in it, and a log line is the easiest place in a system to leak one.
-
-Two properties are deliberately kept, and both are easy to break by accident:
-
-- **Nothing requires a database.** `go test ./...`, `make dev` and `make run` all work on a fresh checkout with no setup. Postgres is opt-in via `DATABASE_URL` (server) or `TEST_DATABASE_URL` (tests).
-- **Both runs must stay green.** A change that passes only one of them has, by definition, made the two stores diverge.
+- **Nothing requires setup.** `go test ./...`, `make dev` and `make run` all work on a fresh checkout with no database, no Docker and no C toolchain. That used to be a property of the *default* — Postgres was opt-in and a second run had to be kept green beside it — and it is now a property of the only store there is.
 
 ## Usage Example
 
@@ -1618,7 +1606,7 @@ dep.Update(ctx, func(ctx context.Context, tx deposit.Tx) error {
 
 ## REST API
 
-A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only — the module's single dependency, `jackc/pgx`, is used by the optional Postgres store in `store/pg` and by nothing else, so the default in-memory build still needs no setup at all.
+A JSON/HTTP server in `cmd/server` exposes the whole system over REST, so a frontend (e.g. a React app) can drive it. It is built on the standard library only — the module's dependencies are `modernc.org/sqlite` and what it pulls in, used by `store/sqlite` and by nothing else, and none of them is external to the process: no server, no Docker, no C toolchain.
 
 ### One binary, one listener per entity
 
@@ -1627,15 +1615,15 @@ There is no single API. Each entity gets a **listener of its own**, bound to its
 ```bash
 go run ./cmd/server        # :8081 central bank, :8082 clearing house, :8083+ one per bank
 
-# The same server, on Postgres. State then survives a restart.
-DATABASE_URL=postgres://cbs:cbs@localhost:5432/cbs?sslmode=disable go run ./cmd/server
+# The same server, against a database file. State then survives a restart.
+DATABASE_URL=./cbs.db go run ./cmd/server
 ```
 
 **One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports over one shared `payment.Network`.
 
-That is not a convenience. `store/mem` is a map behind a mutex in one process's memory, so four bank *processes* would be four disconnected universes: a payment from Aurora to Verde would post into an Aurora that Verde has never heard of. Postgres is strictly optional here (`go test ./...`, `make dev` and `make run` all work with no database), so the split cannot require one.
+That is not a convenience. `store/mem` is a map behind a mutex in one process's memory, so four bank *processes* would be four disconnected universes: a payment from Aurora to Verde would post into an Aurora that Verde has never heard of. The swap to SQLite changed that in a direction nobody asked for and it is worth recording rather than acting on: a SQLite **file** under WAL is shared between processes, so an entity-per-process split no longer needs a server to make the state one universe. What it still needs is everything else below.
 
-A flag once ran a single entity in its own process against a shared Postgres, which is the real topology. It is gone, and what took its place is the `mesh`: the institutions are now separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message. They still share this process, this store and this clock — the mesh models the separation, it does not deploy it — so a listener started alone would serve its API while no message could reach it, and the failure would surface far from its cause. A genuine split is a larger job than a flag, and it is being done rather than described: settlement no longer posts into any book but the central bank's, because each member books its own halves on advice. What is left is that every actor still shares one `Store`, and splitting it means a reconciliation-break concept this system is only starting to have — a member's own `SettlementAdvice` row, and its *absence* against a clearing suspense that has not returned to zero, are the first of it.
+A flag once ran a single entity in its own process against a shared Postgres, which was the real topology. It is gone, and what took its place is the `mesh`: the institutions are now separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message. They still share this process, this store and this clock — the mesh models the separation, it does not deploy it — so a listener started alone would serve its API while no message could reach it, and the failure would surface far from its cause. A genuine split is a larger job than a flag, and it is being done rather than described: settlement no longer posts into any book but the central bank's, because each member books its own halves on advice. What is left is that every actor still shares one `Store`, and splitting it means a reconciliation-break concept this system is only starting to have — a member's own `SettlementAdvice` row, and its *absence* against a clearing suspense that has not returned to zero, are the first of it.
 
 **Ports are static, and admission is not provisioning.** A bank created at runtime through `POST /members` gets a store row, a chart of accounts and a product — and **no listener until the process restarts**. That is a decision rather than a limitation: admitting a member to a payment network is an operational act, and an API call that instantly yielded a running bank would teach the wrong thing. Its reserve accounts are not part of that call either: they are the central bank's to open, and they exist once the scheme has [answered the application](#admission-a-bank-exists-before-it-joins-a-scheme).
 
@@ -1786,4 +1774,4 @@ curl -s $CB/cycles/$CYC | jq -r '.status, .settlementId'    # Settled, set_…
 
 **Which means every one of these responses describes a moment rather than an outcome.** `POST /payments` answers `202` and a payment that is `Initiated`, in no cycle, unseen by the payee's bank — a truthful description of the only work that had finished when the response was written. `POST /cycles/{cid}/close` answers `200` and a `Closed` cycle with net positions and no settlement on it, because the settlement agent has not been asked yet. Only the reads afterwards say what became of either, which is why `POST /payments` hands back an identifier to ask about. A refusal decided by *this* caller's own bank — no funds, an account that is not theirs — still comes back as a `4xx` on the request that caused it; a refusal decided three hops away cannot, and lands on the payment's own row instead. Watch either on the central bank's console: a closed cycle with no settlement against it is an instruction the central bank refused, and `POST /cycles/{cid}/settle` on the clearing house is what an operator does about it once the short member is funded.
 
-> Without `DATABASE_URL` the server is **in-memory**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it runs on `store/pg` and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.
+> Without `DATABASE_URL` the server runs on an **ephemeral in-memory database**: all state resets on restart, and `POST /admin/reset` rebuilds the sample dataset at any time. With one, it is a SQLite file and the data outlives the process (see [Persistence](#persistence)). Either way it is a learning and prototyping tool, not a production service.

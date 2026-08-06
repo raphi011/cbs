@@ -40,10 +40,24 @@ Two mechanical rules that the build will not catch for you:
   ≥8 distinct `concept` tags, no tag more than 3×, and all three difficulty
   tiers.
 
-## Postgres is optional, and that is a load-bearing property
+## One store, and it needs no setup
 
-`go test ./...`, `make dev` and `make run` need no database: with no
-`DATABASE_URL` everything runs on `store/mem`. `TEST_DATABASE_URL=… go test
-./...` (or `make test-pg`) runs the *same* suites against `store/pg`. Both runs
-must stay green, and `store/pg` must never accept or refuse a write differently
-from `store/mem` — `store/storetest` is the conformance suite that enforces it.
+`go test ./...`, `make dev` and `make run` need no database and there is no
+second run to keep green. `store/pg` is gone, and with it `TEST_DATABASE_URL`,
+`docker-compose.yml` and the `-pg` Makefile targets; what replaced it is
+`store/sqlite`, on `modernc.org/sqlite` — real SQLite transpiled to Go, so the
+module gained Go dependencies and lost every external one.
+
+`store/mem` is still here and still the default `store/testenv` hands the suites,
+for one more task: it is the oracle `store/sqlite` was certified against, and
+Task 17.3 deletes it. Until then `store/storetest` holds both to the same
+answers, and neither may accept or refuse a write the other does not.
+
+Two things are worth knowing while both exist, because they are the reason the
+swap happened at all. `store/sqlite` runs a real `BEGIN`/`COMMIT`, so "these
+writes commit or roll back together" is a claim about the code rather than a
+side effect of `store/mem`'s single process-wide mutex — and it is now true on a
+fresh checkout with no Docker. And `store/sqlite/schema/0001_init.sql` records
+its reasoning INSIDE each statement's parentheses, because SQLite drops a comment
+that sits above one; a comment moved to column 0 leaves the database silently,
+which is what `TestSchemaArgumentsReachSqliteMaster` exists to catch.

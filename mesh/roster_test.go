@@ -38,8 +38,9 @@ func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Network 
 
 // The mesh is N+2: one actor per member bank, plus the clearing house and the
 // central bank. The banks come from the CLEARING HOUSE's roster, which is the
-// store, which is why this is the one test in the package that needs one — and
-// why it runs against Postgres too when TEST_DATABASE_URL is set.
+// store, which is why this is the one test in the package that needs one. It
+// used to run a second time against store/pg when TEST_DATABASE_URL was set;
+// there is one store now and one run.
 //
 // The roster and not the bank rows, and TestStartGivesAFoundedBankNoActor is the
 // other half of that: a bank that exists and has not been admitted gets nothing

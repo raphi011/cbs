@@ -58,11 +58,10 @@ func testMesh(t *testing.T, net *payment.Network) *mesh.Mesh {
 	return msh
 }
 
-// testNetwork builds the sample scenario over store/mem by default and over
-// store/pg when TEST_DATABASE_URL is set.
+// testNetwork builds the sample scenario over the store testenv hands it.
 //
 // It is what makes the seed assertions (deterministic IDs, conserved reserves,
-// status coverage) hold on both backends rather than only in memory, and it is
+// status coverage) claims about the seed rather than about one backend, and it is
 // the whole of what a caller of this package now assembles for itself: a store,
 // a network, a running mesh, and Populate over the three.
 func testNetwork(t *testing.T) *payment.Network {

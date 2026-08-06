@@ -34,9 +34,10 @@ const testAsset AssetCode = "EUR"
 // testBook creates a new Book over a fresh store with a fixed clock for
 // deterministic tests.
 //
-// The store comes from testenv: store/mem by default, store/pg when
-// TEST_DATABASE_URL is set. Every assertion below therefore has to hold on both
-// backends, which is the only way the two are kept honest.
+// The store comes from testenv, which is store/mem until Task 17.3 moves it to
+// store/sqlite. Every assertion below is written against the interface rather
+// than against either, which is what let the backend change underneath them —
+// it used to be what kept store/mem and store/pg honest about each other.
 func testBook(t *testing.T) *Book {
 	t.Helper()
 	store := testenv.New(t, testClock)

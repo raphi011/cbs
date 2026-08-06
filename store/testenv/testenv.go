@@ -1,38 +1,30 @@
 // Package testenv picks the store every test suite in this repository runs
-// against, and owns the Postgres schema-per-test lifecycle that choice needs.
+// against.
 //
-// It defaults to store/mem, so `go test ./...` needs no setup at all. Setting
-// TEST_DATABASE_URL switches the same suites onto store/pg, which is the only
-// way the cross-layer atomicity tests mean anything: under a single process-wide
-// mutex, "these writes commit or roll back together" is true whether or not the
-// code arranged for it.
+// It used to do more than that. While store/pg existed this package also owned a
+// Postgres schema-per-test lifecycle and read TEST_DATABASE_URL to decide which
+// backend a suite got, because "no database needed" and "a real BEGIN/COMMIT"
+// were two different runs and only one of them could be the default. Both are
+// now one run: store/sqlite needs no server, no Docker and no toolchain, and it
+// has real transactions. Choosing is all that is left.
 //
 // It is an ordinary package rather than a set of _test.go files because the
 // domain suites (ledger, deposit, payment, mesh, api, seed) all import it, and a
-// _test.go file in store/pg would be unimportable.
+// _test.go file in an implementation package would be unimportable.
 //
-// Choosing a store is all it does. Anything a suite needs that does not name an
-// implementation belongs in store/storetest, which every implementation's tests
-// import and which therefore may not import an implementation back — Store and
-// Admit both live there for that reason. This package is the one place allowed
-// to name mem and pg, which is why the assertions that they satisfy Store are
-// here.
+// Anything a suite needs that does not name an implementation belongs in
+// store/storetest, which every implementation's tests import and which therefore
+// may not import an implementation back — Store and Admit both live there for
+// that reason. This package is the one place allowed to name an implementation,
+// which is why the assertions that they satisfy Store are here.
 package testenv
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"os"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/raphi011/cbs/store/mem"
-	"github.com/raphi011/cbs/store/pg"
 	"github.com/raphi011/cbs/store/sqlite"
 	"github.com/raphi011/cbs/store/storetest"
 )
@@ -44,21 +36,18 @@ type Store = storetest.Store
 // compile-time checks that the implementations really are interchangeable here.
 var (
 	_ Store = (*mem.Store)(nil)
-	_ Store = (*pg.Store)(nil)
 	_ Store = (*sqlite.Store)(nil)
 )
 
-// DSN returns the Postgres connection string the suites should use, or "" for
-// the in-memory store.
-func DSN() string { return os.Getenv("TEST_DATABASE_URL") }
-
-// New returns the store the suites run against: store/mem by default, store/pg
-// in its own fresh schema when TEST_DATABASE_URL is set.
+// New returns the store the suites run against.
+//
+// It is still store/mem, and that is deliberate rather than left over: Task 17.3
+// is where it changes, and changing it here would delete the oracle a commit
+// early. Nothing reads an environment variable to decide any more — with
+// store/pg gone there is one store to fall back to and one to move to, and the
+// choice is in this line rather than in whoever exported what.
 func New(t *testing.T, clock func() time.Time) Store {
 	t.Helper()
-	if dsn := DSN(); dsn != "" {
-		return OpenInFreshSchema(t, dsn, clock)
-	}
 	return mem.New(clock)
 }
 
@@ -77,8 +66,10 @@ func New(t *testing.T, clock func() time.Time) Store {
 // calls Open and gets a name of its own. A per-test scheme would have had to
 // learn to count.
 //
-// Nothing here reads TEST_DATABASE_URL: this store needs no setup at all, which
-// is the property store/mem existed for and the reason it can be replaced.
+// It replaces OpenInFreshSchema, which created a Postgres schema per test and
+// dropped it afterwards, because truncation would have made every test depend on
+// the order tables are emptied in. An ephemeral database is that isolation for
+// free: there is nothing to create and nothing to drop.
 func OpenSQLite(t *testing.T, clock func() time.Time) *sqlite.Store {
 	t.Helper()
 	store, err := sqlite.Open(context.Background(), "", clock)
@@ -93,61 +84,4 @@ func OpenSQLite(t *testing.T, clock func() time.Time) *sqlite.Store {
 		}
 	})
 	return store
-}
-
-// schemaPrefix is unique per process, so that packages tested in parallel — each
-// its own OS process, each with its own counter — cannot land on the same schema
-// name, and so that a schema left behind by a crashed run is never reused.
-var schemaPrefix = func() string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic("testenv: " + err.Error())
-	}
-	return "test_" + hex.EncodeToString(b[:])
-}()
-
-var schemaCounter atomic.Int64
-
-// OpenInFreshSchema opens a Postgres store in a schema of its own and migrates
-// it, dropping the schema when the test ends.
-//
-// A schema per test rather than a TRUNCATE between tests: truncation makes every
-// test depend on the order tables are emptied in, and it makes tests that share
-// a database unable to run in parallel. A private schema has neither problem,
-// and it costs one CREATE SCHEMA and one DROP SCHEMA.
-func OpenInFreshSchema(t *testing.T, dsn string, clock func() time.Time) *pg.Store {
-	t.Helper()
-	ctx := context.Background()
-	schema := fmt.Sprintf("%s_%d", schemaPrefix, schemaCounter.Add(1))
-
-	store, err := pg.OpenSchema(ctx, dsn, schema, clock)
-	if err != nil {
-		t.Fatalf("testenv: open %s: %v", schema, err)
-	}
-	t.Cleanup(func() {
-		// Close is idempotent, which matters because storetest closes the store
-		// it was handed as well.
-		if err := store.Close(); err != nil {
-			t.Errorf("testenv: close: %v", err)
-		}
-		dropSchema(t, dsn, schema)
-	})
-	return store
-}
-
-// dropSchema removes a test schema on a throwaway connection, because the
-// store's pool is closed by the time it runs.
-func dropSchema(t *testing.T, dsn, schema string) {
-	t.Helper()
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, dsn)
-	if err != nil {
-		t.Errorf("testenv: connect to drop %s: %v", schema, err)
-		return
-	}
-	defer conn.Close(ctx)
-
-	if _, err := conn.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{schema}.Sanitize()+" CASCADE"); err != nil {
-		t.Errorf("testenv: drop schema %s: %v", schema, err)
-	}
 }

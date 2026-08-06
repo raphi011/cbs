@@ -1405,10 +1405,10 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 // `{"name":"Ban\u0000k"}` is legal JSON. store/mem stored it and answered 201;
 // store/pg could not (a NUL is SQLSTATE 22021 in a text column and 22P05 inside
 // jsonb) and answered 500 with the raw SQLSTATE in the body. The rule is now a
-// domain rule — see ledger.ValidateText — so both stores answer 400.
-//
-// This test runs against whichever store TEST_DATABASE_URL selects, so "both
-// stores agree" is checked by running it twice rather than asserted once.
+// domain rule — see ledger.ValidateText — so the answer is 400 whatever is
+// underneath, which is the point: the divergence that prompted the rule is gone
+// with the store that had it, and the rule stays because it was never that
+// store's to state.
 func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 	h := newServer(t, nil)
 

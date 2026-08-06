@@ -8,22 +8,26 @@
 //
 // # Which store
 //
-// Without DATABASE_URL (or -database) the server runs on store/mem: zero setup,
-// and every restart starts from the seeded scenario again. With one, it runs on
-// store/pg and the data outlives the process. Postgres is strictly optional —
-// nothing in `make dev`, `make run` or `go test ./...` needs it.
+// Without DATABASE_URL (or -database) the server runs on an ephemeral SQLite
+// database: zero setup, and every restart starts from the seeded scenario again.
+// With one, -database is a FILE PATH and the data outlives the process.
+//
+// The flag keeps its name and its meaning barely changes, but what it takes
+// does: it used to be a Postgres DSN, and the store behind it used to be
+// store/mem when it was empty. Neither the server nor the developer needs a
+// database server now — nothing in `make dev`, `make run` or `go test ./...`
+// ever did, and now nothing anywhere does.
 //
 // Seeding is idempotent, so the same wiring serves both: Populate creates the
 // scenario against an empty store and returns without touching a populated one,
-// which is what makes a restart against Postgres a no-op rather than a second
-// copy of every bank.
+// which is what makes a restart against a file a no-op rather than a second copy
+// of every bank.
 package main
 
 import (
 	"context"
 	"flag"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -34,8 +38,7 @@ import (
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
 	"github.com/raphi011/cbs/seed"
-	"github.com/raphi011/cbs/store/mem"
-	"github.com/raphi011/cbs/store/pg"
+	"github.com/raphi011/cbs/store/sqlite"
 )
 
 // meshConfig names the two institutions this process plays.
@@ -74,7 +77,7 @@ type store interface {
 
 func main() {
 	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per bank")
-	database := flag.String("database", os.Getenv("DATABASE_URL"), "Postgres DSN; empty uses the in-memory store")
+	database := flag.String("database", os.Getenv("DATABASE_URL"), "SQLite file path; empty uses an ephemeral in-memory database")
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stdout, nil))
@@ -102,7 +105,7 @@ func main() {
 	// What that costs is Start's roster read, which finds an empty roster on a
 	// fresh store: the banks it would have registered are the ones the seed is
 	// about to admit, and each of those gets its actor from Mesh.Admit as it is
-	// founded. Against a Postgres database that already holds the scenario the
+	// founded. Against a database file that already holds the scenario the
 	// read finds the whole roster and the seed builds nothing, which is the same
 	// division of labour seen from the other side.
 	msh, err := mesh.New(net, meshConfig, log)
@@ -175,43 +178,27 @@ func main() {
 	}
 }
 
-// openStore returns the in-memory store when dsn is empty and a migrated
-// Postgres store otherwise. pg.Open connects and then applies the embedded
-// migrations, so a fresh database is usable straight away.
-func openStore(ctx context.Context, dsn string, clock func() time.Time, log *slog.Logger) (store, error) {
-	if dsn == "" {
-		log.Info("using the in-memory store; state resets on restart")
-		return mem.New(clock), nil
-	}
-	st, err := pg.Open(ctx, dsn, clock)
+// openStore opens the database at path, or an ephemeral one when path is empty.
+// Open applies the embedded migrations either way, so a fresh file is usable
+// straight away.
+//
+// There is nothing to redact from the log line any more, and that is why the
+// function that used to do it is gone. A Postgres DSN routinely arrives from the
+// environment carrying a real credential, and the line recording which database
+// was opened was the easiest place in this process to leak one; a filesystem
+// path carries no secret, so the guard has nothing left to guard and saying so
+// is better than keeping a function nothing needs.
+func openStore(ctx context.Context, path string, clock func() time.Time, log *slog.Logger) (store, error) {
+	st, err := sqlite.Open(ctx, path, clock)
 	if err != nil {
 		return nil, err
 	}
-	log.Info("using the postgres store", "dsn", redact(dsn))
+	if path == "" {
+		log.Info("using an ephemeral in-memory database; state resets on restart")
+	} else {
+		log.Info("using the database file", "path", path)
+	}
 	return st, nil
-}
-
-// redact removes the password from a DSN so a connection string can be logged.
-// A DSN routinely arrives from the environment with a real credential in it,
-// and a log line is the easiest place in a system to leak one.
-//
-// Two places carry it: the userinfo (which url.Redacted replaces with "xxxxx")
-// and a "password" query parameter, which url.Redacted does not touch.
-//
-// Anything that does not parse as a URL is reported as "<redacted>" rather than
-// echoed: libpq also accepts the keyword form ("host=… password=…"), and
-// guessing at its shape here would risk printing the very thing this exists to
-// hide.
-func redact(dsn string) string {
-	u, err := url.Parse(dsn)
-	if err != nil || u.Scheme == "" {
-		return "<redacted>"
-	}
-	if q := u.Query(); q.Has("password") {
-		q.Set("password", "xxxxx")
-		u.RawQuery = q.Encode()
-	}
-	return u.Redacted()
 }
 
 // defaultBasePort reads the PORT environment variable (the common convention
