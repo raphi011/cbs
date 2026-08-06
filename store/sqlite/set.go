@@ -181,20 +181,87 @@ func (s *Set) Bank(ctx context.Context, bic iso20022.BIC) (payment.Store, error)
 
 // Banks is every bank this set holds a database for, ascending by address.
 //
-// It answers from the open handles rather than from the directory, and the two
-// agree by construction: OpenSet opens every database it finds and Bank adds the
-// one it creates. Reading the directory again would answer about a moment this
-// process has already moved past — a bank founded a millisecond ago is in the
-// map and may not have been flushed anywhere a listing would see.
-func (s *Set) Banks(context.Context) ([]iso20022.BIC, error) {
+// The candidates come from the open handles rather than from the directory, and
+// the two agree by construction: OpenSet opens every database it finds and Bank
+// adds the one it creates. Reading the directory again would answer about a
+// moment this process has already moved past — a bank founded a millisecond ago
+// is in the map and may not have been flushed anywhere a listing would see.
+//
+// # A database is not a bank until something founds one in it
+//
+// So each candidate is ASKED, and this is the one method on the set that reads a
+// row. It used to answer the handles alone, on the rule that the set of banks is
+// the set of databases, and that rule has one exception this process produces
+// itself: Reset empties every database and deletes none, so a reset system holds
+// N bank databases with no bank in any of them.
+//
+// Leaving them in the answer is not a small inaccuracy. api's GET /members reads
+// each listed bank's own row and got ErrParticipantNotFound; cmd/server's plan
+// would bind a listener per phantom, and fail startup naming a bank nobody has
+// heard of. Both are the same wrong claim — that a file is a bank — and
+// TestResetRebuildsTheMeshSoAReadmittedBankCanPay asserts the right one: a reset
+// with no reseed leaves no members.
+//
+// The alternative was for Reset to CLOSE and delete what it empties, and it was
+// rejected because a running process cannot survive it. cmd/server binds each
+// bank's surface once, at startup, over that bank's store handle; a reset that
+// replaced the handle would leave every bank listener serving a database nobody
+// writes to any more, and the reseed founds the same addresses straight back into
+// new files. Truncating in place keeps the handle valid, which is why a reseeded
+// system is still servable on the ports it started with.
+//
+// It costs one keyed read per open bank per call, and there are four callers:
+// cmd/server's boot plan, the seed's idempotency probe, api's GET /members, and
+// payment's audit fixture. None of them is on a payment's path.
+func (s *Set) Banks(ctx context.Context) ([]iso20022.BIC, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]iso20022.BIC, 0, len(s.banks))
-	for bic := range s.banks {
-		out = append(out, bic)
+	if s.closed {
+		s.mu.Unlock()
+		return nil, errors.New("sqlite: the store set is closed")
+	}
+	candidates := make(map[iso20022.BIC]*Store, len(s.banks))
+	for bic, st := range s.banks {
+		candidates[bic] = st
+	}
+	s.mu.Unlock()
+
+	out := make([]iso20022.BIC, 0, len(candidates))
+	for bic, st := range candidates {
+		founded, err := st.holdsABank(ctx, bic)
+		if err != nil {
+			return nil, err
+		}
+		if founded {
+			out = append(out, bic)
+		}
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+// holdsABank is whether this database has had a bank founded in it — the read
+// Banks makes of each of its candidates.
+//
+// It asks for the row keyed by the address the file is named after rather than
+// listing the table, because a bank's database holds exactly its own row and a
+// listing would be the same read with a slice around it.
+func (s *Store) holdsABank(ctx context.Context, bic iso20022.BIC) (bool, error) {
+	var found bool
+	err := s.Payment().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+		_, err := tx.GetBank(ctx, payment.ParticipantID(bic))
+		switch {
+		case errors.Is(err, payment.ErrParticipantNotFound):
+			return nil
+		case err != nil:
+			return err
+		}
+		found = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("sqlite: asking %s's database whether a bank was founded in it: %w", bic, err)
+	}
+	return found, nil
 }
 
 // BankStore is Bank as the concrete store, for the composition root and the test

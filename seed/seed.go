@@ -110,7 +110,17 @@ func (d *Dataset) Populate(ctx context.Context, nets *payment.Networks, msh *mes
 		return errors.New("seed: no mesh, so no bank in this scenario could be admitted to the scheme")
 	}
 
-	existing, err := nets.ClearingHouse().ListBanks(ctx)
+	// "Has anything been built here already", asked of the DEPLOYMENT rather than
+	// of an institution. It was the clearing house's ListBanks while there was one
+	// store; that institution's schema has no banks table, and no institution has
+	// the whole answer anyway — a bank founded and never admitted is in no roster
+	// and in no settlement register, and it is still a bank this scenario built.
+	//
+	// payment.Stores.Banks is the set of DATABASES, which is what the old read
+	// amounted to and is the same question a restart's listener plan asks. It also
+	// becomes true at the same moment: founding the first bank is what creates the
+	// first database, exactly as it used to write the first row.
+	existing, err := nets.Stores().Banks(ctx)
 	if err != nil {
 		return err
 	}

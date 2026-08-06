@@ -313,7 +313,7 @@ func TestReservesConserved(t *testing.T) {
 	net := testNetwork(t)
 	var sum int64
 	for _, p := range listParticipants(t, ctx, net) {
-		bal, err := net.cb().ReserveBalance(ctx, p.ID, "EUR")
+		bal, err := net.cb().ReserveBalance(ctx, p.BIC, "EUR")
 		if err != nil {
 			t.Fatal(err)
 		}

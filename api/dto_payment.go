@@ -398,10 +398,17 @@ func toSchemeDTO(s payment.Scheme) schemeDTO {
 // reserveDTO is one bank's reserve at the central bank, in one asset. A bank
 // holds one reserve account per asset, so a reserve is only meaningful once
 // the asset is named alongside it.
+//
+// The bank is named by its BIC in a field called `agent`, and it was a
+// participant id in a field called `participant`. Both halves of that follow from
+// the same fact: the settlement agent's register is keyed by address and holds no
+// participant ids, because an id the network allocates is not something a message
+// ever tells anybody (payment.SettlementMember). The name matches
+// directoryEntryDTO's, which changed for the same reason.
 type reserveDTO struct {
-	Participant string `json:"participant"`
-	Asset       string `json:"asset"`
-	Reserve     int64  `json:"reserve"`
+	Agent   string `json:"agent"`
+	Asset   string `json:"asset"`
+	Reserve int64  `json:"reserve"`
 }
 
 type createMandateRequest struct {

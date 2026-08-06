@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/raphi011/cbs/deposit"
@@ -2413,24 +2414,21 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
 //     See PostCreditorLegTx.
 //
-// So this reads a cycle, the bank rows, its own SettlementMember rows and its
-// own book, and no payment at all, which is the whole of what a settlement agent
+// So this reads a cycle, its own SettlementMember rows and its own book, and no
+// payment and no bank row at all, which is the whole of what a settlement agent
 // has.
 //
-// What it takes off the BANK rows is not the settlement account number, and this
-// sentence used to say it was. That number is the agent's own and comes off the
-// agent's own row, keyed by BIC, through settlementAccountTx — which is the read
-// Task 17b's SettlementMember exists to make possible, and the reason a
-// settlement agent given its own database still has something to settle from.
-//
-// It used to answer a second question — the IDENTIFIER, because a cycle's
-// positions were keyed by ParticipantID and the agent's own records by BIC, and a
-// bank's row was the only thing in the system holding the mapping. That question
-// has no asker now: the positions arrive keyed by BIC (ClearingCycle.NetPositions).
-//
-// What is left on those rows is a check and not a lookup: AccountsFor, whether
-// the member operates in the cycle's asset at all. It is settlementLegsTx's, and
-// its doc says why it stays where a settlement agent can no longer reach it.
+// It read the BANK rows until Task 18c, and three separate sentences here used to
+// say what for. Not the settlement account number: that is the agent's own and
+// comes off the agent's own row, keyed by BIC, through settlementAccountTx —
+// which is the read Task 17b's SettlementMember exists to make possible, and the
+// reason a settlement agent given its own database still has something to settle
+// from. Not the IDENTIFIER either, which was a mapping from ParticipantID to BIC
+// that has no asker now, since the positions arrive keyed by BIC
+// (ClearingCycle.NetPositions). What was genuinely left was a CHECK —
+// Bank.AccountsFor, whether the member says it operates in the cycle's asset —
+// and this database holds no row to check it against. settlementLegsTx measures
+// what that costs and why the agent's own register is the answer.
 //
 // # The settlement window, and what stopped being true about it
 //
@@ -2471,8 +2469,8 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //
 // # Ordering
 //
-// Participants are visited in registration order, not in map order, so the
-// entries of the central bank's settlement transaction come out the same on
+// Members are visited in the order the central bank opened their accounts, not
+// in map order, so the entries of its settlement transaction come out the same on
 // every run. That order is persisted — the store gives each entry an explicit
 // position column, because a table has no order of its own — so leaving it to
 // Go's randomised map iteration would make the stored transaction differ from
@@ -2522,7 +2520,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	// 1. Central-bank settlement transaction: move netted reserves between
 	//    participants. The net positions sum to zero, so this balances.
 	//
-	//    The participants are read in registration order so that both this
+	//    The members are read in account-opening order so that both this
 	//    transaction's entries and the statements below are deterministic.
 	legs, err := s.settlementLegsTx(ctx, tx, c, asset)
 	if err != nil {
@@ -2556,7 +2554,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 		}
 		if held+leg.net < 0 {
 			return Settlement{}, nil, fmt.Errorf("%w: %s is short %d in %s",
-				ledger.ErrInsufficientBalance, leg.participant.ID, -(held + leg.net), asset)
+				ledger.ErrInsufficientBalance, leg.bic, -(held + leg.net), asset)
 		}
 	}
 
@@ -2593,7 +2591,7 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 				return Settlement{}, nil, err
 			}
 			statements = append(statements, SettlementStatement{
-				Agent:          leg.participant.BIC,
+				Agent:          leg.bic,
 				Account:        leg.settlement,
 				Asset:          asset,
 				Reference:      string(c.ID),
@@ -2640,91 +2638,100 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID) (Settlem
 	return st, statements, nil
 }
 
-// settlementLeg pairs a participant with its non-zero net position in a cycle,
-// together with the account in the CENTRAL BANK's own book that the position
-// moves through — the settlement agent's own record of what it holds for that
-// member, not the member's record of it.
+// settlementLeg pairs a MEMBER — named by its address, which is the only name
+// this institution has for it — with its non-zero net position in a cycle, and
+// with the account in the CENTRAL BANK's own book that the position moves
+// through.
+//
+// It held a *Bank until Task 18c, and the two things it read off that handle
+// were the member's id and the member's address. There is no bank row in this
+// database to read either from, and one of the two does not exist any more
+// anyway: an id the network allocates is not something a settlement agent is
+// ever told. So the address is what a leg carries, and it is what the statement
+// built from it is addressed to.
 type settlementLeg struct {
-	participant *Bank
-	settlement  ledger.AccountID
-	net         ledger.Amount
+	bic        iso20022.BIC
+	settlement ledger.AccountID
+	net        ledger.Amount
 }
 
-// settlementLegsTx resolves a cycle's net positions to participants in
-// registration order, and each participant to the account the settlement agent
-// holds for it in the cycle's asset.
+// settlementLegsTx resolves a cycle's net positions to the settlement agent's
+// own members, in the order it opened their accounts, and each member to the
+// account it holds for that member in the cycle's asset.
 //
-// Registration order rather than map order because these legs decide the entry
-// order of the settlement transaction, which is persisted. Iterating the
-// NetPositions map directly would produce a different stored transaction on
-// every run.
+// Opening order rather than map order because these legs decide the entry order
+// of the settlement transaction, which is persisted. Iterating the NetPositions
+// map directly would produce a different stored transaction on every run.
 //
-// Three failures land here, before anything is posted, and they are not one
-// failure with three causes. A member whose own row says it does not operate in
-// the cycle's asset is ErrParticipantAssetNotFound. A member the central bank
-// holds an account for, but not in this asset, is the same sentinel from the
-// other side. A member the central bank holds NO account for at all is
-// ErrSettlementMemberNotFound — a founded bank that was never admitted, which
-// is a state the domain can be in since founding and joining became two commits
-// with a message between them, and which is not a statement about the asset.
-// See settlementAccountTx, and ReserveBalance, which makes the same distinction
-// for the same reason.
+// Two failures land here, before anything is posted. A member the agent holds an
+// account for, but not in this asset, is ErrParticipantAssetNotFound. A
+// non-zero position naming a bank the agent holds NO account for at all is
+// ErrSettlementMemberNotFound — a founded bank that was never admitted, which is
+// a state the domain can be in since founding and joining became two commits
+// with a message between them, and which is not a statement about the asset. See
+// settlementAccountTx, and ReserveBalance, which makes the same distinction for
+// the same reason.
 //
-// # The id-to-BIC read is gone, and one check on the bank's row is left
+// # It reads the settlement agent's own register, and Task 18c is why
 //
-// This used to read each bank's own row for its ADDRESS, because a cycle's net
-// positions were keyed by ParticipantID and the settlement agent's own records by
-// BIC, and the bank's row was the only thing holding the mapping. That was a
-// settlement agent reading a bank's database and it is not a read it can make.
-// Task 17's doc here argued that the fix was not a narrowing but settling from
-// the MESSAGE, whose pacs.009 already carries both legs' BICs.
+// This used to call tx.ListBanks and walk every bank row in the network, which
+// was a settlement agent reading the banks' database. The csm and centralbank
+// shapes have no banks table at all, so the read has no answer coming — and the
+// register it needed all along is the agent's OWN: a SettlementMember exists for
+// exactly the banks this institution opened an account for, in exactly the assets
+// it opened them in.
 //
-// It was neither: the positions are keyed by BIC now
-// (ClearingCycle.NetPositions), so the conversion has nothing to convert. The
-// message-driven settlement that argument was pointing at is still what the
-// settlement agent holding no cycles at all requires, and it is still Task 18's.
+// # What that cost, and it is one check rather than a lookup
 //
-// What remains on the bank's row is AccountsFor, and it was never part of that
-// crossing: it is a check rather than a lookup, and the thing it checks is the
-// member's own statement about itself — whether this bank operates in the cycle's
-// asset at all. The central bank holding an account the member never asked about
-// would not answer the same question.
-// TestSettleCycleFailsWhenParticipantLacksTheAsset is what pins it. It stays
-// where it is and it is a read a settlement agent still cannot make, which is why
-// the ListBanks below is one of the sites the store split has to answer for.
+// A THIRD failure used to land here: Bank.AccountsFor, the member's own
+// statement about whether it operates in the cycle's asset at all. It was never
+// part of the id-to-BIC crossing — it is a check and not a lookup — but it is a
+// read of another institution's row, and there is no version of it a settlement
+// agent can make.
+//
+// Losing it loses nothing this institution is entitled to decide. The two rows
+// disagree only when an admission stopped halfway (see api.reserveRows, which
+// enumerates the shapes), and in every one of those the agent's own row is the
+// one that governs: settling a position through an account the agent does not
+// hold is what must be refused, and the agent holding one the member has
+// forgotten about is the member's reconciliation rather than a reason to fail a
+// whole cut-off. TestSettleCycleFailsWhenParticipantLacksTheAsset asks the
+// question of the agent's row now, and gives the same sentinel.
 func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, c ClearingCycle, asset ledger.AssetCode) ([]settlementLeg, error) {
-	participants, err := tx.ListBanks(ctx)
+	members, err := tx.ListSettlementMembers(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	legs := make([]settlementLeg, 0, len(c.NetPositions))
-	for _, rec := range participants {
-		net, ok := c.NetPositions[rec.BIC]
+	matched := make(map[iso20022.BIC]bool, len(c.NetPositions))
+	for _, m := range members {
+		net, ok := c.NetPositions[m.BIC]
 		if !ok || net == 0 {
 			continue
 		}
-		p := s.bind(rec)
-		if _, err := p.AccountsFor(asset); err != nil {
-			return nil, err
-		}
-		settlement, err := s.settlementAccountTx(ctx, tx, p.BIC, asset)
+		settlement, err := s.settlementAccountTx(ctx, tx, m.BIC, asset)
 		if err != nil {
 			return nil, err
 		}
-		legs = append(legs, settlementLeg{participant: p, settlement: settlement, net: net})
+		matched[m.BIC] = true
+		legs = append(legs, settlementLeg{bic: m.BIC, settlement: settlement, net: net})
 	}
 
-	// Every non-zero position must have matched a participant; a position that
-	// matched nothing would silently drop money out of the settlement.
-	nonZero := 0
-	for _, net := range c.NetPositions {
-		if net != 0 {
-			nonZero++
+	// Every non-zero position must have matched a member; a position that matched
+	// nothing would silently drop money out of the settlement. The unmatched are
+	// named, sorted, because a map's iteration order would make the same cycle
+	// fail with a different message on every run.
+	missing := make([]string, 0)
+	for bic, net := range c.NetPositions {
+		if net != 0 && !matched[bic] {
+			missing = append(missing, string(bic))
 		}
 	}
-	if len(legs) != nonZero {
-		return nil, ErrParticipantNotFound
+	if len(missing) > 0 {
+		slices.Sort(missing)
+		return nil, fmt.Errorf("%w: no settlement account is held for %s",
+			ErrSettlementMemberNotFound, strings.Join(missing, ", "))
 	}
 	return legs, nil
 }
@@ -4810,19 +4817,19 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 	return out, err
 }
 
-// ReserveBalance returns a participant's reserve book balance in one asset, as
-// held at the central bank. Central-bank settlement accounts are plain GL
-// accounts with no deposit layer, so this is just the GL book balance.
+// ReserveBalance returns a member's reserve book balance in one asset, as held
+// at the central bank. Central-bank settlement accounts are plain GL accounts
+// with no deposit layer, so this is just the GL book balance.
 //
 // It takes an asset because a bank holds one reserve account per asset, and a
 // single number across several of them would be an addition of unlike things.
 //
-// Two different answers mean two different things, and this task makes the first
-// of them reachable for the first time. A bank the central bank holds NO account
-// for is ErrSettlementMemberNotFound — the true state of a bank that is founded
-// and not yet admitted, which is not an error about the asset at all. A bank it
-// holds accounts for but not in this asset is ErrParticipantAssetNotFound. See
-// settlementAccountTx, which is where both come from.
+// Two different answers mean two different things. A bank the central bank holds
+// NO account for is ErrSettlementMemberNotFound — the true state of a bank that
+// is founded and not yet admitted, which is not an error about the asset at all.
+// A bank it holds accounts for but not in this asset is
+// ErrParticipantAssetNotFound. See settlementAccountTx, which is where both come
+// from.
 //
 // The account is read from the CENTRAL BANK's own member row. This is the
 // operator console asking the central bank about the central bank's book, and
@@ -4830,24 +4837,29 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 // a console that read the bank's note of its account number would report a
 // balance the bank had chosen the account for.
 //
-// The id-to-BIC step is the same crossing settlementLegsTx records: the caller
-// holds a ParticipantID and the central bank's records are keyed by address, so
-// the bank's own row is read to translate. The console is outside the entity
-// boundary by construction — it is the one caller in this system that holds
-// every institution's store — so it is the one place that translation is not a
-// crossing to close.
-func (s *Network) ReserveBalance(ctx context.Context, id ParticipantID, asset ledger.AssetCode) (ledger.Amount, error) {
+// # It takes a BIC, and it took a ParticipantID
+//
+// The old signature made the caller name a bank the way the NETWORK named it,
+// and this method then read that bank's own row to translate the id into the
+// address its own records are keyed by. The doc here argued that the translation
+// was not a crossing to close, because the console holds every institution's
+// store and is outside the entity boundary by construction.
+//
+// That argument survives and its conclusion does not. Task 18c gives the central
+// bank a database of its own with no banks table in it, so the read has no answer
+// coming — from the console or from anywhere. What the console holds is a set of
+// stores, not a directory, and the only name it can hand this institution is the
+// one that crosses institutional boundaries. Its callers were holding a BIC
+// already or had one a field away; api.reserveRows now takes the whole list off
+// tx.ListSettlementMembers, where the address is the key.
+func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode) (ledger.Amount, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
 		return 0, err
 	}
 	var out ledger.Amount
 	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		p, err := tx.GetBank(ctx, id)
-		if err != nil {
-			return err
-		}
-		settlement, err := s.settlementAccountTx(ctx, tx, p.BIC, asset)
+		settlement, err := s.settlementAccountTx(ctx, tx, bic, asset)
 		if err != nil {
 			return err
 		}

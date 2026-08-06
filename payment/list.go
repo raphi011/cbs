@@ -20,18 +20,28 @@ import (
 // contract notes in store.go.
 // ---------------------------------------------------------------------------
 
-// ListBanks returns every bank in the network, in registration order.
+// ListBanks returns every bank in THIS network's own database, in registration
+// order — which, on a bank's own store, is that bank and nothing else.
 //
-// Every bank, and not every member: founding is what writes the row, so a bank
-// the scheme has not answered for is in this list carrying Status Founded.
-// Callers depend on that rather than working around it — api's GET /members is
-// how a console watches a bank become a member, and cmd/server builds its port
-// table from this call at start-up, so a bank that was founded before the
-// process started gets a listener whether or not the scheme ever answered for
-// it. (A bank founded at RUNTIME gets none until the next restart, which is a
-// fact about the static table rather than about this list.) GetRosterEntryByBIC
-// below is the narrower question, answered from the table admission writes rather
-// than from this one.
+// # It listed the network and there is no network to list
+//
+// This was the system's bank directory: every bank in one shared store, founded
+// ones included, and its callers were the ones that needed all of them. api's
+// GET /members watched a bank become a member through it and cmd/server built its
+// port table from it. Task 18c leaves neither institution a banks table to
+// answer from — the csm and centralbank shapes have none — so both callers moved
+// to payment.Stores.Banks, which asks the DEPLOYMENT which databases exist rather
+// than asking an institution which colleagues it has.
+//
+// What is left is a bank's own row, reachable through its own network, and the
+// listing form of it is a slice of one. It survives because storetest's suites
+// are written against Tx.ListBanks and because a listing that cannot span
+// institutions is harmless; nothing in this package calls it.
+//
+// Founding is still what writes the row, so a bank the scheme has not answered
+// for is here carrying Status Founded — which is the difference from the
+// clearing house's roster. GetRosterEntryByBIC below is that narrower question,
+// answered from the table admission writes rather than from this one.
 //
 // The returned Banks carry live Ledger and Deposit handles bound to the
 // network's store, so a caller can go straight from a listing to a bank's books.
@@ -158,6 +168,50 @@ func (s *Network) ListRosterEntries(ctx context.Context) ([]RosterEntry, error) 
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
 		var err error
 		out, err = tx.ListRosterEntries(ctx)
+		return err
+	})
+	return out, err
+}
+
+// ListSettlementMembers returns every bank the CENTRAL BANK holds a settlement
+// account for, oldest account first.
+//
+// It is the settlement agent's answer to the question the clearing house answers
+// with ListRosterEntries and the network used to answer with ListBanks, and the
+// three are genuinely three answers rather than one read three ways. A bank
+// founded and not yet admitted is in none of them but the last; a bank whose
+// acmt.007 the agent answered and whose acknowledgement never reached the
+// clearing house is in this one and not the roster.
+//
+// Its caller is api's GET /reserves, which is the operator console asking the
+// central bank what it holds and for whom. Nothing else can ask: this list names
+// its members by ADDRESS, because that is the only name a settlement agent is
+// ever told (see SettlementMember), and a caller wanting the banks themselves
+// wants a different institution.
+func (s *Network) ListSettlementMembers(ctx context.Context) ([]SettlementMember, error) {
+	var out []SettlementMember
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.ListSettlementMembers(ctx)
+		return err
+	})
+	return out, err
+}
+
+// GetSettlementMember returns what the central bank holds for one address: the
+// name it opened the accounts under, one account per asset, and when. Returns
+// ErrSettlementMemberNotFound for a bank it has opened nothing for — which a
+// founded, unadmitted bank ordinarily is.
+//
+// It is ListSettlementMembers narrowed to one member, and it is what GET
+// /reserves/{bic} reads. The route used to read the BANK's row and take the
+// assets off that; the settlement agent has no such row and the assets it can
+// report are the ones it opened accounts in.
+func (s *Network) GetSettlementMember(ctx context.Context, bic iso20022.BIC) (SettlementMember, error) {
+	var out SettlementMember
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetSettlementMember(ctx, bic)
 		return err
 	})
 	return out, err

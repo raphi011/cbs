@@ -103,15 +103,60 @@ func (s *Server) handleAddParticipant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, toParticipantDTO(p))
 }
 
+// handleListParticipants answers every bank this deployment holds a database
+// for, each read out of its own database, ascending by address.
+//
+// # No institution is asked, because none of them knows
+//
+// It called the clearing house's ListBanks until Task 18c, and that read has no
+// answer coming: the csm shape has no banks table. Neither does the central
+// bank's, and the roster is not a substitute — a bank founded and not yet
+// admitted has no roster entry and is precisely the bank this listing exists to
+// show, since participantDTO.Status is what tells "Founded" from "Member" apart.
+//
+// payment.Stores.Banks is the question with an answer: every bank whose DATABASE
+// exists. Its doc says nothing in the domain calls it and nothing should — an
+// institution asking which other institutions exist is the crossing this task
+// removes — and this is not the domain asking. It is the process asking what it
+// has, and then asking each of those banks for its own row.
+//
+// # It reaches past this listener's binding, and surface.go names why
+//
+// Server.as binds one institution's Network to a router and every other handler
+// here goes through s.network(). This one goes through s.nets, to N databases
+// that are not this listener's. So does POST /members beside it, which founds a
+// bank and writes that bank's database whole. Both are the operator's acts over a
+// deployment rather than the settlement agent's over its own books; the router
+// comment in surface.go is where that exception is written down, and this is one
+// of the two routes it covers.
+//
+// # The cost, stated rather than implied
+//
+// One request opens and reads every bank's database. It is the widest read in
+// this process and there is no narrower version of it — a list of N banks is N
+// banks' rows and each row is in a different file. The consolation is that it is
+// the only such read: the seed's idempotency probe and cmd/server's listener plan
+// ask Stores.Banks for the ADDRESSES alone and open nothing.
 func (s *Server) handleListParticipants(w http.ResponseWriter, r *http.Request) {
-	parts, err := s.network().ListBanks(r.Context())
+	bics, err := s.nets.Stores().Banks(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	out := make([]participantDTO, len(parts))
-	for i, p := range parts {
-		out[i] = toParticipantDTO(p)
+	out := make([]participantDTO, 0, len(bics))
+	for _, bic := range bics {
+		id := payment.ParticipantID(bic)
+		net, err := s.nets.Bank(r.Context(), id)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		p, err := net.GetBank(r.Context(), id)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		out = append(out, toParticipantDTO(p))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -228,18 +273,21 @@ func (s *Server) handleListSchemes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleListReserves reports every bank's reserve in every asset it operates
-// in — one row per (participant, asset), because a reserve in one asset says
-// nothing about a reserve in another and the two must not be added up.
+// handleListReserves reports every reserve this central bank holds — one row per
+// (member, asset), because a reserve in one asset says nothing about a reserve
+// in another and the two must not be added up.
+//
+// The list is the settlement agent's OWN register, and it used to be ListBanks.
+// See reserveRows for what changed with it.
 func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
-	parts, err := s.network().ListBanks(r.Context())
+	members, err := s.network().ListSettlementMembers(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	out := make([]reserveDTO, 0, len(parts))
-	for _, p := range parts {
-		rows, err := s.reserveRows(r, p)
+	out := make([]reserveDTO, 0, len(members))
+	for _, m := range members {
+		rows, err := s.reserveRows(r, m)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -249,15 +297,20 @@ func (s *Server) handleListReserves(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// handleGetReserve reports one bank's reserves, one row per asset, for the
+// handleGetReserve reports one member's reserves, one row per asset, for the
 // same reason handleListReserves does.
+//
+// The path segment is a BIC and it used to be a participant id. That is what the
+// settlement agent's records are keyed by, and the only name for a bank it is
+// ever told; a bank it holds no account for is the 422 the sentinel already
+// mapped to rather than a 404 about a bank row this institution has no table for.
 func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
-	p, err := s.network().GetBank(r.Context(), payment.ParticipantID(r.PathValue("pid")))
+	m, err := s.network().GetSettlementMember(r.Context(), iso20022.BIC(r.PathValue("bic")))
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	out, err := s.reserveRows(r, p)
+	out, err := s.reserveRows(r, m)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -265,111 +318,75 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// reserveRows reads one participant's reserve in each of its assets, in asset
-// order so the response does not reshuffle between identical requests.
+// reserveRows reads one member's reserve in each asset the settlement agent
+// holds an account for it in, in asset order so the response does not reshuffle
+// between identical requests.
 //
-// # One rule: a row for every asset the settlement agent holds an account in
+// # One rule: a row for every account this institution holds, and nothing else
 //
-// Nothing else gets a row, and neither of the two ways an account can be missing
-// is an error about the request. Both are the settlement agent saying it holds
-// nothing here, and a reserve report has nothing to report.
+// The assets come off the MEMBER's row — payment.SettlementMember.Accounts, one
+// account per asset, written by the agent when it answered an acmt.007 — so
+// every row this builds is a reserve this institution actually keeps.
 //
-// payment.ErrSettlementMemberNotFound is the agent holding no row for this bank
-// at all — a bank that has founded itself and not yet joined, which admission
-// being a conversation makes an ordinary state rather than a fault. The whole
-// bank loses its rows together, and that is right: it has no reserves at all,
-// not some. (The skip sits inside the per-asset loop only because that is where
-// ReserveBalance is asked; payment.settlementAccountTx reads the member row
-// before it looks at the asset, so this sentinel cannot come back for one asset
-// and not another.)
+// It used to walk the BANK's assets and swallow two sentinels: the agent holding
+// no member row at all (payment.ErrSettlementMemberNotFound, a founded and
+// unadmitted bank) and the agent holding a row without this asset in it
+// (payment.ErrParticipantAssetNotFound, an admission answered in one currency and
+// not yet the other). Both skips are gone and neither answer changed: a bank with
+// no member row is not in ListSettlementMembers to begin with, and an asset with
+// no account is not in this map. What was a comparison between two institutions'
+// records is the agent's own register read straight, which is the only version of
+// this endpoint the central bank's database can serve — Task 18c leaves it no
+// banks table to compare against.
 //
-// payment.ErrParticipantAssetNotFound is the agent holding a row without THIS
-// asset in it, and that one really is per asset. It is not exotic and it is not
-// broken: one acmt.007 asks for one currency, so a bank joining in euro and
-// dollars has two applications answered in two commits, and between them the
-// agent holds euro and not dollars while the bank's own row says both. Every
-// two-asset admission passes through that window. No rate is quoted for it,
-// because a rate here is a fact about when the reads were taken and not about
-// the system — the window is as wide as one unit of work at one actor, and a
-// probe can miss it entirely or find it repeatedly without either result saying
-// anything.
+// # What that costs, and which stuck bank it was actually about
 //
-// Which is why it is skipped rather than surfaced, and the change is deliberate:
-// reporting it turned the LIST route into a 422 for every bank on it because one
-// applicant was mid-conversation, which is worse than the founded-bank 500 this
-// endpoint was fixed for. An empty list from a whole route is not a truer answer
-// than a missing row.
+// The comparison is what found a half-finished admission, and it is worth naming
+// what is no longer visible from here, because the obvious candidate was never
+// one of them.
 //
-// # What that costs, and which stuck bank it is actually about
+// An acmt.007 that never reached the settlement agent — a dead letter on the way
+// out — leaves the agent holding a row without that asset, permanently. An
+// acmt.007 the agent REFUSED leaves exactly the same rows:
+// mesh.bank.receiveAdmissionRejection writes nothing, since nothing about a bank
+// changes when it applies, so the bank's own row carries an empty reference and
+// the agent holds no account. The two were already indistinguishable from each
+// other — "nobody could tell it" and "it was told no" leave identical state and
+// the refusal survives only as a log line — and both now look, from this
+// endpoint, like a member admitted in one asset, which is also what a two-asset
+// admission looks like between its two commits. The difference is TIME and
+// nothing here watches a clock.
 //
-// TWO shapes become indistinguishable from that window, and they are worth
-// naming exactly, because the obvious candidate is neither of them.
+// mesh.Mesh.Admit's "partly admitted bank" is a DIFFERENT state and this endpoint
+// still reports it fully. There the acmt.007 arrived and the acknowledgement went
+// missing, and the agent opens the account before it acknowledges
+// (mesh.centralBank.receiveAdmission), so its row has both assets and this
+// reports two rows — the second showing a reserve the bank cannot spend, since
+// payment.DepositTx resolves through the BANK's record and that one has no
+// reference. That is precisely what payment.RecordMembershipTx describes: a
+// deposit in that asset fails while the operator console cheerfully reports the
+// reserve.
 //
-// The first is an acmt.007 that never reached the settlement agent — a
-// dead letter on the way out, so no account is opened in that asset and none
-// ever will be. The agent holds a row without the asset, permanently, which is
-// byte-identical to holding one without the asset for another millisecond. The
-// difference is TIME and nothing here watches a clock.
-//
-// The second is an acmt.007 the settlement agent REFUSED, and it is the one that
-// makes the recipe below a heuristic rather than a test.
-// mesh.bank.receiveAdmissionRejection writes NOTHING — there is nothing to
-// write, since nothing about a bank changes when it applies — so a refused asset
-// leaves the bank's own row carrying an empty reference and the agent holding no
-// account, which is the dead letter's state exactly. The difference is that this
-// applicant was TOLD, and the telling survives only as a log line. Reaching it
-// needs payment.OpenSettlementAccountTx to fail, so it is a store or a ledger
-// giving way rather than a state the flow produces; measured by making the
-// SECOND settlement account of a two-asset admission fail to write, the readings
-// are reserves = [EUR 0], status Member, own USD settlement account empty — the
-// same three the dead letter gives.
-//
-// mesh.Mesh.Admit's "partly admitted bank" is a DIFFERENT state and this
-// endpoint reports it fully. There the acmt.007 arrived and the acknowledgement
-// went missing, and the agent opens the account before it acknowledges
-// (mesh.centralBank.receiveAdmission), so the agent's row has both assets and
-// this reports two rows — with the second showing a reserve the bank cannot
-// spend, since payment.DepositTx resolves through the BANK's record and that one
-// has no reference. That is precisely what payment.RecordMembershipTx describes:
-// a deposit in that asset fails while the operator console cheerfully reports
-// the reserve. Measured, on a bank admitted in both assets whose own USD
-// reference was then cleared: reserves = [EUR 0, USD 0], status Member, its own
-// row carrying an empty USD settlement account.
-//
-// So the recipe for finding any of them is not "count the rows against the
-// assets". For the two the agent answers nothing for it is a bank whose own row
-// names an asset with NO settlement reference and which has no reserve row in
-// it; for Admit's it is the same empty reference WITH a reserve row. What the
-// first recipe cannot do is what nothing here can: it returns the refused
-// applicant beside the dead-lettered one, because "nobody could tell it" and "it
-// was told no" leave the same rows, and the only record of the refusal is in a
-// log. A reconciliation that acts on that list has to expect a bank that is not
-// stuck at all.
-//
-// Both comparisons need the bank's own assets, which GET /members and GET /me
-// carry and which no screen in this repository renders today — so it is two API
-// reads, not something the console shows. Turning any of them into "will not
-// finish" needs a clock, and that is Task 19's reconciliation rather than this
-// handler's.
-func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
-	codes := make([]string, 0, len(p.Assets))
-	for code := range p.Assets {
+// Finding any of them therefore needs the bank's own assets beside these rows,
+// which GET /me on that bank's own port carries and which no screen in this
+// repository renders — so it is two reads at two institutions, not something one
+// console can show. That is the split doing its job rather than a regression:
+// the readings are the same readings, and putting them side by side is a
+// reconciliation, which is Task 19's and not this handler's.
+func (s *Server) reserveRows(r *http.Request, m payment.SettlementMember) ([]reserveDTO, error) {
+	codes := make([]string, 0, len(m.Accounts))
+	for code := range m.Accounts {
 		codes = append(codes, string(code))
 	}
 	sort.Strings(codes)
 
 	out := make([]reserveDTO, 0, len(codes))
 	for _, code := range codes {
-		bal, err := s.network().ReserveBalance(r.Context(), p.ID, ledger.AssetCode(code))
-		// No account, no row — of either kind. See the doc above.
-		if errors.Is(err, payment.ErrSettlementMemberNotFound) ||
-			errors.Is(err, payment.ErrParticipantAssetNotFound) {
-			continue
-		}
+		bal, err := s.network().ReserveBalance(r.Context(), m.BIC, ledger.AssetCode(code))
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, reserveDTO{Participant: string(p.ID), Asset: code, Reserve: int64(bal)})
+		out = append(out, reserveDTO{Agent: string(m.BIC), Asset: code, Reserve: int64(bal)})
 	}
 	return out, nil
 }

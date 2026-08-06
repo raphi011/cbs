@@ -314,9 +314,14 @@ func fundAccount(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, ac
 
 // takeCashIn is the deposit half alone: the customer's balance rises and the bank
 // holds the cash.
+//
+// Through the BANK's own network, because a deposit is the bank's act on its own
+// register. It went through sys.Network — the clearing house's — while there was
+// one store, which was the same defect the seed's initiate carried: the act
+// looked identical because both views reached the same database.
 func takeCashIn(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, acct deposit.Account, amount ledger.Amount) {
 	t.Helper()
-	assertNoError(t, sys.Deposit(ctx, p.ID, acct.ID, amount, "opening deposit"))
+	assertNoError(t, sys.bank(p.BIC).Deposit(ctx, p.ID, acct.ID, amount, "opening deposit"))
 }
 
 // depositAccount re-reads a customer account from its id, for the fixtures that
@@ -399,7 +404,7 @@ func TestALodgementQuotingNoAccountIsRefused(t *testing.T) {
 
 	// The reserve BEFORE, because setupTwoBanks lodges: what this asserts is
 	// that the refused instruction moved nothing, not that the account is empty.
-	before, err := sys.cb().ReserveBalance(ctx, a.ID, testAsset)
+	before, err := sys.cb().ReserveBalance(ctx, a.BIC, testAsset)
 	assertNoError(t, err)
 
 	// Everything a real lodgement carries except the account it credits.
@@ -416,7 +421,7 @@ func TestALodgementQuotingNoAccountIsRefused(t *testing.T) {
 	// failing afterwards: a lodgement that got past the guard would have posted
 	// into the agent's own row perfectly happily, which is why the assertion
 	// above is the whole of the defect.
-	after, err := sys.cb().ReserveBalance(ctx, a.ID, testAsset)
+	after, err := sys.cb().ReserveBalance(ctx, a.BIC, testAsset)
 	assertNoError(t, err)
 	assertEqual(t, "the member's reserve after a lodgement naming no account", after, before)
 }
@@ -596,7 +601,7 @@ func customerBalance(t *testing.T, p *Bank, acct deposit.AccountID) ledger.Amoun
 func assertReserveMirror(t *testing.T, sys *testSystem, p *Bank) {
 	t.Helper()
 	own := bookBalance(t, p.Ledger, accountsOf(t, p).Reserve)
-	cb, err := sys.cb().ReserveBalance(context.Background(), p.ID, testAsset)
+	cb, err := sys.cb().ReserveBalance(context.Background(), p.BIC, testAsset)
 	assertNoError(t, err)
 	assertEqual(t, "reserve mirror for "+p.Name, own, cb)
 }
@@ -1288,7 +1293,7 @@ func reserveBalances(t *testing.T, ctx context.Context, sys *testSystem) map[Par
 
 	out := make(map[ParticipantID]ledger.Amount, len(participants))
 	for _, p := range participants {
-		bal, err := sys.cb().ReserveBalance(ctx, p.ID, testAsset)
+		bal, err := sys.cb().ReserveBalance(ctx, p.BIC, testAsset)
 		assertNoError(t, err)
 		out[p.ID] = bal
 	}
@@ -2265,9 +2270,17 @@ func TestAccountsForUnknownAssetFails(t *testing.T) {
 	assertError(t, err, ErrParticipantAssetNotFound)
 }
 
-// Settlement must never fall back to a base currency when a member does not
-// hold the cycle's asset. Taking the euro away from a member that is about to
-// settle simulates the state a future non-euro scheme would produce naturally.
+// Settlement must never fall back to a base currency when the settlement agent
+// holds no account for a member in the cycle's asset. Taking the euro account
+// away from a member that is about to settle simulates the state a future
+// non-euro scheme would produce naturally.
+//
+// The asset is taken off the CENTRAL BANK's own member row and it used to be
+// taken off the bank's. Both were ErrParticipantAssetNotFound and only one of
+// them is a question this institution can ask: settlementLegsTx reads the agent's
+// own register now, because the agent's database holds no bank rows to read. See
+// its doc for what the bank's own AccountsFor check was and why losing it costs
+// nothing the settlement agent is entitled to decide.
 func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -2284,11 +2297,13 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
-	stored, err := sys.GetBank(ctx, b.ID)
-	assertNoError(t, err)
-	delete(stored.Assets, testAsset)
-	assertNoError(t, sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
-		return tx.PutBank(ctx, *stored)
+	assertNoError(t, sys.stores.CentralBank().Update(ctx, func(ctx context.Context, tx Tx) error {
+		member, err := tx.GetSettlementMember(ctx, b.BIC)
+		if err != nil {
+			return err
+		}
+		delete(member.Accounts, testAsset)
+		return tx.PutSettlementMember(ctx, member)
 	}))
 
 	_, _, err = sys.cb().SettleCycle(ctx, cyc.ID)
@@ -4536,7 +4551,7 @@ func TestASettlementAgentRefusesAReturnThatNamesNoPayment(t *testing.T) {
 // the only side of the mirror a settlement agent's act moves.
 func reserveAt(t *testing.T, sys *testSystem, p *Bank) ledger.Amount {
 	t.Helper()
-	bal, err := sys.cb().ReserveBalance(context.Background(), p.ID, testAsset)
+	bal, err := sys.cb().ReserveBalance(context.Background(), p.BIC, testAsset)
 	assertNoError(t, err)
 	return bal
 }

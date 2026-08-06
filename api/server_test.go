@@ -517,15 +517,27 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	// and the bank has recorded the reference for that one and holds none for
 	// the other — which is what founding leaves and what the second
 	// acknowledgement would have filled in.
-	if err := h.net.Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+	//
+	// TWO units of work at two institutions, and that is not a fixture detail: the
+	// member row is the central bank's and the bank's row is the bank's own, and
+	// there is no transaction that can span them. The window this rewinds to is
+	// precisely a moment when two databases disagree, so a fixture that could write
+	// both atomically would be reproducing a state the system cannot reach.
+	if err := h.nets.CentralBank().Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		member, err := tx.GetSettlementMember(ctx, "BNKADEFFXXX")
 		if err != nil {
 			return err
 		}
 		member.Accounts = map[ledger.AssetCode]ledger.AccountID{"EUR": member.Accounts["EUR"]}
-		if err := tx.PutSettlementMember(ctx, member); err != nil {
-			return err
-		}
+		return tx.PutSettlementMember(ctx, member)
+	}); err != nil {
+		t.Fatalf("rewinding the agent's register to the window between the two acknowledgements: %v", err)
+	}
+	bankNet, err := h.nets.Bank(context.Background(), payment.ParticipantID(pid))
+	if err != nil {
+		t.Fatalf("opening the applicant's store: %v", err)
+	}
+	if err := bankNet.Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
 		b, err := tx.GetBank(ctx, payment.ParticipantID(pid))
 		if err != nil {
 			return err
@@ -535,7 +547,7 @@ func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 		b.Assets["USD"] = usd
 		return tx.PutBank(ctx, b)
 	}); err != nil {
-		t.Fatalf("rewinding to the window between the two acknowledgements: %v", err)
+		t.Fatalf("rewinding the applicant's own row: %v", err)
 	}
 
 	// One row, not a refusal — and the bank still says it operates in both,
@@ -631,7 +643,7 @@ func TestAdmittingABICWithAnAdmissionInFlightSaysToWait(t *testing.T) {
 func assertBankCountByBIC(t *testing.T, h *Server, bic string, want int) {
 	t.Helper()
 	var members []participantDTO
-	getJSON(t, csm(h), "/members", &members)
+	getJSON(t, cb(h), "/members", &members)
 	var got int
 	for _, m := range members {
 		if m.BIC == bic {
@@ -1270,7 +1282,7 @@ func TestAdminReset(t *testing.T) {
 
 	// emptyList reports whether the /participants body is the empty array.
 	emptyList := func() bool {
-		b := strings.TrimSpace(do(t, csm(h), "GET", "/members", "").Body.String())
+		b := strings.TrimSpace(do(t, cb(h), "GET", "/members", "").Body.String())
 		return b == "[]"
 	}
 
@@ -1401,7 +1413,7 @@ func TestResetSurvivesAClientDisconnect(t *testing.T) {
 
 	// And the store is whole rather than truncated-but-not-reseeded.
 	var parts []participantDTO
-	getJSON(t, csm(srv), "/members", &parts)
+	getJSON(t, cb(srv), "/members", &parts)
 	assertEqual(t, "participants after the reset", len(parts), 1)
 	assertEqual(t, "participant name", parts[0].Name, "Bank A")
 }
@@ -1464,7 +1476,7 @@ func TestConcurrentResetsLeaveExactlyOneDataset(t *testing.T) {
 	}
 
 	var parts []participantDTO
-	getJSON(t, csm(h), "/members", &parts)
+	getJSON(t, cb(h), "/members", &parts)
 	assertEqual(t, "participants after concurrent resets", len(parts), 1)
 
 	var accounts []depositAccountDTO
@@ -1545,7 +1557,7 @@ func TestControlCharactersAreRefusedNotStored(t *testing.T) {
 
 	// Nothing was created by any of the refused requests.
 	var parts []participantDTO
-	getJSON(t, csm(h), "/members", &parts)
+	getJSON(t, cb(h), "/members", &parts)
 	assertEqual(t, "participants after the refusals", len(parts), 1)
 
 	var accounts []depositAccountDTO

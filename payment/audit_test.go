@@ -69,21 +69,29 @@ type auditReader struct {
 // system's trail: the clearing house, the settlement agent, and every member
 // bank that exists at the moment it is called.
 //
-// The banks come from the clearing house's ListBanks, which is a read that does
-// not survive the store split — a clearing house holds no banks table. What
-// replaces it is the roster, and the reason it is not used here yet is that a
-// FOUNDED bank has no roster entry and does have a log: TestFoundingABankIsAudited
-// is about exactly that bank.
+// The banks came from the clearing house's ListBanks, which is a read that did
+// not survive the store split — a clearing house holds no banks table. The
+// roster cannot replace it either: a FOUNDED bank has no roster entry and does
+// have a log, and TestFoundingABankIsAudited is about exactly that bank.
+//
+// What replaces it is Stores.Banks — every bank whose DATABASE exists, which
+// includes the founded and unadmitted one. That is the composition root's
+// question rather than an institution's, and a test fixture assembling the whole
+// system's trail is the composition root; no institution has this list and none
+// should.
 func auditReaders(t *testing.T, sys *testSystem) []auditReader {
 	t.Helper()
-	banks, err := sys.ListBanks(context.Background())
+	bics, err := sys.stores.Banks(context.Background())
 	assertNoError(t, err)
 	out := []auditReader{
 		{net: sys.Network, book: ClearingHouseBook},
 		{net: sys.cb(), book: CentralBankBook},
 	}
-	for _, b := range banks {
-		out = append(out, auditReader{net: sys.bank(b.BIC), book: b.BookID})
+	for _, bic := range bics {
+		net := sys.bank(bic)
+		b, err := net.GetBank(context.Background(), ParticipantID(bic))
+		assertNoError(t, err)
+		out = append(out, auditReader{net: net, book: b.BookID})
 	}
 	return out
 }

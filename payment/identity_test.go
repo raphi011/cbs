@@ -170,7 +170,7 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 			})
 			return err
 		}},
-		{"ReserveBalance", func(n *Network) error { _, err := n.ReserveBalance(ctx, a.ID, testAsset); return err }},
+		{"ReserveBalance", func(n *Network) error { _, err := n.ReserveBalance(ctx, a.BIC, testAsset); return err }},
 		{"CentralBank", func(n *Network) error { _, err := n.CentralBank(); return err }},
 	}
 

@@ -767,7 +767,7 @@ func TestResetRebuildsTheMeshSoAReadmittedBankCanPay(t *testing.T) {
 	assertStatus(t, cb(h), "POST", "/admin/reset", "", http.StatusOK)
 
 	var members []participantDTO
-	getJSON(t, csm(h), "/members", &members)
+	getJSON(t, cb(h), "/members", &members)
 	if len(members) != 0 {
 		t.Fatalf("the roster holds %d banks after a reset with no reseed, want 0", len(members))
 	}
@@ -884,7 +884,7 @@ func TestAdmissionDuringAShutdownIsRefusedWithoutTheRemedy(t *testing.T) {
 func participants(t *testing.T, h *Server) []participantDTO {
 	t.Helper()
 	var out []participantDTO
-	getJSON(t, csm(h), "/members", &out)
+	getJSON(t, cb(h), "/members", &out)
 	return out
 }
 

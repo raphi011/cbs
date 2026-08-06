@@ -164,10 +164,13 @@ type Tx interface {
 	// wrapper that did, and Task 18 deleted it along with the seven other callers
 	// that turned out to be holding an address already.
 	//
-	// ListSettlementMembers is called by nothing but storetest. It is declared
-	// for the reason ListSettlementAdvices below is: the rows exist, and adding
-	// a listing later would be a second occasion to get the ordering contract
-	// wrong. ListRosterEntries has had a caller
+	// ListSettlementMembers has two callers, and both arrived when the settlement
+	// agent got a database with no banks table in it. settlementLegsTx walks it to
+	// turn a cycle's net positions into legs, in the order the agent opened the
+	// accounts — it walked ListBanks, which is a read this institution cannot make
+	// — and api's GET /reserves reports one row per (member, asset) from it. Its
+	// ordering contract is therefore load-bearing twice over: it decides the entry
+	// order of a settlement transaction that is persisted. ListRosterEntries has had a caller
 	// since admission became a conversation — mesh.Mesh.joinRoster, which asks
 	// WHO IS A MEMBER rather than which banks exist, so that a founded and
 	// unadmitted bank gets no actor at startup.
