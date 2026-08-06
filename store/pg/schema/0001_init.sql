@@ -663,11 +663,20 @@ COMMENT ON COLUMN banks.admission_ref IS
 -- one account per asset, automatically; the same account hung off banks
 -- would have needed one column per asset the bank could ever operate in.
 --
--- The set is fixed when the bank joins the network, which is the reason the
--- asset registry that used to sit beside this table is gone: an asset a bank
--- did not join with has no suspense, reserve or settlement account here, so
--- registering one afterwards produced customer accounts that could never
--- settle. What a bank operates in is these rows; what an asset *is* is code.
+-- These rows are written when the bank is FOUNDED, and the set is never
+-- extended afterwards. That is the reason the asset registry which used to sit
+-- beside this table is gone: an asset the bank was not founded in has no row
+-- here at all, so registering one afterwards produced customer accounts that
+-- could never settle. What a bank operates in is these rows; what an asset *is*
+-- is code.
+--
+-- Only one column arrives later. Every account named here but settlement is
+-- created in the bank's own book by the act that writes the row; settlement is
+-- another institution's account, and it is filled in when the scheme answers
+-- the bank's application. So a row with an empty settlement is a founded bank
+-- rather than a broken one — and an acknowledgement naming an asset with no row
+-- here is passed over rather than allowed to create one, which is what keeps
+-- "the set is never extended" true from the admission side as well as this one.
 CREATE TABLE bank_assets (
     bank_id            TEXT NOT NULL REFERENCES banks (id) ON DELETE CASCADE,
     asset              TEXT NOT NULL,
