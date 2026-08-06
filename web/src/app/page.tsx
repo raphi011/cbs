@@ -56,7 +56,10 @@ export default function Lobby() {
       </section>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">Member banks</h2>
+        {/* Every bank the network lists, which is not the same as every MEMBER:
+            a bank founded and not yet admitted is in here too. The card below says
+            which, so the heading says the wider of the two truths. */}
+        <h2 className="text-sm font-medium text-muted-foreground">Banks</h2>
         {isLoading && banks.length === 0 ? (
           <div className="grid gap-4 sm:grid-cols-2">
             <Skeleton className="h-24" />

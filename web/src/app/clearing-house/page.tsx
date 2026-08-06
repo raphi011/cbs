@@ -51,7 +51,7 @@ export default function ClearingHouse() {
       <PageHeader
         title="Clearing house"
         hint="clearing-vs-settlement"
-        description="An interbank payment network running on a double-entry ledger. Each participant is a member bank; they meet at the central bank to settle."
+        description="An interbank payment network running on a double-entry ledger. The banks it clears for meet at the central bank to settle. A bank founded and not yet admitted is listed here as well, and is not one of them yet."
       />
 
       <HowMoneyMoves />
@@ -71,9 +71,10 @@ export default function ClearingHouse() {
       </div>
 
       <section className="space-y-3">
-        <h2 className="text-sm font-medium text-muted-foreground">
-          Member banks
-        </h2>
+        {/* Banks, not members. The STAT above counts members and this list does
+            not filter: a founded bank belongs on the console the network's
+            membership is watched from, and its card says what it is. */}
+        <h2 className="text-sm font-medium text-muted-foreground">Banks</h2>
         {error ? (
           <ErrorState error={error} onRetry={() => refetch()} />
         ) : isLoading ? (
@@ -143,7 +144,7 @@ function ParticipantCard({
       <CardContent>
         <p className="text-sm text-muted-foreground">
           {p.status !== "Member"
-            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and no cut-off it takes part in can settle."
+            ? "Founded. The scheme has not answered its application: it can open customer accounts but not fund them, and a payment to or from it is refused until the answer arrives."
             : provisioned
               ? "Member of the network."
               : "Awaiting provisioning."}
