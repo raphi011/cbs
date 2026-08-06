@@ -13,19 +13,26 @@ function hueOf(accent: string | undefined): number {
 }
 
 // Every id the backend's counter could plausibly have reached, rather than the
-// ids it has reached today.
+// four the seed produces.
 //
-// Naming the seeded ids is what this file did twice, and both times they went
-// stale: every id in the backend comes from one counter per book, so an act that
-// draws one more than it used to shifts every id after it, and admission growing
-// into a conversation moved them again. A stale list does not fail — it asserts
-// about banks nobody has and stays green while real banks collide, which is the
-// one outcome worse than no test.
+// The list this replaces was CORRECT when it was deleted — `bank_1`, `bank_9`,
+// `bank_17`, `bank_25` are the seed's ids today. Two things were wrong with it
+// anyway, and being current was not one of them.
 //
-// A vitest suite cannot read the Go seed, so it stops naming ids. Forty covers
-// whatever the counter reaches for the fourth or fortieth bank alike, and the
-// sweep checks itself: if it stopped reaching the whole palette it says so
-// rather than quietly sampling part of it.
+// It goes stale silently. Every id in the backend comes from one counter per
+// book, so an act that draws one more than it used to shifts every id after it —
+// which happened during this very task, leaving this file asserting about
+// `bank_1/3/5/7` while the seed produced something else. Nothing failed. A list
+// of ids nobody has still passes, and it passes while real banks collide.
+//
+// And even current it is a SAMPLE. Four ids reach at most four of the palette's
+// hues, so a hue that collides with an institution goes unseen unless one of
+// those four happens to land on it — which is the collision this file exists to
+// catch, missed by the instrument written to catch it.
+//
+// A vitest suite cannot read the Go seed, so it stops naming ids. Forty reaches
+// the whole palette, and the sweep checks that it still does rather than quietly
+// sampling part of it.
 const SWEPT_BANKS = Array.from({ length: 40 }, (_, i) => `bank_${i + 1}`);
 
 describe("accentFor", () => {

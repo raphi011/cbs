@@ -300,12 +300,14 @@ export interface ParticipantAccounts {
 // accounts and customers, that no settlement agent holds an account for and no
 // clearing house routes to. "Member" is one the scheme has admitted.
 //
-// What a founded bank can do is open customer accounts, and that is the whole
-// list. It cannot clear a payment, because nothing routes to it — and it cannot
-// take a cash deposit either, which is the one people guess wrong: funding a
-// customer raises the bank's reserve at the central bank in the same step, and
-// there is no reserve to raise until the scheme has answered. The API says so
-// with a 422 naming the membership, not the account.
+// A founded bank runs its own book, and that part is unrestricted: it opens
+// customer accounts, publishes products and adds ledgers, all measured against a
+// bank held in this state. What it cannot do is anything needing another
+// institution. It cannot clear a payment, because nothing routes to it — and it
+// cannot take a cash deposit either, which is the one people guess wrong:
+// funding a customer raises the bank's reserve at the central bank in the same
+// step, and there is no reserve to raise until the scheme has answered. The API
+// says so with a 422 naming the membership, not the account.
 //
 // Both are ordinary states. Admission is a conversation between three
 // institutions, so POST /members answers 202 with a founded bank and the

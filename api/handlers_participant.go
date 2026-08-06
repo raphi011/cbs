@@ -194,35 +194,50 @@ func (s *Server) handleGetReserve(w http.ResponseWriter, r *http.Request) {
 // reserveRows reads one participant's reserve in each of its assets, in asset
 // order so the response does not reshuffle between identical requests.
 //
-// # A bank the central bank holds no account for reports NO ROW for that asset
+// # One rule: a row for every asset the settlement agent holds an account in
 //
-// That is a state this system can be in for the first time: admission is a
-// conversation, so between founding and the scheme's answer there is a real bank
-// with a real book and no settlement account anywhere. ReserveBalance says so
-// with payment.ErrSettlementMemberNotFound, and it is not an error about this
-// request — the bank exists, the asset exists, and the settlement agent simply
-// holds nothing to report a balance from.
+// Nothing else gets a row, and neither of the two ways an account can be missing
+// is an error about the request. Both are the settlement agent saying it holds
+// nothing here, and a reserve report has nothing to report.
 //
-// Answering with a zero would be worse than answering with nothing: zero is a
-// balance, and a console that showed one would be reporting an account that has
-// not been opened. So the asset is skipped, GET on a founded bank's reserves is
-// an empty list, and the list route reports the members and passes over the
-// applicants. What tells an operator which is which is the bank's own status,
-// which participantDTO carries.
+// payment.ErrSettlementMemberNotFound is the agent holding no row for this bank
+// at all — a bank that has founded itself and not yet joined, which admission
+// being a conversation makes an ordinary state rather than a fault. The whole
+// bank loses its rows together, and that is right: it has no reserves at all,
+// not some. (The skip sits inside the per-asset loop only because that is where
+// ReserveBalance is asked; payment.settlementAccountTx reads the member row
+// before it looks at the asset, so this sentinel cannot come back for one asset
+// and not another.)
 //
-// The skip is written inside the per-asset loop because that is where the
-// question is asked — one ReserveBalance per asset — and NOT because the state
-// it skips is per asset. payment.settlementAccountTx reads the member row before
-// it looks at the asset, so a bank the agent holds nothing for answers this
-// sentinel in every asset it operates in and loses all of its rows together,
-// which is right: a founded bank has no reserves at all, not some.
+// payment.ErrParticipantAssetNotFound is the agent holding a row without THIS
+// asset in it, and that one really is per asset. It is not exotic and it is not
+// broken: one acmt.007 asks for one currency, so a bank joining in euro and
+// dollars has two applications answered in two commits, and between them the
+// agent holds euro and not dollars while the bank's own row says both. A
+// two-asset admission passes through that window every time — measured at 319 of
+// 8000 reads taken during 200 concurrent admissions, with no dead letter and
+// nothing wrong.
 //
-// What IS per asset is the OTHER sentinel, and it is left to surface as an
-// error. payment.ErrParticipantAssetNotFound means the agent holds a member row
-// without this asset in it while the bank's own row says it operates in it —
-// two institutions disagreeing about a member, which mesh.Mesh.Admit's doc
-// describes as reachable and Task 19 owns. That is not a bank waiting to be
-// admitted and must not be reported as an absence.
+// Which is why it is skipped rather than surfaced, and the change is deliberate:
+// reporting it turned the LIST route into a 422 for every bank on it because one
+// applicant was mid-conversation, which is worse than the founded-bank 500 this
+// endpoint was fixed for. An empty list from a whole route is not a truer answer
+// than a missing row.
+//
+// # What that costs, and who owns it
+//
+// The genuinely stuck case — an admission whose second asset was never
+// acknowledged, mesh.Mesh.Admit's "partly admitted bank", which has no re-drive
+// and is Task 19's — now looks exactly like one still in flight: a missing row.
+// This endpoint cannot tell them apart, because the difference is TIME and not
+// state, and nothing here is watching a clock.
+//
+// It is not hidden, though. The bank's own row says which assets it operates in
+// and this says which of them the agent holds an account for, and a console
+// holds both: a bank listing EUR and USD with one reserve row has an admission
+// that has not finished. Task 19's reconciliation is what turns "has not
+// finished" into "will not finish", and that is the shape its sweep is looking
+// for — see payment.RecordMembershipTx.
 func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, error) {
 	codes := make([]string, 0, len(p.Assets))
 	for code := range p.Assets {
@@ -233,7 +248,9 @@ func (s *Server) reserveRows(r *http.Request, p *payment.Bank) ([]reserveDTO, er
 	out := make([]reserveDTO, 0, len(codes))
 	for _, code := range codes {
 		bal, err := s.network().ReserveBalance(r.Context(), p.ID, ledger.AssetCode(code))
-		if errors.Is(err, payment.ErrSettlementMemberNotFound) {
+		// No account, no row — of either kind. See the doc above.
+		if errors.Is(err, payment.ErrSettlementMemberNotFound) ||
+			errors.Is(err, payment.ErrParticipantAssetNotFound) {
 			continue
 		}
 		if err != nil {

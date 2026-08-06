@@ -12,8 +12,8 @@ import type { Identity } from "./identity";
 // is stable across reloads and needs nothing persisted. Chroma and lightness are
 // held constant so no bank is louder than another and the same values read in
 // both themes.
-export const CENTRAL_BANK_ACCENT = "oklch(0.55 0.02 260)";
-export const CLEARING_HOUSE_ACCENT = "oklch(0.58 0.10 150)";
+const CENTRAL_BANK_ACCENT = "oklch(0.55 0.02 260)";
+const CLEARING_HOUSE_ACCENT = "oklch(0.58 0.10 150)";
 
 // The palette a bank's hue is drawn from, exported so a test can check the whole
 // of it rather than a sample of ids.
@@ -26,9 +26,9 @@ export const CLEARING_HOUSE_ACCENT = "oklch(0.58 0.10 150)";
 // No hue here may equal an institution's, and that is a property of this LIST
 // rather than of any bank: every pid maps into it, so a hue that collides
 // collides for whichever banks happen to hash onto it. accent.test.ts checks the
-// list itself for that reason — it used to check four ids the seed no longer
-// produces, which is a sample that goes stale and cannot see the collision it was
-// written for.
+// list itself for that reason. It used to check four seeded ids instead — which
+// is a SAMPLE, and a sample of four cannot see a collision that lands on the
+// other three hues, whether or not those four ids are current.
 export const BANK_HUES = [25, 265, 330, 60, 200, 100, 170];
 
 function hueFor(pid: string): number {

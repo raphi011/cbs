@@ -427,62 +427,72 @@ func TestCreateParticipantBICIsValidatedAndRendered(t *testing.T) {
 	assertEqual(t, "bic on a later read", reread["bic"].(string), "AURODEFFXXX")
 }
 
-// TestAdmissionAnswers202WithAFoundedBank pins what POST /members says about a
-// bank that has applied and not yet been answered.
+// TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422 pins the second
+// way a reserve can be absent, which is the one that is neither rare nor broken.
 //
-// Three things, and they are one claim seen three ways. The status code is 202
-// rather than 201, because the resource an operator is asking for — a member of
-// the scheme — does not exist yet and this call cannot make it exist. The DTO
-// says Founded, which is the only field that distinguishes the two states. And
-// the settlement account, which is the central bank's to open, is EMPTY in that
-// answer and filled in once the conversation has finished.
+// One acmt.007 asks for one currency, so a bank joining in euro and dollars has
+// two applications, answered in two commits. Between them the settlement agent
+// holds a euro account and no dollar one while the bank's own row says it
+// operates in both — and every two-asset admission passes through that window.
+// It used to answer 422 for the dollar row, which took the whole LIST route down
+// with it: one applicant mid-conversation and the central bank's console could
+// not report the reserves of any bank at all.
 //
-// The reserves route is the other half of the same moment, and it is the one
-// that used to fail outright: a founded bank has no settlement account, so
-// ReserveBalance answers ErrSettlementMemberNotFound and the handler returned
-// that for the whole participant — a 500 for a bank in a state this system
-// creates on every admission. It reports NO ROW for such a bank instead. Not a
-// zero: zero is a balance, and there is no account to have one.
-func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
+// # The state is written rather than raced for
+//
+// The window is real and it is microseconds wide, and a test that tried to catch
+// it would be the flake this file already had one of. What it consists of is one
+// row — the agent's record with EUR in it and not USD — so this admits a bank in
+// both assets, lets the conversation finish, and then puts that record back the
+// way the window leaves it. The endpoint's answer is a function of that row and
+// of the bank's own; how the row came to look like that is not something the
+// handler can see, which is exactly why writing it is honest here.
+//
+// It is also the STUCK bank's state, since the two differ by time and not by
+// state — see Server.reserveRows, which says what that costs and who owns it.
+func TestAnAssetTheAgentHasNotAnsweredForYetIsAMissingRowNotA422(t *testing.T) {
 	h := newServer(t, nil)
+	p := admitMember(t, h, `{"bic":"BNKADEFFXXX","name":"Bank A","assets":["EUR","USD"]}`, http.StatusAccepted)
+	pid := p["id"].(string)
 
-	founded := doJSON(t, cb(h), "POST", "/members", `{"bic":"BNKADEFFXXX","name":"Bank A"}`, http.StatusAccepted)
-	pid := founded["id"].(string)
-	assertEqual(t, "status in the 202", founded["status"].(string), "Founded")
-	assets := founded["assets"].([]any)
-	if len(assets) != 1 {
-		t.Fatalf("a euro bank came back with %d asset rows, want 1", len(assets))
+	// Admitted in both, so both rows are there to begin with.
+	var full []map[string]any
+	getJSON(t, cb(h), "/reserves/"+pid, &full)
+	if len(full) != 2 {
+		t.Fatalf("a two-asset member reports %v, want a row per asset", full)
 	}
-	assertEqual(t, "settlement account in the 202",
-		assets[0].(map[string]any)["settlement"].(string), "")
 
-	// Reserves: nothing to report, and a 200 saying so.
-	var reserves []map[string]any
-	getJSON(t, cb(h), "/reserves/"+pid, &reserves)
-	if len(reserves) != 0 {
-		t.Errorf("a founded bank reports %v; the central bank holds no account for it yet", reserves)
+	// The settlement agent's record, put back as the window between the two
+	// acknowledgements leaves it: euro answered, dollars not.
+	if err := h.net.Store().Update(context.Background(), func(ctx context.Context, tx payment.Tx) error {
+		member, err := tx.GetSettlementMember(ctx, "BNKADEFFXXX")
+		if err != nil {
+			return err
+		}
+		member.Accounts = map[ledger.AssetCode]ledger.AccountID{"EUR": member.Accounts["EUR"]}
+		return tx.PutSettlementMember(ctx, member)
+	}); err != nil {
+		t.Fatalf("rewinding the settlement agent's record: %v", err)
 	}
-	// And the list route passes over it rather than failing on it.
+
+	// One row, not a refusal — and the bank still says it operates in both,
+	// which is what leaves an operator able to see the difference.
+	var partial []map[string]any
+	getJSON(t, cb(h), "/reserves/"+pid, &partial)
+	if len(partial) != 1 || partial[0]["asset"] != "EUR" {
+		t.Fatalf("mid-admission reserves = %v, want the euro row alone", partial)
+	}
+	me := doJSON(t, bank(h, pid), "GET", "/me", "", http.StatusOK)
+	if got := len(me["assets"].([]any)); got != 2 {
+		t.Errorf("the bank reports %d assets, want 2; the missing row is the agent's answer, not the bank's", got)
+	}
+
+	// And the list route reports the network rather than failing on one bank.
 	var all []map[string]any
 	getJSON(t, cb(h), "/reserves", &all)
-	if len(all) != 0 {
-		t.Errorf("the reserve list reports %v with no bank admitted yet", all)
+	if len(all) != 1 {
+		t.Fatalf("the reserve list = %v, want the one row the agent can answer for", all)
 	}
-
-	// Once the scheme has answered, all three change together.
-	drainServer(t, h)
-	member := doJSON(t, bank(h, pid), "GET", "/me", "", http.StatusOK)
-	assertEqual(t, "status after the conversation", member["status"].(string), "Member")
-	settlement := member["assets"].([]any)[0].(map[string]any)["settlement"].(string)
-	if settlement == "" {
-		t.Error("the bank is a Member and carries no settlement account")
-	}
-	getJSON(t, cb(h), "/reserves/"+pid, &reserves)
-	if len(reserves) != 1 || reserves[0]["asset"] != "EUR" {
-		t.Fatalf("a member's reserves = %v, want one EUR row", reserves)
-	}
-	assertEqual(t, "the reserve of a member that has been funded by nobody",
-		int64(reserves[0]["reserve"].(float64)), int64(0))
 }
 
 // TestAdmittingABICWithAnAdmissionInFlightSaysToWait pins the OTHER 422, which

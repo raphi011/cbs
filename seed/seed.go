@@ -233,9 +233,10 @@ func check(err error) {
 // bank an id that differed from the other eleven builds' once. Twelve more at
 // GOMAXPROCS=1 and twelve at GOMAXPROCS=8 did not reproduce it, which is exactly
 // why one clean run is not evidence here. No id is quoted because none of the
-// ids in that experiment is one this code produces — that is the finding. Draining per bank makes each
-// conversation finish before the next Admit begins, and the four sequential
-// calls this replaces had that for free.
+// ids in that experiment is one this code produces — that is the finding.
+//
+// Draining per bank makes each conversation finish before the next Admit
+// begins, and the four sequential calls this replaces had that for free.
 //
 // What it costs is a scenario built one bank at a time instead of four in
 // flight. Nothing wants the concurrency: this is a fixture, and the property it

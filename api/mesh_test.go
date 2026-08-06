@@ -345,6 +345,110 @@ func TestResetDrainsBeforeTruncating(t *testing.T) {
 	}
 }
 
+// TestAdmissionAnswers202WithAFoundedBank pins what POST /members says about a
+// bank that has applied and not yet been answered.
+//
+// Three things, and they are one claim seen three ways. The status code is 202
+// rather than 201, because the resource an operator is asking for — a member of
+// the scheme — does not exist yet and this call cannot make it exist. The DTO
+// says Founded, which is the only field that distinguishes the two states. And
+// the settlement account, which is the central bank's to open, is EMPTY in that
+// answer and filled in once the conversation has finished.
+//
+// The reserves routes are the other half of the same moment, and they are what
+// used to fail outright: a founded bank has no settlement account, so
+// ReserveBalance answers ErrSettlementMemberNotFound and the handler returned it
+// for the whole participant — a 500 for a bank in the state this system now
+// creates on every admission. It reports NO ROW instead. Not a zero: zero is a
+// balance, and there is no account to have one.
+//
+// # It HOLDS the bank in Founded, and the first version of it did not
+//
+// That version read the reserves straight after the 202 and depended on three
+// actor goroutines not having finished yet. It passed almost always and it was
+// not evidence: under GOMAXPROCS=2 at -count=40 it failed about once a run, with
+// `a founded bank reports [map[asset:EUR reserve:0 …]]` — the conversation
+// having completed between the POST and the GET, which is the system working. A
+// test that asserts the headline behaviour of a task must not be able to pass
+// because a background actor was slow.
+//
+// So the central bank's door is HELD. Its acmt.007 cannot be answered, the
+// acknowledgement that fills in the settlement reference cannot arrive, and the
+// bank is Founded for as long as this test wants it to be — provably, not
+// probably. Opening the gate and draining is then the other half of the same
+// measurement: the same three reads, after the conversation, all changed.
+//
+// It runs on the SEEDED harness, which the first version could not, and that is
+// worth having: the list route has four members to report while this applicant
+// is in it, so "passes over the applicant" is a real claim about a mixed network
+// rather than a statement about an empty one.
+func TestAdmissionAnswers202WithAFoundedBank(t *testing.T) {
+	srv, msh := newAPIHarness(t)
+	open := holdMessagesTo(t, msh, testMeshConfig.CentralBankBIC)
+	defer open()
+
+	members := reserveRows(t, srv, "")
+
+	founded := doJSON(t, cb(srv), "POST", "/members", `{"bic":"BNKZDEFFXXX","name":"Bank Z"}`, http.StatusAccepted)
+	pid := founded["id"].(string)
+	assertEqual(t, "status in the 202", founded["status"].(string), "Founded")
+	assets := founded["assets"].([]any)
+	if len(assets) != 1 {
+		t.Fatalf("a euro bank came back with %d asset rows, want 1", len(assets))
+	}
+	assertEqual(t, "settlement account in the 202",
+		assets[0].(map[string]any)["settlement"].(string), "")
+
+	// Nothing to report about it, and a 200 saying so.
+	if got := reserveRows(t, srv, pid); len(got) != 0 {
+		t.Errorf("a founded bank reports %v; the central bank holds no account for it yet", got)
+	}
+	// And the list carries the members it has, with no row and no failure for
+	// the applicant.
+	if got := reserveRows(t, srv, ""); len(got) != len(members) {
+		t.Errorf("the reserve list went from %d rows to %d while a bank was mid-admission",
+			len(members), len(got))
+	}
+	for _, row := range reserveRows(t, srv, "") {
+		if row["participant"] == pid {
+			t.Errorf("the list reports %v for a bank the central bank holds no account for", row)
+		}
+	}
+
+	// Opened before anything waits on the mesh, which is this file's one rule.
+	open()
+	drainServer(t, srv)
+
+	member := doJSON(t, bank(srv, pid), "GET", "/me", "", http.StatusOK)
+	assertEqual(t, "status after the conversation", member["status"].(string), "Member")
+	if settlement := member["assets"].([]any)[0].(map[string]any)["settlement"].(string); settlement == "" {
+		t.Error("the bank is a Member and carries no settlement account")
+	}
+	got := reserveRows(t, srv, pid)
+	if len(got) != 1 || got[0]["asset"] != "EUR" {
+		t.Fatalf("a member's reserves = %v, want one EUR row", got)
+	}
+	assertEqual(t, "the reserve of a member nobody has funded",
+		int64(got[0]["reserve"].(float64)), int64(0))
+	if after := reserveRows(t, srv, ""); len(after) != len(members)+1 {
+		t.Errorf("the reserve list has %d rows once the admission finished, want %d",
+			len(after), len(members)+1)
+	}
+}
+
+// reserveRows reads the central bank's reserve report: the whole list when pid
+// is empty, one bank's when it is not.
+func reserveRows(t *testing.T, s *Server, pid string) []map[string]any {
+	t.Helper()
+	path := "/reserves"
+	if pid != "" {
+		path += "/" + pid
+	}
+	var out []map[string]any
+	getJSON(t, cb(s), path, &out)
+	return out
+}
+
 // TestFundingABankTheSchemeHasNotAnsweredForIsRefusedByName is the other half of
 // what a founded bank means to this API.
 //

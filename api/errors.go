@@ -91,23 +91,23 @@ func errorStatus(err error) int {
 		errors.Is(err, payment.ErrAssetMismatch),
 		// The bank exists and the asset exists; this bank simply holds no
 		// accounts in it. 404 would read as "participant not found" on
-		// POST /participants/{pid}/deposits and GET /central-bank/reserves/
-		// {pid}. 422 matches the sibling underfunded-member failure. It no
-		// longer reaches a settlement route, because there is none: settling is
+		// POST /participants/{pid}/deposits, which is where it reaches a caller.
+		// 422 matches the sibling underfunded-member failure. It no longer
+		// reaches a settlement route, because there is none: settling is
 		// performed on instruction now (mesh.centralBank), so this error comes
 		// back to the clearing house as a pacs.002 rather than to a caller as a
-		// status code.
+		// status code — and it no longer reaches the reserve routes either, which
+		// report a missing account as a missing row (see Server.reserveRows).
 		errors.Is(err, payment.ErrParticipantAssetNotFound),
 		// A bank the settlement agent holds no account for is a bank that has
 		// founded itself and not yet joined — a legitimate state since admission
 		// became a conversation, and a refusal about that bank's membership
 		// rather than about anything in the request. 422 for the same reason the
 		// asset case above is: the request is well formed and the state refuses
-		// it. It reaches a caller from POST /participants/{pid}/deposits, whose
-		// customer account is fine and whose bank has nowhere to place the cash on
-		// reserve; the reserve routes never surface it, because a bank with no
-		// settlement account is reported as no row rather than as an error (see
-		// Server.reserveRows).
+		// it. Like that one it reaches a caller from
+		// POST /participants/{pid}/deposits, whose customer account is fine and
+		// whose bank has nowhere to place the cash on reserve, and from nowhere
+		// else — the reserve routes report a missing account as a missing row.
 		errors.Is(err, payment.ErrSettlementMemberNotFound),
 		errors.Is(err, lending.ErrFacilityClosed),
 		errors.Is(err, lending.ErrFacilityNotEmpty),
