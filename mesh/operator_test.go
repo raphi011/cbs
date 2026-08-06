@@ -12,7 +12,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/store/testenv"
+	"github.com/raphi011/cbs/store/storetest"
 )
 
 // The two entry points Task 14 needed and no message provokes: an operator
@@ -128,7 +128,7 @@ func TestAnOperatorRejectionOfASettledPaymentIsRefusedAndSendsNothing(t *testing
 // admitted through the mesh's own door is never in this state. What is, is a
 // bank the mesh has not READ: api.Server.Reset truncates the store and rebuilds
 // it underneath a live mesh, and every bank in the new roster is one no actor
-// answers to until JoinRoster runs. testenv.Admit builds exactly that — three
+// answers to until JoinRoster runs. storetest.Admit builds exactly that — three
 // institutions' rows, no transport — which is why this test uses it rather than
 // Admit.
 //
@@ -143,7 +143,7 @@ func TestABankAdmittedAfterStartCanPayAndBePaid(t *testing.T) {
 	h := newMeshHarness(t)
 	ctx := context.Background()
 
-	joiner, err := testenv.Admit(ctx, h.net, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
+	joiner, err := storetest.Admit(ctx, h.net, "Nordhaven Bank", "NORDSESSXXX", euroOnly)
 	if err != nil {
 		t.Fatalf("admitting Nordhaven: %v", err)
 	}

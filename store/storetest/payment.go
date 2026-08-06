@@ -16,8 +16,9 @@ import (
 // RunPayment runs the payment-layer conformance suite against a store. Every
 // payment.Store implementation must pass it identically.
 //
-// It talks only to payment.Store and payment.Tx — never to payment.Network — so
-// what it pins is the storage contract: the not-found sentinels, the fact that
+// It talks only to payment.Store and payment.Tx — never to payment.Network,
+// which RunRaces in races.go does instead — so what it pins is the storage
+// contract: the not-found sentinels, the fact that
 // a Bank's live handles are derived rather than stored, listing order,
 // the open-cycle and end-to-end-id lookups, deep copying, and the three-layer
 // rollback that payment.Tx embedding deposit.Tx embedding ledger.Tx exists to

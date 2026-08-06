@@ -8,7 +8,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	. "github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/store/testenv"
+	"github.com/raphi011/cbs/store/storetest"
 )
 
 // paymentAudit reads the network's own audit trail, optionally narrowed to one
@@ -320,7 +320,7 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
+	p, err := storetest.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	events := paymentAudit(t, sys, string(p.ID))
@@ -368,7 +368,7 @@ func TestEachActOfAnAdmissionLeavesItsOwnAuditEvent(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
-	p, err := testenv.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
+	p, err := storetest.Admit(ctx, sys, "Bank A", testBIC, euroOnly)
 	assertNoError(t, err)
 
 	assertEqual(t, "the whole admission's trail", eventTypes(paymentAudit(t, sys, "")),

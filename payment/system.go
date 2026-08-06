@@ -2527,7 +2527,7 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// payment, under READ COMMITTED, and refuses the reference — or rolled back,
 	// taking the id with it. The gap-free counter serializes the whole operation
 	// and not merely the number it hands out, which is the argument
-	// store/pg/pg_test.go already makes for the admission acts.
+	// store/storetest's races.go already makes for the admission acts.
 	//
 	// With the two the other way round, eight concurrent submissions of one
 	// EndToEndID were accepted eight times on store/pg and once on store/mem —

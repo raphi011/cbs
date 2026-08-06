@@ -102,7 +102,7 @@ func newServerOverStore(t *testing.T, gate *gatedStore,
 // admitForPopulate is what a reseed here uses to make a bank: the mesh's own
 // door, then a wait for the scheme to answer.
 //
-// Every one of these baselines used to call testenv.Admit, which plays the four
+// Every one of these baselines used to call storetest.Admit, which plays the four
 // acts in one goroutine and writes the member row itself. That is no longer
 // enough for a RESEED. api.Server.Reset forgets every bank actor before it
 // truncates and no longer re-registers them afterwards, so a reseed that wrote

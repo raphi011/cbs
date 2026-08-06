@@ -10,6 +10,7 @@ import (
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/store/storetest"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -19,7 +20,7 @@ var euroOnly = []ledger.AssetCode{"EUR"}
 // rosterNetwork is a payment network holding exactly the banks it is given,
 // each already admitted.
 //
-// It builds them WITHOUT a mesh, through testenv.Admit, which is the point of
+// It builds them WITHOUT a mesh, through storetest.Admit, which is the point of
 // the fixture: what these two tests are about is a mesh reading a roster that
 // was there before it started, so the banks have to exist before any actor does.
 // Mesh.Admit is the other door and is exercised in admission_test.go.
@@ -28,7 +29,7 @@ func rosterNetwork(t *testing.T, bics map[string]iso20022.BIC) *payment.Network 
 	clock := func() time.Time { return testTime }
 	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
 	for name, bic := range bics {
-		if _, err := testenv.Admit(context.Background(), net, name, bic, euroOnly); err != nil {
+		if _, err := storetest.Admit(context.Background(), net, name, bic, euroOnly); err != nil {
 			t.Fatalf("admitting %s: %v", name, err)
 		}
 	}
@@ -105,7 +106,7 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	clock := func() time.Time { return testTime }
 	net := payment.NewNetwork(testenv.New(t, clock).Payment(), clock)
 	ctx := context.Background()
-	if _, err := testenv.Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
+	if _, err := storetest.Admit(ctx, net, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
 		t.Fatalf("admitting Aurora: %v", err)
 	}
 	if _, err := net.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {

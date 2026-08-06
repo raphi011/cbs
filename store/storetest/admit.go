@@ -1,4 +1,4 @@
-package testenv
+package storetest
 
 import (
 	"context"
@@ -15,17 +15,23 @@ import (
 //
 // # Why it lives here
 //
-// Four test suites need a bank that is a Member, and none of them is testing the
-// conversation: payment's own suites are about what each act does, api's are
-// about handlers over a network, store/pg's are about two transactions racing.
-// The conversation itself is tested where it happens, in mesh — mesh's harness
+// Several suites need a bank that is a Member, and none of them is testing the
+// conversation: payment's own suites are about what each act does, mesh's
+// operator and roster suites want a member to act on, store/pg's are about two
+// transactions racing, and RunRaces in this package races the acts themselves.
+// A helper each would be one copy per suite of a composition that must not
+// drift.
+//
+// It moved here from store/testenv at Task 17.0, and the reason is a constraint
+// rather than a preference: RunRaces needs it, and this package must not import
+// an implementation, because every implementation's tests import this package.
+// Nothing about the composition itself is backend-specific — it takes a
+// payment.Network and never names a store — which is why the move is a move and
+// not a rewrite.
+//
+// The conversation itself is tested where it happens, in mesh: mesh's harness
 // drives Mesh.Admit and drains, and the tests in mesh/admission_test.go are what
 // assert on the messages and the states.
-//
-// This package is where the four already meet, and for the same reason: it is
-// an ordinary package rather than a set of _test.go files because the domain
-// suites all import it, and a helper each would be four copies of a composition
-// that must not drift.
 //
 // # What it is NOT
 //

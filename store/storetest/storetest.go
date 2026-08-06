@@ -3,12 +3,23 @@
 // RunPayment for the payment layer.
 //
 // It is a normal package rather than a set of _test.go files, because
-// store/mem and store/pg both import it from their own tests. It talks only to
-// the Store and Tx interfaces — never to ledger.Book, deposit.Register or
-// payment.Network — so it pins the storage contract itself: identity
-// allocation, ordering, idempotency, the balance aggregate, the audit log and
-// rollback. Anything the implementations could plausibly disagree about belongs
-// here, because this suite is the only thing keeping them from drifting apart.
+// store/mem and store/pg both import it from their own tests.
+//
+// The conformance suites in this file, deposit.go, payment.go, product.go and
+// lending.go talk only to the Store and Tx interfaces — never to ledger.Book,
+// deposit.Register or payment.Network — so they pin the storage contract itself:
+// identity allocation, ordering, idempotency, the balance aggregate, the audit
+// log and rollback. Anything the implementations could plausibly disagree about
+// belongs here, because this suite is the only thing keeping them from drifting
+// apart.
+//
+// races.go does not observe that boundary, and Task 17.0 crossed it on purpose.
+// Its cases drive payment.Network, because the defect they exist for is an
+// ordering the ACTS choose and the store cannot express — and the synthetic
+// stand-in written to respect the boundary, ConcurrentReadThenWriteOnOneKeyAgrees
+// below, was blind to three money defects of exactly that shape. Admit is here
+// for the same reason: races.go needs it and this package may not import an
+// implementation.
 //
 // # Ordering
 //
@@ -1692,7 +1703,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 	t.Run("ConcurrentReadThenWriteOnOneKeyAgrees", func(t *testing.T) {
 		s := open(t, newStore)
 
-		// This suite's first case with two units of work running AT ONCE, and
+		// This suite's only case with two units of work running AT ONCE, and
 		// the gap it closes is the reason it exists.
 		//
 		// Everything else here is single-threaded, so the suite could not
@@ -1703,8 +1714,14 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 		// atomic there whatever the caller does; store/pg runs READ COMMITTED,
 		// where two transactions both read "not there" and both write. A
 		// pg-only concurrency test can show pg is self-consistent and can never
-		// show the two AGREE, which is why this case is here and not in
-		// store/pg's own tests.
+		// show the two AGREE.
+		//
+		// It is not the only case holding both stores to one winner any more —
+		// races.go does that on payment's acts, which is where the rule this
+		// stands in for actually lives, and it was written at Task 17.0 because
+		// the stand-in was blind to three money defects of this shape. What is
+		// left for this one is the shape stated at the store interface with no
+		// act to hang it on, which is what a store implementer reads.
 		//
 		// What it encodes is the shape payment.SubmitPaymentTx uses to refuse a
 		// duplicate client reference: allocate an id, THEN read the key, THEN
@@ -1798,9 +1815,11 @@ func RunLedger(t *testing.T, newStore func(*testing.T) ledger.Store) {
 }
 
 // errTaken is the losers' answer in ConcurrentReadThenWriteOnOneKeyAgrees: the
-// name was already claimed. It stands in for payment.ErrDuplicateEndToEndID,
-// which this package cannot name — storetest talks only to the store
-// interfaces, never to the domains over them.
+// name was already claimed. It stands in for payment.ErrDuplicateEndToEndID
+// rather than naming it, and since Task 17.0 that is a choice rather than a
+// constraint: races.go names payment's sentinels directly, on the acts
+// themselves. What this case is worth beside those is the shape stated once at
+// the store interface, for rules the acts have not made yet.
 var errTaken = errors.New("storetest: the name is already claimed")
 
 // ---------------------------------------------------------------------------

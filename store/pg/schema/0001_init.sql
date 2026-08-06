@@ -53,8 +53,8 @@ CREATE TABLE books (
 -- find-or-create runs. NextID(NetworkBook, …) takes a row lock on id_sequences,
 -- so a second concurrent caller blocks there until the first commits and then
 -- sees the Central Bank ledger the first created. The counter serializes the
--- whole operation, not just the number it hands out. store/pg's
--- TestConcurrentAdmissionsAgreeOnOneCentralBank pins it.
+-- whole operation, not just the number it hands out. storetest's
+-- Races/ConcurrentAdmissionsAgreeOnOneCentralBank pins it, on every store.
 --
 -- This paragraph used to name AddParticipantTx's first statement as the thing
 -- doing that, and to warn that the find-or-create would become racy again "if
@@ -796,7 +796,7 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
     'would then extend a single entry instead of the second being refused. '
     'mesh.Mesh.Admit mints one process id per admission and every message of '
     'it echoes that value; the seed and the test suites compose no messages '
-    'and derive a reference from the BIC instead (see store/testenv.Admit), '
+    'and derive a reference from the BIC instead (see store/storetest.Admit), '
     'which means two of THEIR admissions on one address share one reference '
     'and extend one entry — why a fixture whose banks settle gives each of '
     'them an address of its own. The column stays nullable-free rather than '

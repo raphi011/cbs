@@ -1,5 +1,5 @@
 // Package testenv picks the store every test suite in this repository runs
-// against.
+// against, and owns the Postgres schema-per-test lifecycle that choice needs.
 //
 // It defaults to store/mem, so `go test ./...` needs no setup at all. Setting
 // TEST_DATABASE_URL switches the same suites onto store/pg, which is the only
@@ -8,8 +8,15 @@
 // code arranged for it.
 //
 // It is an ordinary package rather than a set of _test.go files because the
-// domain suites (ledger, deposit, payment, api, seed) all import it, and a
+// domain suites (ledger, deposit, payment, mesh, api, seed) all import it, and a
 // _test.go file in store/pg would be unimportable.
+//
+// Choosing a store is all it does. Anything a suite needs that does not name an
+// implementation belongs in store/storetest, which every implementation's tests
+// import and which therefore may not import an implementation back — Store and
+// Admit both live there for that reason. This package is the one place allowed
+// to name mem and pg, which is why the assertions that they satisfy Store are
+// here.
 package testenv
 
 import (
@@ -24,24 +31,14 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/raphi011/cbs/deposit"
-	"github.com/raphi011/cbs/ledger"
-	"github.com/raphi011/cbs/payment"
-	"github.com/raphi011/cbs/product"
 	"github.com/raphi011/cbs/store/mem"
 	"github.com/raphi011/cbs/store/pg"
+	"github.com/raphi011/cbs/store/storetest"
 )
 
-// Store is the shape both implementations share: a ledger.Store that can also
-// present itself as a deposit.Store and a payment.Store over the same state and
-// the same unit of work. Go allows a type one Update method, which is why the
-// two narrower views are adapters rather than more interfaces on this one.
-type Store interface {
-	ledger.Store
-	Deposit() deposit.Store
-	Payment() payment.Store
-	Product() product.Store
-}
+// Store is the shape both implementations share. It is storetest.Store, aliased
+// so that the suites which already say testenv.Store keep saying it.
+type Store = storetest.Store
 
 // compile-time checks that both implementations really are interchangeable here.
 var (

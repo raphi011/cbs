@@ -187,7 +187,7 @@ type RosterEntry struct {
 	// So every caller supplies one. mesh.Mesh.Admit mints a process id per
 	// admission; the seed and the test suites compose no messages and have no
 	// process to name, so they derive a reference from the BIC (see
-	// store/testenv.Admit) — which also means two of THEIR admissions on one
+	// store/storetest.Admit) — which also means two of THEIR admissions on one
 	// address quote one reference and extend a single entry, which is why a
 	// fixture whose banks settle gives each of them an address of its own.
 	AdmissionRef string

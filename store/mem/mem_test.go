@@ -70,6 +70,24 @@ func TestLendingConformance(t *testing.T) {
 	})
 }
 
+// TestRaces runs the race suite that needs only concurrent units of work.
+//
+// store/mem runs it and store/pg runs the same cases, which is the whole point:
+// the two must agree on who wins. Every case in it passes here through the
+// mutex rather than through anything the domain arranged, and each says so about
+// itself — that asymmetry is the conformance claim, not a reason to leave the
+// suite to the other store.
+//
+// storetest.RunConcurrentTxRaces is the other half and is NOT called here. It
+// holds its racers at a barrier inside an open unit of work, and store/mem
+// admits one at a time, so the second racer never arrives and the suite would
+// stop rather than fail.
+func TestRaces(t *testing.T) {
+	storetest.RunRaces(t, func(t *testing.T) storetest.Store {
+		return mem.New(func() time.Time { return time.Unix(0, 0).UTC() })
+	})
+}
+
 // A deposit unit of work must never be opened inside another one on the same
 // store: mem's mutex is not reentrant, so it would deadlock without a word.
 // Implementation-specific, hence tested here rather than in storetest.
