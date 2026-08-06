@@ -109,8 +109,10 @@ export const qk = {
     ["participants", pid, "directory", scheme, value] as const,
 
   // Payment network (global — each object spans two participants).
-  mandates: () => ["mandates"] as const,
-  mandate: (mid: string) => ["mandates", mid] as const,
+  // Keyed by BANK, because a mandate is one bank's row and two banks' listings
+  // are two different answers rather than one cache entry.
+  mandates: (pid: string) => ["bank", pid, "mandates"] as const,
+  mandate: (pid: string, mid: string) => ["bank", pid, "mandates", mid] as const,
   payments: () => ["payments"] as const,
   payment: (payid: string) => ["payments", payid] as const,
   // Nested under the participant, because these are that bank's legs and not

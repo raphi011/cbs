@@ -1430,7 +1430,7 @@ A transaction is a **parent row** and its legs are **child rows**. That is the r
 
 Four details carry more weight than they look like they should:
 
-- **Primary keys are composite: `(book_id, id)`.** Chart-of-accounts numbers are unique *within a book*, not globally, so two participants both holding `200.100.001` is normal rather than a collision. A single-column key would force global numbering and destroy the chart of accounts as a readable, per-bank structure. The cost is that every query must carry `WHERE book_id = $1`, and the failure mode when one is missing is the quiet kind: not an error, not an empty result, but another bank's rows mixed in and looking plausible. (The `payment` layer's own entities — banks, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.)
+- **Primary keys are composite: `(book_id, id)`.** Chart-of-accounts numbers are unique *within a book*, not globally, so two participants both holding `200.100.001` is normal rather than a collision. A single-column key would force global numbering and destroy the chart of accounts as a readable, per-bank structure. The cost is that every query must carry `WHERE book_id = $1`, and the failure mode when one is missing is the quiet kind: not an error, not an empty result, but another bank's rows mixed in and looking plausible. (The `payment` layer's own entities — banks, payments, mandates, cycles, settlements — are keyed by id alone rather than by book, because none of them is a chart-of-accounts row. That is a statement about the KEY and it used to be offered as one about ownership too: a mandate has an owner, and it is the creditor's bank. What the id-only key costs is that the row carries no column saying so, which is why `ListMandates` filters in Go on the creditor's participant — and why the split gives each bank a store rather than adding a column.)
 
 - **`entries` needs an explicit `position` column.** `Transaction.Entries` is an ordered slice; a relational table is a set. Without a stored position the legs come back in whatever order the plan produces, and the order is visible — on statements, and in the multi-leg settlement postings.
 
@@ -1713,11 +1713,14 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 | `POST` / `GET /cycles`, `POST /cycles/{id}/close` | clearing cycles |
 | `POST /cycles/{id}/settle` | re-send the `pacs.009` for a cycle the central bank refused |
 | `GET /settlements`, `GET /settlements/{sid}` | settlements (reading is not doing) |
-| `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates |
 | `GET /schemes`, `GET /roster`, `GET /assets` | schemes, the routing directory, known assets |
 | `GET /payments/audit` | the payment layer's log |
 
 `GET /members` here is a different question from the `POST /members` on the central bank's listener, which founds a bank and applies to the scheme for it; a single `POST`/`GET /participants` used to make the two look like one. What this one answers, though, is worth being exact about, because its name and its listener both suggest something narrower than it is: it serves `ListBanks`, so **every bank is in it, founded ones included, each carrying its status**. That is what lets this console show a bank *becoming* a member — and it is what the static port table reads too, so a bank gets a listener from having been founded rather than from having been admitted.
+
+**The mandates are gone from this listener**, and they were on it until Task 18b. In SEPA the *creditor* holds the mandate, and this repository has said so since the pull flow landed — `SDD.ValidateMandate`'s first sentence, and the bullet above about which bank checks one. The storage disagreed: the row was network-scoped, `POST /mandates` was here, and `GET /mandates` listed every member's authorisations over every other member's customers' accounts on one page. Rendering each row made it worse — the handler loaded the *debtor's* bank and listed its deposit register to find the asset, one institution reading another's over HTTP for a display field, and a read the `csm` shape has no table to answer. They are on the creditor bank's listener now, narrowed to that bank's own rows, and `payment.Mandate` carries its asset so nobody reads a register at all.
+
+Two things follow, and both are the boundary rather than a regression. The **debtor is recorded and not checked** — its account is at another bank — so a mandate naming an account that does not exist is created and fails its first collection, exactly as an asserted counterparty BIC does. And the mandate's asset is the **creditor's** account's, so two accounts in different assets are no longer refused at creation: that comparison needed both registers. The collection is refused instead, with `ErrAssetMismatch`, by the debtor's bank — later, and by the only institution that can see both.
 
 **`GET /roster` is the routing directory this institution really does own**, and it is what `GET /directory` used to be here. `roster_entries` is written by `AdmitMemberTx` from the settlement agent's acknowledgement, it answers "who may be addressed" rather than "who exists", and a founded bank is absent from it — which is exactly the distinction `GET /members` above does *not* make.
 
@@ -1751,6 +1754,7 @@ Everything that used to sit under `/participants/{pid}/…`, with the segment go
 | `GET /payments`, `GET /payments/{payid}` | **its own legs only** |
 | `POST /payments` | accept a customer's instruction — `202` and a `paymentId` |
 | `GET /directory`, `GET /assets` | resolve an address in **this bank's own** register; known assets |
+| `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates **this bank's customers hold** — see below |
 
 Two of those are new, and both were impossible before. **`GET /payments` is narrowed to the bank's own legs** — what it sent and what it received. The unnarrowed list showed every bank its competitors' customers, counterparties and amounts, and narrowing it needs a caller identity that a single shared server does not have. A payment this bank is not party to answers `404` rather than `403`: it does not exist as far as this API is concerned, and a `403` would confirm the id names something real.
 

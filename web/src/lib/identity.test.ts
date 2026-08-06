@@ -122,7 +122,6 @@ describe("navFor", () => {
     expect(navFor({ persona: "clearing-house" }).map((n) => n.href)).toEqual([
       "/clearing-house",
       "/clearing-house/payments",
-      "/clearing-house/mandates",
       "/clearing-house/cycles",
       "/clearing-house/settlements",
       "/clearing-house/schemes",
@@ -143,6 +142,9 @@ describe("navFor", () => {
     expect(nav.map((n) => n.href)).toEqual([
       "/bank/bank_1",
       "/bank/bank_1/payments",
+      // A mandate is the CREDITOR's bank's row, so the console that shows one
+      // is a bank's. It was the clearing house's until this moved.
+      "/bank/bank_1/mandates",
       "/bank/bank_1/ledger",
       "/bank/bank_1/transactions",
       "/bank/bank_1/facilities",

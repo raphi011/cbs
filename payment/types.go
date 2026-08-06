@@ -392,10 +392,34 @@ type Payment struct {
 
 // Mandate is a debtor's standing authorization for a specific creditor to
 // pull funds via direct debit.
+//
+// It is the CREDITOR's bank's row. In SEPA the creditor holds the mandate —
+// SDD.ValidateMandate has said so since the pull flow landed, and it is the
+// creditor's bank that checks one at submission — and CreateMandateTx is what
+// makes the storage agree with the rule.
 type Mandate struct {
-	ID        MandateID
-	Debtor    PartyRef
-	Creditor  PartyRef
+	ID       MandateID
+	Debtor   PartyRef
+	Creditor PartyRef
+
+	// Asset is what MaxAmount is denominated in, and it is the CREDITOR's
+	// account's asset because that is the account this bank holds.
+	//
+	// It is on the row rather than derived, and the derivation it replaces is
+	// why. A mandate carries no scheme, so api resolved this by loading the
+	// DEBTOR's bank and listing its deposit accounts — on the clearing house's
+	// port, which is one institution reading another's register over HTTP for a
+	// field. The `csm` shape has no deposit register at all, so that read had no
+	// answer coming; and even at the creditor's own bank, deriving it later
+	// would report today's asset for an authorisation granted under a different
+	// one. What a mandate is denominated in is a fact about the moment it was
+	// granted, exactly as a payment's stored addresses are.
+	//
+	// It is not checked against the DEBTOR's account, and cannot be: that
+	// account is at another bank. See CreateMandateTx for where the mismatch is
+	// refused instead.
+	Asset ledger.AssetCode
+
 	MaxAmount ledger.Amount // 0 means unlimited
 	Status    MandateStatus
 	CreatedAt time.Time

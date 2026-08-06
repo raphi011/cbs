@@ -73,14 +73,14 @@ func TestListMandates(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	_, err := sys.CreateMandate(ctx,
+	_, err := sys.bank(b.ID).CreateMandate(ctx,
 		PartyRef{Participant: a.ID, Account: alice},
 		PartyRef{Participant: b.ID, Account: bob},
 		50000,
 	)
 	assertNoError(t, err)
 
-	mandates, err := sys.ListMandates(ctx)
+	mandates, err := sys.bank(b.ID).ListMandates(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "mandate count", len(mandates), 1)
 }

@@ -14,7 +14,7 @@ import { buildKnownAccounts, projectStatement } from "@/lib/statement";
 import type { StatementRow } from "@/lib/statement";
 import type { AccountType } from "@/lib/enums";
 import { backendFor } from "@/lib/identity";
-import type { Asset, AuditQuery, DepositAccount, Participant } from "@/lib/types";
+import type { Asset, AuditQuery, CreateMandateRequest, DepositAccount, Participant } from "@/lib/types";
 
 import * as api from "./endpoints";
 import { qk } from "./query-keys";
@@ -661,35 +661,39 @@ export function usePaymentAudit(q: AuditQuery = {}) {
 
 // --- Payment: mandates ----------------------------------------------------
 
-export function useMandates() {
-  return useQuery({ queryKey: qk.mandates(), queryFn: api.listMandates });
-}
-
-export function useMandate(mid: string) {
+export function useMandates(pid: string) {
   return useQuery({
-    queryKey: qk.mandate(mid),
-    queryFn: () => api.getMandate(mid),
-    enabled: mid !== "",
+    queryKey: qk.mandates(pid),
+    queryFn: () => api.listMandates(pid),
+    enabled: pid !== "",
   });
 }
 
-export function useCreateMandate() {
+export function useMandate(pid: string, mid: string) {
+  return useQuery({
+    queryKey: qk.mandate(pid, mid),
+    queryFn: () => api.getMandate(pid, mid),
+    enabled: pid !== "" && mid !== "",
+  });
+}
+
+export function useCreateMandate(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: api.createMandate,
+    mutationFn: (body: CreateMandateRequest) => api.createMandate(pid, body),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.mandates(pid) });
       qc.invalidateQueries({ queryKey: qk.paymentAudit() });
     },
   });
 }
 
-export function useRevokeMandate() {
+export function useRevokeMandate(pid: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (mid: string) => api.revokeMandate(mid),
+    mutationFn: (mid: string) => api.revokeMandate(pid, mid),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.mandates() });
+      qc.invalidateQueries({ queryKey: qk.mandates(pid) });
       qc.invalidateQueries({ queryKey: qk.paymentAudit() });
     },
   });

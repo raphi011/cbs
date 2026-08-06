@@ -502,22 +502,28 @@ export function getTotals(pid: string): Promise<Totals[]> {
 }
 
 // --- Payment: mandates ----------------------------------------------------
+//
+// On a BANK's listener, and every one of these used to be on the clearing
+// house's. A mandate is the CREDITOR's bank's row — in SEPA the creditor holds
+// the mandate, and the bank that checks one at submission is the creditor's —
+// so the pid here is the collecting bank's, and what it lists is its own
+// customers' authorisations rather than every member's on one page.
 
-export function listMandates(): Promise<Mandate[]> {
-  return request("GET", csm("/mandates"));
+export function listMandates(pid: string): Promise<Mandate[]> {
+  return request("GET", bank(pid, "/mandates"));
 }
 
-export function getMandate(mid: string): Promise<Mandate> {
-  return request("GET", csm(`/mandates/${mid}`));
+export function getMandate(pid: string, mid: string): Promise<Mandate> {
+  return request("GET", bank(pid, `/mandates/${mid}`));
 }
 
-export function createMandate(body: CreateMandateRequest): Promise<Mandate> {
-  return request("POST", csm("/mandates"), body);
+export function createMandate(pid: string, body: CreateMandateRequest): Promise<Mandate> {
+  return request("POST", bank(pid, "/mandates"), body);
 }
 
 // Revoke takes no body; returns the updated (Revoked) mandate.
-export function revokeMandate(mid: string): Promise<Mandate> {
-  return request("POST", csm(`/mandates/${mid}/revoke`));
+export function revokeMandate(pid: string, mid: string): Promise<Mandate> {
+  return request("POST", bank(pid, `/mandates/${mid}/revoke`));
 }
 
 // --- Payment: payments ----------------------------------------------------

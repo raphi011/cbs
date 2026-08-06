@@ -198,6 +198,13 @@ var reasonTable = []reasonMapping{
 	{ErrStatementNotForThisBank, "ErrStatementNotForThisBank", ""},
 	{ErrNotAPartyToThisReturn, "ErrNotAPartyToThisReturn", ""},
 
+	// A mandate recorded at a bank that is not its creditor's. It reaches no
+	// message at all: creating one is an operator's request on a bank's own
+	// console, answered with a status code, and nothing in the mesh calls
+	// CreateMandateTx. The empty code is therefore not a judgement about what to
+	// tell a counterparty — there is no conversation this can occur in.
+	{ErrNotThisBanksMandate, "ErrNotThisBanksMandate", ""},
+
 	// One institution's act reached through another's Network, and it is the
 	// only entry here that is not about a message at all.
 	//

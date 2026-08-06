@@ -350,6 +350,53 @@ func lodgeReserves(t *testing.T, ctx context.Context, sys *testSystem, p *Bank, 
 	assertNoError(t, err)
 }
 
+// TestALodgementQuotingNoAccountIsRefused is the guard's own "does not apply"
+// value, closed.
+//
+// ReceiveLodgementTx compares the account a camt.050 names against the one the
+// agent actually holds, and refuses a disagreement — a member and its settlement
+// agent disagreeing about which account a lodgement credits is exactly what that
+// comparison is for. It read `in.Account != "" && in.Account != held`, so an
+// instruction quoting NO account walked past the check the doc calls a check.
+// That is the shape this repository has met five times: a guard closing a hole
+// and leaving its own empty value open.
+//
+// Nothing was ever misdirected by it. The account posted to is the agent's own
+// row and never the quoted one, which is why settlementAccountTx is read first.
+// What was lost is the ASSERTION, and the loss is only reachable the way this
+// test reaches it: ReadLodgement refuses a camt.050 with no CdtrAcct/Id/Othr/Id,
+// so no MESSAGE produces one. ReceiveLodgement is exported on settlementOps and
+// callable with an instruction nobody parsed, which is the door this closes.
+func TestALodgementQuotingNoAccountIsRefused(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, _, alice, _ := setupTwoBanks(t, sys)
+	takeCashIn(t, ctx, sys, a, depositAccount(t, ctx, a, alice), 50000)
+
+	// The reserve BEFORE, because setupTwoBanks lodges: what this asserts is
+	// that the refused instruction moved nothing, not that the account is empty.
+	before, err := sys.cb().ReserveBalance(ctx, a.ID, testAsset)
+	assertNoError(t, err)
+
+	// Everything a real lodgement carries except the account it credits.
+	_, err = sys.cb().ReceiveLodgement(ctx, LodgementInstruction{
+		Ref:    "lodge-no-account",
+		BIC:    a.BIC,
+		Agent:  "CBSEDEFFXXX",
+		Asset:  testAsset,
+		Amount: 1000,
+	})
+	assertError(t, err, ErrSettlementAccountReplaced)
+
+	// And nothing was credited. The refusal is what stops it, not the posting
+	// failing afterwards: a lodgement that got past the guard would have posted
+	// into the agent's own row perfectly happily, which is why the assertion
+	// above is the whole of the defect.
+	after, err := sys.cb().ReserveBalance(ctx, a.ID, testAsset)
+	assertNoError(t, err)
+	assertEqual(t, "the member's reserve after a lodgement naming no account", after, before)
+}
+
 // runCycle opens, closes, and settles a cycle for the given scheme, returning
 // the settled settlement.
 //
@@ -896,7 +943,7 @@ func TestSDD_HappyPath(t *testing.T) {
 
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
@@ -923,11 +970,11 @@ func TestSDD_MandateValidation(t *testing.T) {
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
 
-	limited, err := sys.CreateMandate(ctx, debtor, creditor, 5000)
+	limited, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 5000)
 	assertNoError(t, err)
-	revoked, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	revoked, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
-	assertNoError(t, sys.RevokeMandate(ctx, revoked.ID))
+	assertNoError(t, sys.bank(creditor.Participant).RevokeMandate(ctx, revoked.ID))
 
 	cases := []struct {
 		name      string
@@ -964,7 +1011,7 @@ func TestSDD_Return(t *testing.T) {
 	a, b, alice, biller := setupTwoBanks(t, sys)
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment
@@ -1413,7 +1460,7 @@ func TestInitiatePayment_Validation(t *testing.T) {
 		// collection they are perfectly happy with, and AcceptAtCSMTx is what
 		// finds no window open for sepa.dd. A mandate is needed to get that
 		// far at all — without one the creditor's own bank refuses first.
-		m, err := sys.CreateMandate(ctx,
+		m, err := sys.bank(b.ID).CreateMandate(ctx,
 			PartyRef{Participant: a.ID, Account: alice},
 			PartyRef{Participant: b.ID, Account: bob}, 0)
 		assertNoError(t, err)
@@ -2338,7 +2385,7 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 
 	debtor := PartyRef{Participant: alpha.ID, Account: debtorAcct.ID}
 	creditor := PartyRef{Participant: beta.ID, Account: creditorAcct.ID}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	_, err = sys.OpenCycle(ctx, SchemeSEPADD)
@@ -2355,17 +2402,31 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertError(t, err, ErrAssetMismatch)
 }
 
-// A mandate holds two accounts and one MaxAmount. An integer that means 50.00
-// at the debtor's scale and 0.0000005 at the creditor's is not a ceiling on
-// anything, so the two accounts have to agree before the mandate exists —
-// rather than every payment it could authorize failing later.
-func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
+// A mandate whose two accounts are in different assets is CREATED and refuses
+// its first collection, and this test is where that ruling is measured.
+//
+// It used to be TestCreateMandateRejectsMismatchedAssets, and its doc said the
+// two accounts "have to agree before the mandate exists — rather than every
+// payment it could authorize failing later". The reasoning was sound and the
+// read it rested on is gone: the debtor's account is at another bank, so the
+// creditor's bank cannot compare the two. See CreateMandateTx.
+//
+// The claim that replaces it is the second half of the old doc, which was
+// already true and already stated: every payment such a mandate could authorise
+// fails, because each leg is checked against the SCHEME's asset by its own bank
+// and these two cannot both match it. So what is asserted here is that the
+// refusal still happens, at a named moment, with the same sentinel — not that
+// the mandate is somehow harmless.
+//
+// The moment moved from creation to first use, which is worse for an operator
+// and is the price of the boundary. That is recorded rather than hidden.
+func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
 	alpha, err := storetest.Admit(ctx, sys.nets, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC, euroOnly)
+	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	debtorAcct, err := alpha.OpenCustomerAccount(ctx, "Anna", testAsset)
@@ -2373,15 +2434,83 @@ func TestCreateMandateRejectsMismatchedAssets(t *testing.T) {
 	creditorAcct, err := beta.OpenCustomerAccount(ctx, "Bruno", "BTC")
 	assertNoError(t, err)
 
-	_, err = sys.CreateMandate(ctx,
+	// Created, and it records the CREDITOR's asset, because that is the account
+	// the bank recording it holds.
+	m, err := sys.bank(beta.ID).CreateMandate(ctx,
 		PartyRef{Participant: alpha.ID, Account: debtorAcct.ID},
 		PartyRef{Participant: beta.ID, Account: creditorAcct.ID}, 50000)
-	assertError(t, err, ErrAssetMismatch)
-
-	// And nothing was written: a refused mandate is not a mandate.
-	mandates, err := sys.ListMandates(ctx)
 	assertNoError(t, err)
-	assertEqual(t, "mandates recorded", len(mandates), 0)
+	assertEqual(t, "the mandate's asset", string(m.Asset), "BTC")
+
+	mandates, err := sys.bank(beta.ID).ListMandates(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "mandates recorded", len(mandates), 1)
+
+	// And the collection it authorises is refused, by the bank whose account
+	// does not match the scheme's asset.
+	openCycle(t, ctx, sys, SchemeSEPADD)
+	_, err = initiate(ctx, sys, InitiatePaymentRequest{
+		Scheme:        SchemeSEPADD,
+		Amount:        1000,
+		MandateID:     m.ID,
+		Debtor:        PartyRef{Participant: alpha.ID, Account: debtorAcct.ID},
+		Creditor:      PartyRef{Participant: beta.ID, Account: creditorAcct.ID},
+		DebtorDetails: PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
+	})
+	assertError(t, err, ErrAssetMismatch)
+}
+
+// A mandate is the CREDITOR's bank's row, and no other bank may record, read or
+// revoke one.
+//
+// It is the storage agreeing with a rule the code already stated:
+// SDD.ValidateMandate opens "the half the CREDITOR's bank runs, because in SEPA
+// the creditor holds the mandate". Until this change CreateMandateTx checked
+// BOTH parties' accounts — one unit of work reading two banks' deposit registers
+// — and GET /mandates was on the clearing house's port, where rendering a
+// mandate meant loading the DEBTOR's bank and listing its register for an asset.
+//
+// The DEBTOR is not refused here and is not checked either: it is another bank's
+// customer, recorded from what the creditor said, exactly as a payment's
+// counterparty is since Task 14.
+func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
+	ctx := context.Background()
+	sys := testNetwork(t)
+	a, b, alice, bob := setupTwoBanks(t, sys)
+
+	debtor := PartyRef{Participant: a.ID, Account: alice}
+	creditor := PartyRef{Participant: b.ID, Account: bob}
+
+	// The DEBTOR's bank cannot record it, and neither can the clearing house.
+	_, err := sys.bank(a.ID).CreateMandate(ctx, debtor, creditor, 0)
+	assertError(t, err, ErrNotThisBanksMandate)
+	_, err = sys.CreateMandate(ctx, debtor, creditor, 0)
+	assertError(t, err, ErrNotThisInstitutionsAct)
+
+	// The creditor's bank can, and the row carries its own account's asset.
+	m, err := sys.bank(b.ID).CreateMandate(ctx, debtor, creditor, 0)
+	assertNoError(t, err)
+	assertEqual(t, "the mandate's asset", string(m.Asset), string(testAsset))
+
+	// Reading and revoking are the creditor bank's too. The debtor's bank gets a
+	// refusal naming the boundary rather than a not-found: the row exists, and
+	// what is wrong is who asked.
+	if _, err := sys.bank(a.ID).GetMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
+		t.Errorf("the debtor's bank read a mandate it does not hold: %v", err)
+	}
+	if err := sys.bank(a.ID).RevokeMandate(ctx, m.ID); !errors.Is(err, ErrNotThisBanksMandate) {
+		t.Errorf("the debtor's bank revoked a mandate it does not hold: %v", err)
+	}
+
+	// And the listing is this bank's own. The debtor's bank holds none, which is
+	// what stops GET /mandates on a bank's port being every member's
+	// authorisations on one page.
+	mine, err := sys.bank(b.ID).ListMandates(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "the creditor bank's mandates", len(mine), 1)
+	theirs, err := sys.bank(a.ID).ListMandates(ctx)
+	assertNoError(t, err)
+	assertEqual(t, "the debtor bank's mandates", len(theirs), 0)
 }
 
 // What the ledger does and does not catch about a euro-to-bitcoin payment.
@@ -3013,7 +3142,7 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	old := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-BANKA-0001"}
@@ -3052,7 +3181,7 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 
 	debtor := PartyRef{Participant: a.ID, Account: alice}
 	creditor := PartyRef{Participant: b.ID, Account: biller}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	// A second customer at Alice's own bank, funded, addressable, and party to
@@ -3153,7 +3282,7 @@ func networkWithACollection(t *testing.T, fund ledger.Amount) (*testSystem, Init
 	}
 	debtor := PartyRef{Participant: a.ID, Account: payer.ID}
 	creditor := PartyRef{Participant: b.ID, Account: payee.ID}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 	return sys, InitiatePaymentRequest{
 		Scheme:      SchemeSEPADD,
@@ -3177,7 +3306,9 @@ func networkWithAMandate(t *testing.T) (*testSystem, InitiatePaymentRequest) {
 func networkWithARevokedMandate(t *testing.T) (*testSystem, InitiatePaymentRequest) {
 	t.Helper()
 	sys, req, id := networkWithACollection(t, 100000)
-	assertNoError(t, sys.RevokeMandate(context.Background(), id))
+	// The creditor's bank revokes: a mandate is its row. On a pull the creditor
+	// is the SUBMITTING bank, so this is req's submitter.
+	assertNoError(t, sys.bank(req.Creditor.Participant).RevokeMandate(context.Background(), id))
 	return sys, req
 }
 
@@ -4580,7 +4711,7 @@ func settledCollection(t *testing.T, sys *testSystem, debtorBank *Bank, debtorAc
 	ctx := context.Background()
 	debtor := PartyRef{Participant: debtorBank.ID, Account: debtorAcct}
 	creditor := PartyRef{Participant: creditorBank.ID, Account: creditorAcct}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	var pay Payment

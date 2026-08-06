@@ -109,7 +109,6 @@ const CENTRAL_BANK_NAV: NavItem[] = [
 const CLEARING_HOUSE_NAV: NavItem[] = [
   { href: "/clearing-house", label: "Network", icon: LayoutDashboard, exact: true },
   { href: "/clearing-house/payments", label: "Payments", icon: ArrowLeftRight },
-  { href: "/clearing-house/mandates", label: "Mandates", icon: FileSignature },
   { href: "/clearing-house/cycles", label: "Clearing cycles", icon: RefreshCw },
   { href: "/clearing-house/settlements", label: "Settlements", icon: Building2 },
   { href: "/clearing-house/schemes", label: "Schemes", icon: Network },
@@ -127,6 +126,11 @@ export function navFor(identity: Identity): NavItem[] {
       return [
         { href: base, label: "Customers", icon: Users, exact: true },
         { href: `${base}/payments`, label: "Payments", icon: ArrowLeftRight },
+        // Mandates are here and not on the clearing house's console. In SEPA
+        // the CREDITOR holds the mandate, so the row is the collecting bank's
+        // and what this bank sees is its own customers' authorisations. See
+        // payment.Mandate.
+        { href: `${base}/mandates`, label: "Mandates", icon: FileSignature },
         { href: `${base}/ledger`, label: "General ledger", icon: BookOpen },
         { href: `${base}/transactions`, label: "Transactions", icon: ArrowLeftRight },
         { href: `${base}/facilities`, label: "Facilities", icon: Landmark },

@@ -1,5 +1,6 @@
 "use client";
 
+import { useParams } from "next/navigation";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/page-header";
@@ -15,9 +16,24 @@ import { useAssetLookup, useMandates, useRevokeMandate } from "@/lib/api/hooks";
 import { describeError } from "@/lib/api/errors";
 import type { Mandate } from "@/lib/types";
 
-// A mandate's asset is resolved server-side from the debtor's own deposit
-// account (mandateDTO carries it — see api/dto_payment.go's toMandateDTO);
-// the scale that code implies comes from the network-wide asset list.
+// This screen is a BANK's and it used to be the clearing house's, which is the
+// second of Task 18's two directory-shaped moves.
+//
+// A mandate is the CREDITOR's bank's row: in SEPA the creditor holds the
+// mandate, and the bank that checks one at submission is the creditor's. What
+// the clearing house showed was every member's authorisations over every other
+// member's customers' accounts on one page — and it rendered each amount by
+// asking the backend to load the DEBTOR's bank and list its deposit register for
+// the asset, one institution reading another's for a display field.
+//
+// So this lists the mandates whose creditor is THIS bank's own customer, and
+// nothing else. There is no debtor-side screen: a debtor's bank holds no mandate
+// row in this system and has no message that would give it one, which is the
+// limit payment.SDD.ValidateMandate already names.
+
+// A mandate's asset now comes off the ROW — mandateDTO reads it from
+// payment.Mandate.Asset, filled at creation from the creditor's own account —
+// and the scale it implies comes from the network-wide asset list.
 function MandateAmountCell({ mandate }: { mandate: Mandate }) {
   const { byCode, isLoading } = useAssetLookup();
   const asset = byCode.get(mandate.asset);
@@ -29,8 +45,8 @@ function MandateAmountCell({ mandate }: { mandate: Mandate }) {
   return <Money amount={mandate.maxAmount} asset={asset} />;
 }
 
-function RevokeButton({ mandate }: { mandate: Mandate }) {
-  const revoke = useRevokeMandate();
+function RevokeButton({ pid, mandate }: { pid: string; mandate: Mandate }) {
+  const revoke = useRevokeMandate(pid);
   if (mandate.status !== "Active") {
     return <span className="text-muted-foreground">—</span>;
   }
@@ -57,7 +73,9 @@ function RevokeButton({ mandate }: { mandate: Mandate }) {
 }
 
 export default function MandatesPage() {
-  const { data, isLoading, error, refetch } = useMandates();
+  const params = useParams();
+  const pid = typeof params.pid === "string" ? params.pid : "";
+  const { data, isLoading, error, refetch } = useMandates(pid);
 
   const columns: Column<Mandate>[] = [
     { key: "id", header: "ID", render: (m) => <IdText id={m.id} /> },
@@ -69,7 +87,7 @@ export default function MandatesPage() {
     {
       key: "creditor",
       header: "Creditor",
-      render: (m) => <IdText id={m.creditor.participant} />,
+      render: (m) => <IdText id={m.creditor.account} />,
     },
     {
       key: "maxAmount",
@@ -82,7 +100,7 @@ export default function MandatesPage() {
       key: "actions",
       header: "",
       align: "right",
-      render: (m) => <RevokeButton mandate={m} />,
+      render: (m) => <RevokeButton pid={pid} mandate={m} />,
     },
   ];
 
@@ -91,8 +109,8 @@ export default function MandatesPage() {
       <PageHeader
         title="Mandates"
         hint="mandate"
-        description="Standing authorizations that let a creditor pull funds from a debtor — required by pull (direct-debit) schemes."
-        actions={<CreateMandateForm />}
+        description="Standing authorizations this bank's own customers hold, letting them pull funds from an account at another bank. Required by pull (direct-debit) schemes, and held by the creditor's bank — which is this one."
+        actions={<CreateMandateForm pid={pid} />}
       />
       {error ? (
         <ErrorState error={error} onRetry={() => refetch()} />
@@ -102,7 +120,7 @@ export default function MandatesPage() {
           rows={data}
           rowKey={(m) => m.id}
           isLoading={isLoading}
-          empty="No mandates yet. Create one to enable pull payments."
+          empty="No mandates yet. Create one to let a customer of this bank collect by direct debit."
         />
       )}
     </div>

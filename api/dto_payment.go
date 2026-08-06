@@ -252,19 +252,20 @@ type mandateDTO struct {
 }
 
 // toMandateDTO renders a mandate, including the asset its MaxAmount is
-// denominated in. A mandate names no scheme — CreateMandate takes none, and
-// the mandate can later be presented to any pull scheme that accepts it — so
-// unlike paymentDTO there is no scheme to resolve an asset from. What is
-// fixed at creation is the debtor account being authorized to pull from, and
-// its asset is what a pulled amount is denominated in; callers resolve it via
-// (*Server).mandateAsset and pass it in here rather than this function doing
-// its own I/O.
-func toMandateDTO(m payment.Mandate, asset string) mandateDTO {
+// denominated in. A mandate names no scheme — CreateMandate takes none, and the
+// mandate can later be presented to any pull scheme that accepts it — so unlike
+// paymentDTO there is no scheme to resolve an asset from.
+//
+// It comes off the ROW. It used to be resolved by the caller, out of the
+// debtor's bank's deposit register, and that read is gone with the field it
+// filled: see payment.Mandate.Asset and the note where mandateAssets used to be
+// in api/handlers_payment.go.
+func toMandateDTO(m payment.Mandate) mandateDTO {
 	return mandateDTO{
 		ID:        string(m.ID),
 		Debtor:    toPartyRefDTO(m.Debtor),
 		Creditor:  toPartyRefDTO(m.Creditor),
-		Asset:     asset,
+		Asset:     string(m.Asset),
 		MaxAmount: int64(m.MaxAmount),
 		Status:    m.Status.String(),
 		CreatedAt: m.CreatedAt,

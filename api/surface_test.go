@@ -135,6 +135,27 @@ func movedTo(old string) (operator, pattern string) {
 		// On every operator; the disjointness allowlist is what records that.
 		return "clearing-house", old
 
+	case strings.HasPrefix(path, "/mandates"):
+		// It MOVED, and the move is the second of Task 18's two directory-shaped
+		// corrections — the first being /directory below.
+		//
+		// The one server put mandates with payments and cycles, on the reading
+		// that a mandate is network infrastructure. It is not: in SEPA the
+		// CREDITOR holds the mandate, payment.SDD.ValidateMandate has said so
+		// since the pull flow landed, and the bank that checks one at submission
+		// is the creditor's. What the clearing house held was every member's
+		// authorisations over every other member's customers' accounts on one
+		// page — and rendering each row meant loading the DEBTOR's bank and
+		// listing its deposit register for the asset, one institution reading
+		// another's over HTTP. The `csm` shape has no deposit register, so that
+		// read had no answer coming.
+		//
+		// The listing is narrowed as well as moved: a bank sees the mandates
+		// whose creditor is its own customer and no others
+		// (payment.Network.ListMandates), so this is not the same page on a
+		// different port.
+		return "bank", old
+
 	case path == "/directory":
 		// It MOVED, rather than staying where the pre-split server had it, and
 		// the move is the whole of Task 18a's directory change.
@@ -150,7 +171,7 @@ func movedTo(old string) (operator, pattern string) {
 		return "bank", old
 
 	default:
-		// Payments, mandates, cycles, settlements, schemes, the directory.
+		// Payments, cycles, settlements, schemes.
 		return "clearing-house", old
 	}
 }
@@ -533,7 +554,9 @@ func TestTheCreditorsBankSubmitsADirectDebit(t *testing.T) {
 	payerBank, payeeBank, _ := threeBanks(t, h)
 	doJSON(t, csm(h), "POST", "/cycles", `{"scheme":"sepa.dd"}`, http.StatusCreated)
 
-	mandate := doJSON(t, csm(h), "POST", "/mandates", `{
+	// Recorded at the CREDITOR's bank, which on a pull is the collecting bank —
+	// the same bank that submits below, and the only one that may hold the row.
+	mandate := doJSON(t, bank(h, payeeBank.pid), "POST", "/mandates", `{
 		"debtor":{"participant":"`+payerBank.pid+`","account":"`+payerBank.account+`"},
 		"creditor":{"participant":"`+payeeBank.pid+`","account":"`+payeeBank.account+`"},
 		"maxAmount":0
@@ -618,7 +641,7 @@ func TestAnInstructionWithNoParticipantIsRefusedAsAMissingField(t *testing.T) {
 		t.Fatalf("a push naming no debtor participant was refused as %q", push.Body.String())
 	}
 
-	mandate := doJSON(t, csm(h), "POST", "/mandates", `{
+	mandate := doJSON(t, bank(h, b.pid), "POST", "/mandates", `{
 		"debtor":{"participant":"`+a.pid+`","account":"`+a.account+`"},
 		"creditor":{"participant":"`+b.pid+`","account":"`+b.account+`"},
 		"maxAmount":0

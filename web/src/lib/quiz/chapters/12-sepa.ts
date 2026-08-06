@@ -38,7 +38,6 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "SDD is a [[scheme-direction-pull]] — the creditor initiates the debit on the debtor's account. A [[mandate]] is the standing authorisation the debtor signs in advance, naming the specific creditor and often capping the amount. Without a valid mandate the collection is rejected before any posting occurs.",
-      explore: { label: "View mandates", href: "/clearing-house/mandates" },
     },
     {
       kind: "mc",
@@ -73,7 +72,6 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "The [[mandate]] status check fires before any posting. A mandate that exists but has been revoked triggers **ErrMandateRevoked**. `ErrMandateRequired` fires when no mandate exists at all; `ErrMandateExceeded` fires when the collection amount exceeds the mandate limit.",
-      explore: { label: "View mandates", href: "/clearing-house/mandates" },
     },
     {
       kind: "mc",
@@ -160,7 +158,6 @@ export const chapter: Chapter = {
       answer: 1,
       explanation:
         "The [[mandate]] amount cap is a hard gate, not advisory. Even when every other mandate check passes, a collection exceeding the mandate limit is rejected with **ErrMandateExceeded** before any posting occurs. There is no partial approval or automatic cap increase.",
-      explore: { label: "View mandates", href: "/clearing-house/mandates" },
     },
     {
       kind: "mc",

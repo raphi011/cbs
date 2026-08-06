@@ -1968,9 +1968,24 @@ func (s *Network) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementIns
 	if err != nil {
 		return LodgementReceipt{}, err
 	}
-	if in.Account != "" && in.Account != held {
+	// An instruction quoting NO account is refused, and the `in.Account != "" &&`
+	// that used to precede this comparison is what made the doc above false about
+	// its own check: an empty quoted account walked past the guard that exists to
+	// compare it. That is the shape of the escape ErrBICAlreadyAdmitted's note
+	// records — a guard closing a hole and leaving its own "does not apply" value
+	// open — and here the value was reachable, because ReceiveLodgement is
+	// exported on settlementOps and callable with an instruction nobody parsed.
+	//
+	// Nothing was ever misdirected by it: the account posted to is this agent's
+	// own row and never the quoted one, which is the whole point of reading
+	// settlementAccountTx first. What was lost is the ASSERTION. A camt.050 says
+	// which account it means, ReadLodgement refuses one that does not
+	// (CdtrAcct/Id/Othr/Id), and a member and its agent silently disagreeing
+	// about which account a lodgement credits is exactly what this comparison is
+	// for.
+	if in.Account != held {
 		return LodgementReceipt{}, fmt.Errorf(
-			"%w: %s lodges %s into %s and this agent holds %s for it",
+			"%w: %s lodges %s into %q and this agent holds %s for it",
 			ErrSettlementAccountReplaced, in.BIC, in.Asset, in.Account, held)
 	}
 
@@ -2008,26 +2023,73 @@ func (s *Network) CreateMandate(ctx context.Context, debtor, creditor PartyRef, 
 }
 
 // CreateMandateTx is CreateMandate within a caller-supplied unit of work.
+//
+// # It is the CREDITOR's bank's act, and it reads one register
+//
+// It used to run checkPartyTx for BOTH parties, which is one unit of work
+// reading two banks' deposit registers — a crossing the spec's table never
+// listed and 18a did not close. What replaces it is the shape Task 14 and 18a
+// gave the payment path: this bank checks its OWN customer and records what it
+// is told about the other.
+//
+// Which bank that is follows from the domain rather than from convenience. In
+// SEPA the CREDITOR holds the mandate; SDD.ValidateMandate has said so since the
+// pull flow landed and it is the creditor's bank that checks one at submission,
+// so a mandate stored anywhere else would be a record its own validator has to
+// reach across an entity boundary to read. A network that is not the creditor's
+// bank is ErrNotThisBanksMandate.
+//
+// # The asset check moved, and it is a real loss of earliness
+//
+// Both ends of a mandate must be denominated in the same asset: MaxAmount is one
+// integer, and an integer that means one thing at the debtor's scale and another
+// at the creditor's is not a limit on anything. This act used to compare the two
+// accounts here — which is exactly the read it no longer has, because the
+// debtor's account is at another bank.
+//
+// It is not unchecked, it is checked later and by the bank that can. The old
+// comment already said what happens without it: submission refuses every payment
+// such a mandate could authorise, because each leg is checked against the
+// SCHEME's asset by its own bank and these two cannot both match it. That
+// refusal is the debtor's bank's, on the pacs.003, in AcceptInboundTx's pull arm
+// — which is where a real MD01 would come from too.
+//
+// So what is lost is the moment, not the guard: a mismatched mandate is created
+// and refuses its first collection, instead of being refused at creation. That
+// is worse for an operator and it is the honest price of the boundary, and it is
+// worth naming rather than discovering — this doc used to argue the opposite way
+// round, that checking here "only makes the refusal happen where it can be
+// understood instead of at first use".
 func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor PartyRef, maxAmount ledger.Amount) (Mandate, error) {
-	debtorAcct, _, err := s.checkPartyTx(ctx, tx, "debtor", debtor)
+	self, err := s.self()
 	if err != nil {
 		return Mandate{}, err
+	}
+	if creditor.Participant != self {
+		return Mandate{}, fmt.Errorf("%w: %s is asked to record a mandate whose creditor banks at %s",
+			ErrNotThisBanksMandate, self, creditor.Participant)
 	}
 	creditorAcct, _, err := s.checkPartyTx(ctx, tx, "creditor", creditor)
 	if err != nil {
 		return Mandate{}, err
 	}
-	// Both ends of a mandate must be denominated in the same asset. A mandate
-	// authorizes a future direct debit from the debtor to the creditor, and
-	// MaxAmount is one integer — an integer that means one thing at the
-	// debtor's scale and another at the creditor's is not a limit on anything.
-	// Submission would refuse every payment such a mandate could authorize
-	// (each leg is checked against the scheme's asset by its own bank, and
-	// these two cannot both match it), so this only makes the refusal happen
-	// where it can be understood instead of at first use.
-	if debtorAcct.Asset != creditorAcct.Asset {
-		return Mandate{}, fmt.Errorf("%w: debtor %s, creditor %s",
-			ErrAssetMismatch, debtorAcct.Asset, creditorAcct.Asset)
+	// The DEBTOR is validated for shape and not for existence. Its account is at
+	// another bank, so "does it exist" is a question this one cannot ask; what it
+	// can insist on is that the reference names a participant and an account at
+	// all, which is what a mandate needs to be comparable against a payment
+	// (PartyRef.SameParty). See ErrNotThisBanksMandate.
+	if err := validateParty("debtor", debtor); err != nil {
+		return Mandate{}, err
+	}
+	// ValidateText accepts the empty string — it refuses control characters and
+	// invalid UTF-8 and nothing else — so the presence check is separate and
+	// explicit. A mandate whose debtor names neither a bank nor an account
+	// authorises debits from nothing, and SameParty would match it against any
+	// payment quoting the same emptiness.
+	if debtor.Participant == "" || debtor.Account == "" {
+		return Mandate{}, fmt.Errorf(
+			"payment: a mandate names the account it authorises debits from; this one quotes participant %q and account %q",
+			debtor.Participant, debtor.Account)
 	}
 
 	id, err := tx.NextID(ctx, ledger.NetworkBook, "mnd")
@@ -2038,6 +2100,7 @@ func (s *Network) CreateMandateTx(ctx context.Context, tx Tx, debtor, creditor P
 		ID:        MandateID(id),
 		Debtor:    debtor,
 		Creditor:  creditor,
+		Asset:     creditorAcct.Asset,
 		MaxAmount: maxAmount,
 		Status:    MandateActive,
 		CreatedAt: s.now(),
@@ -2060,10 +2123,24 @@ func (s *Network) RevokeMandate(ctx context.Context, id MandateID) error {
 }
 
 // RevokeMandateTx is RevokeMandate within a caller-supplied unit of work.
+//
+// Only the creditor's bank may revoke, for the reason only it may create: the
+// row is its own. A real debtor revokes a mandate by telling their creditor, or
+// their own bank, which then tells the creditor's — a conversation this system
+// does not model and which would be a message rather than a second writer of one
+// row. See ErrNotThisBanksMandate.
 func (s *Network) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) error {
+	self, err := s.self()
+	if err != nil {
+		return err
+	}
 	m, err := tx.GetMandate(ctx, id)
 	if err != nil {
 		return err
+	}
+	if m.Creditor.Participant != self {
+		return fmt.Errorf("%w: %s is asked to revoke a mandate whose creditor banks at %s",
+			ErrNotThisBanksMandate, self, m.Creditor.Participant)
 	}
 	m.Status = MandateRevoked
 	if err := tx.PutMandate(ctx, m); err != nil {
@@ -4556,13 +4633,32 @@ func (s *Network) GetCycle(ctx context.Context, id CycleID) (ClearingCycle, erro
 	return out, err
 }
 
-// GetMandate returns a mandate by ID.
+// GetMandate returns one of THIS bank's mandates by ID, and refuses another
+// bank's with ErrNotThisBanksMandate rather than answering it.
+//
+// A not-found and a somebody-else's are deliberately different answers here,
+// where on a payment they would not be. A mandate id is this bank's own
+// sequence, so an id that resolves to another bank's row is a reader that has
+// crossed a boundary rather than a client that guessed; saying so is more useful
+// than a 404 and it is what Task 18d makes automatic, when the row is simply not
+// in this bank's store.
 func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error) {
+	self, err := s.self()
+	if err != nil {
+		return Mandate{}, err
+	}
 	var out Mandate
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = tx.GetMandate(ctx, id)
-		return err
+	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		m, err := tx.GetMandate(ctx, id)
+		if err != nil {
+			return err
+		}
+		if m.Creditor.Participant != self {
+			return fmt.Errorf("%w: %s asked for a mandate whose creditor banks at %s",
+				ErrNotThisBanksMandate, self, m.Creditor.Participant)
+		}
+		out = m
+		return nil
 	})
 	return out, err
 }

@@ -4,77 +4,26 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/raphi011/cbs/deposit"
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/payment"
 )
 
-// mandateAsset resolves a mandate's asset from the debtor's own deposit
-// account. A mandate carries no scheme (see toMandateDTO), so there is no
-// scheme to derive an asset from the way a payment's is; what a mandate does
-// fix at creation is the debtor account being authorized, and that account's
-// own asset (see deposit.Account.Asset) is what MaxAmount is denominated in.
-func (s *Server) mandateAsset(ctx context.Context, m payment.Mandate) (string, error) {
-	assets, err := s.mandateAssets(ctx, []payment.Mandate{m})
-	if err != nil {
-		return "", err
-	}
-	return assets[m.ID], nil
-}
-
-// mandateAssets resolves a whole batch of mandates' assets at once.
+// There is no mandateAsset or mandateAssets here any more, and their absence is
+// the fix for a crossing rather than a tidy-up.
 //
-// The single-mandate path costs two store.View calls — a full BEGIN…COMMIT
-// each — so calling it once per row turned GET /mandates into 2N+1 units of
-// work for what is a handful of reads. This is the same batch
-// shape as entryAssets (see api/dto_ledger.go): resolve per distinct
-// *participant* rather than per row, and read that participant's deposit
-// accounts in one listing rather than one at a time. A listing of any number
-// of mandates over k banks now costs k+1 round trips, and k is the number of
-// member banks, not the number of results.
-func (s *Server) mandateAssets(ctx context.Context, mandates []payment.Mandate) (map[payment.MandateID]string, error) {
-	byParticipant := make(map[payment.ParticipantID]map[deposit.AccountID]ledger.AssetCode)
-	for _, m := range mandates {
-		if _, done := byParticipant[m.Debtor.Participant]; done {
-			continue
-		}
-		p, err := s.network().GetBank(ctx, m.Debtor.Participant)
-		if err != nil {
-			return nil, err
-		}
-		accounts, err := p.Deposit.ListAccounts(ctx)
-		if err != nil {
-			return nil, err
-		}
-		byAccount := make(map[deposit.AccountID]ledger.AssetCode, len(accounts))
-		for _, a := range accounts {
-			byAccount[a.ID] = a.Asset
-		}
-		byParticipant[m.Debtor.Participant] = byAccount
-	}
-
-	out := make(map[payment.MandateID]string, len(mandates))
-	for _, m := range mandates {
-		asset, ok := byParticipant[m.Debtor.Participant][m.Debtor.Account]
-		if !ok {
-			// The mandate names an account that is not in its debtor's book.
-			// GetAccount is what says so, in the vocabulary the rest of the
-			// package maps to a status code.
-			p, err := s.network().GetBank(ctx, m.Debtor.Participant)
-			if err != nil {
-				return nil, err
-			}
-			if _, err := p.Deposit.GetAccount(ctx, m.Debtor.Account); err != nil {
-				return nil, err
-			}
-			return nil, deposit.ErrAccountNotFound
-		}
-		out[m.ID] = string(asset)
-	}
-	return out, nil
-}
-
+// They resolved a mandate's asset by loading its DEBTOR's bank and listing that
+// bank's deposit accounts — on the CLEARING HOUSE's port, because that is where
+// GET /mandates was. One institution reading another's register over HTTP, for a
+// display field; the HTTP twin of the two-party read payment.CreateMandateTx used
+// to make, and a read the `csm` shape could not have answered at all, having no
+// deposit register in it.
+//
+// payment.Mandate carries its Asset now, filled at creation from the creditor's
+// own account, so the row answers the question and no register is read by
+// anybody. The batching those two functions existed for goes with them: k+1
+// round trips for k banks becomes zero.
+//
 // settlementAsset resolves a settlement's asset via its cycle's scheme — a
 // settlement carries a CycleID but no scheme of its own (see toSettlementDTO).
 func (s *Server) settlementAsset(ctx context.Context, st payment.Settlement) (string, error) {
@@ -113,12 +62,28 @@ func (s *Server) settlementAssets(ctx context.Context, settlements []payment.Set
 	return out, nil
 }
 
-func (s *Server) registerPaymentRoutes(mux *router) {
+// registerMandateRoutes is the CREDITOR bank's mandate console, and it is on a
+// bank's surface because a mandate is that bank's own row.
+//
+// It was the clearing house's until this change, on the reading that a mandate is
+// network infrastructure. It is not: in SEPA the creditor holds the mandate,
+// payment.SDD.ValidateMandate has said so since the pull flow landed, and the
+// bank that checks one at submission is the creditor's. What the clearing house
+// held was every member's authorisations over every other member's customers'
+// accounts, listed on one page.
+//
+// There is no debtor-side route. A debtor's bank has no mandate row in this
+// system and no message that would give it one, which is the limit
+// SDD.ValidateMandate already names: a real debtor's bank keeps records of its
+// own and can refuse a collection MD01, and this one cannot.
+func (s *Server) registerMandateRoutes(mux *router) {
 	mux.HandleFunc("POST /mandates", s.handleCreateMandate)
 	mux.HandleFunc("GET /mandates", s.handleListMandates)
 	mux.HandleFunc("GET /mandates/{mid}", s.handleGetMandate)
 	mux.HandleFunc("POST /mandates/{mid}/revoke", s.handleRevokeMandate)
+}
 
+func (s *Server) registerPaymentRoutes(mux *router) {
 	mux.HandleFunc("POST /payments", s.handleInitiatePayment)
 	mux.HandleFunc("GET /payments", s.handleListPayments)
 	mux.HandleFunc("GET /payments/{payid}", s.handleGetPayment)
@@ -146,12 +111,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	asset, err := s.mandateAsset(r.Context(), m)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, toMandateDTO(m, asset))
+	writeJSON(w, http.StatusCreated, toMandateDTO(m))
 }
 
 func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
@@ -160,14 +120,9 @@ func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	assets, err := s.mandateAssets(r.Context(), mandates)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
 	out := make([]mandateDTO, len(mandates))
 	for i, m := range mandates {
-		out[i] = toMandateDTO(m, assets[m.ID])
+		out[i] = toMandateDTO(m)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -178,12 +133,7 @@ func (s *Server) handleGetMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	asset, err := s.mandateAsset(r.Context(), m)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
+	writeJSON(w, http.StatusOK, toMandateDTO(m))
 }
 
 func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
@@ -196,12 +146,7 @@ func (s *Server) handleRevokeMandate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	asset, err := s.mandateAsset(r.Context(), m)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, toMandateDTO(m, asset))
+	writeJSON(w, http.StatusOK, toMandateDTO(m))
 }
 
 // handleInitiatePayment hands a payment instruction to the bank whose act it is,

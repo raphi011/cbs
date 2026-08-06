@@ -206,13 +206,38 @@ func (s *Network) ListPayments(ctx context.Context) ([]Payment, error) {
 	return out, err
 }
 
-// ListMandates returns all direct-debit mandates, oldest first.
+// ListMandates returns THIS bank's direct-debit mandates, oldest first: the
+// ones whose creditor is its own customer.
+//
+// The filter is what makes moving GET /mandates onto a bank's port honest rather
+// than a relocation. A mandate is the creditor's bank's row (see Mandate), so an
+// unfiltered listing on a bank's console would be one member reading every other
+// member's authorisations — which is the crossing this route was moved off the
+// clearing house's port to avoid, arriving by a different door.
+//
+// It is a filter in Go and not a WHERE clause, and that is deliberate: under
+// Task 18d each bank's store holds its own mandates and there is nothing to
+// filter, so a store method taking a participant would be one this task adds and
+// the next one removes. What the filter costs today is a full listing at four
+// banks, which is what the row count makes it.
 func (s *Network) ListMandates(ctx context.Context) ([]Mandate, error) {
+	self, err := s.self()
+	if err != nil {
+		return nil, err
+	}
 	var out []Mandate
-	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
-		var err error
-		out, err = tx.ListMandates(ctx)
-		return err
+	err = s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		all, err := tx.ListMandates(ctx)
+		if err != nil {
+			return err
+		}
+		out = make([]Mandate, 0, len(all))
+		for _, m := range all {
+			if m.Creditor.Participant == self {
+				out = append(out, m)
+			}
+		}
+		return nil
 	})
 	return out, err
 }

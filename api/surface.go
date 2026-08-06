@@ -126,6 +126,14 @@ func (s *Server) clearingHouseRouter() *router {
 	mux.HandleFunc("GET /roster", s.handleListRoster)
 	mux.HandleFunc("GET /assets", s.handleListAssets)
 	mux.HandleFunc("GET /payments/audit", s.handlePaymentAudit)
+	// The MANDATES are not here and used to be. A mandate is the creditor
+	// bank's own row — in SEPA the creditor holds it, and the bank that checks
+	// one at submission is the creditor's (payment.SDD.ValidateMandate) — so
+	// this console held every member's authorisations over every other member's
+	// customers' accounts, and rendered each one by reading the DEBTOR bank's
+	// deposit register for its asset. The `csm` shape has no deposit register,
+	// so that read had no answer coming. See registerMandateRoutes on the bank's
+	// surface below, and payment.Mandate, which carries its own asset now.
 	s.registerPaymentRoutes(mux)
 	return mux
 }
@@ -164,6 +172,11 @@ func (s *Server) bankRouter() *router {
 	// Where a customer's instruction lands. Never the clearing house: a
 	// retail client has no CSM connection in the real thing either.
 	mux.HandleFunc("POST /payments", s.handleSubmitPayment)
+
+	// A creditor's mandates: the standing authorisations this bank's own
+	// customers hold over other banks' customers' accounts. See
+	// registerMandateRoutes.
+	s.registerMandateRoutes(mux)
 
 	s.registerLedgerRoutes(mux)
 	s.registerDepositRoutes(mux)

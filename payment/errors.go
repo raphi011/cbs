@@ -181,6 +181,23 @@ var (
 	// See payment.Identity, Network.self and Network.centralBankBook.
 	ErrNotThisInstitutionsAct = errors.New("payment: this act belongs to another institution")
 
+	// ErrNotThisBanksMandate is a bank asked to record a mandate whose creditor
+	// banks somewhere else.
+	//
+	// In SEPA the CREDITOR holds the mandate — SDD.ValidateMandate says so and
+	// it is the creditor's bank that checks one at submission — so the row
+	// belongs to that bank and to no other. A bank that recorded whatever it was
+	// handed would hold an authorisation over an account at a third bank, on
+	// behalf of a customer that is not its own, and the validator that reads it
+	// back would be reading another institution's record.
+	//
+	// It is ErrNotThisBanksPayment's shape one flow over, with one difference
+	// worth naming: that one decides between two banks that are both parties to
+	// the payment, and only one may post. This one is not about a party at all.
+	// The DEBTOR is a party and is not this bank's customer either — it is
+	// recorded from what the creditor said, as a payment's counterparty is.
+	ErrNotThisBanksMandate = errors.New("payment: this mandate's creditor banks somewhere else")
+
 	// ErrNotThisBanksPayment is a bank asked to post a leg for a payment whose
 	// party is somebody else's customer.
 	//

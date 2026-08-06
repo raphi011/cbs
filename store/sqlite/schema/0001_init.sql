@@ -1309,6 +1309,28 @@ CREATE TABLE mandates (
     creditor_account           TEXT NOT NULL,
     creditor_identifier_scheme TEXT NOT NULL,
     creditor_identifier_value  TEXT NOT NULL,
+    -- What max_amount is denominated in, and the CREDITOR's account's asset
+    -- because this row is the creditor's bank's.
+    --
+    -- Stored rather than joined, and the join it replaces is the argument. It
+    -- used to be read at display time off the DEBTOR's deposit account, which
+    -- is a row in another bank's book: no table here can reach it once each
+    -- institution keeps its own database, and even within one bank a later read
+    -- reports today's asset for an authorisation granted under a different one.
+    -- Same stance as payments.debtor_name and the four identifier columns above
+    -- — a row records what it was granted with.
+    --
+    -- No CHECK and no foreign key to a currency table, for accounts.asset's
+    -- reason: the known assets are Go constants in ledger, not a database enum,
+    -- and a column that admitted only today's list would have to be migrated to
+    -- add one.
+    --
+    -- It is NOT compared against the debtor's account's asset, here or anywhere.
+    -- That account is at another bank, so the comparison has no reader; a
+    -- mismatched mandate is refused at its first collection, by the debtor's
+    -- bank, which is the only institution that can see both. See
+    -- payment.CreateMandateTx.
+    asset                      TEXT NOT NULL DEFAULT '',
     max_amount                 INTEGER NOT NULL,
     status                     INTEGER NOT NULL,
     created_at                 TEXT,

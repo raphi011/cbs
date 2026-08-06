@@ -102,12 +102,19 @@ func TestNetworkShape(t *testing.T) {
 	if got := len(listParticipants(t, ctx, net)); got != 4 {
 		t.Fatalf("participants = %d, want 4", got)
 	}
-	mandates, err := net.ListMandates(ctx)
-	if err != nil {
-		t.Fatalf("list mandates: %v", err)
+	// Three mandates across the seed, and each is at its CREDITOR's bank: a
+	// mandate is that bank's row and no listing spans them. Counting per bank is
+	// what the move to the bank's surface makes this test mean.
+	mandates := 0
+	for _, p := range listParticipants(t, ctx, net) {
+		mine, err := net.nets.Bank(p.ID).ListMandates(ctx)
+		if err != nil {
+			t.Fatalf("list %s's mandates: %v", p.ID, err)
+		}
+		mandates += len(mine)
 	}
-	if got := len(mandates); got != 3 {
-		t.Fatalf("mandates = %d, want 3", got)
+	if mandates != 3 {
+		t.Fatalf("mandates = %d, want 3", mandates)
 	}
 	cycles, err := net.ListCycles(ctx)
 	if err != nil {
@@ -518,7 +525,7 @@ func TestClockWentLive(t *testing.T) {
 	ref := payment.PartyRef{Participant: first.ID, Account: accts[0].ID}
 
 	// A mutation after build must be timestamped in real time, not at baseDate.
-	m, err := net.CreateMandate(ctx, ref, ref, 0)
+	m, err := net.nets.Bank(first.ID).CreateMandate(ctx, ref, ref, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -776,10 +776,15 @@ func (b *builder) build() {
 	check(verde.Deposit.Freeze(ctx, bianca.ID))      // Active -> Frozen
 
 	// --- Mandates for SEPA Direct Debit ------------------------------------
-	m1 := must(b.csm().CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
-	m2 := must(b.csm().CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
-	m3 := must(b.csm().CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
-	check(b.csm().RevokeMandate(b.ctx, m3.ID)) // revoked, for display
+	//
+	// Each is recorded at its CREDITOR's bank, which is the bank that holds the
+	// mandate in SEPA and the only one this system lets record one. Reading the
+	// second argument as "who may collect" is what says which bank() each call
+	// goes through.
+	m1 := must(b.bank(nord.ID).CreateMandate(b.ctx, b.ref(soleil, chloe), b.ref(nord, nora), 100_000))
+	m2 := must(b.bank(aurora.ID).CreateMandate(b.ctx, b.ref(verde, bruno), b.ref(aurora, aaron), 0))
+	m3 := must(b.bank(soleil.ID).CreateMandate(b.ctx, b.ref(nord, niklas), b.ref(soleil, claude), 25_000))
+	check(b.bank(soleil.ID).RevokeMandate(b.ctx, m3.ID)) // revoked, for display
 
 	b.clock.advance(1 * time.Hour)
 

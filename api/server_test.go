@@ -889,9 +889,11 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	bobUSD := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"BobUSD","asset":"USD","productId":"`+prdOf(t, h, b)+`"}`, http.StatusCreated)["id"].(string)
 	bob := doJSON(t, bank(h, b), "POST", "/deposit-accounts", `{"name":"Bob","asset":"EUR","productId":"`+prdOf(t, h, b)+`","identifiers":[{"scheme":"IBAN","value":"SE89-DTO-BOB-0001"}]}`, http.StatusCreated)["id"].(string)
 
-	// Mandate: derived from the (non-EUR) debtor account. Both ends are USD —
-	// CreateMandate refuses a mandate whose two accounts disagree.
-	mandate := doJSON(t, csm(h), "POST", "/mandates", `{
+	// Mandate: the asset comes off the CREDITOR's account, which is the one the
+	// recording bank holds. Both ends are USD here anyway, so this reads the
+	// same either way — the field it is asserting on is the row's now, not a
+	// join onto the debtor's register.
+	mandate := doJSON(t, bank(h, b), "POST", "/mandates", `{
 		"debtor":{"participant":"`+a+`","account":"`+aliceUSD+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bobUSD+`"},
 		"maxAmount":50000
@@ -900,15 +902,15 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 	mid := mandate["id"].(string)
 
 	var mandates []mandateDTO
-	getJSON(t, csm(h), "/mandates", &mandates)
+	getJSON(t, bank(h, b), "/mandates", &mandates)
 	if len(mandates) != 1 || mandates[0].Asset != "USD" {
 		t.Fatalf("GET /mandates asset = %+v, want one USD mandate", mandates)
 	}
 
-	got := doJSON(t, csm(h), "GET", "/mandates/"+mid, "", http.StatusOK)
+	got := doJSON(t, bank(h, b), "GET", "/mandates/"+mid, "", http.StatusOK)
 	assertEqual(t, "GET mandate asset", got["asset"].(string), "USD")
 
-	revoked := doJSON(t, csm(h), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
+	revoked := doJSON(t, bank(h, b), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
 	assertEqual(t, "revoked mandate asset", revoked["asset"].(string), "USD")
 
 	// Scheme: every scheme implemented today settles in EUR (see
@@ -1870,12 +1872,12 @@ func TestAuditMandateEvents(t *testing.T) {
 	getJSON(t, bank(h, a), "/deposit-accounts", &aAccounts)
 	getJSON(t, bank(h, b), "/deposit-accounts", &bAccounts)
 
-	mid := doJSON(t, csm(h), "POST", "/mandates", `{
+	mid := doJSON(t, bank(h, b), "POST", "/mandates", `{
 		"debtor":{"participant":"`+a+`","account":"`+aAccounts[0].ID+`"},
 		"creditor":{"participant":"`+b+`","account":"`+bAccounts[0].ID+`"},
 		"maxAmount":50000
 	}`, http.StatusCreated)["id"].(string)
-	doJSON(t, csm(h), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
+	doJSON(t, bank(h, b), "POST", "/mandates/"+mid+"/revoke", "", http.StatusOK)
 
 	var events []auditEventDTO
 	getJSON(t, csm(h), "/payments/audit?entity="+mid, &events)

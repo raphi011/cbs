@@ -22,7 +22,9 @@ export const EXPLORE_ROUTES = [
   "/central-bank",
   "/clearing-house",
   "/clearing-house/payments",
-  "/clearing-house/mandates",
+  // There is no mandates route here any more. It moved to a BANK's console —
+  // /bank/{pid}/mandates — because a mandate is the creditor's bank's row, and
+  // a route with a pid in it is not an operator-level one this list can hold.
   "/clearing-house/cycles",
   "/clearing-house/settlements",
   "/clearing-house/schemes",

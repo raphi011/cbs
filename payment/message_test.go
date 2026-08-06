@@ -100,7 +100,7 @@ func networkWithOneCollection(t *testing.T) (*testSystem, Payment, Mandate) {
 
 	debtor := PartyRef{Participant: aurora.ID, Account: alice.ID, Identifier: alice.Identifiers[0]}
 	creditor := PartyRef{Participant: verde.ID, Account: bruno.ID, Identifier: bruno.Identifiers[0]}
-	m, err := sys.CreateMandate(ctx, debtor, creditor, 0)
+	m, err := sys.bank(creditor.Participant).CreateMandate(ctx, debtor, creditor, 0)
 	assertNoError(t, err)
 
 	openCycle(t, ctx, sys, SchemeSEPADD)

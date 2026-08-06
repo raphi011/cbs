@@ -263,11 +263,11 @@ func TestMandateEventsAreAudited(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	m, err := sys.CreateMandate(ctx,
+	m, err := sys.bank(b.ID).CreateMandate(ctx,
 		PartyRef{Participant: a.ID, Account: alice},
 		PartyRef{Participant: b.ID, Account: bob}, 50000)
 	assertNoError(t, err)
-	assertNoError(t, sys.RevokeMandate(ctx, m.ID))
+	assertNoError(t, sys.bank(b.ID).RevokeMandate(ctx, m.ID))
 
 	assertEqual(t, "mandate trail", eventTypes(paymentAudit(t, sys, string(m.ID))),
 		strings.Join([]string{ledger.EventMandateCreated, ledger.EventMandateRevoked}, " "))
@@ -279,7 +279,7 @@ func TestReturnedPaymentIsAudited(t *testing.T) {
 	sys := testNetwork(t)
 	a, b, alice, bob := setupTwoBanks(t, sys)
 
-	m, err := sys.CreateMandate(ctx,
+	m, err := sys.bank(b.ID).CreateMandate(ctx,
 		PartyRef{Participant: a.ID, Account: alice},
 		PartyRef{Participant: b.ID, Account: bob}, 0)
 	assertNoError(t, err)

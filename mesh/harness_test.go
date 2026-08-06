@@ -397,11 +397,11 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// compares them party by party and a mandate over a different account is a
 	// mismatch rather than an authority. MaxAmount 0 is unlimited, so the amount
 	// is never what refuses a collection here.
-	if h.mandate, err = h.net.CreateMandate(ctx, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
+	if h.mandate, err = h.bank(h.creditor.ID).CreateMandate(ctx, h.debtorRef(), h.creditorRef(creditorIBAN), 0); err != nil {
 		t.Fatalf("CreateMandate: %v", err)
 	}
 	if opts.revokeMandate {
-		if err := h.net.RevokeMandate(ctx, h.mandate.ID); err != nil {
+		if err := h.bank(h.creditor.ID).RevokeMandate(ctx, h.mandate.ID); err != nil {
 			t.Fatalf("RevokeMandate: %v", err)
 		}
 	}

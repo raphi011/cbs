@@ -473,7 +473,7 @@ func TestABulkCollectionIsRefusedByTheClearingHouse(t *testing.T) {
 	p := h.submitDirectDebit(t)
 	h.drain(t)
 
-	mandate, err := h.net.GetMandate(context.Background(), p.MandateID)
+	mandate, err := h.bank(h.creditor.ID).GetMandate(context.Background(), p.MandateID)
 	if err != nil {
 		t.Fatalf("GetMandate: %v", err)
 	}
@@ -565,7 +565,9 @@ func TestAnOnUsPaymentIsRefusedBeforeItReachesAClearingHouse(t *testing.T) {
 			// A mandate, so that a collection is refused for being on-us and not
 			// for being unauthorised. Without it SDD.ValidateMandate would refuse
 			// first and this test would pass on a mesh with no boundary at all.
-			mandate, err := h.net.CreateMandate(ctx, h.debtorRef(), otherRef, 0)
+			// Both parties are the payer's bank's, so it is also the creditor's
+			// bank and the one that records the mandate.
+			mandate, err := h.bank(h.debtorPID).CreateMandate(ctx, h.debtorRef(), otherRef, 0)
 			if err != nil {
 				t.Fatalf("CreateMandate: %v", err)
 			}

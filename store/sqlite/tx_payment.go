@@ -625,7 +625,7 @@ func (t *tx) ListPayments(ctx context.Context) ([]payment.Payment, error) {
 
 const mandateColumns = `id, debtor_participant, debtor_account, debtor_identifier_scheme, debtor_identifier_value,
 	creditor_participant, creditor_account, creditor_identifier_scheme, creditor_identifier_value,
-	max_amount, status, created_at`
+	asset, max_amount, status, created_at`
 
 func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	if err := t.write(); err != nil {
@@ -633,7 +633,7 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 	}
 	_, err := t.tx.ExecContext(ctx, `
 		INSERT INTO mandates (`+mandateColumns+`, seq)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("mandates")+`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, `+nextRowSeq("mandates")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			debtor_participant         = EXCLUDED.debtor_participant,
 			debtor_account             = EXCLUDED.debtor_account,
@@ -643,13 +643,14 @@ func (t *tx) PutMandate(ctx context.Context, m payment.Mandate) error {
 			creditor_account           = EXCLUDED.creditor_account,
 			creditor_identifier_scheme = EXCLUDED.creditor_identifier_scheme,
 			creditor_identifier_value  = EXCLUDED.creditor_identifier_value,
+			asset                      = EXCLUDED.asset,
 			max_amount                 = EXCLUDED.max_amount,
 			status                     = EXCLUDED.status,
 			created_at                 = EXCLUDED.created_at`,
 		string(m.ID),
 		string(m.Debtor.Participant), string(m.Debtor.Account), string(m.Debtor.Identifier.Scheme), m.Debtor.Identifier.Value,
 		string(m.Creditor.Participant), string(m.Creditor.Account), string(m.Creditor.Identifier.Scheme), m.Creditor.Identifier.Value,
-		int64(m.MaxAmount), int64(m.Status), nullTime{m.CreatedAt})
+		string(m.Asset), int64(m.MaxAmount), int64(m.Status), nullTime{m.CreatedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put mandate %s: %w", m.ID, err)
 	}
@@ -665,7 +666,7 @@ func scanMandate(row interface{ Scan(...any) error }) (payment.Mandate, error) {
 	err := row.Scan(&m.ID,
 		&m.Debtor.Participant, &m.Debtor.Account, &m.Debtor.Identifier.Scheme, &m.Debtor.Identifier.Value,
 		&m.Creditor.Participant, &m.Creditor.Account, &m.Creditor.Identifier.Scheme, &m.Creditor.Identifier.Value,
-		&m.MaxAmount, &status, &createdAt)
+		&m.Asset, &m.MaxAmount, &status, &createdAt)
 	if err != nil {
 		return payment.Mandate{}, err
 	}
