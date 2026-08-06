@@ -65,9 +65,9 @@ export default function CustomerSend() {
   // simplification. This form used to ask for the payee's bank, and that made a
   // routing element into something a customer typed — the clearing house relays
   // a pacs.008 on CdtrAgt, so a wrong BIC here sent the payment to the wrong
-  // bank. The bank derives it from its own roster now, which is what a real
-  // SEPA originating bank does: IBAN-only since 2016, an address and a name from
-  // the payer and the routing from the network.
+  // bank. The bank derives it from the payee's own record in the network now,
+  // which is what a real SEPA originating bank does: IBAN-only since 2016, an
+  // address and a name from the payer and the routing from the network.
   const [creditorName, setCreditorName] = useState("");
   // The identifier the bank accepted. Holding it is what makes this form the
   // shape 7b needs: the answer to "did it work?" is a second request, not a
@@ -257,7 +257,8 @@ export default function CustomerSend() {
 // job, done in the field below this line, not something the directory
 // answers for them. The bank shown here is informational; it is not what the
 // instruction carries and not what routes the payment — the payer's own bank
-// derives that from its roster when it submits. A miss is an answer and is stated plainly; an ambiguous
+// derives that from the payee's own record when it submits. A miss is an answer
+// and is stated plainly; an ambiguous
 // address — two banks claiming it — is a 409 and describeError names it.
 function PayeeLine({
   query,

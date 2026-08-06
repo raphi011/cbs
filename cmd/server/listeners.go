@@ -14,8 +14,8 @@ import (
 	"github.com/raphi011/cbs/payment"
 )
 
-// Entity keys for the two institutions. A member bank's key is its participant
-// id, which is why these two are spelled out and the banks are not.
+// Entity keys for the two institutions. A bank's key is its participant id,
+// which is why these two are spelled out and the banks are not.
 const (
 	centralBankKey   = "central-bank"
 	clearingHouseKey = "clearing-house"
@@ -31,7 +31,10 @@ type entity struct {
 }
 
 // plan builds the listener table: the two institutions, then one listener per
-// member bank in registration order, from base+2 upward.
+// BANK in registration order, from base+2 upward — every bank the network has
+// founded, which is what ListBanks answers, and not only the ones the scheme has
+// admitted. The paragraph below is why: a listener is provisioning, and a bank
+// whose admission has not finished still has a book and customers to serve.
 //
 // Ports are static. A bank founded at runtime through POST /members gets a store
 // row, a chart of accounts and a product — and no listener until the process

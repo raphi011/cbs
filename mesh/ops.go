@@ -74,10 +74,11 @@ import (
 //
 // Task 17 gave it. payment.Participant is dissolved into three rows, one per
 // owning institution, and what a handler asking about somebody else now gets is
-// the clearing house's: payment.RosterEntry, which is a BIC, a name, a set of
-// assets and an admission reference. There is no handle on it to hand over,
-// because live handles exist only on a bank's own record and nothing on these
-// interfaces returns one.
+// the clearing house's: payment.RosterEntry, which is an address, the assets
+// that address clears in, the admission it was admitted under and when. No
+// NAME — an acmt.010 carries none, and the field went with the hold that filled
+// it. There is no handle on it to hand over either, because live handles exist
+// only on a bank's own record and nothing on these interfaces returns one.
 //
 // So the crossing this file said interfaces could not narrow was closed by
 // narrowing a type instead. Two things follow and both are still true. The

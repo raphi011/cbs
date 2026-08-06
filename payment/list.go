@@ -88,7 +88,14 @@ func (s *Network) GetBank(ctx context.Context, id ParticipantID) (*Bank, error) 
 }
 
 // GetRosterEntry returns what the clearing house holds about one member: its
-// address, its name, and the assets it clears in. Nothing else.
+// address, the assets that address clears in, the admission it was admitted
+// under, and when. Nothing else — and in particular no NAME, which an acmt.010
+// does not carry and this row therefore cannot hold; see RosterEntry.
+//
+// The admission reference is on that list rather than left off it as
+// bookkeeping. It is what the clearing house's refusal of a second institution
+// on a taken address is decided from, so a description of this row that stopped
+// at "address and assets" would omit the field the refusal is made of.
 //
 // It is what a handler asking about SOMEBODY ELSE gets, and the whole of it. A
 // bank deciding whether a rejection is about a payment whose payer banks here

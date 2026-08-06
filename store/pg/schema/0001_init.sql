@@ -810,6 +810,13 @@ COMMENT ON COLUMN roster_entries.admission_ref IS
 -- knows which schemes a member is in so that it can refuse to clear one it is
 -- not in, and that is all it knows.
 --
+-- That refusal is real and it is where the reader is: payment's
+-- bothBanksAreMembersTx, from AcceptAtCSMTx, will not take a payment into a
+-- cycle unless both banks' entries name the scheme's asset. Until that existed
+-- these rows had no reader outside the store's own conformance suite, which is
+-- the shape that deleted the name column from the parent table — recorded here
+-- because a child table nothing reads is not visible in a schema dump either.
+--
 -- Keyed by POSITION and not by asset, which is the same decision cycle_payments
 -- made for ClearingCycle.PaymentIDs and is made here for the same two reasons.
 -- RosterEntry.Assets is an ordered slice, so the position is data rather than a
@@ -1018,7 +1025,7 @@ COMMENT ON COLUMN payments.creditor_agent IS
     'creditor_participant — no operation in this system changes a BIC once a '
     'bank is admitted, so the two cannot yet disagree. It is stored anyway, '
     'and the reason is what the row is: a record of the message that WAS '
-    'SENT, not a view onto the roster as it stands now. PutBank is an '
+    'SENT, not a view onto the banks table as it stands now. PutBank is an '
     'upsert (see store/storetest), so the day a BIC can be corrected is the '
     'day a join would silently rewrite the address on every payment already '
     'settled. There is no foreign key for the same reason. The parallel '
@@ -1026,9 +1033,14 @@ COMMENT ON COLUMN payments.creditor_agent IS
     'are one rule.';
 
 COMMENT ON COLUMN payments.debtor_agent IS
-    'See creditor_agent: derived from the roster at submission, never taken '
+    'See creditor_agent: derived from the banks row at submission, never taken '
     'from the instruction, and stored rather than joined because this row '
-    'records the message that was sent.';
+    'records the message that was sent. The banks table and NOT roster_entries: '
+    'that table is the clearing house''s own, and what it decides is whether '
+    'the payment is carried AT ALL (mesh.Mesh.Submit and '
+    'payment.Network.bothBanksAreMembersTx both refuse a bank with no row in '
+    'it), never which BIC goes in this column. The two tables differ: a bank '
+    'that is founded and not yet admitted has a banks row and no roster entry.';
 
 -- Index 6: GetPaymentByEndToEndID. Deliberately NOT unique. store/mem does not
 -- reject a duplicate client reference — payment.Network does, in

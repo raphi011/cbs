@@ -375,7 +375,8 @@ func New(net *payment.Network, cfg Config, log *slog.Logger) (*Mesh, error) {
 // which is the transport's own tests. Both institutions keep it there, because
 // clearing and settlement are things you do to payments and cycles and a mesh
 // with no store has neither. On a mesh with a network, every actor — both
-// institutions and every member bank — now has a real handler.
+// institutions and every bank this mesh has been told about — now has a real
+// handler.
 func unhandled(name string) handler {
 	return func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return fmt.Errorf("mesh: %s has no handler for the %d bytes %s sent it", name, len(raw), from)
@@ -624,8 +625,10 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 // TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken.
 func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) }
 
-// ForgetBanks removes every member bank's actor: closes its inbox, waits for its
-// goroutine to return, and drops it from the routing table and the bank index.
+// ForgetBanks removes every BANK's actor — every one in the index, which after
+// an in-process Admit includes a bank the scheme has not answered for yet:
+// closes its inbox, waits for its goroutine to return, and drops it from the
+// routing table and the bank index.
 // The two institutions are untouched.
 //
 // # Why a mesh needs this at all
@@ -1385,9 +1388,8 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 // committed before anything is sent. What it does NOT answer is whether the
 // scheme accepted — that arrives later, at two other actors, as a message. The
 // bank it returns is Founded, which is a working bank that can open customer
-// accounts and cannot fund one. See "A founded bank cannot be paid is the
-// intent" in doc.go for what this transport does and does not enforce about the
-// rest of it.
+// accounts and cannot fund one. See "A founded bank can neither pay nor be paid
+// is a REFUSAL now" in doc.go for where that is enforced, and why not here.
 //
 // # The address is reserved first, and that is the orphan defect's fix
 //

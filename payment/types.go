@@ -240,8 +240,9 @@ type PartyDetails struct {
 	// Agent is the BIC of the bank holding this party's account.
 	//
 	// On a SUBMISSION it is never taken from the instruction, on either side.
-	// Both come from the roster — the participant row for the party the payment
-	// already names — because this element ROUTES: it goes out as
+	// Both come from the BANK ROW of the party the payment already names — not
+	// from the clearing house's roster, which is keyed by the very BIC being
+	// derived — because this element ROUTES: it goes out as
 	// CdtrAgt/DbtrAgt and the clearing house relays on it without a store read
 	// of its own. A payer allowed to assert it is a payer allowed to choose
 	// which bank receives their payment, which was measured doing exactly that
@@ -285,8 +286,9 @@ type Payment struct {
 
 	// DebtorDetails and CreditorDetails are what a message says about each side.
 	// The submitting bank fills its OWN side from its own register; for the
-	// counterparty it is TOLD the name and derives the agent from the roster —
-	// see PartyDetails.Agent, PartyDetails.Name, and SubmitPaymentTx.
+	// counterparty it is TOLD the name and derives the agent from that
+	// counterparty's own bank row — see PartyDetails.Agent, PartyDetails.Name,
+	// and SubmitPaymentTx.
 	DebtorDetails   PartyDetails
 	CreditorDetails PartyDetails
 

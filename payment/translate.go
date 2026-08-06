@@ -2481,7 +2481,10 @@ func ReadAdmissionAcknowledgement(doc *iso20022.Acmt010) (AdmissionAcknowledgeme
 //
 // It carries no account, because none was opened, and the applicant stays
 // whatever it was before it asked — Founded, in this system, which is a working
-// bank that cannot pay.
+// bank with no place in a scheme: it opens customer accounts, it cannot fund
+// one, and a payment to or from it is refused with ErrBankNotAdmitted. That last
+// clause used to read "a bank that cannot pay" and was a description of what
+// nobody enforced; it is a refusal now.
 //
 // # The reason is PROSE, and that is the standard's decision rather than this
 // system's

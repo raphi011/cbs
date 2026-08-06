@@ -3243,7 +3243,7 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 	// the account's real name — so the counterparty guard clears and the
 	// refusal reached is the one this case is about, not
 	// ErrCounterpartyNotNamed's. There is no creditorAgent to supply: the
-	// payee's BIC is derived from the roster, never sent.
+	// payee's BIC is derived from that payee's own bank row, never sent.
 	assertStatus(t, csm(h), "POST", "/payments", `{
 		"scheme":"sepa.ct",
 		"debtor":{"participant":"`+a+`","account":"`+alice+`"},
@@ -3369,8 +3369,8 @@ func TestPaymentAddressingRefusalsAre422(t *testing.T) {
 // # What this table used to be, and why it is shorter
 //
 // It had four rows, over two fields: creditorAgent and creditorName. The agent
-// is gone from this request — routing is derived from the roster and never
-// asserted by a payer, see initiatePaymentRequest and
+// is gone from this request — routing is derived from the named party's own bank
+// row and never asserted by a payer, see initiatePaymentRequest and
 // payment.SubmitPaymentTx — so three of those four rows were asking about a
 // field that no longer exists. Two of them were also the weak ones: they left
 // creditorAgent empty and stayed 422 with the guard deleted, because an empty

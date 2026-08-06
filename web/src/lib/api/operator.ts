@@ -1,10 +1,10 @@
-// Each entity has a listener of its own — one per member bank, one for the
-// central bank, one for the clearing house — so a request has to say which one
-// it is for. The first segment after /api is the operator key; the proxy strips
-// it and forwards the rest to that listener.
+// Each entity has a listener of its own — one per bank, one for the central
+// bank, one for the clearing house — so a request has to say which one it is
+// for. The first segment after /api is the operator key; the proxy strips it and
+// forwards the rest to that listener.
 //
 // The port table lives in the proxy, not here. A base URL in a DTO would make
-// the member roster a deployment manifest, and where a bank happens to be bound
+// the list of banks a deployment manifest, and where a bank happens to be bound
 // is not domain data.
 
 /**

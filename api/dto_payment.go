@@ -402,7 +402,7 @@ type initiatePaymentRequest struct {
 	// and it was a routing hole: the agent goes on the wire as CdtrAgt/DbtrAgt
 	// and the clearing house routes on it, so a payer who typed the wrong BIC
 	// chose which bank received the payment. Both agents are now derived from
-	// the roster row for the participant the request already names — see
+	// the bank row of the participant the request already names — see
 	// payment.SubmitPaymentTx — which is what a SEPA originating bank does, and
 	// is why this request carries an account holder's name and no bank
 	// identifier at all.
@@ -426,8 +426,8 @@ func (req initiatePaymentRequest) toDomain() payment.InitiatePaymentRequest {
 		EndToEndID:  req.EndToEndID,
 		Description: req.Description,
 		Metadata:    req.Metadata,
-		// No Agent on either side: SubmitPaymentTx derives both from the roster
-		// and would ignore anything set here.
+		// No Agent on either side: SubmitPaymentTx derives both from the named
+		// participants' own bank rows and would ignore anything set here.
 		DebtorDetails:   payment.PartyDetails{Name: req.DebtorName},
 		CreditorDetails: payment.PartyDetails{Name: req.CreditorName},
 	}

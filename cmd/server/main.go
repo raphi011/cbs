@@ -73,7 +73,7 @@ type store interface {
 }
 
 func main() {
-	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per member bank")
+	basePort := flag.Int("base-port", defaultBasePort(), "first listen port; the central bank takes it, the clearing house the next, then one per bank")
 	database := flag.String("database", os.Getenv("DATABASE_URL"), "Postgres DSN; empty uses the in-memory store")
 	flag.Parse()
 

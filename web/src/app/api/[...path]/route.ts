@@ -27,11 +27,18 @@ const CFG = backendConfig(process.env);
 const CENTRAL_BANK = "central-bank";
 const CLEARING_HOUSE = "clearing-house";
 
-// A bank's port depends on where it sits in the roster, which only the clearing
-// house can answer. The roster is read once and cached for the life of the
-// process: ports are static by design — a bank admitted at runtime gets no
-// listener until a restart — so a stale answer is not a risk, and re-reading it
-// per request would put a network hop in front of every call.
+// A bank's port depends on where it sits in the LIST OF BANKS, which only the
+// clearing house's console can answer. That list is GET /members, which is every
+// bank the network has founded and not only the ones the scheme has admitted —
+// deliberately, because a bank founded before the process started gets a
+// listener whether or not its admission ever finished. It is not the clearing
+// house's routing roster, and the name below is a legacy of when the two were
+// one row.
+//
+// It is read once and cached for the life of the process: ports are static by
+// design — a bank admitted at runtime gets no listener until a restart — so a
+// stale answer is not a risk, and re-reading it per request would put a network
+// hop in front of every call.
 let rosterCache: Promise<string[]> | null = null;
 
 function roster(): Promise<string[]> {

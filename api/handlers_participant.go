@@ -43,7 +43,7 @@ import (
 // the write fails. So a refusal leaves no row, no actor and nothing to clean up
 // — which is the reverse of the ordering this endpoint used to have, where the
 // participant row was written first and a refused address left a bank in the
-// roster that could neither pay nor be paid.
+// network that could neither pay nor be paid, with no way back.
 //
 // An interrupted admission therefore leaves a founded bank rather than an orphan,
 // and calling this again on the same name and BIC RE-DRIVES it: nothing is

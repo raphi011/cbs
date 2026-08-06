@@ -707,7 +707,9 @@ export interface InitiatePaymentRequest {
   // register.
   //
   // There is deliberately no debtorAgent or creditorAgent. A party's BIC is
-  // derived by the bank from its own roster, not asserted by the payer: the
+  // derived by the submitting bank from the named party's own bank record —
+  // not from the clearing house's routing roster, which is keyed by the very
+  // BIC being derived — and never asserted by the payer: the
   // clearing house routes on that element, so a form that asked for it would
   // let a payer choose which bank got paid. The backend's decoder rejects
   // unknown fields, so sending one is a 400 rather than a value quietly

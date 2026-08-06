@@ -8,8 +8,9 @@ import (
 
 // The three operator surfaces.
 //
-// One binary, one process by default, one listener per entity: one per member
-// bank, one for the central bank, one for the clearing house. What a caller can
+// One binary, one process by default, one listener per entity: one per bank —
+// every bank, founded or admitted — one for the central bank, one for the
+// clearing house. What a caller can
 // reach is decided by which port they are talking to, and a bank's routes have
 // nowhere to name another bank — the port carries the identity, which is why
 // s.participant reads it off the Server rather than out of the path.

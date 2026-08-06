@@ -243,9 +243,13 @@ func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, e
 // handles. It is bankTx over the identifier a MESSAGE carries rather
 // than the one this system numbers its members by.
 //
-// A sweep over the roster, because the roster is the only index there is: BIC
-// carries no uniqueness constraint (see the banks.bic column comment,
-// which records why), so there is nothing to look up by. At four members that
+// A sweep over the BANK ROWS — tx.ListBanks, and not the clearing house's
+// roster, which is keyed by BIC and would be the obvious index for this. It
+// cannot be used: this returns a bank with its live handles bound, and a roster
+// entry carries no id to bind them from, which is the crossing
+// Network.GetRosterEntry records pointing the other way. So the sweep is over
+// the only table that answers, and BIC carries no uniqueness constraint there
+// (see the banks.bic column comment, which records why). At four members that
 // is honest; a real settlement agent's directory is a service with an index,
 // exactly as ResolveIdentifier's is.
 //
@@ -254,7 +258,7 @@ func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, e
 // message, and this returns whichever the store lists first. It is not
 // ErrIdentifierAmbiguous's situation — that one refuses, because an ambiguous
 // ADDRESS would route a customer's payment to a bank on the strength of listing
-// order — because a duplicate BIC in the roster is a registration this system
+// order — because two bank rows under one BIC is a registration this system
 // should never have accepted, and refusing every return in the network on
 // account of it would be a worse answer than picking. What removes the limit is
 // a unique index on the column, which is a schema decision nobody has taken.
@@ -1713,8 +1717,10 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
 //     See PostCreditorLegTx.
 //
-// So this reads a cycle, the roster and its own book, and no payment at all,
-// which is the whole of what a settlement agent has.
+// So this reads a cycle, the bank rows and its own book, and no payment at all,
+// which is the whole of what a settlement agent has. The bank rows and not the
+// clearing house's roster: what it needs of each member is a settlement account
+// number, and the roster deliberately carries none.
 //
 // # The settlement window, and what stopped being true about it
 //
@@ -2590,11 +2596,20 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	// since February 2016: the payer supplies an IBAN and a name, and the
 	// originating bank derives the routing itself rather than trusting a BIC
 	// somebody typed. The payment already names which participant the
-	// counterparty is at, and the roster is the authority on that participant's
-	// BIC — "routing needs the bank, not the name".
+	// counterparty is at, and that bank's OWN ROW is the authority on its
+	// address — "routing needs the bank, not the name".
 	//
-	// Reading the roster is NOT a read of the counterparty's book. Participants
-	// are network-scoped rows: tx.GetBank takes no BookID and is
+	// The bank row and not the clearing house's roster, which is what a reader
+	// expects here and what several comments around this one used to say. The
+	// roster is keyed by BIC, so deriving a BIC from it would need the answer to
+	// start with; and the two tables differ in exactly one case — a bank founded
+	// and not yet admitted has a row here and no entry there — which is a
+	// difference this derivation must NOT make, because a payment to or from
+	// such a bank is refused as a payment (payment.ErrBankNotAdmitted) rather
+	// than left with no agent to address.
+	//
+	// Reading a bank's row is NOT a read of the counterparty's book. Bank rows
+	// are network-scoped: tx.GetBank takes no BookID and is
 	// deliberately not one of the recorder's overrides in mesh/books_test.go, so
 	// the submitting bank's measured set is unchanged by this call. The same
 	// test asserts that, on both directions.
@@ -4012,11 +4027,20 @@ func validateParty(field string, ref PartyRef) error {
 // it names. It is the network's directory.
 //
 // A real network's directory is a service with an index; this is a sweep over
-// the members, which is the honest shape at four banks and the boundary at
+// tx.ListBanks, which is the honest shape at four banks and the boundary at
 // which a proxy-alias registry would arrive. Aliases that are NOT bank-issued
 // (a phone number, an email address) cannot be resolved this way at all, since
-// no member can guarantee they are unique — which is why SEPA's Proxy Lookup
+// no bank can guarantee they are unique — which is why SEPA's Proxy Lookup
 // Service and UPI are separate central services rather than a sweep like this.
+//
+// EVERY BANK and not every member: this sweeps the bank rows, so an address at a
+// bank the scheme has not admitted resolves here exactly like any other. That is
+// deliberate and it is not a membership filter in disguise — a founded bank's
+// customers have real accounts with real IBANs, and a directory that hid them
+// would be answering a different question. What refuses a PAYMENT to or from
+// such a bank is ErrBankNotAdmitted, at the mesh's door and at the clearing
+// house, and this lookup is one of the two things that made that refusal
+// necessary.
 func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var out PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -4029,7 +4053,7 @@ func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifie
 
 // ResolveIdentifierTx is ResolveIdentifier within a caller-supplied unit of work.
 //
-// Two members holding the identifier is ErrIdentifierAmbiguous rather than the
+// Two banks holding the identifier is ErrIdentifierAmbiguous rather than the
 // first one found. Uniqueness is enforced per bank — that is the widest scope a
 // register can see — so a collision across banks is representable, and choosing
 // between them here would route a payment to a bank on the strength of listing

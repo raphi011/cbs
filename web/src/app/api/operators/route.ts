@@ -20,7 +20,9 @@ import {
 // each one discover it through a 502.
 //
 // This is Next's own knowledge and is served by no backend: deployment topology
-// is not domain data. A member of the roster with no listener is still a member.
+// is not domain data. A bank with no listener is still a bank, and the list this
+// probes is every bank GET /members returns — founded ones included, which is
+// why the two states have to be told apart here rather than by a 502.
 export const dynamic = "force-dynamic";
 
 const CFG = backendConfig(process.env);

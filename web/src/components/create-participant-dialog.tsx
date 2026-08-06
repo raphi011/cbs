@@ -39,8 +39,9 @@ export function CreateParticipantDialog({
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   // The bank's ISO 9362 business identifier code — what a counterparty
-  // addresses it by, and what the mesh routes on. Required: POST /members
-  // 422s without one (payment.Participant.BIC).
+  // addresses it by, and what the mesh routes on. Required: POST /members 422s
+  // without one, and the refusal is the domain's rather than this form's —
+  // iso20022.BIC.Validate, mapped by api's status table.
   const [bic, setBic] = useState("");
   // The assets the bank joins with. Founding opens a suspense and a reserve
   // account per asset in the bank's own book, and the application asks the
@@ -77,9 +78,9 @@ export function CreateParticipantDialog({
           // claiming an outcome no institution had reached yet.
           toast.success(
             `${p.name} founded, and its application is with the scheme. It can open ` +
-              `customer accounts now; it can pay and be paid once the central bank and ` +
-              `the clearing house have answered. A listener of its own comes with the ` +
-              `next server restart.`,
+              `customer accounts now; it cannot take deposits, and a payment to or ` +
+              `from it is refused, until the central bank and the clearing house have ` +
+              `answered. A listener of its own comes with the next server restart.`,
           );
         },
         onError: (err) => toast.error(describeError(err)),
