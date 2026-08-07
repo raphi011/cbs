@@ -20,41 +20,33 @@ import (
 // Across a CUT-OFF it never sees an individual payment: it is instructed about a
 // cycle, and nothing in settlementOps turns one into the payments inside it.
 //
-// A RETURN is the exception, and it is not a leak in that rule. It names one
-// settled payment because that is what a return is, and the bank that asked for
-// it put the identifier in the message; this actor still cannot enumerate
-// anything or find a payment it was not told about. What makes a return this
-// institution's work is the same thing that makes a cut-off its work — reserves
-// move — and no member bank may move those. See receiveReturn.
+// A RETURN names one settled payment because that is what a return is, and the
+// bank that asked put the identifier in the message; this actor still cannot
+// enumerate anything or find a payment it was not told about. What makes a
+// return this institution's work is what makes a cut-off its work — reserves
+// move. See receiveReturn.
 //
-// # What it does NOT do, and why that is not a shortcut
+// # What it does NOT do
 //
 // The pacs.009 it receives carries the legs the clearing house computed, and
-// this handler reads none of the amounts in them. It takes the CYCLE the legs
-// name and calls SettleCycleTx, which recomputes the whole batch from the
-// cycle's own stored net positions.
-//
-// A real settlement agent has no cycle row of its own — the ancillary system's
-// positions arrive only in the message — so it settles what it was TOLD, and a
-// leg that disagreed with the sender's own books would be the sender's problem.
+// this handler reads none of the amounts in them: it takes the CYCLE the legs
+// name and calls SettleCycleTx, which recomputes the batch from the cycle's own
+// stored net positions. A real settlement agent has no cycle row of its own — the
+// ancillary system's positions arrive only in the message — so it settles what
+// it was TOLD, and a leg that disagreed with the sender's own books would be the
+// sender's problem.
 //
 // # It holds a settlementOps, which is two methods wide
 //
 // SettleCycle and SettleReturn are on that interface and on no other, so a bank
-// handler or a clearing-house handler cannot NAME either. That is what these
-// interfaces narrow, and the whole of what they narrow — it is not a ban on
+// handler or a clearing-house handler cannot NAME either. That is not a ban on
 // those handlers moving money, because these interfaces narrow by method and not
-// by book, so any handler holding a posting method can name any book. The
-// recorder in books_test.go is what watches for that; see the note on bankOps in
-// ops.go.
+// by book; the recorder in books_test.go is what watches for that.
 //
 // Both of this institution's flows post the reserve movement in the central
-// bank's own book and in no member's; every customer leg on either path is made
-// by the bank whose customer it moves, from a message. So this institution is
-// one of the NARROWEST-reaching actors in the system. See
-// TestWhichBooksTheCentralBankReachesWhenItSettles,
-// TestWhichBooksAReturnReaches and
-// TestEachBankBooksItsOwnReturnAndNoOtherBooks.
+// bank's own book and in no member's, so it is one of the NARROWEST-reaching
+// actors in the system. See TestWhichBooksTheCentralBankReachesWhenItSettles and
+// TestWhichBooksAReturnReaches.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -177,106 +169,82 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 //
 // A CUT-OFF and a RETURN both end here, with one statement per member whose
 // reserve account moved: two members at a cut-off that netted, and always
-// exactly two on a return, since a return moves reserves between the payer's
-// bank and the payee's and nobody else. The statements differ only in what they
-// name — a cycle id or a payment id — which is a difference the receiving bank
-// does not act on either (payment.PostSettlementAdviceTx books on a reference
-// without asking which kind it is).
-//
-// That matters most for the failure below, which was written for the cut-off
-// and is now reachable from a second flow. It is the same defect with a second
-// route to it, not a new one; see the last section.
+// exactly two on a return. The statements differ only in what they name — a
+// cycle id or a payment id — which the receiving bank does not act on either.
 //
 // # Why the members and not the clearing house
 //
 // The clearing house is the party that INSTRUCTED and is the one this actor
 // answers; the members are the parties whose accounts moved, and they are not
 // parties to that conversation at all. Each gets a message about its own account
-// and about no other, which is the whole of what an account servicer tells an
-// account holder.
+// and no other, which is the whole of what an account servicer tells an account
+// holder.
 //
 // # After the unit of work, and before the answer
 //
 // After, for Mesh.Submit's reason: a statement enqueued from inside SettleCycleTx
 // would be one a bank could book against a settlement the store then rolled back.
 //
-// Before the answer, and since 15b.3 that is load-bearing rather than tidy. The
-// CREDITOR leg is now posted by the payee's bank, from the per-payment advice the
-// clearing house derives FROM the ACSC this answer produces. Sending the
-// statement first is what puts it in that bank's inbox before the ACSC is even
-// built — see TestTheMessagesACutOffPutsOnTheWire, which states the
-// happens-before chain and asserts the pair.
+// Before the answer, and that is load-bearing. The CREDITOR leg is posted by the
+// payee's bank from the per-payment advice the clearing house derives FROM the
+// ACSC this answer produces, so sending the statement first puts it in that
+// bank's inbox before the ACSC is even built. See
+// TestTheMessagesACutOffPutsOnTheWire.
 //
-// It matters for a NET RECEIVER, and that is the case to state precisely rather
-// than generally. A net receiver's mirror leg CREDITS its clearing suspense, and
-// its creditor legs then draw on that suspense; so for that bank the order
-// decides whether the money is there when it pays. It does not arise for the
-// other two shapes: a net PAYER's mirror leg debits its suspense rather than
-// funding it, and a member whose position nets to zero is sent no statement at
-// all — either way that bank's suspense was funded by its own customers'
-// debtor legs, long before the cut-off.
+// It matters for a NET RECEIVER: its mirror leg CREDITS its clearing suspense
+// and its creditor legs then draw on that suspense, so the order decides whether
+// the money is there when it pays. A net PAYER's mirror leg debits its suspense
+// rather than funding it, and a member whose position nets to zero is sent no
+// statement at all — either way that bank's suspense was funded by its own
+// customers' debtor legs long before the cut-off.
 //
-// A RETURN has the same shape with a different second message. The bank
-// receiving the reserves back is the net receiver of a batch of one; the leg
-// that draws on the suspense its statement credits is its own customer leg,
-// posted from the pacs.004 the clearing house relays out of the handler of THIS
-// answer. So the chain is one hop longer and identical in substance, and
+// A RETURN has the same shape one hop longer: the bank receiving the reserves
+// back is the net receiver of a batch of one, and the leg that draws on the
+// suspense its statement credits is its own customer leg, posted from the
+// pacs.004 the clearing house relays out of the handler of THIS answer.
 // TestTheMessagesAReturnPutsOnTheWire asserts the same pair.
 //
-// The other order is not a corruption, and saying why is the point of stating
-// this at all. Suspense is a Liability and the ledger does not guard those
-// against going negative, so a net receiver that paid its customer first would
-// simply commit, with its suspense overdrawn until the statement arrived. For
-// that interval its own books would say it had lent its customer the money,
-// which is a claim about this bank's balance sheet that nothing in the cut-off
-// justifies. The ordering is what stops it being said.
+// The other order is not a corruption, and saying why is the point. Suspense is
+// a Liability and the ledger does not guard those against going negative, so a
+// net receiver that paid its customer first would simply commit with its
+// suspense overdrawn until the statement arrived — and for that interval its own
+// books would say it had lent its customer the money, which is a claim about its
+// balance sheet that nothing in the cut-off justifies.
 //
 // # A failed send is not a failed settlement, and it suppresses three things
 //
 // The reserves have moved and the cycle is Settled: that is final, and this
-// actor cannot unsay it. So a send that fails comes back as an error to the
-// caller — which in this transport reaches Drain as a dead letter — rather than
-// being retried or swallowed. Deliberately no retry: see below on why the path
-// is unreachable, and untested machinery for an unreachable failure is worse
-// than a stated limitation.
+// actor cannot unsay it. So a send that fails comes back as an error, which in
+// this transport reaches Drain as a dead letter, rather than being retried or
+// swallowed — untested machinery for an unreachable failure is worse than a
+// stated limitation.
 //
-// What the failure costs is wider than the bank that could not be reached, and
-// all three parts belong in one place because a reader who finds only the first
-// will under-estimate the second and third:
+// What the failure costs is wider than the bank that could not be reached:
 //
 //  1. The unreachable member is never advised, so its advice row is ABSENT —
-//     which is indistinguishable in the store from a member that was told and
-//     could not book, because that row commits with the mirror leg. Either way
-//     it is the unreconciled position: a clearing suspense that has not returned
-//     to zero, with nothing recording why.
+//     indistinguishable in the store from a member that was told and could not
+//     book, because that row commits with the mirror leg. Either way it is the
+//     unreconciled position.
 //  2. This returns on the FIRST failing send, so every member AFTER it in the
-//     statement order is never advised either, for a reason that has nothing to
-//     do with that member.
+//     statement order is never advised either.
 //  3. cb.answer never runs, so the clearing house is never told ACSC and
 //     csm.tellSettled's per-payment fan-out never happens. Every bank in the
 //     cycle — INCLUDING the ones successfully advised — is left holding an
-//     instruction it believes outstanding, on a payment the domain has already
-//     marked Settled. That is the largest of the three and the least visible.
+//     instruction it believes outstanding on a payment already marked Settled.
+//     That is the largest of the three and the least visible.
 //
-// On a RETURN the same three land differently and the third is worse. A member
-// never advised has an unreconciled suspense with no advice row, exactly as
-// above. The early return still suppresses the second statement. And the answer
-// that never runs costs more than an answer: csm.receiveReturnStatus is what
-// releases the pacs.004 the clearing house is holding, so the OTHER bank's
-// customer leg is never posted at all — the reserves have moved and are final,
-// one bank's customer has been debited or credited, and the payment stays
-// Settled for ever with half a return standing in one book. It is the same
-// shape as the settlement path's third item and it reaches a customer's account
-// rather than a bank's expectations. See csm.relayReturn, where the held
-// message and its failure mode are recorded together.
+// On a RETURN the third is worse: csm.receiveReturnStatus is what releases the
+// pacs.004 the clearing house is holding, so the OTHER bank's customer leg is
+// never posted at all — the reserves are final, one bank's customer has been
+// debited or credited, and the payment stays Settled for ever with half a return
+// standing in one book. See csm.relayReturn.
 //
 // None of it is reachable in this transport. Mesh.send fails in exactly three
 // ways — a message that will not marshal, a BIC with no actor, and an actor that
-// has been stopped — and none of them occurs for a member of a live roster whose
-// statement the domain has just built. Delivery here is exactly-once and in
-// order, because the transport is a queue inside one process; it becomes
-// reachable the moment the transport can lose a message, which is every real
-// one. payment/recon is what makes any of the three detectable.
+// has been stopped — and none occurs for a member of a live roster whose
+// statement the domain has just built. It becomes reachable the moment the
+// transport can lose a message, which is every real one. payment/recon is what
+// makes any of the three detectable.
 func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 	for _, st := range statements {
 		env, err := payment.StatementMessage(st, payment.MessageContext{
@@ -302,111 +270,87 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 //
 // The reserve reversal between the two members' settlement accounts is
 // central-bank money, so no member bank and no clearing house may make it.
-// payment/doc.go records the consequence: returns settle immediately in this
-// system rather than being cleared and netted in a later R-cycle. A return
-// therefore IS a settlement act, and it belongs where settlement does.
+// Returns settle immediately in this system rather than being cleared and netted
+// in a later R-cycle, so a return IS a settlement act and belongs where
+// settlement does.
 //
-// # There is no price any more, and the paragraph that said there was is gone
-//
-// The pacs.004 travels bank to bank as it does in a real network: the returning
-// bank posts its own leg before it sends, the other bank posts its own when the
-// clearing house relays the message after finality, and each books its reserve
-// mirror from the camt.053 this handler sends. What is left here is the reserve
-// reversal and nothing else. TestWhichBooksAReturnReaches measures that rather
-// than assuming it.
+// What is left here is the reserve reversal and nothing else: the pacs.004
+// travels bank to bank as it does in a real network, each bank posts its own
+// customer leg, and each books its reserve mirror from the camt.053 this handler
+// sends. TestWhichBooksAReturnReaches measures that rather than assuming it.
 //
 // # It reads the parties off the MESSAGE
 //
 // payment.ReadReturn, and not a payment row: this actor holds none, never saw
 // the payment clear, and could not look one up. Both agents and the amount come
-// out of OrgnlTxRef, which is what iso20022.OriginalTransactionReference exists
-// for. See payment.SettleReturnTx, which is written so that it never reads a
-// payment.
+// out of OrgnlTxRef. See payment.SettleReturnTx, which is written so that it
+// never reads a payment.
 //
 // # The order: advise, then answer
 //
 // The camt.053 goes to BOTH banks before the pacs.002 goes to the clearing
-// house, for centralBank.advise's existing reason and for a second one this
-// flow adds. On a PUSH the other bank's refund DRAWS on the clearing suspense
-// its own mirror leg credits, and what makes it draw is the pacs.004 the
-// clearing house relays out of the handler of this answer — so the statement
-// has to be in that bank's inbox first. On a PULL the relayed leg is the
-// clawback, which CREDITS that bank's suspense while its mirror leg debits it
-// (SettleReturnTx makes the creditor's bank the payer of the reversal in both
-// directions), so nothing there is drawn on and the order costs that direction
-// nothing. One order goes out either way, and it is the one the push needs.
-// That is not luck: Mesh.send pushes synchronously on the
-// sender's goroutine, so a statement pushed before the answer is queued before
-// the message the answer provokes can exist. See
-// TestTheMessagesAReturnPutsOnTheWire, which states the chain and asserts the
-// pair.
+// house, for centralBank.advise's reason and for one this flow adds. On a PUSH
+// the other bank's refund DRAWS on the clearing suspense its own mirror leg
+// credits, and what makes it draw is the pacs.004 the clearing house relays out
+// of the handler of this answer — so the statement has to be in that bank's
+// inbox first. On a PULL the relayed leg is the clawback, which CREDITS that
+// bank's suspense while its mirror leg debits it, so nothing there is drawn on.
+// One order goes out either way, and it is the one the push needs. See
+// TestTheMessagesAReturnPutsOnTheWire.
 //
 // # One return per message, and the sender's own count must agree
 //
 // A pacs.004 can carry many, and this system's returning banks send one. Two
-// checks, stated separately because they refuse different things and a bank
-// reading the answer should be able to tell which. A message failing either is
-// refused WHOLE rather than half-executed, for cycleOf's reason one message
-// definition over: returning the first and dropping the rest would leave
-// payments somebody was told had been sent back and never were, with nothing
-// anywhere recording it.
-//
-// The first is the count that ARRIVED: more than one return is more than this
-// actor acts on. The second is the count the sender CLAIMED — the same check
-// payment.ReadSettlement makes on a settlement instruction, and here for the
-// same reason. A transaction lost in transit is a payer who never gets their
-// money back, and a receiver that acted on the survivors would be answering for
-// a message it did not have.
+// checks, stated separately because they refuse different things: the count that
+// ARRIVED, and the count the sender CLAIMED — the same check
+// payment.ReadSettlement makes on a settlement instruction, because a
+// transaction lost in transit is a payer who never gets their money back. A
+// message failing either is refused WHOLE, for cycleOf's reason: returning the
+// first and dropping the rest would leave payments somebody was told had been
+// sent back and never were.
 //
 // # What is answered, and what is dead-lettered
 //
 // A redelivered return names a payment this network has already settled the
 // return of, and SettleReturn refuses it with ErrReturnAlreadySettled — a
 // statement about THIS system's state and not about the sender's message.
-// payment's reasonTable gives it the empty code for exactly that reason, and
-// ReasonFor would turn it into MS03 and tell the returning bank that a return
-// which in fact happened was rejected. Dead letter, and no pacs.002; it is the
-// same discrimination receiveSettlement makes.
+// reasonTable gives it the empty code for that reason, and ReasonFor would turn
+// it into MS03 and tell the returning bank that a return which in fact happened
+// was rejected. Dead letter, and no pacs.002. There is no payment row on this
+// path, so the redelivery is caught where the only durable trace of a settled
+// return is: the idempotency key on the reserve reversal, in this bank's own
+// ledger.
 //
-// There is no payment row on this path, so a redelivery is caught where the only
-// durable trace of a settled return is: the idempotency key on the reserve
-// reversal, in this bank's own ledger. See payment.ErrReturnAlreadySettled.
-//
-// Everything else the domain refuses is answered, with the code ReasonFor maps
-// it to, because a refusal a counterparty can act on is completed work rather
-// than a defect. There are two, and both are about this actor's own book: a
-// creditor's bank whose reserves cannot cover the reversal is
-// ledger.ErrInsufficientBalance and therefore AM04, and an agent BIC that names
-// no member of this network is ErrParticipantNotFound. A message that cannot be
-// READ — no OrgnlTxRef, an agent with no BICFI, an amount in no known asset — is
-// answered too, and by the same rule: the sender composed it and can fix it.
+// Everything else the domain refuses is answered with the code ReasonFor maps it
+// to, because a refusal a counterparty can act on is completed work. There are
+// two, both about this actor's own book: a creditor's bank whose reserves cannot
+// cover the reversal is ledger.ErrInsufficientBalance and therefore AM04, and an
+// agent BIC naming no member is ErrParticipantNotFound. A message that cannot be
+// READ is answered too, by the same rule: the sender composed it and can fix it.
 //
 // ErrSchemeUnsupportedReturn is not among them: SettleReturnTx reads no payment
 // and no scheme, because whether a scheme's rule book allows returns is a
-// question for the bank that composes the pacs.004 (payment.PostReturnLegTx asks
-// it) and not for the agent that moves the reserves after one has been sent.
+// question for the bank that composes the pacs.004 and not for the agent that
+// moves the reserves after one has been sent.
 //
 // # A return that names no payment is answered, and dies one hop later
 //
 // returnedEndToEnd substitutes notProvided when there is no OrgnlEndToEndId, so
-// the report always carries something to refer back by and payment.StatusMessage
-// builds it. What refuses the message is payment.ReadReturn, which will not read
-// a transaction with no OrgnlTxId, so this actor answers RJCT to the clearing
-// house like any other unreadable message, quoting an empty transaction id
-// because that is what it was given.
+// the report always carries something to refer back by. What refuses the message
+// is payment.ReadReturn, which will not read a transaction with no OrgnlTxId, so
+// this actor answers RJCT quoting an empty transaction id because that is what
+// it was given.
 //
 // Where it dies is one hop on: the clearing house turns an answer back into a
-// payment by OrgnlTxId, which is the element this message does not have, so the
-// refusal becomes a dead letter THERE and the returning bank is told nothing.
-// The limit is the clearing house's — it has no way to resolve a payment by its
-// end-to-end reference — and not this handler's.
+// payment by OrgnlTxId, which this message does not have, so the refusal becomes
+// a dead letter THERE and the returning bank is told nothing. The limit is the
+// clearing house's — it has no way to resolve a payment by its end-to-end
+// reference.
 //
-// Why ReadReturn refuses it at all is about money rather than about answering:
-// SettleReturnTx derives the reserve reversal's idempotency key from the payment
-// id, so an empty one would move reserves between two real banks under a key
-// every nameless return shares. No actor in this mesh sends such a message;
-// TestAReturnThatNamesNoPaymentCannotBeAnswered injects one and pins what
-// happens rather than leaving it to be discovered.
+// Why ReadReturn refuses it at all is about money: SettleReturnTx derives the
+// reserve reversal's idempotency key from the payment id, so an empty one would
+// move reserves between two real banks under a key every nameless return shares.
+// TestAReturnThatNamesNoPaymentCannotBeAnswered pins it.
 func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs004) error {
 	body := doc.PmtRtr
 	orig := payment.OriginalMessage{
@@ -457,19 +401,16 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 // the message, because a settlement agent holds no roster and has never been
 // told this system's bank ids. What an acmt.007 tells it is a BIC, a legal name
 // and ONE currency, and the BIC is what it keys its own member row by. See
-// payment.ReadAdmissionRequest, which is where the address is validated, and
-// payment.OpenSettlementAccountTx, which names that reader as the thing that
-// has to run before it.
+// payment.ReadAdmissionRequest, where the address is validated.
 //
 // # It answers acmt.011 and NOT pacs.002
 //
 // A status report is about a payment transaction, and this is not one: no
 // payment exists, no cycle exists, and OrgnlTxId would have nothing to quote.
-// The account-management family carries its own refusal and this actor uses it.
 // The consequence is that the reason travels as PROSE rather than as a code —
 // References6 makes RjctnRsn a repeated Max350Text — which is the standard's
-// decision and not this system's, and it is why payment's reasonTable gives the
-// admission sentinels the empty code. See payment.AdmissionRejectionMessage.
+// decision and not this system's, and it is why reasonTable gives the admission
+// sentinels the empty code.
 //
 // # One request, one currency, one answer that names every account
 //
@@ -477,23 +418,17 @@ func (cb *centralBank) receiveReturn(ctx context.Context, from iso20022.BIC, hdr
 // bank joining in two assets sends two requests; AccountForAction1 is unbounded,
 // so the answer to each lists the member's WHOLE account set as this act has
 // just left it. That is what lets one acknowledgement serve both readers on the
-// far side of the relay — the clearing house learns which assets the member
-// clears in, and the bank learns every account number it has been given.
+// far side of the relay.
 //
-// It answers per request rather than once per admission, and it could not do
-// otherwise: nothing on an acmt.007 says how many of them an admission is made
-// of, so this actor cannot know when the last one has arrived. What that costs
-// is that a two-asset bank is told twice; what it buys is that neither answer
-// waits on a message that may never come.
-//
-// # The process id is echoed, and this is the hop that copies it
+// It answers per request rather than once per admission, and could not do
+// otherwise: nothing on an acmt.007 says how many an admission is made of, so
+// this actor cannot know when the last has arrived. A two-asset bank is told
+// twice; what that buys is that neither answer waits on a message that may never
+// come.
 //
 // Refs/PrcId is the conversation's only correlator — the acknowledgement carries
-// no back-reference to the request at all — so the answer's process id is the
-// request's, read off the acmt.007 by the reader and put back by the builder.
-// This handler is where the two are held at once, which is why
-// payment.AdmissionRequest's own doc names it as what carries the reference
-// forward.
+// no back-reference to the request — so the answer's process id is the
+// request's, and this handler is where the two are held at once.
 func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, doc *iso20022.Acmt007) error {
 	in, err := payment.ReadAdmissionRequest(doc)
 	if err != nil {
@@ -523,86 +458,68 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 // receiveLodgement is the central bank crediting a member's reserve account
 // because the member asked it to: the fourth thing this actor does.
 //
-// # The entries are not new; the instruction is
-//
 // Debit Settlement Assets / Credit Reserve: <member>. A member cannot make these
 // entries itself: it sends a camt.050, and this handler is the only thing in the
 // system that posts them.
 //
-// # It has receiveAdmission's shape, and reads the parties off the message
+// It has receiveAdmission's shape and reads the parties off the message, for
+// that handler's reason: a settlement agent holds no roster and has never heard
+// of this system's bank ids. See payment.ReadLodgement, and
+// payment.ReceiveLodgementTx on why the quoted account number is a CHECK against
+// its own row rather than a lookup.
 //
-// Read the message, run the domain act in one unit of work, answer — and for
-// receiveAdmission's reason: a settlement agent holds no roster and has never
-// heard of this system's bank ids. What a camt.050 tells it is a BIC, an account
-// number, an asset and an amount, and the BIC is what it keys its own row by. See
-// payment.ReadLodgement, and payment.ReceiveLodgementTx on why the quoted account
-// number is a CHECK against its own row rather than a lookup.
-//
-// It takes the HEADER as well as the document, which receiveAdmission does not,
-// and the difference is the relay. An acmt.007 arrives here having been forwarded
-// by the clearing house, so its Fr is the last hop rather than the applicant; a
-// camt.050 comes straight from the member, one hop, so the header and the body
-// must agree and ReadLodgement is where they are compared.
+// It takes the HEADER as well as the document, which receiveAdmission does not:
+// an acmt.007 arrives having been forwarded by the clearing house, so its Fr is
+// the last hop rather than the applicant, while a camt.050 comes straight from
+// the member and the header and the body must agree.
 //
 // # It answers camt.025 and NOT pacs.002
 //
-// receiveAdmission makes the same discrimination and reaches for acmt.011. A
-// status report is about a payment transaction, and a lodgement is not one: it
+// A status report is about a payment transaction, and a lodgement is not one: it
 // moves no customer's money, belongs to no scheme and no cycle, and has no
-// OrgnlTxId to quote. The cash-management family carries its own acknowledgement.
-//
-// The consequence is admission's consequence: the reason travels as PROSE rather
-// than as a code, because camt.025's StsCd is a code set nothing here can check
-// and its Desc is free text. It is why payment's reasonTable gives these
-// sentinels the empty code. See iso20022.RequestHandling.
+// OrgnlTxId to quote. The reason therefore travels as PROSE, because camt.025's
+// StsCd is a code set nothing here can check and its Desc is free text — which
+// is why reasonTable gives these sentinels the empty code.
 //
 // # Everything the domain refuses is answered, and everything else is dead-lettered
 //
 // A member it holds no account for, an asset it holds no account for that member
 // in, and an account number that is not the one it holds are all answered with a
 // refusing receipt: each is a judgement about the request that the sender can act
-// on, and refusing to a counterparty is completed work rather than a defect.
-// lodgementRefusals is that list, by name.
+// on. lodgementRefusals is that list, by name.
 //
-// A REDELIVERED lodgement is not. The queue can deliver twice, and the second copy
-// names a request this agent has already posted; payment.ReceiveLodgementTx keys
-// that posting on the request's own message id, so the repeat is caught by the
-// ledger as ErrDuplicateIdempotencyKey rather than posted again. Answering it
-// would tell the member its lodgement was refused when in fact it happened, which
-// is receiveSettlement's discrimination about ErrCycleNotClosed exactly. Dead
-// letter, and no second receipt.
+// A REDELIVERED lodgement is not. payment.ReceiveLodgementTx keys the posting on
+// the request's own message id, so the repeat is caught by the ledger rather
+// than posted again, and answering it would tell the member its lodgement was
+// refused when in fact it happened.
 //
 // NEITHER IS A STORE FAILURE, and this handler is the one place in the mesh where
 // getting that wrong costs money that nothing can recover. Every other refusing
-// handler answers a sender that has posted nothing: receiveAdmission's applicant
-// is waiting for an account to exist, and receiveReturn's is waiting to be told.
-// A lodging member has ALREADY COMMITTED ITS LEG — payment.LodgeReservesTx posts
-// Debit Reserve / Credit Vault Cash before the camt.050 goes out, because a
-// camt.025 carries no amount and the alternative was remembering the request in
-// the actor. So a refusal here is read by the member as "this did not happen",
-// and a camt.025 saying that because the agent's Store.Update exhausted its retry
-// budget is a lie about money: the member's mirror stays raised, the agent's book
-// never moved, and bank.receiveLodgementReceipt cannot unwind it because the
-// amount is not on the receipt.
+// handler answers a sender that has posted nothing. A lodging member has ALREADY
+// COMMITTED ITS LEG — payment.LodgeReservesTx posts Debit Reserve / Credit Vault
+// Cash before the camt.050 goes out, because a camt.025 carries no amount — so a
+// refusal here is read as "this did not happen", and one sent because the
+// agent's Store.Update exhausted its retry budget is a lie about money: the
+// member's mirror stays raised, the agent's book never moved, and
+// bank.receiveLodgementReceipt cannot unwind it because the amount is not on the
+// receipt.
 //
-// The discrimination is checkPartyTx's, one layer down and for the same reason —
-// a transient fault at the receiver must not come back to the sender as a
-// judgement about its request. It is made BY NAME rather than through
-// payment.ReasonFor, and that is forced rather than chosen: these sentinels carry
-// the empty code, so ReasonFor cannot tell them from an error it has never heard
-// of. payment.ReasonFor's own doc says the protection an empty code gives is the
-// caller's, made by name before it asks for a code at all. This is that caller.
+// The discrimination is checkPartyTx's, one layer down and for the same reason.
+// It is made BY NAME rather than through payment.ReasonFor, and that is forced
+// rather than chosen: these sentinels carry the empty code, so ReasonFor cannot
+// tell them from an error it has never heard of.
 //
-// So anything not on the list is a dead letter, and the member is told nothing.
-// That leaves its mirror overstated too — the difference is that a dead letter is
-// a visible break an operator can re-drive, and a false refusal is a break that
-// looks like a completed conversation.
+// So anything not on the list is a dead letter and the member is told nothing.
+// That leaves its mirror overstated too — the difference is that a dead letter
+// is a visible break an operator can re-drive, and a false refusal is a break
+// that looks like a completed conversation.
 //
 // # It answers the SENDER, and the sender is the member
 //
 // Unlike a settlement or a return, there is no third institution in this
 // conversation. The clearing house is not a party to a member's liquidity
-// management, routes nothing here, and would have nothing to do with the answer.
+// management, routes nothing here, and would have nothing to do with the
+// answer.
 func (cb *centralBank) receiveLodgement(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Camt050) error {
 	in, err := payment.ReadLodgement(hdr, doc)
 	if err != nil {
