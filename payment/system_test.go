@@ -246,11 +246,23 @@ func reject(ctx context.Context, sys *testSystem, id PaymentID, code iso20022.St
 	// and a ReverseDebtorLegTx in ONE transaction on the clearing house's store,
 	// which was two institutions in one unit of work and a bank's book reached
 	// through another institution's network.
-	if _, err := sys.bank(out.DebtorDetails.Agent).RejectAtBank(ctx, id, code, reason); err != nil {
-		return Payment{}, err
-	}
+	//
+	// A bank that holds NO copy is skipped, and that is the mesh's behaviour
+	// rather than a convenience. The pacs.002 is addressed to both agents on the
+	// payment, and one of them may never have been sent the instruction at all —
+	// a clearing house that refuses a payment before relaying it leaves the far
+	// bank with nothing, and that bank dead-letters the status it is then sent.
+	// Failing here instead would make this helper unusable for exactly the
+	// pre-relay rejections it is most needed for.
+	agents := []iso20022.BIC{out.DebtorDetails.Agent}
 	if other := out.CreditorDetails.Agent; other != out.DebtorDetails.Agent {
-		if _, err := sys.bank(other).RejectAtBank(ctx, id, code, reason); err != nil {
+		agents = append(agents, other)
+	}
+	for _, agent := range agents {
+		if _, err := sys.bank(agent).GetPayment(ctx, id); errors.Is(err, ErrPaymentNotFound) {
+			continue
+		}
+		if _, err := sys.bank(agent).RejectAtBank(ctx, id, code, reason); err != nil {
 			return Payment{}, err
 		}
 	}
@@ -809,9 +821,13 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	// 2. The payment settled, because it did: the reserves moved and Bob's bank
 	//    has been paid. Which of that bank's accounts holds the money afterwards
 	//    is between the bank and Bob.
-	got, err := sys.GetPayment(ctx, pay.ID)
-	assertNoError(t, err)
-	assertEqual(t, "status", got.Status, Settled)
+	//
+	//    On BOB'S BANK's copy, which is the one SettleAtBank moved. The clearing
+	//    house's says Cleared and is not wrong — it has taken the payment into a
+	//    settled cut-off and has not been told what the payee's bank did with
+	//    it, which is the acceptance the fixture stops short of (SettleAtCSM,
+	//    see payTheCreditors).
+	assertEqual(t, "status", mustGetPaymentAt(t, ctx, sys.bank(b.BIC), pay.ID).Status, Settled)
 
 	// 3. And that account is the unclaimed-balances one, not Bob's.
 	assertEqual(t, "bank B unclaimed balances", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 30000)
@@ -937,8 +953,12 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 	_, statements, err := sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
-	_, err = sys.bank(b.BIC).SettleAtBank(ctx, pay.ID)
-	assertNoError(t, err)
+	// Every institution is told, not just the payee's bank. A return is an edge
+	// from Settled, and each of the three keeps its own status: without the
+	// clearing house's SettleAtCSM and the payer's bank's own SettleAtBank the
+	// return below is refused by two copies that still say Cleared. See
+	// payTheCreditors.
+	payTheCreditors(t, sys, cyc.ID)
 
 	// Where the money is before the return, and it is not with Bob.
 	assertEqual(t, "bank B unclaimed after settlement", bookBalance(t, b.Ledger, accountsOf(t, b).Unclaimed), 30000)
@@ -4394,8 +4414,14 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 
 				// The same store, decorated only from here on: the payment had
 				// to be submitted successfully for there to be one to answer.
+				// The RECEIVING bank's store, which is the one this act reads:
+				// it resolves that bank's own party in that bank's own
+				// register. Wrapping the clearing house's reported a missing
+				// table instead of the injected failure — a true statement
+				// about the wrong institution, and one that would have hidden
+				// the very confusion this test exists to prevent.
 				broken := NewNetwork(failingUpdateStore{
-					Store:          n.Store(),
+					Store:          n.bank(receiverOf(n, p)).Store(),
 					participantErr: tc.participantErr,
 					accountErr:     tc.accountErr,
 				}, func() time.Time { return fixedTime }, AsBank(ParticipantID(receiverOf(n, p))))
@@ -4431,6 +4457,14 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 	ctx := context.Background()
 	n, p := networkWithASubmittedPayment(t)
+	receiver := n.bank(receiverOf(n, p))
+
+	// The receiving bank ANSWERS FIRST, and it has to. Its guard reads its OWN
+	// copy since Task 18d — "a row that is here and is not Initiated" — so a
+	// bank that has never seen the payment has no row to be wrong about and
+	// writes a fresh one, which is the correct answer to a first delivery
+	// however late it arrives. What this test is about is the SECOND.
+	assertNoError(t, receiver.AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 	rejected, err := reject(ctx, n, p.ID, iso20022.StatusReasonDuplication, "cancelled by the payer")
 	assertNoError(t, err)
@@ -4439,13 +4473,12 @@ func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 	// p is the copy submission returned: Initiated, with a debtor leg that has
 	// since been reversed. Exactly what a bank's handler would still be
 	// holding.
-	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)); !errors.Is(err, ErrInvalidStateTransition) {
+	if err := receiver.AcceptInbound(ctx, p.ID, relayedFrom(p)); !errors.Is(err, ErrInvalidStateTransition) {
 		t.Fatalf("AcceptInbound on a rejected payment = %v, want ErrInvalidStateTransition", err)
 	}
 
-	stored, err := n.GetPayment(ctx, p.ID)
-	assertNoError(t, err)
-	assertEqual(t, "status after the late answer", stored.Status, Rejected)
+	assertEqual(t, "status after the late answer",
+		mustGetPaymentAt(t, ctx, receiver, p.ID).Status, Rejected)
 }
 
 func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
