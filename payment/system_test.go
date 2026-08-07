@@ -288,19 +288,39 @@ func setupTwoBanks(t *testing.T, sys *testSystem) (a, b *Bank, alice, bob deposi
 	return a, b, aliceAcct.ID, bobAcct.ID
 }
 
-// addParticipant admits a euro-only bank, failing the test on error. It is
-// setupTwoBanks' admission, factored out for tests that want more than two
-// banks or want to name them themselves.
+// addParticipant admits a euro-only bank at the given address, failing the test
+// on error. It is setupTwoBanks' admission, factored out for tests that want
+// more than two banks or want to name them themselves.
 //
 // It goes through storetest.Admit, which runs the four acts in order with no mesh
 // to carry the messages between them. The conversation itself is tested in
 // mesh; what these tests need is a bank that is a Member.
-func addParticipant(t *testing.T, ctx context.Context, sys *testSystem, name string) *Bank {
+//
+// # The address is an argument now, and it had to become one
+//
+// It used to give every bank testBIC, and a caller admitting Aurora and Verde
+// got two banks the fixture could tell apart by name. Since Task 18d a bank's
+// address is its DATABASE — Networks.Bank routes on it, and a bank's
+// ParticipantID is its BIC — so two banks on one address are one institution
+// holding two rows: Verde opened its customer in Aurora's register, and every
+// test asserting that one bank cannot see the other's account was asserting it
+// about a bank that could. auroraBIC and verdeBIC are the pair those fixtures
+// use; testBICs is for the ones building more than two.
+func addParticipant(t *testing.T, ctx context.Context, sys *testSystem, name string, bic iso20022.BIC) *Bank {
 	t.Helper()
-	p, err := storetest.Admit(ctx, sys.nets, name, testBIC, euroOnly)
+	p, err := storetest.Admit(ctx, sys.nets, name, bic, euroOnly)
 	assertNoError(t, err)
 	return p
 }
+
+// auroraBIC and verdeBIC are the two addresses the Aurora/Verde fixtures below
+// are built on. They are distinct because those fixtures' whole subject is one
+// bank NOT seeing the other's register, which is a claim about two institutions
+// and unmakeable on one address.
+const (
+	auroraBIC iso20022.BIC = "AURODEFFXXX"
+	verdeBIC  iso20022.BIC = "VERDITMMXXX"
+)
 
 // openCustomer opens a customer deposit account at p, addressed by the given
 // IBAN. It goes through p.Deposit.OpenAccount directly, rather than
@@ -1765,7 +1785,11 @@ func mustGetBank(t *testing.T, ctx context.Context, sys *testSystem, id Particip
 func assertCentralBankReserveAccountCount(t *testing.T, ctx context.Context, sys *testSystem, bank string, want int) {
 	t.Helper()
 	var got int
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	// The CENTRAL BANK's store, because the book is. Reading it through the
+	// embedded clearing-house network is refused by name since Task 18d — that
+	// store does not answer for another institution's book — so the routing here
+	// is what makes the count a count rather than an error.
+	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx Tx) error {
 		accounts, err := tx.ListAccounts(ctx, CentralBankBook)
 		if err != nil {
 			return err
@@ -1809,10 +1833,18 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 		t.Errorf("a founded bank cannot open a customer account: %v", err)
 	}
 
-	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
+	// Two institutions, two reads, and that is the point of the test rather than
+	// an inconvenience: "no other institution was touched" is a claim about the
+	// central bank's database AND about the clearing house's, and since Task 18d
+	// neither can be asked about the other's table. One View over one store was
+	// the same sentence only while there was one store.
+	assertNoError(t, sys.cb().Store().View(ctx, func(ctx context.Context, tx Tx) error {
 		if _, err := tx.GetSettlementMember(ctx, "AURODEFFXXX"); !errors.Is(err, ErrSettlementMemberNotFound) {
 			t.Errorf("the central bank has a member row for a bank that only founded itself: %v", err)
 		}
+		return nil
+	}))
+	assertNoError(t, sys.Store().View(ctx, func(ctx context.Context, tx Tx) error {
 		if _, err := tx.GetRosterEntry(ctx, "AURODEFFXXX"); !errors.Is(err, ErrRosterEntryNotFound) {
 			t.Errorf("the clearing house has a routing entry for a bank that has not applied: %v", err)
 		}
@@ -1835,11 +1867,11 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 
 	in := AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: testAsset, Ref: "adm-1"}
 	var first, second SettlementMember
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
 		first, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
 		second, err = sys.cb().OpenSettlementAccountTx(ctx, tx, in)
 		return err
 	})
@@ -1858,7 +1890,7 @@ func TestOpeningASettlementAccountTwiceOpensOne(t *testing.T) {
 	// A different asset is a different account, and it does not disturb the one
 	// already open.
 	var extended SettlementMember
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
+	mustUpdateAt(t, ctx, sys.cb(), func(ctx context.Context, tx Tx) (err error) {
 		extended, err = sys.cb().OpenSettlementAccountTx(ctx, tx,
 			AdmissionRequest{Name: "Aurora Bank", BIC: "AURODEFFXXX", Asset: "USD", Ref: "adm-2"})
 		return err
@@ -1973,7 +2005,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 	}
 	// A bank with nothing recorded takes the first that names it.
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -1986,7 +2018,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	// currency makes ordinary.
 	second := ack
 	second.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001", "USD": "200.100.002"}
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, second)
 		return err
 	})
@@ -1996,7 +2028,7 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	forged := ack
 	forged.Ref = "adm-someone-else"
 	forged.Accounts = map[ledger.AssetCode]ledger.AccountID{testAsset: "acc_bogus"}
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, forged)
 		return err
 	})
@@ -2053,7 +2085,7 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		return sys, bank
 	}
 	record := func(sys *testSystem, id ParticipantID, ack AdmissionAcknowledgement) error {
-		return sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+		return sys.bank(iso20022.BIC(id)).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 			_, err := sys.bank(iso20022.BIC(id)).RecordMembershipTx(ctx, tx, ack)
 			return err
 		})
@@ -2174,7 +2206,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 
 	// The BANK. A membership recorded under no admission is a Member whose row
 	// reads as "accepted nothing", which is the reset.
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, noRef)
 		return err
 	})
@@ -2206,7 +2238,7 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	// SENTINEL rather than the field.
 	real := noRef
 	real.Ref = "adm-1"
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 		return err
 	})
@@ -2365,7 +2397,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 		Accounts: map[ledger.AssetCode]ledger.AccountID{testAsset: "200.100.001"},
 		Ref:      "adm-1",
 	}
-	err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	err := sys.bank(verde.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(verde.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -2385,7 +2417,7 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	}
 
 	// And the bank the acknowledgement IS addressed to records it.
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
+	mustUpdateAt(t, ctx, sys.bank(aurora.BIC), func(ctx context.Context, tx Tx) error {
 		_, err := sys.bank(aurora.BIC).RecordMembershipTx(ctx, tx, ack)
 		return err
 	})
@@ -2944,8 +2976,8 @@ func assertEqual[T comparable](t *testing.T, label string, got, want T) {
 func TestResolveIdentifierAnswersOnlyForTheAskingBanksOwnRegister(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
 	_ = openCustomer(t, ctx, verde, "Bruno", "IT60-VERDE-2001")
@@ -2975,7 +3007,7 @@ func TestResolveIdentifierAnswersOnlyForTheAskingBanksOwnRegister(t *testing.T) 
 func TestResolveIdentifierNotFound(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
 
 	_, err := net.bank(aurora.BIC).ResolveIdentifier(ctx, deposit.Identifier{
 		Scheme: deposit.IdentifierIBAN, Value: "NOBODY-0001",
@@ -3004,8 +3036,8 @@ func TestResolveIdentifierNotFound(t *testing.T) {
 func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
 	alice := openCustomer(t, ctx, aurora, "Alice", "SHARED-0001")
@@ -3038,8 +3070,8 @@ func TestACrossBankCollisionIsNoLongerObservable(t *testing.T) {
 func TestResolveIdentifierRefusesAWithinBankCollision(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	shared := deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SHARED-0001"}
 	openCustomer(t, ctx, aurora, "Alice", "SHARED-0001")
@@ -3066,8 +3098,8 @@ func TestResolveIdentifierRefusesAWithinBankCollision(t *testing.T) {
 func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 	openCycle(t, ctx, net, SchemeSEPACT)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
@@ -3112,8 +3144,8 @@ func TestInitiateRefusesAnAccountWithNoIdentifierInTheSchemesScheme(t *testing.T
 func TestTheFarLegsAddressAndAccountCannotDisagree(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 	openCycle(t, ctx, net, SchemeSEPACT)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
@@ -3144,8 +3176,8 @@ func TestInitiateRefusesAQuotedIdentifierOnTheDebtorLeg(t *testing.T) {
 	// passes every creditor-leg test in the file.
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 	openCycle(t, ctx, net, SchemeSEPACT)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
@@ -3183,8 +3215,8 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
@@ -3248,8 +3280,8 @@ func TestInitiateRefusesAnAddressFromAnotherIdentifierScheme(t *testing.T) {
 func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
@@ -3287,8 +3319,8 @@ func TestInitiateBackFillsTheAddressOnBothLegs(t *testing.T) {
 func TestInitiateRefusesToChooseBetweenTwoAddresses(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
-	aurora := addParticipant(t, ctx, net, "Aurora Bank")
-	verde := addParticipant(t, ctx, net, "Banca Verde")
+	aurora := addParticipant(t, ctx, net, "Aurora Bank", auroraBIC)
+	verde := addParticipant(t, ctx, net, "Banca Verde", verdeBIC)
 
 	alice := openCustomer(t, ctx, aurora, "Alice", "SE89-AURORA-1001")
 	fundAccount(t, ctx, net, aurora, alice, 100_00)
