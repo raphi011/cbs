@@ -19,3 +19,12 @@
 # do — vendors them by accident, and the rule is broken by the workflow the
 # repository itself prescribes.
 iso20022/testdata/xsd/
+
+# The compiled server binary. `go build` with no -o drops it here under the
+# module's name, and `git add -A` — which is what every plan in
+# docs/superpowers/plans tells a developer to do — then commits 17 MB of it.
+# That is exactly what happened in Task 17.2, and it rode along in every commit
+# after it until the history was rewritten to take it out. Same failure mode as
+# iso20022/testdata/xsd above: a rule nothing enforced, broken by the workflow
+# this repository prescribes.
+/server
