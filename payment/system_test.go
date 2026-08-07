@@ -1234,8 +1234,7 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	cycle, err := net.GetCycle(ctx, cycleID)
 	assertNoError(t, err)
 
-	participants, err := net.ListBanks(ctx)
-	assertNoError(t, err)
+	participants := allBanks(t, ctx, net)
 
 	// Snapshot every layer the settlement would touch.
 	suspenseBefore := map[ParticipantID]ledger.Amount{}
@@ -1358,8 +1357,7 @@ func newClosedCycleWithUnderfundedMember(t *testing.T) (*testSystem, CycleID) {
 // reserveBalances reads every participant's reserve as held at the central bank.
 func reserveBalances(t *testing.T, ctx context.Context, sys *testSystem) map[ParticipantID]ledger.Amount {
 	t.Helper()
-	participants, err := sys.ListBanks(ctx)
-	assertNoError(t, err)
+	participants := allBanks(t, ctx, sys)
 
 	out := make(map[ParticipantID]ledger.Amount, len(participants))
 	for _, p := range participants {
@@ -1644,7 +1642,7 @@ func TestParticipantHasAccountsPerAsset(t *testing.T) {
 
 	// And they survive the store, rather than only the value the last act
 	// returned.
-	reloaded, err := sys.GetBank(ctx, p.ID)
+	reloaded, err := sys.bank(p.BIC).GetBank(ctx, p.ID)
 	assertNoError(t, err)
 	assertEqual(t, "assets after a reload", len(reloaded.Assets), 2)
 }
@@ -1696,11 +1694,62 @@ func mustUpdate(t *testing.T, ctx context.Context, sys *testSystem, fn func(cont
 	assertNoError(t, sys.Store().Update(ctx, fn))
 }
 
-// mustGetBank re-reads a bank from the store, so an assertion is about what was
-// committed rather than about the value an act returned.
+// mustUpdateAt is mustUpdate at ONE NAMED BANK: its network, and its own
+// database's unit of work.
+//
+// The two are not interchangeable and mustUpdate is the clearing house's. A
+// bank's act run through the clearing house's network is refused outright
+// (ErrNotThisInstitutionsAct) and a bank's row written into the clearing house's
+// store is a table that shape does not have, so every *Tx act below whose
+// subject is a bank has to come through here. See payment.Networks.
+func mustUpdateAt(t *testing.T, ctx context.Context, net *Network, fn func(context.Context, Tx) error) {
+	t.Helper()
+	assertNoError(t, net.Store().Update(ctx, fn))
+}
+
+// submit is a payment SUBMITTED, through the bank the request says submits it.
+//
+// It exists because submission stopped being something a caller can do to "the
+// network". SubmitPaymentTx resolves the submitting side's account in the
+// acting network's OWN register and refuses any network that is not a member
+// bank's, so a fixture calling it on the embedded clearing house gets
+// ErrNotThisInstitutionsAct rather than a payment. Which bank submits is the
+// scheme's direction; see submitterOfReq.
+func (s *testSystem) submit(ctx context.Context, req InitiatePaymentRequest) (Payment, error) {
+	return s.bank(submitterOfReq(s, req)).SubmitPayment(ctx, req)
+}
+
+// allBanks is every bank in the system, read from each bank's own database.
+//
+// It replaces ListBanks, which a clearing house cannot answer: it holds no banks
+// table, and the roster it does hold names addresses rather than banks — and
+// says nothing at all about a bank that has been founded and never admitted.
+// Stores.Banks is the composition root's question, which is what a test
+// assembling the whole system is asking. See auditReaders, which had the same
+// problem and the same answer.
+func allBanks(t *testing.T, ctx context.Context, sys *testSystem) []*Bank {
+	t.Helper()
+	bics, err := sys.stores.Banks(ctx)
+	assertNoError(t, err)
+	out := make([]*Bank, 0, len(bics))
+	for _, bic := range bics {
+		b, err := sys.bank(bic).GetBank(ctx, ParticipantID(bic))
+		assertNoError(t, err)
+		out = append(out, b)
+	}
+	return out
+}
+
+// mustGetBank re-reads a bank from ITS OWN store, so an assertion is about what
+// was committed rather than about the value an act returned.
+//
+// Its own, because a bank row is in the bank shape and in no other: reading one
+// through the clearing house's network is not a wrong answer but a missing
+// table. The id is the address (Task 18), which is what makes the routing a
+// conversion rather than a lookup.
 func mustGetBank(t *testing.T, ctx context.Context, sys *testSystem, id ParticipantID) *Bank {
 	t.Helper()
-	p, err := sys.GetBank(ctx, id)
+	p, err := sys.bank(iso20022.BIC(id)).GetBank(ctx, id)
 	assertNoError(t, err)
 	return p
 }
@@ -1742,8 +1791,9 @@ func TestFoundingABankTouchesNoOtherInstitution(t *testing.T) {
 	sys := testNetwork(t)
 
 	var b *Bank
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-		b, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly)
+	aurora := sys.bank("AURODEFFXXX")
+	mustUpdateAt(t, ctx, aurora, func(ctx context.Context, tx Tx) (err error) {
+		b, err = aurora.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly)
 		return err
 	})
 
@@ -1908,8 +1958,9 @@ func TestABankRefusesAnAcknowledgementOfAnotherAdmission(t *testing.T) {
 	sys := testNetwork(t)
 
 	var bank *Bank
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+	own := sys.bank(testBIC)
+	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
 		return err
 	})
 	if bank.AdmissionRef != "" {
@@ -1994,8 +2045,9 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 		t.Helper()
 		sys := testNetwork(t)
 		var bank *Bank
-		mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-			bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+		own := sys.bank(testBIC)
+		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
 			return err
 		})
 		return sys, bank
@@ -2056,8 +2108,9 @@ func TestABankRefusesAnAcknowledgementThatWouldLeaveItWrong(t *testing.T) {
 	t.Run("a second currency alongside one already recorded", func(t *testing.T) {
 		sys := testNetwork(t)
 		var bank *Bank
-		mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-			bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, []ledger.AssetCode{testAsset, "USD"})
+		own := sys.bank(testBIC)
+		mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+			bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, []ledger.AssetCode{testAsset, "USD"})
 			return err
 		})
 		assertNoError(t, record(sys, bank.ID, real))
@@ -2108,8 +2161,9 @@ func TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs(t *testing.T) {
 	sys := testNetwork(t)
 
 	var bank *Bank
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-		bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+	own := sys.bank(testBIC)
+	mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+		bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
 		return err
 	})
 
@@ -2240,8 +2294,9 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			// decide the next one's outcome.
 			sys := testNetwork(t)
 			var bank *Bank
-			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-				bank, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
+			own := sys.bank(testBIC)
+			mustUpdateAt(t, ctx, own, func(ctx context.Context, tx Tx) (err error) {
+				bank, err = own.FoundBankTx(ctx, tx, "Aurora Bank", testBIC, euroOnly)
 				return err
 			})
 
@@ -2251,7 +2306,11 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 			}); !errors.Is(err, tc.want) {
 				t.Errorf("the clearing house answered an acknowledgement with %s: %v, want %v", tc.what, err, tc.want)
 			}
-			if err := sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+			// The BANK's own unit of work, on the BANK's own database. It shared
+			// the clearing house's above, which is what the split takes away: the
+			// two refusals are two institutions', asked separately because they
+			// have to be.
+			if err := sys.bank(bank.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, tc.in)
 				return err
 			}); !errors.Is(err, tc.want) {
@@ -2265,9 +2324,10 @@ func TestAnUnusableAcknowledgementIsRefusedByBothActs(t *testing.T) {
 				t.Errorf("the bank is %q after the refusal, want %q", got.Status, BankFounded)
 			}
 			mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) error {
-				if _, err := sys.AdmitMemberTx(ctx, tx, real); err != nil {
-					return err
-				}
+				_, err := sys.AdmitMemberTx(ctx, tx, real)
+				return err
+			})
+			mustUpdateAt(t, ctx, sys.bank(bank.BIC), func(ctx context.Context, tx Tx) error {
 				_, err := sys.bank(bank.BIC).RecordMembershipTx(ctx, tx, real)
 				return err
 			})
@@ -2285,12 +2345,17 @@ func TestABankCannotRecordAnotherBanksMembership(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
 
+	// One unit of work each, at each bank's own network over its own database.
+	// They shared one, which is the thing that cannot be done any more: two banks
+	// founding themselves is two institutions, and a Tx belongs to one.
 	var aurora, verde *Bank
-	mustUpdate(t, ctx, sys, func(ctx context.Context, tx Tx) (err error) {
-		if aurora, err = sys.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
-			return err
-		}
-		verde, err = sys.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", euroOnly)
+	auroraNet, verdeNet := sys.bank("AURODEFFXXX"), sys.bank("VERDITMMXXX")
+	mustUpdateAt(t, ctx, auroraNet, func(ctx context.Context, tx Tx) (err error) {
+		aurora, err = auroraNet.FoundBankTx(ctx, tx, "Aurora Bank", "AURODEFFXXX", euroOnly)
+		return err
+	})
+	mustUpdateAt(t, ctx, verdeNet, func(ctx context.Context, tx Tx) (err error) {
+		verde, err = verdeNet.FoundBankTx(ctx, tx, "Banca Verde", "VERDITMMXXX", euroOnly)
 		return err
 	})
 
@@ -3474,7 +3539,7 @@ func networkWithAnUnfundedDebtor(t *testing.T) (*testSystem, InitiatePaymentRequ
 func networkWithASubmittedPayment(t *testing.T) (*testSystem, Payment) {
 	t.Helper()
 	n, req := networkWithTwoBanks(t)
-	p, err := n.SubmitPayment(context.Background(), req)
+	p, err := n.submit(context.Background(), req)
 	assertNoError(t, err)
 	return n, p
 }
@@ -3496,7 +3561,7 @@ func closeCreditorAccount(t *testing.T, n *testSystem, p Payment) {
 func TestSubmitLeavesAPushPaymentInitiatedAndOutOfAnyCycle(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 
-	p, err := n.SubmitPayment(context.Background(), req)
+	p, err := n.submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("SubmitPayment: %v", err)
 	}
@@ -3539,7 +3604,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 		sys := testNetwork(t)
 		member, err := storetest.Admit(ctx, sys.nets, "Member Bank", testBIC, euroOnly)
 		assertNoError(t, err)
-		founded, err := sys.FoundBank(ctx, "Founded Bank", testBIC2, euroOnly)
+		founded, err := sys.bank(testBIC2).FoundBank(ctx, "Founded Bank", testBIC2, euroOnly)
 		assertNoError(t, err)
 
 		// The founded bank's customer is given an ARRANGED OVERDRAFT rather than
@@ -3585,7 +3650,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			// submitting bank checks its own customer's account and the
 			// receiving bank checks its own. Neither is asked about membership,
 			// and neither can be — the roster is a third institution's row.
-			p, err := sys.SubmitPayment(ctx, req)
+			p, err := sys.submit(ctx, req)
 			assertNoError(t, err)
 			assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
@@ -3654,7 +3719,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	// storetest.Admit: founded in both assets, and the settlement agent asked for
 	// one. Nothing is planted — this is the sequence the mesh runs, stopped where
 	// a refused acmt.007 stops it.
-	half, err := sys.FoundBank(ctx, "Half Bank", testBIC2, bothAssets)
+	half, err := sys.bank(testBIC2).FoundBank(ctx, "Half Bank", testBIC2, bothAssets)
 	assertNoError(t, err)
 	const ref = "half-admitted"
 	member, err := sys.cb().OpenSettlementAccount(ctx, AdmissionRequest{
@@ -3684,7 +3749,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 	assertNoError(t, err)
 	openCycle(t, ctx, sys, dollarPush{}.ID())
 
-	p, err := sys.SubmitPayment(ctx, InitiatePaymentRequest{
+	p, err := sys.submit(ctx, InitiatePaymentRequest{
 		Scheme:          dollarPush{}.ID(),
 		Amount:          25000,
 		Debtor:          PartyRef{Account: payerAcct.ID},
@@ -3714,7 +3779,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 // leg when it accepts the collection.
 func TestSubmitPostsNothingForAPullPayment(t *testing.T) {
 	n, req := networkWithAMandate(t)
-	p, err := n.SubmitPayment(context.Background(), req)
+	p, err := n.submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("SubmitPayment: %v", err)
 	}
@@ -3736,7 +3801,7 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	// discover and answer with AC01.
 	req.Creditor.Account = "no-such-account"
 
-	p, err := n.SubmitPayment(context.Background(), req)
+	p, err := n.submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("SubmitPayment refused a payment whose far side it cannot see: %v", err)
 	}
@@ -3762,7 +3827,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	// The agent is whatever the fixture's creditor bank is; this test is about
 	// the NAME, and the agent only has to be present and well formed.
-	creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
+	creditorBank, err := n.bank(req.CreditorDetails.Agent).GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 	assertNoError(t, err)
 	req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
 	// A WRONG name on the bank's own side. A merge that copied req.DebtorDetails
@@ -3770,7 +3835,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	// overwrite from the register catches it.
 	req.DebtorDetails = PartyDetails{Agent: "WRONGDEFFXXX", Name: "Not Alice At All"}
 
-	p, err := n.SubmitPayment(ctx, req)
+	p, err := n.submit(ctx, req)
 	if err != nil {
 		t.Fatalf("SubmitPayment: %v", err)
 	}
@@ -3784,7 +3849,7 @@ func TestSubmitTakesTheCounterpartyNameFromTheRequest(t *testing.T) {
 	if p.DebtorDetails.Name != "Alice" {
 		t.Errorf("debtor name is %q, want the submitting bank's own register value %q, not what the request carried", p.DebtorDetails.Name, "Alice")
 	}
-	debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
+	debtorBank, err := n.bank(req.DebtorDetails.Agent).GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 	assertNoError(t, err)
 	if p.DebtorDetails.Agent != debtorBank.BIC {
 		t.Errorf("debtor agent is %q, want the submitting bank's own BIC %q", p.DebtorDetails.Agent, debtorBank.BIC)
@@ -3819,7 +3884,7 @@ func TestSubmitRefusesAnUnnamedCounterparty(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			n, req := networkWithTwoBanks(t)
 			req.CreditorDetails = tc.details
-			if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, tc.want) {
+			if _, err := n.submit(context.Background(), req); !errors.Is(err, tc.want) {
 				t.Errorf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -3859,12 +3924,12 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 	t.Run("push: the creditor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()
 		n, req := networkWithTwoBanks(t)
-		debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
+		debtorBank, err := n.bank(req.DebtorDetails.Agent).GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 		assertNoError(t, err)
 		// The payer names the WRONG bank — their own. Nothing here corrects it.
 		req.CreditorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payer Typed"}
 
-		p, err := n.SubmitPayment(ctx, req)
+		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		if p.CreditorDetails.Agent != debtorBank.BIC {
 			t.Errorf("creditor agent is %q, want the instruction's %q — an asserted agent is recorded, not replaced", p.CreditorDetails.Agent, debtorBank.BIC)
@@ -3883,12 +3948,12 @@ func TestSubmitRecordsTheCounterpartyAgentTheInstructionAsserts(t *testing.T) {
 	t.Run("pull: the debtor is the counterparty", func(t *testing.T) {
 		ctx := context.Background()
 		n, req, _ := networkWithACollection(t, 100000)
-		creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
+		creditorBank, err := n.bank(req.CreditorDetails.Agent).GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 		assertNoError(t, err)
 		// The collector names ITSELF as the payer's bank.
 		req.DebtorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Biller Typed"}
 
-		p, err := n.SubmitPayment(ctx, req)
+		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		if p.DebtorDetails.Agent != creditorBank.BIC {
 			t.Errorf("debtor agent is %q, want the instruction's %q — an asserted agent is recorded, not replaced", p.DebtorDetails.Agent, creditorBank.BIC)
@@ -3927,7 +3992,7 @@ func TestSubmitDoesNotCheckWhetherTheCounterpartysBankExists(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	req.CreditorDetails.Agent = "no-such-bank"
 
-	if _, err := n.SubmitPayment(context.Background(), req); err != nil {
+	if _, err := n.submit(context.Background(), req); err != nil {
 		t.Errorf("SubmitPayment = %v, want it accepted — a submitting bank does not check the counterparty's registry", err)
 	}
 }
@@ -3944,7 +4009,7 @@ func TestSubmitRefusesItsOwnPartyAtNoSuchBank(t *testing.T) {
 	n, req := networkWithTwoBanks(t)
 	req.DebtorDetails.Agent = "no-such-bank"
 
-	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
+	if _, err := n.submit(context.Background(), req); !errors.Is(err, ErrParticipantNotFound) {
 		t.Errorf("got %v, want ErrParticipantNotFound", err)
 	}
 }
@@ -3982,7 +4047,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 	t.Run("push", func(t *testing.T) {
 		ctx := context.Background()
 		n, req := networkWithTwoBanks(t)
-		creditorBank, err := n.GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
+		creditorBank, err := n.bank(req.CreditorDetails.Agent).GetBank(ctx, ParticipantID(req.CreditorDetails.Agent))
 		assertNoError(t, err)
 		// Deliberately NOT "Bob" — the real name on the creditor's own
 		// register (setupTwoBanks). If AcceptInboundTx's creditorSideTx (the
@@ -3990,7 +4055,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 		// from its register, this would come back as "Bob".
 		req.CreditorDetails = PartyDetails{Agent: creditorBank.BIC, Name: "Whoever The Payer Typed"}
 
-		p, err := n.SubmitPayment(ctx, req)
+		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		if p.Creditor.Identifier != (deposit.Identifier{}) {
 			t.Fatalf("the submitted payment already carries a creditor address (%+v), so AcceptInbound has nothing to change and this subtest can no longer fail; see the doc above", p.Creditor.Identifier)
@@ -4015,7 +4080,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 	t.Run("pull", func(t *testing.T) {
 		ctx := context.Background()
 		n, req, _ := networkWithACollection(t, 100000)
-		debtorBank, err := n.GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
+		debtorBank, err := n.bank(req.DebtorDetails.Agent).GetBank(ctx, ParticipantID(req.DebtorDetails.Agent))
 		assertNoError(t, err)
 		// Deliberately NOT "Alice" — the real name on the debtor's own
 		// register (networkWithACollection). If AcceptInboundTx's
@@ -4023,7 +4088,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 		// DebtorDetails from its register, this would come back as "Alice".
 		req.DebtorDetails = PartyDetails{Agent: debtorBank.BIC, Name: "Whoever The Payee Typed"}
 
-		p, err := n.SubmitPayment(ctx, req)
+		p, err := n.submit(ctx, req)
 		assertNoError(t, err)
 		assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
@@ -4142,7 +4207,7 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 			t.Run(tc.name+", "+dir.name, func(t *testing.T) {
 				ctx := context.Background()
 				n, req := dir.setup(t)
-				p, err := n.SubmitPayment(ctx, req)
+				p, err := n.submit(ctx, req)
 				assertNoError(t, err)
 
 				// The same store, decorated only from here on: the payment had
@@ -4226,12 +4291,12 @@ func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
 // calls checkPartyTx for the debtor.
 func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 	n, req := networkWithARevokedMandate(t)
-	if _, err := n.SubmitPayment(context.Background(), req); !errors.Is(err, ErrMandateRevoked) {
+	if _, err := n.submit(context.Background(), req); !errors.Is(err, ErrMandateRevoked) {
 		t.Fatalf("SubmitPayment with a revoked mandate = %v, want ErrMandateRevoked", err)
 	}
 
 	n2, req2 := networkWithAnUnfundedDebtor(t)
-	p, err := n2.SubmitPayment(context.Background(), req2)
+	p, err := n2.submit(context.Background(), req2)
 	if err != nil {
 		t.Fatalf("SubmitPayment refused for lack of funds it cannot see: %v", err)
 	}
@@ -4338,7 +4403,7 @@ func TestAFailedReversalRollsBackTheWholeRejection(t *testing.T) {
 func TestReverseDebtorLegIsANoOpWhenNoLegWasPosted(t *testing.T) {
 	ctx := context.Background()
 	n, req := networkWithAMandate(t)
-	p, err := n.SubmitPayment(ctx, req)
+	p, err := n.submit(ctx, req)
 	assertNoError(t, err)
 	assertEqual(t, "debtor leg after submitting a collection", p.DebtorLegTx, "")
 
@@ -4412,7 +4477,7 @@ func TestRejectionRefusesAnUnsafeReasonInBothHalves(t *testing.T) {
 func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	ctx := context.Background()
 	n, req := networkWithAMandate(t)
-	p, err := n.SubmitPayment(ctx, req)
+	p, err := n.submit(ctx, req)
 	assertNoError(t, err)
 	assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
