@@ -16,31 +16,16 @@ import (
 	"github.com/raphi011/cbs/product"
 )
 
-// Network is the payment processor. It owns one book of accounts per
-// participant bank plus a central-bank book, and orchestrates payments through
-// their full lifecycle: initiation, clearing (netting), and settlement.
+// Network is one institution's handle on the payment network. It orchestrates
+// payments through their lifecycle: initiation, clearing (netting), and
+// settlement.
 //
-// # One store, one settlement window
+// # One settlement window, and it is one institution's
 //
-// Every book — each participant's and the central bank's — lives in the same
-// Store, distinguished by its ledger.BookID, and the network's own entities
-// (participants, payments, mandates, cycles, settlements) live there too under
-// ledger.NetworkBook. Because payment.Tx embeds deposit.Tx embeds ledger.Tx, one
-// transaction can reach all of them, which is what makes an operation spanning
-// several books a single unit of work.
-//
-// SettleCycle used to be that operation at its widest: it moved reserves at the
-// central bank, posted every member's mirror leg and paid out every creditor
-// inside one Update. It no longer does either of the last two. What is one unit
-// of work is what ONE institution does — the central bank's netting transaction,
-// whole or not at all — and each member books its own halves afterwards, on
-// advice, in units of work of its own. See SettleCycle on why the interval
-// between them is now the thing being modelled rather than something to hide.
-//
-// A settlement window is still what the central bank's half is: an interval
-// during which the settlement agent holds the participants' reserve accounts,
-// checks that every net payer can cover its position, and posts the whole batch
-// or none of it. The database transaction is what supplies that window here.
+// A unit of work is one institution's. The central bank's netting transaction
+// commits whole or not at all, and each member books its own halves afterwards,
+// on advice, in units of work of its own — see SettleCycle on why the interval
+// between them is modelled rather than hidden.
 //
 // # Where the state lives
 //
@@ -55,14 +40,11 @@ import (
 type Network struct {
 	clock func() time.Time
 
-	// id is which institution this network acts as, and it is the answer to
-	// every "whose book?" the acts below used to take as an argument. See
-	// Identity, which carries the argument for why it is here rather than on
-	// each call, and Networks, which is what mints one per entity.
+	// id is which institution this network acts as, and it answers every
+	// "whose book?" below. Networks mints one Network per entity.
 	id Identity
 
-	// store backs every book the network creates and every network-scoped
-	// entity it records.
+	// store backs every book the network creates and every entity it records.
 	store Store
 
 	// ledgers, deposits and lendings are the same store seen through the
@@ -83,19 +65,8 @@ type Network struct {
 	// use (see centralBankChartTx), so it survives a Store.Reset and works
 	// against a database that was populated by an earlier process.
 	//
-	// It is NIL on every network but the settlement agent's, and that is Task
-	// 18b's second half. Until then every Network held one, which meant every
-	// institution in this system held a handle on the book where central-bank
-	// money lives — a bank's, a clearing house's, a test fixture's — and the
-	// only thing keeping a bank handler out of it was that bankOps names no
-	// method that reaches it. That is a fact about the mesh rather than about
-	// this package: SettleCycleTx, SettleReturnTx, OpenSettlementAccountTx,
-	// ReceiveLodgementTx and ReserveBalance are all exported, and any of them
-	// called on a bank's network would have posted in the central bank's book
-	// and been right to, because the book was there.
-	//
-	// Now it is not, and centralBankBook is what every one of those five goes
-	// through. See it for what the refusal is worth and what it is not.
+	// It is NIL on every network but the settlement agent's; centralBankBook is
+	// what the five acts reaching it go through.
 	centralBank *ledger.Book
 }
 
@@ -108,18 +79,14 @@ type Network struct {
 // is not the central bank's has no book to perform them in, so it is refused
 // here rather than in five places.
 //
-// # What this catches, and what it does not
-//
 // It catches an act of the settlement agent's reached through any other
 // institution's handle — which, since these methods are exported, is every
-// caller outside the mesh: api, seed, a test fixture, and the reconciliation
-// harness Task 18e adds. Inside the mesh the compiler already caught it, because
-// settlementOps carries the five and bankOps and csmOps carry none of them.
+// caller outside the mesh. Inside the mesh the compiler already catches it,
+// because settlementOps carries the five and bankOps and csmOps carry none.
 //
 // It does NOT catch the central bank posting in the wrong PLACE within its own
 // book, and it never could: a BookID is an ordinary argument and one is as valid
-// as another. That is still the recorder's job in mesh/books_test.go, and Task
-// 18c's one-book rule is what finally makes it the store's.
+// as another. That is the recorder's job in mesh/books_test.go.
 func (s *Network) centralBankBook() (*ledger.Book, error) {
 	if s.centralBank == nil {
 		return nil, fmt.Errorf("%w: this is %s, and the central bank's book of accounts is the settlement agent's alone",
@@ -130,19 +97,10 @@ func (s *Network) centralBankBook() (*ledger.Book, error) {
 
 // self is the member bank this network acts as, or a refusal.
 //
-// It is what nine methods in the mesh's bankOps used to take as a `by` argument
-// and what ResolveIdentifier took as one from Task 18a. Every act it guards is a
-// posting or a read in one member's own book, so a network that is not a
-// member's has nothing to perform it against.
-//
-// The refusal is the point rather than a side effect. A per-call `by` could be
-// any participant and the domain's own guards were what decided — a payment this
-// bank is not a party to, a statement about another member's reserve account, an
-// acknowledgement addressed to somebody else. Those guards all stay, and they
-// are still what answers a bank asking about a payment that is not its own. What
-// this adds is the case none of them covered: an act of a member bank's
-// performed through the clearing house's or the central bank's handle, which
-// used to be indistinguishable from the member performing it itself.
+// Every act it guards is a posting or a read in one member's own book, so a
+// network that is not a member's has nothing to perform it against. It catches
+// the case the domain's own guards do not: an act of a member bank's performed
+// through the clearing house's or the central bank's handle.
 func (s *Network) self() (ParticipantID, error) {
 	pid, ok := s.id.Participant()
 	if !ok {
@@ -153,14 +111,11 @@ func (s *Network) self() (ParticipantID, error) {
 }
 
 // selfBIC is the ADDRESS this member bank is reached at: self, as the identifier
-// a message carries and as everything about a payment's two sides is now keyed.
+// a message carries.
 //
-// The conversion is total and lossless because the two are one value — a bank's
-// ParticipantID is its BIC since Task 18; see AsBank — and it is a method rather
-// than an iso20022.BIC(…) at each of the dozen call sites so that exactly one
-// place in this package says so. Whether two types over one value are worth
-// keeping is the question AsBank leaves open, and this is the line the answer
-// would be written on or deleted from.
+// The conversion is total and lossless because a bank's ParticipantID is its BIC
+// (see AsBank). It is a method so that exactly one place in this package says so
+// rather than a dozen call sites spelling iso20022.BIC(…).
 func (s *Network) selfBIC() (iso20022.BIC, error) {
 	pid, err := s.self()
 	if err != nil {
@@ -171,23 +126,16 @@ func (s *Network) selfBIC() (iso20022.BIC, error) {
 
 // clearingHouse refuses every institution that is not the clearing house.
 //
-// It is self's counterpart on the other side, and it arrived with the act that
-// needed it: RecordRelayedTx, the clearing house writing its own copy of an
-// instruction it is routing. The two are asymmetric in what they return and the
-// asymmetry is the domain's — a member bank's acts are ABOUT that bank, so self
-// hands back which one; the clearing house's acts are about payments between
-// OTHER institutions, so there is nothing to hand back and the only question is
-// whether the caller is it.
+// It returns nothing where self returns a ParticipantID, and the asymmetry is
+// the domain's: a member bank's acts are ABOUT that bank, the clearing house's
+// are about payments between OTHER institutions.
 //
-// Nothing else in this package reaches it yet, and the reason is worth stating
-// rather than leaving as an oddity: AcceptAtCSMTx, RejectAtCSMTx and the cycle
-// acts are the clearing house's too and are NOT guarded. They read and write
-// rows that only the clearing house's shape has (a cycle, a payment's cycle_id),
-// so the store refuses them at another institution — inShape, and the missing
-// table — which is a stronger refusal than this one and needs no code. Recording
-// a payment is the one act of this institution's that would SUCCEED at a bank,
-// because a bank's shape has a payments table, so this is where the guard has to
-// be written down.
+// Only RecordRelayedTx reaches it. AcceptAtCSMTx, RejectAtCSMTx and the cycle
+// acts are the clearing house's too and are NOT guarded, because they touch rows
+// only the clearing house's shape has (a cycle, a payment's cycle_id) and the
+// store refuses them by missing table — a stronger refusal needing no code.
+// Recording a payment is the one act that would SUCCEED at a bank, because a
+// bank's shape has a payments table, so it is the one the guard is written for.
 func (s *Network) clearingHouse() error {
 	if s.id.role != roleClearingHouse {
 		return fmt.Errorf("%w: this is %s, and carrying another institution's payment is the clearing house's own act",
@@ -204,46 +152,28 @@ const CentralBankBook ledger.BookID = "central-bank"
 // sequenced under.
 //
 // It is NOT a chart of accounts and there is none to be had: the clearing house
-// keeps no book of accounts, which csm/0001_init.sql now states by having no
-// ledger tables at all. What it names is the audit log and the id counters,
-// which are book-keyed in every shape because ledger.Tx is one interface over
-// three schemas.
-//
-// It replaces ledger.NetworkBook, and the replacement is not a rename. That
-// constant meant "belongs to no single institution", and it was the book under
-// which participants, payments, mandates, cycles and settlements were all
-// sequenced — one counter, one audit stream, shared by everybody, in the one
-// database that held everything. There is no network left for anything to
-// belong to. Each of those rows turned out to have exactly one owner, each owner
-// now has a database, and this is the clearing house's name for its own.
+// keeps no book of accounts, which csm/0001_init.sql states by having no ledger
+// tables at all. What it names is the audit log and the id counters, which are
+// book-keyed in every shape because ledger.Tx is one interface over three
+// schemas.
 const ClearingHouseBook ledger.BookID = "clearing-house"
 
-// book is the BookID this institution's own rows are keyed and sequenced under,
-// and the answer to every "which book?" that used to be ledger.NetworkBook.
+// book is the BookID this institution's own rows are keyed and sequenced under.
 //
 // THE COUNTER FOLLOWS THE ROW. Every read-then-write ordering in this package
 // allocates an id before the read it decides from, and the ordering is worth
 // something only while the counter row and the row being decided from are in one
 // database — two databases is two transactions, and no retry can make one of
 // them see the other. So an act allocates from the store it is about to write,
-// which is this one, because a Network is one institution's handle and its store
-// is that institution's.
-//
-// That the four orderings survived unchanged is a finding rather than a design:
-// each of them — a payment id before the duplicate-reference check, and the
-// three admission acts before their find-or-creates — turned out to belong to
-// exactly one institution already. Had any of them spanned two, it would have
-// had to become a message.
+// which is this one.
 //
 // There is no zero case. NewNetwork refuses an identity-less network, so every
 // Network reaching this has one of the three roles.
 func (s *Network) book() ledger.BookID {
 	switch s.id.role {
 	case roleBank:
-		// A bank IS its own book: ledger.BookID(ID), fixed by FoundBankTx and
-		// documented on Bank.BookID. Since Task 18 that id is the bank's BIC, so
-		// this is also its address and the name of its database — one identifier
-		// doing what three used to. See FoundBankTx.
+		// A bank IS its own book, and that id is its BIC — so this is also its
+		// address and the name of its database. See FoundBankTx.
 		return ledger.BookID(s.id.pid)
 	case roleClearingHouse:
 		return ClearingHouseBook
@@ -266,13 +196,6 @@ const (
 // asset. The asset is part of the name, the way it is for a bank's reserve and
 // suspense accounts, because there is one such account per asset and a chart
 // of accounts listing two rows both called "Settlement Assets" is unreadable.
-//
-// The name used to be stable across assets: a book written before the asset
-// dimension existed had one such account, backfilled to EUR, and a name that
-// did not mention the asset was what let it be found rather than duplicated.
-// The migration series that produced those books has since been folded away —
-// there is one migration, and it creates accounts.asset from the start — so
-// there is no longer any book whose account is named without its asset.
 func cbAssetsAccountName(asset ledger.AssetCode) string {
 	return cbAssetsName + " (" + string(asset) + ")"
 }
@@ -284,21 +207,16 @@ func cbAssetsAccountName(asset ledger.AssetCode) string {
 // the given clock, so that booking dates, value dates and audit timestamps line
 // up across all of them.
 //
-// id says WHICH institution this is, and it is what every act below that used to
-// take a participant argument now reads instead. Most callers do not name one
-// here: Networks is the factory, it is what api, the mesh and cmd/server hold,
-// and it is where "which entity" and "which store" become one question in Task
-// 18d. See Identity for why this is constructor state.
+// id says WHICH institution this is, and every act below reads it rather than
+// taking a participant argument. Most callers do not name one here: Networks is
+// the factory, and it is what api, the mesh and cmd/server hold.
 //
 // # The zero Identity panics
 //
 // A network belonging to nobody is what this parameter exists to remove, so
-// accepting one would leave the shape it replaces reachable — and reachable by
-// omission, which is the easiest way there is to reach something. It is a wiring
-// mistake in the same class as api.NewServer's missing mesh: no caller can
-// recover from it, no request can be answered despite it, and every act would
-// fail far from the cause with a refusal naming "no institution". So it fails
-// here, loudly, at the line that got it wrong.
+// accepting one would leave that shape reachable by omission. It is a wiring
+// mistake no caller can recover from, and every act would fail far from the
+// cause, so it fails here at the line that got it wrong.
 //
 // The constructor performs no I/O: the central bank's chart of accounts is
 // created on first use and looked up thereafter, so calling NewNetwork against
@@ -339,17 +257,13 @@ func (s *Network) Identity() Identity { return s.id }
 // dates, value dates, audit timestamps.
 //
 // It is exported because a layer built OVER a network has to timestamp too, and
-// a second clock beside this one would be a second answer to the same question.
-// The mesh is the case that forced it: a message header carries a creation time
-// (AppHdr/CreDt), so a mesh with a clock of its own could emit a pacs.008 dated
-// after the payment it carries — under the frozen clock the tests run on, days
-// after. There is one clock in this system, and this is how anything above the
-// payment layer reads it. See the mesh package doc, which says so.
+// a second clock beside this one would be a second answer to the same question:
+// a mesh with its own clock could emit a pacs.008 dated after the payment it
+// carries. There is one clock in this system, and this is how anything above
+// the payment layer reads it.
 func (s *Network) Now() time.Time { return s.clock() }
 
-// now is Now, for this package's own use. Both exist because the exported one
-// is a promise to callers outside and the unexported one is what a hundred call
-// sites in here already spell.
+// now is Now, for this package's own use.
 func (s *Network) now() time.Time { return s.Now() }
 
 // Store returns the store every layer of this network shares, so a caller can
@@ -371,22 +285,19 @@ func (s *Network) Store() Store { return s.store }
 // ErrAssetMismatch — including the ones that were arriving perfectly well
 // before the second scheme was registered.
 //
-// SEPA Instant is exactly that case, and it is the example this comment used to
-// offer, so it is worth naming rather than leaving to be discovered: it is a
-// push scheme settling in euro, as SEPA Credit Transfer is, so registering one
-// alongside SCT stops this network being able to receive a euro pacs.008 at
-// all. What decides it is direction and asset and nothing else — a card scheme
-// in euro that pushed would collide the same way, and one in another asset, or
-// pulling, would not.
+// SEPA Instant is exactly that case: a push scheme settling in euro, as SEPA
+// Credit Transfer is, so registering one alongside SCT stops this network being
+// able to receive a euro pacs.008 at all. Direction and asset decide it and
+// nothing else — a euro card scheme that pushed would collide the same way, and
+// one in another asset, or pulling, would not.
 //
 // See schemeSettling for why that is a refusal rather than a rule: nothing in a
 // pacs.008 could break the tie, and what a real network has here is the clearing
 // arrangement the message arrived over, which this system does not model.
 //
 // Nothing else is affected. Submitting under either scheme, clearing it and
-// settling it are all driven by the payment's own SchemeID and do not care how
-// many schemes share an asset; it is only the translation of a message BACK
-// into a request that has a question to answer.
+// settling it are all driven by the payment's own SchemeID; only the
+// translation of a message BACK into a request has a question to answer.
 func (s *Network) RegisterScheme(sc Scheme) {
 	s.schemes.mu.Lock()
 	defer s.schemes.mu.Unlock()
@@ -396,9 +307,6 @@ func (s *Network) RegisterScheme(sc Scheme) {
 // Scheme looks up a registered scheme, for callers outside this package that
 // have to ask the scheme a question before they can act on a payment — which
 // bank submits it, for one (see api's bank submit handler).
-//
-// It is a wrapper over the unexported scheme rather than a rename of it, so
-// that the dozens of internal call sites stay as they are.
 func (s *Network) Scheme(id SchemeID) (Scheme, bool) { return s.scheme(id) }
 
 // scheme looks up a registered scheme.
@@ -443,18 +351,10 @@ func (s *Network) bankTx(ctx context.Context, tx Tx, id ParticipantID) (*Bank, e
 
 // selfBankTx loads THIS bank's own row and binds its live handles.
 //
-// It is bankTx with the argument taken away, and the argument is what stopped
-// having a source. Every caller that has become this one passed a party's
-// participant off a PartyRef, and a PartyRef no longer names a bank — see
-// PartyRef. What each of them actually wanted was its OWN register: validateFunds
-// is the payer's bank checking the payer's funds, ResolveIdentifierTx is a bank
-// searching its own addresses, and debtorSideTx is a bank resolving its own
-// customer's account. On every path any of them could succeed on, the id they
-// passed was already this network's own.
-//
-// So this is narrower than what it replaces rather than equivalent to it: a
-// network that is not a member bank's is a refusal here (see self), where before
-// it was a lookup of whatever id the caller happened to hold.
+// Every caller wants its OWN register: validateFunds is the payer's bank
+// checking the payer's funds, ResolveIdentifierTx is a bank searching its own
+// addresses, debtorSideTx is a bank resolving its own customer's account. A
+// network that is not a member bank's is a refusal here (see self).
 func (s *Network) selfBankTx(ctx context.Context, tx Tx) (*Bank, error) {
 	self, err := s.self()
 	if err != nil {
@@ -466,18 +366,8 @@ func (s *Network) selfBankTx(ctx context.Context, tx Tx) (*Bank, error) {
 // bankByBICTx finds the member a BIC addresses and binds its live handles. It is
 // bankTx over the identifier a MESSAGE carries.
 //
-// It is a keyed read, and until Task 18 it was a SWEEP — tx.ListBanks, comparing
-// each row's bic column — with a paragraph here explaining that the sweep was
-// over the only table that could answer, that BIC carried no uniqueness
-// constraint on it, and that the FIRST match therefore won, leaving two members
-// registered under one address indistinguishable to a message.
-//
-// All of that is gone rather than fixed, and not by adding the unique index that
-// paragraph asked for. A bank's id IS its BIC (see AsBank), so the address is the
-// primary key, and a second bank on one address is not a row the table can hold.
-// The clearing house's roster, which that paragraph ruled out because a roster
-// entry carries no id to bind handles from, is not needed either: the id it lacked
-// is the value being looked up.
+// It is a keyed read: a bank's id IS its BIC (see AsBank), so the address is the
+// primary key and a second bank on one address is not a row the table can hold.
 func (s *Network) bankByBICTx(ctx context.Context, tx Tx, bic iso20022.BIC) (*Bank, error) {
 	rec, err := tx.GetBank(ctx, ParticipantID(bic))
 	if errors.Is(err, ErrParticipantNotFound) {
@@ -556,19 +446,12 @@ func (s *Network) centralBankChartTx(ctx context.Context, tx Tx) (ledger.Subledg
 //
 // The lookup is by (capital subledger, name, asset). Matching on the asset as
 // well as the name is what makes it idempotent per asset rather than per
-// central bank — see cbAssetsAccountName for why the name carries the asset
-// too.
+// central bank — see cbAssetsAccountName for why the name carries the asset too.
 //
 // It lists the central bank's accounts on every call, immediately before the one
-// lookup it makes, so nothing it matches against can be stale. There used to be
-// a second form of this taking a chart and a listing the caller had already
-// made, for the loop the deleted AddParticipantTx ran over a bank's assets; its
-// doc warned that a caller able to ask twice for one asset would open a second
-// account against a stale listing and must list again. OpenSettlementAccountTx
-// is exactly that caller — it is idempotent per (BIC, asset) and re-entered on a
-// retried admission — and it asks about ONE asset, because one acmt.007 asks for
-// one currency, so the loop the pre-listed form saved work in no longer exists.
-// Deleting it removes the hazard rather than arguing about it.
+// lookup it makes, so nothing it matches against can be stale. A caller reading
+// a listing made earlier could open a second account for an asset it already
+// has, and OpenSettlementAccountTx is re-entered on a retried admission.
 func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset ledger.AssetCode) (ledger.AccountID, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
@@ -598,11 +481,6 @@ func (s *Network) centralBankAssetsAccountTx(ctx context.Context, tx Tx, asset l
 // I hold for this member, in this asset" — read from its own SettlementMember
 // row and from no bank's.
 //
-// It is what the row added by Task 17b exists for. Every reserve movement in
-// this system used to resolve its account through Bank.Assets[asset].Settlement,
-// which is the settlement agent reading a bank's record of the settlement
-// agent's own book; under Task 18's stores that read is not available at all.
-//
 // A member the agent holds nothing for is ErrSettlementMemberNotFound, which is
 // the true state of a bank that is founded and not yet admitted. A member it
 // holds accounts for but not in this asset is ErrParticipantAssetNotFound, the
@@ -629,20 +507,16 @@ func (s *Network) settlementAccountTx(ctx context.Context, tx Tx, bic iso20022.B
 // clearing house writes the routing entry, and the bank records what it was
 // told. No act writes another institution's row.
 //
-// They do not compose themselves, and nothing in this package composes them
-// either. What runs them in order is a CONVERSATION: mesh.Mesh.Admit founds the
-// bank and sends one acmt.007 per asset, and the other three acts run in the
-// handlers of the messages that reach the institutions whose acts they are. The
-// transitional call that ran all four in one transaction is gone, and with it
-// the guarantee it bought — that a bank could never exist without the accounts
-// it needs. That guarantee is what isolation takes away, and no real admission
-// ever had it: a bank is licensed and built before any scheme has heard of it,
-// and what follows is a request that can be refused.
+// Nothing in this package composes them. What runs them in order is a
+// CONVERSATION: mesh.Mesh.Admit founds the bank and sends one acmt.007 per
+// asset, and the other three acts run in the handlers of the messages that
+// reach the institutions whose acts they are. A bank is licensed and built
+// before any scheme has heard of it, and what follows is a request that can be
+// refused — so there is no guarantee that a bank has the accounts it needs.
 //
-// Each act appends ONE audit event, which is the whole of what remains of the
-// atomic call's record. Four events across four commits, in three institutions'
-// names — see appendAuditTx, and ledger's EventParticipantAdded and the three
-// beside it.
+// Each act appends ONE audit event: four events across four commits, in three
+// institutions' names. See appendAuditTx, and ledger's EventParticipantAdded
+// and the three beside it.
 // ---------------------------------------------------------------------------
 
 // AdmissionRequest is a bank asking an account servicer to open it an account:
@@ -694,14 +568,9 @@ type AdmissionRequest struct {
 // acmt.010 identifies the account owner with an OrganisationIdentification29 —
 // a BIC, an LEI, generic identifiers — and carries no legal name, no country
 // and no address; the REQUEST names the applicant with an Organisation33 and
-// the answer does not. So this type has a BIC and no name, which is what the
-// message can be read into, and both of its readers get on without one:
-// AdmitMemberTx writes routing, and RecordMembershipTx is a bank writing its own
-// row, which knows its own name.
-//
-// It carried a Name briefly, filled by the clearing house from the application
-// it had relayed, so that AdmitMemberTx could put one on the roster entry. Both
-// are gone. See RosterEntry, which has the whole of that reversal.
+// the answer does not. Both readers get on without one: AdmitMemberTx writes
+// routing, and RecordMembershipTx is a bank writing its own row, which knows
+// its own name. See RosterEntry.
 type AdmissionAcknowledgement struct {
 	BIC      iso20022.BIC
 	Accounts map[ledger.AssetCode]ledger.AccountID
@@ -792,102 +661,50 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // admissionSequenceTx takes the network's identity counter before an admission
 // act reads the row it decides from.
 //
-// # Without it the refusals were the store's and not the act's
+// # Without it the refusals are the store's and not the act's
 //
 // Every act that decides something from a read calls this first, which is all of
 // them except FoundBankTx — that one allocates the bank's own id before it
 // touches anything, which is the same lock under a different name. What each of
-// them decides, and what it did without this:
+// them decides:
 //
 //   - AdmitMemberTx reads the roster entry, compares its admission reference and
 //     writes. Two DIFFERENT admissions of one address at once both read nothing
 //     and both write, and the entry ends up naming whichever committed last.
-//     60 runs in 60.
 //
 //   - OpenSettlementAccountTx reads the member row to decide whether it has
 //     already opened an account for (BIC, asset). Two requests for one member in
 //     two assets at once both read the same row, and each writes a map holding
 //     only its own account — so the central bank opens two reserve accounts in
 //     its own book and records one, leaving a liability account nothing points
-//     at. 60 runs in 60.
+//     at.
 //
 //   - RecordMembershipTx reads the bank row and writes the settlement account
 //     numbers onto it. Two recordings of one bank at once both read the row as
-//     it was and both write it, so the loser's account numbers are lost — the
-//     classic lost update, and it is what this act has instead of a state guard
-//     since it stopped refusing a bank that is already a Member. 60 runs in 60,
-//     measured when the guard was still there and both recordings were accepted.
+//     it was and both write it, so the loser's account numbers are lost.
 //
-// # Every one of those numbers needs a connection pool with two connections in it
-//
-// This is worth more than the numbers, because the next person to measure it
-// will get the wrong answer the way the first attempt here did.
-//
-// pgxpool opens connections on demand and keeps them, so a store that has just
-// been built and used once has exactly ONE idle connection. Two racers started
-// against it are not concurrent at all: the first takes the connection and
-// commits while the second is still opening a TCP connection, and the second
-// then reads what the first wrote. Measured that way, RecordMembershipTx
-// diverges 0 times in 60 and looks like the act that does not need this call.
-// Hold four reads open at once first, so the pool really has two connections,
-// and the same probe gives 60 in 60. AdmitMemberTx's clash is the same story
-// less completely — between 41 and 55 of 60 across four cold samples, and 60 of
-// 60 warm. Only OpenSettlementAccountTx's lost update shows 60 in 60 either way,
-// because both racers do enough work to still be in flight together.
-//
-// An earlier version of this comment credited store/pg's deadlock retry for
-// RecordMembershipTx holding — PutBank's upsert plus its per-asset child rows,
-// losers deadlocking, Store.Update running the callback again against a bank
-// that is Member by then. That does not happen. The callback ran exactly ONCE
-// in all 240 Postgres runs measured across the four configurations, and the
-// cold-pool loser simply ran its SELECT after the winner's COMMIT. store/pg's
-// retry — its 40P01/40001 arm — was real and was never reached. The lesson
-// survives the store: a retry that would explain an outcome has to be observed
-// firing, not assumed from its existence.
-//
-// One more question rides along with the second: centralBankChartTx, which
+// One question rides along with the second: centralBankChartTx, which
 // OpenSettlementAccountTx calls, resolves the central bank's chart of accounts
 // find-or-create BY NAME, with no unique constraint behind it. Two callers that
 // both find no Central Bank ledger both create one, and the members underneath
-// them disagree about which subledger holds reserves — 60 runs in 60. The
-// schema is where the absent constraint is argued (the ledgers table in
-// store/sqlite/schema/centralbank/0001_init.sql, which is the institution
-// whose chart of accounts this race is about), and it used to close this by pointing at
-// the first statement of the deleted AddParticipantTx, which drew an id before
-// anything else ran. Nothing composes the four acts in one transaction
-// any more — they are four commits with messages between them — so this call is
-// what every one of them reaches the find-or-create behind. Both places point
-// here.
+// them disagree about which subledger holds reserves. The absent constraint is
+// argued at the ledgers table in store/sqlite/schema/centralbank/0001_init.sql.
 //
-// # What it is worth on the store that is left, measured
+// # It is a second guard on this store, and it stays
 //
-// Every number above is store/pg's, and store/pg is gone. store/mem serialized
-// every Update on one process-wide mutex, so all of it was atomic there whatever
-// the caller did — 0 in 60 on every case above, warm pool or cold, which is the
-// whole difference — and store/pg ran READ COMMITTED, where two transactions
-// both read "not there" and both write. A domain refusal that held on one store
-// and not the other was not a refusal, and closing that is what this function
-// was for.
+// store/sqlite admits ONE WRITER, so the loser of a read-then-write pair is
+// refused at its write rather than let through, and Store.Update re-runs the
+// unit of work — reading again, after the winner has committed, and meeting the
+// domain's guard. With this function made to return nil, storetest's RunRaces
+// still passes all four cases, ephemeral and WAL file alike. So no test in this
+// repository can see the ordering go.
 //
-// store/sqlite is neither of them. It admits ONE WRITER, so the loser of a
-// read-then-write pair is refused at its write rather than let through, and
-// Store.Update re-runs the unit of work — reading again, after the winner has
-// committed, and meeting the domain's guard. Measured, with this function made
-// to return nil: storetest's RunRaces passes ten runs out of ten, all four
-// cases, on the ephemeral store and on a WAL file alike. So the ordering below
-// is a SECOND guard here rather than the only one, and no test in this
-// repository can see it go.
-//
-// It stays for two reasons. It costs one row write per act and holds the
-// property without depending on the retry budget; and the question Task 18 had
-// to decide has been decided in the way that keeps it working. THE COUNTER
-// FOLLOWS THE ROW: this function allocates from the settlement agent's own
-// id_sequences and reads that agent's own ledgers table, one database apart from
-// nothing, so the ordering survives the split unchanged. Had the allocation
-// landed anywhere else the ordering would have been worth nothing — two
-// databases is two transactions, and no retry can make one of them see the
-// other. See ledgers in store/sqlite/schema/centralbank/0001_init.sql, which
-// carries the ruling.
+// It stays because it costs one row write per act and holds the property without
+// depending on the retry budget. THE COUNTER FOLLOWS THE ROW: this function
+// allocates from the settlement agent's own id_sequences and reads that agent's
+// own ledgers table, one database apart from nothing. Had the allocation landed
+// anywhere else the ordering would be worth nothing — two databases is two
+// transactions, and no retry can make one of them see the other.
 //
 // # Why an id allocation is the lock
 //
@@ -896,46 +713,25 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // the composition touches anything — and it is the one store/storetest's
 // ConcurrentReadThenWriteOnOneKeyAgrees states at the store interface.
 //
-// What makes an allocation a lock is that it WRITES. Under Postgres, NextID's
-// INSERT … ON CONFLICT DO UPDATE took a row lock on id_sequences held until the
-// transaction ended. Under SQLite the write is what makes this transaction the
-// database's writer, so a second allocator waits there and then reads what the
-// first committed — see store/sqlite's nextSeq, which is the same ordering
-// arrived at from the database admitting one writer rather than from a row being
-// locked.
+// What makes an allocation a lock is that it WRITES: the write is what makes
+// this transaction the database's writer, so a second allocator waits there and
+// then reads what the first committed. See store/sqlite's nextSeq.
 //
-// The number is discarded, and that is the whole of the difference from those
-// two callers. Neither row an admission writes is keyed by an id — the
-// identifier between these institutions is the BIC — so what is wanted here is
-// the lock and not the number.
+// The number is discarded. Neither row an admission writes is keyed by an id —
+// the identifier between these institutions is the BIC — so what is wanted here
+// is the lock and not the number.
 //
 // # It leaves gaps in the network's numbering, and they are visible
 //
-// One counter serves every prefix within a book (see store/sqlite's NextID), so this
-// advances the same counter that numbers banks, payments, mandates and cycles.
-// What a euro-only admission draws from it is: the bank's own id, one here per
-// act that decides from a read — one per settlement account asked for, one for
-// the roster entry, one for the recording — and one per audit event, of which an
-// admission appends four, one per act.
+// One counter serves every prefix within a book (see store/sqlite's NextID), so
+// this advances the same counter that numbers banks, payments, mandates and
+// cycles. What a euro-only admission draws from it is: the bank's own id, one
+// here per act that decides from a read, and one per audit event, of which an
+// admission appends four.
 //
 // So the gaps between consecutive banks are wide, and they widen again whenever
-// an act is added or an act starts writing to the log. That is what the counter
-// has always meant, since it interleaves every prefix in the book and doubles as
-// a creation order, and it is why api's mesh tests resolve the ids they use from
-// the seed's IBANs instead of naming them.
-//
-// A number is deliberately not quoted here. This paragraph used to name the
-// seed's four banks — and did so twice, each time correctly when it was written
-// and wrongly by the next task, because every one of the changes above moves
-// them. What a reader wants is the list of things that draw an id, which is
-// above and which stays true; what the seed's banks are numbered on any given
-// day is a `ListBanks` away.
-//
-// Every one of these calls is now load-bearing rather than redundant. While one
-// transaction composed the four acts, FoundBankTx's own allocation had already
-// taken the lock before the other three ran, so their calls did nothing. Each act
-// is its own commit at its own institution now, driven by a message, and there is
-// no earlier allocation to ride on.
+// an act is added or an act starts writing to the log. That is why api's mesh
+// tests resolve the ids they use from the seed's IBANs instead of naming them.
 func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 	_, err := tx.NextID(ctx, s.book(), "adm")
 	return err
@@ -943,17 +739,11 @@ func (s *Network) admissionSequenceTx(ctx context.Context, tx Tx) error {
 
 // The four acts, each in its own unit of work.
 //
-// One wrapper per act and no wrapper over all four, which is the shape of the
-// split rather than an omission. Each act is ONE institution's work, and what
-// composes them is a conversation between three of them: mesh.Mesh.Admit founds
-// the bank and sends, and the other three run in the handlers of the messages
-// that reach the institutions whose acts they are. A wrapper spanning the four
-// would be a single unit of work again, which is exactly what an admission
-// across a store boundary cannot be.
-//
-// They exist because a message handler holds no transaction. Everything else in
-// this package that a handler calls has the same pair — SubmitPayment,
-// AcceptInbound, SettleCycle — and for the same reason.
+// One wrapper per act and no wrapper over all four: a wrapper spanning the four
+// would be a single unit of work again, which is what an admission across a
+// store boundary cannot be. They exist because a message handler holds no
+// transaction, which is why SubmitPayment, AcceptInbound and SettleCycle have
+// the same pair.
 
 // FoundBank is FoundBankTx in its own unit of work: the bank's own act, and the
 // only one of the four its own operator drives directly.
@@ -1023,32 +813,20 @@ func (s *Network) RecordMembership(ctx context.Context, in AdmissionAcknowledgem
 // agent holds an account for it to raise, so the deposit is refused by name
 // (ErrSettlementMemberNotFound). Nor is it in any routing directory, so nothing
 // it takes part in can settle. That is what a bank is between its licence and
-// its scheme membership, and it is what an interrupted admission leaves behind —
-// which is why the guarantee the deleted atomic call gave up is one no real
-// admission ever had.
-//
-// This used to say "it can take deposits", which is the one thing it cannot do,
-// and "no clearing house routes to it", which is not a refusal anybody makes:
-// mesh routes on its actor table rather than on the roster. mesh/doc.go's
-// admission section records what that costs, measured.
+// its scheme membership, and it is what an interrupted admission leaves behind.
 //
 // Assets[asset].Settlement is EMPTY on every set of accounts it writes. The
 // settlement account is another institution's to open and its number is
 // something this bank has to be told; RecordMembershipTx is where it lands.
 //
-// What it writes outside the bank's own BOOK is network-scoped storage rather
-// than another institution's record: the id allocation, the Bank row itself —
-// which names a book without being scoped to one, as
-// TestWritingAParticipantTouchesNoBankBook pins — and one participant.added audit
-// event, the audit log being network-scoped in this system by construction (see
-// appendAuditTx).
+// What it writes outside the bank's own BOOK is the id allocation, the Bank row
+// itself — which names a book without being scoped to one — and one
+// participant.added audit event.
 //
 // That event is about the FOUNDING and is silent about everything after it: the
 // bank it carries is Founded and its settlement references are empty, because at
 // the moment it is written no settlement agent has opened one. The other three
-// acts each append their own, which is what makes an admission four events in
-// the log rather than one — see the note above this block, and
-// TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+// acts each append their own.
 func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20022.BIC, assets []ledger.AssetCode) (*Bank, error) {
 	if err := ledger.ValidateText("name", name); err != nil {
 		return nil, err
@@ -1065,33 +843,13 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 
 	// NOTHING IS ALLOCATED HERE. THE BANK'S ID IS ITS BIC.
 	//
-	// It used to be NextID(ledger.NetworkBook, "bank"), drawn from a counter every
-	// institution shared, and that counter is gone. What replaced it is not
-	// another counter, and the reason is worth having at the line that used to
-	// draw one.
-	//
-	// A counter-derived id could not work at all. A bank's database is named by
-	// its id, and the counter an id is drawn from is a row in id_sequences inside
-	// that database — so allocating it would mean opening the store whose name is
-	// the value being allocated. That knot is why FoundBank was called through the
-	// CLEARING HOUSE's handle right up to this task: the joining bank had no
-	// handle of its own yet. mesh.Mesh.Admit and store/storetest.Admit both did
-	// it and both were recorded as deferrals.
-	//
-	// Siting the counter somewhere else would have been the wrong fix, because
-	// the id had stopped meaning anything. It was doing two jobs — this bank's own
-	// name for itself, and the NETWORK'S ADDRESS for it — and only the first
-	// survives isolation: eight readers in mesh turned a participant id into a BIC
-	// by reading a bank's row, and every one of them is a read into a database its
-	// caller does not hold. Take the second job away and the first distinguishes
-	// nothing, because a bank's database holds one bank. An id that is a constant
-	// is not an identity.
-	//
-	// So there is one identifier and a joining bank arrives already knowing it.
-	// s.self() is this network's identity, which is the BIC, which is this store's
-	// one BookID — the value it was opened for and refuses every other of. See
-	// banks in store/sqlite/schema/bank/0001_init.sql, where the argument is
-	// recorded in the database.
+	// A counter-derived id could not work: a bank's database is named by its id
+	// and the counter is a row inside that database, so allocating one would mean
+	// opening the store whose name is the value being allocated. There is one
+	// identifier and a joining bank arrives already knowing it. s.self() is this
+	// network's identity, which is the BIC, which is this store's one BookID —
+	// the value it was opened for and refuses every other of. See banks in
+	// store/sqlite/schema/bank/0001_init.sql.
 	pid, err := s.self()
 	if err != nil {
 		return nil, err
@@ -1116,12 +874,10 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 	if err != nil {
 		return nil, err
 	}
-	// A third subledger, and the reason it is not one of the two above is the
-	// whole of what Task 18a's deposit change is about. Vault cash is not owed to
-	// a customer, so it is not a Customer Deposit; and it is not a position
-	// against another institution, so it is not Interbank. It is the bank's own
-	// money, in its own hands — the one asset on this chart that is nobody else's
-	// promise.
+	// Vault cash is not owed to a customer, so it is not a Customer Deposit; and
+	// it is not a position against another institution, so it is not Interbank.
+	// It is the bank's own money, in its own hands — the one asset on this chart
+	// that is nobody else's promise.
 	//
 	// It is created AFTER the other two on purpose. Subledgers are numbered in
 	// creation order, so appending leaves every account number in the two
@@ -1247,20 +1003,16 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // # Idempotent per (BIC, asset), not per BIC
 //
 // A request for an asset it has already opened returns the accounts it holds and
-// opens none. A request for an asset it has not returns a member extended by
-// one account. Both halves are needed and for different reasons: one acmt.007
-// names one currency, so a bank in two schemes asks twice and the second ask
-// must not be swallowed as a repeat; and an operator re-driving an admission
-// that failed after the accounts were opened must not be given a second account
-// that the first one's balance is already sitting in. That re-drive is the route
-// out of a half-happened admission this system documents, so the second half is
-// reachable in practice and not only in principle.
+// opens none. A request for an asset it has not returns a member extended by one
+// account. Both halves are needed: one acmt.007 names one currency, so a bank in
+// two schemes asks twice and the second ask must not be swallowed as a repeat;
+// and an operator re-driving an admission that failed after the accounts were
+// opened must not be given a second account that the first one's balance is
+// already sitting in.
 //
 // The idempotency is this act's own and not a store's: it reads the member row
-// and then writes it, which without something ordering the two is two callers
-// both reading "not there". What orders them is the id drawn before the read —
-// see admissionSequenceTx, which measures what the act does without it, on this
-// store and on the two that came before.
+// and then writes it. What orders two callers is the id drawn before the read —
+// see admissionSequenceTx.
 //
 // The name on the row is the one it was first opened under. An account servicer
 // names an account after the member it opened it for, and a second request that
@@ -1282,31 +1034,23 @@ func (s *Network) FoundBankTx(ctx context.Context, tx Tx, name string, bic iso20
 // that is a refusal one institution earlier rather than a weaker test here — see
 // ErrBICAlreadyAdmitted.
 //
-// That leaves something for the relay to guarantee rather than nothing, and it
-// is worth naming because this act is reached from a message. The BIC it is
-// handed becomes the primary key of the settlement agent's own row —
-// settlement_members.bic — so a request carrying a malformed or
-// empty address writes a member row keyed by one, which no later message can
-// address and no reader can find. What must not reach here is an address
-// nothing validated: iso20022.BIC.Validate is what the reader of an acmt.007
-// runs, in the actor that receives it, before this act is called. See
-// ReadAdmissionRequest, which does exactly that and says so.
+// That leaves something for the relay to guarantee. The BIC becomes the primary
+// key of settlement_members, so a request carrying a malformed or empty address
+// writes a row no later message can address and no reader can find.
+// iso20022.BIC.Validate is what the reader of an acmt.007 runs, in the actor
+// that receives it, before this act is called. See ReadAdmissionRequest.
 //
 // # It appends one audit event, and only when it opens something
 //
-// settlement_account.opened, under the member's BIC, carrying the whole row.
-// The audit log is this system's only immutable record and an admission is now
-// four commits at three institutions, so each act writes its own — see the note
-// above this block. A request for an asset already held returns above without
-// an event, because nothing happened: an event there would make a redelivered
-// acmt.007 indistinguishable in the log from a second account.
+// settlement_account.opened, under the member's BIC, carrying the whole row. A
+// request for an asset already held returns above without an event, because
+// nothing happened: an event there would make a redelivered acmt.007
+// indistinguishable in the log from a second account.
 func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in AdmissionRequest) (SettlementMember, error) {
-	// FIRST, and the placement is the fix rather than a style: this act returns
-	// early for an asset the agent already holds an account in, so a guard
-	// further down was reachable only on the path that opens something. A
-	// redelivered acmt.007 answered a clearing house's network with a member row
-	// and no refusal at all. Who is acting is not a question about how much work
-	// is left.
+	// FIRST: this act returns early for an asset the agent already holds an
+	// account in, so a guard further down would be reachable only on the path
+	// that opens something — and a redelivered acmt.007 would answer a clearing
+	// house's network with a member row and no refusal at all.
 	book, err := s.centralBankBook()
 	if err != nil {
 		return SettlementMember{}, err
@@ -1314,11 +1058,9 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 	if _, err := ledger.LookupAsset(in.Asset); err != nil {
 		return SettlementMember{}, err
 	}
-	// Before the read below, and before centralBankChartTx's find-or-create.
-	// See admissionSequenceTx: without it this act's idempotency is whatever the
-	// store underneath happens to give it rather than something the act arranged
-	// — which on store/mem was everything, on store/pg was nothing, and on
-	// store/sqlite is measured.
+	// Before the read below, and before centralBankChartTx's find-or-create. See
+	// admissionSequenceTx: without it this act's idempotency is whatever the
+	// store happens to give it rather than something the act arranged.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return SettlementMember{}, err
 	}
@@ -1377,14 +1119,9 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 //
 // # It is ReadAdmissionAcknowledgement's refusals, made again in the acts
 //
-// That is the whole specification, and it is stated as a correspondence rather
-// than as a list this function invented: everything the reader will not read off
-// an acmt.010, the acts will not act on. The reader is the only guard a message
-// meets, and the acts are separately callable — an institution doing its own
-// unit of work is the point of the split — so a reader's guard that is the only
-// line is not defence in depth. It is the rule Task 16e arrived at for
-// ReadReturn and SettleReturnTx after an implementer found the hole outside its
-// brief.
+// Everything the reader will not read off an acmt.010, the acts will not act on.
+// The reader is the only guard a message meets, and the acts are separately
+// callable, so a reader's guard alone is not defence in depth.
 //
 // The correspondence, refusal for refusal:
 //
@@ -1398,17 +1135,12 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 //	AcctId[i]/Id/Othr/Id absent           ErrAdmittedAccountUnusable
 //	two accounts in one currency          unrepresentable: Accounts is a map
 //
-// TestAnUnusableAcknowledgementIsRefusedByBothActs and
-// TestAnAcknowledgementQuotingNoAdmissionIsRefusedByBothActs are what hold the
-// right-hand column; TestReadAdmissionAcknowledgementRefusesAnAccountItCannotFile
-// holds the left. A refusal added to the reader and not here is a row of this
-// table with an empty right-hand side, which is how each of the three holes this
-// function has grown to cover got in.
+// A refusal added to the reader and not here is a row of this table with an
+// empty right-hand side.
 //
 // # Why each of them, and what "" means
 //
-// The BIC and the reference are both values that a guard elsewhere reads as
-// ABSENCE, which is what made them dangerous rather than merely untidy:
+// The BIC and the reference are both values a guard elsewhere reads as ABSENCE:
 //
 //   - an empty Bank.AdmissionRef means "this bank has accepted nothing yet", so
 //     an acknowledgement quoting none resets that guard and hands the next
@@ -1416,30 +1148,23 @@ func (s *Network) OpenSettlementAccountTx(ctx context.Context, tx Tx, in Admissi
 //     RosterEntry.AdmissionRef compares equal to every other empty one, so two
 //     institutions on one address would extend a single entry.
 //   - an empty or malformed BIC is the KEY of the roster row AdmitMemberTx
-//     writes. Measured: `AdmitMemberTx bic="" -> entry={BIC: Assets:[EUR] …}` and
-//     the same for "nonsense" — rows nothing can address and no reader can find.
-//     RecordMembershipTx was already covered by its own comparison, since a
-//     bank's own BIC is validated at founding and cannot equal either; the
-//     clearing house had nothing.
+//     writes: a row nothing can address and no reader can find.
 //
-// The accounts are the acknowledgement's whole content, and an empty list is the
-// value that makes the per-account arms below not execute at all. Measured, it
-// WEDGES both institutions: a Member that settles through no account and a
-// roster entry that clears in no scheme, and then the true acknowledgement is
-// refused for ever by the very guards those two rows now carry.
+// The accounts are the acknowledgement's whole content, and an empty list makes
+// the per-account arms below not execute at all. It WEDGES both institutions: a
+// Member that settles through no account and a roster entry that clears in no
+// scheme, after which the true acknowledgement is refused for ever by the guards
+// those two rows now carry.
 //
 // # It is one function and it runs before the id
 //
 // One function and not lines in each act, because the two would otherwise refuse
 // different things — on an empty currency the clearing house would write a
 // member clearing in the empty asset and the bank would silently skip the
-// account; on an empty reference the clearing house would merge two institutions
-// and the bank would forget it had been admitted. Same message, two answers, and
-// in each pair only one of them visible.
+// account. Same message, two answers, and in each pair only one of them visible.
 //
-// It reads no store, so it runs BEFORE admissionSequenceTx rather than after: a
-// message this system cannot act on should not cost an identity from the
-// network's counter, and there is nothing here for that lock to protect.
+// It reads no store, so it runs BEFORE admissionSequenceTx: a message this
+// system cannot act on should not cost an identity from the network's counter.
 //
 // What it does NOT check is which bank an acknowledgement is FOR. That is
 // RecordMembershipTx's own comparison against the bank's own address
@@ -1504,43 +1229,24 @@ func checkAcknowledgement(in AdmissionAcknowledgement) error {
 // admissionSequenceTx.
 //
 // An acknowledgement this act cannot use is refused before any of the above, by
-// checkAcknowledgement, which is ReadAdmissionAcknowledgement's refusals made
-// again in the act. Two of them decide this act's own guards rather than merely
-// tidying the row: an empty reference, because two institutions on one BIC both
-// quoting "" compare equal and the refusal above would never fire; and an empty
-// or malformed BIC, because this row is KEYED by it — measured at
-// `entry={BIC: Assets:[EUR] …}`, a row nothing can address.
+// checkAcknowledgement. Two of its refusals decide this act's own guards: an
+// empty reference, because two institutions on one BIC both quoting "" compare
+// equal and the refusal above would never fire; and an empty or malformed BIC,
+// because this row is KEYED by it.
 //
-// # What it can leave behind, enumerated
+// # What it can leave behind
 //
-// RecordMembershipTx needed two guards beyond the message's because the state it
-// writes is not the message it reads; this act was enumerated the same way and
-// needed none, which is worth recording rather than leaving as an absence.
 // checkAcknowledgement guarantees a non-empty account list in which every asset
 // and every identifier is non-empty, so the loop below always appends at least
 // one asset and this row can never be written clearing in nothing. It only
-// APPENDS, so no value already on the entry is replaced and there is no
-// equivalent of the moved-account case. The reference and the address are the
-// row's other two fields and both are refused empty before this runs.
+// APPENDS, so no value already on the entry is replaced.
 //
 // What it CAN leave is an entry naming an asset the bank holds no internal
-// accounts in, and that is deliberate rather than unguarded: the assets are the
-// servicer's answer about its own book, and this institution has no business
-// asking the bank what it wanted. The bank's own act declines such an account
-// for itself. The consequence is real and it is a clearing house routing a
-// scheme its member cannot settle in, which is why AcceptAtCSMTx reads
-// RosterEntry.Assets before it takes a payment into a cycle — see
-// bothBanksAreMembersTx.
-//
-// # It writes an ADDRESS and not a description
-//
-// Everything on the entry comes off the acknowledgement, and there is nothing on
-// the acknowledgement this act declines to use. That was not true while the row
-// carried a NAME: acmt.010 identifies the account owner by BIC and carries no
-// legal name, so the name had to be kept by the institution driving this act and
-// handed in beside the message. Both the field and the keeping are gone — see
-// RosterEntry, which records the whole of that reversal — and what is left is a
-// row a clearing house can write from one message and nothing else.
+// accounts in, and that is deliberate: the assets are the servicer's answer
+// about its own book, and this institution has no business asking the bank what
+// it wanted. The consequence is a clearing house routing a scheme its member
+// cannot settle in, which is why AcceptAtCSMTx reads RosterEntry.Assets before
+// it takes a payment into a cycle — see bothBanksAreMembersTx.
 //
 // # It appends one audit event
 //
@@ -1555,10 +1261,7 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 		return RosterEntry{}, err
 	}
 	// Then the id, before the read the refusal is decided from. See
-	// admissionSequenceTx: without it, two different admissions of one address
-	// were both accepted on store/pg and the entry recorded whichever committed
-	// last — the impostor half the time — and that is what this ordering was put
-	// here for.
+	// admissionSequenceTx.
 	if err := s.admissionSequenceTx(ctx, tx); err != nil {
 		return RosterEntry{}, err
 	}
@@ -1603,69 +1306,39 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 // ledger. The bank becomes a Member in the same write, because being told the
 // account exists is exactly what being admitted consists of.
 //
-// # The bank is this network's identity, and the domain still has to check
+// # Which bank, and which admission
 //
-// The bank claiming the acknowledgement is no longer something the caller says;
-// it is which member's network this is. That closes one hole and leaves the
-// original one exactly where it was. A bank that recorded whatever arrived would
-// write another member's account numbers onto its own row, and every reserve
-// movement it made afterwards would name an account it does not hold — so the
-// check below still compares the message's address against this bank's own BIC.
-// It has to: the identity says which member is acting, and nothing about the
-// MESSAGE follows from that. This is ErrStatementNotForThisBank's argument one
-// flow over, and the check is the same one.
+// Which member is acting is the network's identity, and nothing about the
+// MESSAGE follows from that — so the check below still compares the message's
+// address against this bank's own BIC. A bank that recorded whatever arrived
+// would write another member's account numbers onto its own row, and every
+// reserve movement it made afterwards would name an account it does not hold.
 //
-// What the identity removes is the case that check could never make: the
-// acknowledgement recorded by an institution that is not a member bank at all.
-//
-// # It records or extends, and refuses only a different admission
-//
-// A bank that is already a Member is EXTENDED rather than refused, and this used
-// to be the other way round: the act took only a Founded bank, and a second
-// acknowledgement was ErrBankNotFounded. That refusal was measured wrong. One
-// acmt.007 asks for one currency, so a two-asset admission produces two
-// acknowledgements; the first takes the bank to Member and the second met a
-// Member and was refused — leaving the bank a Member with a dollar settlement
-// reference it never learned, while the central bank held a dollar reserve for
-// it. DepositTx in dollars then failed against a reserve the operator console
-// cheerfully reported, because the console reads the central bank's row.
-//
-// So the state guard went, and for one round nothing replaced it. That was
-// wrong, and the argument for it was worse than the omission: it said a bank has
-// no contender, because the acknowledgement has already been checked to name
-// this bank's own BIC. The BIC answers WHICH BANK. It does not answer WHICH
-// ADMISSION, and two admissions can quote one BIC — which is the entire premise
-// of RosterEntry.AdmissionRef, in roster.go.
-//
-// Measured: an acknowledgement naming this bank's own BIC, quoting an admission
-// reference this bank had never heard of, and carrying an invented account,
-// moved a Member bank's euro settlement reference off the central bank's real
-// account and onto the forged one. The bank's row then disagreed with the
-// settlement agent's about which account it holds, and DepositTx reads the
-// bank's.
+// The BIC answers WHICH BANK and not WHICH ADMISSION, and two admissions can
+// quote one BIC — the premise of RosterEntry.AdmissionRef. An acknowledgement
+// naming this bank's own BIC, quoting a reference it never heard of and carrying
+// an invented account, would move a Member's settlement reference off the
+// central bank's real account and onto the forged one, leaving the bank's row
+// disagreeing with the settlement agent's about which account it holds.
 //
 // What refuses it is Bank.AdmissionRef: the reference this bank itself accepted,
 // compared against the one on the message. It is not the clearing house's guard
-// duplicated. That one decides between two INSTITUTIONS contending for an
-// address, from a row this institution does not own and which Task 18 moves to
-// another database; this one is a bank comparing a message against its own
-// memory, and it needs nobody else's store to make it. Today the only thing
-// stopping a forged acknowledgement reaching this act is AdmitMemberTx one
-// institution earlier — which is exactly the guard the split takes away.
+// duplicated — that one decides between two INSTITUTIONS contending for an
+// address, from a row in another database; this is a bank comparing a message
+// against its own memory.
 //
-// A bank that is still Founded accepts whatever reference arrives and records
-// it, because it has accepted none. That is what makes an operator re-driving an
-// interrupted admission work: Mesh.Admit mints a new process id, and a bank with
-// nothing recorded has nothing to disagree with.
+// # It records or extends
 //
-// What record-or-extend buys, and what the guard does not take back, is that the
-// act is idempotent in the way messages require: a redelivered acknowledgement
-// writes the same row, and a second asset's acknowledgement — same admission,
-// same reference — adds a reference the bank did not have. The id drawn before
-// the read is here for the reason it is in the other two acts: two recordings of
-// one bank racing on store/pg both read the row and both wrote it, and the
-// loser's account numbers were lost. See admissionSequenceTx, which is where
-// what that ordering is worth today is measured.
+// A bank that is already a Member is EXTENDED rather than refused. One acmt.007
+// asks for one currency, so a two-asset admission produces two acknowledgements,
+// and refusing the second would leave a Member with a settlement reference it
+// never learned while the central bank held a reserve for it.
+//
+// A bank that is still Founded accepts whatever reference arrives, because it
+// has accepted none. That is what makes re-driving an interrupted admission
+// work: Mesh.Admit mints a new process id, and a bank with nothing recorded has
+// nothing to disagree with. The id drawn before the read is here for the reason
+// it is in the other two acts — see admissionSequenceTx.
 //
 // # An account for an asset this bank does not operate in is not recorded —
 // unless that is all of them
@@ -1687,31 +1360,20 @@ func (s *Network) AdmitMemberTx(ctx context.Context, tx Tx, in AdmissionAcknowle
 //
 // # The two guards below are about the STATE, not the message
 //
-// checkAcknowledgement is a correspondence table against
-// ReadAdmissionAcknowledgement and is complete against it, refusal for refusal.
-// Neither of these is a message that reader would refuse, and neither is
-// derivable from that table: they are what this ACT would leave behind. Written
-// by enumerating the outcomes rather than the inputs — a Member with a settlement
-// reference it never learned, and a Member with a reference moved off the account
-// the settlement agent actually holds — because deriving from the other side's
-// list is what left the first three holes this act has had.
+// Neither is a message checkAcknowledgement would refuse: they are what this ACT
+// would leave behind — a Member with a settlement reference it never learned,
+// and a Member with a reference moved off the account the settlement agent
+// actually holds.
 //
 // The moved-account arm is ErrSettlementAccountReplaced, and it compares rather
 // than forbids: an acmt.010 lists every account the servicer holds for the
 // address, so a redelivery and a second currency's answer both repeat accounts
-// already recorded, and equal is an extension. See that sentinel for what a
-// different value cost when nothing compared it.
-//
-// An acknowledgement this act cannot use at all is refused before either, by
-// checkAcknowledgement — which both acts driven from an acknowledgement run, and
-// which is what keeps AdmissionRef's empty value meaning one thing.
+// already recorded, and equal is an extension.
 //
 // # It appends one audit event
 //
 // membership.recorded, under the bank's own id, carrying the bank as it now
-// stands. It is the pair to the participant.added FoundBankTx wrote, and the
-// reason that one can be silent about everything the founding did not know: the
-// settlement account numbers are on this event and on no other.
+// stands. The settlement account numbers are on this event and on no other.
 func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAcknowledgement) (*Bank, error) {
 	self, err := s.self()
 	if err != nil {
@@ -1793,27 +1455,11 @@ func (s *Network) RecordMembershipTx(ctx context.Context, tx Tx, in AdmissionAck
 // bank's dollar vault; there is nothing for a caller to pick and therefore
 // nothing to default, and the two legs cannot end up in different assets.
 //
-// # This used to reach the central bank's ledger, and that was crossing 6
-//
-// A deposit was modelled as the bank placing the cash on reserve, which took two
-// postings in two books inside one unit of work — Debit Reserve at Central Bank /
-// Credit customer here, and Debit Settlement Assets / Credit Reserve: <bank>
-// there. The second was a member bank writing in the settlement agent's ledger,
-// and it was the last crossing in sub-project 8's table that never became a
-// message: funding arrives from an operator or a fixture, with no institution
-// behind it, so no recorder assertion built on booksTouchedBy could see it.
-//
-// What was wrong with it is not only the store. It said that cash cannot be paid
-// in at a bank that has not joined a payment scheme, which is false about banking
-// — a bank's counter has nothing to do with its central bank account — and the
-// refusal it produced (ErrSettlementMemberNotFound) was a settlement agent's
-// sentinel answering a question about a customer's money.
-//
-// Both halves are fixed by the same change. Cash becomes VAULT CASH, which every
-// founded bank has from FoundBankTx; and moving it onto reserve becomes a
-// LODGEMENT, which is a camt.050 to the central bank and its camt.025 back. See
-// LodgeReservesTx, and Camt050 on why a lodgement is a conversation and a deposit
-// is not.
+// A deposit reaches no other institution's book. Cash paid in over the counter
+// is VAULT CASH, which every founded bank has from FoundBankTx; moving it onto
+// reserve is a separate act, a LODGEMENT, which is a camt.050 to the central
+// bank and its camt.025 back. See LodgeReservesTx, and Camt050 on why a
+// lodgement is a conversation and a deposit is not.
 func (s *Network) Deposit(ctx context.Context, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	return s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
 		return s.DepositTx(ctx, tx, participant, account, amount, description)
@@ -1823,11 +1469,8 @@ func (s *Network) Deposit(ctx context.Context, participant ParticipantID, accoun
 // DepositTx is Deposit within a caller-supplied unit of work.
 //
 // It names no account outside this bank's book and asks the central bank nothing.
-// The read that used to be here — Bank.Assets[asset].Settlement, the bank's own
-// record of its settlement account number — went with the posting it was for:
-// there is no leg at the central bank to resolve an account for. What still reads
-// that field is LodgeReservesTx, which is where quoting one's own account number
-// belongs, because that is the act with a counterparty.
+// LodgeReservesTx is the act with a counterparty, and it is what reads this
+// bank's record of its settlement account number.
 func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantID, account deposit.AccountID, amount ledger.Amount, description string) error {
 	if amount <= 0 {
 		return ErrInvalidPaymentAmount
@@ -1859,25 +1502,9 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 	if err != nil {
 		return err
 	}
-	// There is no guard on the settlement account here, and its absence is the
-	// change rather than an oversight.
-	//
-	// This used to refuse a bank whose Assets[asset].Settlement was empty, with
-	// ErrSettlementMemberNotFound and the sentence "is founded and not yet
-	// admitted, so it has no reserve to fund". It was a true description of what
-	// the code then did — the second posting named that account, so an empty one
-	// had to be caught before the central bank's ledger answered "account not
-	// found" about what reads as the customer's account — and it was a false
-	// statement about banking. A bank's counter does not depend on its central
-	// bank account. A founded bank can take cash.
-	//
-	// The guard is not deleted so much as MOVED, to the act it was always true
-	// about: LodgeReservesTx cannot place cash on reserve at an agent that holds
-	// no account for this bank, and refuses there with that sentinel. The
-	// imprecision the old sentence carried — it said "founded and not yet
-	// admitted" of a bank that may be a Member in a different asset — is gone with
-	// the sentence rather than fixed in place, which is what closes it as a
-	// defect.
+	// No guard on the settlement account: a bank's counter does not depend on its
+	// central bank account, and a founded bank can take cash. LodgeReservesTx is
+	// where an agent holding no account for this bank is refused.
 	_, err = p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		Description: description,
 		Entries: []ledger.Entry{
@@ -1901,7 +1528,7 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 //
 // The matching pair is the CENTRAL BANK's and lands in the central bank's own
 // book, from the camt.050 this returns — see ReceiveLodgementTx. Two books, two
-// units of work, one message each way, which is what closes crossing 6.
+// units of work, one message each way.
 //
 // # It posts and instructs together, for SubmitAndInstruct's reason
 //
@@ -1923,13 +1550,11 @@ func (s *Network) DepositTx(ctx context.Context, tx Tx, participant ParticipantI
 // is that it does not survive a restart. So: post first.
 //
 // What that costs is an interval in which the bank's own Reserve at Central Bank
-// says more than the central bank's book does. That is not a new class of defect
-// here; it is the unreconciled position this system already models and already
-// documents (see BankAccounts), the same interval a cut-off opens between the
-// reserve moving and the member booking its camt.053. What is different is that a
-// REFUSED lodgement never closes it, and nothing in 18a detects that. The guard
-// below is what makes it unreachable rather than merely unlikely, and Task 18e's
-// reconciliation harness is the instrument that would find it if it happened.
+// says more than the central bank's book does — the unreconciled position this
+// system already models (see BankAccounts), the same interval a cut-off opens
+// between the reserve moving and the member booking its camt.053. A REFUSED
+// lodgement never closes it; the guard below is what makes that unreachable, and
+// payment/recon is the instrument that would find it if it happened.
 func (s *Network) LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 	amount ledger.Amount, mc MessageContext) (LodgementInstruction, iso20022.Envelope, error) {
 
@@ -1950,22 +1575,17 @@ func (s *Network) LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 
 // LodgeReservesTx is LodgeReserves within a caller-supplied unit of work.
 //
-// # The guard the deposit used to make
+// # A bank that cannot name its own reserve account is refused
 //
-// A bank whose Assets[asset].Settlement is empty is refused here with
-// ErrSettlementMemberNotFound. That check used to live in DepositTx, where it
-// said a founded bank could not take cash — true of the code and false of banking
-// — and this is the act it was always correct about: a bank that cannot name its
-// own reserve account cannot ask for a credit to it, and the central bank has no
-// account to post to.
+// ErrSettlementMemberNotFound: it cannot ask for a credit to an account it
+// cannot name, and the central bank has no account to post to.
 //
 // It also makes the central bank's own refusal unreachable in practice, which is
 // what keeps the interval described above closed. Nothing writes a bank's
 // settlement reference before the agent's account exists — RecordMembershipTx
 // runs on the acknowledgement, and the account is opened before that
 // acknowledgement is built — so a bank able to pass this guard is one the agent
-// certainly holds an account for. The disagreement is one-directional, and this
-// is the direction that is safe.
+// certainly holds an account for.
 //
 // # It does not refuse a bank with too little cash, and does not need to
 //
@@ -2038,10 +1658,8 @@ func (s *Network) LodgeReservesTx(ctx context.Context, tx Tx, asset ledger.Asset
 //
 //	central bank:  Debit  Settlement Assets (asset)  / Credit Reserve: <member> (asset)
 //
-// That is the same pair the deposit used to post here from inside the BANK's unit
-// of work. What has changed is who posts it and on whose instruction — which is
-// the whole of the crossing, and the reason this method is on settlementOps and
-// on no other interface.
+// It is the central bank posting on a member's instruction, which is why the
+// method is on settlementOps and on no other interface.
 func (s *Network) ReceiveLodgement(ctx context.Context, in LodgementInstruction) (LodgementReceipt, error) {
 	var out LodgementReceipt
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -2109,21 +1727,11 @@ func (s *Network) ReceiveLodgementTx(ctx context.Context, tx Tx, in LodgementIns
 	if err != nil {
 		return LodgementReceipt{}, err
 	}
-	// An instruction quoting NO account is refused, and the `in.Account != "" &&`
-	// that used to precede this comparison is what made the doc above false about
-	// its own check: an empty quoted account walked past the guard that exists to
-	// compare it. That is the shape of the escape ErrBICAlreadyAdmitted's note
-	// records — a guard closing a hole and leaving its own "does not apply" value
-	// open — and here the value was reachable, because ReceiveLodgement is
-	// exported on settlementOps and callable with an instruction nobody parsed.
-	//
-	// Nothing was ever misdirected by it: the account posted to is this agent's
-	// own row and never the quoted one, which is the whole point of reading
-	// settlementAccountTx first. What was lost is the ASSERTION. A camt.050 says
-	// which account it means, ReadLodgement refuses one that does not
-	// (CdtrAcct/Id/Othr/Id), and a member and its agent silently disagreeing
-	// about which account a lodgement credits is exactly what this comparison is
-	// for.
+	// An instruction quoting NO account is refused too: a camt.050 says which
+	// account it means, ReadLodgement refuses one that does not, and a member and
+	// its agent silently disagreeing about which account a lodgement credits is
+	// what this comparison is for. (Nothing is ever misdirected either way — the
+	// account posted to is this agent's own row and never the quoted one.)
 	if in.Account != held {
 		return LodgementReceipt{}, fmt.Errorf(
 			"%w: %s lodges %s into %q and this agent holds %s for it",
@@ -2167,11 +1775,7 @@ func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, d
 //
 // # It is the CREDITOR's bank's act, and it reads one register
 //
-// It used to run checkPartyTx for BOTH parties, which is one unit of work
-// reading two banks' deposit registers — a crossing the spec's table never
-// listed and 18a did not close. What replaces it is the shape Task 14 and 18a
-// gave the payment path: this bank checks its OWN customer and records what it
-// is told about the other.
+// This bank checks its OWN customer and records what it is told about the other.
 //
 // Which bank that is follows from the domain rather than from convenience. In
 // SEPA the CREDITOR holds the mandate; SDD.ValidateMandate has said so since the
@@ -2180,42 +1784,25 @@ func (s *Network) CreateMandate(ctx context.Context, debtorAgent iso20022.BIC, d
 // reach across an entity boundary to read. A network that is not the creditor's
 // bank is ErrNotThisBanksMandate.
 //
-// # The asset check moved, and it is a real loss of earliness
+// # The asset match between the two ends is checked at first collection
 //
 // Both ends of a mandate must be denominated in the same asset: MaxAmount is one
 // integer, and an integer that means one thing at the debtor's scale and another
-// at the creditor's is not a limit on anything. This act used to compare the two
-// accounts here — which is exactly the read it no longer has, because the
-// debtor's account is at another bank.
+// at the creditor's is not a limit on anything. This act cannot compare them —
+// the debtor's account is at another bank.
 //
-// It is not unchecked, it is checked later and by the bank that can. The old
-// comment already said what happens without it: submission refuses every payment
+// It is checked later and by the bank that can: submission refuses every payment
 // such a mandate could authorise, because each leg is checked against the
 // SCHEME's asset by its own bank and these two cannot both match it. That
 // refusal is the debtor's bank's, on the pacs.003, in AcceptInboundTx's pull arm
-// — which is where a real MD01 would come from too.
+// — which is where a real MD01 would come from too. So a mismatched mandate is
+// created and refuses its first collection, instead of being refused at creation.
 //
-// So what is lost is the moment, not the guard: a mismatched mandate is created
-// and refuses its first collection, instead of being refused at creation. That
-// is worse for an operator and it is the honest price of the boundary, and it is
-// worth naming rather than discovering — this doc used to argue the opposite way
-// round, that checking here "only makes the refusal happen where it can be
-// understood instead of at first use".
-// # Which bank the creditor is at stopped being an argument
-//
-// The creditor's side of a mandate used to name its own participant and this act
-// refused one that was not this bank's. A PartyRef no longer names a bank (see
-// PartyRef) and a mandate carries no creditor agent, because a mandate IS the
-// creditor's bank's row and a column holding this institution in every row of
-// every mandate it writes records nothing.
-//
-// So the refusal moved rather than went: what is refused is a network that is not
-// a member bank's at all, and the creditor account is then checked against THIS
-// bank's own register. An account id that is not one of this bank's comes back
-// ErrAccountNotInParticipant from checkPartyTx, which is the same refusal reached
-// one step later and from the only table that can actually answer it. What is no
-// longer possible is the case the old guard was written for — a caller naming
-// somebody else's bank — because there is no field left to name one in.
+// A mandate names no creditor bank, because a mandate IS the creditor's bank's
+// row. What is refused here is a network that is not a member bank's at all, and
+// the creditor account is then checked against THIS bank's own register — an
+// account id that is not one of this bank's comes back ErrAccountNotInParticipant
+// from checkPartyTx.
 //
 // debtorAgent is the address the collection will be sent to, and it is the whole
 // of what this row records about the other side.
@@ -2294,13 +1881,10 @@ func (s *Network) RevokeMandate(ctx context.Context, id MandateID) error {
 // does not model and which would be a message rather than a second writer of one
 // row. See ErrNotThisBanksMandate.
 //
-// What "its own" is decided from is the STORE and no longer a field on the row.
-// The mandate carried its creditor's participant and this compared against self;
-// a mandate names no creditor bank now (see Mandate.DebtorAgent) because every
-// mandate in this database is this bank's. The comparison that survives is the
-// one against the institution rather than against the row: the clearing house and
-// the settlement agent are refused, and the `csm` shape holds no mandates table
-// for either of them to have read.
+// What "its own" is decided from is the STORE and not a field on the row: every
+// mandate in this database is this bank's. So the comparison is against the
+// institution — the clearing house and the settlement agent are refused, and the
+// `csm` shape holds no mandates table for either of them to have read.
 func (s *Network) RevokeMandateTx(ctx context.Context, tx Tx, id MandateID) error {
 	if _, err := s.self(); err != nil {
 		return fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
@@ -2370,13 +1954,9 @@ func (s *Network) OpenCycleTx(ctx context.Context, tx Tx, scheme SchemeID) (Clea
 // it instructed has settled — and handing back the payments so the caller can
 // tell each one's banks.
 //
-// # Why the clearing house needs an act here at all
-//
-// It did not have one. Settled was written by the payee's BANK, on the row every
-// institution shared, so the clearing house's view of the payment moved because
-// somebody else moved it. Task 18d gives it a copy nobody else can write, and
-// without this act that copy would say Cleared for ever: the one institution
-// that knows a cut-off finished would be the one whose records did not say so.
+// The clearing house's copy is one nobody else can write, so without this act it
+// would say Cleared for ever: the one institution that knows a cut-off finished
+// would be the one whose records did not say so.
 //
 // # It is per CYCLE, because that is what the central bank answers about
 //
@@ -2410,12 +1990,9 @@ func (s *Network) SettleAtCSMTx(ctx context.Context, tx Tx, id CycleID) ([]Payme
 	if err != nil {
 		return nil, err
 	}
-	// The CYCLE first, and this write used to be the settlement agent's: it set
-	// CycleSettled and stamped its own settlement id onto the clearing house's
-	// row, from inside its own unit of work, in a database with no cycles table.
-	// The status is what the ACSC says, so it is written by the institution the
-	// ACSC was sent to. The settlement id is not written at all — see
-	// SettleCycleTx, which explains what that costs.
+	// The CYCLE first. The status is what the ACSC says, so it is written by the
+	// institution the ACSC was sent to; the settlement id is not written at all —
+	// see SettleCycleTx for what that costs.
 	//
 	// A cycle already settled is left where it is, for the same reason a payment
 	// already Settled is: the settlement agent redelivers.
@@ -2473,9 +2050,7 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 	}
 
 	// Keyed by the agent BICs the payments already carry, which is what the
-	// settlement agent receiving these figures keys its own records by. It was
-	// keyed by ParticipantID, and turning one into the other took a read of the
-	// named bank's own row — a read this institution has no table for; see
+	// settlement agent receiving these figures keys its own records by. See
 	// ClearingCycle.NetPositions.
 	net := map[iso20022.BIC]ledger.Amount{}
 	for _, pid := range c.PaymentIDs {
@@ -2528,47 +2103,25 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //
 // So this reads a cycle, its own SettlementMember rows and its own book, and no
 // payment and no bank row at all, which is the whole of what a settlement agent
-// has.
+// has. The settlement account number is the agent's own and comes off the
+// agent's own row, keyed by BIC, through settlementAccountTx.
 //
-// It read the BANK rows until Task 18c, and three separate sentences here used to
-// say what for. Not the settlement account number: that is the agent's own and
-// comes off the agent's own row, keyed by BIC, through settlementAccountTx —
-// which is the read Task 17b's SettlementMember exists to make possible, and the
-// reason a settlement agent given its own database still has something to settle
-// from. Not the IDENTIFIER either, which was a mapping from ParticipantID to BIC
-// that has no asker now, since the positions arrive keyed by BIC
-// (ClearingCycle.NetPositions). What was genuinely left was a CHECK —
-// Bank.AccountsFor, whether the member says it operates in the cycle's asset —
-// and this database holds no row to check it against. settlementLegsTx measures
-// what that costs and why the agent's own register is the answer.
+// # The settlement window, and what it does not span
 //
-// # The settlement window, and what stopped being true about it
+// What is atomic is what this institution does: the central bank posts one
+// transaction, in its own book, and is FINAL either way — a net payer that
+// cannot cover its position aborts the batch rather than leaving the other
+// members paid. See the reserve check above the postings, and
+// TestSettleCycleIsAtomic. What each member does afterwards is that member's
+// own, on advice, in its own unit of work, and it can fail on its own.
 //
-// This doc used to argue that ALL of settlement was one unit of work and that
-// "the interval in which the books are inconsistent is not observable". That was
-// a true description of the code that carried it and the right thing to want: a
-// net payer that cannot cover its position must abort the batch, not leave the
-// other members paid and the central bank's books moved. The batch is still
-// atomic in exactly that sense, and that much is unchanged — see the reserve
-// check above the postings, and TestSettleCycleIsAtomic.
-//
-// What was wrong was the SCOPE. One process cannot hold every institution's
-// books inside a window, because they are not one process's to hold, and this
-// system has stopped pretending otherwise. What is atomic is what this
-// institution does: the central bank posts one transaction, in its own book, and
-// is FINAL either way. What each member does afterwards is that member's own, on
-// advice, in its own unit of work, and it can fail on its own.
-//
-// The interval between is therefore not merely observable — it is the thing
-// being modelled. It is the UNRECONCILED POSITION: the reserves have moved and a
-// member has been told and has not yet booked. Where it is visible is that
-// member's CLEARING SUSPENSE, which has not returned to zero, with no
-// SettlementAdvice row against the cycle — the row is written only by a member
-// that books, and it commits with the mirror leg. In the EU that gap is not a
-// modelling convenience but
-// a directive: the Settlement Finality Directive is about exactly this moment,
-// when a transfer order becomes irrevocable regardless of what any participant
-// does next.
+// The interval between is the thing being modelled. It is the UNRECONCILED
+// POSITION: the reserves have moved and a member has been told and has not yet
+// booked. Where it is visible is that member's CLEARING SUSPENSE, which has not
+// returned to zero, with no SettlementAdvice row against the cycle. In the EU
+// that gap is a directive rather than a modelling convenience: the Settlement
+// Finality Directive is about exactly this moment, when a transfer order becomes
+// irrevocable regardless of what any participant does next.
 //
 // # A redelivered instruction posts nothing
 //
@@ -2579,12 +2132,10 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 // carries the idempotency key "<cycle>:settle", so even a caller that reached
 // the posting would move nothing twice.
 //
-// It used to refuse anything that was not CycleClosed, off the cycle's own
-// status, and that is a row this institution has no table for since Task 18d.
-// The other half of that refusal — a cycle not closed YET — went to the clearing
-// house, which owns the cut-off and will not build an instruction for an open
-// one (mesh/csm.settle). What reaches here from an open cycle is an instruction
-// with no legs, and that is ErrInvalidSettlement. See ErrCycleNotClosed.
+// A cycle not closed YET is the clearing house's refusal, since it owns the
+// cut-off and will not build an instruction for an open one (mesh/csm.settle).
+// What reaches here from an open cycle is an instruction with no legs, and that
+// is ErrInvalidSettlement. See ErrCycleNotClosed.
 //
 // # Ordering
 //
@@ -2618,13 +2169,9 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 	if err != nil {
 		return Settlement{}, nil, err
 	}
-	// A redelivered instruction, refused before anything is read or checked.
-	//
-	// This was `c.Status != CycleClosed`, off the clearing house's cycle row, and
-	// a settlement agent has no cycles table — the read was one institution
-	// looking into another's database for its own guard. The agent's OWN record
-	// of having settled this cut-off is a settlement row against the cycle, which
-	// is a fact it wrote itself.
+	// A redelivered instruction, refused before anything is read or checked. The
+	// agent's OWN record of having settled this cut-off is a settlement row
+	// against the cycle, which is a fact it wrote itself.
 	//
 	// It comes FIRST, above the reserve check, and the order is what keeps a
 	// duplicate a duplicate: the first settlement moved the reserves, so a second
@@ -2661,11 +2208,8 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 	// It is checked explicitly because the ledger will not check it. A member's
 	// settlement account in this book is a LIABILITY — the central bank owes the
 	// member its reserve — and Book.checkSufficientBalance only guards Asset and
-	// Expense accounts. Until this task the refusal came from the MIRROR leg in
-	// the member's own book, where "Reserve at Central Bank" is an Asset; moving
-	// that leg to the bank would have taken AM04 with it and settled a cycle
-	// whose net payer was short, leaving the shortfall to surface at the bank as
-	// a dead letter.
+	// Expense accounts. Without it a cycle whose net payer was short would settle,
+	// leaving the shortfall to surface at the bank as a dead letter.
 	//
 	// Refusing to take a member's reserve below zero is the central bank
 	// declining to extend uncollateralised intraday credit, which is the decision
@@ -2753,25 +2297,18 @@ func (s *Network) SettleCycleTx(ctx context.Context, tx Tx, id CycleID, instruct
 		statements[i].StatementRef = string(st.ID)
 	}
 
-	// The CYCLE is not written here, and it used to be: this act set it
-	// CycleSettled and stamped the settlement's id onto it. Both were writes into
-	// the clearing house's own row, made by the settlement agent, in a database
-	// that holds no cycles. The clearing house marks its own cycle settled on the
-	// ACSC it is answered with — see SettleAtCSMTx.
+	// The CYCLE is not written here: it is the clearing house's own row, and it
+	// marks it settled on the ACSC it is answered with — see SettleAtCSMTx.
 	//
-	// What is LOST with the second write is the link from a cycle back to the
-	// settlement that discharged it. The settlement's id is this agent's own row
-	// number, allocated here, and nothing carries it back: the answer quotes the
-	// CYCLE, because that is what the clearing house asked about. So a clearing
-	// house knows its cut-off settled and does not know what the agent numbered
-	// it, which is the truthful state of a network where the two are separate
-	// institutions. api's cycle DTO omits the field for that reason rather than
-	// reporting an empty one as absence of a settlement.
+	// So there is no link from a cycle back to the settlement that discharged it.
+	// The settlement's id is this agent's own row number and nothing carries it
+	// back; the answer quotes the CYCLE, because that is what the clearing house
+	// asked about. api's cycle DTO omits the field rather than reporting an empty
+	// one as absence of a settlement.
 	//
-	// One cycle.settled, and that is the whole of this unit of work's audit
-	// trail. It used to be one payment.settled per payment as well; those are
-	// appended by each institution to its OWN log now, when it records its own
-	// half of the settlement.
+	// One cycle.settled, and that is the whole of this unit of work's audit trail.
+	// Each institution appends its own payment.settled to its OWN log when it
+	// records its own half.
 	if err := s.appendAuditTx(ctx, tx, ledger.EventCycleSettled, string(id), st); err != nil {
 		return Settlement{}, nil, err
 	}
@@ -2861,12 +2398,9 @@ func positionsIn(id CycleID, legs []SettlementLeg) (map[iso20022.BIC]ledger.Amou
 // with the account in the CENTRAL BANK's own book that the position moves
 // through.
 //
-// It held a *Bank until Task 18c, and the two things it read off that handle
-// were the member's id and the member's address. There is no bank row in this
-// database to read either from, and one of the two does not exist any more
-// anyway: an id the network allocates is not something a settlement agent is
-// ever told. So the address is what a leg carries, and it is what the statement
-// built from it is addressed to.
+// The address is what a leg carries — there is no bank row in this database and
+// an id the network allocates is not something a settlement agent is ever told —
+// and it is what the statement built from it is addressed to.
 type settlementLeg struct {
 	bic        iso20022.BIC
 	settlement ledger.AccountID
@@ -2890,31 +2424,18 @@ type settlementLeg struct {
 // settlementAccountTx, and ReserveBalance, which makes the same distinction for
 // the same reason.
 //
-// # It reads the settlement agent's own register, and Task 18c is why
+// # It reads the settlement agent's own register
 //
-// This used to call tx.ListBanks and walk every bank row in the network, which
-// was a settlement agent reading the banks' database. The csm and centralbank
-// shapes have no banks table at all, so the read has no answer coming — and the
-// register it needed all along is the agent's OWN: a SettlementMember exists for
-// exactly the banks this institution opened an account for, in exactly the assets
-// it opened them in.
+// A SettlementMember exists for exactly the banks this institution opened an
+// account for, in exactly the assets it opened them in. It does NOT ask the
+// member whether it operates in the cycle's asset — that is a read of another
+// institution's row, and there is no version of it a settlement agent can make.
 //
-// # What that cost, and it is one check rather than a lookup
-//
-// A THIRD failure used to land here: Bank.AccountsFor, the member's own
-// statement about whether it operates in the cycle's asset at all. It was never
-// part of the id-to-BIC crossing — it is a check and not a lookup — but it is a
-// read of another institution's row, and there is no version of it a settlement
-// agent can make.
-//
-// Losing it loses nothing this institution is entitled to decide. The two rows
-// disagree only when an admission stopped halfway (see api.reserveRows, which
-// enumerates the shapes), and in every one of those the agent's own row is the
-// one that governs: settling a position through an account the agent does not
-// hold is what must be refused, and the agent holding one the member has
-// forgotten about is the member's reconciliation rather than a reason to fail a
-// whole cut-off. TestSettleCycleFailsWhenParticipantLacksTheAsset asks the
-// question of the agent's row now, and gives the same sentinel.
+// The two disagree only when an admission stopped halfway (see api.reserveRows),
+// and in every one of those the agent's own row governs: settling a position
+// through an account the agent does not hold is what must be refused, and the
+// agent holding one the member has forgotten about is the member's
+// reconciliation rather than a reason to fail a whole cut-off.
 func (s *Network) settlementLegsTx(ctx context.Context, tx Tx, netPositions map[iso20022.BIC]ledger.Amount, asset ledger.AssetCode) ([]settlementLeg, error) {
 	members, err := tx.ListSettlementMembers(ctx)
 	if err != nil {
@@ -2978,40 +2499,22 @@ func (s *Network) PostSettlementAdvice(ctx context.Context, m AdvisedMovement) (
 // receiver's reserve goes UP and its suspense goes UP with it; a net payer's
 // reserve goes DOWN and its suspense goes DOWN.
 //
-// These three comments used to say a net receiver's suspense went down and a net
-// payer's up, and they were wrong about the code they sit on. Contra does not
-// mean opposite BALANCES here: suspense is a ledger.Liability (see
-// FoundBankTx, which opens it), so the receiver's Credit RAISES it and the payer's Debit
-// LOWERS it. Measured in the seed — Verde, a net receiver, credits its suspense
-// 10000; Aurora, a net payer, debits its suspense 25000 to zero.
+// Contra does not mean opposite BALANCES: suspense is a ledger.Liability (see
+// FoundBankTx), so the receiver's Credit RAISES it and the payer's Debit LOWERS
+// it. The ordering argument for sending the camt.053 BEFORE the ACSC rests on
+// the receiver's suspense going UP first, so that its creditor legs have
+// something to draw on — see mesh.centralBank.advise.
 //
-// Not a typo worth passing over, because the whole ordering argument for sending
-// the camt.053 BEFORE the ACSC rests on the receiver's suspense going UP first,
-// so that its creditor legs have something to draw on. A reader who trusted the
-// old wording would conclude that requirement was backwards. See
-// mesh.centralBank.advise, mesh's package doc and
-// TestTheMessagesACutOffPutsOnTheWire, which state it the right way round and
-// always did.
-//
-// Suspense returns to zero only if the
-// central bank's reserve movement and the clearing house's payment list agree,
-// which is the reconciliation this whole conversation is for and which needs no
-// cross-store read — that is what makes it legal under isolation.
+// Suspense returns to zero only if the central bank's reserve movement and the
+// clearing house's payment list agree, which is the reconciliation this whole
+// conversation is for and which needs no cross-store read.
 //
 // # It is the BANK's act
 //
-// It used to be the central bank's, inline: SettleCycleTx posted every member's
-// mirror leg inside its own unit of work, which is a posting in another
-// institution's book. TestWhichBooksTheCentralBankReachesWhenItSettles measured
-// exactly that. A settlement agent has no access to a member's ledger and no
-// business in it; what it has is a statement to send.
-//
-// It no longer calls this at all. SettleCycleTx returns one SettlementStatement
-// per member, the settlement agent sends each as a camt.053, and the member that
-// receives it calls this for itself — see mesh's centralBank.advise and
-// bank.receiveStatement. TestEachBankBooksItsOwnSettlementAndNoOtherBooks is what
-// measures that the posting is now made in the acting bank's own book and in no
-// other.
+// SettleCycleTx returns one SettlementStatement per member, the settlement agent
+// sends each as a camt.053, and the member that receives it calls this for
+// itself — see mesh's centralBank.advise and bank.receiveStatement. A settlement
+// agent has no access to a member's ledger and no business in it.
 //
 // # The statement is checked before it is booked
 //
@@ -3064,22 +2567,14 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, m AdvisedMo
 	// so the row and the mirror leg stand or fall together: a posting that fails
 	// takes this write back with it and leaves nothing at all.
 	//
-	// That is the right shape and not a limitation. Booking the leg and recording
-	// that you booked it must be atomic, or a bank can post and fail to record —
-	// and a bank whose own store claims a booking it did not make is worse off
-	// than one with no row. The ordering therefore buys nothing observable: the
-	// second Put below is the only version any reader outside this transaction
-	// ever sees.
+	// Booking the leg and recording that you booked it must be atomic, or a bank
+	// can post and fail to record — and a bank whose own store claims a booking it
+	// did not make is worse off than one with no row.
 	//
-	// This comment used to say the opposite — that a failed posting left the row
-	// at Advised, and that such a row was the unreconciled position. It was never
-	// true of this code. The store issues a ROLLBACK, so there is no half of this
-	// that can survive.
-	// What the row actually is: this bank's own durable record that it BOOKED
-	// this cut-off, which is what makes a redelivered statement a no-op (the
-	// GetSettlementAdvice check above) and what Task 19's reconciliation reads.
-	// The unreconciled position is the ABSENCE of a row against a clearing
-	// suspense that has not returned to zero.
+	// The row is this bank's own durable record that it BOOKED this cut-off, which
+	// is what makes a redelivered statement a no-op (the GetSettlementAdvice check
+	// above) and what payment/recon reads. The unreconciled position is the
+	// ABSENCE of a row against a clearing suspense that has not returned to zero.
 	if err := tx.PutSettlementAdvice(ctx, p.BookID, advice); err != nil {
 		return SettlementAdvice{}, err
 	}
@@ -3104,14 +2599,8 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, m AdvisedMo
 	// The description says "settlement of <reference>" and stops there, because
 	// that is the whole of what this bank knows. The reference is a cycle id on
 	// the cut-off path and a payment id on the return path, and a member bank
-	// holds neither kind of row — see SettlementAdvice, which records that there
-	// is deliberately no field saying which it is. This used to read "Net
-	// settlement of cycle …", which was true of every statement that existed
-	// when it was written and became a false claim the moment a return could
-	// produce one. No customer reads it — the leg is Suspense against Reserve in
-	// the bank's own book — but it is what an operator reconciling that bank's
-	// suspense has to go on, and a reconciliation told to look for a cycle that
-	// does not exist is worse off than one told nothing.
+	// holds neither kind of row — see SettlementAdvice, which has deliberately no
+	// field saying which it is.
 	posted, err := p.Ledger.PostTransactionTx(ctx, tx, ledger.PostTransactionRequest{
 		IdempotencyKey: m.Reference + ":reserve:" + string(p.ID),
 		Description:    "Settlement of " + m.Reference,
@@ -3132,9 +2621,9 @@ func (s *Network) PostSettlementAdviceTx(ctx context.Context, tx Tx, m AdvisedMo
 // acting on an advice it has just been handed needs: the message names one
 // payment and there is nothing else to commit with it.
 //
-// One payment at a time is the point rather than a convenience. While this ran
-// inside the cut-off's unit of work a single payee's closed account could fail
-// the whole batch; now each bank's each payment succeeds or fails alone.
+// One payment at a time is the point rather than a convenience: a single payee's
+// closed account must not fail a whole batch, so each bank's each payment
+// succeeds or fails alone.
 func (s *Network) SettleAtBank(ctx context.Context, id PaymentID) (Payment, error) {
 	var out Payment
 	err := s.store.Update(ctx, func(ctx context.Context, tx Tx) error {
@@ -3149,52 +2638,30 @@ func (s *Network) SettleAtBank(ctx context.Context, id PaymentID) (Payment, erro
 // bank's OWN copy that the payment settled, and — if this bank holds the payee —
 // releases the money out of its clearing suspense into their account.
 //
-// # It was PostCreditorLegTx, and the rename is Task 18d
+// Both banks are sent the ACSC and both have a row to advance; only one of them
+// has a leg. So the posting is the CONDITIONAL part and the status the
+// unconditional one.
 //
-// It did one thing, because there was only one thing for a bank to do: the
-// payment row was shared, the clearing house had already written Settled onto
-// it, and a bank that was not the payee's bank had nothing left to do at all —
-// so being one was a precondition (ErrNotThisBanksPayment) rather than a branch.
+// A bank that is party to NEITHER side is refused by the store rather than by a
+// check: an institution that was never sent this payment has no row for it, so
+// the read below is ErrPaymentNotFound.
 //
-// Each institution now holds its own copy, and the clearing house cannot write
-// on this one. Both banks are sent the ACSC and both have a row to advance; only
-// one of them has a leg. So the posting became the CONDITIONAL part and the
-// status became the unconditional part, which is the reverse of how it read, and
-// the name had to follow: a payer's bank calling something named for the
-// creditor's leg would be doing the opposite of what it says.
+// # The payee's account is checked, and a refusal diverts rather than fails
 //
-// A bank that is party to NEITHER side is still refused, and the store is what
-// refuses it: an institution that was never sent this payment has no row for it,
-// so the read below is ErrPaymentNotFound. That is a stronger guard than the
-// agent comparison it replaces — it cannot be got past by a bank that knows the
-// id — and it is the split doing the work rather than a check.
-//
-// # The check that could not be made before
-//
-// creditorSideTx and DepositTx both call Deposit.CheckCreditTx before money lands
-// in a customer's account. This never did, and its own doc said why: settlement
-// was one unit of work over the whole batch, so a check that failed took the
-// entire cut-off down for one retail customer who closed an account — and a
-// Cleared payment has no route out of the cycle it is in. Refusing was worse than
-// stranding, so it stranded, and the ruling was recorded rather than fixed.
-//
-// The split is what makes the check affordable. One payment at one bank now fails
-// on its own, and the residual has somewhere to go: the bank's unclaimed-balances
-// account, which is what a real bank does with money that arrives for an account
-// that cannot receive it. The payment still reaches Settled, because it did — the
-// reserves moved and the payee's bank has been paid. What is left open is whether
-// the CUSTOMER has been paid, which is between the bank and its customer.
+// One payment at one bank fails on its own, so the residual has somewhere to go:
+// the bank's unclaimed-balances account, which is what a real bank does with
+// money that arrives for an account that cannot receive it. The payment still
+// reaches Settled, because it did — the reserves moved and the payee's bank has
+// been paid. What is left open is whether the CUSTOMER has been paid, which is
+// between the bank and its customer.
 //
 // # The diversion is recorded on the payment
 //
-// It has to be, and the first version of this was not: a return of a diverted
-// payment debited the payee's closed account to minus the amount and left the
-// unclaimed liability standing, because the return had nothing to read.
 // CreditorLegAccount is written HERE, in both arms, because the account the
-// credit went to is a fact about a moment that no later reading recovers. See
-// Payment.CreditorLegAccount for why re-deriving it is unsafe, and
-// TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability for
-// the numbers.
+// credit went to is a fact about a moment that no later reading recovers.
+// Without it a return of a diverted payment debits the payee's closed account to
+// minus the amount and leaves the unclaimed liability standing. See
+// Payment.CreditorLegAccount.
 //
 // # Only the payee's bank posts, and both banks record
 //
@@ -3255,17 +2722,12 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 		return Payment{}, err
 	}
 
-	// Resolving the payee's account is not allowed to fail SOFTLY here, and the
-	// reason is one line of glAccountTx: it collapses every error from its read
-	// into ErrAccountNotInParticipant, so a dropped connection, a scan error and
-	// a genuinely absent account are one value by the time they arrive. There is
-	// no shape of failure this caller could tell apart, which means there is no
-	// failure it may route money on.
-	//
-	// So it fails the cut-off, which is retriable, rather than diverting. That
-	// costs nothing real: this bank RESOLVED the payee's account once already,
-	// when it accepted the payment, so a read that cannot answer now is a fault
-	// in the reading and not news about the account.
+	// Not allowed to fail SOFTLY: glAccountTx collapses every error from its read
+	// into ErrAccountNotInParticipant, so a dropped connection and a genuinely
+	// absent account are one value by the time they arrive, and there is no
+	// failure this caller may route money on. So it fails the cut-off, which is
+	// retriable, rather than diverting — this bank resolved the payee's account
+	// once already when it accepted the payment.
 	glAccount, err := creditor.glAccountTx(ctx, tx, p.Creditor.Account)
 	if err != nil {
 		return Payment{}, err
@@ -3279,10 +2741,8 @@ func (s *Network) SettleAtBankTx(ctx context.Context, tx Tx, id PaymentID) (Paym
 			// ErrAccountClosed is the ONLY refusal CheckCreditTx makes —
 			// deposit.requireCreditable checks Closed and nothing else — so
 			// anything else from here is a STORE FAILURE and not a statement
-			// about the account. Diverting money to unclaimed balances because a
-			// database connection dropped would be the settlement-time twin of
-			// the defect Task 14 fixed in checkPartyTx, where a dropped
-			// connection reported AC01 to another bank.
+			// about the account, and diverting money to unclaimed balances
+			// because a connection dropped would be wrong.
 			return Payment{}, err
 		}
 		target, description = accts.Unclaimed, "Unclaimed: "+p.Description
@@ -3340,28 +2800,19 @@ type InitiatePaymentRequest struct {
 	// anything supplied for it is ignored, because a payer does not get to
 	// rename themselves on an instruction.
 	//
-	// The COUNTERPARTY's Agent is required, and this paragraph used to say the
-	// opposite — that the agent on either side is ignored because SubmitPaymentTx
-	// derives both from the roster, and that routing is never the caller's to
-	// assert. Task 18a reversed it: a bank holds only its own row from Task 18c,
-	// so there is nothing left to derive the counterparty's BIC FROM, and
-	// SubmitPaymentTx refuses an instruction that names no agent
-	// (ErrCounterpartyAgentNotNamed). The address here is an IBAN and a BIC, which
-	// is what SEPA was before 2016. See the long note in SubmitPaymentTx for what
-	// makes asserting it safe — narrowing the resolution, in the same commit.
+	// The COUNTERPARTY's Agent is REQUIRED. A bank holds only its own row, so
+	// there is nothing to derive the counterparty's BIC from, and SubmitPaymentTx
+	// refuses an instruction that names no agent (ErrCounterpartyAgentNotNamed).
+	// The address is an IBAN and a BIC, which is what SEPA was before 2016. See
+	// SubmitPaymentTx for what makes asserting it safe.
 	//
-	// The SUBMITTING bank's own agent is still ignored, for the reason its name is:
-	// this bank is the authority on itself and fills its own side from its own
+	// The SUBMITTING bank's own agent is ignored, for the reason its name is: this
+	// bank is the authority on itself and fills its own side from its own
 	// register.
 	//
-	// The field is on the struct for a second reason as well, and that one is
-	// unchanged: this same type is what CreditTransferRequest and
-	// DirectDebitRequest produce from a RECEIVED message, where the agent is the
-	// sender's assertion and is genuinely carried.
-	//
-	// api's initiatePaymentRequest used to have no agent field at all, on the
-	// strength of the claim above; it has one again, and its doc records the
-	// there-then-not-then-here-again in full.
+	// This same type is also what CreditTransferRequest and DirectDebitRequest
+	// produce from a RECEIVED message, where the agent is the sender's assertion
+	// and is genuinely carried.
 	DebtorDetails   PartyDetails
 	CreditorDetails PartyDetails
 }
@@ -3387,19 +2838,13 @@ func (s *Network) SubmitPayment(ctx context.Context, req InitiatePaymentRequest)
 //
 // # Why they cannot be two
 //
-// They were, and it was a money bug. SubmitPayment committed the debtor leg,
-// the caller then built the pacs.008, and building one can FAIL — a payee whose
-// address the instruction never quoted is ErrUnaddressableAccount, which api
-// answers 422. The payer was debited by a request the API reported as refused,
-// and no message existed, so not even a dead letter recorded it; a client that
-// retried drained the account. Two of the refusals
-// TestPaymentAddressingRefusalsAre422 drives were of exactly that shape.
-//
-// The fix is the ordering, not a new check: everything the instruction needs is
-// resolved while the transaction is still open, so a counterparty this bank
-// cannot address rolls the debit back with it. Nothing is DUPLICATED — there is
-// still one address check and it is the message builder's, which is the only
-// place that knows what a pacs.008 must carry.
+// Building the message can FAIL — a payee whose address the instruction never
+// quoted is ErrUnaddressableAccount — and a committed debtor leg behind a
+// refused request debits a payer against an instruction nobody will answer.
+// Everything the instruction needs is therefore resolved while the transaction
+// is still open, so a counterparty this bank cannot address rolls the debit back
+// with it. Nothing is DUPLICATED: there is one address check and it is the
+// message builder's.
 //
 // # The send is still outside
 //
@@ -3436,9 +2881,7 @@ func (s *Network) SubmitAndInstruct(ctx context.Context, req InitiatePaymentRequ
 //
 // The mandate is loaded here rather than carried on the payment because a
 // payment holds its MandateID and nothing else of it; the message needs the
-// document's own terms. It is a network-scoped row, like the payment itself: in
-// this system mandates live once, in the network's store, which is the
-// simplification SDD.ValidateMandate names.
+// document's own terms.
 func (s *Network) InstructionTx(ctx context.Context, tx Tx, p Payment, mc MessageContext) (iso20022.Envelope, error) {
 	scheme, ok := s.scheme(p.Scheme)
 	if !ok {
@@ -3536,8 +2979,8 @@ func validateInstruction(id PaymentID, req InitiatePaymentRequest) error {
 	return ledger.ValidateText("mandateId", string(req.MandateID))
 }
 
-// SubmitPaymentTx is the SUBMITTING bank's half of what used to be
-// InitiatePaymentTx, and which half that is depends on the scheme's direction.
+// SubmitPaymentTx is the SUBMITTING bank's half of accepting a payment, and
+// which half that is depends on the scheme's direction.
 //
 // For a push (SCT) the debtor's bank submits, so the debtor half runs: the
 // account, the asset, the address, the funds, and the debtor leg posted. For a
@@ -3545,10 +2988,6 @@ func validateInstruction(id PaymentID, req InitiatePaymentRequest) error {
 // NOTHING is posted — the debtor's bank posts the leg when it accepts the
 // collection, which is the only moment either the funds or the account are in
 // view.
-//
-// The roadmap called this "the creditor-account check moving out of
-// InitiatePaymentTx". That is true for a credit transfer and backwards for a
-// direct debit. The rule that covers both is the one above.
 //
 // The payment is left Initiated and in NO cycle. Adding it to one is the
 // clearing house's act, on receiving the counterparty's ACCP, because clearing
@@ -3571,63 +3010,30 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 	if err := validateInstruction("", req); err != nil {
 		return Payment{}, err
 	}
-	// The id comes BEFORE the duplicate check, and the order is the whole of
-	// what makes that check atomic.
+	// The id comes BEFORE the duplicate check, and the order is what makes that
+	// check atomic. NextID writes one row of id_sequences (store/sqlite's
+	// nextSeq), and writing is what makes this transaction the database's writer.
+	// A second submission waits there, and by the time it gets past, the first has
+	// either committed — so the read below sees its payment and refuses the
+	// reference — or rolled back, taking the id with it. See admissionSequenceTx,
+	// which measures what this ordering is worth on this store.
 	//
-	// NextID writes one row of id_sequences (store/sqlite's nextSeq), and writing
-	// is what makes this transaction the database's writer. A second submission
-	// waits there, and by the time it gets past, the first has either committed —
-	// so the read below sees its payment and refuses the reference — or rolled
-	// back, taking the id with it. The gap-free counter serializes the whole
-	// operation and not merely the number it hands out, which is the argument
-	// store/storetest's races.go already makes for the admission acts.
+	// # The id carries the bank that minted it
 	//
-	// With the two the other way round, eight concurrent submissions of one
-	// EndToEndID were accepted eight times on store/pg, under READ COMMITTED, and
-	// once on store/mem, which serialized every Update on one process-wide mutex
-	// and so could never show it. The payer was debited eight times for one client
-	// reference.
+	// The ADDRESS is in the prefix. Each institution writes ITS OWN row for this
+	// payment, under the id this bank mints and the message carries in PmtId/TxId,
+	// so the same string has to name the same payment in N+2 databases that share
+	// no counter. A bank's BIC is unique across the network by construction, which
+	// makes (minter, counter) unique without any coordination between minters —
+	// which is also what SEPA asks of an originating bank, whose reference must be
+	// unique network-wide with no registry to get one from.
 	//
-	// What the ordering is worth on the store that is left is measured, and it is
-	// smaller: with the two statements swapped back, storetest's
-	// Races/ConcurrentSubmissionsOfOneReferenceAcceptOne passes ten runs out of
-	// ten, on the ephemeral store and on a WAL file. SQLite admits one writer, so
-	// the loser is refused at its first write and Store.Update re-runs the unit of
-	// work against the winner's committed row — the retry closes the same hole a
-	// second way, and no test here can now see this ordering go. See
-	// admissionSequenceTx, which records the same finding for the admission acts,
-	// and storetest's ConcurrentReadThenWriteOnOneKeyAgrees — a subtest of
-	// TestConformance, not a test function of its own — which states the shape at
-	// the store interface.
+	// The counter itself is one gap-free sequence per book shared by every prefix
+	// (store/sqlite's NextID): the prefix is a format, not a second counter.
 	//
-	// # The id carries the bank that minted it, and Task 18d is why
-	//
-	// It was "pay", so this bank's counter produced pay_29 and every other bank's
-	// counter produced pay_29 too. That was harmless while one payment was one row
-	// in one store: the counter was the network's, so there was only ever one
-	// allocator. Each institution now writes ITS OWN row for this payment, under
-	// the id this bank mints and the message carries in PmtId/TxId, so the same
-	// string has to name the same payment in N+2 databases that share no counter.
-	// Two banks submitting their nth payment would collide at the clearing house,
-	// which writes both, and a bank writes its counterparty's id beside its own.
-	// Nothing would fail loudly: the second write would be an UPDATE of somebody
-	// else's payment.
-	//
-	// So the ADDRESS goes in the prefix. It is the one value that is unique across
-	// the network by construction — a bank's BIC is its id and is the name of its
-	// database — which makes (minter, counter) unique without any coordination
-	// between the minters. That is also what SEPA asks of an originating bank: the
-	// scheme requires its reference to be unique network-wide and gives it no
-	// registry to get one from, so the bank makes it so out of its own identity.
-	//
-	// The counter itself is untouched. It is still one gap-free sequence per book
-	// shared by every prefix (store/sqlite's NextID), so the number still doubles
-	// as this bank's creation order and the serialization argument above still
-	// holds — the prefix is a format, not a second counter.
-	//
-	// s.self is reached HERE rather than at the party checks below, which is a
-	// guard this act did not have: an institution that is not a member bank now
-	// fails to mint an id at all instead of failing to find its own bank row.
+	// s.self is reached HERE rather than at the party checks below, so an
+	// institution that is not a member bank fails to mint an id at all instead of
+	// failing to find its own bank row.
 	self, err := s.selfBIC()
 	if err != nil {
 		return Payment{}, err
@@ -3670,46 +3076,21 @@ func (s *Network) SubmitPaymentTx(ctx context.Context, tx Tx, req InitiatePaymen
 		return Payment{}, err
 	}
 
-	// The AGENT is ASSERTED, and Task 18a is where it went back to being so.
+	// The AGENT is ASSERTED rather than derived. A bank holds only its own row, so
+	// there is no source to derive the counterparty's BIC from: the roster is
+	// keyed by the BIC being derived and is the CLEARING HOUSE's row, and this
+	// network has no IBAN-to-BIC directory service. So the address on an
+	// instruction here is an IBAN AND a BIC — what SEPA was before February 2016,
+	// and what a cross-border transfer still is.
 	//
-	// # What it was, and why the derivation could not survive the split
+	// What makes that safe is that ResolveIdentifierTx resolves only against the
+	// resolving bank's OWN register. A misdirected message has nothing to resolve,
+	// and the bank that receives it answers AC01 — the true statement about what
+	// it was sent, and what a real bank does with a payment for an IBAN it does
+	// not hold. The payer's debit is reversed by the rejection. See mesh's
+	// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 	//
-	// It was DERIVED: `tx.GetBank(counterpartyRef.Participant)`, the counterparty
-	// bank's own row, with whatever the instruction carried discarded. That was
-	// Task 14's fix for a real routing defect — this element goes out as
-	// CdtrAgt/DbtrAgt (translate.go's partiesOf) and the clearing house relays on
-	// exactly it with no store read of its own, so a payer who typed the wrong
-	// bank chose the bank.
-	//
-	// The row it read is the counterparty's, and from Task 18c a bank holds only
-	// its own. There is no second source to move the derivation to. The roster is
-	// keyed by the BIC being derived, and it is the CLEARING HOUSE's row rather
-	// than a bank's; and this network has no IBAN-to-BIC directory service, which
-	// is the thing a real originating bank actually derives from. SEPA is
-	// IBAN-only because every bank subscribes to such a table, not because the
-	// routing is computable from the address.
-	//
-	// So the address on an instruction here is an IBAN AND a BIC — which is what
-	// SEPA was before February 2016, and what a cross-border transfer still is.
-	//
-	// # What makes that safe, and it is the same commit's other half
-	//
-	// Both measured failures of the asserted agent had one mechanism: the bank
-	// the message reached could resolve a payee it does not hold, because
-	// ResolveIdentifierTx swept every member's register. A push naming the
-	// payer's own bank came back to its sender, which found the payee at the real
-	// bank and answered its own instruction; a pull naming the collector saw the
-	// COLLECTING bank post the debit in the payer's bank's book.
-	//
-	// Task 18a narrows that resolution to the resolving bank's own register. A
-	// misdirected message now has nothing to resolve, and the bank that receives
-	// it answers AC01 — which is the true statement about what it was sent, and
-	// what a real bank does with a payment for an IBAN it does not hold. The
-	// payer's debit is reversed by the rejection. See mesh/books_test.go's
-	// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames, which is the pin and
-	// is the old test reversed.
-	//
-	// # What is still refused here
+	// # What is refused here
 	//
 	// The FORMAT, and nothing else. An unnamed agent is refused by name, because
 	// the message cannot be built without CdtrAgt/DbtrAgt and a submission that
@@ -3778,24 +3159,6 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 	})
 }
 
-// resolveOwnPartyTx is DELETED, and its own doc is what said when.
-//
-// It replaced a party ref with the one this bank resolved for the address on it,
-// because the row it was correcting had been written by the SUBMITTING bank and
-// named an account at another bank by that bank's internal key. It carried a
-// fallback for a ref with no identifier at all, and the note above it read: this
-// "survives only because ONE payment row is shared. Task 18d gives each entity
-// its own, at which point the receiving bank writes its row from the message and
-// there is no ref to fall back to; the fallback goes with the shared row rather
-// than being tightened here."
-//
-// That is this change. There is no foreign ref to correct, because there is no
-// foreign row: the resolution happens once, where the message is read
-// (CreditTransferRequest and DirectDebitRequest, through localPartyIn), and what
-// reaches AcceptInboundTx is a request already carrying this bank's own answer
-// for its own side. A caller that supplies none is refused by checkPartyTx
-// rather than quietly accepted, which is what the fallback used to do.
-
 // AcceptInboundTx is the RECEIVING bank's half: the half SubmitPaymentTx did
 // not run, because the bank that ran that one could not see this side.
 //
@@ -3803,9 +3166,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // the account exists, is in the scheme's asset, is addressable, and can be
 // credited at all. Nothing is posted: the payee is paid AFTER the cut-off has
 // settled, out of the creditor bank's suspense, by that bank's own
-// SettleAtBankTx on the clearing house's per-payment advice. This comment
-// used to say "at settlement", which was true while the settlement agent posted
-// every member's legs inside its own unit of work.
+// SettleAtBankTx on the clearing house's per-payment advice.
 //
 // For a pull the receiver is the DEBTOR's bank, and its half is the one that
 // moves money: it checks the account, the asset, the address and the funds,
@@ -3813,30 +3174,22 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // posts nothing at submission — until this runs, the payer's money has not
 // moved and no actor has looked at their account.
 //
-// # It CREATES this bank's row, and that is Task 18d
+// # It CREATES this bank's row
 //
-// It used to LOAD the payment by the id and correct what the submitting bank had
-// written on it. That worked because both banks read one payment row out of one
-// store, and the whole of this sub-project is that they do not. The receiving
-// bank has no record of this payment until the message arrives, so what it has
-// is what a real receiving bank has: the instruction, and its own register.
-//
-// So the row is BUILT from the request, under the id the message carries in
-// PmtId/TxId. Nothing is allocated — the submitting bank minted that id out of
-// its own address and its own counter (see SubmitPaymentTx), which is what makes
-// one string name the same payment in three databases that share no sequence.
+// The receiving bank has no record of this payment until the message arrives, so
+// what it has is what a real receiving bank has: the instruction, and its own
+// register. The row is BUILT from the request, under the id the message carries
+// in PmtId/TxId. Nothing is allocated — the submitting bank minted that id out
+// of its own address and its own counter (see SubmitPaymentTx), which is what
+// makes one string name the same payment in three databases that share no
+// sequence.
 //
 // The request is the message already READ: CreditTransferRequest for a push,
 // DirectDebitRequest for a pull, both of which resolved this bank's OWN party by
 // address in this bank's own register and left the counterparty as the address
-// the sender quoted. mesh/bank.go's receive handlers used to build exactly that
-// and throw it away; it is the argument they made and this is where its answer is
-// finally used. A not-found on that resolution is ErrAccountNotInParticipant and
-// becomes AC01, which is what a bank says about an IBAN it does not hold — see
-// mesh's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
-//
-// resolveOwnPartyTx is gone with the correction it existed to make; see the note
-// where it used to be.
+// the sender quoted. A not-found on that resolution is
+// ErrAccountNotInParticipant and becomes AC01, which is what a bank says about
+// an IBAN it does not hold.
 //
 // # What this bank does NOT take from the message
 //
@@ -3857,22 +3210,12 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // # The same message twice
 //
 // A message queue redelivers, so the same pacs.003 or pacs.008 can arrive twice.
-// The WITNESS is now the row itself: it did not exist before this half ran, this
+// The WITNESS is the row itself: it did not exist before this half ran, this
 // half creates it and posts in one unit of work, so a payment that is here has
-// been answered and the redelivery returns without doing anything.
-//
-// That replaces DebtorLegTx, which was the witness while the row was the
-// submitter's and only the pull arm wrote anything of this bank's onto it. The
-// new one is strictly stronger and covers both directions with one fact: without
-// it a redelivered collection reached postDebtorLegTx again and came back with
-// the ledger's ErrDuplicateIdempotencyKey, which has no entry in reasonTable, so
-// ReasonFor fell through to MS03 and the bank rejected on the wire a collection
-// it had in fact accepted.
-//
-// It also fixes the push arm's version of the same wrong answer, which the old
-// witness could not: a redelivered pacs.008 re-ran the payee's account check, so
-// a payee who closed their account between the two deliveries was answered ACCP
-// and then AC01 about one message. An answer that has been given does not change.
+// been answered and the redelivery returns without doing anything. That covers
+// both directions with one fact — an answer that has been given does not change,
+// so a payee who closed their account between two deliveries is not answered
+// ACCP and then AC01 about one message.
 //
 // A row that is here and is NOT Initiated is a redelivery that arrived after the
 // payment moved on, and that is ErrInvalidStateTransition rather than a silent
@@ -3881,20 +3224,13 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // turns that sentinel into a dead letter, because there is nobody to answer.
 // TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated is the pin.
 //
-// # It appends payment.initiated, and it used to append nothing
+// # It appends payment.initiated
 //
-// The old note said the payment's lifecycle has two facts and not three — the
-// submitting bank's initiation and the clearing house's acceptance — so an event
-// here would put a second payment.initiated in every payment's trail. There is
-// no such trail any more. Each institution keeps its own audit log in its own
-// database, and this is the moment this payment comes into existence in THIS
-// one; a bank whose log recorded a debtor leg it posted but never recorded
-// taking the payment on would have a trail that starts in the middle.
-//
-// So each of the three logs now opens with its own payment.initiated, and none
-// of them can see the other two. The four exact-sequence assertions the old note
-// pinned this absence with (payment/audit_test.go and api/server_test.go) are
-// assertions about ONE institution's log and are re-measured accordingly.
+// Each institution keeps its own audit log in its own database, and this is the
+// moment this payment comes into existence in THIS one. A bank whose log
+// recorded a debtor leg it posted but never recorded taking the payment on would
+// have a trail that starts in the middle. So each of the three logs opens with
+// its own payment.initiated, and none of them can see the other two.
 func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) error {
 	if _, err := s.self(); err != nil {
 		return err
@@ -3911,25 +3247,19 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	//
 	// # Except when this bank SUBMITTED it, which is the on-us payment
 	//
-	// The row is the witness because it did not exist before this half ran. That
-	// is true of every payment with two banks in it and false of one whose payer
-	// and payee are the same institution: there the row was written by this
-	// bank's own SubmitPaymentTx, so an unqualified "the row is here" reads a
-	// submission as an answer and the receiving half never runs. On a pull that
-	// silently skips the debtor leg — the payer is never debited — and the
-	// collection then settles, pays the payee and can be returned, out of money
-	// nobody took.
+	// The row is the witness because it did not exist before this half ran, which
+	// is false of a payment whose payer and payee are the same institution: there
+	// the row was written by this bank's own SubmitPaymentTx, so an unqualified
+	// "the row is here" reads a submission as an answer and the receiving half
+	// never runs. On a pull that silently skips the debtor leg and the collection
+	// then settles, pays the payee and can be returned, out of money nobody took.
 	//
 	// Mesh.Submit refuses an on-us payment, so nothing in the running system
-	// reaches this; the domain is where it has to be right all the same, which
-	// is the argument TestAPullRefundIsHonouredWhenOneBankIsBothParties makes
-	// about the other half of the same flow.
+	// reaches this; the domain has to be right all the same.
 	//
-	// What answers it is the same fact the receiving half writes: on a PULL the
-	// debtor leg, which only this half posts. On a push the receiving half posts
-	// nothing at all, so a second delivery to the submitting bank has genuinely
-	// nothing to do and returning is right. That is the OLD witness, kept for
-	// exactly the one case the row cannot cover rather than in place of it.
+	// What answers it is the debtor leg, which only this half posts. On a push the
+	// receiving half posts nothing at all, so a second delivery to the submitting
+	// bank has nothing to do and returning is right.
 	push := scheme.Direction() == Push
 	switch existing, err := tx.GetPayment(ctx, id); {
 	case err == nil:
@@ -4019,18 +3349,10 @@ func (s *Network) RecordRelayed(ctx context.Context, id PaymentID, req InitiateP
 // RecordRelayedTx is the CLEARING HOUSE's copy of a payment: the row it has to
 // hold before it can accept one into a cycle or reject one out of the flow.
 //
-// # Why this act exists at all
-//
-// It did not, and it did not need to. One payment was one row in one store, so
-// the submitting bank's write was also the clearing house's record and
-// AcceptAtCSMTx could simply load it. Task 18d gives each institution its own
-// database, and this institution had no row for any payment — every acceptance
-// and every rejection was reaching for one that was never written here.
-//
-// So the clearing house records what it CARRIES. That is not bookkeeping for its
-// own sake: a clearing house that cannot say which payments it is carrying
-// cannot run a cut-off, and the cycle its copy joins is the one thing about this
-// payment that exists nowhere else in the network.
+// The clearing house records what it CARRIES. A clearing house that cannot say
+// which payments it is carrying cannot run a cut-off, and the cycle its copy
+// joins is the one thing about this payment that exists nowhere else in the
+// network.
 //
 // # It knows less than either bank, and the row says so
 //
@@ -4057,8 +3379,7 @@ func (s *Network) RecordRelayed(ctx context.Context, id PaymentID, req InitiateP
 // because there is nobody left to answer.
 //
 // It appends payment.initiated to this institution's own log. See
-// AcceptInboundTx on why there are three such events now and no trail that could
-// hold two of them.
+// AcceptInboundTx on why there are three such events and no trail holding two.
 func (s *Network) RecordRelayedTx(ctx context.Context, tx Tx, id PaymentID, req InitiatePaymentRequest) (Payment, error) {
 	if err := s.clearingHouse(); err != nil {
 		return Payment{}, err
@@ -4107,29 +3428,16 @@ func (s *Network) AcceptAtBank(ctx context.Context, id PaymentID) (Payment, erro
 // AcceptAtBankTx is a member bank's half of an acceptance: it records on this
 // bank's OWN copy that the clearing house has taken the payment into a cycle.
 //
-// It posts nothing, and that is the whole of what makes it look unnecessary. No
-// money moves when a payment is accepted — the payer's money left their account
-// at submission and the payee's does not arrive until the cut-off settles — so a
-// bank is left with an acceptance it has nothing to DO about, and for one commit
-// it did nothing with it at all.
+// It posts nothing — no money moves when a payment is accepted. What it does is
+// REMEMBER. A record that jumps from "instructed" to "settled" cannot answer the
+// question a customer asks in between, cannot distinguish a payment waiting on a
+// cut-off from one nobody has looked at, and leaves this bank's audit log with a
+// hole in the middle of its own payment's life. The clearing house's copy has
+// the fact; this bank cannot read it and is not meant to.
 //
-// What it has to do with it is REMEMBER it, and the reason is what a bank's copy
-// is FOR. It is this institution's own record of a payment it is party to, and a
-// record that jumps from "instructed" to "settled" is one that cannot answer the
-// question a customer actually asks in between, cannot distinguish a payment
-// waiting on a cut-off from one nobody has looked at, and leaves this bank's
-// audit log with a hole in the middle of its own payment's life. The clearing
-// house's copy has the fact; this bank cannot read it and is not meant to.
-//
-// It is NOT a guard on the rejection that may follow. That is what the first
-// version of it was written as, and Network.transition says why it does not
-// hold: a rejection is a pre-settlement act, and a payment already in a cycle is
-// exactly the kind a cut-off rejects.
-//
-// It is on the same footing as RejectAtBankTx and SettleAtBankTx rather than a
-// bare status write, for their reason: a bank's copy moves only through an act
-// that names who is moving it and refuses a bank that has no standing to. The
-// three of them are the whole of what a bank does with what it is told.
+// It is NOT a guard on the rejection that may follow — see Network.transition: a
+// rejection is a pre-settlement act, and a payment already in a cycle is exactly
+// the kind a cut-off rejects.
 //
 // # Only the bank that was TOLD reaches Accepted
 //
@@ -4193,11 +3501,9 @@ func (s *Network) AcceptAtCSM(ctx context.Context, id PaymentID) (Payment, error
 //
 // "On receiving the counterparty's ACCP" is a statement about WHEN the clearing
 // house runs this, not a precondition it checks. A payment record does not
-// distinguish an Initiated payment the far side has accepted from one it has
-// not yet seen, and this will take either into a cycle. That invariant lives in
-// the message flow — the CSM calls this from the pacs.002 handler and nowhere
-// else — so Tasks 10 and 11 own it, and the composition sites that stand in for
-// the mesh today own it by calling the halves in order.
+// distinguish an Initiated payment the far side has accepted from one it has not
+// yet seen, and this will take either into a cycle. That invariant lives in the
+// message flow: the CSM calls this from the pacs.002 handler and nowhere else.
 func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payment, error) {
 	p, err := tx.GetPayment(ctx, id)
 	if err != nil {
@@ -4233,22 +3539,16 @@ func (s *Network) AcceptAtCSMTx(ctx context.Context, tx Tx, id PaymentID) (Payme
 // bothBanksAreMembersTx is the clearing house asking whether it clears for the
 // two banks this payment is between.
 //
-// It is asked of the PARTIES' agents and not of the submitter, for
-// mesh.ErrOnUsPayment's reason: which bank submits flips with the scheme's
-// direction, and both directions of this defect were reachable — a founded bank
-// paying and a founded bank being paid. Both BICs are on the payment already,
-// derived rather than asserted (see SubmitPaymentTx, which fills
-// CreditorDetails.Agent from the counterparty's own row and the submitting side
-// from the bank that ran it), so this reads the roster and nothing else. That is
-// the clearing house's own key and its own table, which is what makes this the
-// one of the two membership guards that survives Task 18.
+// It is asked of the PARTIES' agents and not of the submitter: which bank submits
+// flips with the scheme's direction, and both a founded bank paying and a founded
+// bank being paid are reachable. Both BICs are on the payment already, so this
+// reads the roster and nothing else — the clearing house's own key and its own
+// table.
 //
 // ErrRosterEntryNotFound is turned into ErrBankNotAdmitted rather than passed
-// through, because the two say different things to the layer above: the lookup
-// coming back empty is not by itself a refusal, and only here is it one. Every
-// other error is passed through as it arrived, for the reason SubmitPaymentTx's
-// agent derivation gives at length — a dropped connection is not a statement
-// about the instruction.
+// through, because the lookup coming back empty is not by itself a refusal and
+// only here is it one. Every other error is passed through as it arrived: a
+// dropped connection is not a statement about the instruction.
 //
 // A payment refused here has already had its debtor leg posted, and getting the
 // customer's money back is csm.clear's job rather than this one's: it rejects
@@ -4288,15 +3588,11 @@ func (s *Network) bothBanksAreMembersTx(ctx context.Context, tx Tx, p Payment) e
 // account is one of its own, denominated in the scheme's asset, addressable in
 // the scheme's addressing scheme, and good for the money.
 //
-// The asset check now runs per LEG rather than across both.
-//
-// Sub-project 1 put it in InitiatePaymentTx precisely because that was the one
-// moment both ends were in view. The mesh removes that moment: no single
-// actor sees both accounts. Each bank therefore checks its own leg against the
-// scheme's asset, which is strictly weaker — two banks could each hold a
-// conforming account in a scheme neither is entitled to — and strictly what a
-// real bank can do. The stronger check that remains is the ledger's, at
-// settlement, exactly as sub-project 1's log describes.
+// The asset check runs per LEG rather than across both, because no single actor
+// sees both accounts. Each bank checks its own leg against the scheme's asset,
+// which is strictly weaker — two banks could each hold a conforming account in a
+// scheme neither is entitled to — and strictly what a real bank can do. The
+// stronger check that remains is the ledger's, at settlement.
 //
 // The address comes BACK and is written onto the payment's own ref: a caller
 // that quoted nothing gets the account's address filled in rather than a
@@ -4383,11 +3679,8 @@ func (s *Network) postDebtorLegTx(ctx context.Context, tx Tx, scheme Scheme, p *
 	// debtorSideTx); the GL posting here references the deposit account's
 	// backing GL account.
 	//
-	// The bank posting is THIS one, and the line read p.Debtor.Participant until a
-	// PartyRef stopped naming a bank. It was already this one on both paths — the
-	// doc above says whoever runs this is the debtor's bank — so what changes is
-	// that a network which is not a member's is refused rather than looking up
-	// whatever the payment named.
+	// The bank posting is THIS one: whoever runs this is the debtor's bank, so a
+	// network that is not a member's is refused.
 	debtor, err := s.selfBankTx(ctx, tx)
 	if err != nil {
 		return err
@@ -4454,32 +3747,15 @@ func (s *Network) RejectAtCSM(ctx context.Context, id PaymentID, code iso20022.S
 //
 // # This half can happen without the other
 //
-// This is the FIRST operation in this repository that can half-happen, and it
-// is written down here rather than left to be discovered: between the two
-// halves the payment is Rejected and the customer's money is still in suspense.
-// Every earlier operation either committed whole or rolled back whole, because
-// one process held one transaction across the lot.
-//
-// The mesh does not hide it. Once Tasks 10 and 11 put this flow on the wire, a
-// pacs.002 whose reversal fails at the debtor's bank has nobody to answer, so
-// it becomes a dead letter and mesh.Drain returns it — the system fails a test
-// rather than quietly telling the payer their money is back. Closing the gap
-// for real needs a way to carry an unreconciled position, the concept the
-// roadmap assigns to sub-project 8; 7b's job is to expose the seam honestly,
-// not to close it.
+// Between the two halves the payment is Rejected and the customer's money is
+// still in suspense. The mesh does not hide it: a pacs.002 whose reversal fails
+// at the debtor's bank has nobody to answer, so it becomes a dead letter and
+// mesh.Drain returns it —
+// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered forces exactly that.
 //
 // One caller still composes both halves in ONE transaction, so the gap is not
 // open there: the seed, which builds a fixed scenario before any actor is
-// running and has no mesh to send anything through. A failed reversal takes the
-// transition down with it, pinned by TestSeedRejectIsOneUnitOfWork; this
-// package's own reject test helper has the same shape, pinned by
-// TestAFailedReversalRollsBackTheWholeRejection.
-//
-// api no longer does. Its rejection goes through mesh.Reject, so the gap above
-// is open on that path and is measured rather than described:
-// TestARejectionWhoseRefundFailsStandsAndIsDeadLettered forces the reversal to
-// fail and asserts that the rejection stands and the failure comes back as a
-// dead letter.
+// running and has no mesh to send anything through.
 //
 // The reason text is validated HERE and not in the other half because this is
 // the half that stores it: RejectReason is persisted on the payment and copied
@@ -4538,22 +3814,10 @@ func (s *Network) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.
 // collection the clearing house refused before the payer's bank ever answered
 // has no leg even there.
 //
-// # What it replaced, and why the caller could not keep doing it
-//
-// mesh's bank.receiveStatus did this by hand: read the payment, check the row
-// says Rejected, hand that copy to ReverseDebtorLegTx. The check was the whole
-// safety argument — ReverseDebtorLegTx looks at no status and would happily
-// reverse the live debit of a payment on its way to settlement — and it worked
-// because the CLEARING HOUSE had already written Rejected onto the row both
-// banks were reading. On this bank's own copy nothing had, so the guard read a
-// row that still said Initiated and refused every genuine rejection.
-//
-// The decision and the reversal are therefore one act now, in one unit of work,
-// at the institution that owns both. A bank cannot reverse a leg without having
-// first recorded why, and cannot record a rejection without giving the money
-// back, because a failure in either takes the other with it. That is strictly
-// better than the arrangement it replaces, in which the two were separated by a
-// handler that had to remember the order.
+// The decision and the reversal are one act, in one unit of work, at the
+// institution that owns both. A bank cannot reverse a leg without having first
+// recorded why, and cannot record a rejection without giving the money back,
+// because a failure in either takes the other with it.
 //
 // # Which refusals it accepts
 //
@@ -4570,13 +3834,10 @@ func (s *Network) RejectAtBank(ctx context.Context, id PaymentID, code iso20022.
 // withholds from a bank, and this is the act that would do the damage if they
 // were not.
 //
-// What it can NOT check is whether this network really made the decision the
-// message reports. The status it reads is its own copy's, and its own copy used
-// to be the clearing house's — so the guard that read "does the row say Rejected"
-// was reading the decider's own record and is not available to anybody now. See
-// Network.transition on what a real network answers that with, and mesh's
-// csm.relayed for the clearing house's half: it must not send an RJCT about a
-// payment it has not rejected.
+// What it can NOT check is whether the clearing house really made the decision
+// the message reports: the status it reads is its own copy's. See
+// Network.transition, and mesh's csm.relayed for the clearing house's half — it
+// must not send an RJCT about a payment it has not rejected.
 //
 // The refusal names the status rather than returning the bare sentinel, because
 // a dead letter that says which state refused the reversal is the difference
@@ -4639,16 +3900,10 @@ func (s *Network) ReverseDebtorLeg(ctx context.Context, p Payment, reason string
 // house refused before the payer's bank ever answered it never took the payer's
 // money, and there is nothing to give back.
 //
-// It takes the payment BY VALUE, and unlike AcceptInboundTx that is right here
-// rather than the lost update sub-project 7b fixed there. That half wrote a
-// caller-supplied copy of the payment back to the payment store, so a stale
-// copy resurrected dead fields. This one writes nothing to the payment store at
-// all: it posts in the debtor bank's own ledger and returns. The two fields it
-// reads — ID and DebtorLegTx — are fixed when the leg is posted and never change
-// afterwards, so a copy of the payment taken at any point after that names the
-// same transaction. It read a third, Debtor.Participant, to find the book to post
-// in; that book is this network's own, which is a fact about the caller rather
-// than about the copy and so is not a weakening.
+// It takes the payment BY VALUE and writes nothing to the payment store: it
+// posts in the debtor bank's own ledger and returns. The two fields it reads —
+// ID and DebtorLegTx — are fixed when the leg is posted and never change, so a
+// copy taken at any point after that names the same transaction.
 //
 // What it therefore relies on the caller for is the DECISION. It does not load
 // the payment and does not look at its status, so nothing here would stop it
@@ -4700,28 +3955,12 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 //
 // Everything it needs is on the instruction, because everything it needs is on
 // the message: the two agents' BICs, the amount, the asset. A settlement agent
-// under sub-project 8 holds no payment rows at all — it never saw the payment
-// clear — so a return it could only execute by looking one up is a return it
-// could not execute. That is why iso20022.OriginalTransactionReference had to
-// exist before this function could: the pacs.004 this system used to send named
-// no parties, and there was nothing else for a bank without a payment row to
-// resolve accounts from. See ReadReturn, which is what turns the message into
-// the argument here.
-//
-// # The accounts it moves are its own records', and the ids on the statements are not
+// holds no payment rows at all — it never saw the payment clear — so a return it
+// could only execute by looking one up is a return it could not execute. See
+// ReadReturn, which turns the message into the argument here.
 //
 // Which account each side's reserves sit in is read from the settlement agent's
-// own SettlementMember rows, keyed by the two BICs the message carries. It used
-// to be read off each bank's row, which was the agent asking its members where
-// its own money is.
-//
-// It still reads the two bank rows, and for one thing only: a SettlementStatement
-// names its addressee by ParticipantID, and the message names it by BIC. So the
-// BICs are swept over the bank rows rather than indexed — see bankByBICTx, which
-// records what that costs — and that read is a crossing this task does not
-// close. It closes when a statement's addressee is an address rather than an id,
-// which is the same change that lets the settlement agent stop holding rows
-// about members at all: Task 18's.
+// own SettlementMember rows, keyed by the two BICs the message carries.
 //
 // # The one decision it makes
 //
@@ -4752,29 +3991,24 @@ func (s *Network) SettleReturn(ctx context.Context, in ReturnInstruction) ([]Set
 // # Which is why the payment id is required, and required HERE
 //
 // The key is the only record this actor keeps of anything, so an instruction
-// with no payment id is not a cosmetic defect: the reversal would move reserves
-// between two real banks under ":return-settle", and every later nameless
-// return would come back ErrReturnAlreadySettled having settled nothing. The
-// first costs money and the rest are silently wrong.
+// with no payment id would move reserves between two real banks under
+// ":return-settle", and every later nameless return would come back
+// ErrReturnAlreadySettled having settled nothing.
 //
 // ReadReturn refuses such a message before an instruction exists, and that is
-// the guard mesh actually hits. This one is not a second copy of it: ReadReturn
-// is a READER, and a ReturnInstruction built any other way — a future caller, a
-// test, a second transport — would reopen the hole with nothing in the way. It
-// is the argument ReverseReturnLegTx's doc already makes about its own Settled
-// check: a guard on the money belongs next to the money, not in whichever
-// handler happens to be the only caller today.
+// the guard mesh hits. This is not a second copy of it: a ReturnInstruction
+// built any other way would reopen the hole. A guard on the money belongs next
+// to the money.
 func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstruction) ([]SettlementStatement, error) {
 	// Before anything is read, because this is a check on the KEY the posting
 	// below will carry rather than on any account. See the note above.
 	//
 	// A plain error and not a sentinel: it is a judgement about the INSTRUCTION,
-	// so ReasonFor's fallback turning it into MS03 on the wire is the right
-	// answer rather than a hazard, and it is the same shape cycleOf uses for a
-	// settlement instruction that names no cycle. ledger.ValidateText would not
-	// catch it — that one refuses control characters and invalid UTF-8, and the
-	// empty string is neither.
-	// First, for OpenSettlementAccountTx's reason.
+	// so ReasonFor's fallback turning it into MS03 on the wire is right.
+	// ledger.ValidateText would not catch it — that one refuses control
+	// characters and invalid UTF-8, and the empty string is neither.
+	//
+	// The book first, for OpenSettlementAccountTx's reason.
 	book, err := s.centralBankBook()
 	if err != nil {
 		return nil, err
@@ -4782,23 +4016,10 @@ func (s *Network) SettleReturnTx(ctx context.Context, tx Tx, in ReturnInstructio
 	if in.PaymentID == "" {
 		return nil, fmt.Errorf("payment: a return instruction naming no payment cannot be settled; its reserve reversal would be keyed by nothing")
 	}
-	// The two banks are NOT read, and there is nothing left to read them for.
-	//
-	// Two bankByBICTx calls stood here, and both handles were used for one field
-	// each: the BIC, which the instruction already carries at both ends. It was a
-	// settlement agent opening a member's own row to learn that member's address
-	// back — and this institution has no banks table, so it is now the loud
-	// refusal the split exists to produce rather than a redundant read.
-	//
-	// What the reads were NOT doing is worth stating, because losing a lookup can
-	// lose a check by accident: they never established membership. That is
-	// settlementAccountTx's job below, out of this agent's OWN register, and a
-	// bank it holds no account for is refused there with
-	// ErrSettlementMemberNotFound whether or not a bank row exists anywhere.
-	//
-	// The accounts are the settlement agent's own, read from its own member rows
-	// by the addresses the message carries. Nothing about which account moves
-	// comes from a bank here.
+	// No bank row is read: the accounts are the settlement agent's own, from its
+	// own member rows, keyed by the addresses the message carries. Membership is
+	// settlementAccountTx's answer — a bank it holds no account for is refused
+	// with ErrSettlementMemberNotFound.
 	debtorSettlement, err := s.settlementAccountTx(ctx, tx, in.DebtorAgent, in.Asset)
 	if err != nil {
 		return nil, err
@@ -4968,51 +4189,30 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // all — the bank is releasing an obligation it took on, not taking money off
 // anybody.
 //
-// # The refund closes a gap that was a ruling for two tasks
+// # The refund into a closed account diverts
 //
-// ReturnPaymentTx's doc — deleted with the function at Task 16e — recorded at
-// length that a refund into a payer's closed account stranded for ever, and that
-// refusing would only trade one stranding for another. It could not be fixed
-// while a return was one unit of work over three institutions. It is fixed here
-// the same way SettleAtBankTx fixed the settlement-side twin: divert to this
-// bank's unclaimed balances.
-//
-// The diversion happens on deposit.ErrAccountClosed and on NOTHING else, and
-// the check runs BEFORE the payer's GL account is resolved so that a store
-// failure reaches this discrimination rather than being collapsed on the way.
-// glAccountTx turns every failure of its read into ErrAccountNotInParticipant,
-// so a guard written the other way round could not tell a dropped connection
-// from a closed account — and money must not be routed on a failure nobody can
-// tell apart. That is the defect the first review round on Task 15 found on the
-// creditor side. See
+// To this bank's unclaimed balances, as SettleAtBankTx does with its
+// settlement-side twin. The diversion happens on deposit.ErrAccountClosed and on
+// NOTHING else, and the check runs BEFORE the payer's GL account is resolved so
+// that a store failure reaches this discrimination rather than being collapsed
+// on the way: glAccountTx turns every failure of its read into
+// ErrAccountNotInParticipant, and money must not be routed on a failure nobody
+// can tell apart. See
 // TestAReturnStoreFailureDoesNotRouteTheRefundToUnclaimedBalances.
 //
 // # The SECOND leg is what sets Returned
 //
 // One row takes one transition, and the transition is about the last customer
-// leg, which is SettleAtBankTx's shape reused.
-//
-// WHICH leg is last used to be read off the row: the leg that found the OTHER
-// side's transaction id already written was the one arriving last, because one
-// payment was one row that both banks read. Task 18d ended that — each bank
-// holds its own copy and writes its own field on it, so both would see one leg
-// posted and neither would ever be second — and Payment.ReturnClawbackTx said
-// this function would inherit the problem. It did. What replaced the row is
-// POSITION IN THE CONVERSATION, which is a fact each bank has on its own and
-// which the long note beside the transition below sets out in full.
+// leg. WHICH leg is last is POSITION IN THE CONVERSATION, a fact each bank has
+// on its own — see the note at the transition below.
 //
 // A bank that is BOTH sides — a payment from one bank to itself — holds both
 // legs and posts them one call at a time, clawback first, because the guard is
 // written as "my leg, not standing" rather than as a choice between two parties.
 // Mesh.Submit refuses such a payment at the door, so nothing in this system
-// BUILDS one; the ordering is kept rather than turned into a refusal here, for
-// the reason ReadReturn's id guard and SettleReturnTx's are both kept — a guard
-// at the boundary is one caller's, and this is the domain. That distinction
-// stopped being academic at Task 18d, because position in the conversation needs
-// a conversation and this arrangement has none. See the note at the transition,
-// and TestAPullRefundIsHonouredWhenOneBankIsBothParties, whose own doc argues
-// that a rule holding only because no caller builds the counter-example is a
-// rule nobody is keeping.
+// BUILDS one; the domain handles it anyway, because a rule that holds only
+// because no caller builds the counter-example is a rule nobody is keeping. See
+// TestAPullRefundIsHonouredWhenOneBankIsBothParties.
 //
 // The same guard makes a redelivered first leg a no-op, which is what
 // SettleAtBankTx does with a redelivered advice and for the same reason: the
@@ -5022,15 +4222,12 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 //
 // # A leg that was UNWOUND is not a leg that was posted
 //
-// The guard is "not standing" and not "not set", and that is the difference
-// between a retried return that repays the payer and one that does not. An RJCT
-// leaves this bank's leg Reversed in its own book with the id still on the
-// payment (ReverseReturnLegTx says why), so a return asked again arrives here
-// with the field non-empty and nothing standing behind it. Read as "already
-// posted", the retry answered success without posting, the pacs.004 went out
-// anyway, the reserves reversed, the other bank clawed its customer back — and
-// the payer got nothing while the amount sat in the returning bank's clearing
-// suspense for ever.
+// The guard is "not standing" and not "not set". An RJCT leaves this bank's leg
+// Reversed in its own book with the id still on the payment (ReverseReturnLegTx
+// says why), so a return asked again arrives here with the field non-empty and
+// nothing standing behind it. Read as "already posted", the retry would answer
+// success without posting while the rest of the conversation ran to completion
+// around a leg that does not exist.
 //
 // So the ledger is consulted (legStandsTx), and the retry is posted under a key
 // derived from the attempt it replaces (returnLegKey), because the first
@@ -5077,13 +4274,9 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reas
 	// left to refuse. So the clawback is refusable on exactly one combination of
 	// direction and role, and it takes both conjuncts to say so.
 	//
-	// Asking only "is this bank the returner" was true of BOTH legs when one
-	// bank is both parties, which made the returning bank refuse its own
-	// customer's refund on a pull — the exact inversion of the rule above. That
-	// arrangement is now refused where a payment enters the mesh (see
-	// Mesh.Submit), and this is stated correctly anyway: a rule that holds
-	// because a caller elsewhere never builds the counter-example is a rule
-	// nobody is keeping.
+	// Both conjuncts are needed: asking only "is this bank the returner" is true
+	// of BOTH legs when one bank is both parties, which would make the returning
+	// bank refuse its own customer's refund on a pull.
 	//
 	// Written through ReturnerOf rather than as "the creditor's bank on a push"
 	// so that who the returner is stays stated once. The two are the same bank;
@@ -5092,13 +4285,10 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reas
 
 	// Has this bank's leg posted, AND does that posting still STAND?
 	//
-	// The id on the payment answers the first question and not the second, and
-	// the difference is a return that repays nobody. ReverseReturnLegTx leaves
-	// the id in place deliberately — it records what this bank DID — so after an
-	// RJCT the field is non-empty and names a Reversed transaction. Read as
-	// "already posted", a retry fell through to the redelivery arm below and
-	// answered success without posting, while the rest of the conversation ran
-	// to completion around a leg that did not exist.
+	// The id on the payment answers the first question and not the second.
+	// ReverseReturnLegTx leaves the id in place deliberately — it records what
+	// this bank DID — so after an RJCT the field is non-empty and names a Reversed
+	// transaction.
 	//
 	// So the LEDGER is asked, which is where "it no longer stands" is recorded.
 	// Only ever about THIS bank's own leg: the other side's id names a
@@ -5139,14 +4329,11 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reas
 	p.RejectReason = reason
 	// WHICH of the two legs this is, and therefore whether the return is over.
 	//
-	// It used to be read off the row: the leg that found the OTHER side's
-	// transaction id already written was the one arriving last. That answer is
-	// gone with the shared row — each bank now holds its own copy and sets its
-	// own field on it, so both banks would see one leg posted and neither would
-	// ever be second. Payment.ReturnClawbackTx said this task would inherit the
-	// problem; this is the inheritance.
+	// Each bank holds its own copy and sets its own field on it, so the row cannot
+	// answer it: both banks would see one leg posted and neither would ever be
+	// second.
 	//
-	// What replaces it is POSITION IN THE CONVERSATION, which is a fact each bank
+	// What answers it is POSITION IN THE CONVERSATION, which is a fact each bank
 	// has on its own. The returner posts BEFORE it sends, so that it can still
 	// refuse (see the mayRefuse note above); the other bank is sent the pacs.004
 	// only after the settlement agent has answered ACSC, because a bank that
@@ -5364,9 +4551,7 @@ func (s *Network) CompleteReturn(ctx context.Context, id PaymentID) (Payment, er
 //
 // Two institutions call it and they are the two that cannot learn it any other
 // way: the bank that ASKED for the return, and the clearing house that carried
-// it. Both are sent the settlement agent's ACSC, and until Task 18d neither
-// needed an act — the return's SECOND customer leg wrote Returned onto the row
-// all three of them were reading, so being told was news rather than work.
+// it. Both are sent the settlement agent's ACSC.
 //
 // The third institution, the bank that did not ask, needs nothing here: it is
 // sent the pacs.004 itself and its own PostReturnLegTx is the second leg, so its
@@ -5437,37 +4622,25 @@ func (s *Network) ReverseReturnLeg(ctx context.Context, id PaymentID, reason str
 //
 // So it refuses anything that is not still Settled. The caller this guard exists
 // for is mesh's bank.receiveReturnStatus, which acts on a MESSAGE: a status
-// arriving late, or twice, is exactly the shape that would otherwise unwind half
-// of a return that finished, and a handler cannot be relied on to have checked a
-// status it was not sent. There it surfaces as a dead letter, which is the
-// truthful outcome for an RJCT about a return this network completed. ErrInvalidStateTransition rather than a new sentinel —
-// it is this package's word for an operation a payment's status does not permit,
-// and reasonTable already classifies it as a defect here rather than a judgement
-// to answer a counterparty with.
+// arriving late, or twice, is the shape that would otherwise unwind half of a
+// return that finished. There it surfaces as a dead letter.
+// ErrInvalidStateTransition rather than a new sentinel — reasonTable already
+// classifies it as a defect here rather than a judgement to answer a
+// counterparty with.
 //
 // # The transaction id is left on the payment, and it means something narrower
 //
-// It is not cleared. It records what this bank DID, and it did post; the ledger
-// is where the fact that it no longer stands is recorded, on the transaction
-// itself. Leaving it is also what makes a RETRY postable at all — returnLegKey
-// derives the retry's idempotency key from the reversed attempt's id, so the
-// field is the only record of which attempt this is.
+// It records what this bank DID, and it did post; the ledger is where the fact
+// that it no longer stands is recorded, on the transaction itself. Leaving it is
+// what makes a RETRY postable at all — returnLegKey derives the retry's
+// idempotency key from the reversed attempt's id.
 //
-// What that costs is a field whose meaning is "this bank has an attempt at this
-// leg", NOT "this bank's leg stands". An earlier version of this paragraph said
-// there was no reader for whom a stale id decides anything. There was:
-// PostReturnLegTx's switch asked "is the id empty?" to decide whether to post,
-// so a return asked again after an unwind fell through to the idempotent-
-// redelivery arm and answered success having posted nothing — while the rest of
-// the conversation ran to completion, the other bank clawed its customer back,
-// and the payer was never repaid. That reader now asks the LEDGER (legStandsTx),
-// which is the only place that can answer it.
-//
-// A reader that has this id and wants to know whether the leg holds must do the
-// same. The one place that does NOT is PostReturnLegTx's transition to Returned,
-// which reads both ids and can read only one book: it relies on a leg being
-// reversible only while the OTHER side is still unposted, which the Settled
-// guard above is what makes true.
+// So the field means "this bank has an attempt at this leg", NOT "this bank's
+// leg stands". A reader that wants the second must ask the LEDGER (legStandsTx).
+// The one place that does NOT is PostReturnLegTx's transition to Returned, which
+// reads both ids and can read only one book: it relies on a leg being reversible
+// only while the OTHER side is still unposted, which the Settled guard above is
+// what makes true.
 func (s *Network) ReverseReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reason string) error {
 	self, err := s.selfBIC()
 	if err != nil {
@@ -5531,21 +4704,10 @@ func (s *Network) GetCycle(ctx context.Context, id CycleID) (ClearingCycle, erro
 
 // GetMandate returns one of THIS bank's mandates by ID.
 //
-// It used to distinguish a not-found from a somebody-else's, answering the second
-// with ErrNotThisBanksMandate on the argument that a mandate id is this bank's own
-// sequence, so an id resolving to another bank's row is a reader that has crossed
-// a boundary rather than a client that guessed. The row it compared against is
-// gone: a mandate names no creditor bank, because every mandate in this database
-// is this bank's (see Mandate.DebtorAgent).
-//
-// That distinction is what the STORE makes now, and it makes it better than the
-// comparison did — another bank's mandate is not a row this database holds, so it
-// is a not-found and there is nothing to disclose. Until the split's wiring lands
-// the store is still shared and this answers about a row it should not see; the
-// gap is ListMandates', named there, and closing it there closes it here.
-//
-// What survives is the refusal of the other two institutions, which never had
-// mandates to ask about.
+// Another bank's mandate is not a row this database holds, so it is a not-found
+// and there is nothing to disclose — the STORE makes the distinction. What this
+// adds is the refusal of the other two institutions, which have no mandates to
+// ask about at all.
 func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error) {
 	if _, err := s.self(); err != nil {
 		return Mandate{}, fmt.Errorf("%w: %w", ErrNotThisBanksMandate, err)
@@ -5579,21 +4741,10 @@ func (s *Network) GetMandate(ctx context.Context, id MandateID) (Mandate, error)
 // a console that read the bank's note of its account number would report a
 // balance the bank had chosen the account for.
 //
-// # It takes a BIC, and it took a ParticipantID
-//
-// The old signature made the caller name a bank the way the NETWORK named it,
-// and this method then read that bank's own row to translate the id into the
-// address its own records are keyed by. The doc here argued that the translation
-// was not a crossing to close, because the console holds every institution's
-// store and is outside the entity boundary by construction.
-//
-// That argument survives and its conclusion does not. Task 18c gives the central
-// bank a database of its own with no banks table in it, so the read has no answer
-// coming — from the console or from anywhere. What the console holds is a set of
-// stores, not a directory, and the only name it can hand this institution is the
-// one that crosses institutional boundaries. Its callers were holding a BIC
-// already or had one a field away; api.reserveRows now takes the whole list off
-// tx.ListSettlementMembers, where the address is the key.
+// It takes a BIC because that is the only name that crosses institutional
+// boundaries: the central bank's database has no banks table to translate an id
+// through. api.reserveRows takes the whole list off tx.ListSettlementMembers,
+// where the address is the key.
 func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCode) (ledger.Amount, error) {
 	book, err := s.centralBankBook()
 	if err != nil {
@@ -5618,15 +4769,10 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // transition moves THIS INSTITUTION's copy of a payment to a new status if the
 // edge is legal for the institution making it.
 //
-// # There are two machines now, and there used to be one
+// # There are two machines
 //
-// One payment was one row, so one table described its whole life: Initiated,
-// Accepted into a cycle, Cleared at the cut-off, Settled when the payee's bank
-// paid out, Returned. Different actors made different edges on the same row and
-// the row carried the union of what they all knew.
-//
-// Task 18d gives each institution its own copy, and a copy can only record what
-// its owner was TOLD. The two machines are what each of them can honestly say:
+// Each institution holds its own copy, and a copy can only record what its owner
+// was TOLD. The two machines are what each of them can honestly say:
 //
 //   - The CLEARING HOUSE runs the whole of it. Cleared is a fact about a CYCLE,
 //     and the cycle is this institution's own — a bank has no cycles and its
@@ -5644,16 +4790,14 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // and that is not a bank losing track of a payment — it is a bank that was never
 // told, because it was never waiting.
 //
-// # Why a bank tracks Accepted at all, having not needed to
+// # Why a bank tracks Accepted at all
 //
-// This table said Initiated -> {Rejected, Settled} for one commit, on the
-// argument that an acceptance "asks nothing of a bank". It asks nothing, and it
-// TELLS the bank where the payment has got to. Without the state a bank cannot
-// tell "not yet decided" from "already in a cycle", cannot answer a customer who
-// asks, and has an audit log that skips the middle of its own payment's life.
+// An acceptance asks nothing of a bank and TELLS it where the payment has got
+// to. Without the state a bank cannot tell "not yet decided" from "already in a
+// cycle", cannot answer a customer who asks, and has an audit log that skips the
+// middle of its own payment's life.
 //
-// It is NOT a guard against a rejection, and the first version of it was written
-// as one. Accepted -> Rejected stays legal here, because a rejection is a
+// It is NOT a guard against a rejection. Accepted -> Rejected is legal, because a
 // pre-SETTLEMENT act and not a pre-acceptance one: a scheme rejects a payment
 // that has been in a cycle for hours when the cut-off finds a participant short
 // of its position, and a bank that refused that message on the grounds that it
@@ -5661,22 +4805,13 @@ func (s *Network) ReserveBalance(ctx context.Context, bic iso20022.BIC, asset le
 // cannot do is reverse a debit AFTER settlement or twice, and those are the two
 // edges this table really withholds — Settled and Rejected have no way back.
 //
-// What a bank genuinely cannot do any more is tell a rejection this network made
-// from one it did not. Its own copy used to be the clearing house's copy, so the
-// row it read WAS the decision; it holds its own now and no institution can read
-// another's. Nothing replaces that here, because nothing here could: what a real
-// network answers it with is the channel — an authenticated message on a closed
-// network — and reconciliation against the cycle reports afterwards. The
-// clearing house's side of the same fact is that it must never send an RJCT
-// about a payment it has not rejected, which is a property of csm.relayed and
-// csm.refuseBulk rather than of this table.
-//
-// # What the split buys, beyond honesty
-//
-// The clearing house's machine got STRICTER rather than looser. Nothing but this
-// institution can now write Cleared anywhere in the network, because no other
-// institution's table has an edge to it — where before, any actor holding the
-// shared row could.
+// What a bank cannot do is tell a rejection this network made from one it did
+// not: it holds its own copy and no institution can read another's. Nothing here
+// could replace that — what a real network answers it with is the channel, an
+// authenticated message on a closed network, and reconciliation against the
+// cycle reports afterwards. The clearing house's side of the same fact is that
+// it must never send an RJCT about a payment it has not rejected, which is a
+// property of csm.relayed and csm.refuseBulk rather than of this table.
 func (s *Network) transition(p *Payment, to PaymentStatus) error {
 	allowed := map[PaymentStatus][]PaymentStatus{
 		Initiated: {Accepted, Rejected},
@@ -5704,13 +4839,8 @@ func (s *Network) transition(p *Payment, to PaymentStatus) error {
 // with it. The identifier is stored on the payment rather than derived, and the
 // account id is used as a lookup key — so a control character in it names nothing
 // this system ever generated, and what a caller is owed is the domain's refusal
-// rather than whatever the store makes of a key like that. Out of store/pg it
-// was a raw SQLSTATE. See ledger.ValidateText.
-//
-// It checked a participant id too, and there is none to check: a PartyRef names
-// no bank. The bank beside it is an iso20022.BIC, which carries a stricter rule
-// than ValidateText's and enforces it itself — see PartyDetails.Agent and
-// CreateMandateTx, which is the caller that has to run both halves by hand.
+// rather than whatever the store makes of a key like that. See
+// ledger.ValidateText.
 func validateParty(field string, ref PartyRef) error {
 	if err := ledger.ValidateText(field+".account", string(ref.Account)); err != nil {
 		return err
@@ -5727,45 +4857,20 @@ func validateParty(field string, ref PartyRef) error {
 // it names, WITHIN THIS BANK's register. The bank asking is this network's own
 // identity, and the answer is about its own customers or there is no answer.
 //
-// # It used to sweep, and the narrowing is Task 18a's
+// The question it answers is "is this address one of MINE", which is the one a
+// receiving bank has to answer and the one that produces AC01 for anything else.
+// A bank has no standing to say whether an address at ANOTHER bank exists — that
+// is the other bank's register and the other bank's customer.
 //
-// It called tx.ListBanks and asked every member's register in turn, which made
-// it "the network's directory" — a directory assembled by reading every bank's
-// book, on the happy path of every received message. That is crossing 2 in the
-// db-per-entity design's table, and it is the read a bank cannot make once it
-// holds only its own register: ListBanks has no answer and neither has
-// another member's BookID.
+// There is no network-wide lookup, because this network has no directory SERVICE
+// to provide one. A real one does: SEPA banks resolve an IBAN's bank out of a
+// subscribed IBAN-to-BIC table, and aliases that are not bank-issued (a phone
+// number, an email address) go to a separate central service — the EPC's Proxy
+// Lookup Service, or UPI — precisely because no bank can guarantee they are
+// unique.
 //
-// The narrowing is not a reduction in what this system can honestly answer. A
-// bank has never had the standing to say whether an address at ANOTHER bank
-// exists — that is the other bank's register and the other bank's customer — and
-// the sweep's answers about them were the only thing that made an asserted
-// counterparty BIC dangerous (see mesh's
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames). What is genuinely lost
-// is the network-wide lookup, and it is lost because this network has no
-// directory SERVICE to replace it with. A real one does: SEPA banks resolve an
-// IBAN's bank out of a subscribed IBAN-to-BIC table, and aliases that are not
-// bank-issued (a phone number, an email address) go to a separate central
-// service — the EPC's Proxy Lookup Service, or UPI — precisely because no bank
-// can guarantee they are unique. Neither is a sweep, and neither is something
-// one bank can build out of the others' books.
-//
-// So the question this answers is "is this address one of MINE", which is the
-// one a receiving bank actually has to answer, and the one that produces AC01
-// for anything else.
-//
-// Which bank is asking was an ARGUMENT for exactly one task. Task 18a narrowed
-// the sweep and had nowhere to read the asking bank from, so it took it from the
-// caller and said in this doc that Task 18b would take it away again. This is
-// that: the register searched is this network's own, and a network that is not a
-// member bank's has no register to search. See Network.self.
-//
-// The two are not the same guard wearing different clothes. With the argument,
-// "in its own register" was a claim about every caller — three handlers in the
-// mesh and one route in api, each passing an id it had for its own reasons — and
-// a fifth caller passing somebody else's would have swept nothing and resolved
-// perfectly well in another bank's register. There is no such caller now, and
-// there is no way to write one.
+// The register searched is this network's own, and a network that is not a member
+// bank's has no register to search. See Network.self.
 func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (PartyRef, error) {
 	var out PartyRef
 	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
@@ -5784,11 +4889,9 @@ func (s *Network) ResolveIdentifier(ctx context.Context, ident deposit.Identifie
 // choosing between two of this bank's own accounts would route a payment on the
 // strength of listing order.
 //
-// It used to be able to find that collision ACROSS banks as well, which was the
-// widest scope a sweep could see. That scope is gone with the sweep and nothing
-// replaces it: two banks issuing one IBAN is a fact neither of them can now
-// observe, and in life it is the IBAN's issuer registry that stops it happening
-// rather than anybody's directory noticing afterwards.
+// A collision ACROSS banks is not observable here: two banks issuing one IBAN is
+// a fact neither of them can see, and in life it is the IBAN's issuer registry
+// that stops it happening rather than anybody's directory noticing afterwards.
 func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.Identifier) (PartyRef, error) {
 	if err := ident.Validate("identifier"); err != nil {
 		return PartyRef{}, err
@@ -5825,36 +4928,24 @@ func (s *Network) ResolveIdentifierTx(ctx context.Context, tx Tx, ident deposit.
 // trip — so returning a bound bank here is free, and a caller re-fetching the
 // same row with bankTx (as debtorSideTx used to) is not.
 //
-// # The bank is this network's own, and it used to come off the ref
-//
-// The line was tx.GetBank(ctx, ref.Participant), and a PartyRef no longer names a
-// bank (see PartyRef). Every caller was already passing its own side: this is the
-// half of a payment the submitting or receiving bank is the authority on, and the
-// counterparty's account is at another bank and is recorded rather than checked.
-// So the read is narrower rather than differently aimed, and a caller that WAS
-// reaching for another bank's register now cannot express the attempt.
+// The bank is this network's own: the half of a payment the submitting or
+// receiving bank is the authority on. The counterparty's account is at another
+// bank and is recorded rather than checked.
 //
 // # Only a NOT-FOUND becomes a domain error
 //
-// The same discipline addressedPartyTx keeps on the inbound side, and for the
-// same reason — this one is on the MONEY path. It is reached from
-// AcceptInboundTx through creditorSideTx/debtorSideTx, so a receiving bank runs
-// it on every message it answers, and mesh/bank.go's answer turns whatever comes
-// back into a pacs.002 through ReasonFor. `if err != nil { return
-// ErrAccountNotInParticipant }` — which is what this was — makes AC01 "incorrect
-// account number" the answer to a dropped database connection, so a transient
-// fault at the RECEIVING bank tells the SENDING bank its customer's IBAN is
-// wrong. On a push the payer's debit is then reversed, and a fault that would
-// have cleared on a retry has become a permanent rejection carrying a false
-// reason. ErrParticipantNotFound is the same shape one element up: RC01, "bank
-// identifier incorrect", about a bank that is fine.
+// This is on the MONEY path — reached from AcceptInboundTx through
+// creditorSideTx/debtorSideTx, so a receiving bank runs it on every message it
+// answers and mesh turns whatever comes back into a pacs.002 through ReasonFor.
+// Collapsing every error into ErrAccountNotInParticipant would make AC01
+// "incorrect account number" the answer to a dropped database connection, so a
+// transient fault at the RECEIVING bank would tell the SENDING bank its
+// customer's IBAN is wrong — and on a push the payer's debit is then reversed.
 //
-// So a genuine not-found — the store's own sentinel, the one contract note in
-// store.go guarantees — maps to the domain sentinel and everything else is
-// returned unchanged, to fall through ReasonFor's default to MS03: this agent
-// could not carry the instruction out, which is the only true thing there is to
-// say. TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is the pin, on
-// both halves.
+// So a genuine not-found — the store's own sentinel — maps to the domain
+// sentinel and everything else is returned unchanged, to fall through ReasonFor's
+// default to MS03: this agent could not carry the instruction out.
+// TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure is the pin.
 func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref PartyRef) (deposit.Account, *Bank, error) {
 	if err := validateParty(field, ref); err != nil {
 		return deposit.Account{}, nil, err
@@ -5883,11 +4974,9 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 // addressFor settles which external address one leg of a payment records, and
 // refuses the leg when the scheme cannot address its account at all.
 //
-// It returns the address rather than merely approving one, which is the whole
-// point: without that, a caller who quoted nothing — the ordinary case, since
-// the API's identifier field is optional — settled a payment whose stored
-// debtor and creditor addresses were both empty, and "a payment records the
-// address it was sent to" was true only when the caller volunteered it.
+// It returns the address rather than merely approving one, so that a caller who
+// quoted nothing — the ordinary case, since the API's identifier field is
+// optional — still gets the address recorded on the payment.
 //
 // Three outcomes, in the order they are decided:
 //
@@ -5905,13 +4994,9 @@ func (s *Network) checkPartyTx(ctx context.Context, tx Tx, field string, ref Par
 //
 // That last "in the scheme's scheme" is why the loop scans inScheme rather than
 // the whole set. Scanning the whole set asks only whether the account holds the
-// quoted address somewhere, which is not the question: an account holding both
-// an IBAN and a card PAN would have a sepa.ct payment accepted — and stored —
-// quoting the PAN. It is unreachable while IdentifierIBAN is the only scheme
-// shipped, which is precisely the argument for fixing it now: the design's
-// load-bearing claim is that a card PAN drops in as a constant, and the first
-// day it does, an address bound to the scheme would silently stop being bound
-// to it. AddressedBy() is decorative unless it decides this answer.
+// quoted address somewhere, so an account holding both an IBAN and a card PAN
+// would have a sepa.ct payment accepted quoting the PAN. AddressedBy() is
+// decorative unless it decides this answer.
 func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Identifier, error) {
 	want := scheme.AddressedBy()
 	var inScheme []deposit.Identifier
@@ -5931,20 +5016,15 @@ func addressFor(scheme Scheme, ref PartyRef, acct deposit.Account) (deposit.Iden
 	}
 	// Matches and not ==, and the payment records the account's STORED form.
 	//
-	// The two differ for exactly one reason today: an IBAN is stored in its
-	// readable display form and quoted on the wire compact, and those are one
-	// address (deposit.Identifier.MatchValue). A payment translated out of a
-	// received pacs.008 quotes what the message carried, so == would refuse a
-	// party this bank had just successfully resolved BY that address — the
-	// directory and this check would disagree about what an address is, which is
-	// the shape of bug that only shows up once a real message arrives.
+	// The two differ for one reason: an IBAN is stored in its readable display
+	// form and quoted on the wire compact, and those are one address
+	// (deposit.Identifier.MatchValue). A payment translated out of a received
+	// pacs.008 quotes what the message carried, so == would refuse a party this
+	// bank had just resolved BY that address.
 	//
-	// Returning the stored identifier rather than the quoted one keeps the
-	// invariant that a payment's recorded address is one the account actually
-	// holds, in the form this bank writes it. The quoted form is not lost — it
-	// is what the message says, and the message is what the counterparty keeps.
-	// TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses drives
-	// both halves.
+	// Returning the stored identifier keeps the invariant that a payment's
+	// recorded address is one the account actually holds, in the form this bank
+	// writes it. The quoted form is not lost — it is what the message says.
 	for _, ident := range inScheme {
 		if ident.Matches(ref.Identifier) {
 			return ident, nil

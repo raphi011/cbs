@@ -27,8 +27,7 @@ type Store interface {
 }
 
 // Stores is the SET of databases one process holds: one per member bank, the
-// clearing house's, and the central bank's. It is what Networks is built over,
-// and it is the whole of what Task 18d adds to the wiring.
+// clearing house's, and the central bank's. It is what Networks is built over.
 //
 // # Why the set is an interface and not a map
 //
@@ -36,8 +35,7 @@ type Store interface {
 // be complete before the first act, which is the thing this system cannot
 // promise: banks are founded while the process runs, and the set of them is the
 // set of databases rather than a list somebody keeps. Bank therefore takes a
-// context and returns an error, and those two additions are the whole reason
-// Networks.Bank grew both.
+// context and returns an error.
 //
 // # Asking for a bank is what makes it exist
 //
@@ -67,13 +65,10 @@ type Stores interface {
 	// Banks is every member bank this set holds a database for, ascending by
 	// address so that two calls agree and a restart plans the same listeners.
 	//
-	// It is what replaces the clearing house's ListBanks at the composition
-	// root, and it answers a different question in the one case that matters.
-	// ListBanks said "every bank whose row the network holds" and this says
-	// "every bank whose database exists", which INCLUDES the founded and
-	// unadmitted bank the roster deliberately omits — a bank with a licence, a
-	// book and customers that no scheme has admitted. cmd/server's listener plan
-	// is the caller and that bank is exactly the one it must not drop: a founded
+	// It answers "every bank whose database exists", which INCLUDES the founded
+	// and unadmitted bank the roster deliberately omits — a bank with a licence,
+	// a book and customers that no scheme has admitted. cmd/server's listener
+	// plan is the caller and that bank is the one it must not drop: a founded
 	// bank still has an operator, and the way in for it is Mesh.Admit.
 	//
 	// Nothing in the domain calls it and nothing should. An institution asking
@@ -110,8 +105,8 @@ type Stores interface {
 // of work: two batches, one commit, so a failure halfway cannot leave a bank
 // with a day of interest on its loans and none on its overdrafts.
 //
-// It is ONE interface over three schemas, and that is the shape Task 18c left
-// behind rather than an oversight. Go has no way to give the clearing house a Tx
+// It is ONE interface over three schemas. Go has no way to give a clearing house
+// a Tx
 // without PutBank on it, so every institution's store implements every method
 // and two thirds of them have no table underneath. A method reached on the wrong
 // institution's store is refused by a named sentinel — store/sqlite's
@@ -119,11 +114,8 @@ type Stores interface {
 // something a caller has to be able to handle and a test has to be able to
 // assert.
 //
-// What used to stand here said the network-scoped entities — banks, payments,
-// mandates, cycles, settlements — belonged to no single bank and lived under
-// ledger.NetworkBook. There is no network left for anything to belong to. Each
-// of those rows has exactly one owner, each owner has a database, and each row
-// is keyed and sequenced under that owner's book. See Network.book.
+// Every row it reaches has exactly one owner, each owner has a database, and
+// each row is keyed and sequenced under that owner's book. See Network.book.
 type Tx interface {
 	deposit.Tx
 	lending.Tx
@@ -134,11 +126,8 @@ type Tx interface {
 	// each lives in a different DATABASE: the bank's own record of itself, the
 	// settlement agent's record of the account it opened, the clearing house's
 	// record of where to send a message. Two of the three methods in each block
-	// below therefore answer sqlite.ErrNotInThisShape on any given store, which is
-	// the split being a fact rather than a convention. What made that split
-	// necessary is that the settlement agent used to have no record of its own
-	// members at all — it read the account it was to post to off the clearing
-	// house's row, which is a read no isolated institution could make.
+	// below therefore answer sqlite.ErrNotInThisShape on any given store, which
+	// is the split being a fact rather than a convention.
 	//
 	// The two BIC-keyed rows are keyed that way because the BIC is the only
 	// identifier that crosses an institutional boundary in this system. Neither
@@ -158,24 +147,19 @@ type Tx interface {
 	// PutSettlementMember and GetSettlementMember are the settlement agent's,
 	// called by OpenSettlementAccountTx and by settlementAccountTx — which is
 	// every reserve movement in the system, since SettleCycleTx, SettleReturnTx
-	// and ReserveBalance all resolve their account through it. PutRosterEntry
-	// and GetRosterEntry are the clearing house's, called by AdmitMemberTx and by
+	// and ReserveBalance all resolve their account through it. PutRosterEntry and
+	// GetRosterEntry are the clearing house's, called by AdmitMemberTx and by
 	// Network.GetRosterEntryByBIC, which is what the mesh's admission relay asks
-	// instead of being handed a whole bank. It starts from the BIC an acmt.007
-	// carries and so reads no bank row on the way — there was a second, id-keyed
-	// wrapper that did, and Task 18 deleted it along with the seven other callers
-	// that turned out to be holding an address already.
+	// instead of being handed a whole bank.
 	//
-	// ListSettlementMembers has two callers, and both arrived when the settlement
-	// agent got a database with no banks table in it. settlementLegsTx walks it to
-	// turn a cycle's net positions into legs, in the order the agent opened the
-	// accounts — it walked ListBanks, which is a read this institution cannot make
-	// — and api's GET /reserves reports one row per (member, asset) from it. Its
-	// ordering contract is therefore load-bearing twice over: it decides the entry
-	// order of a settlement transaction that is persisted. ListRosterEntries has had a caller
-	// since admission became a conversation — mesh.Mesh.joinRoster, which asks
-	// WHO IS A MEMBER rather than which banks exist, so that a founded and
-	// unadmitted bank gets no actor at startup.
+	// ListSettlementMembers has two callers: settlementLegsTx walks it to turn a
+	// cycle's net positions into legs, in the order the agent opened the
+	// accounts, and api's GET /reserves reports one row per (member, asset) from
+	// it. Its ordering contract is load-bearing because it decides the entry
+	// order of a settlement transaction that is persisted. ListRosterEntries'
+	// caller is mesh.Mesh.joinRoster, which asks WHO IS A MEMBER rather than
+	// which banks exist, so that a founded and unadmitted bank gets no actor at
+	// startup.
 	PutRosterEntry(ctx context.Context, e RosterEntry) error
 	GetRosterEntry(ctx context.Context, bic iso20022.BIC) (RosterEntry, error)
 	ListRosterEntries(ctx context.Context) ([]RosterEntry, error)
@@ -203,13 +187,11 @@ type Tx interface {
 	// GetPaymentByEndToEndID is: the row is keyed by an id this institution
 	// allocated, and the question arrives quoting somebody else's.
 	//
-	// It exists because SettleCycleTx used to answer that question out of the
-	// CYCLE — refusing anything that was not CycleClosed — and a settlement agent
-	// has no cycles table. A redelivered pacs.009 is the reachable case and it
-	// must not settle twice; the ledger's idempotency key would refuse the second
-	// POSTING, but only after the reserve check had already run against reserves
-	// the first settlement moved, which turns a duplicate into a spurious AM04.
-	// Same sentinel shape as the rest of this block: ErrSettlementNotFound.
+	// A redelivered pacs.009 is the reachable case and it must not settle twice;
+	// the ledger's idempotency key would refuse the second POSTING, but only
+	// after the reserve check had already run against reserves the first
+	// settlement moved, which turns a duplicate into a spurious AM04. Same
+	// sentinel shape as the rest of this block: ErrSettlementNotFound.
 	GetSettlementByCycle(ctx context.Context, id CycleID) (Settlement, error)
 	ListSettlements(ctx context.Context) ([]Settlement, error)
 
@@ -223,17 +205,13 @@ type Tx interface {
 	// makes the recorder in mesh/books_test.go see a bank reaching its own book
 	// when it books a settlement.
 	//
-	// ListSettlementAdvices has NO production caller — the only method in this
-	// interface with none — and it is not scaffolding any more. Its reader is
-	// payment/recon, the reconciliation harness Task 18e added: the harness holds
-	// every institution's advices against the settlement agent's own register, so
-	// that a movement the agent made and a member never booked can be told apart
-	// from a member's books simply being wrong. That comparison is the one thing
-	// no institution in this system may make, which is why its reader is a
-	// harness and not a caller. SettlementAdvice.ClosingBalance is still read by
-	// nothing, and Task 19 is still where a bank checks it against its own books.
-	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what pins
-	// the ordering contract.
+	// ListSettlementAdvices has NO production caller. Its reader is
+	// payment/recon, the reconciliation harness: it holds every institution's
+	// advices against the settlement agent's own register, so that a movement the
+	// agent made and a member never booked can be told apart from a member's
+	// books simply being wrong. That comparison is the one thing no institution
+	// in this system may make, which is why its reader is a harness and not a
+	// caller. SettlementAdvice.ClosingBalance is read by nothing.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
 	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
@@ -296,9 +274,7 @@ type Tx interface {
 //
 //   - Rollback spans all three layers: a failed Update undoes payment rows,
 //     deposit rows, ledger rows and audit appends written through the same Tx.
-//     It spans one INSTITUTION and no more, and that is not a limitation to be
-//     lifted: a unit of work is one database's, so the cycle another institution
-//     wrote in the same instant rolls back on its own terms or not at all.
+//     It spans one INSTITUTION and no more: a unit of work is one database's.
 //     (UpdateRollsBackAllThreeLayersTogether.)
 //
 //   - GetSettlementAdvice -> ErrSettlementAdviceNotFound. The key is

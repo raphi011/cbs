@@ -4,29 +4,29 @@
 //
 // Like the layers below it, the package holds no state of its own: banks, the
 // two rows the other institutions keep about them, payments, mandates, clearing
-// cycles and settlements all live in a Store (store/sqlite) behind the
-// payment.Store and payment.Tx interfaces declared here.
+// cycles and settlements all live in a Store behind the payment.Store and
+// payment.Tx interfaces declared here.
 //
-// There is no such thing as THE store. Since Task 18 there is one database per
-// institution — N member banks, the clearing house, the settlement agent — and
-// Stores is the set of them. A Network is one institution's handle on one of
-// them, so which rows an act can even see is decided by which institution is
-// performing it, and a method reaching for a table its institution's schema does
-// not create is refused by name. See Identity, Networks and Stores.
+// There is no such thing as THE store. There is one database per institution —
+// N member banks, the clearing house, the settlement agent — and Stores is the
+// set of them. A Network is one institution's handle on one of them, so which
+// rows an act can even see is decided by which institution is performing it,
+// and a method reaching for a table its institution's schema does not create is
+// refused by name. See Identity, Networks and Stores.
 //
 // # The model
 //
 // Several participant banks each keep their own book of accounts (a
-// ledger.Book, their general ledger) with a deposit.Register layered on top for
-// their customer accounts. A separate central-bank book holds a reserve account
-// per asset for every bank the scheme has ADMITTED — the central bank opens each
-// one itself, when it answers that bank's application, so a founded bank has
-// none. Each book is in its OWN database, so chart-of-accounts numbers, ID
-// counters and idempotency keys are per bank because they are per database, and
-// no transaction can span two of them: a unit of work is one institution's, and
+// ledger.Book) with a deposit.Register layered on top for their customer
+// accounts. A separate central-bank book holds a reserve account per asset for
+// every bank the scheme has ADMITTED — the central bank opens each one itself,
+// when it answers that bank's application, so a founded bank has none. Each
+// book is in its OWN database, so chart-of-accounts numbers, ID counters and
+// idempotency keys are per bank because they are per database, and no
+// transaction can span two of them: a unit of work is one institution's, and
 // two institutions acting on one event are two units of work with a message
-// between them. Banks only meet at the central bank — which is exactly what
-// makes the distinction between clearing and settlement real:
+// between them. Banks only meet at the central bank — which is what makes the
+// distinction between clearing and settlement real:
 //
 //   - Clearing is the exchange and netting of payment instructions. No central
 //     bank money moves; banks just agree on who owes whom.
@@ -42,10 +42,9 @@
 //
 // # One payment, three actors
 //
-// The package's central design fact is that no single function accepts a
-// payment any more. What used to be InitiatePaymentTx is three halves run by
-// three different institutions, and which half is which depends on the
-// scheme's direction:
+// No single function accepts a payment. Acceptance is three halves run by three
+// different institutions, and which half is which depends on the scheme's
+// direction:
 //
 //   - SubmitPaymentTx is the SUBMITTING bank's half. For a push that is the
 //     debtor half — the account, the asset, the address, the funds, and the
@@ -62,34 +61,30 @@
 //     and no bank refuses its own customer on account of it.
 //
 // A rejection splits the same way, into RejectAtCSMTx and ReverseDebtorLegTx,
-// and is the first operation here that can HALF-HAPPEN: between the two the
+// and is the one operation here that can HALF-HAPPEN: between the two the
 // payment is Rejected and the payer's money is still in clearing suspense.
-// RejectAtCSMTx documents that seam at length. Every rule above holds for
-// exactly one reason — the DEBTOR's bank posts the debtor leg — and the
-// direction only decides whether that bank is the one submitting or the one
-// answering.
+// RejectAtCSMTx documents that seam. Every rule above holds for one reason —
+// the DEBTOR's bank posts the debtor leg — and the direction only decides
+// whether that bank is the one submitting or the one answering.
 //
 // # Three acts a bank does with what it is TOLD
 //
-// One payment is three rows in three databases since Task 18d, so a bank's own
-// copy no longer advances because somebody else wrote on it. Every step of its
-// life at a member bank is that bank's own act, and there are exactly three:
+// One payment is three rows in three databases, so a bank's copy never advances
+// because somebody else wrote on it. Every step of its life at a member bank is
+// that bank's own act, and there are exactly three:
 //
 //   - AcceptAtBankTx records that the clearing house took the payment into a
-//     cycle. It posts NOTHING, which is what makes it look unnecessary — no
-//     money moves when a payment is accepted. What it does is REMEMBER, because
-//     a bank's copy that jumped from instructed to settled could not answer the
-//     question a customer asks in between and would leave this bank's own audit
-//     log with a hole in the middle of its own payment's life.
+//     cycle. It posts NOTHING — no money moves when a payment is accepted. What
+//     it does is REMEMBER: a copy that jumped from instructed to settled could
+//     not answer the question a customer asks in between, and would leave this
+//     bank's audit log with a hole in the middle of its own payment's life.
 //   - RejectAtBankTx records the rejection and reverses the debtor leg, and the
 //     two commit together: a bank that cannot give the money back does not
 //     record the rejection either.
 //   - SettleAtBankTx records that the payment settled, and — only if this bank
 //     holds the payee — releases the money out of its clearing suspense into
 //     that customer's account. The status is the unconditional half and the
-//     posting is the conditional one, which is the reverse of how it read when
-//     this function was PostCreditorLegTx and being the payee's bank was a
-//     precondition.
+//     posting is the conditional one.
 //
 // Which bank reaches which status when is not uniform and is not a defect. The
 // ACCP goes to the bank waiting for the answer to its instruction and to no
@@ -98,15 +93,14 @@
 // legal edge at a bank and not at the clearing house. Neither bank is wrong;
 // they were told different things because they asked different things.
 //
-// A RETURN is the same shape a third time, and it is the one where the split
-// decides who may say no:
+// A RETURN is the same shape again, and it is the one where the split decides
+// who may say no:
 //
 //   - PostReturnLegTx is a BANK posting the customer leg it owns. The clawback
 //     is always the CREDITOR's bank's, out of the account its creditor leg
 //     actually credited; the refund is always the DEBTOR's bank's, into the
 //     payer's account. Which of the two the RETURNING bank holds is what the
-//     scheme's direction decides (ReturnerOf), and that is the whole of what it
-//     decides.
+//     scheme's direction decides (ReturnerOf).
 //   - SettleReturnTx is the SETTLEMENT AGENT's half: the reserve reversal
 //     between the two members' settlement accounts, in the central bank's own
 //     book, plus a statement for each. It reads no payment row, because a
@@ -120,29 +114,22 @@
 // IT BEFORE IT SENDS. The returning bank posts first, so its refusal costs
 // nothing and is an error to its caller rather than a message. The other bank
 // posts after the reserves have moved and cannot refuse, which is why
-// BankAccounts.ReturnsReceivable is reached on one side and not the other:
-// every bank is opened one per asset, and the bank that must force a posting
-// into it is the one that first hears about the return when it is already
-// final.
+// BankAccounts.ReturnsReceivable is reached on one side and not the other.
 //
 // # One admission, three institutions
 //
-// The same split a fourth time, about a bank rather than a payment, and it is
-// the one that dissolved this package's central type. Participant used to carry
-// the bank's own record, the central bank's settlement account and the clearing
-// house's routing entry on one row — so the settlement agent read the account it
-// was to post to off the CLEARING HOUSE's row, which is a read no isolated
-// institution could make. Three rows now, one writer each: Bank,
-// SettlementMember, RosterEntry.
-//
-// Four acts follow from that, and each is one institution's unit of work:
+// The same split about a bank rather than a payment. The bank's own record, the
+// central bank's settlement account and the clearing house's routing entry are
+// three rows with one writer each — Bank, SettlementMember, RosterEntry — so no
+// institution resolves an account off another institution's row. Four acts
+// follow, each one institution's unit of work:
 //
 //   - FoundBankTx is the BANK building itself — its book, its chart of
 //     accounts, its internal accounts per asset, its default deposit product.
 //     It comes out Founded, which is a bank with a licence and no place in a
-//     scheme: it can open customer accounts and take cash in, which lands in its
-//     own vault, and it cannot LODGE that cash — putting it on reserve needs the
-//     central bank to credit an account in the central bank's own book.
+//     scheme: it can open customer accounts and take cash in, which lands in
+//     its own vault, and it cannot LODGE that cash — putting it on reserve
+//     needs the central bank to credit an account in the central bank's book.
 //   - OpenSettlementAccountTx is the SETTLEMENT AGENT opening one account, in
 //     one asset, in its own book, and recording that it holds it. Idempotent
 //     per (BIC, asset), because one acmt.007 asks for one currency and a
@@ -155,11 +142,8 @@
 //
 // Nothing in this package composes them. What runs them in order is a
 // CONVERSATION — mesh.Mesh.Admit and the three handlers the acmt.007 and
-// acmt.010 reach — and the guarantee that went with the composition is the
-// reversal this sub-project set out to make: a bank could never exist without
-// the accounts it needs, and no real admission ever had that. A bank is
-// licensed and built before any scheme has heard of it, and what follows is a
-// request that can be refused.
+// acmt.010 reach. A bank is licensed and built before any scheme has heard of
+// it, and what follows is a request that can be refused.
 //
 // # Schemes
 //
@@ -179,15 +163,14 @@
 //
 // Two schemes are designed for but not yet implemented:
 //
-//   - Instant payments (real-time gross settlement). The Scheme already
-//     exposes SettlementModel (Net/Gross); what remains is a settlement path
-//     that branches on it, settling a Gross payment immediately and per-payment
-//     rather than through a clearing cycle. SettleCycle currently implements
-//     only the netted path, so this is the one place the orchestrator must grow.
+//   - Instant payments (real-time gross settlement). Scheme already exposes
+//     SettlementModel (Net/Gross); what remains is a settlement path that
+//     branches on it, settling a Gross payment immediately and per-payment
+//     rather than through a clearing cycle. SettleCycle implements only the
+//     netted path, so this is the one place the orchestrator must grow.
 //   - Card schemes (authorise/capture then clear). The authorisation is a
 //     deposit hold and the capture becomes the debtor leg; clearing and
-//     settlement reuse the existing net machinery. This slots in cleanly now
-//     that holds live in the deposit layer.
+//     settlement reuse the existing net machinery.
 //
 // See README.md ("Next Work") for the details.
 //
@@ -199,34 +182,19 @@
 //     renders and reads every one of them: the payment family (pacs.008,
 //     pacs.003, pacs.002, pacs.004, pacs.009), the statement a settlement agent
 //     sends its members (camt.053), and the account-management family an
-//     admission is carried on (acmt.007, acmt.010, acmt.011). Package mesh is
-//     what carries them between the institutions as marshalled bytes, so they
-//     are parsed on arrival rather than passed as structs.
+//     admission is carried on (acmt.007, acmt.010, acmt.011). Package mesh
+//     carries them between institutions as marshalled bytes, so they are parsed
+//     on arrival rather than passed as structs.
 //
-//     Two readers are worth naming for what they are FOR rather than for what
-//     they parse. ReadReturn is read by two actors — mesh/centralbank.go turns
-//     an arriving pacs.004 into a ReturnInstruction for SettleReturnTx, which
-//     reads no payment row at all, and mesh/bank.go reads the relayed copy the
-//     same way to post its own customer leg — and that pair is a settlement
-//     agent resolving accounts from OrgnlTxRef instead of from a row it may no
-//     longer hold. ReadAdmissionAcknowledgement is read by two more, for the
-//     same kind of reason: the clearing house takes a routing entry out of it
-//     and the joining bank takes the settlement account numbers it will quote
-//     for the rest of its life at that agent, and neither of them could have
-//     known either before the message arrived.
-//
-//     What is absent is pain.001/pain.008 customer initiation (an instruction
-//     arrives over this repository's REST API instead), the rest of the camt
-//     reporting family — including camt.054 and the admi.002 a real receiver
-//     answers an unreadable file with — camt.056/pacs.007 recalls and
-//     reversals, runtime XSD validation, and message signing. There IS a
-//     golden-file check against the real schemas — `make test-schemas`, which
-//     sets ISO20022_REQUIRE_SCHEMAS=1 so that a missing schema fails rather
-//     than skips — but the schemas themselves are gitignored, because they are
-//     ISO's to redistribute rather than this repository's to vendor. So it
-//     passes where somebody has fetched them into iso20022/testdata/xsd and
-//     skips everywhere else, and no document is validated at RUNTIME on any
-//     machine.
+//     Absent: pain.001/pain.008 customer initiation (an instruction arrives
+//     over this repository's REST API instead), the rest of the camt reporting
+//     family — including camt.054 and the admi.002 a real receiver answers an
+//     unreadable file with — camt.056/pacs.007 recalls and reversals, runtime
+//     XSD validation, and message signing. There IS a golden-file check against
+//     the real schemas (`make test-schemas`), but the schemas themselves are
+//     gitignored as ISO's to redistribute rather than this repository's to
+//     vendor, so it passes only where somebody has fetched them into
+//     iso20022/testdata/xsd and no document is validated at RUNTIME anywhere.
 //
 //     Nor is there any batching of customer payments: a pacs.008 or pacs.003
 //     built here carries exactly one transaction and one arriving with several
@@ -236,65 +204,53 @@
 //   - No identifier format validation: an IBAN's check digit, length and
 //     country code go unchecked, and a participant's BIC is checked for
 //     structure only — there is no directory to look it up in. Addresses
-//     resolve by lookup against
-//     deposit.Identifier, not by parsing — literally, with one exception the
-//     readable stored form forces: an IBAN is compared with its display
-//     separators removed from both sides (deposit.Identifier.MatchValue), so
-//     that the SE89-AURORA-1001 this system stores and the SE89AURORA1001 a
-//     pacs.008 carries are the one address they are. No other scheme is
-//     normalised.
+//     resolve by lookup against deposit.Identifier, not by parsing, with one
+//     exception the readable stored form forces: an IBAN is compared with its
+//     display separators removed from both sides
+//     (deposit.Identifier.MatchValue), so that the SE89-AURORA-1001 this system
+//     stores and the SE89AURORA1001 a pacs.008 carries are the one address they
+//     are. No other scheme is normalised.
 //
 //   - Many assets, but no exchange between them. Accounts and schemes are
 //     denominated in one of the known assets and transactions balance per
 //     asset, so the multi-asset accounting is real — what is missing is
-//     conversion. There are no rates, no FX trade and no position accounts,
-//     so a payment whose two ends differ in asset is refused with
-//     ErrAssetMismatch rather than converted. Amounts are ledger.Amount,
-//     integer minor units.
+//     conversion. There are no rates, no FX trade and no position accounts, so
+//     a payment whose two ends differ in asset is refused with ErrAssetMismatch
+//     rather than converted. Amounts are ledger.Amount, integer minor units.
 //
 //   - One database transaction stands in for a settlement window, and it is ONE
-//     institution's. payment.Tx embeds deposit.Tx embeds ledger.Tx, so a single
-//     transaction reaches all three layers of the database it is open on —
-//     which is the settlement agent's own, and no other. SettleCycle moves the
-//     netted reserves inside one Store.Update, so a net payer that cannot cover
-//     its position aborts the whole batch. That is the essence of a real RTGS
-//     settlement window: the settlement agent holds the participants' reserve
-//     accounts, checks that every payer can cover, and posts all of it or none.
-//     This entry used to add that every book lived in the same Store, told apart
-//     by ledger.BookID, and that is what Task 18 removed — the window could not
-//     have spanned the members afterwards even if the design had wanted it to.
-//     What that window no longer spans is the MEMBERS. Both legs in a member's
-//     own book used to be in this unit of work: the mirror leg is the member's
-//     own posting now, made from the statement SettleCycle hands back (see
+//     institution's — the settlement agent's. SettleCycle moves the netted
+//     reserves inside one Store.Update, so a net payer that cannot cover its
+//     position aborts the whole batch. That is the essence of a real RTGS
+//     window: the settlement agent holds the participants' reserve accounts,
+//     checks that every payer can cover, and posts all of it or none.
+//
+//     The window does not span the MEMBERS. A member's mirror leg is its own
+//     posting, made from the statement SettleCycle hands back (see
 //     PostSettlementAdviceTx), and the creditor leg is the payee's bank's, made
 //     from the clearing house's per-payment advice (see SettleAtBankTx). The
 //     interval between the central bank's commit and a member's is the
 //     unreconciled position, and it is modelled rather than hidden — see
-//     SettleCycle.
-//     A RETURN's window used to span the members too, and that exception is
-//     gone: ReturnPaymentTx composed every institution's act inside one
-//     Store.Update, and Task 16e deleted it once mesh could carry the
-//     conversation instead. What is left is SettleReturnTx — the reserve
-//     reversal, in the central bank's own book, reading no payment at all — with
-//     each customer leg its own bank's act (PostReturnLegTx) and each reserve
-//     mirror booked from a camt.053, exactly as at a cut-off.
+//     SettleCycle. A return works the same way: SettleReturnTx is the reserve
+//     reversal alone, each customer leg is its own bank's act
+//     (PostReturnLegTx), and each reserve mirror is booked from a camt.053.
+//
 //     What a real system adds is what happens next — queueing the batch,
 //     running a liquidity-saving optimisation, unwinding the defaulter, or
 //     extending intraday credit. Here the batch simply fails and can be retried
-//     once the member has LODGED — which since Task 18a is two acts and not one:
-//     cash paid in reaches the bank's own vault, and putting it on reserve is a
-//     camt.050 to the central bank (see LodgeReservesTx). A deposit alone no
-//     longer unsticks a refused settlement, because settlement reads the central
-//     bank's book and a deposit never touches it. See Network for details.
+//     once the member has LODGED, which is two acts and not one: cash paid in
+//     reaches the bank's own vault, and putting it on reserve is a camt.050 to
+//     the central bank (see LodgeReservesTx). A deposit alone does not unstick
+//     a refused settlement, because settlement reads the central bank's book
+//     and a deposit never touches it.
 //
-//     What is no longer standing in for anything is who ASKS. The window is
-//     instructed: closing a cycle emits a pacs.009 carrying the net positions,
-//     and the central bank decides. Its refusal is a pacs.002 — RJCT/AM04 when
-//     a net payer's reserve cannot cover its position — rather than a Go error
-//     handed back to whoever pressed settle, which is not something a clearing
-//     house could act on. A refusal is told to NOBODY else: nothing was posted,
-//     so every payment is exactly where the cut-off left it, and the failure
-//     shows on the cycle, which stays Closed with no settlement against it.
+//     Who ASKS is not stood in for either. The window is instructed: closing a
+//     cycle emits a pacs.009 carrying the net positions, and the central bank
+//     decides. Its refusal is a pacs.002 — RJCT/AM04 when a net payer's reserve
+//     cannot cover its position — rather than a Go error handed back to whoever
+//     pressed settle. A refusal is told to NOBODY else: nothing was posted, so
+//     every payment is where the cut-off left it, and the cycle stays Closed
+//     with no settlement against it.
 //
 //   - Returns settle immediately rather than through a later R-cycle.
 //

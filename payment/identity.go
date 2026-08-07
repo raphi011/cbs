@@ -13,23 +13,13 @@ import (
 //
 // # Why this is constructor state and not a per-call argument
 //
-// It was an argument until Task 18b, on nine methods, and every one of them
-// spelled it `by`. The mesh's actors passed their own id — bank.pid, and its
-// doc said in as many words that it was "a loan and not the answer" — because
-// nothing in this package could check it. That is the shape a per-call identity
-// has: the caller asserts who it is, the act believes it, and the guard behind
-// it ("is this bank a party to this payment?") is the only thing standing
-// between a handler and another member's book. Ten methods, ten assertions, and
-// the assertion is made in the layer that would have to be wrong for the guard
-// to matter.
-//
-// As constructor state it is not asserted at all. A Network is one institution's
-// handle on the system, the way a Book is one book's; there is no call at which
-// a different answer could be given, so there is no call at which the wrong one
-// could be given. That is also the whole reason this is Task 18b and not part of
-// 18d: once each entity has a store of its own, the identity is what SELECTS the
-// store, and a value that arrives per call cannot select the thing the call is
-// already running against.
+// As a per-call argument the caller asserts who it is and the act believes it,
+// so the domain's own guard ("is this bank a party to this payment?") is the
+// only thing between a handler and another member's book. As constructor state
+// it is not asserted at all: a Network is one institution's handle on the system,
+// the way a Book is one book's, and there is no call at which a different answer
+// could be given. It is also what SELECTS the store, which a value arriving per
+// call could not do.
 //
 // What it does not become is authorization. Nothing verifies that the process
 // holding a bank's Network is that bank — the composition root hands it out (see
@@ -64,22 +54,13 @@ const (
 // deposit register and whose customers this network's acts are about.
 //
 // It is the only one of the three that carries a value, and ONE value is all
-// there is to carry. A bank's ParticipantID, its BookID, its BIC and the name of
-// its database are the same string since Task 18 — see Network.book and
-// FoundBankTx. This doc used to explain why the BookID and the BIC were not
-// stored beside the id: the book because a bank IS its own book, so a copy could
-// only be the same answer or a wrong one, and the BIC because every act that
-// needed one read it off the bank's own row. The first reason survives and the
-// second is what collapsed: reading the BIC off a row was fine while the row was
-// this bank's, and eight readers in mesh were doing it to OTHER banks' rows, in
-// databases they no longer hold.
+// there is to carry: a bank's ParticipantID, its BookID, its BIC and the name of
+// its database are the same string. See Network.book and FoundBankTx.
 //
 // The type stays ParticipantID rather than iso20022.BIC because the two say
 // different things at a call site — which participant is acting, versus which
 // address a message is going to — and because iso20022.BIC is where the
-// structural rule lives and this is not the layer that validates it. Whether
-// that distinction is worth two types over one value is worth revisiting once
-// the wiring has settled.
+// structural rule lives and this is not the layer that validates it.
 func AsBank(pid ParticipantID) Identity { return Identity{role: roleBank, pid: pid} }
 
 // AsClearingHouse is the CSM's identity: it clears, it nets, it routes, and it
@@ -124,12 +105,9 @@ func (i Identity) String() string {
 // listener to the single Network its surface belongs to, and the mesh takes one
 // and gives each actor its own. Nothing downstream of those two holds a second.
 //
-// It was pure wiring at Task 18b — all N+2 Networks it minted shared the one
-// Store it was built with — and the note where this paragraph is said that when
-// each entity got a store of its own, the store would become a property of the
-// entity being asked for and the change would be INSIDE this type. That is what
-// happened, and it cost exactly one thing above it: Bank takes a context and
-// returns an error, because opening a database can fail. See Stores.
+// The store is a property of the entity being asked for, which costs one thing:
+// Bank takes a context and returns an error, because opening a database can
+// fail. See Stores.
 type Networks struct {
 	stores Stores
 	clock  func() time.Time
@@ -149,9 +127,7 @@ type Networks struct {
 	// they did it.
 	//
 	// So registering a scheme on any network this mints registers it on all of
-	// them, and that survives Task 18d unchanged: separate STORES are the point,
-	// separate scheme registries never were. The mesh's usdCT fixture and
-	// payment's dollarPush are what measure it.
+	// them: separate STORES are the point, separate scheme registries are not.
 	schemes *schemeRegistry
 }
 
@@ -169,9 +145,8 @@ func newSchemeRegistry() *schemeRegistry {
 	return &schemeRegistry{m: make(map[SchemeID]Scheme)}
 }
 
-// NewNetworks builds the factory. It performs no I/O, for NewNetwork's reason —
-// and, since Task 18d, for a second one: opening a bank's database is Stores'
-// job and it happens when a bank is asked for, not when the factory is built.
+// NewNetworks builds the factory. It performs no I/O: opening a bank's database
+// is Stores' job and happens when a bank is asked for.
 func NewNetworks(stores Stores, clock func() time.Time) *Networks {
 	return &Networks{stores: stores, clock: clock, schemes: newSchemeRegistry()}
 }
@@ -219,7 +194,4 @@ func (n *Networks) CentralBank() *Network {
 // that has to reach all of them at once — clearing the system is the only such
 // caller, and it is nobody's act in the domain — can do it without first
 // choosing an institution to do it as.
-//
-// It replaces Store, which handed back the ONE store every network shared. There
-// is no such store: that is the task.
 func (n *Networks) Stores() Stores { return n.stores }

@@ -12,12 +12,6 @@ import (
 // other, which is what stopped the settlement agent borrowing the clearing
 // house's records.
 //
-// It is what the settlement agent used to do without. Every reserve movement in
-// this system resolved its account through the BANK's row —
-// Bank.Assets[asset].Settlement — so a settlement agent given its own database
-// would have had nothing to settle from. That is the deeper half of dissolving
-// the participant row, and it is why this is a row rather than a lookup.
-//
 // # What reads it
 //
 // settlementAccountTx, which is the only way anything in this package now turns
@@ -30,11 +24,6 @@ import (
 // the account holder's rather than the servicer's: DepositTx quoting its own
 // account number to fund a deposit, and PostSettlementAdviceTx checking that an
 // arriving statement is about the account this bank holds. See BankAccounts.
-//
-// The row was written a task before it was read. A single task that both
-// introduced it and re-pointed the readers would have had to backfill every
-// existing member in the same change, and the split would have been invisible
-// until then.
 //
 // # It is keyed by BIC and by nothing else
 //
@@ -68,8 +57,7 @@ type SettlementMember struct {
 	// reason Bank.Assets is keyed rather than flat.
 	//
 	// The account ids in it are the central bank's own, allocated in its own
-	// book. This is the record whose absence would leave a split-out settlement
-	// agent unable to post.
+	// book.
 	Accounts map[ledger.AssetCode]ledger.AccountID
 
 	// OpenedAt is when this institution opened the accounts, which is not
@@ -96,29 +84,17 @@ type SettlementMember struct {
 // AdmitMemberTx, the clearing house's act, writes this row from an
 // acknowledgement it did not originate.
 //
-// # It carried a NAME, and the message that writes it has none
+// # There is no NAME on it, because the message that writes it has none
 //
-// The row had a Name until the acmt.010 that produces it was read.
 // AccountRequestAcknowledgementV03 identifies the account owner with an
 // OrganisationIdentification29 — a BIC, an LEI, generic identifiers — and
 // carries no legal name, no country and no address anywhere; the REQUEST names
-// the applicant with an Organisation33 and the answer does not. So a name on
-// this row would be a field asserting something no message delivered, and the
-// only way to fill it was for the clearing house to remember the application
-// across the relay.
+// the applicant with an Organisation33 and the answer does not. A name here
+// would assert something no message delivered.
 //
-// It is gone rather than propped up, and the deciding fact is that nothing read
-// it. Every reader of this row in mesh — the debtor lookup, the submitter
-// lookup, the settlement fan-out's recipient, the returner — takes the BIC and
-// touches nothing else, and ListParticipants reads bank rows. A field whose only
-// writer existed to fill it and whose only reader was that writer is the shape
-// this sub-project has refused twice.
-//
-// What it costs is exactly nothing that routing needs, which is the principle
-// this row is built on rather than the enumeration it was built from. A bank's
-// legal name lives where it was told to somebody: on the bank's own row, and on
-// the settlement agent's SettlementMember, which learns it from the acmt.007's
-// Org/FullLglNm and names the account it opens after it.
+// A bank's legal name lives where it was told to somebody: on the bank's own
+// row, and on the settlement agent's SettlementMember, which learns it from the
+// acmt.007's Org/FullLglNm and names the account it opens after it.
 type RosterEntry struct {
 	BIC iso20022.BIC
 
@@ -129,14 +105,12 @@ type RosterEntry struct {
 	//
 	// Its reader is Network.bothBanksAreMembersTx, from AcceptAtCSMTx: the
 	// clearing house will not take a payment into a cycle unless both banks are
-	// admitted in the scheme's asset. That reader was added after the field, and
-	// the field had none in the meantime — the shape that deleted Name out of
-	// this same row. What makes it a reader and not a formality is the
+	// admitted in the scheme's asset. The case that makes it load-bearing is the
 	// PARTLY-ADMITTED bank: one acmt.007 asks for one currency, so a two-asset
-	// admission commits twice and a settlement agent that answers one and refuses
-	// the other leaves a Member with internal accounts in both assets and a
-	// settlement account in one. Nothing else in the system would refuse its
-	// payments in the other asset, and the cut-off could not build their pacs.009.
+	// admission commits twice, and an agent that answers one and refuses the
+	// other leaves a Member with internal accounts in both assets and a
+	// settlement account in one. Nothing else would refuse its payments in the
+	// other asset, and the cut-off could not build their pacs.009.
 	//
 	// Being a slice, it is ORDERED and it can REPEAT, and the store must answer
 	// for both — its child table is keyed by POSITION for exactly that reason,
