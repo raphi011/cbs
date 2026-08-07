@@ -65,13 +65,9 @@ import (
 // BEFORE it composes the pacs.004, and that ordering is the whole of why a
 // refusal binds. See returnPayment and payment.PostReturnLegTx.
 //
-// This paragraph used to say the opposite: that a returning bank's half moved
-// nothing at all, because every posting a return made was the settlement
-// agent's. Half of that is still exactly right — the reserve reversal is
-// central-bank money and no member bank may move it — and the half that was
-// wrong is that a return's CUSTOMER legs were ever the settlement agent's to
-// make. Each belongs to the bank whose customer it moves, and Task 16e gave
-// each bank its own.
+// The reserve reversal is central-bank money and no member bank may move it. A
+// return's CUSTOMER legs are not reserves: each belongs to the bank whose
+// customer it moves, and each bank posts its own.
 //
 // The OTHER bank plays the fifth role and it is the counterpart of the fourth:
 // it is sent the pacs.004 after finality (receiveReturn) and posts the leg the
@@ -90,10 +86,9 @@ import (
 // a camt.053 from the settlement agent, and books its own mirror leg from it
 // (receiveStatement). It produces no pacs.002, because a statement is not an
 // instruction: the settlement has already happened and there is nothing to
-// accept or refuse. It used to be the ONE inbound message here with that
-// property; receiveReturn is the second, for a related reason — see its own
-// doc. It is still the only role in which this bank posts without any customer
-// of its own being involved: what moves is its own position at the central bank.
+// accept or refuse. It is the only role in which this bank posts without any
+// customer of its own being involved: what moves is its own position at the
+// central bank.
 //
 // # A seventh role, played once, before this actor was addressable
 //
@@ -113,8 +108,6 @@ type bank struct {
 	// Mesh.banks.
 	bic iso20022.BIC
 
-	// There is no pid field, and its absence is Task 18b.
-	//
 	// There was one, and it was passed down to nine of the methods on bankOps —
 	// which participant is posting this leg, whose register resolves this
 	// address, which member this statement is about. Its own doc called it "a
@@ -140,20 +133,15 @@ type bank struct {
 // whole reason this takes the sender as an argument rather than reading it out
 // of the header: the header is exactly what is unreadable.
 //
-// A message type this bank has no handler for is an ERROR and not a shrug. The
-// pacs.004 used to be one of them: a bank in this system SENT a return and was
-// never sent one, because the settlement agent made every one of a return's
-// postings in one unit of work, including the refund into the payer's bank's own
-// book.
+// A message type this bank has no handler for is an ERROR and not a shrug.
 //
-// It has an arm now, and that arm is the substance of Task 16e rather than a
-// completeness exercise. In a real network the pacs.004 travels to the bank that
+// The pacs.004 has an arm because in a real network it travels to the bank that
 // did not ask for the return, and that bank moves its own customer's money
-// itself; here it does too. Which of the two banks is sent one follows from the
-// direction — the payer's bank on a push, the payee's bank on a pull — and
-// neither this handler nor the clearing house decides it: the domain refuses a
-// bank that is not that leg's owner (payment.ErrNotAPartyToThisReturn). See
-// receiveReturn, and the return flow in the package doc.
+// itself. Which of the two banks is sent one follows from the direction — the
+// payer's bank on a push, the payee's bank on a pull — and neither this handler
+// nor the clearing house decides it: the domain refuses a bank that is not that
+// leg's owner (payment.ErrNotAPartyToThisReturn). See receiveReturn, and the
+// return flow in the package doc.
 //
 // The two acmt arms are the answers to this bank's OWN admission, and the
 // acmt.007 is deliberately not among them: a bank composes an application and is
@@ -243,14 +231,11 @@ func (b *bank) submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 //
 // # It posts BEFORE it sends, and that is the return's one rule
 //
-// The paragraph this replaces said the opposite — "this one posts nothing at
-// all, in either direction" — and gave a reason that was half right: the
-// reserve reversal moves central-bank money and no member bank may make it. It
-// does not follow, and it used to be treated as though it did, that a return's
-// CUSTOMER legs are the settlement agent's. This bank posts the leg it owns:
-// the clawback if it is the creditor's bank, the refund if it is the payer's.
-// payment.PostReturnLegTx decides which, from the payment rather than from
-// anything this handler passes it.
+// This bank posts the leg it owns: the clawback if it is the creditor's bank,
+// the refund if it is the payer's. payment.PostReturnLegTx decides which, from
+// the payment rather than from anything this handler passes it. The reserve
+// reversal is not among them — that moves central-bank money and no member bank
+// may make it.
 //
 // The ordering is what makes a refusal BIND. On a push this bank is the payee's
 // bank and holds the clawback, so a payee who has already spent the money stops
@@ -389,38 +374,20 @@ func returnReasonOf(env iso20022.Envelope) string {
 //
 // # Own register, and the two tasks it took
 //
-// Task 14 narrowed which PARTY goes through the resolution and this doc used to
-// say, at length, that it had not narrowed the resolution itself: the one
-// address that reached ResolveIdentifierTx was still looked for in every
-// member's register, so AC01 fired only when NOBODY in the network held the
-// creditor's IBAN and an address some other bank happened to hold still
-// resolved. Task 18a narrowed the lookup and Task 18b removed the argument it
-// needed: the register searched is the one belonging to this actor's own
-// payment.Network.
+// The register searched is the one belonging to this actor's own
+// payment.Network, so AC01 fires whenever THIS bank does not hold the creditor's
+// IBAN.
 //
-// What that changes is not the happy path — a message correctly routed here is
-// about this bank's own customer either way — but the WRONGLY routed one. Since
-// Task 18a the counterparty's BIC is asserted by the payer rather than derived
+// That matters on the WRONGLY routed message rather than on the happy path. The
+// counterparty's BIC is asserted by the payer rather than derived
 // (payment.SubmitPaymentTx says why it has to be), so this handler is what a
-// misdirected credit transfer reaches. Under the sweep it would have found the
-// payee at the payee's real bank and accepted a payment for another bank's
-// customer; now it holds no such address and answers AC01. See
-// mesh/books_test.go's TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// misdirected credit transfer reaches — and it holds no such address, so it
+// answers AC01. See mesh/books_test.go's
+// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
 // Second: does this bank's own half check out? That is AcceptInbound: the payee's
 // account exists, is in the scheme's asset, is addressable, and can take a
 // credit.
-//
-// The request the first question produces is deliberately discarded. In a real
-// network it would BE the payment — the receiving bank has no record of one until
-// this message arrives, so it would create its own from what the message says.
-// Here both banks read one payment row out of one store, so the second half loads
-// it by the identifier the message carries (PmtId/TxId) and there is nothing for
-// the request to become. That gap is not a defect in this handler; it is the
-// shared store, and closing it is sub-project 8's whole subject. The narrowing
-// above sharpens the loss rather than closing it: what is discarded is now only
-// this bank's own resolved half plus the debtor's asserted details, never a
-// resolution of the debtor's account this bank had no business making.
 func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
 	orig := payment.OriginalMessage{
@@ -462,10 +429,9 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 // has no way of knowing it.
 //
 // That is also why own-register resolution matters more on this side than on the
-// push. A collection addressed to the wrong bank used to resolve the payer
-// through the sweep and post the debit in the PAYER'S BANK'S BOOK — the
-// collecting bank moving another bank's customer's money. Now the bank that was
-// wrongly named holds no such address and answers AC01 before anything posts.
+// push: a collection addressed to the wrong bank must not resolve the payer and
+// post the debit in the PAYER'S BANK'S BOOK. The bank that was wrongly named
+// holds no such address and answers AC01 before anything posts.
 //
 // The resolved request is discarded for the same reason receiveCreditTransfer
 // discards its own — one store, one payment row, loaded by the identifier the
@@ -494,11 +460,9 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 // because the direction changes what the half DOES and not what this actor does
 // about it.
 //
-// The REQUEST goes through it since Task 18d, which is the change both receive
-// handlers' docs said was coming. It is no longer the discarded by-product of the
-// first question: this bank has no row for the payment, so what the resolution
-// produced IS the payment, written here under the id the message carries in
-// PmtId/TxId. See payment.AcceptInboundTx.
+// The REQUEST goes through it: this bank has no row for the payment, so what the
+// resolution produced IS the payment, written here under the id the message
+// carries in PmtId/TxId. See payment.AcceptInboundTx.
 //
 // The id and the request come off the same message and are passed separately,
 // which is worth one line: a request describes an instruction and carries no id,
@@ -647,11 +611,9 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		}
 		if r.Status == iso20022.TransactionStatusSettlementCompleted {
 			// ACSC. Both recipients record it on their own copy, and only the
-			// payee's bank posts anything — see payment.SettleAtBankTx, which is
-			// where being the creditor's bank stopped being a precondition and
-			// became a branch. A bank that is party to NEITHER side is refused,
-			// and mostly by the store: it has no row for a payment it was never
-			// sent.
+			// payee's bank posts anything — see payment.SettleAtBankTx. A bank that is
+			// party to NEITHER side is refused, and mostly by the store: it has no row
+			// for a payment it was never sent.
 			if _, err := b.ops.SettleAtBank(ctx, payment.PaymentID(r.TxID)); err != nil {
 				return fmt.Errorf("mesh: %s could not settle its own half of %s: %w", b.bic, r.TxID, err)
 			}
@@ -673,12 +635,6 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 		}
 		// The decision goes onto this bank's OWN copy, and the payer's money comes
 		// back in the same unit of work if this bank is the one holding it.
-		//
-		// This handler used to make three judgements before calling anything: it
-		// read the payment, looked its scheme up to work out who had submitted,
-		// refused a bank that was neither that nor the payer's, and refused again
-		// unless the row already said Rejected. All four steps are gone and the
-		// act is one call.
 		//
 		// The last of them was the whole safety argument — ReverseDebtorLegTx looks
 		// at no status — and it worked because the CLEARING HOUSE had written
@@ -715,12 +671,11 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 // yet" look the same from outside.
 //
 // What a failure produces instead is an ERROR, which this transport turns into a
-// dead letter. That is the whole of the price of not answering, and it is a real
-// one: the return is settled at the central bank and this bank's customer leg
-// is missing, which leaves the payment Settled for ever with one leg standing in
-// the other bank's book. Nothing in this flow can put that back — the reserves
-// are final — so it is a case for Task 19's reconciliation and not for a
-// message. See centralBank.advise, which records the same shape one hop up.
+// dead letter. That is a real price: the return is settled at the central bank
+// and this bank's customer leg is missing, which leaves the payment Settled for
+// ever with one leg standing in the other bank's book. Nothing in this flow can
+// put that back — the reserves are final — so it is payment/recon's to find. See
+// centralBank.advise, which records the same shape one hop up.
 //
 // # Which leg, and whose business it is
 //
@@ -743,9 +698,8 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 // payment.ReadReturn, which is also what centralBank.receiveReturn calls. This
 // bank holds a payment row of its OWN and could read the reason off that
 // instead; the message is what it reads, because the message is what a bank in a
-// real network has. The row this argument used to point at — one shared row both
-// banks read — is gone, so what was a discipline is now also the only option for
-// anything the other bank decided.
+// real network has — and it is the only source for anything the other bank
+// decided.
 //
 // The loop is over what the reader returns, and that is written for what the
 // reader can PRODUCE rather than for what this flow sends. ReadReturn holds a
@@ -771,12 +725,6 @@ func (b *bank) receiveReturn(ctx context.Context, from iso20022.BIC, doc *iso200
 // settlement agent did with it.
 //
 // # An ACSC needs nothing from this bank, and a REFUSAL does
-//
-// That is the reverse of what this doc used to say, and the reversal is the
-// whole of Task 16e in one handler. It used to read: neither outcome gives this
-// bank anything to post, because a return that went through was made entirely at
-// the settlement agent — this bank's own customer leg among them — and a refused
-// return had posted nothing anywhere, so the payment was exactly where it was.
 //
 // Both halves have flipped. This bank posts its own leg BEFORE it sends the
 // pacs.004 (returnPayment, payment.PostReturnLegTx), so:
@@ -819,11 +767,9 @@ func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) e
 		if r.Status != iso20022.TransactionStatusRejected {
 			// An ACSC, and it is WORK now where the doc above says it is not.
 			//
-			// It was not, because the return's second customer leg wrote Returned
-			// onto the row all three institutions were reading, and this bank's
-			// leg had gone in before it sent. Task 18d leaves that leg in the
-			// OTHER bank's database, so nothing writes on this copy and it would
-			// say Settled for ever — about a payment this bank itself returned.
+			// Nothing else writes on this copy: the return's second customer leg lands
+			// in the OTHER bank's database, so without this it would say Settled for
+			// ever about a payment this bank itself returned.
 			//
 			// Nothing is posted here. See payment.CompleteReturnTx, and
 			// PostReturnLegTx's note on why the returner is first by construction
@@ -859,8 +805,7 @@ func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) e
 // of work, so a mirror leg that fails takes the row with it. The dead letter is
 // the only trace in this PROCESS; in the STORE the unreconciled position is a
 // clearing suspense that has not returned to zero with no advice row against the
-// cycle. Task 19 is the reconciliation that makes that visible from inside the
-// system rather than only in Drain.
+// cycle, which is payment/recon's to find.
 //
 // # One statement, one member
 //
@@ -884,17 +829,13 @@ func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) e
 // check would be a second answer to a question already answered, by the layer
 // with less to answer it with.
 //
-// What ownership buys is NOT "only the settlement agent may advise me", and the
-// difference is worth stating rather than leaving to be inferred from an
-// absence. That is a strictly stronger guarantee and this system does not make
-// it: any actor that named this bank's own settlement account would be booked
-// here, because the row it produces is indistinguishable from a real one. What
-// it does buy is that nobody can move this bank's mirror by advising it about
-// somebody else's position, which is the failure that would actually cost money.
-// Nothing in this mesh sends a camt.053 but the settlement agent; and under one
-// shared store the two properties are not separable anyway, since every account
-// id is in one table. Sub-project 8 is where a sender becomes something a
-// receiver could meaningfully insist on.
+// What ownership buys is NOT "only the settlement agent may advise me". That is
+// a strictly stronger guarantee and this system does not make it: any actor that
+// named this bank's own settlement account would be booked here, because the row
+// it produces is indistinguishable from a real one. What it does buy is that
+// nobody can move this bank's mirror by advising it about somebody else's
+// position, which is the failure that would cost money. Nothing in this mesh
+// sends a camt.053 but the settlement agent.
 func (b *bank) receiveStatement(ctx context.Context, from iso20022.BIC, doc *iso20022.Camt053) error {
 	moves, err := payment.ReadStatement(doc)
 	if err != nil {
@@ -1008,12 +949,11 @@ func (b *bank) receiveAdmissionRejection(from iso20022.BIC, doc *iso20022.Acmt01
 // is returned as an error naming both halves, exactly as submit's is, rather than
 // swallowed.
 //
-// The remedy is NOT to ask again, and that is the difference from returnPayment's
-// seam worth writing down. payment.LodgeReservesTx keys its posting on the
-// message id, and a retry through this method takes a NEW id from
-// Mesh.nextMsgID — so asking again lodges a second time rather than completing
-// the first. What closes the gap is Task 18e's reconciliation harness, which is
-// the instrument for a break that never became a message.
+// The remedy is NOT to ask again, which is the difference from returnPayment's
+// seam. payment.LodgeReservesTx keys its posting on the message id, and a retry
+// through this method takes a NEW id from Mesh.nextMsgID — so asking again lodges
+// a second time rather than completing the first. payment/recon is the instrument
+// for a break that never became a message.
 func (b *bank) lodge(ctx context.Context, asset ledger.AssetCode, amount ledger.Amount) (payment.LodgementInstruction, error) {
 	// Everything below is this bank's work, and is recorded as this bank's. See
 	// withActor.

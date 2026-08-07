@@ -6,16 +6,11 @@
 // in this package is TOLD that a payment was accepted except by receiving a
 // pacs.002 saying so. Everything else here follows from taking that seriously.
 //
-// The qualification this paragraph used to carry has expired, and what replaced
-// it is worth more than the qualification was. It said the actors share one
-// store, that bankOps carries GetPayment, and that a bank here CAN look the
-// answer up — what it could not do was be TOLD by anything other than a message.
-// Task 18 removed the first half: every institution has a database of its own,
-// so there is no row a bank could read to learn what a counterparty decided, and
-// a handler reaching for one is refused by name rather than answered. A bank
-// still reads its own copy — bank.receiveStatus does, and trusts it over the
-// message it just received — but that copy is a record of what this bank was
-// told, which is the point rather than the loophole. See "Five databases,
+// Every institution has a database of its own, so there is no row a bank could
+// read to learn what a counterparty decided, and a handler reaching for one is
+// refused by name rather than answered. A bank still reads its own copy —
+// bank.receiveStatus does, and trusts it over the message it just received — but
+// that copy is a record of what this bank was told. See "Five databases,
 // likewise" below.
 //
 // # Actors
@@ -38,29 +33,11 @@
 // actor table. The two institutions have no store row at all and are named in
 // Config.
 //
-// This paragraph counted the actors for several tasks — "N+2" — and the count
-// was falsified by the mechanism described in the sentence beside it: after any
-// in-process Admit there are as many more as there are founded banks. It says
-// where actors come from instead.
-//
 // # The flows, listed once
 //
 // A push, a pull, a cut-off, a return and an admission — the sections below, in
-// that order. They are listed here and counted nowhere.
-//
-// The count is what goes stale, and it went stale in every direction at once.
-// Files across this package and payment disagreed about how many flows there
-// were, and admission was called "the fourth flow" in some and the clearing
-// house's "fifth job" in another. Some of those were right when they were
-// written and overtaken; the two that called admission the fourth were wrong on
-// the day they were written, in the commit that ADDED admission as the fifth —
-// which is worse, and is the case for not writing the number at all rather than
-// for keeping it up to date.
-//
-// Then the sentence that retired those counts carried a tally of its own and got
-// the distribution wrong. Hence no number here either: what each flow IS does
-// not change when another arrives, and how many there are is a fact about this
-// list, readable from it.
+// that order. They are listed here and counted nowhere: what each flow IS does
+// not change when another arrives.
 //
 // # Bytes, not structs
 //
@@ -174,8 +151,7 @@
 // clearing suspense holds money that has left a customer and not yet settled
 // between banks; the mirror leg is that suspense moving against the bank's
 // reserve, and it is a posting in the bank's own ledger. The settlement agent
-// used to make it, inside its own unit of work, in a book that was not its.
-// Now it states the movement and the closing balance, and the member books it
+// states the movement and the closing balance, and the member books it
 // (bank.receiveStatement, payment.PostSettlementAdviceTx).
 //
 // A statement is not an instruction, so it is ANSWERED BY NOTHING: the central
@@ -185,11 +161,10 @@
 // one unit of work, so a failure takes both. The unreconciled position is
 // therefore a clearing suspense that has not returned to zero with no advice row
 // against the cycle — which looks the same in the store as never having been
-// told, and telling those two apart is Task 19's problem rather than a
-// distinction this schema makes.
+// told.
 //
-// It goes out BEFORE the answer, and since 15b.3 that ordering is load-bearing
-// rather than merely tidy. The CREDITOR leg is posted from the clearing house's
+// It goes out BEFORE the answer, and that ordering is load-bearing. The CREDITOR
+// leg is posted from the clearing house's
 // ACSC fan-out, which is derived from the answer, so sending the statement first
 // puts it in the member's inbox before the ACSC is even built — a happens-before
 // chain rather than a race, because a send pushes onto the target's queue
@@ -215,7 +190,7 @@
 // the same pair. Both tests record the same trap: swapping the two leaves a
 // race the central bank usually wins, so only a swap PLUS a delay inverts it.
 //
-// # What an undelivered statement suppresses, and why Task 19 is scoped from here
+// # What an undelivered statement suppresses
 //
 // centralBank.advise returns on the FIRST send it cannot make, and the cost is
 // wider than the bank it could not reach:
@@ -245,19 +220,14 @@
 // message. The settlement is FINAL in all these cases — the reserves moved and
 // the cycle or the return is discharged — so nothing may be unsaid, and there is
 // deliberately no retry here rather than untested machinery for an unreachable
-// failure. What is
-// missing is the ability to NOTICE, and that is what Task 19's reconciliation is
-// for: an absent advice row against a clearing suspense that has not returned to
-// zero, and a cycle Settled whose banks were never told, are the two shapes it
-// has to find. They are the same shape in the store, which is why noticing needs
-// the CLOSING BALANCE the statement carried rather than the row's status alone.
+// failure. What is missing is the ability to NOTICE: an absent advice row against
+// a clearing suspense that has not returned to zero, and a cycle Settled whose
+// banks were never told, are the same shape in the store, which is why noticing
+// needs the CLOSING BALANCE the statement carried rather than the row's status.
 //
-// The refusal moved with the leg. A net payer whose reserve cannot cover its
-// position used to be refused by the LEDGER, when the mirror leg took an Asset
-// account negative in the member's own book. A member's settlement account at
-// the central bank is a Liability, which the ledger does not guard, so
-// SettleCycleTx now checks each net payer's reserve itself and answers with the
-// same AM04. That is the central bank declining to extend uncollateralised
+// A member's settlement account at the central bank is a Liability, which the
+// ledger does not guard, so SettleCycleTx checks each net payer's reserve itself
+// and answers AM04. That is the central bank declining to extend uncollateralised
 // intraday credit, which is the decision a settlement agent exists to make.
 //
 // A cut-off does not arrive in an inbox. It comes in from outside the mesh the
@@ -284,12 +254,12 @@
 // returned to whoever pressed settle, which is not something a clearing house
 // can act on.
 //
-// What that window does NOT hold is any member's own book, and it used to. Each
-// member's mirror leg and creditor legs are that member's own units of work now,
-// made on advice and afterwards. That is what makes settlement FINAL rather than
-// simultaneous: when this unit of work commits the reserves have moved, and a
-// member that has not yet booked its half has an unreconciled position rather
-// than a claim on anyone. See payment.SettleCycle.
+// What that window does NOT hold is any member's own book. Each member's mirror
+// leg and creditor legs are that member's own units of work, made on advice and
+// afterwards. That is what makes settlement FINAL rather than simultaneous: when
+// this unit of work commits the reserves have moved, and a member that has not
+// yet booked its half has an unreconciled position rather than a claim on
+// anyone. See payment.SettleCycle.
 //
 // The CLEARING HOUSE fans the acceptance out, per payment, to the bank that
 // submitted it AND to the payee's bank. The central bank could not: it answers
@@ -314,21 +284,18 @@
 // # The return
 //
 // The R-transaction: a payment that has already settled, sent back. It is the
-// only flow here that starts at the bank which ANSWERED rather than the one
-// that submitted, and the only one in which a message a BANK composed is
-// carried past the clearing house — the document travels unchanged, with only
-// the header replaced, as csm.relay always does. Task 12's settlement
-// instruction reaches the central bank too, but that one is the clearing house's
-// own message about its own cut-off.
+// only flow here that starts at the bank which ANSWERED rather than the one that
+// submitted, and the only one in which a message a BANK composed is carried past
+// the clearing house — the document travels unchanged, with only the header
+// replaced, as csm.relay always does.
 //
 //	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  central bank
 //	                             both banks      <--camt.053--  central bank
 //	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank
 //	payer's bank  <--pacs.004--  clearing house
 //
-// Seven messages, and they used to be four. The three that are new are the two
-// statements and the relayed return, and each of them exists because a posting
-// moved off the settlement agent and onto the bank whose book it is in.
+// Seven messages. Two of them are statements and one is the relayed return, and
+// each exists because a posting belongs to the bank whose book it is in.
 //
 // The bank that RECEIVED the original instruction asks for it, which is the
 // SEPA rule book's own division: the beneficiary bank returns a credit transfer
@@ -336,8 +303,8 @@
 // disputes. So it is the payee's bank on a push and the payer's on a pull —
 // exactly the opposite end from the one that submitted, in both directions.
 //
-// Its half MOVES MONEY, and this paragraph used to say it moved nothing. The
-// returning bank posts the leg it owns BEFORE it composes the message — the
+// Its half MOVES MONEY. The returning bank posts the leg it owns BEFORE it
+// composes the message — the
 // clawback if it is the creditor's bank, the refund if it is the payer's — and
 // that ordering is the whole of the return's one rule: A BANK CAN REFUSE A LEG
 // ONLY IF IT POSTS IT BEFORE IT SENDS. On a push it holds the clawback, so a
@@ -366,12 +333,10 @@
 // package keeps between messages, it is in memory, and csm.relayReturn records
 // what a restart costs.
 //
-// A bank in this system used to SEND a return and never receive one, which was
-// the shared store showing through: the settlement agent posted the far bank's
-// leg itself. It receives one now, and posts its own leg from it
-// (bank.receiveReturn), which is what a real network does. That handler answers
-// nothing, for the reason bank.receiveStatement answers nothing: the return is
-// already final by the time the message arrives.
+// A bank both sends and receives returns, posting its own leg from the one it
+// receives (bank.receiveReturn). That handler answers nothing, for the reason
+// bank.receiveStatement answers nothing: the return is already final by the time
+// the message arrives.
 //
 // The refusals are split by whether anyone could be TOLD, and there are now
 // three kinds. A payment that has not settled cannot be returned, and the
@@ -408,8 +373,7 @@
 //
 // The bank composes the request, the clearing house relays it, the settlement
 // agent acts in its own book and answers, and the clearing house writes its own
-// row from the answer and forwards it. That shape is Task 16's pacs.004, reused
-// rather than reinvented.
+// row from the answer and forwards it — the return's shape, reused.
 //
 // It is FOUR messages per ASSET. acmt.007's Acct/Ccy is minOccurs="1"
 // maxOccurs="1" — one currency per request — so a bank joining in two assets
@@ -451,8 +415,7 @@
 // refuses at the door, beside ErrOnUsPayment and for that guard's stated reason:
 // Submit is synchronous, so a refusal any later has a committed debtor leg to
 // unwind. AcceptAtCSMTx refuses again from the clearing house's own roster row,
-// which is the institution whose judgement it is and the only one of the two that
-// survives Task 18's split. Both are pinned —
+// which is the institution whose judgement it is. Both are pinned —
 // TestAFoundedBankCanNeitherPayNorBePaid here, which also asserts that the other
 // member's payment in the same cycle settles, and
 // TestTheClearingHouseWillNotClearForANonMember in payment.
@@ -484,12 +447,12 @@
 //
 // # The CLEARING HOUSE refuses, relays, and holds almost nothing
 //
-// Two authorities used to claim one address and one of them has been narrowed.
-// The mesh's actor map refuses a taken BIC and that refusal is now a statement
-// about CONNECTIVITY; the roster's is the statement about MEMBERSHIP, made by
-// the institution that owns routing, and it is keyed on the ADMISSION rather
-// than on the address — a refusal keyed on the address alone would refuse the
-// same bank asking again and never fire on the impostor it exists for. See
+// Two authorities claim one address and they say different things. The mesh's
+// actor map refuses a taken BIC, which is a statement about CONNECTIVITY; the
+// roster's refusal is the statement about MEMBERSHIP, made by the institution
+// that owns routing, and it is keyed on the ADMISSION rather than on the address
+// — a refusal keyed on the address alone would refuse the same bank asking again
+// and never fire on the impostor it exists for. See
 // payment.ErrBICAlreadyAdmitted.
 //
 // It also refuses an application whose applicant is not its SENDER. An acmt.007
@@ -507,9 +470,8 @@
 // and the admission's process id, which is every field of the routing entry —
 // so there is nothing about the request left to remember.
 //
-// The roster entry carried a member's legal NAME for one round, and an acmt.010
-// names nobody: OrganisationIdentification29 has a BIC and no name element. The
-// field went rather than the property, because nothing read it — routing is an
+// The roster entry carries no legal NAME, because an acmt.010 names nobody:
+// OrganisationIdentification29 has a BIC and no name element. Routing is an
 // address. See payment.RosterEntry.
 //
 // It writes the routing entry BEFORE it forwards the acknowledgement, so a bank
@@ -590,13 +552,11 @@
 // actor always succeeds. RC01 remains reachable, because a BIC can fail to
 // resolve against the routing table, but a timeout does not.
 //
-// Nor is the network a boundary in any other sense. The actors share one
-// process and one clock; there is no serialisation cost, no authentication, no
+// Nor is the network a boundary in any other sense. The actors share one process
+// and one clock; there is no serialisation cost, no authentication, no
 // signature, and no cut-off enforced by anything but the clearing cycle's own
 // state. What the mesh models is the SHAPE of interbank messaging — who may know
-// what, and when — not its infrastructure. They no longer share a STORE, and
-// that sentence used to be in this list; see below for what it was worth and
-// what it left behind.
+// what, and when — not its infrastructure. They do NOT share a store; see below.
 //
 // The clock is literally one: every header this package stamps is dated from
 // payment.Network.Now, the same source the payments themselves are booked from
@@ -609,38 +569,31 @@
 //
 // # Five databases, likewise, and four mechanisms rather than two
 //
-// This section used to open "One store, likewise, is not one bank's", and it is
-// the paragraph Task 18 changed most. The store is N+2 databases now — one per
-// member bank, the clearing house's, the settlement agent's — and the boundary
-// that was asserted is in part simply GIVEN. What the four mechanisms narrow,
-// each differently:
+// The store is N+2 databases — one per member bank, the clearing house's, the
+// settlement agent's — so much of the boundary is simply GIVEN. What the four
+// mechanisms narrow, each differently:
 //
 //   - ops.go narrows by METHOD. A bank handler that calls SettleCycleTx does not
 //     compile, because bankOps does not name it.
 //   - payment.Network's IDENTITY narrows by INSTITUTION. Each actor is built over
-//     the network of the institution it IS (see Mesh.nets), so an act that used
-//     to take "which bank is doing this" as an argument reads it from there and a
-//     bank cannot act as another bank through a handle it legitimately holds.
-//     Task 18b.
+//     the network of the institution it IS (see Mesh.nets), so a bank cannot act
+//     as another bank through a handle it legitimately holds.
 //   - the STORE narrows by DATABASE. A store handed a book it does not answer for
 //     refuses with sqlite.ErrNotThisStoresBook, and a method reaching for a table
 //     its institution's schema does not create is refused with
-//     sqlite.ErrNotInThisShape. Task 18c and 18d. This is the one that turned an
-//     assertion into a fact: the crossing the recorder was invented for — one
-//     bank reading another's ledger through a method it holds — has no database
-//     left in which it could succeed.
+//     sqlite.ErrNotInThisShape. This is the one that makes the crossing the
+//     recorder was invented for — one bank reading another's ledger through a
+//     method it holds — have no database left in which it could succeed.
 //   - the RECORDER in books_test.go watches which books each unit of work
 //     actually reached, which is the question none of the other three answers.
 //     "Did this bank's act touch exactly its own book" is still worth asking
-//     inside one institution's own database, and TestWhichBooksEachBankActuallyReaches
-//     is where the answers are.
+//     inside one institution's own database, and
+//     TestWhichBooksEachBankActuallyReaches is where the answers are.
 //
 // A fifth is not a boundary at all and belongs beside them anyway. Every
 // mechanism above is about what one institution may REACH; payment/recon is
 // about whether the institutions that reached nothing of each other's still
 // agree — a bank's reserve against the central bank's liability to it, a cycle
-// against the settlement that discharged it. That question only became askable
-// when the answer stopped being guaranteed by everything sharing one database,
-// which is to say the split created it. mesh/recon_test.go is where it is
+// against the settlement that discharged it. mesh/recon_test.go is where it is
 // calibrated.
 package mesh

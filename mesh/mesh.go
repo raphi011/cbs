@@ -33,13 +33,6 @@ var ErrUnknownBIC = errors.New("mesh: no actor for this BIC")
 // that will fail the same way whatever address they choose. Telling the two
 // apart is what api's handleAddParticipant uses it for.
 //
-// The consequence of following that advice used to be worse than a wasted
-// retry: every attempt left a participant row behind, so an operator working
-// through addresses accumulated orphans. Mesh.Admit claims the address before
-// anything is written, so a refusal on either branch now costs nothing at all.
-// The sentinel survives the fix because the ADVICE still differs, which is the
-// smaller of the two reasons it was introduced for.
-//
 // It is a statement about CONNECTIVITY and not about membership. The clearing
 // house's roster answers the second question, one institution over and keyed on
 // the admission rather than on the address; see payment.ErrBICAlreadyAdmitted
@@ -200,11 +193,9 @@ type actor struct {
 //
 // See the package doc for what this is deliberately not.
 type Mesh struct {
-	// nets mints one payment.Network per institution. It is what replaces the
-	// single *payment.Network this field used to be, and the replacement is the
-	// whole of Task 18b in this package: each actor below is built over the
-	// network of the institution it IS, so a bank handler's ops are a bank's
-	// view and the clearing house's are the clearing house's.
+	// nets mints one payment.Network per institution: each actor below is built
+	// over the network of the institution it IS, so a bank handler's ops are a
+	// bank's view and the clearing house's are the clearing house's.
 	//
 	// Nothing here holds more than one institution's view at a time. This is a
 	// factory, not a collection: it opens nothing and remembers nothing, and
@@ -221,12 +212,8 @@ type Mesh struct {
 	// The clearing house is the right institution for the roster questions,
 	// which are its own rows. It is the WRONG one for two of them and they are
 	// named rather than hidden: joinRoster's ListBanks and Admit's
-	// GetBank/FoundBank read and write the banks table, which Task 18c gives to
-	// the bank shape, so a clearing house reaching them is a crossing. It is on
-	// Task 18d's list in as many words — every ListBanks and GetBank call site
-	// becomes a roster read at the clearing house, a message, or an error — and
-	// what stops it being invisible in the meantime is that they are all here,
-	// through this field, rather than spread over a network everybody shares.
+	// GetBank/FoundBank read and write the banks table, which belongs to the bank
+	// shape, so a clearing house reaching them is a crossing.
 	clearingHouse *payment.Network
 
 	cfg Config
@@ -275,13 +262,11 @@ type Mesh struct {
 	// reserved is the addresses an admission has CLAIMED and not yet given an
 	// actor to, and it is the whole of the orphan defect's fix.
 	//
-	// A BIC is the only thing about an admission that can clash, and it used to
-	// be checked last: the row was written and the address asked for afterwards,
-	// so a refusal left a bank in the roster that could neither pay nor be paid.
-	// Reversed, the claim has to be made BEFORE the bank exists — and a bank that
-	// does not exist yet cannot have an actor, because an actor's handler is
-	// bound to the bank's own identity. So the claim is a set membership rather
-	// than an entry in the actor table.
+	// A BIC is the only thing about an admission that can clash, and the claim
+	// has to be made BEFORE the bank exists — a bank that does not exist yet
+	// cannot have an actor, because an actor's handler is bound to the bank's own
+	// identity. So the claim is a set membership rather than an entry in the
+	// actor table.
 	//
 	// Everything that hands out an address consults it: addActors refuses a BIC
 	// reserved by an admission in flight, and Admit refuses one twice over. It is
@@ -293,16 +278,6 @@ type Mesh struct {
 	reserved map[iso20022.BIC]bool
 	// banks is the member banks by ADDRESS, which is how Submit finds the actor
 	// that plays a payer's own bank.
-	//
-	// It was keyed by ParticipantID until the store split, on the argument that a
-	// request said which PARTICIPANT held the payer's account and turning that
-	// into a BIC to find an actor would be a store read answering a question the
-	// roster already answered at startup. Task 18 made the two one value (see
-	// payment.AsBank), so the argument was spent and the key was a BIC wearing
-	// the other type: two lookups converted on the way in, claimAddress swept the
-	// whole map to find the id behind an address, and Lodge took a participant
-	// where its caller held an address. All three of those are gone with the
-	// re-key, and none of them was replaced by anything.
 	banks    map[iso20022.BIC]*bank
 	inFlight int
 	// quiet is closed when inFlight reaches zero and replaced when it leaves
@@ -342,10 +317,9 @@ type Mesh struct {
 // join after that, which is every bank a human admits over HTTP.
 //
 // Admit claims the ADDRESS before it writes anything and registers the actor
-// once the bank's own unit of work has committed. The two are not the same step
-// and this sentence used to run them together: the claim is what makes a clash
-// cost nothing, and the actor is what makes the bank reachable. See Mesh.Admit
-// and Mesh.reserved.
+// once the bank's own unit of work has committed. The claim is what makes a
+// clash cost nothing; the actor is what makes the bank reachable. See
+// Mesh.Admit and Mesh.reserved.
 //
 // nets may be nil. A mesh with no networks has no roster and therefore no member
 // banks; that is what the transport's own tests use, and it is the reason this
@@ -412,12 +386,10 @@ func New(nets *payment.Networks, cfg Config, log *slog.Logger) (*Mesh, error) {
 // missing half look like a working one. Drain returns it, which is exactly the
 // dead-letter path this package exists to keep visible.
 //
-// After Task 12 it is reached on ONE kind of mesh: one built over no network,
-// which is the transport's own tests. Both institutions keep it there, because
-// clearing and settlement are things you do to payments and cycles and a mesh
-// with no store has neither. On a mesh with a network, every actor — both
-// institutions and every bank this mesh has been told about — now has a real
-// handler.
+// It is reached on ONE kind of mesh: one built over no network, which is the
+// transport's own tests. Both institutions keep it there, because clearing and
+// settlement are things you do to payments and cycles and a mesh with no store
+// has neither.
 func unhandled(name string) handler {
 	return func(ctx context.Context, from iso20022.BIC, raw []byte) error {
 		return fmt.Errorf("mesh: %s has no handler for the %d bytes %s sent it", name, len(raw), from)
@@ -570,13 +542,9 @@ func (m *Mesh) Start(ctx context.Context) error {
 // licence, a book and customers, and no scheme has admitted it — and the way in
 // is Mesh.Admit.
 //
-// It reads the roster and NOTHING ELSE, which is the store split's doing. It
-// used to read the bank rows as well — through the clearing house's network, in
-// the clearing house's database — because Mesh.banks was keyed by ParticipantID
-// and only a bank's own row knew which id belonged to which address. That was a
-// crossing and it is named as one on the field. Both halves of it are gone: the
-// id IS the address, so there is nothing to look up, and the clearing house's
-// schema has no banks table to look it up in.
+// It reads the roster and NOTHING ELSE. The id IS the address, so there is
+// nothing to look up, and the clearing house's schema has no banks table to
+// look it up in.
 //
 // What is lost with the second read is the bank's NAME, which the actor carried
 // for the operator console. A roster entry does not have one — an acmt.010 names
@@ -805,18 +773,10 @@ func (m *Mesh) ForgetBanks(ctx context.Context) error {
 // goroutine reading an inbox nobody can address, so a taken BIC is refused with
 // ErrAddressTaken.
 //
-// # What it no longer is
-//
-// It used to be the second half of an admission over HTTP: api's handler wrote
-// the participant row and then asked the mesh for the address, which is the
-// ordering that left a bank in the roster that could neither pay nor be paid.
-// That ordering is gone. Mesh.Admit claims the address BEFORE anything is
-// written and turns the claim into this registration afterwards, so there is no
-// longer a moment at which a committed bank can be refused an address. This runs
-// in the middle of Admit — after the bank's unit of work commits and before the
-// first acmt.007 is sent, since a bank that cannot be reached is one whose
-// application nobody could answer. Its other callers are the mesh's own tests,
-// which use it to plant an actor without a conversation.
+// It runs in the middle of Admit — after the bank's unit of work commits and
+// before the first acmt.007 is sent, since a bank that cannot be reached is one
+// whose application nobody could answer. Its other callers are the mesh's own
+// tests, which use it to plant an actor without a conversation.
 //
 // The registration and the index entry are ONE critical section, and the
 // reservation an admission made is cleared inside it. Both matter: a gap before
@@ -994,11 +954,7 @@ func (m *Mesh) run(ctx context.Context, a *actor) {
 //
 // It is there so that a unit of work can be attributed to the institution that
 // opened it. Nothing in the domain reads it — payment neither knows nor cares —
-// but the book recorder this package tests against does, and "which books did
-// the payer's bank reach" has no other answer under a shared store: one process,
-// one store, and four actors driving it concurrently, so neither the goroutine
-// nor the store nor the call stack can say. Sub-project 8 replaces the question
-// with a store per entity; until then this is how it is asked.
+// but the book recorder this package tests against does.
 //
 // A context value rather than an argument because it has to survive the trip
 // through payment: a handler calls AcceptInbound, payment opens the unit of work
@@ -1345,11 +1301,11 @@ func (m *Mesh) takeDeadLetters() error {
 // payer's bank is the counterparty on that one and hears about it as a message
 // like any other counterparty does.
 //
-// Taking the debtor unconditionally — which is what this did through Task 10 —
-// is the wrong bank for every direct debit, and it is invisible until a pull
-// exists: the payment goes through, the books balance, and the only thing wrong
-// is that the wrong institution did the work and signed the message. api's
-// handleSubmitPayment asks the same question, for the same reason, one layer up.
+// Taking the debtor unconditionally is the wrong bank for every direct debit,
+// and it is invisible until a pull exists: the payment goes through, the books
+// balance, and the only thing wrong is that the wrong institution did the work
+// and signed the message. api's handleSubmitPayment asks the same question one
+// layer up.
 //
 // It reads the network to ask, so like Mesh.now it exists only on a mesh that
 // has one. A mesh built over no network has no participant roster and therefore
@@ -1401,12 +1357,8 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// (payment.SubmitPaymentTx), so this comparison cannot fire on one. What it
 	// catches is a caller that names both — the seed, and this package's fixtures.
 	//
-	// It compared the two PARTICIPANTS until Task 18, on the argument that a
-	// payer's bank cannot know the payee's internal participant id and so an
-	// ordinary instruction names one side. The id is the BIC now (see
-	// payment.PartyRef), so what an instruction leaves unnamed is its own side
-	// rather than the other's — the same guard, firing on the same requests, for a
-	// reason that has turned around.
+	// What an instruction leaves unnamed is its OWN side rather than the other's:
+	// a bank fills its own from its own register. See payment.PartyRef.
 	if req.DebtorDetails.Agent != "" && req.DebtorDetails.Agent == req.CreditorDetails.Agent {
 		return payment.Payment{}, fmt.Errorf("mesh: %s is both the payer's bank and the payee's for this instruction: %w",
 			req.DebtorDetails.Agent, ErrOnUsPayment)
@@ -1422,26 +1374,14 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// which is what makes the API answer a 422 rather than a 202 followed by a
 	// rejection nobody can be told about. See payment.ErrBankNotAdmitted.
 	//
-	// It is a roster read and nothing else, and it used to be two reads. A request
-	// named its parties by participant id while the roster is keyed by BIC, so
-	// each side's bank row had to be read first to learn its address — the
-	// clearing house reaching into a member's database to answer a question about
-	// its own roster. Task 18 made the id the BIC, so what a request names is what
-	// the roster is keyed by; this is the ONE of that crossing's eight callers that
-	// still calls anything, because it is the only one asking a question about
-	// membership rather than about an address. See payment.Network.GetRosterEntryByBIC.
+	// It is a roster read and nothing else. What a request names is what the
+	// roster is keyed by, so no bank row is read on the way. See
+	// payment.Network.GetRosterEntryByBIC.
 	//
-	// A STATUS CODE went with the read that disappeared, and it is worth writing
-	// down because nothing about a membership guard predicts it. A party naming a
-	// participant no bank row existed for used to fail the id half here and come
-	// back payment.ErrParticipantNotFound — a 404. There is no id half left: a BIC
-	// nobody has been admitted on is not a member, which is a 422 and
-	// ErrBankNotAdmitted. That is the more honest answer of the two — the clearing
-	// house has never been able to tell "no such institution" from "an institution
-	// I have not admitted", and answering 404 was it reporting a bank row it should
-	// not have been reading. api's
-	// TestAPaymentNamingAParticipantThatDoesNotExistIsNotFound is about the old
-	// answer.
+	// A BIC nobody has been admitted on is not a member, which is a 422 and
+	// ErrBankNotAdmitted rather than a 404. The clearing house cannot tell "no
+	// such institution" from "an institution I have not admitted", and answering
+	// 404 would be it reporting a bank row it should not be reading.
 	for _, side := range []struct {
 		role  string
 		agent iso20022.BIC
@@ -1479,14 +1419,13 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 	// On-us, asked by ADDRESS, and this is the arm that fires for an instruction
 	// a customer actually hands in.
 	//
-	// It RESOLVES rather than comparing BICs, and the difference is the whole
-	// reason this arm is here. Since Task 18a the counterparty's BIC is the
-	// PAYER'S ASSERTION (payment.SubmitPaymentTx says why nothing derives it any
-	// more), so "the asserted agent is this bank" is not a statement about where
-	// the payee banks — it is a statement about what somebody typed, and a payer
-	// who types their own bank's BIC for a payee at another bank would be told
-	// their instruction is a book transfer, which it is not. What IS a fact this
-	// bank holds is whether the address resolves in its own register.
+	// It RESOLVES rather than comparing BICs. The counterparty's BIC is the
+	// PAYER'S ASSERTION (payment.SubmitPaymentTx says why nothing derives it), so
+	// "the asserted agent is this bank" is a statement about what somebody typed
+	// rather than about where the payee banks — and a payer who types their own
+	// bank's BIC for a payee at another bank would be told their instruction is a
+	// book transfer, which it is not. What IS a fact this bank holds is whether
+	// the address resolves in its own register.
 	//
 	// The participant comparison further up covers the instructions this cannot:
 	// a caller that names both internal ids — the seed, and this package's
@@ -1532,14 +1471,11 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 //
 // # The address is reserved first, and that is the orphan defect's fix
 //
-// A BIC is the only thing about an admission that can clash, and it used to be
-// checked LAST: api.handleAddParticipant wrote the participant row and then
-// asked the mesh for the address, so a refusal left a bank in the roster that
-// could neither pay nor be paid, with no way back. Reversed here. The address is
-// claimed before the bank's unit of work runs and released again if that unit of
-// work fails, because an in-memory rollback is reliable and a rollback of a
-// committed transaction is not. See Mesh.reserved, and
-// TestNothingIsWrittenWhenTheAddressIsRefused, which is what makes the ordering
+// A BIC is the only thing about an admission that can clash, and it is checked
+// FIRST. The address is claimed before the bank's unit of work runs and released
+// again if that unit of work fails, because an in-memory rollback is reliable
+// and a rollback of a committed transaction is not. See Mesh.reserved, and
+// TestNothingIsWrittenWhenTheAddressIsRefused, which makes the ordering
 // falsifiable.
 //
 // # A taken address is two situations
@@ -1597,8 +1533,7 @@ func (m *Mesh) Submit(ctx context.Context, req payment.InitiatePaymentRequest) (
 //
 // It is reachable only from a dead letter — every message of an admission is
 // carried exactly once and in order by this transport, so the acknowledgement
-// goes missing only if a handler could not act on it — and it is Task 19's, with
-// the rest of this system's half-finished conversations.
+// goes missing only if a handler could not act on it.
 //
 // That task's reconciliation is what has to FIND it, and the obvious comparison
 // does not. "A bank whose assets and the settlement agent's accounts for its BIC
@@ -1648,14 +1583,11 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 		return nil, err
 	}
 
-	// The APPLICANT's own network, over the applicant's own database. Founding
-	// used to run through the clearing house's, and that was a crossing named on
-	// Mesh.clearingHouse: a bank's row is the bank's, and the clearing house's
-	// schema has no table to write it to. What made it look necessary was the id
-	// — a counter-derived id had to come from somewhere, and the database it
-	// would name is the one place that cannot supply it. There is no counter: a
-	// joining bank arrives knowing its BIC, its BIC is its id, and asking the
-	// store set for that bank is what creates the database. See payment.Stores.
+	// The APPLICANT's own network, over the applicant's own database: a bank's row
+	// is the bank's, and the clearing house's schema has no table to write it to.
+	// There is no counter to allocate an id from — a joining bank arrives knowing
+	// its BIC, its BIC is its id, and asking the store set for that bank is what
+	// creates the database. See payment.Stores.
 	applicant, err := m.nets.Bank(ctx, payment.ParticipantID(bic))
 	if err != nil {
 		if !redriving {
@@ -1717,12 +1649,6 @@ func (m *Mesh) Admit(ctx context.Context, name string, bic iso20022.BIC, assets 
 // reservation is made, and the caller founds nothing — the roster has already
 // been asked and holds no entry for it, so this is a re-drive.
 // Anything else is ErrAddressTaken.
-//
-// It used to hand back the re-driving bank's ParticipantID, found by sweeping
-// the bank index for the address. There is nothing to sweep for: the id IS the
-// address since Task 18, so the only thing the sweep could return was the
-// argument, and the caller reads that bank's row out of the database named by
-// the very BIC it passed in.
 //
 // "Anything else" is worth spelling out because two of its three cases have
 // nothing to do with banks: an address one of the two INSTITUTIONS answers to,
@@ -1879,10 +1805,10 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 // that can happen to a payment.
 //
 // It is Submit's and CloseCycle's third sibling — synchronous, on the caller's
-// goroutine, sending only after the returning bank's half has run — because a
+// goroutine, sending only after the returning bank's half has POSTED — because a
 // return arrives from outside the mesh in the same way both of those do. An
-// operator (or api's POST /payments/{payid}/return) asks for it; no inbox is involved.
-// Since Task 16e "after the returning bank's half has run" means after that bank
+// operator (or api's POST /payments/{payid}/return) asks for it; no inbox is
+// involved. See bank.returnPayment.
 // has POSTED, not merely after it has checked; see bank.returnPayment.
 //
 // # Which bank is handed the instruction
@@ -1897,12 +1823,10 @@ func (m *Mesh) Reject(ctx context.Context, id payment.PaymentID, code iso20022.S
 //
 // # It answers with an error and nothing else
 //
-// Not with a payment, and the reason has changed under it. This used to say the
-// returning bank's half posts nothing and decides nothing beyond whether there
-// is a settled payment to return. That half posts now — its own customer leg,
-// before the message exists — and it can refuse there, which is why an error is
-// the whole of what a caller needs: on a push a payee who has spent the money
-// comes back AM04 and nothing was sent.
+// Not with a payment. The returning bank's half posts its own customer leg
+// before the message exists and can refuse there, which is why an error is the
+// whole of what a caller needs: on a push a payee who has spent the money comes
+// back AM04 and nothing was sent.
 //
 // What survives is the reason a PAYMENT would be no use. The row the caller
 // could read is still Settled — one leg is posted, and a return is not finished
@@ -2006,10 +1930,8 @@ func (m *Mesh) Lodge(ctx context.Context, bic iso20022.BIC, asset ledger.AssetCo
 // bank that did not submit is a message nobody was waiting for.
 //
 // It takes the two AGENTS rather than a Payment, because Submit has only a
-// request and a request is not yet a payment. It took the two PartyRefs and every
-// caller then took .Participant off the answer; a PartyRef stopped naming a bank
-// at Task 18, and what all four callers want is an address to send to. See
-// payment.PartyRef.
+// request and a request is not yet a payment. What all four callers want is an
+// address to send to. See payment.PartyRef.
 func submitterOf(scheme payment.Scheme, debtorAgent, creditorAgent iso20022.BIC) iso20022.BIC {
 	if scheme.Direction() == payment.Pull {
 		return creditorAgent

@@ -34,46 +34,27 @@ import (
 // name and calls SettleCycleTx, which recomputes the whole batch from the
 // cycle's own stored net positions.
 //
-// That is a consequence of the shared store, exactly as receiveCreditTransfer's
-// discarded request is: the clearing house and the central bank read one cycle
-// row, so a settlement agent that trusted the message would be trusting a copy
-// of the row it is about to read anyway. A real settlement agent has no such
-// row — the ancillary system's positions arrive only in the message — so it
-// settles what it was TOLD, and a leg that disagreed with the sender's own books
-// would be the sender's problem. Closing that gap is sub-project 8's, which is
-// where the entities stop sharing a store; until then this handler names the
-// gap rather than hiding it, and the message is a real instruction over a real
-// wire in every other respect.
+// A real settlement agent has no cycle row of its own — the ancillary system's
+// positions arrive only in the message — so it settles what it was TOLD, and a
+// leg that disagreed with the sender's own books would be the sender's problem.
 //
 // # It holds a settlementOps, which is two methods wide
 //
-// SettleCycle and SettleReturn are on that interface and on no other, so a
-// bank handler or a clearing-house handler cannot NAME either. That is what
-// these interfaces narrow, and the whole of what they narrow — it is not a ban
-// on those handlers moving money. It used to be less of one than it is: a
-// method on both of the other two interfaces (GetParticipant) returned a value
-// carrying live ledger and deposit handles bound to whichever bank it named,
-// and a member bank's ledger is exactly where a return's customer legs go.
-// Task 17 narrowed that return to a roster entry, so no handler in THIS package
-// is handed a book any more — which is a claim about these three interfaces and
-// not about the system: api still hands a bound bank to the directory lookup,
-// and that crossing is Task 18's (see payment.Network.GetBank). What remains is that any handler holding a posting method can
-// name any book, because these interfaces narrow by method and not by book. The
-// recorder in books_test.go is what watches for that, here as everywhere else
-// in this package; see the note on bankOps in ops.go.
+// SettleCycle and SettleReturn are on that interface and on no other, so a bank
+// handler or a clearing-house handler cannot NAME either. That is what these
+// interfaces narrow, and the whole of what they narrow — it is not a ban on
+// those handlers moving money, because these interfaces narrow by method and not
+// by book, so any handler holding a posting method can name any book. The
+// recorder in books_test.go is what watches for that; see the note on bankOps in
+// ops.go.
 //
-// The two methods behind this interface reach the same distance, and that is
-// new. This note used to record the opposite — that settlement posted in this
-// book alone while a RETURN reached three books, two of them member banks' —
-// and it was an accurate description of payment.ReturnPayment, the transitional
-// composition Task 16d kept alive and 16e deleted. Both calls now post the
-// reserve movement in the central bank's own book and in no member's; every
-// customer leg on either path is made by the bank whose customer it moves, from
-// a message. So this institution is one of the NARROWEST-reaching actors in the
-// system on both of its flows rather than the widest on one of them. See
-// TestWhichBooksTheCentralBankReachesWhenItSettles and
-// TestWhichBooksAReturnReaches for the measurements, and
-// TestEachBankBooksItsOwnReturnAndNoOtherBooks for where the two legs went.
+// Both of this institution's flows post the reserve movement in the central
+// bank's own book and in no member's; every customer leg on either path is made
+// by the bank whose customer it moves, from a message. So this institution is
+// one of the NARROWEST-reaching actors in the system. See
+// TestWhichBooksTheCentralBankReachesWhenItSettles,
+// TestWhichBooksAReturnReaches and
+// TestEachBankBooksItsOwnReturnAndNoOtherBooks.
 type centralBank struct {
 	m   *Mesh
 	ops settlementOps
@@ -130,13 +111,11 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 // which is the party that can act on it: it holds the cycle, and it is the one
 // that would re-present or unwind.
 //
-// "Nothing is posted anywhere" is still true and no longer true for the reason it
-// used to be. It once held because one unit of work spanned every book and a
-// failure rolled all of them back. It holds now because the check runs ABOVE the
-// netting transaction, so the central bank has written nothing of its own; and
-// because advise runs only on the success path, so no member is sent a statement
-// and the clearing house fans no ACSC out. There is nothing for a member to undo
-// because no member was ever told.
+// "Nothing is posted anywhere" holds because the check runs ABOVE the netting
+// transaction, so the central bank has written nothing of its own; and because
+// advise runs only on the success path, so no member is sent a statement and the
+// clearing house fans no ACSC out. There is nothing for a member to undo because
+// no member was ever told.
 //
 // The code comes from payment.ReasonFor, which maps ledger.ErrInsufficientBalance
 // to AM04 through borrowedReasons — the same route deposit.ErrInsufficientAvailable
@@ -152,13 +131,6 @@ func (cb *centralBank) handle(ctx context.Context, from iso20022.BIC, raw []byte
 // exactly that reason, and ReasonFor would turn it into MS03 and tell the
 // clearing house that a cycle which in fact settled was rejected. So it becomes
 // a dead letter and is not answered.
-//
-// ErrInvalidStateTransition used to be caught here beside it, because
-// SettleCycleTx transitioned every payment in the batch to Settled and refused a
-// batch holding one that was not Cleared. It no longer touches a payment at all
-// — that leg is the payee's bank's, on the clearing house's advice — so the
-// sentinel is no longer reachable from this call and the arm that caught it is
-// gone with the claim.
 func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC, hdr iso20022.AppHdr, doc *iso20022.Pacs009) error {
 	body := doc.FICdtTrf
 	orig := payment.OriginalMessage{
@@ -301,11 +273,10 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 // None of it is reachable in this transport. Mesh.send fails in exactly three
 // ways — a message that will not marshal, a BIC with no actor, and an actor that
 // has been stopped — and none of them occurs for a member of a live roster whose
-// statement the domain has just built. The mesh's own doc says why more
-// generally: delivery here is exactly-once and in order, because the transport
-// is a queue inside one process. It becomes reachable the moment the transport
-// can lose a message, which is every real one. Task 19's reconciliation is what
-// makes any of the three detectable from inside the system.
+// statement the domain has just built. Delivery here is exactly-once and in
+// order, because the transport is a queue inside one process; it becomes
+// reachable the moment the transport can lose a message, which is every real
+// one. payment/recon is what makes any of the three detectable.
 func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 	for _, st := range statements {
 		env, err := payment.StatementMessage(st, payment.MessageContext{
@@ -337,14 +308,10 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 //
 // # There is no price any more, and the paragraph that said there was is gone
 //
-// This doc used to record a price, in the same words receiveSettlement's did:
-// postings landing in member banks' books, made by this handler — each bank's
-// customer leg and each bank's reserve mirror — because under one store this
-// actor did all of it. That is the reversal Task 16e is. The pacs.004 now
-// travels bank to bank as it does in a real network: the returning bank posts
-// its own leg before it sends, the other bank posts its own when the clearing
-// house relays the message after finality, and each books its reserve mirror
-// from the camt.053 this handler sends. What is left here is the reserve
+// The pacs.004 travels bank to bank as it does in a real network: the returning
+// bank posts its own leg before it sends, the other bank posts its own when the
+// clearing house relays the message after finality, and each books its reserve
+// mirror from the camt.053 this handler sends. What is left here is the reserve
 // reversal and nothing else. TestWhichBooksAReturnReaches measures that rather
 // than assuming it.
 //
@@ -353,9 +320,8 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // payment.ReadReturn, and not a payment row: this actor holds none, never saw
 // the payment clear, and could not look one up. Both agents and the amount come
 // out of OrgnlTxRef, which is what iso20022.OriginalTransactionReference exists
-// for — a pacs.004 in this system used to name no parties at all, and a
-// settlement agent handed one had nothing to resolve accounts from. See
-// payment.SettleReturnTx, which is written so that it never reads a payment.
+// for. See payment.SettleReturnTx, which is written so that it never reads a
+// payment.
 //
 // # The order: advise, then answer
 //
@@ -402,13 +368,9 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // which in fact happened was rejected. Dead letter, and no pacs.002; it is the
 // same discrimination receiveSettlement makes.
 //
-// The sentinel MOVED, and the reason it moved is worth a sentence rather than a
-// diff. It was ErrInvalidStateTransition, which came from the payment row this
-// handler's call used to transition. There is no payment row on this path any
-// more, so the redelivery is caught where the only durable trace of a settled
-// return now is: the idempotency key on the reserve reversal, in this bank's own
-// ledger. See payment.ErrReturnAlreadySettled, which records that it needs no
-// row of its own.
+// There is no payment row on this path, so a redelivery is caught where the only
+// durable trace of a settled return is: the idempotency key on the reserve
+// reversal, in this bank's own ledger. See payment.ErrReturnAlreadySettled.
 //
 // Everything else the domain refuses is answered, with the code ReasonFor maps
 // it to, because a refusal a counterparty can act on is completed work rather
@@ -419,24 +381,19 @@ func (cb *centralBank) advise(statements []payment.SettlementStatement) error {
 // READ — no OrgnlTxRef, an agent with no BICFI, an amount in no known asset — is
 // answered too, and by the same rule: the sender composed it and can fix it.
 //
-// ErrSchemeUnsupportedReturn is no longer among them, and its absence is a
-// consequence rather than an omission. It was raised by ReturnPaymentTx, which
-// read the payment's scheme; SettleReturnTx reads no payment and no scheme,
-// because whether a scheme's rule book allows returns is a question for the bank
-// that composes the pacs.004 (payment.PostReturnLegTx still asks it) and not for
-// the agent that moves the reserves after one has been sent.
+// ErrSchemeUnsupportedReturn is not among them: SettleReturnTx reads no payment
+// and no scheme, because whether a scheme's rule book allows returns is a
+// question for the bank that composes the pacs.004 (payment.PostReturnLegTx asks
+// it) and not for the agent that moves the reserves after one has been sent.
 //
 // # A return that names no payment is answered, and dies one hop later
 //
-// This paragraph used to say the opposite twice over — that such a message
-// "cannot be answered at all", and that the report would fail to marshal for
-// want of a reference — and both halves are now false. returnedEndToEnd
-// substitutes notProvided when there is no OrgnlEndToEndId, so the report always
-// carries something to refer back by and payment.StatusMessage builds it; and
-// what refuses the message is no longer a payment lookup that fails but
-// payment.ReadReturn, which will not read a transaction with no OrgnlTxId. So
-// this actor answers RJCT to the clearing house like any other unreadable
-// message, quoting an empty transaction id because that is what it was given.
+// returnedEndToEnd substitutes notProvided when there is no OrgnlEndToEndId, so
+// the report always carries something to refer back by and payment.StatusMessage
+// builds it. What refuses the message is payment.ReadReturn, which will not read
+// a transaction with no OrgnlTxId, so this actor answers RJCT to the clearing
+// house like any other unreadable message, quoting an empty transaction id
+// because that is what it was given.
 //
 // Where it dies is one hop on: the clearing house turns an answer back into a
 // payment by OrgnlTxId, which is the element this message does not have, so the
@@ -564,18 +521,13 @@ func (cb *centralBank) receiveAdmission(ctx context.Context, from iso20022.BIC, 
 }
 
 // receiveLodgement is the central bank crediting a member's reserve account
-// because the member asked it to: the fourth thing this actor does, and the one
-// that closes Task 18a's crossing.
+// because the member asked it to: the fourth thing this actor does.
 //
 // # The entries are not new; the instruction is
 //
-// Debit Settlement Assets / Credit Reserve: <member> is exactly the pair
-// Network.DepositTx used to post in this book. It posted them from inside the
-// FUNDING BANK's unit of work, which is what made funding a reserve the one
-// crossing on sub-project 8's list that never became a message and that no
-// recorder assertion could see. Nothing about the entries changed. What changed is
-// that a member can no longer make them: it sends a camt.050, and this handler is
-// the only thing in the system that posts them.
+// Debit Settlement Assets / Credit Reserve: <member>. A member cannot make these
+// entries itself: it sends a camt.050, and this handler is the only thing in the
+// system that posts them.
 //
 // # It has receiveAdmission's shape, and reads the parties off the message
 //

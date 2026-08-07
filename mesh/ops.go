@@ -12,9 +12,7 @@ import (
 // The three narrowed views of *payment.Network, one per kind of actor.
 //
 // Each actor holds one of these rather than the whole *payment.Network, so a
-// bank handler that calls SettleCycleTx does not COMPILE. That is cheap now and
-// it is exactly the seam sub-project 8 needs: when each entity gets its own
-// store, these interfaces are already the list of what each one may reach.
+// bank handler that calls SettleCycleTx does not COMPILE.
 //
 // # Two mechanisms, because neither alone is enough
 //
@@ -30,22 +28,11 @@ import (
 // that lacks the method makes the crossing unwritable. Method and book, static
 // and dynamic — one of each, because each is blind exactly where the other sees.
 //
-// # Why they started empty, and what they are now
+// # Every method below has a caller
 //
-// They were declared empty ON PURPOSE and grew method by method as Tasks 10-13
-// discovered what each handler needs. An interface written ahead of its callers
-// is a guess, and a guess here is a wrong boundary that then looks
-// authoritative — the worst of both, since every later reader takes it for a
-// decision. While they were empty they constrained nothing, and only the
-// recorder bit.
-//
-// Task 13 was the last new flow to add to them in that shape, and Tasks 15 and
-// 17 are what have added since — by moving a posting from one institution to
-// another, by narrowing a return, and finally by giving each of the three
-// interfaces its own act of an ADMISSION, which is the one flow whose subject is
-// a member rather than a payment. Either way every method
-// below is one some handler in this package calls today and there are no
-// others.
+// They grew method by method as each handler discovered what it needs. An
+// interface written ahead of its callers is a guess, and a guess here is a wrong
+// boundary that then looks authoritative.
 //
 // Admission's four acts land three-and-one, and the one that is missing says
 // something about the flow. RecordMembership is on bankOps, AdmitMember and
@@ -58,114 +45,37 @@ import (
 // nowhere more widely: a handler cannot NAME a method its interface does not
 // carry.
 //
-// # What Task 10 put in, the hole it could not close, and what closed it
+// # bankOps
 //
-// Every method below is one a bank handler calls, and there are no others: a
-// bank cannot settle a cycle, close one, or take a payment into one, because
-// none of those is here. That much the compiler enforces.
+// A bank cannot settle a cycle, close one, or take a payment into one, because
+// none of those is here. Nothing on it returns a handle to a book this actor
+// does not own, so posting another bank's leg by hand is unreachable — and what
+// still stops a handler acting on somebody else's leg is what always did the
+// real work: the domain refusing a bank that is not that leg's owner, and the
+// recorder in books_test.go.
 //
-// GetParticipant used to be the hole in that, and this note used to say so at
-// length. It answered "which BIC is this participant", which is what the
-// payer's bank needs in order to refuse a status about a payment whose payer
-// banks somewhere else — but *payment.Network binds live handles onto what it
-// returned (Network.bind), so the value carried another bank's Ledger, Deposit
-// and Catalogue with it. A handler that wanted to reach another bank's book had
-// that here, in a method it legitimately held. The note recorded that closing
-// it needed a narrower RETURN, which was payment's to give and sub-project 8's
-// to want.
+// PostSettlementAdvice and SettleAtBank are the two things here the settlement
+// agent might look like it should do TO a bank. Both are postings in the
+// member's own ledger, so both belong to the member; what arrives from the
+// settlement agent is a camt.053 saying what the reserve account did, and what
+// arrives from the clearing house is a pacs.002 saying one payment settled.
 //
-// Task 17 gave it. payment.Participant is dissolved into three rows, one per
-// owning institution, and what a handler asking about somebody else now gets is
-// the clearing house's: payment.RosterEntry, which is an address, the assets
-// that address clears in, the admission it was admitted under and when. No
-// NAME — an acmt.010 carries none, and the field went with the hold that filled
-// it. There is no handle on it to hand over either, because live handles exist
-// only on a bank's own record and nothing on these interfaces returns one.
-//
-// So the crossing this file said interfaces could not narrow was closed by
-// narrowing a type instead. Two things follow and both are still true. The
-// recorder in books_test.go is still what watches for a handler reaching into a
-// book it does not own, because these interfaces still cannot narrow by BOOK.
-// And a crossing remains at GetRosterEntry itself: a payment names its parties
-// by ParticipantID, so payment reads the bank's own row to turn one into a BIC
-// before it can read the roster. That read is inside payment and is named where
-// it happens (payment.Network.GetRosterEntry); what closes it is a payment that
-// carries BICs, which is Task 18's.
-//
-// # What Task 11 added, and why none of it widens the hole
-//
-// The pull flow needs more methods and one of them deserves a note. Scheme
-// answers "who submits this, and who receives it" — the question the direction
-// decides and the one a handler cannot ask any other way. It reads a map in
-// memory, takes no unit of work and names no book, so it was the one method
-// here that handed nothing over even while GetParticipant did.
-//
-// Task 11 also gave a bank a way to load a MANDATE, because a pacs.003 carries
-// one. That method is gone again, and its absence is the C1 fix rather than a
-// narrowing for its own sake: the mandate is now read inside the submitting
-// bank's own unit of work, by payment.InstructionTx, because the message has to
-// be built there or not at all.
-//
-// # What Task 13 added, what it deliberately did not, and what 16e reversed
-//
-// Task 13 added one method, ReturnMessage, and it was the whole of a bank's
-// half of a return. The reason recorded here was that a returning bank posts
-// NOTHING, because every posting a return made was the settlement agent's — so
-// what a bank needed was a way to say so and no way to do it.
-//
-// That is no longer true and the reason it gave was never the whole one. The
-// reserve reversal is central-bank money and no member may move it, which is
-// still exactly right; but a return's CUSTOMER legs are not reserves, and each
-// of them belongs to the bank whose customer it moves. Task 16e gave each bank
-// the leg it owns, so PostReturnLeg and ReverseReturnLeg are on this interface
-// beside ReturnMessage, and SettleReturn — the reserve half, and only that — is
-// on settlementOps and on no other, so no bank handler can name it.
-//
-// That was a statement about NAMING and not about capability, and it had to be
-// made twice while GetParticipant was on this interface: a bank handler held a
-// method that handed it another bank's live Ledger and Deposit, so posting the
-// OTHER bank's leg by hand was reachable from here. It is not any more — no
-// method below returns a handle to a book this actor does not own. What still
-// stops a handler acting on somebody else's leg is what always did the real
-// work: the domain refusing a bank that is not that leg's owner, and the
-// recorder in books_test.go, which measures that each bank reaches its own book
-// and no other (TestEachBankBooksItsOwnReturnAndNoOtherBooks). Neither of those
-// was made redundant by the narrowing, because neither was ever the compiler's
-// job.
-//
-// # What Task 15 added, and why they are a bank's methods at all
-//
-// Two methods, PostSettlementAdvice and PostCreditorLeg, and they are the first
-// things on this interface that the settlement agent used to do TO a bank rather
-// than things a bank does. Both are postings in the member's own ledger, so both
-// belong to the member; what arrives from the settlement agent is a camt.053
-// saying what the reserve account did, and what arrives from the clearing house
-// is a pacs.002 saying one payment settled.
-//
-// Neither takes an acting participant any more, and Task 18b is what took it.
-// Both used to, as the two halves of a payment did, and the actor passed its own
-// id: a loan the domain had no way to check, so what stopped a handler posting
-// another member's half was the SUBJECT guard behind it and nothing else — a
-// statement about anybody else's reserve account
-// (payment.ErrStatementNotForThisBank), a payment whose creditor banks somewhere
-// else (payment.ErrNotThisBanksPayment).
-//
-// Those two guards are unchanged and still do all the work they ever did: two
-// member banks are both member banks, and only the payment says which one holds
-// this leg. What has gone is the assertion in front of them. The bank acting is
-// the identity of the network behind this interface, so there is no argument to
-// name somebody else with — see payment.Identity.
+// No method takes an acting participant. The bank acting is the identity of the
+// network behind this interface, so there is no argument to name somebody else
+// with — see payment.Identity. The SUBJECT guards behind that are what decide
+// between two member banks: a statement about anybody else's reserve account is
+// payment.ErrStatementNotForThisBank, a payment this bank is no party to is
+// payment.ErrNotThisBanksPayment.
 type bankOps interface {
 	// The submitting bank's half, and the message it then sends. See
 	// Mesh.Submit for why the send is not inside the unit of work.
 	//
-	// ONE method and not two, and that is the fix for a money bug rather than
-	// tidying. This was SubmitPayment plus a message built afterwards, and
-	// building one can fail — a payee the instruction quoted no address for —
-	// so a refusal the API answered 422 left the payer debited by a request it
-	// had reported as refused. Posting the leg and rendering the instruction
-	// now commit or roll back together; the send still happens after, which is
-	// the property TestARolledBackSubmitSendsNothing pins.
+	// ONE method and not two: building a message can fail — a payee the
+	// instruction quoted no address for — and a refusal reported after the
+	// debtor leg committed leaves the payer debited by a request the API
+	// answered 422. Posting the leg and rendering the instruction commit or
+	// roll back together; the send still happens after, which is the property
+	// TestARolledBackSubmitSendsNothing pins.
 	//
 	// Which message it produces is the scheme's direction, and payment is what
 	// decides: a pacs.008 pushes money at the payee's bank, a pacs.003 asks the
@@ -179,20 +89,13 @@ type bankOps interface {
 	// payee's bank on a push, and the posting of the debtor leg for the payer's
 	// bank on a pull.
 	//
-	// The address is resolved in this bank's own register and in no other, which
-	// is what the resolution has always CLAIMED to do and did not: it swept every
-	// member's until Task 18a, and that sweep is the crossing the recorder's
-	// receiver set carried from the first time it was measured. Task 18a narrowed
-	// it with an argument the actor filled in from bank.pid; Task 18b took the
-	// argument away, because the register searched is the one belonging to the
-	// network these methods are called on.
-	// AcceptInbound takes the REQUEST as well as the id since Task 18d, and that
-	// is the whole of the store split arriving in this package. This bank has no
-	// row for the payment — the submitting bank's row is in the submitting bank's
-	// database — so the request the resolution just produced is not a check to be
-	// thrown away, it is the payment. See payment.AcceptInboundTx, and the two
-	// receive handlers, whose docs used to end by saying the request is discarded
-	// and that closing the gap was sub-project 8's whole subject.
+	// The address is resolved in this bank's own register and in no other: the
+	// register searched belongs to the network these methods are called on.
+	//
+	// AcceptInbound takes the REQUEST as well as the id because this bank has no
+	// row for the payment — the submitting bank's row is in the submitting
+	// bank's database — so the request the resolution just produced is not a
+	// check to be thrown away, it IS the payment. See payment.AcceptInboundTx.
 	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
 	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
 	AcceptInbound(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) error
@@ -204,46 +107,29 @@ type bankOps interface {
 	// institution that can say so. See Mesh.Submit and payment.ErrOnUsPayment.
 	//
 	// It reaches THIS bank's register and no other, and that is a property of
-	// the network behind the interface rather than of what the caller passes —
-	// Task 18b's change, in the one place in this package where the difference
-	// is visible from outside a handler.
+	// the network behind the interface rather than of what the caller passes.
 	ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (payment.PartyRef, error)
 
 	// This bank's own copy of a payment, which is the only one it has and the
 	// only one it may read. One handler asks for it — bank.returnPayment, which
 	// has to establish there is a SETTLED payment to return before it builds a
-	// pacs.004 — and no other, which is the shape Task 18d left: a handler acting
-	// on what it was told hands the id to the act and lets the act read.
+	// pacs.004 — and no other: a handler acting on what it was told hands the id
+	// to the act and lets the act read.
 	//
-	// A GetRosterEntry sat beside it, and it was what told this bank whether a
-	// rejection it was sent is about a payment whose payer banks somewhere else —
-	// a comparison of two BICs, its own against the one the CLEARING HOUSE's
-	// roster held for the payment's payer. It is gone, and so is the comparison
-	// that replaced it: a bank sent a decision about a payment it is no party to
-	// holds no row for it, so the STORE refuses before any BIC is looked at. A
-	// member bank asking the clearing house who its own payment's payer is was a
-	// read across an entity boundary to learn something it had been told; a member
-	// bank asking ITSELF is not a read it needs to make either.
+	// There is no roster read here. A bank sent a decision about a payment it is
+	// no party to holds no row for it, so the STORE refuses before any BIC is
+	// looked at.
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
 	// The bank's half of a rejection: record it on this bank's own copy, and give
 	// the payer their money back if this bank is the one holding it.
 	//
-	// It was two calls and a judgement made HERE — read the payment, check the
-	// row says Rejected, hand that copy to ReverseDebtorLeg — and the check was
-	// the whole safety argument, because ReverseDebtorLegTx looks at no status of
-	// its own. It worked because the clearing house had written Rejected onto the
-	// row both banks were reading. Task 18d gives each bank a copy nobody else can
-	// write, so the guard read a row that still said Initiated and refused every
-	// genuine rejection. The decision and the reversal are one act at the
-	// institution that owns both now; see payment.RejectAtBankTx, which also says
-	// what this bank can no longer establish at all and where that moved to.
-	//
-	// A Scheme sat here too, and it was how this handler worked out which of the
-	// two roles a status made it play: the submitter waiting for an answer, or the
-	// bank holding money it must give back. The act decides that now, off the
-	// payment and its own identity, so the direction of a scheme is no longer
-	// something a bank's message handler has to know.
+	// ONE method and not a judgement made here, because ReverseDebtorLegTx looks
+	// at no status of its own: the decision and the reversal are one act at the
+	// institution that owns both. Which of the two roles a status makes this
+	// bank play — the submitter waiting for an answer, or the bank holding money
+	// it must give back — is the act's to decide, off the payment and its own
+	// identity. See payment.RejectAtBankTx.
 	RejectAtBank(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
 
 	// The bank's half of an acceptance, and the one of the three that posts
@@ -286,23 +172,19 @@ type bankOps interface {
 	PostReturnLeg(ctx context.Context, id payment.PaymentID, reason string) (payment.Payment, error)
 	ReverseReturnLeg(ctx context.Context, id payment.PaymentID, reason string) error
 
-	// The bank's half of settlement, and it is the half that used to be done TO
-	// it. A member books its own mirror leg from the statement the settlement
-	// agent sent; nothing else in this mesh may post in that book, and nothing
-	// on this interface lets this bank post in anybody else's.
+	// The mirror leg. A member books it from the statement the settlement agent
+	// sent; nothing else in this mesh may post in that book, and nothing on this
+	// interface lets this bank post in anybody else's.
 	PostSettlementAdvice(ctx context.Context, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
 
 	// The bank's half of settlement: record it on this bank's own copy, and — if
 	// this bank holds the payee — release the payment out of its own clearing
 	// suspense into its own customer's account.
 	//
-	// It was PostCreditorLeg, and being the payee's bank was a PRECONDITION: the
-	// clearing house had already written Settled onto the shared row, so a bank
-	// that held no creditor leg had nothing left to do and was refused
-	// (payment.ErrNotThisBanksPayment). Both banks now hold a copy only they can
-	// write, so the status is what both of them do and the posting is what one of
-	// them does. See payment.SettleAtBankTx, which is where the two swapped
-	// places, and which still refuses a bank that is party to neither side.
+	// Both banks hold a copy only they can write, so the status is what both of
+	// them do and the posting is what one of them does. See
+	// payment.SettleAtBankTx, which refuses a bank that is party to neither
+	// side.
 	//
 	// Which bank posts is decided by comparing the payment's creditor against the
 	// acting bank, and the acting bank is the network's identity rather than an
@@ -329,13 +211,6 @@ type bankOps interface {
 	// message that will not build must take the leg down with it — and the send
 	// still happens after, outside the unit of work.
 	//
-	// It is the crossing Task 18a closes. Funding a reserve used to be
-	// DepositTx, which posted the bank's leg AND the central bank's inside the
-	// bank's own unit of work; nothing on any of these three interfaces could
-	// narrow that, because it was one method on one Network reaching two books.
-	// What makes it expressible as a boundary is that the two halves are now two
-	// methods on two interfaces, and only ONE of them is here.
-	//
 	// The receiving half is ReceiveLodgement, on settlementOps and on no other,
 	// so no bank handler can name it — which is the same shape SettleReturn has
 	// and for the same reason: crediting a reserve account is the account
@@ -343,8 +218,7 @@ type bankOps interface {
 	//
 	// The lodging member is the network's identity, as it is for the settlement
 	// and return methods above. What the domain refuses is a bank that cannot
-	// name its own reserve account (payment.ErrSettlementMemberNotFound) — the
-	// guard that used to sit on a deposit and was wrong there.
+	// name its own reserve account (payment.ErrSettlementMemberNotFound).
 	LodgeReserves(ctx context.Context, asset ledger.AssetCode,
 		amount ledger.Amount, mc payment.MessageContext) (payment.LodgementInstruction, iso20022.Envelope, error)
 
@@ -367,53 +241,31 @@ type bankOps interface {
 
 // csmOps is the clearing house's view: what a CSM handler may reach.
 //
-// The comment on bankOps applies to all three — empty on purpose, grown by the
-// task that first needs a method.
-//
-// Seven methods for the whole of clearing: a clearing house accepts a payment
-// into a cycle, rejects one, reaches the cut-off, asks which direction a payment
-// runs in, and looks up where to send the answer. Posting is a bank's act or a
-// central bank's, and no method here is one — with no exception now. The note
-// above records the one there used to be: GetParticipant was on this interface
-// too and handed over a member's live ledger and deposit handles, which is a
-// way to post. GetRosterEntry replaced it and hands over an address.
+// A clearing house accepts a payment into a cycle, rejects one, reaches the
+// cut-off, asks which direction a payment runs in, and looks up where to send
+// the answer. Posting is a bank's act or a central bank's, and no method here is
+// one.
 //
 // That does not make the ban the compiler's. These interfaces narrow by method
-// and never by book, so a clearing house that acquired a posting method would
-// be stopped by nothing here; TestTheCSMTouchesOnlyItsOwnBook is what
-// enforces it, and TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles
-// extends it over the cut-off and the settlement conversation Task 12 added.
+// and never by book, so a clearing house that acquired a posting method would be
+// stopped by nothing here; TestTheCSMTouchesOnlyItsOwnBook is what enforces it,
+// and TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles extends it over the
+// cut-off and the settlement conversation.
 //
-// Task 13 added NOTHING here, and that is worth a sentence because it is the
-// shape of the flow rather than a coincidence. Carrying a return needs no store
-// at all on the way out — the destination is decided by the message definition
-// — and the answer coming back needs exactly the three the ACSC fan-out already
-// needed: the payment the status names, its scheme, and the participant to
-// address. Same three questions, asked about one payment instead of a batch.
-//
-// Task 16e added nothing either, and that is the more surprising of the two.
-// The clearing house gained a whole second hop on this flow — it now relays the
-// pacs.004 onward to the bank that did not ask for the return — and it needs no
-// method for it, because the message names both agents itself (OrgnlTxRef) and
-// the recipient is whichever of them the message did not come from. What the
-// hop DID need is state, and state is not an interface: see csm.held.
-//
-// Task 17's two are the first here whose subject is a MEMBER rather than a
-// payment, and admission needs no state at all to go with them: every field of
-// the row this actor writes is on the acknowledgement it writes it from. See
-// csm.relayAdmission, which sets out why that is true here and is not true of
-// the return.
+// Relaying a RETURN needs no method: the message names both agents itself
+// (OrgnlTxRef) and the recipient is whichever of them the message did not come
+// from. What that hop does need is state, and state is not an interface — see
+// csm.held. Admission needs neither, because every field of the row this actor
+// writes is on the acknowledgement it writes it from; see csm.relayAdmission.
 type csmOps interface {
 	// The clearing house's own copy of an instruction it is carrying, written as
-	// it routes one. Task 18d added them, and they are the first methods here
-	// whose subject is a payment this actor has not decided anything about yet.
+	// it routes one. AcceptAtCSM loads the payment by id, and every institution
+	// keeps its own row, so without these the clearing house would be reaching
+	// for one that was never written in its database.
 	//
-	// They exist because there is nothing left to accept. AcceptAtCSM loads the
-	// payment by id and every institution now keeps its own row, so the clearing
-	// house was reaching for one that had never been written in its database.
-	// Recording is not accepting: membership, the open cycle and the direction are
-	// all still asked later and can all still refuse — and being able to refuse
-	// with a row in hand is what lets the refusal be ANSWERED. See
+	// Recording is not accepting: membership, the open cycle and the direction
+	// are all asked later and can all refuse — and being able to refuse with a
+	// row in hand is what lets the refusal be ANSWERED. See
 	// payment.RecordRelayedTx.
 	//
 	// They take the DOCUMENT, unlike a bank's pair, because this institution has
@@ -434,10 +286,7 @@ type csmOps interface {
 	// posts: this institution holds no book, and both are recording news that
 	// arrived from the settlement agent.
 	//
-	// Neither existed, and the reason is the shared row. Settled was written by
-	// the payee's BANK and Returned by whichever bank posted the second leg, onto
-	// the row all three institutions were reading — so the clearing house's view
-	// moved because somebody else moved it. See payment.SettleAtCSMTx.
+	// See payment.SettleAtCSMTx.
 	SettleAtCSM(ctx context.Context, id payment.CycleID) ([]payment.Payment, error)
 	CompleteReturn(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
@@ -447,14 +296,9 @@ type csmOps interface {
 	// even when the message it is acting on came from the other one, which on a
 	// pull it always does.
 	//
-	// A GetRosterEntry sat beside it, turning that answer into an address, and the
-	// doc here called it the one lookup on this actor that survived the split
-	// intact — the roster IS this institution's own row. It survived and stopped
-	// being needed, which is a different thing: the payment names both agents by
-	// BIC, so scheme.Direction picks between two values the clearing house is
-	// already holding. What is lost with it is a membership check nobody was
-	// making on this path; the roster read would have failed for a non-member, and
-	// a non-member's payment cannot be in a cycle to be answered about.
+	// No roster read goes with it: the payment names both agents by BIC, so
+	// scheme.Direction picks between two values the clearing house is already
+	// holding.
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
 
 	// The cut-off, and what it now has to say afterwards.
@@ -494,9 +338,6 @@ type csmOps interface {
 // settlementOps is the central bank's view: what a settlement handler may
 // reach.
 //
-// The comment on bankOps applies to all three — empty on purpose, grown by the
-// task that first needs a method.
-//
 // Two methods, and they are the two ways central-bank reserves move in this
 // system: a cut-off's net positions being discharged, and a settled payment
 // being sent back. Neither is on any other interface, so a bank handler or a
@@ -511,26 +352,14 @@ type csmOps interface {
 // still cannot do is ENUMERATE the payments of a batch, which is why the
 // settlement fan-out is the clearing house's; see csm.tellSettled.
 //
-// It is still not a ban on those handlers moving money, and the reason has
-// changed. It used to be a method: GetParticipant was on both of the other
-// interfaces and returned a value carrying live ledger and deposit handles
-// bound to whichever bank it named, so posting was reachable from either of
-// them through a method each legitimately held. Task 17 narrowed that return to
-// payment.RosterEntry and there is no handle on either interface now.
+// The limit these interfaces have and cannot lose: they narrow by METHOD, and
+// every ledger.Tx method takes its book as an ordinary argument, so a handler
+// holding any posting method at all can post in any book. The recorder in
+// books_test.go is what watches for that.
 //
-// What remains is the limit these interfaces have always had and cannot lose:
-// they narrow by METHOD, and every ledger.Tx method takes its book as an
-// ordinary argument, so a handler holding any posting method at all can post in
-// any book. The recorder in books_test.go is what watches for that, here as
-// everywhere else in this package.
-//
-// The two methods behind it now reach the SAME distance, and that is what Tasks
-// 15 and 16 between them did. This interface used to carry ReturnPayment, which
-// posted in three books of which two were member banks', and the note here said
-// the settlement agent was still the widest-reaching actor in the system on that
-// one flow. It is not any more: SettleCycleTx and SettleReturnTx each post in
-// the central bank's own book and in no member's, and every customer leg on
-// either path is made by the bank whose customer it moves, from a message.
+// SettleCycleTx and SettleReturnTx each post in the central bank's own book and
+// in no member's, and every customer leg on either path is made by the bank
+// whose customer it moves, from a message.
 // TestWhichBooksTheCentralBankReachesWhenItSettles and
 // TestWhichBooksAReturnReaches measure both rather than assuming either.
 //
@@ -540,15 +369,13 @@ type csmOps interface {
 // id here — which is why payment.SettlementAdvice is keyed by a reference
 // rather than by a cycle.
 type settlementOps interface {
-	// SettleCycle takes the LEGS as well as the cycle id since Task 18d, which
-	// makes it the same shape as SettleReturn below and for the same reason:
-	// everything this institution acts on comes off the message. It used to take
-	// the id alone and read the cycle — the clearing house's row, in a database
-	// this one does not hold and whose shape has no cycles table — for the
-	// positions, the asset and the "has this cut-off been reached" guard. The
-	// first two are on the pacs.009 (payment.ReadSettlement), and the third is
-	// answered out of this agent's own settlement register instead. See
-	// payment.SettleCycleTx and positionsIn.
+	// SettleCycle takes the LEGS as well as the cycle id, which is the shape
+	// SettleReturn below has and for the same reason: everything this
+	// institution acts on comes off the message. The positions and the asset are
+	// on the pacs.009 (payment.ReadSettlement), and "has this cut-off been
+	// reached" is answered out of this agent's own settlement register — the
+	// cycle is the clearing house's row, in a database this one does not hold.
+	// See payment.SettleCycleTx and positionsIn.
 	//
 	// It hands back the STATEMENTS beside the settlement, because the closing
 	// balance each carries is a claim about a moment inside the unit of work and
@@ -556,11 +383,10 @@ type settlementOps interface {
 	// see centralBank.advise.
 	SettleCycle(ctx context.Context, id payment.CycleID, legs []payment.SettlementLeg) (payment.Settlement, []payment.SettlementStatement, error)
 
-	// SettleReturn takes the INSTRUCTION rather than a payment id, and that is
-	// the whole of what sub-project 8 needed from this flow: everything it acts
-	// on came off the pacs.004 (payment.ReadReturn), because a settlement agent
-	// holds no payment rows and never saw the payment clear. Nothing on this
-	// interface turns a payment id into a payment, here or at a cut-off.
+	// SettleReturn takes the INSTRUCTION rather than a payment id: everything it
+	// acts on came off the pacs.004 (payment.ReadReturn), because a settlement
+	// agent holds no payment rows and never saw the payment clear. Nothing on
+	// this interface turns a payment id into a payment, here or at a cut-off.
 	SettleReturn(ctx context.Context, in payment.ReturnInstruction) ([]payment.SettlementStatement, error)
 
 	// OpenSettlementAccount is the third thing this institution does, and the
@@ -574,18 +400,11 @@ type settlementOps interface {
 	// a BIC, a name and one currency, and a BIC is what it keys its own row by.
 	OpenSettlementAccount(ctx context.Context, in payment.AdmissionRequest) (payment.SettlementMember, error)
 
-	// ReceiveLodgement is the fourth, and it is the half of Task 18a's crossing
-	// that lands here: a member has asked this institution to credit the member's
-	// own reserve account, and this institution posts Debit Settlement Assets /
-	// Credit Reserve: <member> in its own book.
-	//
-	// It is the same pair of entries a DEPOSIT used to make in this book — from
-	// inside the funding bank's unit of work, which is what made it a crossing.
-	// Nothing about the entries changed. What changed is who makes them and on
-	// whose instruction, and that difference is the whole of what the split needs:
-	// this method is on this interface and on no other, so a bank handler cannot
-	// NAME it, and the only way a member can cause this posting is by sending a
-	// camt.050.
+	// ReceiveLodgement is the fourth: a member has asked this institution to
+	// credit the member's own reserve account, and this institution posts Debit
+	// Settlement Assets / Credit Reserve: <member> in its own book. It is on
+	// this interface and on no other, so a bank handler cannot NAME it, and the
+	// only way a member can cause this posting is by sending a camt.050.
 	//
 	// It takes the INSTRUCTION rather than a bank, for the reason
 	// OpenSettlementAccount and SettleReturn both do: everything it acts on came
@@ -597,13 +416,9 @@ type settlementOps interface {
 	ReceiveLodgement(ctx context.Context, in payment.LodgementInstruction) (payment.LodgementReceipt, error)
 }
 
-// *payment.Network satisfies all three today, and these assertions are what keep
-// that true: a method added to one of the interfaces above that the Network does
-// not have fails the build here rather than at the handler that wanted it.
-//
-// They asserted nothing while the interfaces were empty, which was not an
-// argument for leaving them out: they cost one line each and they started
-// working the moment Task 10 added the first method.
+// *payment.Network satisfies all three, and these assertions are what keep that
+// true: a method added to one of the interfaces above that the Network does not
+// have fails the build here rather than at the handler that wanted it.
 var (
 	_ bankOps       = (*payment.Network)(nil)
 	_ csmOps        = (*payment.Network)(nil)
