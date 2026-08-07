@@ -89,12 +89,13 @@ The sections below are organized around these layers: general-ledger concepts fi
 - [Reporting and Compliance](#reporting-and-compliance)
   - [End-of-Day Snapshots](#end-of-day-snapshots)
   - [Audit Trail](#audit-trail)
+    - [There Is No Combined Log, and No Order Between Two of Them](#there-is-no-combined-log-and-no-order-between-two-of-them)
 - [Statements](#statements)
   - [Derived from the Ledger, Not a Separate Account Ledger](#derived-from-the-ledger-not-a-separate-account-ledger)
   - [What Appears on a Statement](#what-appears-on-a-statement)
   - [Why Transactions and Balances May Not Reconcile](#why-transactions-and-balances-may-not-reconcile)
 - [Persistence](#persistence)
-  - [One Store, and the Suite That Used to Compare Two](#one-store-and-the-suite-that-used-to-compare-two)
+  - [One Implementation, and the Suite That Used to Compare Two](#one-implementation-and-the-suite-that-used-to-compare-two)
   - [The Ledger as Relational Tables](#the-ledger-as-relational-tables)
   - [The Asset Dimension in the Schema](#the-asset-dimension-in-the-schema)
     - [The Constraint That Is Missing on Purpose](#the-constraint-that-is-missing-on-purpose)
@@ -910,7 +911,7 @@ bank's book:          Debit  Reserve at Central Bank  → Credit Vault Cash
 central bank's book:  Debit  Settlement Assets        → Credit Reserve: <bank>
 ```
 
-**Two books, two units of work, one message each way.** That is not machinery added for realism — it is the only shape available once each institution keeps its own books, and a single transaction spanning both is exactly what the [store split](#persistence) exists to remove. `camt.050` (`LiquidityCreditTransfer`) is also closer to the real thing than most of this system's messages: it is what a TARGET2 or CLM participant genuinely sends to move liquidity onto its RTGS account.
+**Two books, two units of work, one message each way.** That is not machinery added for realism — it is the only shape available once each institution keeps its own books, and a single transaction spanning both is exactly what the [store split](#persistence) removed. `camt.050` (`LiquidityCreditTransfer`) is also closer to the real thing than most of this system's messages: it is what a TARGET2 or CLM participant genuinely sends to move liquidity onto its RTGS account.
 
 **The bank posts its own leg before it sends, and the reason is the message rather than the money.** A `camt.025` receipt carries no amount — it acknowledges a *request*, identified by that request's message id, and assumes the requester still knows what it asked for — so a bank cannot work out what to post from the answer. The alternative, remembering the outstanding request in memory until the answer arrives, is a state that does not survive a restart. So: post first. Between the send and the receipt the bank's reserve mirror says more than the central bank's book does, which is the same [unreconciled position](#settlement-is-final-at-the-central-bank-and-the-banks-catch-up) a cut-off opens.
 
@@ -1007,6 +1008,11 @@ What `Direction` governs is bigger than it used to be, and it is worth stating e
 
 That refusal is about the **route** and not about the payment: a transfer between two customers of one bank is an ordinary product, and the honest statement is that this system does not offer it yet. Submitted to clearing anyway it produced three different wrong answers, one per institution — a cycle whose only payment netted to zero settled nothing and stranded at `Cleared`; a return sent that bank two statements of the *same* reserve account under the same reference, so its own mirror moved by an amount the central bank's record of it did not; and the returning bank, being both parties, held both legs and refused its own customer's unconditional refund. Each is a symptom of an instruction that should never have been handed to a clearing house, which is why one refusal at the door replaces three patches further in.
 
+**A rule that holds only because no caller builds the counter-example is a rule nobody is keeping**, and the domain is written to be right about this arrangement even though the door refuses it. Two defects were found that way, by a test that builds the payment the door will not, and both are the *store split* showing through rather than anything about on-us payments as such:
+
+- **A bank cannot take "there is a row for this payment" as evidence that somebody else instructed it.** `AcceptInboundTx`'s witness that it is the receiving side is the row's existence, which works because the row does not exist until the instruction arrives — and is false when this bank also submitted. Read that way, a pull's collection was mistaken for an answer, the debtor leg was never posted, the payer was never debited, and the collection then settled, paid the payee and could be returned out of money nobody took. What distinguishes the two cases is the *debtor leg*, and it is checked again alongside the row.
+- **"Which of the two legs is last" needs two banks to be last of.** `PostReturnLegTx` decides that a return is over by POSITION IN THE CONVERSATION: the returning bank posts first, by construction, and the other bank is told only after the reserves have moved. One institution that is both parties is "first" about both of its legs and nothing is coming to tell it otherwise — `SettleReturn` moves reserves *between* two members and there are none. For that arrangement alone, the bank answers out of its own book: both legs written, return over.
+
 Other **net-settled** schemes drop in by implementing `Scheme` and registering it — the orchestrator does not change. **Instant** and **card** schemes need a little more wiring; see [Next Work](#next-work).
 
 #### A Scheme Declares Its Asset
@@ -1060,6 +1066,18 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
           ▼                             Returned
       Rejected
 ```
+
+**A payment is three rows, in three databases, and they legitimately disagree.** The diagram above is a state machine per *copy*, not per payment. The payer's bank, the payee's bank and the clearing house each hold their own record of the same payment; no one of them can read another's, and there is no row anywhere that is "the payment". Which copy a question is about is part of the question:
+
+| | the payer's bank | the payee's bank | the clearing house |
+| --- | --- | --- | --- |
+| legs | the debtor leg it posted | the creditor leg it posted | **none** — this institution keeps no book of accounts |
+| cycle | **none** — a bank has no cycles | none | the cycle it took the payment into |
+| status | what it was **told** | what it was **told** | what it **decided** |
+
+The status column is where this bites. `Accepted` is the clearing house's decision, and the `ACCP` announcing it goes to the bank that is waiting for an answer to its instruction — the submitter — and to nobody else. So the bank that *answered* the instruction is never told, and its copy reads `Initiated` until settlement: `Initiated → Settled` is a legal edge at a bank and an impossible one at the clearing house. Neither bank is wrong. They were told different things because they asked different things.
+
+Each institution advances its own copy through an act of its own, and a member bank has exactly three of them: `AcceptAtBankTx` records that the payment made it into a cycle (and posts nothing — no money moves when a payment is accepted, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between); `RejectAtBankTx` records the rejection and reverses the debtor leg, in one unit of work, so a bank that cannot give the money back does not record the rejection either; `SettleAtBankTx` records that it settled and, if this bank holds the payee, releases the money out of clearing suspense.
 
 Every one of those arrows is drawn by a *named institution*, and no two adjacent ones by the same:
 
@@ -1128,7 +1146,9 @@ The central bank's answer is final either way. A net payer that cannot cover its
 
 What records the other side of it is the member's own `SettlementAdvice` row, and it is worth being exact about what that row does and does not say, because this document said the wrong thing about it first. `PostSettlementAdviceTx` writes the row and posts the mirror leg in **one unit of work**, so the two commit together or neither does. The row therefore means *this bank booked this cut-off* — which is what makes a redelivered statement a no-op, and what a reconciliation reads. It is not a trace of a failure: a posting that fails takes the row back with it and leaves nothing. So the unreconciled position is the **absence** of a row against a suspense that has not cleared, and a bank that was told and could not book looks exactly like one that was never told at all.
 
-That is the right design rather than a limitation. Booking the leg and recording that you booked it must be atomic, or a bank can post and fail to record; a row asserting a booking that never happened is worse than no row. (`AdviceAdvised` — "told, not yet booked" — exists in the type and no committed row says it today. It becomes meaningful only if the write and the posting ever stop sharing a unit of work.) Telling the two absences apart is what the stored closing balance is for, and nothing reads it yet: that is Task 19.
+That is the right design rather than a limitation. Booking the leg and recording that you booked it must be atomic, or a bank can post and fail to record; a row asserting a booking that never happened is worse than no row. (`AdviceAdvised` — "told, not yet booked" — exists in the type and no committed row says it today. It becomes meaningful only if the write and the posting ever stop sharing a unit of work.) Telling the two absences apart from *inside the bank* is what the stored closing balance is for, and nothing reads it yet.
+
+Telling them apart from **outside every bank** is possible now, and it is what `payment/recon` does: hold the settlement agent's own register of what it moved against each member's advice rows, and a movement the agent made that no member booked is named, with the reference it was made under. That is a comparison across two databases — which is exactly why it is a test-level harness and not an act any institution performs. A bank that could read the agent's register would not need the statement.
 
 **A return is the same shape, one payment wide.** None of the paragraphs above is about cut-offs in particular; they are about an institution being final and the members catching up, and a [return](#sepa-direct-debit-and-returns) does exactly that. `SettleReturnTx` reverses the reserves in the central bank's own book and is final there; it states both members' accounts in a `camt.053` apiece; each bank books its own reserve mirror afterwards, in its own unit of work, and writes its own `SettlementAdvice` row for it. So a return has an unreconciled position of its own, and it shows in the same place — a clearing suspense that has not returned to zero with no advice row against the reference. What differs is only what the reference *is*: a cycle id at a cut-off, a payment id here. A member cannot tell one from the other and has no reason to; both name a row in an institution it does not share a database with. What a return does **not** leave behind at the settlement agent is a row: a cut-off writes a `Settlement`, and a return writes nothing at all, because the only durable trace it needs is the idempotency key on the reserve reversal, which is what makes a redelivered `pacs.004` `ErrReturnAlreadySettled` instead of a second payout.
 
@@ -1138,7 +1158,7 @@ The **clearing house has no ledger**. `CloseCycleTx` posts nowhere: it marks eac
 
 The **central bank has no customers**. Its book holds one `Reserve: <Bank> (<asset>)` liability per member per asset and the balancing `Settlement Assets (<asset>)` — no deposit accounts and no payees. It answers about a *cycle* and has no way to look an individual payment up, which is why the per-payment `ACSC` fan-out is the clearing house's job and not its.
 
-A **bank has no cycles**. A member never *reads* the cycle row — `bankOps`, the narrowed interface a bank's handler holds, has no method that returns one. (It handles an opaque *reference*: `PostSettlementAdvice` takes an `AdvisedMovement` carrying the `Reference` the statement quoted — a cycle id today, and, once a return can settle on its own, a payment id, which a member cannot tell apart from a cycle id and has no reason to.) A member learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record of that cut-off is the `settlement_advices` row keyed by `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. There is deliberately no foreign key from it to anything: the reference names a row in an institution the member does not share a database with, in either direction, and a constraint here would encode exactly the sharing that splitting the stores removes.
+A **bank has no cycles**. A member never *reads* the cycle row — `bankOps`, the narrowed interface a bank's handler holds, has no method that returns one. (It handles an opaque *reference*: `PostSettlementAdvice` takes an `AdvisedMovement` carrying the `Reference` the statement quoted — a cycle id at a cut-off, a payment id at a return, and a member cannot tell the two apart and has no reason to.) A member learns of a cut-off from the `camt.053` addressed to it and from one `pacs.002` per payment, and its own record of that cut-off is the `settlement_advices` row keyed by `(book_id, reference, asset)` — the first payment-layer table **keyed by** book. There is deliberately no foreign key from it to anything: the reference names a row in an institution the member does not share a database with, in either direction, and a constraint here would encode exactly the sharing that splitting the stores removes.
 
 #### A Bank Reconciles Two Advices from Two Institutions Against One Balance
 
@@ -1317,20 +1337,35 @@ The audit trail is an immutable, append-only log of every mutation in the system
 - The entity affected
 - The full event payload, as it was at the time
 
-All four layers write to the same log, told apart by **scope**:
+All four layers write to *an* institution's log, told apart by **scope**:
 
-| Scope | Book | Events |
+| Scope | Whose log | Events |
 | --- | --- | --- |
 | `ledger` | one bank's, or the central bank's | ledger, subledger and account creation; transaction posting; reversal |
 | `deposit` | one bank's | account opened, frozen, unfrozen, closed, dormant, reactivated; hold created, released, captured; end-of-day snapshot |
-| `payment` | the network's | the four acts of an admission — participant added, settlement account opened, member admitted, membership recorded; mandate created, revoked; payment initiated, accepted, cleared, settled, rejected, returned; cycle opened, closed, settled |
+| `payment` | whichever institution performed the act | founding and membership recorded at the joining bank; the settlement account at the central bank; the routing entry at the clearing house; mandates at the creditor's bank; a payment's events at each institution that acted on its own copy; cycles at the clearing house; settlements at the central bank |
 | `lending` | one bank's | facility opened, disbursed, drawn, accrued, charged, repaid, arrears changed, closed |
+
+#### There Is No Combined Log, and No Order Between Two of Them
+
+This section used to say all four layers wrote to *the same* log, and the `payment` row above used to say the book was "the network's". Both were true and neither is: there is no network book, because every row that used to live under one turned out to have exactly one owner, and each owner now has a database of its own. **A deployment of N banks has N+2 audit logs.**
+
+Two consequences follow, and the second is the one that surprises people:
+
+- **A payment's history is spread across three logs.** Each institution's opens with its own `payment.initiated` — so a bank holds *two* per payment it is a party to on a pull, one as submitter and one as receiver, and that is the shape rather than a duplicate. What each log records is what that institution did, which is the only thing it is in a position to know.
+- **`seq` is per institution, so two events from two institutions cannot be ordered against each other.** It used to be a store-global counter, so merging the logs was a *sort*. Now `seq 7` means "the seventh thing this institution did" and names as many events as there are institutions; sorted anyway, a combined trail comes out interleaved by accident of how busy each institution has been. There is no global clock either.
+
+The honest answer to "what order did these things happen in" is therefore **none, across institutions** — and that is a finding rather than a gap in the implementation. An auditor holding three banks' logs and a clearing house's has exactly this problem in the real world, and answers it the same way this system does: with the **messages**, which carry causality that counters do not. A `pacs.002` quotes the `pacs.008` it answers; a `camt.053` quotes the cut-off it discharges. Inside one institution `seq` is still a total order and still a cursor, which is what every audit endpoint pages on.
+
+The thing that *can* hold several institutions' books against each other is the reconciliation harness (`payment/recon`), and it is test-only for precisely this reason: an institution able to read everybody's log would be an institution that did not need the messages.
 
 Admission is four events rather than one because it is four units of work at three institutions: the bank founds itself, the settlement agent opens it an account in its own book, the clearing house writes its routing entry, and the bank records what it was told. `participant.added` is the FOUNDING alone — its payload is a bank whose settlement account numbers are still empty, because at the moment it is written no settlement agent has opened one — and `membership.recorded` is where those numbers enter the log at all. The two the other institutions write are keyed by the bank's **BIC**, because that is the only identifier either of them has ever been told.
 
 An event is always written **inside the transaction of the operation it describes**, so a rolled-back operation leaves no record claiming it happened. A settlement that fails on an underfunded member therefore writes no `cycle.settled`. It writes no `payment.settled` either, but for a different reason and not because the two share a transaction: `payment.settled` is the **payee's bank's**, appended by `SettleAtBankTx` in that bank's own unit of work, and a cut-off that never settled produces no advice for any bank to act on.
 
-Because the log is append-only and unbounded, every audit endpoint is **paged**: `?limit=` (default 100, capped at 1000) and `?before=<seq>`, which is an exclusive upper cursor on the sequence number, plus `?type=` and `?entity=` to narrow. A page is the newest events below the cursor, handed back oldest-first, so paging walks backwards while each page still reads chronologically. The sequence number is a store-global total order rather than a per-book counter, so a cursor is only meaningful when replayed against the same filter that produced it.
+Because the log is append-only and unbounded, every audit endpoint is **paged**: `?limit=` (default 100, capped at 1000) and `?before=<seq>`, which is an exclusive upper cursor on the sequence number, plus `?type=` and `?entity=` to narrow. A page is the newest events below the cursor, handed back oldest-first, so paging walks backwards while each page still reads chronologically. The sequence number is a total order over **one institution's whole database** rather than a per-book counter, so a cursor is only meaningful when replayed against the same filter that produced it *on the same listener* — a `?before=` taken off a bank's console means nothing on the clearing house's.
+
+`GET /payments/audit` is therefore **one endpoint per institution** and not one endpoint. A bank's serves that bank's own book and knows nothing of another bank's mandates; the clearing house's serves the clearing house's. Which one an operator wants depends on whose account of an event they are after, and asking all of them is the only way to get all of it.
 
 The audit trail provides:
 
@@ -1394,17 +1429,17 @@ The interfaces are still interfaces with one implementation behind them, and tha
 
 > **On dependencies.** The library core — `ledger`, `deposit`, `payment`, `api`, `seed` — is standard library only. The store is the single exception, and it is why the module has a dependency at all. What changed with the swap is what KIND: `store/pg` needed a driver *and* a server, a container and a DSN; `store/sqlite` needs ten Go modules and nothing outside the process. More modules, zero external dependencies.
 
-### One Store, and the Suite That Used to Compare Two
+### One Implementation, and the Suite That Used to Compare Two
 
 `store/storetest` is a single suite the store must pass. It was a **conformance** suite until recently — the only thing standing between "two backends" and "two subtly different systems" — and it is worth knowing that it no longer is, because a great deal of this chapter was written in that voice.
 
 There were three implementations in all: `store/mem`, a Go map behind one mutex, which was the reference; `store/pg` on Postgres, reached only by exporting `TEST_DATABASE_URL` and having a server to point it at; and `store/sqlite`, which was added last and certified against both. Then both went. What is left runs on a fresh checkout with nothing exported:
 
 ```bash
-go test ./...                          # one store, one run, zero setup
+go test ./...                          # one implementation, one run, zero setup
 ```
 
-What survives the loss is the way the cases were written. `storetest` talks only to `Store` and `Tx` — never to `ledger.Book`, `deposit.Register` or `payment.Network` — and names no table and no dialect, so what each case pins is the **contract**: identity allocation, ordering, idempotency, the balance aggregate, the audit log, rollback. That is a suite one implementation can be held to, and it is what the [store split](#next-work) needs, where three store *shapes* run the same file.
+What survives the loss is the way the cases were written. `storetest` talks only to `Store` and `Tx` — never to `ledger.Book`, `deposit.Register` or `payment.Network` — and names no table and no dialect, so what each case pins is the **contract**: identity allocation, ordering, idempotency, the balance aggregate, the audit log, rollback. That is a suite one implementation can be held to, and it is what the [store split](#persistence) needed: three store *shapes* run the same file, and a case that named a table could not have been run three times.
 
 The rule the suite used to enforce was sharper than "both work": **neither store may accept or refuse a write the other handles differently.** Its consequences are still in the schema, and each of them now has to stand on a reason that does not name a second store. There is no `UNIQUE (book_id, name)` on ledgers, subledgers or accounts, however tempting it looks — not because one backend could hold it and another could not, but because the domain does not hold that invariant at all. Two customers called "John Smith" at one bank is not an error, and neither is a bank filing two subledgers under one heading; a name here is a label, and identity is the generated id. A constraint asserting otherwise would refuse a write the domain has already decided to allow.
 
@@ -1442,13 +1477,22 @@ Four details carry more weight than they look like they should:
 
 Two tables carry the product catalogue: **`products`** (the named entry: name, kind, whether it is retired) and **`product_versions`** (what it cost from one day onwards, keyed `(book_id, product_id, day_key)`). A version's `published_at` being NULL means *draft* — editable, and invisible to pricing — and its `hash` is verified on every read that prices a day, not merely stored. Neither fact is visible in a schema dump, so both are recorded in the migration itself, inside the statement. `overdraft_terms` gains a `product_id` and its three pricing columns become nullable: all three NULL means the pricing floats from the product, all three set is a negotiated overlay, and the mixed state is refused by the domain rather than by a `CHECK` — so that a caller is told which combination is wrong instead of being handed a constraint violation — with a comment beside the columns saying so, because "NULL means free" and "NULL means ask the product" look identical in a dump.
 
-`store/sqlite/schema/0001_init.sql` is the whole schema, in one file, and its comments say why each of these is the way it is. There is exactly one migration: this repository has no deployed databases — every database it meets is an ephemeral one or a throwaway file, both of which migrate from empty — so the asset dimension was folded into `0001` rather than layered on top of it as history nobody will ever replay. `migrate.go`'s own doc comment explains why the usual "a shipped migration is immutable" rule is suspended here, and under what condition it would have to come back.
+**There are three schemas, not one, and the differences between them are the design.** `store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql` are a member bank's database, the clearing house's and the settlement agent's; each is a single `0001` and nothing is layered on top, because this repository has no deployed databases — every one it meets is ephemeral or a throwaway file, and both migrate from empty. `migrate.go`'s own doc comment explains why the usual "a shipped migration is immutable" rule is suspended here, and under what condition it would have to come back.
 
-**Where a comment sits in that file is load-bearing, and it was not under Postgres.** SQLite stores the *text of a statement* in `sqlite_master`, so a comment inside a `CREATE TABLE`'s parentheses reaches a schema dump and one written above the statement is dropped silently. `COMMENT ON COLUMN` used to buy that for free; here it is a convention, and it is the arguments about what the schema does **not** do that most need to survive — an absent constraint has no column to hang a comment from. So every such argument lives inside the statement it concerns, and `TestSchemaArgumentsReachSqliteMaster` fails if one moves back to column 0.
+What each file *lacks* is what it says. There is no `payments` table in the central bank's and no `cycles` table either — the settlement agent is told a set of positions and a reference, checks that every net payer can cover its own, and posts the whole thing or none, and it never holds the batch. There is no ledger at all in the clearing house's: no `accounts`, no `entries`, no `transactions`, because clearing moves no money. A bank's `payments` has no `cycle_id`, and the clearing house's has no leg columns. `TestSchemaArgumentsReachSqliteMaster` runs three cases, one per shape.
+
+Two columns exist because a **derivation** turned out to cross an institutional boundary, and both are worth naming because they look like denormalisation and are not:
+
+- **`settlements.asset`**, in the central bank's schema. What was settled in used to be read settlement → its cycle → that cycle's scheme, which is a chain out of the settlement agent's own row and into the clearing house's database. There is no cycles table here to join to and never was one to join to honestly. The agent has always known the answer without asking: an instruction whose legs are not all in one asset is refused before anything is posted, so the batch this row records has exactly one, and it records it.
+- **`mandates.asset`**, in a bank's. Rendering a mandate used to load the *debtor's* bank and list its deposit register to find out what the account was denominated in — one institution reading another's for a display field.
+
+**Where a comment sits in each file is load-bearing, and it was not under Postgres.** SQLite stores the *text of a statement* in `sqlite_master`, so a comment inside a `CREATE TABLE`'s parentheses reaches a schema dump and one written above the statement is dropped silently. `COMMENT ON COLUMN` used to buy that for free; here it is a convention, and it is the arguments about what the schema does **not** do that most need to survive — an absent constraint has no column to hang a comment from, and an absent *column* has nothing at all. So every such argument lives inside the statement it concerns, and `TestSchemaArgumentsReachSqliteMaster` fails if one moves back to column 0.
+
+**An argument that spans two of the three files lives in `bank/0001_init.sql`** and the others name it at the point it applies. The seq allocation rule, the absent `CHECK` on an asset code and the absent parent foreign key are all there. One goes the other way, and it is the largest in the original schema: the find-or-create race behind the chart of accounts is the *settlement agent's*, so it is written on `ledgers` in `centralbank/0001_init.sql` and the bank's copy names it. An argument goes where the thing it is about lives, not where the table happens to appear first — copying is how one fact ends up in nine places and then in three versions.
 
 ### The Asset Dimension in the Schema
 
-**There is no `assets` table.** [Asset definitions live in Go](#assets-what-an-account-is-denominated-in), so the schema holds no row saying what EUR *is* — only rows denominated in it. What the asset dimension costs the schema is therefore four columns and one child table, not a lookup table and five foreign keys.
+**There is no `assets` table.** [Asset definitions live in Go](#assets-what-an-account-is-denominated-in), so the schema holds no row saying what EUR *is* — only rows denominated in it. What the asset dimension costs the schemas is therefore a column here and there and one child table, not a lookup table and a foreign key per row that carries one.
 
 Three decisions in how the asset spreads from there.
 
@@ -1466,13 +1510,13 @@ The two rows that are not the bank's are keyed by **BIC**, not by a bank id. Nei
 
 #### The Constraint That Is Missing on Purpose
 
-Four columns hold an asset code out of a set of three known values, and there is deliberately **no `CHECK`** restricting any of them. Adding the "missing" one breaks the shared suite.
+Ten columns across the three schemas hold an asset code out of a set of three known values, and there is deliberately **no `CHECK`** restricting any of them. Adding the "missing" one breaks the shared suite.
 
-The argument is the one from [One Store, and the Suite That Used to Compare Two](#one-store-and-the-suite-that-used-to-compare-two), pointed at a new case. A store is a per-table key/value layer; "the asset must be one the system knows" is a **domain** rule, and `ledger.Book.CreateAccountTx` enforces it against `ledger.LookupAsset` before it creates an account — precisely where "the parent must exist" already lives for ledgers and subledgers. Putting it in the schema as well enforces it twice, in two places that answer differently: the constraint fires first, and it fires as a constraint violation where the domain would have named the asset it did not know. The subtest is `ParentReferencesAreNotEnforced`, whose fixtures write accounts with no asset set at all, so adding the `CHECK` fails it. An earlier composite FK on `subledgers (book_id, ledger_id)` broke that same subtest and was removed for the same reason.
+The argument is the one from [One Implementation, and the Suite That Used to Compare Two](#one-implementation-and-the-suite-that-used-to-compare-two), pointed at a new case. A store is a per-table key/value layer; "the asset must be one the system knows" is a **domain** rule, and `ledger.Book.CreateAccountTx` enforces it against `ledger.LookupAsset` before it creates an account — precisely where "the parent must exist" already lives for ledgers and subledgers. Putting it in the schema as well enforces it twice, in two places that answer differently: the constraint fires first, and it fires as a constraint violation where the domain would have named the asset it did not know. The subtest is `ParentReferencesAreNotEnforced`, whose fixtures write accounts with no asset set at all, so adding the `CHECK` fails it. An earlier composite FK on `subledgers (book_id, ledger_id)` broke that same subtest and was removed for the same reason.
 
 There is a second, more ordinary reason, and since the second store went it is the one carrying the weight. The known assets are a one-line change to a Go slice; a `CHECK` enumerating them would make every such change a **migration**, so the set would live in two places and the database's copy would be the one that decided. This decision used to be argued the other way round — a SQL store could express the rule and a Go map could not, so neither did — and that half expired with `store/mem`. This half never mentioned it.
 
-`0001_init.sql` writes the reasoning into the database itself, inside the `CREATE TABLE` that holds the columns. That is not ceremony. The absence of a constraint is invisible: the next author reads the schema, sees four TEXT columns holding `'EUR'` and `'BTC'`, concludes someone forgot, and helpfully adds one. A comment the schema dump carries is the only place that warning can sit where it will actually be read — and under SQLite it only carries if it is inside the statement, which is why the file opens by saying so.
+Each schema writes the reasoning into the database itself, inside the `CREATE TABLE` that holds the columns. That is not ceremony. The absence of a constraint is invisible: the next author reads the schema, sees TEXT columns holding `'EUR'` and `'BTC'`, concludes someone forgot, and helpfully adds one. A comment the schema dump carries is the only place that warning can sit where it will actually be read — and under SQLite it only carries if it is inside the statement, which is why each file opens by saying so. `accounts.asset` in `bank/0001_init.sql` is the canonical statement and the other two point at it, because one argument repeated ten times becomes ten arguments that can disagree.
 
 ### A Balance Is an Aggregate, Not a Column
 
@@ -1671,13 +1715,17 @@ go run ./cmd/server        # :8081 central bank, :8082 clearing house, :8083+ on
 DATABASE_URL=./cbs.db go run ./cmd/server
 ```
 
-**One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports over one shared `Store`.
+**One binary, one process.** What multiplies is listeners, not artefacts: there is no `cmd/bank`, no build matrix, and `make dev` starts a single Go process — it just answers on six ports. What it does *not* do any more is answer them over one shared `Store`: there is one database per institution, N+2 of them, and each listener is bound to exactly one.
 
 What it no longer answers on is one shared `payment.Network`, and the correction is recent. A `Network` is **one institution's** handle now: it is built with an `Identity` saying which entity it is, and each listener holds the one belonging to its own — the bank whose port it is, or the clearing house, or the central bank. That is what lets an act ask "whose book?" and get an answer without being told; before it, every act about a particular bank took that bank as an argument, so the caller asserted who it was and the domain believed it. `payment.Networks` is the factory the process holds, and it is the only thing in the repository that holds more than one institution's view.
 
 That is not a convenience. `store/mem` was a map behind a mutex in one process's memory, so four bank *processes* would have been four disconnected universes: a payment from Aurora to Verde posting into an Aurora that Verde had never heard of. The swap to SQLite changed that in a direction nobody asked for and it is worth recording rather than acting on: a SQLite **file** under WAL is shared between processes, so an entity-per-process split no longer needs a server to make the state one universe. What it still needs is everything else below.
 
-A flag once ran a single entity in its own process against a shared Postgres, which was the real topology. It is gone, and what took its place is the `mesh`: the institutions are now separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message. They still share this process, this store and this clock — the mesh models the separation, it does not deploy it — so a listener started alone would serve its API while no message could reach it, and the failure would surface far from its cause. A genuine split is a larger job than a flag, and it is being done rather than described: settlement no longer posts into any book but the central bank's, because each member books its own halves on advice. What is left is that every actor still shares one `Store`, and splitting it means a reconciliation-break concept this system is only starting to have — a member's own `SettlementAdvice` row, and its *absence* against a clearing suspense that has not returned to zero, are the first of it.
+A flag once ran a single entity in its own process against a shared Postgres, which was the real topology. It is gone, and what took its place is the `mesh`: the institutions are separate **actors**, each with its own goroutine and inbox, and one reaches another only by sending it a message.
+
+**And they no longer share a store.** This paragraph carried "they still share this process, this store and this clock" for several tasks, with the store named as the last thing left to split. It is split: a member bank's database, the clearing house's and the central bank's are three *different schemas*, and no statement can span two of them — a bank reading another bank's rows finds nothing, and a method reaching for a table its institution's schema does not create is refused by name rather than answered. What is genuinely left is the process and the clock. Two banks in a real network do not share a clock, and every timestamp comparison between them is a comparison across two, which is why real cut-offs are stated in a named time zone and enforced with a tolerance; none of that is modelled. A listener started alone would still serve its API while no message could reach it.
+
+What the split created is the thing this system did not previously need: **a reconciliation**. While one database held every book, "the bank's reserve equals the central bank's liability to it" was true by construction and there was nothing to check. Now it is a claim about two databases that can disagree, and the instrument for it is `payment/recon` — a test-level harness that opens all N+2 stores at once, precisely because no institution in the system may. What it finds is of two kinds and only one is a defect: a **break** is two books that disagree with nothing able to reconcile them, and an **unreconciled position** is a clearing suspense that has not returned to zero with a payment still in flight or a reserve movement not yet booked. The second is modelled on purpose and is [what settlement finality means](#settlement-is-final-at-the-central-bank-and-the-banks-catch-up).
 
 **Ports are static, and admission is not provisioning.** A bank created at runtime through `POST /members` gets a store row, a chart of accounts and a product — and **no listener until the process restarts**. That is a decision rather than a limitation: admitting a member to a payment network is an operational act, and an API call that instantly yielded a running bank would teach the wrong thing. Its reserve accounts are not part of that call either: they are the central bank's to open, and they exist once the scheme has [answered the application](#admission-a-bank-exists-before-it-joins-a-scheme).
 
@@ -1691,10 +1739,15 @@ The settlement layer. Reserves move in its book and nowhere else.
 |---|---|
 | `GET /reserves`, `GET /reserves/{pid}` | every bank's reserves, or one bank's — one row per asset |
 | `POST /members` | found a bank and apply to the scheme for it. `202` with a **founded** bank; the settlement account this listener opens for it is written when the application reaches this actor as an `acmt.007`, and the bank learns its number from the answer |
-| `GET /cycles`, `GET /cycles/{cid}` | the cycles it is instructed to settle, and their net positions |
+| `GET /members` | every bank this **deployment** holds a database for, founded ones included, each carrying its status |
 | `GET /settlements`, `GET /settlements/{sid}` | what it settled |
+| `GET /assets` | known assets |
 | `GET /audit` | the central bank's own log |
-| `POST /admin/reset` | clear the store and rebuild the sample dataset |
+| `POST /admin/reset` | clear every store and rebuild the sample dataset |
+
+**`GET /cycles` was here and is not.** A cycle is the clearing house's row: this institution holds no cycles table, is told a set of positions and a reference, and records what it discharged. The route was invisible while one database served every institution and is a missing table now. It is on the clearing house, where the cut-off is.
+
+**`GET /members` and `POST /members` are the OPERATOR's, not the settlement agent's** — the one pair on this listener that reaches past the entity it is bound to. Founding the banks a deployment starts with and listing them are acts over a *deployment*, and a deployment is not an institution; this listener is where the operator's console is served. `GET /members` is the only enumeration of banks that survives, and it asks which **databases exist** rather than which banks a roster names — so the founded, unadmitted bank is in it, which is exactly the bank a console watching an admission needs to see.
 
 **There is no `POST /settlements`, and its absence is the shape of what the message layer changed.** Settling used to be an operator's act: a human opened this console and pressed a button on a cycle somebody else had closed, with nothing between the two consoles but the two operators. The instruction between them is now modelled — the clearing house reaches a cut-off, sends a **`pacs.009`** carrying the closed cycle's net positions, and the central bank answers a `pacs.002`: `ACSC`, or `RJCT`/`AM04` when a net payer's reserve cannot cover its position. A route that let a human settle beside that would be a second way to settle the same cycle, racing the first.
 
@@ -1708,15 +1761,15 @@ The CSM. It sees every payment in the network, which is its job rather than a le
 
 | Method & path | Operation |
 |---|---|
-| `GET /members` | every bank in the network, and the state each is in |
-| `POST` / `GET /payments`, `POST /payments/{id}/reject\|return` | interbank payments |
-| `POST` / `GET /cycles`, `POST /cycles/{id}/close` | clearing cycles |
+| `POST` / `GET /payments`, `GET /payments/{id}`, `POST /payments/{id}/reject\|return` | interbank payments — this institution's own copy of each |
+| `POST` / `GET /cycles`, `GET /cycles/{cid}`, `POST /cycles/{id}/close` | clearing cycles, and their net positions |
 | `POST /cycles/{id}/settle` | re-send the `pacs.009` for a cycle the central bank refused |
-| `GET /settlements`, `GET /settlements/{sid}` | settlements (reading is not doing) |
 | `GET /schemes`, `GET /roster`, `GET /assets` | schemes, the routing directory, known assets |
-| `GET /payments/audit` | the payment layer's log |
+| `GET /payments/audit` | **this institution's** payment-layer log |
 
-`GET /members` here is a different question from the `POST /members` on the central bank's listener, which founds a bank and applies to the scheme for it; a single `POST`/`GET /participants` used to make the two look like one. What this one answers, though, is worth being exact about, because its name and its listener both suggest something narrower than it is: it serves `ListBanks`, so **every bank is in it, founded ones included, each carrying its status**. That is what lets this console show a bank *becoming* a member — and it is what the static port table reads too, so a bank gets a listener from having been founded rather than from having been admitted.
+**`GET /members` was here and is not**, and the argument that put it here was right about the console and wrong about the institution. This is where an admission is watched from, and watching a bank *become* a member needs the banks that are not one yet — but the clearing house holds no banks table. What it holds is `roster_entries`, and a roster is exactly the list that omits the founded bank the listing existed for. So the two halves separated rather than one being bent into the other: the roster is on `GET /roster` below and is this institution's own answer, and the bank list moved to the central bank's listener beside the route that founds them, where it is the operator's read over a deployment rather than an institution's claim about its members.
+
+**`GET /settlements` was here and is not either.** A settlement is the settlement agent's own record of an act it performed in its own book; reading is not doing, which was the argument for keeping it, and it is still true — of a route on the agent's console. There is no settlements table in this database.
 
 **The mandates are gone from this listener**, and they were on it until Task 18b. In SEPA the *creditor* holds the mandate, and this repository has said so since the pull flow landed — `SDD.ValidateMandate`'s first sentence, and the bullet above about which bank checks one. The storage disagreed: the row was network-scoped, `POST /mandates` was here, and `GET /mandates` listed every member's authorisations over every other member's customers' accounts on one page. Rendering each row made it worse — the handler loaded the *debtor's* bank and listed its deposit register to find the asset, one institution reading another's over HTTP for a display field, and a read the `csm` shape has no table to answer. They are on the creditor bank's listener now, narrowed to that bank's own rows, and `payment.Mandate` carries its asset so nobody reads a register at all.
 
@@ -1750,13 +1803,16 @@ Everything that used to sit under `/participants/{pid}/…`, with the segment go
 | `POST /facilities/{fid}/interest-refunds`, `GET /interest-refunds-payable` | interest the bank charged and never earned |
 | `POST` / `GET /products`, `.../versions`, `.../publish`, `.../retire` | the product catalogue |
 | `POST /end-of-day` | run the day's accrual |
-| `GET /audit`, `GET /deposit-audit` | this bank's own logs |
-| `GET /payments`, `GET /payments/{payid}` | **its own legs only** |
+| `GET /audit`, `GET /deposit-audit` | this bank's own ledger and deposit logs |
+| `GET /payments/audit` | this bank's own **payment-layer** log — its own copy's events, and nothing of another bank's |
+| `GET /payments`, `GET /payments/{payid}` | **its own copies only** |
 | `POST /payments` | accept a customer's instruction — `202` and a `paymentId` |
 | `GET /directory`, `GET /assets` | resolve an address in **this bank's own** register; known assets |
 | `POST` / `GET /mandates`, `POST /mandates/{id}/revoke` | direct-debit mandates **this bank's customers hold** — see below |
 
-Two of those are new, and both were impossible before. **`GET /payments` is narrowed to the bank's own legs** — what it sent and what it received. The unnarrowed list showed every bank its competitors' customers, counterparties and amounts, and narrowing it needs a caller identity that a single shared server does not have. A payment this bank is not party to answers `404` rather than `403`: it does not exist as far as this API is concerned, and a `403` would confirm the id names something real.
+Two of those are new, and both were impossible before. **`GET /payments` is narrowed to the bank's own copies** — what it sent and what it received. The unnarrowed list showed every bank its competitors' customers, counterparties and amounts, and narrowing it needed a caller identity that a single shared server does not have. It needs no narrowing at all now: this bank's database holds this bank's rows and no others, so a payment it is not party to has no row here, and the `404` it answers is the store's answer rather than a filter's. It is `404` and not `403` for the reason it always was — a `403` would confirm that the id names something real — and that is now simply true: as far as this institution is concerned it does not.
+
+**`GET /payments/audit` is one endpoint per institution**, for the same reason and with a sharper consequence: there is no combined payment log anywhere, and no order between two institutions' events. See [There Is No Combined Log](#there-is-no-combined-log-and-no-order-between-two-of-them).
 
 **`POST /payments` is where a customer's instruction lands.** A retail client must never talk to the clearing house — it has no CSM connection in the real thing either — so submission goes to its own bank, which forwards it. The answer is `202 Accepted` with a `paymentId` rather than the payment itself, and the outcome is read back from `GET /payments/{id}`. That is the shape a real CSM imposes: it answers with a `pacs.002` later, not by return value.
 
@@ -1776,10 +1832,12 @@ Example — a SEPA credit transfer end to end, across three listeners:
 CSM=http://localhost:8082; CB=http://localhost:8081; H='-H Content-Type:application/json'
 
 # A bank's own listener. Its port is its identity, so no path names the bank —
-# and a bank admitted through POST /members has no listener until the process
-# restarts, which is why this walks the two the sample dataset started with.
-BANK_A=http://localhost:8083; BANK_B=http://localhost:8084
-A=$(curl -s $BANK_A/me | jq -r .id); B=$(curl -s $BANK_B/me | jq -r .id)
+# and a bank founded through POST /members has no listener until the process
+# restarts, which is why this walks two the sample dataset started with. Ports
+# are assigned in ADDRESS order, so :8083 is AURODEFFXXX and :8086 is
+# VERDITMMXXX; a bank founded at an address that sorts earlier moves them.
+BANK_A=http://localhost:8083; BANK_B=http://localhost:8086
+B=$(curl -s $BANK_B/me | jq -r .bic)   # Bob's bank, which the instruction has to name
 
 # A deposit account is sold FROM a product and SEPA routes on IBANs, so neither
 # the product nor the address is optional: an account with no identifier cannot
@@ -1799,13 +1857,21 @@ curl -s $H -X POST $BANK_A/deposits -d "{\"account\":\"$ALICE\",\"amount\":10000
 #
 # The answer is `202` and a `paymentId` — nothing else, because there is nothing
 # else true yet: the payer's bank has run its own half and sent a `pacs.008`, and
-# nobody has looked at it. Bob's IBAN is quoted because the message has to carry
-# one — an address in another bank's register is exactly what Alice's bank cannot
-# look up.
+# nobody has looked at it.
+#
+# Only the COUNTERPARTY is described, and it is described rather than referenced:
+# `creditorAgent` and `creditorName` are what the instruction asserts about Bob,
+# because Bob's account is in another bank's register and nothing on the path
+# that builds a payment reads one. Alice's own side is not asserted at all — a
+# payer does not rename themselves and does not reroute their own bank, so both
+# come from the register and the row this listener is bound to. Bob's IBAN is
+# quoted for the same reason: the message has to carry an address, and an address
+# in another bank's register is exactly what Alice's bank cannot look up.
 PAY=$(curl -s $H -X POST $BANK_A/payments -d "{\"scheme\":\"sepa.ct\",
-  \"debtor\":{\"participant\":\"$A\",\"account\":\"$ALICE\"},
-  \"creditor\":{\"participant\":\"$B\",\"account\":\"$BOB\",
-    \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}},\"amount\":25000}" | jq -r .paymentId)
+  \"debtor\":{\"account\":\"$ALICE\"},
+  \"creditor\":{\"account\":\"$BOB\",
+    \"identifier\":{\"scheme\":\"IBAN\",\"value\":\"IT60-VERDE-9001\"}},
+  \"creditorAgent\":\"$B\",\"creditorName\":\"Bob\",\"amount\":25000}" | jq -r .paymentId)
 
 # Ask again for the outcome. By now Bob's bank has answered and the clearing
 # house has taken the payment into its scheme's open cycle, so this reads
@@ -1822,7 +1888,15 @@ curl -s $H -X POST $CSM/cycles/$CYC/close | jq -r .status   # Closed
 
 curl -s $BANK_A/deposit-accounts/$ALICE/balance   # book 75000 — the debtor leg
 curl -s $BANK_B/deposit-accounts/$BOB/balance     # book 25000 — settled
-curl -s $CB/cycles/$CYC | jq -r '.status, .settlementId'    # Settled, set_…
+
+# Whether the cut-off was discharged, asked of the CLEARING HOUSE — the cycle is
+# its row, and the status is all it can say. A cycle does not name its
+# settlement: that id is allocated inside the settlement agent's own unit of work
+# in the settlement agent's own database, and the `pacs.002` that comes back
+# quotes the CYCLE, because the cycle is what was asked about. The link exists in
+# the other direction only, on the agent's own row.
+curl -s $CSM/cycles/$CYC | jq -r .status                    # Settled
+curl -s $CB/settlements | jq -r '.[-1] | .id, .cycleId, .asset'   # set_…, cyc_…, EUR
 
 # If that had said `Closed` with no settlement, the central bank refused the
 # instruction — a net payer short of reserves, answered `AM04`. Fund the member
