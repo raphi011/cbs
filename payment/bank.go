@@ -19,6 +19,13 @@ import (
 // field-nothing-reads this sub-project has already refused twice. What "the
 // request is out" is worth knowing for is a stuck admission, which needs a
 // reconciliation that walks both ends rather than a column on one of them.
+//
+// That walk exists as of Task 18e and it is payment/recon: an admission writes
+// three rows in three databases, each institution can see exactly one of them,
+// and the harness is what holds the three against each other. A bank calling
+// itself a Member that no settlement agent holds an account for is what a
+// half-happened admission looks like from outside all three, and it is not
+// visible from inside any.
 type BankStatus string
 
 const (

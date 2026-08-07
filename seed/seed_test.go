@@ -13,6 +13,7 @@ import (
 	"github.com/raphi011/cbs/ledger"
 	"github.com/raphi011/cbs/mesh"
 	"github.com/raphi011/cbs/payment"
+	"github.com/raphi011/cbs/payment/recon"
 	"github.com/raphi011/cbs/store/testenv"
 )
 
@@ -189,6 +190,50 @@ func TestPaymentStatusCoverage(t *testing.T) {
 		if byStatus[status] != n {
 			t.Errorf("status %v = %d, want %d", status, byStatus[status], n)
 		}
+	}
+}
+
+// TestTheSeededNetworkReconciles holds all six of this scenario's databases
+// against each other at once.
+//
+// It is the seed's counterpart to TestReservesConserved and it asks a
+// strictly larger question. That one sums the reserves the SETTLEMENT AGENT
+// holds and checks the total against what was funded, which is one
+// institution's book agreeing with itself; this one holds every member's own
+// Reserve at Central Bank against the agent's liability to it, every member's
+// clearing suspense against what is still owed to that member, the clearing
+// house's cycles against the agent's settlements, and each of the three
+// institutions' copy of a payment against the other two. Not one of those is a
+// question any actor in this system may ask — see payment/recon.
+//
+// The seed is the right subject for it because it is the widest deployment this
+// repository builds: four banks, eleven payments in five statuses, five cycles
+// in three, two settlements and a return. Every earlier assertion in this file
+// is about one of those in isolation.
+//
+// The unreconciled positions are asserted rather than ignored, and that is the
+// point of the second half. This scenario deliberately ends with payments in
+// flight — three Accepted and two Cleared — so a bank's suspense NOT returning
+// to zero is the correct outcome and a harness that demanded zero would be
+// measuring the wrong thing. What must be true is that every non-zero suspense
+// has something outstanding against it, which is what Check enforces, and that
+// it is the banks holding the in-flight payments that have one.
+func TestTheSeededNetworkReconciles(t *testing.T) {
+	net := testNetwork(t)
+
+	report := recon.Check(t, net.nets)
+
+	if len(report.Unreconciled) == 0 {
+		t.Fatal("no unreconciled position anywhere in the seed; this scenario ends with five payments in flight, " +
+			"so a suspense that has returned to zero everywhere means the harness is not reading the suspense accounts")
+	}
+	for _, u := range report.Unreconciled {
+		if len(u.InFlight) == 0 && len(u.Unbooked) == 0 {
+			t.Errorf("%s (%s) holds %d in clearing suspense with nothing outstanding; Check should have reported that as a break",
+				u.Bank, u.Asset, u.Suspense)
+		}
+		t.Logf("unreconciled: %s (%s) suspense %d, %d in flight, unbooked %v",
+			u.Bank, u.Asset, u.Suspense, len(u.InFlight), u.Unbooked)
 	}
 }
 

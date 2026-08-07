@@ -212,21 +212,26 @@ type Tx interface {
 	ListSettlements(ctx context.Context) ([]Settlement, error)
 
 	// The advice rows are BOOK-SCOPED, unlike every other method in this block.
-	// Banks, payments, mandates, cycles and settlements belong to no
-	// single bank and live under ledger.NetworkBook; an advice is one member
-	// bank's record of what it was told, so it is keyed by that bank's book —
-	// which is also what makes the recorder in mesh/books_test.go see a bank
-	// reaching its own book when it books a settlement.
+	// Every other row here belongs to the ONE institution whose database it is
+	// in and is keyed under that institution's book; an advice is one member
+	// bank's record of what it was told, and the book is part of its identity
+	// rather than a scope over rows that could have been somebody else's. Two
+	// banks advised of one movement write two rows in two databases — see
+	// SettlementAdvice, where that is the whole design — and it is also what
+	// makes the recorder in mesh/books_test.go see a bank reaching its own book
+	// when it books a settlement.
 	//
 	// ListSettlementAdvices has NO production caller — the only method in this
-	// interface with none. It is Task 19's scaffolding, on the same footing as
-	// SettlementAdvice.ClosingBalance, which no code reads either: a
-	// reconciliation walks a bank's own advices against a clearing suspense that
-	// has not returned to zero, and that walk is the reader. It is declared now
-	// because the rows are written now, and a listing added later would be a
-	// second occasion to get the ordering contract wrong. storetest's
-	// SettlementAdviceIsScopedToTheBankThatWasAdvised is what pins it in the
-	// meantime.
+	// interface with none — and it is not scaffolding any more. Its reader is
+	// payment/recon, the reconciliation harness Task 18e added: the harness holds
+	// every institution's advices against the settlement agent's own register, so
+	// that a movement the agent made and a member never booked can be told apart
+	// from a member's books simply being wrong. That comparison is the one thing
+	// no institution in this system may make, which is why its reader is a
+	// harness and not a caller. SettlementAdvice.ClosingBalance is still read by
+	// nothing, and Task 19 is still where a bank checks it against its own books.
+	// storetest's SettlementAdviceIsScopedToTheBankThatWasAdvised is what pins
+	// the ordering contract.
 	PutSettlementAdvice(ctx context.Context, book ledger.BookID, a SettlementAdvice) error
 	GetSettlementAdvice(ctx context.Context, book ledger.BookID, reference string, asset ledger.AssetCode) (SettlementAdvice, error)
 	ListSettlementAdvices(ctx context.Context, book ledger.BookID) ([]SettlementAdvice, error)
