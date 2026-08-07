@@ -925,9 +925,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		// The upsert: a settled cycle replaces the closed one rather than
 		// adding a second row, and the status change is what is read back.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			settled := cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early)
-			settled.SettlementID = "set_1"
-			return tx.PutCycle(ctx, settled)
+			return tx.PutCycle(ctx, cycle("cyc_1", payment.SchemeSEPACT, payment.CycleSettled, early))
 		})
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			all, err := tx.ListCycles(ctx)
@@ -936,7 +934,6 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 			}
 			assertEqual(t, "cycles after an upsert", len(all), 1)
 			assertEqual(t, "cycle status after an upsert", all[0].Status.String(), payment.CycleSettled.String())
-			assertEqual(t, "settlement id after an upsert", string(all[0].SettlementID), "set_1")
 			return nil
 		})
 	})
@@ -970,9 +967,7 @@ func RunClearingHousePayment(t *testing.T, newStore func(*testing.T) payment.Sto
 		// An upsert keeps a row where it was: settling a cycle must not move it
 		// to the bottom of the list.
 		updatePayment(t, s, func(ctx context.Context, tx payment.Tx) error {
-			c := cycle("cyc_8", payment.SchemeSEPACT, payment.CycleSettled, early)
-			c.SettlementID = "set_8"
-			return tx.PutCycle(ctx, c)
+			return tx.PutCycle(ctx, cycle("cyc_8", payment.SchemeSEPACT, payment.CycleSettled, early))
 		})
 		viewPayment(t, s, func(ctx context.Context, tx payment.Tx) error {
 			cs, err := tx.ListCycles(ctx)

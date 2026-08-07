@@ -361,6 +361,21 @@ func TestAReturnedCollectionIsSentByThePayersBank(t *testing.T) {
 // got sharper rather than staler, because the settlement agent no longer reads
 // the payment at all: it acts on what the message says, so nothing downstream
 // would have caught this one.
+//
+// # The status it names is ITS OWN, and on a push that is Initiated
+//
+// The returning bank here is the PAYEE's, and the payee's bank is the one that
+// ANSWERED the pacs.008. Only the bank waiting for an answer is sent the ACCP —
+// the submitter, which on a push is the payer's bank — so this bank's copy sits
+// at Initiated all the way to settlement while the clearing house's says
+// Accepted. Both are right, and the refusal quotes the only one this bank can
+// honestly cite. It said Accepted while all three institutions read one row;
+// there is no such row, and a bank that named a status it cannot see would be
+// reporting somebody else's record as its own.
+//
+// The status the CLEARING HOUSE holds is asserted separately below, off its own
+// copy, because "the refused return changed nothing" is a claim about the
+// network and not about the bank that refused.
 func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -371,8 +386,8 @@ func TestABankRefusesToReturnAPaymentThatHasNotSettled(t *testing.T) {
 	if !errors.Is(err, payment.ErrInvalidStateTransition) {
 		t.Fatalf("Return = %v, want the illegal transition refused to the caller", err)
 	}
-	if !strings.Contains(err.Error(), "Accepted") {
-		t.Errorf("the refusal %q does not say what this network records the payment as", err)
+	if !strings.Contains(err.Error(), "Initiated") {
+		t.Errorf("the refusal %q does not say what this BANK records the payment as", err)
 	}
 	h.drain(t)
 	if got := h.messagesSeen(); got != before {
@@ -599,21 +614,29 @@ func TestTheReturnsReasonTravelsFromTheAskingBankToTheLedgers(t *testing.T) {
 // as well, so this covers the join's other arm at the same time — a reason with
 // a code and no text.
 //
-// # The injection now skips a half, and the payment stops at Settled
+// # The injection skips a half, and it is a LEG that is missing rather than a
+// status
 //
-// This used to assert Returned, and the change is a consequence of the return
-// becoming a conversation rather than a weakening of the test. Sending a
-// doctored pacs.004 into the clearing house puts the message on the wire WITHOUT
-// the returning bank's own act behind it — that bank never posted its clawback,
-// because bank.returnPayment is what does that and this test does not call it.
-// So the far leg lands, the near one never existed, and the payment cannot reach
-// Returned: it takes both, and payment.PostReturnLegTx is what says so.
+// Sending a doctored pacs.004 into the clearing house puts the message on the
+// wire WITHOUT the returning bank's own act behind it — that bank never posted
+// its clawback, because bank.returnPayment is what does that and this test does
+// not call it. So the far leg lands and the near one never existed.
 //
-// That leaves this test measuring exactly what it is named for — the reason
-// reaching a customer's ledger — and it is asserted on the one leg the message
-// really did cause. A test that still wanted Returned here would have to fake
-// the returning bank's posting, which is the fixture asserting the system's
-// behaviour to itself.
+// What that costs is asserted on the RETURNING BANK's own copy, and this took two
+// rewrites to state. It first asserted Returned; then Settled, on the argument
+// that the row takes both legs to move. Neither is a claim a single row can carry
+// any more. Each institution holds its own copy and each moves on what IT did or
+// was told: the payer's bank posted the refund it was sent and reached Returned,
+// the settlement agent reversed the reserves, and the clearing house and the
+// returning bank were both told the return went through and marked their copies
+// Returned too (payment.CompleteReturnTx). Every one of those is correct — the
+// return DID settle — and none of them is evidence about the leg.
+//
+// The leg is. A clawback is a posting in the payee's bank's own ledger and its id
+// is a column on that bank's own copy, so the absence is read there and nowhere
+// else. That leaves this test measuring exactly what it is named for — the reason
+// reaching a customer's ledger — asserted on the one leg the message really did
+// cause, plus the one it did not.
 func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.settledPayment(t)
@@ -634,12 +657,12 @@ func TestAProprietaryReturnReasonReachesTheLedgersToo(t *testing.T) {
 	if got := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-refund").Description; !strings.Contains(got, prtry) {
 		t.Errorf("the payer's refund is described as %q, want it to carry the proprietary reason %q", got, prtry)
 	}
-	// One leg, so the row stops short of Returned. Asserted rather than left
-	// out, because "the status did not change" and "the far bank never got the
-	// message" would otherwise look the same from here.
-	if got := h.payment(t, p.ID); got.Status != payment.Settled {
-		t.Errorf("status = %v, want Settled — this return had no returning bank behind it, so one leg is missing",
-			got.Status)
+	// One leg, and the missing one is the returner's own clawback. Asserted
+	// rather than left out, because "the near leg was never posted" and "the far
+	// bank never got the message" would otherwise look the same from here.
+	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.ReturnClawbackTx != "" {
+		t.Errorf("the payee's bank posted a clawback (%s); this return had no returning bank behind it",
+			got.ReturnClawbackTx)
 	}
 }
 
@@ -981,18 +1004,20 @@ func TestARefusedReturnUnwindsTheReturningBanksLeg(t *testing.T) {
 	h.assertLastTxStatusTo(t, h.debtorBIC, iso20022.TransactionStatusRejected)
 	h.assertLastStatusTo(t, h.debtorBIC, iso20022.StatusReasonInsufficientFunds)
 
-	// The payment is exactly where it was.
-	got := h.payment(t, p.ID)
-	if got.Status != payment.Settled {
-		t.Errorf("the refused return left the payment at %v, want Settled", got.Status)
+	// The payment is exactly where it was, at every institution that holds one.
+	if got := h.payment(t, p.ID); got.Status != payment.Settled {
+		t.Errorf("the refused return left the clearing house's copy at %v, want Settled", got.Status)
 	}
-	if got.ReturnClawbackTx != "" {
+	// Each leg is read off the bank whose ledger it would be in, which on a PULL
+	// puts the refund at the returner and the clawback at the other bank. See
+	// meshHarness.bankPayment.
+	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.ReturnClawbackTx != "" {
 		t.Errorf("the payee's bank posted a clawback (%s) for a return that was refused", got.ReturnClawbackTx)
 	}
 	// The refund is REVERSED rather than absent. The id stays on the payment
 	// because this bank did post; the ledger is where "it no longer stands" is
 	// recorded. See payment.ReverseReturnLegTx.
-	if got.ReturnRefundTx == "" {
+	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.ReturnRefundTx == "" {
 		t.Fatal("the returning bank posted no refund at all; this test is about unwinding one")
 	}
 	refund := h.postingByKey(t, h.debtorPID, string(p.ID)+":return-refund")
@@ -1069,10 +1094,10 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	h.returnPayment(t, p.ID, iso20022.ReturnReasonNoMandate, "the debtor disputes the mandate")
 	h.drain(t)
 
-	unwound := h.payment(t, p.ID)
-	if unwound.Status != payment.Settled {
+	if unwound := h.payment(t, p.ID); unwound.Status != payment.Settled {
 		t.Fatalf("the refused return left the payment at %v, want Settled — this test retries from there", unwound.Status)
 	}
+	unwound := h.bankPayment(t, h.debtorBIC, p.ID)
 	if unwound.ReturnRefundTx == "" {
 		t.Fatal("the returning bank posted no refund at all; this test is about retrying one that was unwound")
 	}
@@ -1116,7 +1141,7 @@ func TestAReturnRetriedAfterAnUnwindRepaysThePayer(t *testing.T) {
 	// The retry is a SECOND posting and not a revival of the reversed one: the
 	// ledger has no way to un-reverse a transaction, so a return that repaid the
 	// payer must have a standing leg of its own.
-	retried := h.payment(t, p.ID)
+	retried := h.bankPayment(t, h.debtorBIC, p.ID)
 	if retried.ReturnRefundTx == unwound.ReturnRefundTx {
 		t.Errorf("the payment still names %s as its refund, which is Reversed; a retry posts a new leg", retried.ReturnRefundTx)
 	}

@@ -53,11 +53,14 @@ func TestDirectDebitPostsTheDebtorLegAtTheDebtorsBank(t *testing.T) {
 
 	h.drain(t)
 
-	got := h.payment(t, p.ID)
-	if got.Status != payment.Accepted {
+	if got := h.payment(t, p.ID); got.Status != payment.Accepted {
 		t.Fatalf("status = %v, want Accepted", got.Status)
 	}
-	if got.DebtorLegTx == "" {
+	// The leg is read off the DEBTOR's bank's own copy, because that is the only
+	// row in the network with a column to hold one. The clearing house's copy has
+	// no leg columns at all — it posts nothing and holds no book of accounts — so
+	// asking it would report a missing leg for a leg that was posted.
+	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.DebtorLegTx == "" {
 		t.Error("no debtor leg after the debtor's bank accepted the collection")
 	}
 }
@@ -169,8 +172,9 @@ func TestDirectDebitWithNoOpenCycleIsTM01(t *testing.T) {
 		t.Errorf("reject code = %q, want TM01 — no cycle open IS an invalid cut-off time", got.RejectCode)
 	}
 	// The debtor's bank really did take the money before the clearing house
-	// refused — otherwise there would be nothing for the reversal to prove.
-	if got.DebtorLegTx == "" {
+	// refused — otherwise there would be nothing for the reversal to prove. Its
+	// own copy is where the leg is; see meshHarness.bankPayment.
+	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
 		t.Fatal("no debtor leg, so this test cannot show the reversal it exists for")
 	}
 	if bal := h.suspense(t, h.debtorPID); bal != 0 {
@@ -215,7 +219,7 @@ func TestTheRefundIsAttemptedEvenWhenTheSubmitterCannotBeAddressed(t *testing.T)
 	h.drain(t)
 
 	got := h.payment(t, p.ID)
-	if got.DebtorLegTx == "" {
+	if h.bankPayment(t, h.debtorBIC, p.ID).DebtorLegTx == "" {
 		t.Fatal("no debtor leg, so there is no refund for this test to be about")
 	}
 	if h.suspense(t, h.debtorPID) != harnessAmount {

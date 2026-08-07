@@ -307,6 +307,26 @@ func (s *Network) GetSettlement(ctx context.Context, id SettlementID) (Settlemen
 	return out, err
 }
 
+// GetSettlementByCycle returns the settlement this agent made for a cycle, or
+// ErrSettlementNotFound if it made none.
+//
+// It is the only way left to ask "did this cut-off settle, and as what". The
+// CYCLE used to name the settlement's id, and Task 18d found that it cannot: the
+// id belongs to this institution, is allocated inside its own unit of work, and
+// no message in this system carries it back to the clearing house that asked.
+// The link survives in the direction it can be kept — the settlement names the
+// cycle — and this is that direction, answerable only at the agent that holds
+// both halves of it. See ClearingCycle, where the field was.
+func (s *Network) GetSettlementByCycleID(ctx context.Context, id CycleID) (Settlement, error) {
+	var out Settlement
+	err := s.store.View(ctx, func(ctx context.Context, tx Tx) error {
+		var err error
+		out, err = tx.GetSettlementByCycle(ctx, id)
+		return err
+	})
+	return out, err
+}
+
 // ListSchemes returns all registered payment schemes, ordered by scheme ID.
 //
 // Schemes are code rather than data — they are registered at startup and live

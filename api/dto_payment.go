@@ -298,7 +298,12 @@ type clearingCycleDTO struct {
 	NetPositions map[string]int64 `json:"netPositions,omitempty"`
 	OpenedAt     time.Time        `json:"openedAt"`
 	ClosedAt     time.Time        `json:"closedAt,omitempty"`
-	SettlementID string           `json:"settlementId,omitempty"`
+
+	// There is no settlementId, and a client that used to read one is being told
+	// something true by its absence: the settlement's id belongs to the
+	// SETTLEMENT AGENT and the clearing house this DTO is rendered from cannot
+	// learn it. See payment.ClearingCycle, where the field was. Status is what
+	// says a cut-off settled, and GET /settlements is where the settlements are.
 }
 
 // toClearingCycleDTO renders a cycle, including the asset it clears in. A
@@ -319,7 +324,6 @@ func toClearingCycleDTO(c payment.ClearingCycle, schemes []payment.Scheme) clear
 		NetPositions: positionsToMap(c.NetPositions),
 		OpenedAt:     c.OpenedAt,
 		ClosedAt:     c.ClosedAt,
-		SettlementID: string(c.SettlementID),
 	}
 }
 

@@ -825,7 +825,7 @@ func (t *tx) ListMandates(ctx context.Context) ([]payment.Mandate, error) {
 // Clearing cycles
 // ---------------------------------------------------------------------------
 
-const cycleColumns = `c.id, c.scheme, c.status, c.net_positions, c.opened_at, c.closed_at, c.settlement_id`
+const cycleColumns = `c.id, c.scheme, c.status, c.net_positions, c.opened_at, c.closed_at`
 
 func (t *tx) PutCycle(ctx context.Context, c payment.ClearingCycle) error {
 	if err := t.inShape("cycles"); err != nil {
@@ -839,17 +839,16 @@ func (t *tx) PutCycle(ctx context.Context, c payment.ClearingCycle) error {
 		return fmt.Errorf("sqlite: put cycle %s: %w", c.ID, err)
 	}
 	_, err = t.tx.ExecContext(ctx, `
-		INSERT INTO cycles (id, scheme, status, net_positions, opened_at, closed_at, settlement_id, seq)
-		VALUES (?, ?, ?, ?, ?, ?, ?, `+nextRowSeq("cycles")+`)
+		INSERT INTO cycles (id, scheme, status, net_positions, opened_at, closed_at, seq)
+		VALUES (?, ?, ?, ?, ?, ?, `+nextRowSeq("cycles")+`)
 		ON CONFLICT (id) DO UPDATE SET
 			scheme        = EXCLUDED.scheme,
 			status        = EXCLUDED.status,
 			net_positions = EXCLUDED.net_positions,
 			opened_at     = EXCLUDED.opened_at,
-			closed_at     = EXCLUDED.closed_at,
-			settlement_id = EXCLUDED.settlement_id`,
+			closed_at     = EXCLUDED.closed_at`,
 		string(c.ID), string(c.Scheme), int64(c.Status), positions,
-		nullTime{c.OpenedAt}, nullTime{c.ClosedAt}, string(c.SettlementID))
+		nullTime{c.OpenedAt}, nullTime{c.ClosedAt})
 	if err != nil {
 		return fmt.Errorf("sqlite: put cycle %s: %w", c.ID, err)
 	}
@@ -936,7 +935,7 @@ func (t *tx) queryCycles(ctx context.Context, where, order string, args ...any) 
 			opened, closed nullTime
 			paymentID      sql.NullString
 		)
-		if err := rows.Scan(&c.ID, &c.Scheme, &status, &positions, &opened, &closed, &c.SettlementID, &paymentID); err != nil {
+		if err := rows.Scan(&c.ID, &c.Scheme, &status, &positions, &opened, &closed, &paymentID); err != nil {
 			return nil, fmt.Errorf("sqlite: query cycles: %w", err)
 		}
 		at, seen := index[c.ID]

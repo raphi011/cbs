@@ -347,13 +347,23 @@ CREATE TABLE cycles (
     net_positions TEXT CHECK (json_valid(net_positions)),
     opened_at     TEXT,
     closed_at     TEXT,
-    -- The settlement this cut-off produced, as an id and nothing more. The
-    -- settlements table is the CENTRAL BANK's and is not in this database, so
-    -- there is no foreign key that could be written. What this column is for is
-    -- the clearing house knowing that it has been told, which is the only thing
-    -- it can know: settlement is final at the central bank and the participants
-    -- catch up afterwards.
-    settlement_id TEXT NOT NULL,
+    -- There is NO settlement_id column, and the absence is the finding rather
+    -- than an omission.
+    --
+    -- There was one, holding "the settlement this cut-off produced, as an id and
+    -- nothing more", on the argument that the settlements table is the CENTRAL
+    -- BANK's so there is no foreign key to write but the id itself is still worth
+    -- keeping. The id is not something this institution can learn. It is the
+    -- settlement agent's own row number, allocated inside that agent's own unit
+    -- of work in its own database, and what comes back on the wire is a pacs.002
+    -- quoting the CYCLE — because the cycle is what this institution asked
+    -- about. Nothing in the conversation ever carries the other number, so the
+    -- column could only ever have been empty.
+    --
+    -- What the clearing house does know is that it was told, and that is the
+    -- cycle's own status: CycleSettled. The link in the other direction is real
+    -- and lives where it can be kept — settlements.cycle_id in the central bank's
+    -- schema, which is that agent's own row pointing at what it settled.
     seq           INTEGER NOT NULL
 ) STRICT;
 

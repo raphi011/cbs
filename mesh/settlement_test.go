@@ -77,9 +77,18 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	h.drain(t)
 
 	// The stuck state, in the four places it shows.
+	//
+	// Whether a cut-off settled is read off the CYCLE's status and, at the
+	// settlement agent, off whether it holds a settlement for that cycle. The
+	// cycle used to name the settlement's id and no longer can: that id is the
+	// agent's own row number and nothing on the wire carries it back. See
+	// payment.ClearingCycle.
 	stuck := h.creditTransferCycle(t)
-	if stuck.Status != payment.CycleClosed || stuck.SettlementID != "" {
-		t.Fatalf("cycle %s is %v with settlement %q, want Closed with none", stuck.ID, stuck.Status, stuck.SettlementID)
+	if stuck.Status != payment.CycleClosed {
+		t.Fatalf("cycle %s is %v, want Closed", stuck.ID, stuck.Status)
+	}
+	if _, err := h.cb().GetSettlementByCycleID(context.Background(), stuck.ID); !errors.Is(err, payment.ErrSettlementNotFound) {
+		t.Fatalf("the settlement agent answers %v for a cycle it refused to settle, want it to hold none", err)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Cleared {
 		t.Fatalf("payment status = %v, want Cleared", got.Status)
@@ -115,8 +124,11 @@ func TestARefusedSettlementCanBeInstructedAgain(t *testing.T) {
 	h.drain(t)
 
 	settled := h.creditTransferCycle(t)
-	if settled.Status != payment.CycleSettled || settled.SettlementID == "" {
-		t.Fatalf("cycle %s is %v with settlement %q, want Settled with one", settled.ID, settled.Status, settled.SettlementID)
+	if settled.Status != payment.CycleSettled {
+		t.Fatalf("cycle %s is %v, want Settled", settled.ID, settled.Status)
+	}
+	if _, err := h.cb().GetSettlementByCycleID(context.Background(), settled.ID); err != nil {
+		t.Fatalf("the settlement agent holds no settlement for %s: %v", settled.ID, err)
 	}
 	if got := h.payment(t, p.ID); got.Status != payment.Settled {
 		t.Fatalf("payment status = %v, want Settled", got.Status)
@@ -218,9 +230,12 @@ func TestASecondSettlementInstructionPostsNothing(t *testing.T) {
 	if len(settlements) != 1 {
 		t.Fatalf("%d settlements after a replayed instruction, want 1", len(settlements))
 	}
-	after := h.creditTransferCycle(t)
-	if after.SettlementID != cyc.SettlementID {
-		t.Fatalf("the cycle now names settlement %q, want the original %q", after.SettlementID, cyc.SettlementID)
+	// And the one settlement it holds is still the one it made for this cycle.
+	// The link is the settlement agent's own — Settlement.CycleID — because the
+	// clearing house's copy of the cycle cannot name a settlement it was never
+	// told the id of.
+	if settlements[0].CycleID != cyc.ID {
+		t.Fatalf("the surviving settlement names cycle %q, want %q", settlements[0].CycleID, cyc.ID)
 	}
 }
 
@@ -302,21 +317,27 @@ func TestEachMemberBooksTheStatementItWasSent(t *testing.T) {
 	}
 }
 
-// advice is one bank's own record of a cut-off, read out of that bank's book.
+// advice is one bank's own record of a cut-off, read out of that bank's book —
+// and out of that bank's DATABASE, which is the part this had wrong.
 //
 // Through the store rather than through a Network method, because there is no
 // such method: an advice is a member's own row and nothing in this system reads
-// another institution's yet. The unit of work is opened on a bare context, so the
-// recorder attributes the read to no actor and it cannot spoil a per-actor set.
+// another institution's. The store it opens has to be that member's own for the
+// same reason: settlement_advices is in the bank shape and in no other, so
+// asking the clearing house's store is not a wrong answer but a missing table
+// (store/sqlite/schema/csm/0001_init.sql). The unit of work is opened on a bare
+// context, so the recorder attributes the read to no actor and it cannot spoil a
+// per-actor set.
 func (h *meshHarness) advice(t *testing.T, id payment.ParticipantID, reference string) payment.SettlementAdvice {
 	t.Helper()
 	ctx := context.Background()
-	p, err := h.bank(iso20022.BIC(id)).GetBank(ctx, id)
+	member := h.bank(iso20022.BIC(id))
+	p, err := member.GetBank(ctx, id)
 	if err != nil {
 		t.Fatalf("GetBank %s: %v", id, err)
 	}
 	var out payment.SettlementAdvice
-	if err := h.net.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
+	if err := member.Store().View(ctx, func(ctx context.Context, tx payment.Tx) error {
 		out, err = tx.GetSettlementAdvice(ctx, p.BookID, reference, "EUR")
 		return err
 	}); err != nil {
@@ -497,8 +518,8 @@ func TestAnEmptyCycleInstructsNothing(t *testing.T) {
 		if c.Status != payment.CycleClosed {
 			t.Errorf("cycle %s (%s) is %v after the cut-off, want Closed", c.ID, c.Scheme, c.Status)
 		}
-		if c.SettlementID != "" {
-			t.Errorf("cycle %s settled as %s; there was nothing in it to settle", c.ID, c.SettlementID)
+		if _, err := h.cb().GetSettlementByCycleID(context.Background(), c.ID); !errors.Is(err, payment.ErrSettlementNotFound) {
+			t.Errorf("the settlement agent answers %v for cycle %s; there was nothing in it to settle", err, c.ID)
 		}
 	}
 }

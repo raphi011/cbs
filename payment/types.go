@@ -494,9 +494,21 @@ type ClearingCycle struct {
 	// was for, and it is gone. See cycles in store/sqlite/schema/csm/0001_init.sql.
 	NetPositions map[iso20022.BIC]ledger.Amount
 
-	OpenedAt     time.Time
-	ClosedAt     time.Time
-	SettlementID SettlementID
+	OpenedAt time.Time
+	ClosedAt time.Time
+
+	// There is no SettlementID here, and there was until Task 18d.
+	//
+	// The settlement's id is the SETTLEMENT AGENT's own row number, allocated
+	// inside that agent's own unit of work in its own database. What comes back
+	// to the clearing house is a pacs.002 quoting the CYCLE — because the cycle
+	// is what the clearing house asked about — so no message in this system ever
+	// carries the other number and the field could only ever have been empty.
+	//
+	// What the clearing house knows is that it was told, and Status carries that:
+	// CycleSettled. The link in the other direction is real and kept where it can
+	// be — Settlement.CycleID, which is the agent's own row naming what it
+	// settled, answerable through Tx.GetSettlementByCycle.
 }
 
 // Settlement is the record of a closed cycle's net positions being moved

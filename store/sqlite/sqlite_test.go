@@ -251,9 +251,10 @@ func TestSchemaArgumentsReachSqliteMaster(t *testing.T) {
 			{"transactions_idempotency_key_idx", "the ONLY unique index in THIS schema"},
 		}},
 		{CSM, payment.ClearingHouseBook, []struct{ object, argument string }{
-			// A foreign key that cannot be written because the table it would
-			// point at is in another institution's database.
-			{"cycles", "there is no foreign key that could be written"},
+			// A COLUMN that is not here, which is the kind of argument with
+			// nothing at all to hang on. It held a settlement id, and the id
+			// belongs to another institution and never crosses the wire.
+			{"cycles", "There is NO settlement_id column"},
 			// The audit log's absent foreign key, argued in the shape that has
 			// no books table at all.
 			{"audit_events", "It has no foreign key to books"},

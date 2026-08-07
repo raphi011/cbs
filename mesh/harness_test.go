@@ -1035,14 +1035,47 @@ func (h *meshHarness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs
 	return env.Document.(*iso20022.Pacs004)
 }
 
-// payment reads a payment back out of the store, which is the only way to learn
-// what became of it: Submit answers with the payment as its own bank left it,
-// and everything after that happened at another actor.
+// payment reads the CLEARING HOUSE's copy of a payment, which is the only way to
+// learn what became of it: Submit answers with the payment as its own bank left
+// it, and everything after that happened at another actor.
+//
+// Whose copy is a question since Task 18d, and it did not used to be. Three
+// institutions hold three rows for one payment and no institution can read
+// another's, so "the payment" is not a thing a test can ask for. This one asks
+// the clearing house because that is the institution whose copy runs the whole
+// state machine — Accepted and Cleared are ITS facts, and a test about where a
+// payment has got to in the network wants them.
+//
+// A test about what a BANK did needs bankPayment instead, and the shapes are
+// what make the difference sharp: the clearing house's row has no leg columns at
+// all, so a debtor leg read through here comes back empty rather than wrong.
 func (h *meshHarness) payment(t *testing.T, id payment.PaymentID) payment.Payment {
 	t.Helper()
 	p, err := h.net.GetPayment(context.Background(), id)
 	if err != nil {
 		t.Fatalf("GetPayment %s: %v", id, err)
+	}
+	return p
+}
+
+// bankPayment reads ONE BANK's own copy, which is where a leg is.
+//
+// A payment's legs are postings in a member's ledger and its copy is the only
+// row that names them — payment.DebtorLegTx and CreditorLegTx are columns in the
+// bank shape and in no other (store/sqlite/schema/bank/0001_init.sql). A test
+// that reads a leg off h.payment is reading the clearing house's row, which has
+// nowhere to hold one, and it fails saying the leg is missing rather than saying
+// it asked the wrong institution.
+//
+// The bank also holds the status IT was told, which is not always the clearing
+// house's: a bank that answered an instruction is never sent the ACCP, so its
+// copy says Initiated while the network's says Accepted. Both are right. Which
+// one a test wants is part of what it is asserting.
+func (h *meshHarness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.PaymentID) payment.Payment {
+	t.Helper()
+	p, err := h.bank(bic).GetPayment(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetPayment %s at %s: %v", id, bic, err)
 	}
 	return p
 }
