@@ -372,21 +372,29 @@ func TestOneSettlementInstructionPerAsset(t *testing.T) {
 // actually paid, and this message is what tells it to pay its own customer, so
 // it closes the thing it started and starts the last posting the payment needs.
 //
-// The payer's bank is told NOTHING, and that is the assertion beside it. The
-// last thing it heard was the clearing house's ACCP, and a system that announced
-// settlement to every party to a payment would be one where "who is waiting for
-// this" had stopped meaning anything.
+// # ONE message to the payee's bank and one to the payer's, and the second one
+// is Task 18d's
 //
-// # ONE message, not two, and that is the pull half of the direction rule
+// The fan-out used to address two ROLES — the bank that submitted, and the
+// CREDITOR's bank, which has the leg to post — so on a pull, where those are one
+// institution, it sent a single message and the payer's bank was told nothing at
+// all. This note asserted that absence and argued for it: the payer's bank
+// answered the collection long ago and has nothing outstanding, and a system
+// that announced settlement to every party would be one where "who is waiting
+// for this" had stopped meaning anything.
 //
-// The fan-out addresses two roles — the bank that submitted, and the CREDITOR's
-// bank, which has the leg to post. On a push those are two institutions and the
-// clearing house sends twice. Here they are one, so it sends once: the payee's
-// bank submitted the collection and is also the creditor. The count is asserted
-// because nothing else would catch a fan-out that sent the same advice twice —
-// PostCreditorLegTx's Settled guard makes the second one a no-op, so the money
-// would still be right and only the conversation would be wrong. See
-// csm.tellSettled.
+// The argument was about WAITING and the message is not only for waiting. Each
+// institution holds its own copy of this payment now and nobody can write
+// another's, so a payer's bank that is never told keeps a row saying Initiated
+// for ever about a payment whose reserves have moved — and then refuses to
+// return it, because a return is an edge from Settled. Three return tests were
+// exactly that. So the third reason to be told is a ROW TO CLOSE, and it belongs
+// to whichever bank has neither of the first two.
+//
+// The counts are still what catch a fan-out that sent the same advice twice —
+// SettleAtBankTx's Settled guard makes a second one a no-op, so the money would
+// be right and only the conversation wrong — and they are ONE EACH rather than
+// one and none. See csm.tellSettled.
 func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitDirectDebit(t)
@@ -395,6 +403,7 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	// Counted from here, so the ACCP this bank was already sent when it
 	// submitted is not in the total.
 	before := h.statusesSentTo(h.creditorBIC)
+	debtorBefore := h.statusesSentTo(h.debtorBIC)
 	h.closeCycle(t)
 	h.drain(t)
 
@@ -405,8 +414,13 @@ func TestASettledCollectionIsAnnouncedToThePayeesBank(t *testing.T) {
 	if got := h.statusesSentTo(h.creditorBIC) - before; got != 1 {
 		t.Errorf("the payee's bank was sent %d statuses over the cut-off; it is the submitter AND the creditor's bank, which is one message", got)
 	}
-	if got := h.statusesSentTo(h.debtorBIC); got != 0 {
-		t.Errorf("the payer's bank was sent %d statuses; on a pull it answered the collection and is waiting for nothing", got)
+	if got := h.statusesSentTo(h.debtorBIC) - debtorBefore; got != 1 {
+		t.Errorf("the payer's bank was sent %d statuses over the cut-off; it holds a copy of this payment and has one row to close, which is one message", got)
+	}
+	// And it really did close it, which is what the message is for on this side:
+	// no leg to post, and a copy that can now be returned from.
+	if got := h.bankPayment(t, h.debtorBIC, p.ID); got.Status != payment.Settled {
+		t.Errorf("the payer's own copy is %v after the cut-off, want Settled", got.Status)
 	}
 }
 
@@ -780,7 +794,7 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 }
 
 // TestOnlyThePayeesBankPaysThePayee pins which of the two banks told about a
-// settled payment may act on it.
+// settled payment posts the CREDITOR's leg.
 //
 // On a push the clearing house tells both: the payer's bank because it has been
 // waiting for the answer to its instruction, the payee's bank because it has a
@@ -788,9 +802,28 @@ func TestASettlementInstructionNamingTwoCyclesIsRefused(t *testing.T) {
 // wrong institution's book — the exact crossing this sub-project removes, arrived
 // at from the other direction.
 //
-// It is asserted at the DOMAIN layer, where the refusal lives, because that is
-// where it can be made to fail: the mesh never hands the payer's bank's id to a
-// payment it does not own, so a mesh-level test would pass with the guard gone.
+// # It was a REFUSAL and it is a BRANCH, and the change is not a weakening
+//
+// This used to assert ErrNotThisBanksPayment back to the payer's bank, because
+// being the payee's bank was the precondition of the whole act: the clearing
+// house had already written Settled onto the row both banks read, so a bank with
+// no creditor leg had nothing left to do and was turned away. Each institution
+// holds its own copy now and only its owner can write it, so BOTH banks have a
+// row to advance and only one has a leg. payment.SettleAtBankTx is where the
+// status became the unconditional half and the posting became the conditional
+// one, which is the reverse of how it read.
+//
+// So the claim moves from the return value to the LEDGER, which is where it was
+// always really about: the payer's bank ends the cut-off having posted nothing
+// for this payment and naming no creditor account, however many times it is
+// asked. A test that still wanted the error would be asserting a precondition
+// this system deliberately gave up, and would go green on a version that had
+// stopped posting the leg at all.
+//
+// The refusal itself has not gone; it moved to a bank that is party to NEITHER
+// side, and it is the STORE that makes it — an institution never sent this
+// payment holds no row for it. That is stronger than the comparison it replaces,
+// because it cannot be got past by a bank that knows the id.
 func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)
@@ -798,11 +831,29 @@ func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
 	h.closeCycle(t)
 	h.drain(t)
 
-	// The payer's bank asking to post the payee's leg is refused, whatever else
-	// is true of the payment.
-	_, err := h.bank(h.debtor.BIC).SettleAtBank(context.Background(), p.ID)
-	if !errors.Is(err, payment.ErrNotThisBanksPayment) {
-		t.Errorf("the payer's bank got %v, want ErrNotThisBanksPayment", err)
+	// The payee was paid, by its own bank, and the leg is named on that bank's
+	// own copy.
+	if got := h.bankPayment(t, h.creditorBIC, p.ID); got.CreditorLegAccount == "" {
+		t.Error("the payee's bank names no account for the creditor leg; it is the bank that posts one")
+	}
+	// The payer's bank recorded the settlement and posted no customer leg for
+	// it, which is the whole of what a bank on that side does.
+	payer := h.bankPayment(t, h.debtorBIC, p.ID)
+	if payer.Status != payment.Settled {
+		t.Errorf("the payer's bank's own copy is %v after the cut-off, want Settled", payer.Status)
+	}
+	if payer.CreditorLegAccount != "" {
+		t.Errorf("the payer's bank names %q as the creditor leg's account; the payee banks elsewhere", payer.CreditorLegAccount)
+	}
+
+	// And asking it again changes nothing — no second row, no posting, no error
+	// a caller has to interpret.
+	h.rec.reset()
+	if _, err := h.bank(h.debtorBIC).SettleAtBank(context.Background(), p.ID); err != nil {
+		t.Errorf("the payer's bank got %v asking about its own settled payment, want no error", err)
+	}
+	if got := h.balance(t, h.creditorPID, h.creditorAcct.ID); got != harnessAmount {
+		t.Errorf("the payee holds %d after the payer's bank asked again, want %d", got, harnessAmount)
 	}
 }
 

@@ -225,15 +225,32 @@ func TestAddingABankOnAnotherBanksBICIsRefusedAndChangesNothing(t *testing.T) {
 	// wanted — the old fixture said as much, "a founded bank is all AddBank needs"
 	// — and no longer pretends the domain would have allowed one.
 	clash := &payment.Bank{ID: payment.ParticipantID(h.debtorBIC), Name: "Aurora Bank (again)", BIC: h.debtorBIC}
+
+	// The incumbent's entry, taken before. What the index has to be left holding
+	// is THIS handler and not the newcomer's.
+	//
+	// It used to be enough to ask whether the clashing bank was in the index at
+	// all, because the index was keyed by ParticipantID and the two banks had
+	// different ids under one address. Task 18 made a bank's id BE its address,
+	// so the clash's key is the incumbent's key and "is it indexed" is answered
+	// yes by the bank that was always there. The claim survives; what identifies
+	// it changed, so it is asserted on the handler the key points at.
+	h.mesh.mu.Lock()
+	incumbent := h.mesh.banks[h.debtorBIC]
+	h.mesh.mu.Unlock()
+	if incumbent == nil {
+		t.Fatal("the harness's own bank is not in the index; there is no clash to make")
+	}
+
 	if err := h.mesh.AddBank(context.Background(), clash); err == nil {
 		t.Fatal("AddBank accepted a second bank on an address another bank already answers to")
 	}
 
 	h.mesh.mu.Lock()
-	_, indexed := h.mesh.banks[clash.BIC]
+	after := h.mesh.banks[h.debtorBIC]
 	h.mesh.mu.Unlock()
-	if indexed {
-		t.Error("the refused bank is in the mesh's bank index; a refusal must leave it as it found it")
+	if after != incumbent {
+		t.Error("the refused bank replaced the incumbent in the mesh's bank index; a refusal must leave it as it found it")
 	}
 }
 

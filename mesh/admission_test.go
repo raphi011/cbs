@@ -123,8 +123,16 @@ func TestAnAdmittedBankCanPayAndBePaid(t *testing.T) {
 		t.Fatalf("funding a bank admitted through the mesh: %v", err)
 	}
 
+	// Both halves of "the payer is Nora at the joining bank": the account, and
+	// the AGENT that holds it. Leaving the agent pointing at the harness's own
+	// bank routes the instruction there, and that bank's register really does
+	// hold an account under Nora's id — account ids are each bank's own and
+	// collide across banks by design — so what came back was its refusal that the
+	// quoted IBAN is not one of ITS customer's addresses. A confusing way to
+	// learn that the request named the wrong bank.
 	out := h.creditTransferRequest(t)
 	out.Debtor = payment.PartyRef{Account: acct.ID, Identifier: acct.Identifiers[0]}
+	out.DebtorDetails = payment.PartyDetails{Agent: joiner.BIC, Name: acct.Name}
 	sent, err := h.mesh.Submit(ctx, out)
 	if err != nil {
 		t.Fatalf("the admitted bank could not submit: %v", err)
@@ -958,9 +966,18 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 						Account:    acct.ID,
 						Identifier: deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: foundedIBAN},
 					},
-					Creditor:        h.creditorRef(creditorIBAN),
-					Amount:          harnessAmount,
-					Description:     "from a bank no scheme has admitted",
+					Creditor:    h.creditorRef(creditorIBAN),
+					Amount:      harnessAmount,
+					Description: "from a bank no scheme has admitted",
+					// BOTH agents, because the founded bank is the one submitting
+					// and Mesh.Submit picks the submitting actor out of the two
+					// (submitterOf) before any bank's half runs. Left empty, this
+					// was refused with "no bank actor for" — the mesh having
+					// nobody to hand it to, which is a true statement about an
+					// unnamed bank and not the refusal this test is about. The
+					// roster check runs first, so naming it correctly is what
+					// reaches ErrBankNotAdmitted.
+					DebtorDetails:   payment.PartyDetails{Agent: b.BIC, Name: "Nora"},
 					CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 				}
 			},
@@ -979,6 +996,7 @@ func TestAFoundedBankCanNeitherPayNorBePaid(t *testing.T) {
 					},
 					Amount:          harnessAmount,
 					Description:     "to a bank no scheme has admitted",
+					DebtorDetails:   payment.PartyDetails{Agent: h.debtorBIC, Name: h.debtorAcct.Name},
 					CreditorDetails: payment.PartyDetails{Agent: b.BIC, Name: "Nora"},
 				}
 			},

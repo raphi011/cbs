@@ -1023,13 +1023,20 @@ func TestPaymentDTOsCarryAsset(t *testing.T) {
 // handlers — so a test that needs a SETTLED cycle to read reaches past the API
 // to the network the API is over. Every test that used this used the route for
 // the same reason: to reach the state, not to exercise the button.
-// settlementOfCycle is the settlement a cut-off produced, read back off the
-// cycle.
+// settlementOfCycle is the settlement a cut-off produced, found at the
+// SETTLEMENT AGENT by the cycle it names.
 //
 // It replaced a helper that CALLED SettleCycle. Nothing may do that any more:
 // closing a cycle is what instructs settlement, and a second discharge beside it
 // would be one nobody asked for, racing the one the pacs.009 provoked. Every
 // caller drains first, because the central bank answers in an actor of its own.
+//
+// It then read the id off the CYCLE, which is two institutions' rows treated as
+// one. The clearing house holds the cycle and cannot know what the agent
+// numbered its settlement — the id is allocated inside that agent's own unit of
+// work and the pacs.002 coming back quotes the cycle, because the cycle is what
+// was asked about. So the cycle answers "did it settle" and the agent's own
+// listing answers "as what". See payment.ClearingCycle.
 func settlementOfCycle(t *testing.T, h *Server, cid string) string {
 	t.Helper()
 	var c clearingCycleDTO
@@ -1037,10 +1044,15 @@ func settlementOfCycle(t *testing.T, h *Server, cid string) string {
 	if c.Status != "Settled" {
 		t.Fatalf("cycle %s is %q, want Settled — the central bank refused the instruction or was never asked", cid, c.Status)
 	}
-	if c.SettlementID == "" {
-		t.Fatalf("cycle %s is Settled and names no settlement", cid)
+	var settlements []settlementDTO
+	getJSON(t, cb(h), "/settlements", &settlements)
+	for _, st := range settlements {
+		if st.CycleID == cid {
+			return st.ID
+		}
 	}
-	return c.SettlementID
+	t.Fatalf("cycle %s is Settled and the settlement agent lists no settlement against it", cid)
+	return ""
 }
 
 // TestNoRouteSettlesACycle is the pin on the deleted route, and on the

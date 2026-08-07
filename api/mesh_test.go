@@ -1001,22 +1001,42 @@ func TestClosingACycleThroughTheAPIInstructsSettlement(t *testing.T) {
 	if closed.Status != "Closed" {
 		t.Errorf("cycle status in the response = %q, want Closed", closed.Status)
 	}
-	if closed.SettlementID != "" {
-		t.Errorf("the close answered with settlement %q; the central bank had not been asked yet", closed.SettlementID)
-	}
-
 	drain(t, msh)
 
+	// The cycle is read back from the CLEARING HOUSE, which is the institution
+	// that has one: there is no cycles table in the central bank's schema, and
+	// asking it is not a wrong answer but a missing table.
 	var settled clearingCycleDTO
-	getJSON(t, cb(srv), "/cycles/"+cid, &settled)
+	getJSON(t, csm(srv), "/cycles/"+cid, &settled)
 	if settled.Status != "Settled" {
 		t.Fatalf("cycle is %q after draining, want Settled — the pacs.009 is what discharges it", settled.Status)
 	}
-	if settled.SettlementID == "" {
-		t.Fatal("the settled cycle names no settlement")
+
+	// And the settlement is found at the SETTLEMENT AGENT, by the cycle it names
+	// rather than by an id the cycle names.
+	//
+	// The cycle used to carry settlementId and the assertions above used to read
+	// it — one before the drain, expecting empty, one after, expecting an id, and
+	// then a GET on that id. It cannot: the settlement's id is allocated inside
+	// the settlement agent's own unit of work in its own database, and what comes
+	// back to the clearing house is a pacs.002 quoting the CYCLE. So the field is
+	// gone from the DTO and from payment.ClearingCycle, and the link is asserted
+	// from the end that can hold it. What the pre-drain assertion was really
+	// about — that closing a cycle does not settle it — is the Status above and
+	// the empty listing below.
+	var settlements []settlementDTO
+	getJSON(t, cb(srv), "/settlements", &settlements)
+	var found settlementDTO
+	for _, st := range settlements {
+		if st.CycleID == cid {
+			found = st
+		}
+	}
+	if found.ID == "" {
+		t.Fatalf("the settlement agent lists no settlement against cycle %q", cid)
 	}
 	var st settlementDTO
-	getJSON(t, cb(srv), "/settlements/"+settled.SettlementID, &st)
+	getJSON(t, cb(srv), "/settlements/"+found.ID, &st)
 	if st.CycleID != cid {
 		t.Errorf("settlement %s is against cycle %q, want %q", st.ID, st.CycleID, cid)
 	}

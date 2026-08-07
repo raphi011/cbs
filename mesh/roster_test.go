@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"testing"
@@ -87,7 +88,12 @@ func TestStartGivesEveryParticipantAnActor(t *testing.T) {
 	if err == nil {
 		t.Fatal("Drain was clean; the bank's actor never ran its handler")
 	}
-	if !strings.Contains(err.Error(), "Aurora Bank") {
+	// By its ADDRESS and not by its name. joinRoster reads the clearing house's
+	// roster and nothing else, and a roster entry names nobody — an acmt.010
+	// carries a BIC and no name (payment.RosterEntry) — so the actor registered
+	// at startup is labelled with its address. The name is on the bank's own row
+	// in the bank's own database, which no other institution reads.
+	if !strings.Contains(err.Error(), "AURODEFFXXX") {
 		t.Errorf("dead letter %q does not come from the bank's own actor", err)
 	}
 }
@@ -110,7 +116,15 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	if _, err := storetest.Admit(ctx, nets, "Aurora Bank", "AURODEFFXXX", euroOnly); err != nil {
 		t.Fatalf("admitting Aurora: %v", err)
 	}
-	if _, err := nets.ClearingHouse().FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
+	// Founded through its OWN network, over its own database, because founding
+	// is a member bank's own act — payment.ErrNotThisInstitutionsAct is what a
+	// clearing house asking for it gets. Asking nets.Bank for the address is
+	// what creates that database; see payment.Stores.
+	nordhaven, err := nets.Bank(ctx, "NORDSESSXXX")
+	if err != nil {
+		t.Fatalf("Nordhaven's own network: %v", err)
+	}
+	if _, err := nordhaven.FoundBank(ctx, "Nordhaven Bank", "NORDSESSXXX", euroOnly); err != nil {
 		t.Fatalf("FoundBank Nordhaven: %v", err)
 	}
 
@@ -137,35 +151,63 @@ func TestStartGivesAFoundedBankNoActor(t *testing.T) {
 	}
 }
 
-// Two banks sharing a BIC is a routing table that cannot say which one a
-// message is for. The store permits it — banks.bic has no unique
-// constraint, because a BIC identifies an institution and not a row — so the
-// mesh is where it has to be refused, and it refuses at startup rather than at
-// the first payment that goes to the wrong bank.
+// A batch of actors with two on one address registers NOBODY.
 //
-// Both are in the roster under ONE entry, which is what the clearing house's own
-// act does with a second acknowledgement quoting the same admission reference:
-// it extends rather than refusing (payment.AdmitMemberTx). So the roster says
-// one address is a member and two bank rows claim it, and the mesh is the first
-// thing that has to choose.
-func TestStartRefusesTwoParticipantsWithOneBIC(t *testing.T) {
-	net := rosterNetwork(t, map[string]iso20022.BIC{
-		"Aurora Bank":   "AURODEFFXXX",
-		"Aurora Bank 2": "AURODEFFXXX",
-	})
+// Two actors sharing a BIC is a routing table that cannot say which one a
+// message is for, and one of the two would end up with a goroutine reading an
+// inbox nothing could address. addActors refuses the whole batch rather than
+// stopping where it noticed: registering the first and failing on the second
+// leaves a half-populated mesh that a retry cannot fix, because the retry
+// collides with what the failed attempt itself created.
+//
+// # It was TestStartRefusesTwoParticipantsWithOneBIC, and Start cannot reach it
+//
+// The state it built was two BANK ROWS claiming one address, both admitted, with
+// the clearing house's roster holding ONE entry for them — which is what a
+// second acknowledgement quoting the same admission reference really does
+// (payment.AdmitMemberTx extends rather than refusing). Start read the bank rows
+// to turn the roster's ids into addresses, so it saw the pair and had to choose.
+//
+// Neither half of that survives Task 18. A bank's database is NAMED by its
+// address (store/sqlite.Set), so founding a second bank on a taken BIC opens the
+// first one's database and renames it — there is no pair of rows to have. And
+// joinRoster reads the roster and NOTHING else, because a participant's id IS
+// its address now, so there is no bank row left in that path to disagree with
+// the roster about. The fixture that used to build the clash builds one bank.
+//
+// The GUARD is untouched and is still the only thing standing between this mesh
+// and an unreachable actor, so it is provoked where it lives instead. Its other
+// entry point is measured next door: TestAddingABankOnAnotherBanksBICIsRefused-
+// AndChangesNothing is the same refusal arriving one bank at a time.
+func TestActorRegistrationIsAllOrNoneOnAClashingBatch(t *testing.T) {
+	net := rosterNetwork(t, map[string]iso20022.BIC{"Aurora Bank": "AURODEFFXXX"})
 	m, err := New(net, testConfig, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Stop(context.Background()) })
-	if err := m.Start(context.Background()); err == nil {
-		t.Fatal("Start accepted two participants under one BIC")
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
-	// And it left the mesh as it found it. Registering the first bank and then
-	// failing on the second would leave a half-populated mesh that a retry
-	// could not fix, because the retry would collide with what the failed
-	// attempt had itself created.
-	if got := len(m.actors); got != 2 {
-		t.Errorf("after the refusal the mesh holds %d actors, want the 2 institutions only", got)
+	before := len(m.actors)
+
+	nothing := func(context.Context, iso20022.BIC, []byte) error { return nil }
+	err = m.addActors(
+		actorSpec{bic: "NORDSESSXXX", name: "Nordhaven Bank", handle: nothing},
+		actorSpec{bic: "BANKDEFFXXX", name: "Bankhaus Meridian", handle: nothing},
+		actorSpec{bic: "NORDSESSXXX", name: "Nordhaven Bank (again)", handle: nothing},
+	)
+	if !errors.Is(err, ErrAddressTaken) {
+		t.Fatalf("addActors = %v, want ErrAddressTaken", err)
+	}
+	// Not one of the three, and that includes the one with no clash at all: a
+	// batch is refused whole.
+	if got := len(m.actors); got != before {
+		t.Errorf("after the refusal the mesh holds %d actors, want the %d it started with", got, before)
+	}
+	for _, bic := range []iso20022.BIC{"NORDSESSXXX", "BANKDEFFXXX"} {
+		if _, ok := m.actors[bic]; ok {
+			t.Errorf("%s was registered out of a batch that was refused", bic)
+		}
 	}
 }
