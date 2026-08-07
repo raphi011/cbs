@@ -69,8 +69,8 @@ func TestAMemberBanksActsAreRefusedOnAnyOtherInstitutionsNetwork(t *testing.T) {
 			_, err := n.ResolveIdentifier(ctx, deposit.Identifier{Scheme: deposit.IdentifierIBAN, Value: "SE89-ALICE-0001"})
 			return err
 		}},
-		{"AcceptInbound", func(n *Network) error { return n.AcceptInbound(ctx, pay.ID) }},
-		{"PostCreditorLeg", func(n *Network) error { _, err := n.PostCreditorLeg(ctx, pay.ID); return err }},
+		{"AcceptInbound", func(n *Network) error { return n.AcceptInbound(ctx, pay.ID, relayedFrom(pay)) }},
+		{"SettleAtBank", func(n *Network) error { _, err := n.SettleAtBank(ctx, pay.ID); return err }},
 		{"PostReturnLeg", func(n *Network) error { _, err := n.PostReturnLeg(ctx, pay.ID, "AC04"); return err }},
 		{"ReverseReturnLeg", func(n *Network) error { return n.ReverseReturnLeg(ctx, pay.ID, "AM04") }},
 		{"PostSettlementAdvice", func(n *Network) error {
@@ -162,7 +162,7 @@ func TestTheCentralBanksBookIsReachableOnlyFromTheSettlementAgentsNetwork(t *tes
 			})
 			return err
 		}},
-		{"SettleCycle", func(n *Network) error { _, _, err := n.SettleCycle(ctx, "cyc-1"); return err }},
+		{"SettleCycle", func(n *Network) error { _, _, err := n.SettleCycle(ctx, "cyc-1", nil); return err }},
 		{"SettleReturn", func(n *Network) error {
 			_, err := n.SettleReturn(ctx, ReturnInstruction{
 				PaymentID: "pay-1", DebtorAgent: testBIC, CreditorAgent: testBIC2,

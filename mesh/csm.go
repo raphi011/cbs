@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
-	"slices"
 
 	"github.com/raphi011/cbs/iso20022"
 	"github.com/raphi011/cbs/ledger"
@@ -127,9 +125,9 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 	}
 	switch doc := env.Document.(type) {
 	case *iso20022.Pacs008:
-		return c.relayCreditTransfer(from, env, doc)
+		return c.relayCreditTransfer(ctx, from, env, doc)
 	case *iso20022.Pacs003:
-		return c.relayDirectDebit(from, env, doc)
+		return c.relayDirectDebit(ctx, from, env, doc)
 	case *iso20022.Pacs004:
 		return c.relayReturn(from, env, doc)
 	case *iso20022.Acmt007:
@@ -172,8 +170,31 @@ func (c *csm) handle(ctx context.Context, from iso20022.BIC, raw []byte) error {
 
 // relayCreditTransfer hands a credit transfer on to the CREDITOR's agent: the
 // bank that holds the payee, because a push travels towards the money's
-// destination.
-func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs008) error {
+// destination — and records this institution's own copy of it.
+//
+// # The record comes AFTER the routing, and the order is decided rather than
+// incidental
+//
+// A message this actor cannot route never becomes a payment here. Both refusals
+// above the relay are of that kind — a bulk file, and the RC01 for an agent this
+// mesh has no address for — and neither leaves a row behind saying the clearing
+// house is carrying something that never left the building. Recording first
+// would mean rejecting that row a moment later to say the same thing.
+//
+// It is safe to record after the send because an actor handles its inbox
+// SERIALLY (Mesh.run: pop, handle, repeat). The receiving bank's pacs.002 lands
+// in this actor's inbox and cannot be popped until this handler returns, so the
+// row is always there before anything asks for it. That is a property of the
+// transport, and it is named here because it is what makes the order a choice.
+//
+// What it costs is one seam: a relay that succeeded and a record that failed
+// leaves the message in flight with no row to answer against, and the bank's
+// answer then dead-letters. The error is returned rather than swallowed, so it
+// is one dead letter here and one there.
+//
+// c.relay itself still reads and writes NO store — see its doc, which makes a
+// property of that. The write is this function's.
+func (c *csm) relayCreditTransfer(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs008) error {
 	body := doc.FIToFICstmrCdtTrf
 	ref := body.CdtTrfTxInf[0].PmtId
 	orig := payment.OriginalMessage{
@@ -184,7 +205,13 @@ func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc 
 	if n := len(body.CdtTrfTxInf); n != 1 {
 		return c.refuseBulk(from, orig, ref, "CdtTrfTxInf", n)
 	}
-	return c.relay(from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI)
+	if err := c.relay(from, env, doc, orig, ref, body.CdtTrfTxInf[0].CdtrAgt.FinInstnId.BICFI); err != nil {
+		return err
+	}
+	if _, err := c.ops.RecordRelayedCreditTransfer(ctx, doc); err != nil {
+		return fmt.Errorf("mesh: %s relayed %s and could not record it: %w", c.bic, ref.TxId, err)
+	}
+	return nil
 }
 
 // relayDirectDebit hands a collection on to the DEBTOR's agent: the bank that
@@ -195,7 +222,8 @@ func (c *csm) relayCreditTransfer(from iso20022.BIC, env iso20022.Envelope, doc 
 // to the bank that sent it, which would answer its own instruction — and the
 // resolution inside DirectDebitRequest would succeed while it did, because both
 // parties resolve by address whoever is asking.
-func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs003) error {
+// It records its own copy after the relay, for relayCreditTransfer's reasons.
+func (c *csm) relayDirectDebit(ctx context.Context, from iso20022.BIC, env iso20022.Envelope, doc *iso20022.Pacs003) error {
 	body := doc.FIToFICstmrDrctDbt
 	ref := body.DrctDbtTxInf[0].PmtId
 	orig := payment.OriginalMessage{
@@ -206,7 +234,13 @@ func (c *csm) relayDirectDebit(from iso20022.BIC, env iso20022.Envelope, doc *is
 	if n := len(body.DrctDbtTxInf); n != 1 {
 		return c.refuseBulk(from, orig, ref, "DrctDbtTxInf", n)
 	}
-	return c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI)
+	if err := c.relay(from, env, doc, orig, ref, body.DrctDbtTxInf[0].DbtrAgt.FinInstnId.BICFI); err != nil {
+		return err
+	}
+	if _, err := c.ops.RecordRelayedDirectDebit(ctx, doc); err != nil {
+		return fmt.Errorf("mesh: %s relayed %s and could not record it: %w", c.bic, ref.TxId, err)
+	}
+	return nil
 }
 
 // relayReturn hands a return on to the SETTLEMENT AGENT, and keeps a copy for
@@ -1175,34 +1209,13 @@ func (c *csm) instructSettlement(ctx context.Context, closed payment.ClearingCyc
 // an IntrBkSttlmAmt of zero, which the codec refuses (ActiveCurrencyAndAmount
 // requires a positive amount) and which would say a bank was instructed to move
 // nothing.
+// The rendering itself is payment.SettlementLegsOf. It moved there when the
+// settlement agent stopped reading the cycle and started working from the
+// instruction: the seed plays every institution and sends no messages, so it has
+// to produce exactly what this actor would have put on the wire, and two
+// renderings of one intent are two things that can drift.
 func (c *csm) settlementLegs(ctx context.Context, closed payment.ClearingCycle, asset ledger.AssetCode) ([]payment.SettlementLeg, error) {
-	cb := c.m.cfg.CentralBankBIC
-	legs := make([]payment.SettlementLeg, 0, len(closed.NetPositions))
-	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there
-	// is nothing between the two. There was: the positions were keyed by
-	// ParticipantID, and turning one into the other meant reading the named bank's
-	// own row through the clearing house's roster — a crossing the spec named
-	// twice, because the same turn happened again inside SettleCycleTx. Task 18
-	// made a bank's id its BIC and the positions were re-keyed with it; see
-	// payment.ClearingCycle.NetPositions.
-	for _, bic := range slices.Sorted(maps.Keys(closed.NetPositions)) {
-		net := closed.NetPositions[bic]
-		if net == 0 {
-			continue
-		}
-		leg := payment.SettlementLeg{
-			From:      bic,
-			To:        cb,
-			Amount:    -net,
-			Asset:     asset,
-			Reference: string(closed.ID),
-		}
-		if net > 0 {
-			leg.From, leg.To, leg.Amount = cb, bic, net
-		}
-		legs = append(legs, leg)
-	}
-	return legs, nil
+	return payment.SettlementLegsOf(closed, asset, c.m.cfg.CentralBankBIC), nil
 }
 
 // receiveSettlementStatus is the clearing house acting on what the CENTRAL BANK
@@ -1306,15 +1319,19 @@ func (c *csm) receiveSettlementStatus(ctx context.Context, from iso20022.BIC, do
 // — and a real network would, so that every hop of a payment's answer quotes the
 // instruction that started it.
 func (c *csm) tellSettled(ctx context.Context, id payment.CycleID, orig payment.OriginalMessage, r payment.TransactionStatusReport) error {
-	cycle, err := c.ops.GetCycle(ctx, id)
+	// This institution's OWN copies move first, in one unit of work, and what
+	// comes back is what they say. Reading the cycle and then each payment is what
+	// this used to do, and it read rows nothing had written Settled onto: the
+	// payee's BANK wrote that, on the row all three institutions shared. See
+	// payment.SettleAtCSMTx.
+	//
+	// A cycle whose copies could not all be marked tells nobody anything, which is
+	// the same rule the ACSC fan-out already had for a payment it could not read.
+	settled, err := c.ops.SettleAtCSM(ctx, id)
 	if err != nil {
-		return fmt.Errorf("mesh: %s was told %s settled and cannot read it: %w", c.bic, id, err)
+		return fmt.Errorf("mesh: %s was told %s settled and cannot record it: %w", c.bic, id, err)
 	}
-	for _, pid := range cycle.PaymentIDs {
-		p, err := c.ops.GetPayment(ctx, pid)
-		if err != nil {
-			return fmt.Errorf("mesh: %s was told %s settled and cannot read %s: %w", c.bic, id, pid, err)
-		}
+	for _, p := range settled {
 		scheme, ok := c.ops.Scheme(p.Scheme)
 		if !ok {
 			return fmt.Errorf("mesh: %s was told %s settled and holds no %q scheme to say who submitted %s: %w",
@@ -1435,6 +1452,21 @@ func (c *csm) receiveReturnStatus(ctx context.Context, from iso20022.BIC, doc *i
 		delete(c.held, id)
 		if holding && r.Status == iso20022.TransactionStatusSettlementCompleted {
 			errs = append(errs, c.releaseReturn(held, id))
+		}
+		if r.Status == iso20022.TransactionStatusSettlementCompleted {
+			// This institution's own copy, which nothing else writes any more. The
+			// return's two customer legs land in the two BANKS' databases, so what
+			// used to move this row — the second of them — is not reachable from
+			// here. See payment.CompleteReturnTx.
+			//
+			// After the release rather than before it, so the message that makes
+			// the other bank post is not held up by this actor's bookkeeping; and
+			// its error is joined rather than returned, for the reason the whole
+			// block joins: a failure in one of these must not silently cancel the
+			// others.
+			if _, err := c.ops.CompleteReturn(ctx, id); err != nil {
+				errs = append(errs, fmt.Errorf("mesh: %s could not record the return of %s: %w", c.bic, id, err))
+			}
 		}
 		if err := errors.Join(errs...); err != nil {
 			return err

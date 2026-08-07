@@ -518,6 +518,22 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 		submitter = req.CreditorDetails.Agent
 	}
 	p := must(b.bank(submitter).SubmitPayment(b.ctx, req))
+
+	// What the OTHER two institutions would have been sent, and it is the whole of
+	// what they get. Each writes its own row from it (Task 18d), so the seed has
+	// to hand over an instruction rather than an id — which is what a pacs.008 or
+	// a pacs.003 is, minus the XML.
+	//
+	// The two DETAILS come off the payment rather than off the request: the
+	// submitting bank overwrote its own side from its own register, and the
+	// message it would have built carries what it wrote. Everything else is the
+	// instruction unchanged, including both account ids — which is the seed being
+	// the seed. A real receiving bank resolves its own side from the address and
+	// has no way to know the other's, and the mesh is where that is modelled;
+	// this process holds every register and is building a fixed scenario.
+	relayed := req
+	relayed.DebtorDetails, relayed.CreditorDetails = p.DebtorDetails, p.CreditorDetails
+
 	// The RECEIVING bank answers, and it is the other one. Naming it is what
 	// picks the network AcceptInbound resolves the address in — its own register
 	// and no other, since Task 18a — and the seed is playing that bank as well as
@@ -526,7 +542,11 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 	if receiver == submitter {
 		receiver = p.DebtorDetails.Agent
 	}
-	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID))
+	check(b.bank(receiver).AcceptInbound(b.ctx, p.ID, relayed))
+	// And the CLEARING HOUSE, which has to be carrying the payment before it can
+	// take it into a cycle. In the mesh this is the moment it relays the
+	// instruction on; here there is nothing to relay, so the record stands alone.
+	must(b.csm().RecordRelayed(b.ctx, p.ID, relayed))
 	return must(b.csm().AcceptAtCSM(b.ctx, p.ID))
 }
 
@@ -542,8 +562,19 @@ func (b *builder) initiate(req payment.InitiatePaymentRequest) payment.Payment {
 // still promises is the OUTCOME rather than the process.
 func (b *builder) reject(id payment.PaymentID, code iso20022.StatusReason, reason string) {
 	rejected := must(b.csm().RejectAtCSM(b.ctx, id, code, reason))
-	// The payer's bank gives the money back, in its own book.
-	check(b.bank(rejected.DebtorDetails.Agent).ReverseDebtorLeg(b.ctx, rejected, reason))
+	// Both banks record it, each on its own copy, and only the payer's bank gives
+	// any money back — which is one act at each of them since Task 18d, because
+	// the decision and the reversal cannot be separated once the row the guard
+	// reads is the acting bank's own. See payment.RejectAtBankTx.
+	//
+	// On a push the two are one bank and there is one call; on a pull the payee's
+	// bank submitted and is being told the answer to its instruction, with nothing
+	// to undo. csm.tell is what decides the same thing in the mesh, and it decides
+	// it the same way.
+	must(b.bank(rejected.DebtorDetails.Agent).RejectAtBank(b.ctx, id, code, reason))
+	if other := rejected.CreditorDetails.Agent; other != rejected.DebtorDetails.Agent {
+		must(b.bank(other).RejectAtBank(b.ctx, id, code, reason))
+	}
 }
 
 // returnPayment runs all three institutions' halves of an R-transaction, leaving
@@ -599,7 +630,18 @@ func (b *builder) returnPayment(id payment.PaymentID, reason string) {
 		Reason:        reason,
 	}))
 	b.advise(statements)
+	// The OTHER bank's leg, which is the SECOND one and therefore the one that
+	// takes that bank's copy to Returned. Which of the two is second used to be
+	// read off the row — the leg that found the other side's transaction id
+	// already there — and cannot be now: each bank writes its own field on its own
+	// copy, so both would see one leg and neither would be last. Position in the
+	// conversation replaces it; see payment.PostReturnLegTx.
 	must(b.bank(other).PostReturnLeg(b.ctx, id, reason))
+	// So the returner's copy and the clearing house's are moved by what they are
+	// TOLD, which in the mesh is the settlement agent's ACSC relayed on. The seed
+	// has no message and says the same thing directly.
+	must(b.bank(returner).CompleteReturn(b.ctx, id))
+	must(b.csm().CompleteReturn(b.ctx, id))
 }
 
 // advise books each member's mirror leg from the statement the settlement agent
@@ -646,18 +688,35 @@ func (b *builder) advise(statements []payment.SettlementStatement) {
 // spans two. The fixture is the outcome, not the process, and that is now the
 // only thing it could be.
 func (b *builder) settle(id payment.CycleID) {
-	_, statements := must2(b.cb().SettleCycle(b.ctx, id))
+	// What the pacs.009 would have carried, built where the clearing house builds
+	// it — off the CLOSED CYCLE, which is that institution's own row. The
+	// settlement agent works from the instruction now rather than from the cycle,
+	// because it holds no cycles table, so the seed has to hand it the same legs
+	// the message would have. See payment.SettlementLegsOf.
+	closed := must(b.csm().GetCycle(b.ctx, id))
+	scheme, ok := b.csm().Scheme(closed.Scheme)
+	if !ok {
+		check(fmt.Errorf("seed: no scheme %q to settle %s under: %w", closed.Scheme, id, payment.ErrSchemeNotFound))
+	}
+	legs := payment.SettlementLegsOf(closed, scheme.Asset(), b.mesh.CentralBankBIC())
+
+	_, statements := must2(b.cb().SettleCycle(b.ctx, id, legs))
 	b.advise(statements)
 
-	// The cycle is re-read for its payment list, which the settlement does not
-	// carry: a settlement agent answers about net positions per MEMBER and holds
-	// no way to enumerate the batch. That is why the fan-out is the clearing
-	// house's in the mesh, and why the seed asks the CLEARING HOUSE's cycle row
-	// here rather than the statements above.
-	cycle := must(b.csm().GetCycle(b.ctx, id))
-	for _, pid := range cycle.PaymentIDs {
-		p := must(b.csm().GetPayment(b.ctx, pid))
-		must(b.bank(p.CreditorDetails.Agent).PostCreditorLeg(b.ctx, pid))
+	// The CLEARING HOUSE's own copies move first, and they are also the payment
+	// list — which the settlement does not carry: a settlement agent answers about
+	// net positions per MEMBER and holds no way to enumerate the batch. That is
+	// why the fan-out is the clearing house's in the mesh, and why the seed asks
+	// this institution rather than the statements above.
+	for _, p := range must(b.csm().SettleAtCSM(b.ctx, id)) {
+		// Then both banks, each on its own copy, and only the payee's bank pays
+		// anybody. On a push those are two calls to two databases; on a pull the
+		// payee's bank is also the submitter and there are still two, because the
+		// payer's bank holds a row too. See payment.SettleAtBankTx.
+		must(b.bank(p.CreditorDetails.Agent).SettleAtBank(b.ctx, p.ID))
+		if other := p.DebtorDetails.Agent; other != p.CreditorDetails.Agent {
+			must(b.bank(other).SettleAtBank(b.ctx, p.ID))
+		}
 	}
 }
 

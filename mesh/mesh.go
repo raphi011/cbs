@@ -670,6 +670,20 @@ func (m *Mesh) joinRoster(ctx context.Context) error {
 // TestJoinRosterRefusesTheWholeRosterWhenOneAddressIsTaken.
 func (m *Mesh) JoinRoster(ctx context.Context) error { return m.joinRoster(ctx) }
 
+// CentralBankBIC is the address this mesh routes settlement instructions to.
+//
+// It is configured rather than discovered — the settlement agent has no roster
+// row, because it is not a member of the scheme it settles — so a caller that
+// needs to name it has nowhere else to read it from. The seed is the caller: it
+// plays every institution in one process and sends no messages, and a settlement
+// instruction names the agent at one end of every leg. See
+// payment.SettlementLegsOf.
+//
+// The clearing house's has no accessor because nothing outside this package
+// needs to name it: every act addressed to it is one of the exported methods
+// above, which fill the address in themselves.
+func (m *Mesh) CentralBankBIC() iso20022.BIC { return m.cfg.CentralBankBIC }
+
 // ForgetBanks removes every BANK's actor — every one in the index, which after
 // an in-process Admit includes a bank the scheme has not answered for yet:
 // closes its inbox, waits for its goroutine to return, and drops it from the

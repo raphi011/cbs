@@ -196,6 +196,19 @@ type Tx interface {
 
 	PutSettlement(ctx context.Context, s Settlement) error
 	GetSettlement(ctx context.Context, id SettlementID) (Settlement, error)
+	// GetSettlementByCycle is the settlement agent's answer to "have I already
+	// discharged this cut-off", and it is a secondary lookup for the same reason
+	// GetPaymentByEndToEndID is: the row is keyed by an id this institution
+	// allocated, and the question arrives quoting somebody else's.
+	//
+	// It exists because SettleCycleTx used to answer that question out of the
+	// CYCLE — refusing anything that was not CycleClosed — and a settlement agent
+	// has no cycles table. A redelivered pacs.009 is the reachable case and it
+	// must not settle twice; the ledger's idempotency key would refuse the second
+	// POSTING, but only after the reserve check had already run against reserves
+	// the first settlement moved, which turns a duplicate into a spurious AM04.
+	// Same sentinel shape as the rest of this block: ErrSettlementNotFound.
+	GetSettlementByCycle(ctx context.Context, id CycleID) (Settlement, error)
 	ListSettlements(ctx context.Context) ([]Settlement, error)
 
 	// The advice rows are BOOK-SCOPED, unlike every other method in this block.

@@ -141,7 +141,39 @@ var (
 
 	// ErrCycleNotClosed is returned when settlement is attempted on a cycle
 	// that has not been closed (its cut-off has not been reached).
+	//
+	// It is the CLEARING HOUSE's refusal and only its own: that institution
+	// holds the cycle and knows whether the cut-off has been reached. The
+	// SETTLEMENT AGENT used to make it too, by reading the cycle row out of the
+	// clearing house's database, and it has no cycles table — see
+	// ErrCycleAlreadySettled, which is what it refuses a redelivery with instead.
 	ErrCycleNotClosed = errors.New("clearing cycle is not closed")
+
+	// ErrCycleAlreadySettled is the SETTLEMENT AGENT refusing to discharge a
+	// cut-off it has already discharged.
+	//
+	// It replaces ErrCycleNotClosed on that one path, and the swap is Task 18d.
+	// A redelivered pacs.009 used to be caught by the cycle's status, which is a
+	// row this institution cannot read; what it can read is its own settlement
+	// register, and a settlement against this cycle is its own record of having
+	// done the work. Same shape of statement, made out of a fact it owns.
+	//
+	// Like ErrCycleNotClosed it is classified with the EMPTY code in reasonTable:
+	// it describes this system's own state rather than a judgement about the
+	// sender's message, so the mesh dead-letters it instead of answering a
+	// clearing house that its settled cycle was rejected.
+	ErrCycleAlreadySettled = errors.New("clearing cycle has already settled")
+
+	// ErrInvalidSettlement is a settlement instruction this agent cannot read as
+	// one batch: no legs, legs referencing different cycles or assets, no single
+	// settlement agent between them, or one member named twice.
+	//
+	// It exists because the agent works from the INSTRUCTION now rather than from
+	// the cycle it names — see positionsIn. Under the shared store the positions
+	// were read off the clearing house's own row and could not be malformed; a
+	// message can be, and a batch that does not sum to zero moves money nobody
+	// computed.
+	ErrInvalidSettlement = errors.New("settlement instruction cannot be read as one batch")
 
 	// ErrCycleAlreadyOpen is returned when opening a cycle for a scheme that
 	// already has one open.

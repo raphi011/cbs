@@ -433,10 +433,11 @@ func (b *bank) receiveCreditTransfer(ctx context.Context, from iso20022.BIC, hdr
 	// refer back by. More than one is refused below, by CreditTransferRequest.
 	ref := body.CdtTrfTxInf[0].PmtId
 
-	if _, err := b.ops.CreditTransferRequest(ctx, doc); err != nil {
+	req, err := b.ops.CreditTransferRequest(ctx, doc)
+	if err != nil {
 		return b.answer(from, orig, ref, err)
 	}
-	return b.accept(ctx, from, orig, ref)
+	return b.accept(ctx, from, orig, ref, req)
 }
 
 // receiveDirectDebit is the PAYER's bank answering a collection, and it is the
@@ -481,18 +482,32 @@ func (b *bank) receiveDirectDebit(ctx context.Context, from iso20022.BIC, hdr is
 	// refer back by. More than one is refused below, by DirectDebitRequest.
 	ref := body.DrctDbtTxInf[0].PmtId
 
-	if _, err := b.ops.DirectDebitRequest(ctx, doc); err != nil {
+	req, err := b.ops.DirectDebitRequest(ctx, doc)
+	if err != nil {
 		return b.answer(from, orig, ref, err)
 	}
-	return b.accept(ctx, from, orig, ref)
+	return b.accept(ctx, from, orig, ref, req)
 }
 
 // accept runs the receiving bank's own half and answers with the result. It is
 // the second of the two questions both receive handlers ask, and it is shared
 // because the direction changes what the half DOES and not what this actor does
 // about it.
-func (b *bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage, ref iso20022.PaymentIdentification) error {
-	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId)); err != nil {
+//
+// The REQUEST goes through it since Task 18d, which is the change both receive
+// handlers' docs said was coming. It is no longer the discarded by-product of the
+// first question: this bank has no row for the payment, so what the resolution
+// produced IS the payment, written here under the id the message carries in
+// PmtId/TxId. See payment.AcceptInboundTx.
+//
+// The id and the request come off the same message and are passed separately,
+// which is worth one line: a request describes an instruction and carries no id,
+// because the act that MINTS one is the submitting bank's and there is exactly
+// one of those in the system (payment.SubmitPaymentTx).
+func (b *bank) accept(ctx context.Context, from iso20022.BIC, orig payment.OriginalMessage,
+	ref iso20022.PaymentIdentification, req payment.InitiatePaymentRequest) error {
+
+	if err := b.ops.AcceptInbound(ctx, payment.PaymentID(ref.TxId), req); err != nil {
 		// Already answered. A queue redelivers, so the same message can arrive
 		// twice — and the second time the payment is no longer Initiated, which
 		// is what this sentinel says. It must NOT become a rejection: payment's
@@ -621,17 +636,14 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 			continue
 		}
 		if r.Status == iso20022.TransactionStatusSettlementCompleted {
-			// ACSC. This bank posts its creditor leg if the payee is its
-			// customer, and does nothing at all if it is not — which on a push
-			// is the payer's bank, hearing the answer to the instruction it
-			// sent. The domain decides which this bank is;
-			// ErrNotThisBanksPayment is the ordinary case for one of the two
-			// recipients and is not a failure.
-			if _, err := b.ops.PostCreditorLeg(ctx, payment.PaymentID(r.TxID)); err != nil {
-				if errors.Is(err, payment.ErrNotThisBanksPayment) {
-					continue
-				}
-				return fmt.Errorf("mesh: %s could not pay its customer for %s: %w", b.bic, r.TxID, err)
+			// ACSC. Both recipients record it on their own copy, and only the
+			// payee's bank posts anything — see payment.SettleAtBankTx, which is
+			// where being the creditor's bank stopped being a precondition and
+			// became a branch. A bank that is party to NEITHER side is refused,
+			// and mostly by the store: it has no row for a payment it was never
+			// sent.
+			if _, err := b.ops.SettleAtBank(ctx, payment.PaymentID(r.TxID)); err != nil {
+				return fmt.Errorf("mesh: %s could not settle its own half of %s: %w", b.bic, r.TxID, err)
 			}
 			continue
 		}
@@ -647,44 +659,39 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 			return fmt.Errorf("mesh: %s was told %s was rejected and holds no %q scheme: %w",
 				b.bic, p.ID, p.Scheme, payment.ErrSchemeNotFound)
 		}
-		// Whose payer is this? A bank that acted on a misrouted rejection would
-		// reverse a debit in somebody else's ledger, so the answer decides
-		// everything below.
+		// Is this bank a party to it at all? A bank that acted on a misrouted
+		// rejection would reverse a debit in somebody else's ledger.
 		//
-		// It is read off the PAYMENT, and it used to be read out of the clearing
-		// house's roster — GetRosterEntry, keyed by the payer's participant id,
-		// which had to read that bank's own row to reach its address. Both steps
-		// are gone: a payment carries each side's agent BIC, which is the whole of
-		// what this comparison needs and is a value this bank was TOLD rather than
-		// one it has to ask another institution for. It applies to the submitter
-		// below too.
-		debtor := p.DebtorDetails.Agent
-		if debtor != b.bic {
-			// Not the payer's bank. The only other party with any business
-			// receiving this is the one that submitted and is waiting for an
-			// answer, and it has nothing to give back.
-			submitter := submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
-			if submitter != b.bic {
-				return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s and which %s submitted",
-					b.bic, p.ID, debtor, submitter)
-			}
-			continue
+		// Both addresses are read off the PAYMENT, and they used to be read out of
+		// the clearing house's roster — GetRosterEntry, keyed by the payer's
+		// participant id, which had to read that bank's own row to reach its
+		// address. Both steps are gone: a payment carries each side's agent BIC,
+		// which is the whole of what this comparison needs and is a value this bank
+		// was TOLD rather than one it has to ask another institution for.
+		submitter := submitterOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent)
+		if p.DebtorDetails.Agent != b.bic && submitter != b.bic {
+			return fmt.Errorf("mesh: %s was sent a rejection of %s, whose payer banks at %s and which %s submitted",
+				b.bic, p.ID, p.DebtorDetails.Agent, submitter)
 		}
-		// And is it really rejected? A pacs.002 is not on its own a decision:
-		// this network's record of the payment is. Reversing on the message
-		// alone would take a live debit back off a payment on its way to
-		// settlement, and the money would simply be gone from the flow: this
+		// The decision goes onto this bank's OWN copy, and the payer's money comes
+		// back in the same unit of work if this bank is the one holding it.
+		//
+		// This handler used to make that judgement itself: read the row, refuse
+		// unless it already said Rejected, then reverse. The check was the whole
+		// safety argument — ReverseDebtorLegTx looks at no status — and it worked
+		// because the CLEARING HOUSE had written Rejected onto the row this bank
+		// was reading. It writes on its own row now, so the guard read Initiated
+		// and refused every genuine rejection. What replaces it is the domain
+		// refusing the transition, which is the same question asked where the
+		// answer and the posting cannot come apart. See payment.RejectAtBankTx.
+		//
+		// What is at stake if it comes apart has not changed: reversing on the
+		// message alone would take a live debit back off a payment on its way to
+		// settlement, and the money would simply be gone from the flow — this
 		// suspense is the PAYER's bank's, so the debit is what funds that bank's
-		// own mirror leg when the cut-off settles. (This comment used to say the
-		// payee is paid out of this suspense. The payee is paid out of the
-		// PAYEE's bank's suspense, by that bank, after settlement — a different
-		// account in a different book. The mistake made the consequence sound
-		// smaller than it is.)
-		if p.Status != payment.Rejected {
-			return fmt.Errorf("mesh: %s was told to reverse %s, which this network records as %v", b.bic, p.ID, p.Status)
-		}
-		if err := b.ops.ReverseDebtorLeg(ctx, p, rejectionText(r)); err != nil {
-			return fmt.Errorf("mesh: %s could not give the payer of %s their money back: %w", b.bic, p.ID, err)
+		// own mirror leg when the cut-off settles.
+		if _, err := b.ops.RejectAtBank(ctx, p.ID, r.Code, rejectionText(r)); err != nil {
+			return fmt.Errorf("mesh: %s could not record the rejection of %s: %w", b.bic, p.ID, err)
 		}
 	}
 	return nil
@@ -797,10 +804,28 @@ func (b *bank) receiveReturn(ctx context.Context, from iso20022.BIC, doc *iso200
 func (b *bank) receiveReturnStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 	_, reports := payment.ReadStatus(doc)
 	for _, r := range reports {
-		if r.Status != iso20022.TransactionStatusRejected || r.TxID == "" {
+		if r.TxID == "" {
 			// A status naming no transaction is skipped rather than refused, for
 			// receiveStatus's reason: it is the FF01 a counterparty sends when it
 			// could not parse a file, and there is no leg it could be about.
+			continue
+		}
+		if r.Status != iso20022.TransactionStatusRejected {
+			// An ACSC, and it is WORK now where the doc above says it is not.
+			//
+			// It was not, because the return's second customer leg wrote Returned
+			// onto the row all three institutions were reading, and this bank's
+			// leg had gone in before it sent. Task 18d leaves that leg in the
+			// OTHER bank's database, so nothing writes on this copy and it would
+			// say Settled for ever — about a payment this bank itself returned.
+			//
+			// Nothing is posted here. See payment.CompleteReturnTx, and
+			// PostReturnLegTx's note on why the returner is first by construction
+			// and therefore cannot be the one that closes the return.
+			if _, err := b.ops.CompleteReturn(ctx, payment.PaymentID(r.TxID)); err != nil {
+				return fmt.Errorf("mesh: %s could not record that its return of %s went through: %w",
+					b.bic, r.TxID, err)
+			}
 			continue
 		}
 		b.m.log.Error("mesh: return refused",

@@ -779,7 +779,7 @@ func TestOnlyThePayeesBankPaysThePayee(t *testing.T) {
 
 	// The payer's bank asking to post the payee's leg is refused, whatever else
 	// is true of the payment.
-	_, err := h.bank(h.debtor.BIC).PostCreditorLeg(context.Background(), p.ID)
+	_, err := h.bank(h.debtor.BIC).SettleAtBank(context.Background(), p.ID)
 	if !errors.Is(err, payment.ErrNotThisBanksPayment) {
 		t.Errorf("the payer's bank got %v, want ErrNotThisBanksPayment", err)
 	}

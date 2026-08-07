@@ -186,9 +186,16 @@ type bankOps interface {
 	// it with an argument the actor filled in from bank.pid; Task 18b took the
 	// argument away, because the register searched is the one belonging to the
 	// network these methods are called on.
+	// AcceptInbound takes the REQUEST as well as the id since Task 18d, and that
+	// is the whole of the store split arriving in this package. This bank has no
+	// row for the payment — the submitting bank's row is in the submitting bank's
+	// database — so the request the resolution just produced is not a check to be
+	// thrown away, it is the payment. See payment.AcceptInboundTx, and the two
+	// receive handlers, whose docs used to end by saying the request is discarded
+	// and that closing the gap was sub-project 8's whole subject.
 	CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (payment.InitiatePaymentRequest, error)
 	DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003) (payment.InitiatePaymentRequest, error)
-	AcceptInbound(ctx context.Context, id payment.PaymentID) error
+	AcceptInbound(ctx context.Context, id payment.PaymentID, req payment.InitiatePaymentRequest) error
 
 	// ResolveIdentifier is the on-us check, and it is the one method here the
 	// mesh calls on the caller's goroutine rather than inside a handler: an
@@ -202,10 +209,17 @@ type bankOps interface {
 	// is visible from outside a handler.
 	ResolveIdentifier(ctx context.Context, ident deposit.Identifier) (payment.PartyRef, error)
 
-	// The payer's bank's half of a rejection: give the payer their money back.
-	// GetPayment is what establishes that there is a decision to act on — see
-	// ReverseDebtorLegTx, which does not look at the payment's status itself and
-	// says the caller must.
+	// The bank's half of a rejection: record it on this bank's own copy, and give
+	// the payer their money back if this bank is the one holding it.
+	//
+	// It was two calls and a judgement made HERE — read the payment, check the
+	// row says Rejected, hand that copy to ReverseDebtorLeg — and the check was
+	// the whole safety argument, because ReverseDebtorLegTx looks at no status of
+	// its own. It worked because the clearing house had written Rejected onto the
+	// row both banks were reading. Task 18d gives each bank a copy nobody else can
+	// write, so the guard read a row that still said Initiated and refused every
+	// genuine rejection. The decision and the reversal are one act at the
+	// institution that owns both now; see payment.RejectAtBankTx.
 	//
 	// Scheme is how a bank decides which of the two roles a status makes it play:
 	// the submitter waiting for an answer, or the bank holding money it must
@@ -221,7 +235,7 @@ type bankOps interface {
 	// told. See payment.PartyRef.
 	GetPayment(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	Scheme(id payment.SchemeID) (payment.Scheme, bool)
-	ReverseDebtorLeg(ctx context.Context, p payment.Payment, reason string) error
+	RejectAtBank(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
 
 	// The returning bank's message. It takes no context because it reads no
 	// store — the amount's scale comes from the scheme registry, which is a map
@@ -262,17 +276,32 @@ type bankOps interface {
 	// on this interface lets this bank post in anybody else's.
 	PostSettlementAdvice(ctx context.Context, m payment.AdvisedMovement) (payment.SettlementAdvice, error)
 
-	// The payee's bank's half of settlement: release one payment out of its own
-	// clearing suspense into its own customer's account.
+	// The bank's half of settlement: record it on this bank's own copy, and — if
+	// this bank holds the payee — release the payment out of its own clearing
+	// suspense into its own customer's account.
 	//
-	// Both banks are told a payment settled and only one may post it — see
-	// payment.ErrNotThisBanksPayment. Which one is decided by comparing the
-	// payment's creditor against the acting bank, and the acting bank is now the
-	// network's identity rather than an argument. The domain refuses the other,
-	// rather than this package deciding: which bank a payment's creditor banks at
-	// is a fact about the payment, and a handler that decided it would be
-	// asserting something it cannot check.
-	PostCreditorLeg(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
+	// It was PostCreditorLeg, and being the payee's bank was a PRECONDITION: the
+	// clearing house had already written Settled onto the shared row, so a bank
+	// that held no creditor leg had nothing left to do and was refused
+	// (payment.ErrNotThisBanksPayment). Both banks now hold a copy only they can
+	// write, so the status is what both of them do and the posting is what one of
+	// them does. See payment.SettleAtBankTx, which is where the two swapped
+	// places, and which still refuses a bank that is party to neither side.
+	//
+	// Which bank posts is decided by comparing the payment's creditor against the
+	// acting bank, and the acting bank is the network's identity rather than an
+	// argument. The domain decides rather than this package: which bank a
+	// payment's creditor banks at is a fact about the payment, and a handler that
+	// decided it would be asserting something it cannot check.
+	SettleAtBank(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
+
+	// The bank that ASKED for a return learning that it went through. It posts
+	// nothing — its own leg went in before it sent the pacs.004 — and marks its
+	// own copy Returned, which is the one fact about this payment it cannot learn
+	// any other way now that the other bank's leg lands in the other bank's
+	// database. See payment.CompleteReturnTx and payment.PostReturnLegTx's note on
+	// position in the conversation.
+	CompleteReturn(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
 	// The bank's own liquidity management, and the second thing on this interface
 	// whose subject is this bank rather than a payment.
@@ -359,8 +388,42 @@ type bankOps interface {
 // csm.relayAdmission, which sets out why that is true here and is not true of
 // the return.
 type csmOps interface {
+	// The clearing house's own copy of an instruction it is carrying, written as
+	// it routes one. Task 18d added them, and they are the first methods here
+	// whose subject is a payment this actor has not decided anything about yet.
+	//
+	// They exist because there is nothing left to accept. AcceptAtCSM loads the
+	// payment by id and every institution now keeps its own row, so the clearing
+	// house was reaching for one that had never been written in its database.
+	// Recording is not accepting: membership, the open cycle and the direction are
+	// all still asked later and can all still refuse — and being able to refuse
+	// with a row in hand is what lets the refusal be ANSWERED. See
+	// payment.RecordRelayedTx.
+	//
+	// They take the DOCUMENT, unlike a bank's pair, because this institution has
+	// no register: there is no resolution for a caller to have made on its behalf,
+	// so there is no reason to split the read from the write.
+	RecordRelayedCreditTransfer(ctx context.Context, doc *iso20022.Pacs008) (payment.Payment, error)
+	RecordRelayedDirectDebit(ctx context.Context, doc *iso20022.Pacs003) (payment.Payment, error)
+
 	AcceptAtCSM(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 	RejectAtCSM(ctx context.Context, id payment.PaymentID, code iso20022.StatusReason, reason string) (payment.Payment, error)
+
+	// The two the clearing house needs to keep its OWN copies honest once the
+	// decision is somebody else's to make.
+	//
+	// SettleAtCSM marks a settled cycle's payments Settled and hands them back, so
+	// the per-payment fan-out reads what it just wrote rather than the batch a
+	// second time. CompleteReturn does the same for one returned payment. Neither
+	// posts: this institution holds no book, and both are recording news that
+	// arrived from the settlement agent.
+	//
+	// Neither existed, and the reason is the shared row. Settled was written by
+	// the payee's BANK and Returned by whichever bank posted the second leg, onto
+	// the row all three institutions were reading — so the clearing house's view
+	// moved because somebody else moved it. See payment.SettleAtCSMTx.
+	SettleAtCSM(ctx context.Context, id payment.CycleID) ([]payment.Payment, error)
+	CompleteReturn(ctx context.Context, id payment.PaymentID) (payment.Payment, error)
 
 	// Scheme is what says which bank a status goes back to: the payer's for a
 	// push, the payee's for a pull. Reading it off the payment's own scheme rather
@@ -461,11 +524,21 @@ type csmOps interface {
 // id here — which is why payment.SettlementAdvice is keyed by a reference
 // rather than by a cycle.
 type settlementOps interface {
-	// SettleCycle hands back the STATEMENTS beside the settlement, because the
-	// closing balance each carries is a claim about a moment inside the unit of
-	// work and cannot be re-read after it. Sending them is this actor's, not the
-	// domain's: see centralBank.advise.
-	SettleCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, []payment.SettlementStatement, error)
+	// SettleCycle takes the LEGS as well as the cycle id since Task 18d, which
+	// makes it the same shape as SettleReturn below and for the same reason:
+	// everything this institution acts on comes off the message. It used to take
+	// the id alone and read the cycle — the clearing house's row, in a database
+	// this one does not hold and whose shape has no cycles table — for the
+	// positions, the asset and the "has this cut-off been reached" guard. The
+	// first two are on the pacs.009 (payment.ReadSettlement), and the third is
+	// answered out of this agent's own settlement register instead. See
+	// payment.SettleCycleTx and positionsIn.
+	//
+	// It hands back the STATEMENTS beside the settlement, because the closing
+	// balance each carries is a claim about a moment inside the unit of work and
+	// cannot be re-read after it. Sending them is this actor's, not the domain's:
+	// see centralBank.advise.
+	SettleCycle(ctx context.Context, id payment.CycleID, legs []payment.SettlementLeg) (payment.Settlement, []payment.SettlementStatement, error)
 
 	// SettleReturn takes the INSTRUCTION rather than a payment id, and that is
 	// the whole of what sub-project 8 needed from this flow: everything it acts

@@ -113,6 +113,35 @@ func (s *testSystem) bank(bic iso20022.BIC) *Network {
 // bank's book of accounts.
 func (s *testSystem) cb() *Network { return s.nets.CentralBank() }
 
+// testCentralBankBIC is the address this fixture's settlement agent is reached
+// at. It has no store row — a settlement agent is not a member of the scheme it
+// settles — so, like the mesh's, it is configured rather than discovered.
+//
+// It exists because SettleCycle takes the LEGS since Task 18d and a leg names
+// the agent at one end. See settleCycle.
+const testCentralBankBIC iso20022.BIC = "CBANDEFFXXX"
+
+// settleCycle instructs the settlement agent to discharge one cut-off, with the
+// legs the clearing house would have put on the pacs.009.
+//
+// The two steps are one call here and two institutions in the mesh, which is
+// what makes the helper worth having: the legs are rendered from the CLEARING
+// HOUSE's closed cycle (payment.SettlementLegsOf) and handed to the CENTRAL
+// BANK, because the agent holds no cycles table and settles what it was
+// instructed rather than what it can look up.
+func (s *testSystem) settleCycle(ctx context.Context, id CycleID) (Settlement, []SettlementStatement, error) {
+	// The embedded Network is the clearing house's; see newTestSystem.
+	c, err := s.GetCycle(ctx, id)
+	if err != nil {
+		return Settlement{}, nil, err
+	}
+	var asset ledger.AssetCode
+	if scheme, ok := s.Scheme(c.Scheme); ok {
+		asset = scheme.Asset()
+	}
+	return s.cb().SettleCycle(ctx, id, SettlementLegsOf(c, asset, testCentralBankBIC))
+}
+
 // cbBook is that book, for the assertions below that read the central bank's
 // own accounts and transactions directly.
 //
@@ -172,7 +201,7 @@ func initiate(ctx context.Context, sys *testSystem, req InitiatePaymentRequest) 
 		if err != nil {
 			return err
 		}
-		if err := sys.bank(receiverOf(sys, p)).AcceptInboundTx(ctx, tx, p.ID); err != nil {
+		if err := sys.bank(receiverOf(sys, p)).AcceptInboundTx(ctx, tx, p.ID, relayedFrom(p)); err != nil {
 			return err
 		}
 		out, err = sys.AcceptAtCSMTx(ctx, tx, p.ID)
@@ -446,7 +475,7 @@ func runCycle(t *testing.T, sys *testSystem, scheme SchemeID, submit func()) Set
 	submit()
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	st, statements, err := sys.cb().SettleCycle(ctx, cyc.ID)
+	st, statements, err := sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
 	payTheCreditors(t, sys, cyc.ID)
@@ -563,7 +592,7 @@ func payTheCreditors(t *testing.T, sys *testSystem, id CycleID) {
 	for _, pid := range cyc.PaymentIDs {
 		p, err := sys.GetPayment(ctx, pid)
 		assertNoError(t, err)
-		_, err = sys.bank(p.CreditorDetails.Agent).PostCreditorLeg(ctx, pid)
+		_, err = sys.bank(p.CreditorDetails.Agent).SettleAtBank(ctx, pid)
 		assertNoError(t, err)
 	}
 }
@@ -689,9 +718,9 @@ func TestASettlementIntoAClosedAccountGoesToUnclaimedBalances(t *testing.T) {
 	//    settlement agent's netting transaction, and the closed account is not
 	//    in it. Bob's bank meets it afterwards, on its own, when it comes to
 	//    pay its own customer.
-	_, _, err = sys.cb().SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).SettleAtBank(ctx, pay.ID)
 	assertNoError(t, err)
 
 	// 2. The payment settled, because it did: the reserves moved and Bob's bank
@@ -752,7 +781,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	assertNoError(t, err)
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	_, _, err = sys.cb().SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 
 	// The same store, decorated only from here on: the payment had to clear and
@@ -763,7 +792,7 @@ func TestASettlementStoreFailureDoesNotRouteMoneyToUnclaimedBalances(t *testing.
 	broken := NewNetwork(failingUpdateStore{Store: sys.Store(), accountErr: dropped},
 		func() time.Time { return fixedTime }, AsBank(b.ID))
 
-	if _, err := broken.PostCreditorLeg(ctx, pay.ID); err == nil {
+	if _, err := broken.SettleAtBank(ctx, pay.ID); err == nil {
 		t.Error("a creditor leg over a store that could not read the payee's account succeeded; " +
 			"a read that cannot answer is not permission to put the money somewhere else")
 	}
@@ -822,10 +851,10 @@ func TestReturningAPaymentThatSettledIntoUnclaimedBalancesReleasesTheLiability(t
 
 	_, err = sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	_, statements, err := sys.cb().SettleCycle(ctx, cyc.ID)
+	_, statements, err := sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
-	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).SettleAtBank(ctx, pay.ID)
 	assertNoError(t, err)
 
 	// Where the money is before the return, and it is not with Bob.
@@ -1125,7 +1154,7 @@ func TestSettleCycleIsAtomic(t *testing.T) {
 
 	before := reserveBalances(t, ctx, net)
 
-	_, _, err := net.cb().SettleCycle(ctx, cycleID)
+	_, _, err := net.settleCycle(ctx, cycleID)
 	if err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
@@ -1181,7 +1210,7 @@ func TestSettleCycleRollsBackEveryLayer(t *testing.T) {
 	cbTxBefore, err := net.cbBook(t).ListTransactions(ctx)
 	assertNoError(t, err)
 
-	_, _, err = net.cb().SettleCycle(ctx, cycleID)
+	_, _, err = net.settleCycle(ctx, cycleID)
 	if err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
@@ -1380,19 +1409,19 @@ func TestStateMachineGuards(t *testing.T) {
 
 	t.Run("settle before close", func(t *testing.T) {
 		_, cyc := mkPayment()
-		_, _, err := sys.cb().SettleCycle(ctx, cyc)
+		_, _, err := sys.settleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
 		_, _ = sys.CloseCycle(ctx, cyc)
-		_, _, _ = sys.cb().SettleCycle(ctx, cyc)
+		_, _, _ = sys.settleCycle(ctx, cyc)
 	})
 
 	t.Run("double settle", func(t *testing.T) {
 		_, cyc := mkPayment()
 		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, _, err = sys.cb().SettleCycle(ctx, cyc)
+		_, _, err = sys.settleCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, _, err = sys.cb().SettleCycle(ctx, cyc)
+		_, _, err = sys.settleCycle(ctx, cyc)
 		assertError(t, err, ErrCycleNotClosed)
 	})
 
@@ -1401,14 +1430,14 @@ func TestStateMachineGuards(t *testing.T) {
 		_, err := returnWholePayment(ctx, sys, p.ID, "too early")
 		assertError(t, err, ErrInvalidStateTransition)
 		_, _ = sys.CloseCycle(ctx, cyc)
-		_, _, _ = sys.cb().SettleCycle(ctx, cyc)
+		_, _, _ = sys.settleCycle(ctx, cyc)
 	})
 
 	t.Run("reject after settle", func(t *testing.T) {
 		p, cyc := mkPayment()
 		_, err := sys.CloseCycle(ctx, cyc)
 		assertNoError(t, err)
-		_, _, err = sys.cb().SettleCycle(ctx, cyc)
+		_, _, err = sys.settleCycle(ctx, cyc)
 		assertNoError(t, err)
 		_, err = reject(ctx, sys, p.ID, iso20022.StatusReasonNotSpecifiedAgentGenerated, "too late")
 		assertError(t, err, ErrInvalidStateTransition)
@@ -2306,7 +2335,7 @@ func TestSettleCycleFailsWhenParticipantLacksTheAsset(t *testing.T) {
 		return tx.PutSettlementMember(ctx, member)
 	}))
 
-	_, _, err = sys.cb().SettleCycle(ctx, cyc.ID)
+	_, _, err = sys.settleCycle(ctx, cyc.ID)
 	assertError(t, err, ErrParticipantAssetNotFound)
 
 	// And nothing was posted: the batch fails whole, exactly as it does for a
@@ -2643,12 +2672,12 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 
 	// The cut-off itself is untouched by this: the settlement agent nets reserves
 	// and never reads a payee's account.
-	_, statements, err := sys.cb().SettleCycle(ctx, cyc.ID)
+	_, statements, err := sys.settleCycle(ctx, cyc.ID)
 	assertNoError(t, err)
 	bookTheAdvices(t, sys, statements)
 
 	// The refusal arrives at the payee's bank, when it comes to pay.
-	_, err = sys.bank(b.BIC).PostCreditorLeg(ctx, pay.ID)
+	_, err = sys.bank(b.BIC).SettleAtBank(ctx, pay.ID)
 	assertError(t, err, ledger.ErrUnbalancedAsset)
 
 	// The one payment fails, not the batch: the cycle settled, and this payment
@@ -3517,7 +3546,7 @@ func TestTheClearingHouseWillNotClearForANonMember(t *testing.T) {
 			// and neither can be — the roster is a third institution's row.
 			p, err := sys.SubmitPayment(ctx, req)
 			assertNoError(t, err)
-			assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID))
+			assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 			_, err = sys.AcceptAtCSM(ctx, p.ID)
 			if !errors.Is(err, ErrBankNotAdmitted) {
@@ -3623,7 +3652,7 @@ func TestTheClearingHouseWillNotClearInAnAssetAMemberWasNotAdmittedIn(t *testing
 		CreditorDetails: PartyDetails{Agent: half.BIC, Name: "Nora"},
 		DebtorDetails:   PartyDetails{Agent: payer.BIC}})
 	assertNoError(t, err)
-	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID))
+	assertNoError(t, sys.bank(receiverOf(sys, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 	_, err = sys.AcceptAtCSM(ctx, p.ID)
 	if !errors.Is(err, ErrBankNotAdmitted) {
@@ -3677,7 +3706,7 @@ func TestSubmitDoesNotCheckTheCreditorAccount(t *testing.T) {
 	// would be a claim no test could contradict — a creditorSideTx that
 	// tolerated a missing account passed the whole suite before this line
 	// existed.
-	if err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID); !errors.Is(err, ErrAccountNotInParticipant) {
+	if err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID, relayedFrom(p)); !errors.Is(err, ErrAccountNotInParticipant) {
 		t.Fatalf("AcceptInbound on an account the creditor's bank does not hold = %v, want ErrAccountNotInParticipant", err)
 	}
 }
@@ -3925,7 +3954,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 		if p.Creditor.Identifier != (deposit.Identifier{}) {
 			t.Fatalf("the submitted payment already carries a creditor address (%+v), so AcceptInbound has nothing to change and this subtest can no longer fail; see the doc above", p.Creditor.Identifier)
 		}
-		assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID))
+		assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 		after, err := n.GetPayment(ctx, p.ID)
 		assertNoError(t, err)
@@ -3955,7 +3984,7 @@ func TestAcceptInboundDoesNotRewriteEitherPartysDetails(t *testing.T) {
 
 		p, err := n.SubmitPayment(ctx, req)
 		assertNoError(t, err)
-		assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID))
+		assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 		after, err := n.GetPayment(ctx, p.ID)
 		assertNoError(t, err)
@@ -4083,7 +4112,7 @@ func TestAcceptInboundDoesNotBlameTheSenderForAStoreFailure(t *testing.T) {
 					accountErr:     tc.accountErr,
 				}, func() time.Time { return fixedTime }, AsBank(ParticipantID(receiverOf(n, p))))
 
-				err = broken.AcceptInbound(ctx, p.ID)
+				err = broken.AcceptInbound(ctx, p.ID, relayedFrom(p))
 				if !errors.Is(err, dropped) {
 					t.Fatalf("AcceptInbound over a broken store = %v, want the store's own error", err)
 				}
@@ -4122,7 +4151,7 @@ func TestAcceptInboundRefusesAPaymentThatIsNoLongerInitiated(t *testing.T) {
 	// p is the copy submission returned: Initiated, with a debtor leg that has
 	// since been reversed. Exactly what a bank's handler would still be
 	// holding.
-	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID); !errors.Is(err, ErrInvalidStateTransition) {
+	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)); !errors.Is(err, ErrInvalidStateTransition) {
 		t.Fatalf("AcceptInbound on a rejected payment = %v, want ErrInvalidStateTransition", err)
 	}
 
@@ -4135,7 +4164,7 @@ func TestAcceptInboundRefusesAClosedCreditorAccount(t *testing.T) {
 	n, p := networkWithASubmittedPayment(t)
 	closeCreditorAccount(t, n, p)
 
-	err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID)
+	err := n.bank(receiverOf(n, p)).AcceptInbound(context.Background(), p.ID, relayedFrom(p))
 	if !errors.Is(err, deposit.ErrAccountClosed) {
 		t.Fatalf("AcceptInbound = %v, want the closed-account error", err)
 	}
@@ -4165,7 +4194,7 @@ func TestMandateIsCheckedAtSubmissionAndFundsOnReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitPayment refused for lack of funds it cannot see: %v", err)
 	}
-	if err := n2.bank(receiverOf(n2, p)).AcceptInbound(context.Background(), p.ID); !errors.Is(err, deposit.ErrInsufficientAvailable) {
+	if err := n2.bank(receiverOf(n2, p)).AcceptInbound(context.Background(), p.ID, relayedFrom(p)); !errors.Is(err, deposit.ErrInsufficientAvailable) {
 		t.Fatalf("AcceptInbound = %v, want insufficient funds", err)
 	}
 }
@@ -4344,7 +4373,7 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	n, req := networkWithAMandate(t)
 	p, err := n.SubmitPayment(ctx, req)
 	assertNoError(t, err)
-	assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID))
+	assertNoError(t, n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)))
 
 	answered, err := n.GetPayment(ctx, p.ID)
 	assertNoError(t, err)
@@ -4352,7 +4381,7 @@ func TestAcceptInboundIgnoresARedeliveredCollection(t *testing.T) {
 	assertNoError(t, err)
 	balance := customerBalance(t, bank, p.Debtor.Account)
 
-	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID); err != nil {
+	if err := n.bank(receiverOf(n, p)).AcceptInbound(ctx, p.ID, relayedFrom(p)); err != nil {
 		t.Fatalf("redelivered collection = %v, want a no-op — the mesh would answer MS03 for a collection this bank accepted", err)
 	}
 	assertEqual(t, "payer's balance after the redelivery", customerBalance(t, bank, p.Debtor.Account), balance)
@@ -5121,6 +5150,35 @@ func TestACompletedReturnCannotBeUnwound(t *testing.T) {
 // payer's on a pull. It reads the agents, because a PartyRef stopped naming a
 // bank at Task 18 — see PartyRef — and it returns a BIC, which is what
 // testSystem.bank now takes.
+// relayedFrom is the instruction the other two institutions would have been sent
+// about a payment this fixture has just submitted.
+//
+// It exists because AcceptInboundTx and RecordRelayedTx take a REQUEST since
+// Task 18d: each institution writes its own row from the message, so an id alone
+// says nothing to an institution that has never seen the payment. In the mesh
+// this is CreditTransferRequest or DirectDebitRequest reading a real pacs.008;
+// here it is the payment turned back into what the message would have said,
+// which is the same set of values by a shorter route.
+//
+// The account ids go through unchanged, and that is the fixture being a fixture.
+// A real receiving bank resolves its own side from the ADDRESS and never learns
+// the other's internal key; this process holds every register, and the mesh's
+// own suites are where that distinction is measured.
+func relayedFrom(p Payment) InitiatePaymentRequest {
+	return InitiatePaymentRequest{
+		Scheme:          p.Scheme,
+		Debtor:          p.Debtor,
+		Creditor:        p.Creditor,
+		Amount:          p.Amount,
+		MandateID:       p.MandateID,
+		EndToEndID:      p.EndToEndID,
+		Description:     p.Description,
+		Metadata:        p.Metadata,
+		DebtorDetails:   p.DebtorDetails,
+		CreditorDetails: p.CreditorDetails,
+	}
+}
+
 func receiverOf(n *testSystem, p Payment) iso20022.BIC {
 	scheme, ok := n.Scheme(p.Scheme)
 	if ok && scheme.Direction() == Pull {

@@ -1010,6 +1010,26 @@ func (t *tx) GetSettlement(ctx context.Context, id payment.SettlementID) (paymen
 	return out[0], nil
 }
 
+// GetSettlementByCycle answers "have I already discharged this cut-off". There
+// is no unique index behind it — one cycle settles once because SettleCycleTx
+// refuses a second, and adding one would be a second answer to that question by
+// a layer that cannot say why. It orders so that a database which somehow held
+// two would answer with the FIRST rather than with whichever the planner
+// returned, because the first is the one whose posting stands.
+func (t *tx) GetSettlementByCycle(ctx context.Context, id payment.CycleID) (payment.Settlement, error) {
+	if err := t.inShape("settlements"); err != nil {
+		return payment.Settlement{}, err
+	}
+	out, err := t.querySettlements(ctx, "WHERE s.cycle_id = ?", "s.seq", string(id))
+	if err != nil {
+		return payment.Settlement{}, err
+	}
+	if len(out) == 0 {
+		return payment.Settlement{}, payment.ErrSettlementNotFound
+	}
+	return out[0], nil
+}
+
 func (t *tx) ListSettlements(ctx context.Context) ([]payment.Settlement, error) {
 	if err := t.inShape("settlements"); err != nil {
 		return nil, err

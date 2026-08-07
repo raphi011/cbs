@@ -1248,7 +1248,7 @@ func (s *Network) ReturnMessage(p Payment, reason iso20022.ReturnReason, text st
 // neither bank wrote down.
 //
 // It returns a REQUEST and not a Payment: nothing here is accepted, deduplicated
-// or posted. That is SubmitPaymentTx's job, and the separation is what lets the
+// or posted. That is AcceptInboundTx's job, and the separation is what lets the
 // mesh translate a message without a write and reject it before one.
 func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs008) (InitiatePaymentRequest, error) {
 	// Before the message is read at all, and the placement is what makes the
@@ -1261,40 +1261,60 @@ func (s *Network) CreditTransferRequest(ctx context.Context, doc *iso20022.Pacs0
 	if _, err := s.self(); err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	body := doc.FIToFICstmrCdtTrf
-	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	scheme, amount, err := s.schemeSettling(Push, tx.IntrBkSttlmAmt)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	req, _, err := s.creditTransferIn(doc)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
 	// The creditor is this bank's own customer on a push; the debtor is the
-	// sending bank's and is recorded, not resolved.
-	creditor, err := s.localPartyIn(ctx, cdtrID)
-	if err != nil {
+	// sending bank's and is recorded, not resolved. creditTransferIn left the
+	// creditor as the ADDRESS the message quoted, which is exactly what this
+	// resolution consumes.
+	if req.Creditor, err = s.localPartyIn(ctx, req.Creditor.Identifier); err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	debtor := PartyRef{Identifier: dbtrID}
+	return req, nil
+}
+
+// creditTransferIn is everything a pacs.008 SAYS, resolving nobody.
+//
+// It is the half of CreditTransferRequest that needs no register, split out
+// because the clearing house has none and has to record the payment anyway. Both
+// parties come back as the address the message quoted and no account id; the
+// receiving bank's own resolution then replaces its own side, and the clearing
+// house's copy keeps both as they arrived. See RecordRelayedCreditTransfer.
+//
+// The PaymentID comes back beside the request because it is the one thing on the
+// message that is not part of an instruction: it was minted by the SUBMITTING
+// bank and is what every institution keys its own row by. Nothing here allocates
+// one — see SubmitPaymentTx, which is the only place in the system that does.
+func (s *Network) creditTransferIn(doc *iso20022.Pacs008) (InitiatePaymentRequest, PaymentID, error) {
+	body := doc.FIToFICstmrCdtTrf
+	tx, err := onlyTransaction("CdtTrfTxInf", body.CdtTrfTxInf, body.GrpHdr.NbOfTxs)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	scheme, amount, err := s.schemeSettling(Push, tx.IntrBkSttlmAmt)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
 	return InitiatePaymentRequest{
 		Scheme:          scheme,
-		Debtor:          debtor,
-		Creditor:        creditor,
+		Debtor:          PartyRef{Identifier: dbtrID},
+		Creditor:        PartyRef{Identifier: cdtrID},
 		Amount:          amount,
 		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
 		Description:     remittanceIn(tx.RmtInf),
 		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
 		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
-	}, nil
+	}, PaymentID(tx.PmtId.TxId), nil
 }
 
 // DirectDebitRequest turns a received pacs.003 into a request this system can
@@ -1334,45 +1354,55 @@ func (s *Network) DirectDebitRequest(ctx context.Context, doc *iso20022.Pacs003)
 	if _, err := s.self(); err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	body := doc.FIToFICstmrDrctDbt
-	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	scheme, amount, err := s.schemeSettling(Pull, tx.IntrBkSttlmAmt)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	mandate := tx.DrctDbtTx.MndtRltdInf.MndtId
-	if mandate == "" {
-		return InitiatePaymentRequest{}, fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
-	}
-	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
-	if err != nil {
-		return InitiatePaymentRequest{}, err
-	}
-	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	req, _, err := s.directDebitIn(doc)
 	if err != nil {
 		return InitiatePaymentRequest{}, err
 	}
 	// The debtor is this bank's own customer on a pull; the creditor is the
-	// sending bank's and is recorded, not resolved.
-	debtor, err := s.localPartyIn(ctx, dbtrID)
-	if err != nil {
+	// sending bank's and is recorded, not resolved. See creditTransferIn's
+	// mirror note on what directDebitIn left behind for this line to consume.
+	if req.Debtor, err = s.localPartyIn(ctx, req.Debtor.Identifier); err != nil {
 		return InitiatePaymentRequest{}, err
 	}
-	creditor := PartyRef{Identifier: cdtrID}
+	return req, nil
+}
+
+// directDebitIn is everything a pacs.003 SAYS, resolving nobody. It is
+// creditTransferIn's mirror; see that function for why the split exists and what
+// the PaymentID beside the request is.
+func (s *Network) directDebitIn(doc *iso20022.Pacs003) (InitiatePaymentRequest, PaymentID, error) {
+	body := doc.FIToFICstmrDrctDbt
+	tx, err := onlyTransaction("DrctDbtTxInf", body.DrctDbtTxInf, body.GrpHdr.NbOfTxs)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	scheme, amount, err := s.schemeSettling(Pull, tx.IntrBkSttlmAmt)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	mandate := tx.DrctDbtTx.MndtRltdInf.MndtId
+	if mandate == "" {
+		return InitiatePaymentRequest{}, "", fmt.Errorf("%w: DrctDbtTx/MndtRltdInf/MndtId", ErrMandateRequired)
+	}
+	dbtrID, err := identifierIn("DbtrAcct", tx.DbtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
+	cdtrID, err := identifierIn("CdtrAcct", tx.CdtrAcct)
+	if err != nil {
+		return InitiatePaymentRequest{}, "", err
+	}
 	return InitiatePaymentRequest{
 		Scheme:          scheme,
-		Debtor:          debtor,
-		Creditor:        creditor,
+		Debtor:          PartyRef{Identifier: dbtrID},
+		Creditor:        PartyRef{Identifier: cdtrID},
 		Amount:          amount,
 		MandateID:       MandateID(mandate),
 		EndToEndID:      endToEndIn(tx.PmtId.EndToEndId),
 		Description:     remittanceIn(tx.RmtInf),
 		DebtorDetails:   PartyDetails{Agent: agentIn(tx.DbtrAgt), Name: nameIn(tx.Dbtr)},
 		CreditorDetails: PartyDetails{Agent: agentIn(tx.CdtrAgt), Name: nameIn(tx.Cdtr)},
-	}, nil
+	}, PaymentID(tx.PmtId.TxId), nil
 }
 
 // onlyTransaction is the receiver's side of NbOfTxs, plus this system's own
@@ -1922,6 +1952,57 @@ type SettlementLeg struct {
 	Amount    ledger.Amount
 	Asset     ledger.AssetCode
 	Reference string
+}
+
+// SettlementLegsOf turns a closed cycle's net positions into the legs a
+// settlement instruction carries.
+//
+// Every position is a claim on or an obligation to the SETTLEMENT AGENT and
+// never a bilateral one between two members — that is precisely what netting
+// destroys — so a net payer's leg runs from that bank TO the central bank and a
+// net receiver's from the central bank to it. The reference on every leg is the
+// CYCLE, which is what the central bank reads to know what it is being asked to
+// discharge.
+//
+// Members are visited in sorted BIC order rather than map order. The legs are
+// the message's transactions AND, since Task 18d, the entries of the settlement
+// agent's own posting, so map iteration would produce a different byte sequence
+// on the wire and a different stored transaction on every run.
+//
+// A position of zero is left out. It nets to nothing, and a leg for it would be
+// an IntrBkSttlmAmt of zero, which the codec refuses (ActiveCurrencyAndAmount
+// requires a positive amount) and which would say a bank was instructed to move
+// nothing.
+//
+// # It lives here because two callers have to agree
+//
+// It was mesh's csm.settlementLegs and had one. The settlement agent works from
+// the LEGS now rather than from the cycle — it holds no cycles table, and
+// SettleCycleTx was reading one out of the clearing house's database — so the
+// seed, which plays every institution and sends no messages, has to produce
+// exactly what the pacs.009 would have carried. Two renderings of one intent are
+// two things that can drift, and this is the one that decides what settles.
+func SettlementLegsOf(c ClearingCycle, asset ledger.AssetCode, centralBank iso20022.BIC) []SettlementLeg {
+	legs := make([]SettlementLeg, 0, len(c.NetPositions))
+	// A cycle's positions are keyed by BIC and a leg is addressed by BIC, so there
+	// is nothing between the two. There was: the positions were keyed by
+	// ParticipantID, and turning one into the other meant reading the named bank's
+	// own row through the clearing house's roster — a crossing the spec named
+	// twice, because the same turn happened again inside SettleCycleTx. Task 18
+	// made a bank's id its BIC and the positions were re-keyed with it; see
+	// ClearingCycle.NetPositions.
+	for _, bic := range slices.Sorted(maps.Keys(c.NetPositions)) {
+		net := c.NetPositions[bic]
+		if net == 0 {
+			continue
+		}
+		leg := SettlementLeg{From: bic, To: centralBank, Amount: -net, Asset: asset, Reference: string(c.ID)}
+		if net > 0 {
+			leg.From, leg.To, leg.Amount = centralBank, bic, net
+		}
+		legs = append(legs, leg)
+	}
+	return legs
 }
 
 // SettlementMessage renders a closed cycle's net positions as the pacs.009 that

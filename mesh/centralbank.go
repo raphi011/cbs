@@ -182,9 +182,13 @@ func (cb *centralBank) receiveSettlement(ctx context.Context, from iso20022.BIC,
 		return cb.answer(from, orig, notProvided, notProvided, iso20022.TransactionStatusRejected, err)
 	}
 
-	_, statements, err := cb.ops.SettleCycle(ctx, id)
+	// The legs travel on, because they ARE the instruction: this institution
+	// settles what it was asked to settle rather than re-deriving a batch out of
+	// the clearing house's cycle row, which it holds no table for. See
+	// payment.SettleCycleTx.
+	_, statements, err := cb.ops.SettleCycle(ctx, id, legs)
 	if err != nil {
-		if errors.Is(err, payment.ErrCycleNotClosed) {
+		if errors.Is(err, payment.ErrCycleAlreadySettled) {
 			return fmt.Errorf("mesh: %s was told to settle %s again: %w", cb.bic, id, err)
 		}
 		return cb.answer(from, orig, string(id), string(id), iso20022.TransactionStatusRejected, err)

@@ -269,7 +269,7 @@ func TestARefusedSettlementLeavesNoAuditTrail(t *testing.T) {
 		t.Fatal("fixture produced no audit events")
 	}
 
-	if _, _, err := sys.cb().SettleCycle(ctx, cycleID); err == nil {
+	if _, _, err := sys.settleCycle(ctx, cycleID); err == nil {
 		t.Fatal("SettleCycle succeeded, want failure on the underfunded member")
 	}
 
