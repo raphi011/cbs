@@ -1510,9 +1510,14 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 		t.Errorf("the accepted payment records the debtor address %q, want the account's stored form",
 			accepted.Debtor.Identifier.Value)
 	}
-	if accepted.Creditor.Identifier.Value != "IT60 X054 2811 1010 0000 0123 456" {
+	// The creditor's, on VERDE's copy: normalizing the payee's address is the
+	// payee's bank's own act on its own register, made when the instruction
+	// arrives, and nothing carries it back upstream. See
+	// TestInitiateBackFillsTheAddressOnBothLegs.
+	atVerde := mustGetPaymentAt(t, ctx, n.bank(verde.BIC), accepted.ID)
+	if atVerde.Creditor.Identifier.Value != "IT60 X054 2811 1010 0000 0123 456" {
 		t.Errorf("the accepted payment records the creditor address %q, want the account's stored form",
-			accepted.Creditor.Identifier.Value)
+			atVerde.Creditor.Identifier.Value)
 	}
 }
 

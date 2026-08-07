@@ -5306,6 +5306,15 @@ func returnTheWholeWay(t *testing.T, sys *testSystem, p Payment, reason string) 
 
 	out, err := sys.bank(other).PostReturnLeg(ctx, p.ID, reason)
 	assertNoError(t, err)
+	// The two institutions that learn it only by being told: the RETURNER, whose
+	// own leg was the first and therefore not the one that closes the payment,
+	// and the clearing house, which carried the pacs.004 and posts nothing. In
+	// the mesh both are sent the settlement agent's ACSC. Same last two acts as
+	// returnWholePayment, for the same reason.
+	_, err = sys.bank(returner).CompleteReturn(ctx, p.ID)
+	assertNoError(t, err)
+	_, err = sys.CompleteReturn(ctx, p.ID)
+	assertNoError(t, err)
 	return out
 }
 
@@ -5502,10 +5511,16 @@ func TestARejectedReturnUnwindsTheReturningBanksOwnLeg(t *testing.T) {
 	assertError(t, sys.bank(b.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: told again"), ledger.ErrTransactionAlreadyReversed)
 	assertEqual(t, "bob after the second unwind", customerBalance(t, b, bob), 30000)
 
-	// A bank that is neither side of the payment has no leg to unwind.
+	// A bank that is neither side of the payment has no leg to unwind, and since
+	// Task 18d it does not get as far as saying so: it holds no row for this
+	// payment, so its own store refuses before ErrNotAPartyToThisReturn can be
+	// reached. ErrNotAPartyToThisReturn is not dead — it is what a bank answers
+	// about a payment it DOES hold and is not a party to, which is reachable
+	// only through a forged instruction — and the store is the stronger guard,
+	// because it cannot be got wrong by a comparison.
 	c, err := storetest.Admit(ctx, sys.nets, "Bank C", "BANKFRPPXXX", euroOnly)
 	assertNoError(t, err)
-	assertError(t, sys.bank(c.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: not mine"), ErrNotAPartyToThisReturn)
+	assertError(t, sys.bank(c.BIC).ReverseReturnLeg(ctx, pay.ID, "AM04: not mine"), ErrPaymentNotFound)
 }
 
 // TestACompletedReturnCannotBeUnwound is the guard on the unwind, and the case
