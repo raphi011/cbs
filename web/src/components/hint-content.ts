@@ -519,6 +519,8 @@ Initiated ──▶ Accepted ──▶ Cleared ──▶ Settled
       Rejected
 \`\`\`
 
+**It is a state machine per COPY, not per payment.** A payment is [[store-split|three rows in three databases]] — the payer's bank's, the payee's bank's and the clearing house's — and no one of them can read another's. The three legitimately disagree about the status, because each holds what *it* was told and the clearing house holds what it decided. The \`ACCP\` goes only to the bank waiting for an answer to its instruction, so the bank that *answered* it is never told and its copy reads *Initiated* until settlement: \`Initiated → Settled\` is a legal edge at a bank and an impossible one at the clearing house.
+
 Every arrow is drawn by a **named institution**, and no two adjacent ones by the same:
 
 - **Initiated** is a state a payment sits in, not a moment. The submitting bank has run its own half and sent the instruction; nobody else has looked at it yet. On a push that half already posted the [[debtor-leg]] — the payer's money is in [[clearing-suspense]], customer's side value-dated to the debit and suspense side to settlement — while the payment still reads *Initiated*. On a pull it posted nothing, and the **payer's** bank posts the debtor leg when the collection reaches it, still leaving the payment *Initiated*.
@@ -527,6 +529,8 @@ Every arrow is drawn by a **named institution**, and no two adjacent ones by the
 - **Cleared → Settled:** three institutions, and the arrow is the *third* one's. The clearing house asks — closing a cycle sends a \`pacs.009\` — and the **central bank** discharges the net positions in its own book, which is where the money becomes [[settlement-finality|final]]. The payment row moves to Settled later still, when the **payee's own bank** posts the [[creditor-leg]] on being told, per payment, that the cycle settled. The gap between those two moments is the [[unreconciled-position|unreconciled position]]. A net payer who cannot cover is refused before anything posts at all: the cycle stays Closed with no settlement against it, and every payment in it stays Cleared.
 - **Rejected:** reachable from *Initiated* as well as *Accepted*, and it is **two halves in two units of work** — the clearing house marks the payment Rejected, and the payer's own bank then [[reversal|reverses]] the debtor leg. In between, the rejection has half-happened: the payment reads Rejected while the customer's money is still in suspense. A rejected *collection* can be told to two banks, because the bank waiting for the answer and the bank holding the money can be different institutions — but only when the payer's bank has already **posted the debtor leg**. When it refused the collection itself for want of funds (\`AM04\`), it posted nothing, there is nothing to give back, and there is one message again.
 - **Returned:** after settlement; an R-transaction unwinds the flow (available on [[allows-return|return-enabled]] schemes only), and it is **three acts at three institutions**. It is sent by the bank that *received* the original instruction, and that bank posts the leg it owns **before** it sends — which is the only reason it can still refuse. The central bank then reverses the reserves and is final. The other bank posts the leg it owns **after** that, on the \`pacs.004\` the clearing house releases to it, and cannot refuse: there is nothing left to refuse. The status turns Returned when the second customer leg lands.
+
+A member bank advances its own copy through exactly three acts of its own: recording that the payment reached a cycle (which posts nothing — no money moves at an acceptance, but a record that jumped from *instructed* to *settled* could not answer the question a customer asks in between), recording a rejection **and** reversing the debtor leg in one unit of work, and recording a settlement while releasing the payee's money if it holds the payee.
 
 See [[clearing-vs-settlement]] for why clearing and settlement are distinct phases, and [[settlement-delay]] for how the value date is set.`,
   },
@@ -714,6 +718,27 @@ The interval between the commit and a member's booking is the [[unreconciled-pos
 
 **A [[allows-return|return]] is the same shape, one payment wide.** None of the above is about cut-offs in particular — it is about an institution being final and the members catching up. The central bank reverses the reserves in its own book and is final there, states both members' accounts in a \`camt.053\`, and each bank books its own reserve mirror afterwards. What differs is only the reference the statement carries: a cycle id at a cut-off, a payment id here.`,
   },
+  "store-split": {
+    title: "One database per institution",
+    body: `A deployment of N banks has **N+2 databases**: one per member bank, one for the clearing house, one for the settlement agent. No statement spans two of them. A bank reading another bank's rows finds nothing, and a method reaching for a table its institution's schema does not create is refused by name.
+
+That is not deployment trivia — it decides what every layer above can *say*.
+
+**A payment is three rows, and they legitimately disagree.**
+
+\`\`\`
+                payer's bank      payee's bank      clearing house
+  legs          the debtor leg    the creditor leg  none — it keeps no book
+  cycle         none — a bank has no cycles         the cycle it cleared it in
+  status        what it was TOLD  what it was TOLD  what it DECIDED
+\`\`\`
+
+The \`ACCP\` announcing an acceptance goes to the bank waiting for an answer to its instruction and to nobody else, so the bank that *answered* the instruction is never told: its copy reads \`Initiated\` until settlement. \`Initiated → Settled\` is a legal edge at a bank and an impossible one at the clearing house. Neither bank is wrong — they were told different things because they asked different things.
+
+**There is no combined [[audit-trail|audit log]] and no order between two of them.** Each institution's \`seq\` counts its own acts, so \`seq 7\` names as many events as there are institutions, and there is no global clock. The honest cross-institution order is *none* — which is exactly the problem a real auditor holding four banks' logs has, and it is answered the same way: with the **messages**, which carry causality that counters do not.
+
+**What it costs is a reconciliation this system did not previously need.** While one database held every book, "a bank's [[reserve-account|reserve]] equals the central bank's liability to it" was true by construction. Now it is a claim about two databases that can disagree, and checking it means holding both at once — which is the one thing no institution in the system may do. The instrument is a **test-level harness** for that reason: it opens all N+2 databases and reports **breaks** (two books that disagree with nothing able to reconcile them) apart from [[unreconciled-position|unreconciled positions]] (a suspense still holding money that something outstanding accounts for). The second is modelled on purpose; only the first is a defect.`,
+  },
   "unreconciled-position": {
     title: "Unreconciled position",
     body: `The **unreconciled position** is the interval between the central bank committing a settlement and a member bank booking its own half of it. Settlement is [[settlement-finality|final]] at the commit; the member is only *told* then, and books afterwards in a [[unit-of-work|unit of work]] of its own.
@@ -819,7 +844,9 @@ A payment records the address it was reached by whether or not the caller quoted
     title: "Counterparty details",
     body: `A payment names two parties, and the submitting bank treats them differently. Its **own** side is overwritten unconditionally, in \`SubmitPaymentTx\` — its own BIC, and the account holder's name straight off its own deposit register — because it is the authority on its own customer; nothing is compared, the value the request quoted is simply replaced. The **counterparty's NAME** is not overwritten: it is asserted on the instruction (\`payment.PartyDetails{Agent, Name}\`, stored on the payment as \`DebtorDetails\`/\`CreditorDetails\`) and carried through as given.
 
-**The counterparty's BANK is neither asserted nor compared — it is derived.** \`SubmitPaymentTx\` reads the bank row of the participant the payment already names and takes the BIC from there, discarding whatever the caller supplied. The bank's own row and not the clearing house's [[routing-roster|routing roster]] — that table is keyed by the BIC being derived, so it could not answer the question, and what it decides instead is whether the payment is carried at all. That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who could type it could choose which bank got paid. Measured before it was closed — a push whose creditor agent named the payer's own bank came back to its sender, and a pull whose debtor agent named the collector had the collecting bank post the debit in the payer's bank's book (\`mesh.TestAWrongCounterpartyAgentDoesNotMisroute\`). Real SEPA works the same way: IBAN-only since 2016, the payer gives an address and a name and the originating bank derives the routing. A bank row is network-scoped — banks belong to no single bank — so deriving it crosses nothing. **Routing needs the bank; the payer supplies the name.**
+**The counterparty's BANK is asserted too, and this hint said the opposite for two tasks.** It read: the bank is neither asserted nor compared, it is *derived* — \`SubmitPaymentTx\` takes the BIC off the bank row of the participant the payment names and discards whatever the caller supplied. The hazard that argued for it is real and unchanged. That element is not a description, it is an **address**: it goes out as \`CdtrAgt\`/\`DbtrAgt\` and the clearing house relays on it without reading anything, so a payer who can type it can choose which bank gets paid. It was measured doing exactly that — a push whose creditor agent named the payer's own bank came back to its sender, and a pull whose debtor agent named the collector had the collecting bank post the debit in the payer's bank's book (\`mesh.TestAWrongCounterpartyAgentDoesNotMisroute\`).
+
+**What expired is the derivation, not the hazard.** The row the BIC was read off is the *counterparty's own*, and since the [[store-split|store split]] a bank holds only its own — there is no row left to derive it from, so \`SubmitPaymentTx\` refuses an instruction that names no counterparty agent (\`ErrCounterpartyAgentNotNamed\`). What makes asserting it safe is the narrowing that landed with it: a bank resolves an address in its **own register only**, so an instruction naming the wrong bank is refused \`AC01\` by the bank it named rather than quietly accepted for somebody else's customer. Real SEPA is the same shape — IBAN *and* BIC was what it was before 2016, and IBAN-only works because a directory service resolves the rest, which this network does not have. **The payer supplies the counterparty's address, its name and its bank; its own bank supplies everything about itself.**
 
 \`SubmitPaymentTx\` — the SUBMITTING bank, before either leg posts — refuses an unnamed counterparty outright (\`ErrCounterpartyNotNamed\`). The RECEIVING bank's half, \`AcceptInboundTx\`, runs no check on either field at all. For its own side — the creditor's account on a push, the debtor's on a pull — it does read that account (\`creditorSideTx\`/\`debtorSideTx\`) and could in principle compare the name it finds there against what the other bank asserted, but it does not: overwriting \`CreditorDetails\`/\`DebtorDetails\` there would desynchronise the stored payment from the message that already went out on the wire. That is a deliberate restraint, not an inability.
 
@@ -833,9 +860,11 @@ Events recorded, grouped by the layer (**scope**) that produced them:
 
 - **ledger** — ledger/subledger/account creation, transaction posting, [[reversal]]
 - **deposit** — account opened/frozen/closed, [[holds|hold]] creation, [[hold-release|hold release]], [[hold-capture|hold capture]], [[snapshot|end-of-day snapshot]]
-- **payment** — the four acts of an admission (participant added, settlement account opened, member admitted, membership recorded), [[mandate]] created/revoked, and every payment and [[clearing-vs-settlement|clearing cycle]] as it moves through the [[payment-lifecycle|lifecycle]]
+- **payment** — the four acts of an admission, one at each institution that performs it (founded and membership recorded at the joining bank, the settlement account at the central bank, the routing entry at the clearing house), [[mandate]] created/revoked at the *creditor's* bank, every payment as each institution advances its own copy, [[clearing-vs-settlement|clearing cycles]] at the clearing house and settlements at the central bank
 
 Each event is written **inside the transaction of the operation it describes**, so an operation that rolls back leaves no record claiming it happened. The log is unbounded, so the API pages it: **limit** (default 100, max 1000) and **before**, an exclusive cursor on the event's sequence number.
+
+**There is one log per institution, not one log.** Since the [[store-split|store split]] each institution keeps its own, and \`seq\` counts that institution's own acts — so \`seq 7\` names as many events as there are institutions, and a cursor taken from one console means nothing on another. A payment's history is spread across the three institutions that touched it, each recording what *it* did, and there is no order between two of them. See [[store-split]].
 
 \`\`\`
 Example audit events (oldest first, as the API returns them):
@@ -921,7 +950,7 @@ Note also that a reversal is a *new, opposite* posting ([[reversal]]), so the su
 It has to span all three layers, because the operations do. A payee's bank paying its own customer posts a [[creditor-leg]] in the ledger, moves a deposit balance, and marks the payment settled — a partial success there would credit the customer against a payment the system still calls unpaid.
 
 \`\`\`
-PostCreditorLeg:
+SettleAtBank, at the payee's own bank:
   BEGIN
     creditor leg in this bank's book          (ledger layer)
     deposit balance follows                   (deposit layer)
@@ -930,7 +959,9 @@ PostCreditorLeg:
   COMMIT   ← all of it, or none of it
 \`\`\`
 
-What a unit of work may **not** span is more than one institution. Settling a [[clearing-vs-settlement|clearing cycle]] used to be one scope holding the central bank's reserves and every member's creditor leg at once. Now it is the central bank's own scope for the reserves, plus one of that member's own for every leg a member books afterwards — joined by messages, with the interval between them a real [[unreconciled-position|unreconciled position]] rather than something a transaction can hide. A [[allows-return|return]] is the same rule applied to one payment: the returning bank's leg, the reserve reversal and the other bank's leg are three scopes at three institutions.
+What a unit of work may **not** span is more than one institution — and since the [[store-split|store split]] that is a fact about the database rather than a discipline the code keeps. A unit of work is one *database's*, and each institution has its own, so there is no transaction that could hold two.
+
+Settling a [[clearing-vs-settlement|clearing cycle]] used to be one scope holding the central bank's reserves and every member's creditor leg at once. Now it is the central bank's own scope for the reserves, plus one of that member's own for every leg a member books afterwards — joined by messages, with the interval between them a real [[unreconciled-position|unreconciled position]] rather than something a transaction can hide. A [[allows-return|return]] is the same rule applied to one payment: the returning bank's leg, the reserve reversal and the other bank's leg are three scopes at three institutions.
 
 Nesting one unit of work inside another is refused rather than allowed: the inner scope would be a *separate* transaction that commits even when the outer one rolls back. Methods come in pairs for this reason — the plain one opens a unit of work, the \`…Tx\` one joins the caller's.`,
   },
@@ -990,9 +1021,11 @@ CREATE TABLE accounts (
 );
 \`\`\`
 
-A single-column key would force globally unique numbering and destroy the [[ledger-vs-subledger|chart of accounts]] as a readable, per-bank structure. Every query is scoped the same way: a missing \`WHERE book_id = ?\` does not error, it quietly returns another bank's rows.
+A single-column key would force globally unique numbering and destroy the [[ledger-vs-subledger|chart of accounts]] as a readable, per-bank structure.
 
-The [[payment-lifecycle|payment layer]]'s own entities — participants, payments, mandates, cycles, settlements — belong to no single bank, so they live in a network-wide book and are keyed by id alone.`,
+The composite key survives even though the [[store-split|split]] has made it redundant, and that is worth knowing. A bank's database now holds exactly one book — its own — so \`book_id\` takes one value in it, and a query that forgot to scope by it could no longer return another bank's rows: there are no other bank's rows to return. It stays because a book id is a real key rather than a convention, and because dropping it from thirty tables would buy nothing.
+
+This hint used to close by saying the payment layer's own entities — participants, payments, mandates, cycles, settlements — belong to no single bank and live in a **network-wide book**, keyed by id alone. **There is no network-wide book.** Every one of those rows turned out to have exactly one owner: a bank's own record of itself and its [[mandate|mandates]] at that bank, a [[net-positions|cycle]] at the clearing house, a settlement at the central bank. Each is keyed and sequenced under its owner's book, in its owner's database, and a payment is [[store-split|three rows in three of them]].`,
   },
   asset: {
     title: "Asset (what an account is denominated in)",

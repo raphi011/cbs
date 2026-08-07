@@ -304,5 +304,33 @@ export const chapter: Chapter = {
       explanation:
         "The [[statement]] listing uses booking date; balances use [[value-date|value date]]. A transaction booked in February but value-dating in March appears in the listing but does not move the closing balance. A transaction booked in January but value-dating in February moves the opening balance but does not appear in the listing. Both effects cause the listed transactions to not 'add up' — by design, not by error.",
     },
+    {
+      kind: "truefalse",
+      id: "ch14-q21",
+      difficulty: "core",
+      concept: "audit-trail",
+      prompt:
+        "There is one audit log for the whole payment network, so an auditor can read a payment's full history — every institution's part of it — from a single ordered trail.",
+      answer: false,
+      explanation:
+        "There is **one log per institution**, so a deployment of four banks has six of them: each bank's, the clearing house's and the settlement agent's. Each records what *that* institution did, because that is the only thing it is in a position to know — see [[store-split]].\n\nA payment's history is therefore spread across the three institutions that touched it, and each of those logs opens with its own `payment.initiated`. A bank holds **two** per collection it is party to on a pull — one as the submitter, one as the receiver — and that is the shape rather than a duplicate.\n\nThis is not a limitation of the implementation. An auditor holding four banks' logs and a clearing house's has exactly this problem in the real world, which is why supervisory reconstruction works from the **messages** rather than from anybody's log.",
+    },
+    {
+      kind: "mc",
+      id: "ch14-q22",
+      difficulty: "challenge",
+      concept: "audit-trail",
+      prompt:
+        "An event in the payer's bank's log carries `seq 41`; an event in the clearing house's log carries `seq 38`. What can be concluded about the order in which the two happened?",
+      options: [
+        "The clearing house's happened first, because 38 < 41",
+        "Nothing — the two numbers count different institutions' acts and cannot be compared",
+        "The payer's bank's happened first, because a payment starts there",
+        "They happened in the same transaction, because both belong to one payment",
+      ],
+      answer: 1,
+      explanation:
+        "`seq` is a total order over **one institution's own database** and nothing more, so `41` means \"the forty-first thing this bank did\" and `38` means \"the thirty-eighth thing the clearing house did\". Comparing them produces an order that nothing in the system has. There is no global clock either — see [[store-split]].\n\nIt used to be a store-global counter, when every institution shared one database, and merging the logs was a *sort*. Sorted the same way now, a combined trail comes out interleaved by accident of how busy each institution has been, which is worse than having no order at all: it looks like an answer.\n\nWhat *does* carry causality is the **messages**. A `pacs.002` quotes the `pacs.008` it answers and a `camt.053` quotes the cut-off it discharges, so the sequence can be reconstructed from what was said between the institutions rather than from what each counted privately. Inside one institution `seq` is still a total order, and still the cursor every audit endpoint pages on.",
+    },
   ],
 };

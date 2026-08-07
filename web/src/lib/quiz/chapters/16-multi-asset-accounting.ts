@@ -323,5 +323,23 @@ export const chapter: Chapter = {
         "A [[settlement-account|settlement account]] is `Reserve: <Bank> (<asset>)` — a [[account-type-liability|liability]] of the **central bank's**, in the **central bank's own book**, numbered in the central bank's chart of accounts. The bank does not hold it; what it holds is the number, which it learns from the acknowledgement and quotes for the rest of its life at that agent. **One per [[asset]]**, for the reason every [[participant-assets|internal account]] is per asset: a reserve in euro says nothing about a reserve in dollars, and the two must never be added up. That is also why a two-asset bank applies *twice* — the account-opening request carries a single currency — and is answered twice. The answer naming the **clearing house** confuses the two institutions: it holds no account for any member in any asset, and its [[routing-roster|routing entry]] carries no account identifier at all.",
       explore: { href: "/central-bank", label: "Central-bank reserves" },
     },
+    {
+      kind: "mc",
+      id: "ch16-q22",
+      difficulty: "challenge",
+      concept: "relational-mapping",
+      prompt:
+        "A cut-off is discharged and the settlement agent records what it did. Which asset the batch settled in is stored as a column on that row rather than derived. Given that a scheme declares its asset and a cycle names its scheme, why is the derivation not preferred?",
+      options: [
+        "Because a batch may contain payments in several assets, so no single derived value would be correct",
+        "Because the derivation reads settlement → cycle → scheme, and the cycle is the clearing house's row in a database the settlement agent has none of",
+        "Because a scheme's asset can be changed after the fact, so a stored copy preserves what it was on the day",
+        "Because joining three tables on every read of a settlement is too slow for an operator console",
+      ],
+      answer: 1,
+      explanation:
+        "The derivation crossed an institutional boundary. A settlement is the **central bank's** row; a cycle and its [[scheme-asset|scheme]] are the **clearing house's**, and since the [[store-split|store split]] those are different databases — so the chain answers 'no such table' rather than an asset.\n\nThe first option gets the accounting exactly backwards, and it is why the column is safe. An instruction whose legs are not all in **one** asset is refused before anything is posted, precisely because netting a euro position against a dollar one does not produce a smaller number, it produces a [[per-asset-balance|meaningless]] one. So the batch this row records has exactly one asset, and the agent has always known which without asking anybody.\n\nThat makes it an *absent derivation* rather than denormalisation, and the distinction matters: nothing can drift, because there is no second copy anywhere for it to drift from. The schema says so inside the statement, which is the only place a comment about a column's reason survives a dump.",
+      explore: { href: "/clearing-house/settlements", label: "Settlements" },
+    },
   ],
 };

@@ -299,7 +299,7 @@ export const chapter: Chapter = {
       ],
       answers: [1, 3, 4],
       explanation:
-        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, and that is where [[settlement-finality|finality]] is achieved — the payment can no longer be unwound. The [[creditor-leg]] delivers funds to the payee, and it is posted by the **payee's own bank**, in its own unit of work, once the clearing house has told it that this payment settled. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.",
+        "At the [[payment-lifecycle|settlement]] step: the central bank moves reserves, and that is where [[settlement-finality|finality]] is achieved — the payment can no longer be unwound. The [[creditor-leg]] delivers funds to the payee, and it is posted by the **payee's own bank**, in its own unit of work, once the clearing house has told it that this payment settled. The payer's debit (option A) is the initiation step; net-position computation (option C) is the clearing step.\n\n**Notice how many different institutions' books that list touches, and that no two of them are in the same database.** A payment is [[store-split|three rows]] — the payer's bank's, the payee's bank's and the clearing house's — and the events above are each written by whichever institution performed them, on its own copy. That is why the payer's debit and the payee's credit cannot be one transaction, and why the interval between the reserves moving and the payee being credited is a real [[unreconciled-position|unreconciled position]] rather than something a database could hide.",
       explore: { label: "View settlements", href: "/clearing-house/settlements" },
     },
     {
