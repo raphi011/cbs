@@ -80,10 +80,9 @@ func networkWithOnePayment(t *testing.T) (*testSystem, Payment) {
 		Amount:      250000,
 		EndToEndID:  "e2e-1",
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it —
-		// the NAME and, since Task 18a, the BIC. Nothing derives the second any
-		// more: the row it was derived from is the counterparty's own, and a bank
-		// holds only its own. See payment.SubmitPaymentTx.
+		// Push: the creditor is the counterparty, so the request must name it — the
+		// NAME and the BIC. Nothing derives the second: the row it would be derived
+		// from is the counterparty's own. See payment.SubmitPaymentTx.
 		CreditorDetails: PartyDetails{Agent: verde.BIC, Name: bruno.Name},
 		DebtorDetails:   PartyDetails{Agent: aurora.BIC}})
 	assertNoError(t, err)
@@ -416,10 +415,9 @@ func TestReturnMessageCarriesTheReturnReason(t *testing.T) {
 	}
 }
 
-// TestAReturnCarriesTheTwoAgentsItsSettlementNeeds is the whole of why
-// OrgnlTxRef stopped being deliberately absent. A settlement agent with no
-// payment rows learns whose reserves to move from this element or from
-// nothing.
+// TestAReturnCarriesTheTwoAgentsItsSettlementNeeds is why OrgnlTxRef is not
+// omitted. A settlement agent with no payment rows learns whose reserves to move
+// from this element or from nothing.
 func TestAReturnCarriesTheTwoAgentsItsSettlementNeeds(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	env, err := n.ReturnMessage(p, iso20022.ReturnReasonClosedAccountNumber, "account closed",
@@ -592,7 +590,7 @@ func TestSettlementMessageAmountBound(t *testing.T) {
 	if err := settle(99999999999999999); !errors.Is(err, iso20022.ErrAmountFormat) {
 		t.Errorf("a legal 17-digit amount = %v, want the codec's ErrAmountFormat refusal", err)
 	}
-	// And the far end, which is all the old test covered.
+	// And the far end.
 	if err := settle(math.MaxInt64); !errors.Is(err, iso20022.ErrAmountFormat) {
 		t.Errorf("MaxInt64 = %v, want ErrAmountFormat", err)
 	}
@@ -614,34 +612,25 @@ func TestSettlementMessageRefusesAnUnknownAsset(t *testing.T) {
 // ---------------------------------------------------------------------------
 //
 // The one error that must NOT become a wire reason code — a store failure or a
-// cancelled context being mistranslated into a fact about the counterparty's
-// message — no longer has an outbound test in this section; see the comment
-// below TestCreditTransferMessageDoesNotBlameTheCounterpartyForAStoreFailure
-// used to sit above for why. Its one remaining pin,
+// cancelled context mistranslated into a fact about the counterparty's message —
+// has no outbound test in this section, because building an outbound message
+// reads no store. Its one pin,
 // TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure, is
-// inbound and lives under "Inbound: a received message becomes a request"
-// further down, where failingStore (below) is still used to reach it.
+// inbound and lives under "Inbound: a received message becomes a request", where
+// failingStore (below) is still used to reach it.
 
 // failingTx is a Tx whose directory lookups fail with an error of the caller's
 // choosing. Everything else is the real transaction, promoted by embedding —
 // so a participant still resolves, and the failure lands on exactly the call
 // the tests are about.
 //
-// It used to override two methods, one per direction: partyTx read a deposit
-// account by id building an OUTBOUND message, and addressedPartyTx reads one
-// by ADDRESS resolving an INBOUND one. Task 14.3 deleted partyTx — partiesOf
-// now reads nothing building an outbound message, see payment/translate.go —
-// so the GetDepositAccount override that used to exist here is gone with it:
-// failingStore is only ever applied to a View (see below), and every
-// production GetDepositAccount call site left in payment — scheme.go's
-// validateFunds, participant.go's glAccountTx, system.go's DepositTx and
-// checkPartyTx — runs inside an Update, which failingStore never wraps.
-// Keeping a method nothing can reach would be exactly the kind of claim this
-// file exists to distrust.
-// ListDepositAccountsByIdentifier is the one override still live: it is what
-// the inbound directory sweep in ResolveIdentifierTx calls, reached through a
-// View, and TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure
-// below still depends on it.
+// ListDepositAccountsByIdentifier is the one override: it is what the inbound
+// resolution in ResolveIdentifierTx calls, reached through a View, and
+// TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure below
+// depends on it. There is no outbound counterpart, because partiesOf reads
+// nothing building an outbound message — and failingStore is only ever applied
+// to a View, while every remaining GetDepositAccount call site in payment runs
+// inside an Update.
 type failingTx struct {
 	Tx
 	err error
@@ -654,13 +643,11 @@ func (t failingTx) ListDepositAccountsByIdentifier(ctx context.Context, book led
 // failingStore wraps a real Store and hands every view a failingTx.
 //
 // This exists because there is no other way to reach an inbound resolution
-// failure on demand — see failingTx on what used to also be true of the
-// outbound side. The store checks ctx.Err() before it opens a transaction (both
-// store/sqlite's inUpdate and its inView do, and store/mem and store/pg did too),
-// so a cancelled context never gets as far as the closure, and a real database
-// failure cannot be provoked on demand from a test. A synthetic error injected
-// at the seam reaches the code under test whatever is underneath and depends on
-// no driver behaviour at all.
+// failure on demand. The store checks ctx.Err() before it opens a transaction
+// (both store/sqlite's inUpdate and its inView do), so a cancelled context never
+// gets as far as the closure, and a real database failure cannot be provoked on
+// demand from a test. A synthetic error injected at the seam reaches the code
+// under test whatever is underneath and depends on no driver behaviour at all.
 type failingStore struct {
 	Store
 	err error
@@ -682,36 +669,18 @@ func (s failingStore) View(ctx context.Context, fn func(context.Context, Tx) err
 // account must refuse the message with ErrParticipantNotFound /
 // ErrAccountNotInParticipant.
 //
-// Task 14.3 deleted partyTx along with everything these four pinned. partiesOf
-// no longer reads a participant or an account building an outbound message —
-// both sides are already on the Payment (DebtorDetails/CreditorDetails,
-// resolved once at submission, see payment/system.go's SubmitPaymentTx) — so
-// there is no store call left here to fail, no context left to cancel, and no
-// directory lookup left that could come back not-found. p.CreditorDetails.Agent
-// = "no-such-bank" and p.Creditor.Account = "no-such-account", the two setups
-// the last pair of tests used, no longer reach anything that reads them.
+// There is no outbound equivalent of these. partiesOf reads no participant and
+// no account building an outbound message — both sides are already on the
+// Payment (DebtorDetails/CreditorDetails, resolved once at submission, see
+// payment/system.go's SubmitPaymentTx) — so there is no store call left here to
+// fail, no context left to cancel, and no directory lookup that could come back
+// not-found.
 //
-// CreditTransferMessage can still refuse before the wire — it is not down to
-// zero ways, only down to the ones that were never partyTx's: assetOf's
-// ErrSchemeNotFound (TestCreditTransferMessageRefusesAnUnregisteredScheme,
-// below), ibanOf's ErrUnaddressableAccount for a missing or malformed address
-// (TestCreditTransferMessageRefusesAPaymentWithNoAddress,
-// TestCreditTransferMessageRefusesAMalformedIBAN, both further up), and
-// amountOf's ErrAmountScale / magnitude bound for a value the wire cannot
-// carry (not pinned per message type — TestSettlementMessageTakesItsScaleFromTheAsset
-// and its neighbours exercise the same amountOf that creditTransfer and
-// directDebit both call). namedPartyOf's iso20022.ErrMissingElement for an
-// empty account-holder name is live too, and, per namedPartyOf's own doc, has
-// no dedicated fixture here at all — FuzzTranslate is what found it. None of
-// these four goes anywhere near a participant, an account, or the store.
-//
-// The property the first two guarded — a store failure or a cancellation must
-// not be misreported as a fact about the counterparty's message — is not gone
-// from the system, only from this function. It still holds on the INBOUND
-// side, where addressedPartyTx and ResolveIdentifierTx still read the store,
+// The property that guarded — a store failure or a cancellation must not be
+// misreported as a fact about the counterparty's message — still holds on the
+// INBOUND side, where addressedPartyTx and ResolveIdentifierTx read the store,
 // and TestCreditTransferRequestDoesNotBlameTheCounterpartyForAStoreFailure
-// further down still pins it there, with the same failingStore this comment
-// used to sit above.
+// further down pins it there with the same failingStore.
 
 // A payment whose scheme is not registered has no asset, and therefore no scale
 // to render its amount at. Guessing euro is the multi-asset mistake amountOf
@@ -821,18 +790,15 @@ func TestCreditTransferRoundTripsThroughTheWire(t *testing.T) {
 	if got.Creditor.Identifier != p.Creditor.Identifier {
 		t.Errorf("creditor address = %+v, want the quoted %+v", got.Creditor.Identifier, p.Creditor.Identifier)
 	}
-	// The DEBTOR is the SENDING bank's customer. Task 14.4 narrowed
-	// CreditTransferRequest to resolve its own side only — not the sweep itself,
-	// which is still network-wide, but WHICH party is put through it — so the
-	// debtor comes back with the address the message quoted and NO ACCOUNT: an
-	// account id is this bank's own key for its own register and there is
-	// nothing here for it to be a key to.
+	// The DEBTOR is the SENDING bank's customer. CreditTransferRequest resolves
+	// this bank's own side only, so the debtor comes back with the address the
+	// message quoted and NO ACCOUNT: an account id is this bank's own key for its
+	// own register and there is nothing here for it to be a key to.
 	//
-	// The AGENT is not part of that claim and this used to assert it was empty.
-	// It is DbtrAgt, read straight off the message like every other element,
-	// and it has been asserted rather than derived since Task 18a — see
-	// SubmitPaymentTx. The check below on DebtorDetails as a whole is the one
-	// that says so, and the two contradicted each other.
+	// The AGENT is not part of that claim and is not empty. It is DbtrAgt, read
+	// straight off the message like every other element and asserted rather than
+	// derived — see SubmitPaymentTx. The check below on DebtorDetails as a whole is
+	// what says so.
 	if got.Debtor.Account != "" {
 		t.Errorf("debtor resolved to %+v, want it recorded rather than resolved", got.Debtor)
 	}
@@ -917,14 +883,11 @@ func TestDirectDebitRoundTripsThroughTheWire(t *testing.T) {
 // TestAReceivingBankDoesNotResolveTheSendersCustomer pins the behaviour change
 // this narrowing IS, rather than only the book set it produces.
 //
-// A pacs.008 quoting a debtor IBAN that nobody in this network holds used to be
-// refused AC01, because resolution swept every member's register and found
-// nothing. That refusal was never this bank's to make: the debtor is the SENDING
-// bank's customer, and a receiving bank is not the party that answers for it.
-// It now resolves only its own side of the message, the creditor, and a message
-// whose creditor it can find is accepted whatever the debtor's address says.
-// That is WHICH PARTY is resolved, not which registers are searched:
-// ResolveIdentifierTx still sweeps every member, and narrowing it is later work.
+// A pacs.008 quoting a debtor IBAN this bank does not hold is NOT refused AC01.
+// The debtor is the SENDING bank's customer, and a receiving bank is not the
+// party that answers for it: it resolves only its own side of the message, the
+// creditor, and a message whose creditor it can find is accepted whatever the
+// debtor's address says.
 func TestAReceivingBankDoesNotResolveTheSendersCustomer(t *testing.T) {
 	n, p := networkWithOnePayment(t)
 	ctx := context.Background()
@@ -1039,13 +1002,10 @@ func TestCreditTransferRequestRefusesAnAccountThatIsNotAnIBAN(t *testing.T) {
 // code falls to MS03, "this agent could not carry it out", which is the true
 // one.
 //
-// # It used to be a THIRD BANK claiming the address, and that is no longer the
-// case this can be provoked with
+// # A THIRD BANK claiming the address is not provokable here
 //
-// The contender was another bank, because the sweep read every register and so
-// was the only thing in the system that could see two of them at once. Task 18a
-// narrowed the lookup to the receiving bank's own register, so a third bank
-// holding the same IBAN is now invisible here — see
+// Resolution is narrowed to the receiving bank's own register, so a third bank
+// holding the same IBAN is invisible — see
 // TestACrossBankCollisionIsNoLongerObservable, which records that loss where the
 // resolution lives.
 //
@@ -1291,13 +1251,12 @@ func TestCreditTransferRequestReadsNOTPROVIDEDBackAsNoReference(t *testing.T) {
 	if req.CreditorDetails != p.CreditorDetails {
 		t.Errorf("creditor details = %+v, want %+v", req.CreditorDetails, p.CreditorDetails)
 	}
-	// The debtor's participant and account are filled in directly rather than
-	// left as CreditTransferRequest returned them. That is not the workaround
-	// this test used to carry: Task 14.4 deliberately stopped resolving the
-	// debtor at all — Aurora's customer is not Verde's to look up — so
-	// req.Debtor now holds only the address the message quoted. What is under
-	// test here is EndToEndID deduplication, which needs a resolvable debtor to
-	// reach; p.Debtor names the very account this message was built from.
+	// The debtor's participant and account are filled in directly rather than left
+	// as CreditTransferRequest returned them: the debtor is not resolved at all —
+	// Aurora's customer is not Verde's to look up — so req.Debtor holds only the
+	// address the message quoted. What is under test here is EndToEndID
+	// deduplication, which needs a resolvable debtor to reach; p.Debtor names the
+	// very account this message was built from.
 	req.DebtorDetails.Agent = p.DebtorDetails.Agent
 	req.Debtor.Account = p.Debtor.Account
 	if _, err := initiate(ctx, n, req); err != nil {
@@ -1392,18 +1351,17 @@ func TestDirectDebitRequestRefusesACollectionWithNoMandate(t *testing.T) {
 // drives both of them.
 //
 // Both banks' accounts are stored separated, and differently: hyphens on
-// Aurora's side, spaces on Verde's. Task 14.4 means only ONE of the two now
-// goes through the DIRECTORY here: CreditTransferRequest resolves the
-// CREDITOR, so Verde's space-separated form is what
-// deposit.Identifier.MatchValue proves survives the round trip through
-// ResolveIdentifierTx. Aurora's hyphen-separated form is no longer resolved by
-// this call at all — the debtor is recorded, not looked up — so its coverage
-// moves to the second comparison this test drives: addressFor's own
+// Aurora's side, spaces on Verde's. Only ONE of the two goes through the
+// DIRECTORY here: CreditTransferRequest resolves the CREDITOR, so Verde's
+// space-separated form is what deposit.Identifier.MatchValue proves survives the
+// round trip through ResolveIdentifierTx. Aurora's hyphen-separated form is not
+// resolved by this call at all — the debtor is recorded, not looked up — so its
+// coverage is the second comparison this test drives: addressFor's own
 // deposit.Identifier.Matches, exercised below when the debtor's own bank
 // resubmits with the wire's compact form and the result is checked against the
-// account's stored, hyphenated one. A fix that learned only one comparison
-// would still resolve the creditor and still normalize the debtor — this test
-// is what tells the two apart.
+// account's stored, hyphenated one. A fix that learned only one comparison would
+// still resolve the creditor and still normalize the debtor — this test is what
+// tells the two apart.
 func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing.T) {
 	ctx := context.Background()
 	n := testNetwork(t)
@@ -1459,7 +1417,7 @@ func TestCreditTransferRoundTripsThroughTheWireForSeedShapedAddresses(t *testing
 	// The CREDITOR is Verde's own customer on this push, so it is what this call
 	// resolves — against the SPACE-separated stored form, which is the half of
 	// "hyphens on one side and spaces on the other" that CreditTransferRequest
-	// still exercises after Task 14.4 narrowed it to one side.
+	// exercises.
 	if !got.Creditor.SameParty(p.Creditor) {
 		t.Errorf("creditor resolved to %+v, want %+v", got.Creditor, p.Creditor)
 	}

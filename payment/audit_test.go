@@ -15,27 +15,22 @@ import (
 // paymentAudit reads the payment-scope audit trail of the WHOLE SYSTEM,
 // optionally narrowed to one entity.
 //
-// It used to be one read of one book. ledger.NetworkBook was the book every
-// payment-scope event was written under — participants, payments, mandates,
-// cycles and settlements, one log shared by everybody — and it is deleted,
-// because each of those rows turned out to have exactly one owner and each owner
-// now has a book of its own (payment.Network.book, and ClearingHouseBook's doc,
-// which is where the constant's meaning is recorded).
+// It is three reads of three books, because each institution keeps its own
+// payment-scope log in its own database — a mandate is the creditor bank's, a
+// cycle is the clearing house's, a settlement is the central bank's. See
+// payment.Network.book.
 //
 // So the trail these tests are about is spread across N+2 logs, and this reads
 // them all and CONCATENATES them, institution by institution: the clearing
 // house, the settlement agent, then each bank, each in its own order.
 //
-// # It used to sort by Seq, and there is no longer a total order to sort into
+// # There is no total order to sort into
 //
-// Seq was a store-GLOBAL sequence, so merging the three books by it reproduced
-// the one log's order exactly — the merge was a sort and not an interleave, and
-// this doc said so. Task 18c gives each institution its own DATABASE and
-// therefore its own counter. Two events from two institutions now carry Seq
-// numbers that mean "third thing this bank did" and "third thing the clearing
-// house did", and comparing them produces an order nothing in the system has.
-// Sorted anyway, the trail came out interleaved by accident of how busy each
-// institution had been.
+// Each institution has its own database and therefore its own counter, so two
+// events from two institutions carry Seq numbers that mean "third thing this
+// bank did" and "third thing the clearing house did". Comparing them produces an
+// order nothing in the system has; sorted anyway, the trail comes out
+// interleaved by accident of how busy each institution had been.
 //
 // What replaces it is the only cross-institution order this system can honestly
 // state: NONE. There is no global clock and no shared log, and that is the
@@ -159,16 +154,12 @@ func eventTypes(events []ledger.AuditEvent) string {
 // two payments is the smallest fixture that can tell "once" from "once per
 // payment" apart.
 //
-// # The ORDER across the cut-off is the measurement Task 15 moved, and Task 18d
-// moved it out of reach
+// # The ORDER across the cut-off is out of reach
 //
-// payment.settled used to come BEFORE cycle.settled, because both were appended
-// inside the settlement agent's one unit of work and the payments were done
-// first. They became two institutions' acts at Task 15: cycle.settled is the
-// settlement agent's, and each payment.settled is a payee's bank's, appended
-// when that bank posts its own creditor leg on the clearing house's advice. So
-// the settlement closed first and the payments followed it, and this test read
-// that off one merged list.
+// cycle.settled is the settlement agent's, and each payment.settled is a payee's
+// bank's, appended when that bank posts its own creditor leg on the clearing
+// house's advice. They are two institutions' acts in two databases, so there is
+// no merged list to read an order off.
 //
 // There is no list to read it off now. The two events are in two DATABASES with
 // two counters, so nothing here can order them — see paymentAudit. The claim
@@ -278,9 +269,8 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 
 	// A bank's own two, keyed by its own id: it founded itself, and later it
 	// recorded what the scheme told it. The other two acts of its admission are
-	// keyed by its BIC — and since Task 18 a bank's id IS its BIC, so what
-	// separates them is no longer the key but the LOG THEY ARE IN. See
-	// TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
+	// keyed by its BIC — and a bank's id IS its BIC, so what separates them is the
+	// LOG THEY ARE IN. See TestEachActOfAnAdmissionLeavesItsOwnAuditEvent.
 	assertEqual(t, "Bank A's own trail for itself", eventTypes(bankAudit(t, sys, a.BIC, string(a.ID))),
 		ledger.EventParticipantAdded+" "+ledger.EventMembershipRecorded)
 	assertEqual(t, "the clearing house on Bank A", eventTypes(csmAudit(t, sys, string(a.ID))),
@@ -342,15 +332,13 @@ func TestPaymentAuditCoversTheNettingFlow(t *testing.T) {
 // then every member's mirror leg, so an underfunded member was discovered after
 // the unit of work had already written, and the store had to undo it.
 //
-// The mirror leg is the member's own act since Task 15b.2, so SettleCycleTx
-// checks each net payer's reserve ITSELF, above the netting transaction and with
-// only reads behind it. Against this fixture the refusal is therefore a clean
-// no-op: nothing was written, so nothing was rolled back, and the assertions
-// below pass for a different reason than the one they were written for. They are
-// kept because what they measure — a refused cut-off leaves no trace, which is
-// what makes asking again safe once the member is funded — is still worth
-// pinning, and because a settlement that started appending before it checked
-// would fail them again.
+// The mirror leg is the member's own act, so SettleCycleTx checks each net
+// payer's reserve ITSELF, above the netting transaction and with only reads
+// behind it. Against this fixture the refusal is therefore a clean no-op:
+// nothing was written, so nothing was rolled back. What the assertions below
+// measure — a refused cut-off leaves no trace, which is what makes asking again
+// safe once the member is funded — is still worth pinning, and a settlement that
+// started appending before it checked would fail them.
 //
 // TestSettleCycleIsAtomic in system_test.go is the same correction on the
 // balances rather than the trail, and it names the test that still carries the
@@ -573,23 +561,22 @@ func TestParticipantAuditPayloadDropsLiveHandles(t *testing.T) {
 // this system's bank ids. The bank's own two are keyed by its id, and they are
 // its own row before and after.
 //
-// # Which is no longer a distinction, and the log each event is in has replaced it
+// # The log each event is in is what separates them
 //
-// A bank's ParticipantID IS its BIC since Task 18 (see AsBank), so all four
-// events are keyed by one string and filtering by entity cannot tell the
-// institutions apart. What can, and what could not before Task 18d, is WHOSE
-// DATABASE each event is in: the bank's own log holds the two it wrote, the
-// settlement agent's holds the account it opened, the clearing house's holds the
-// roster entry it made. That is a stronger separation than the key ever was —
-// the key was a convention and this is a boundary — and it is why the four
+// A bank's ParticipantID IS its BIC (see AsBank), so all four events are keyed by
+// one string and filtering by entity cannot tell the institutions apart. What
+// can is WHOSE DATABASE each event is in: the bank's own log holds the two it
+// wrote, the settlement agent's holds the account it opened, the clearing
+// house's holds the roster entry it made. That is a stronger separation than a
+// key — a key is a convention and this is a boundary — and it is why the four
 // assertions below are four reads rather than one.
 //
-// The ORDER between them is gone with it. Each institution's log orders its own
-// acts and nothing orders one against another (see paymentAudit), so
-// "participant.added, then settlement_account.opened, then member.admitted, then
-// membership.recorded" is no longer a sequence this system can state. What
-// survives is that each act happened, in the log of the institution that
-// performed it, and that each carries its result.
+// There is no ORDER between them. Each institution's log orders its own acts and
+// nothing orders one against another (see paymentAudit), so "participant.added,
+// then settlement_account.opened, then member.admitted, then
+// membership.recorded" is not a sequence this system can state. What survives is
+// that each act happened, in the log of the institution that performed it, and
+// that each carries its result.
 //
 // The settlement account numbers are asserted on the events that must carry
 // them, rather than only counting types: an event whose payload had lost the

@@ -27,8 +27,7 @@ import (
 // # What it is NOT
 //
 // It does not stand in for the API. Mesh.Submit is what a bank's customer-facing
-// layer calls, and the harness calls it directly; Task 14 is what puts an HTTP
-// handler in front of it.
+// layer calls, and the harness calls it directly.
 
 // harnessAmount is what every transfer in this package moves, and harnessFunding
 // is what the payer starts with. Funding is larger, so the payer is good for the
@@ -87,11 +86,10 @@ type meshHarness struct {
 	// nets mints one payment.Network per institution, and net is the CLEARING
 	// HOUSE's — the view the network-scoped reads below go through.
 	//
-	// Task 18b is why there are two. A fixture cannot hold one Network and play
-	// every institution with it any more: a member's own act needs that member's
-	// network and the central bank's book is on the settlement agent's alone.
-	// See payment.Networks, and payment's testSystem, which carries the same
-	// split for the same reason.
+	// A fixture cannot hold one Network and play every institution with it: a
+	// member's own act needs that member's network and the central bank's book is
+	// on the settlement agent's alone. See payment.Networks, and payment's
+	// testSystem, which carries the same split for the same reason.
 	nets *payment.Networks
 	net  *payment.Network
 
@@ -140,9 +138,9 @@ type harnessOptions struct {
 	openCycles bool
 	// fundTheDebtor pays the opening deposit in. Withheld, the debtor's account
 	// exists, is addressable and is denominated in euro, and has nothing in it —
-	// which is the condition that produces AM04 from the debtor's own BANK, on
-	// its funds check. (Task 12 added a second route to the same code, from the
-	// central bank and about a bank rather than a customer; see lendToTheDebtor.)
+	// which is the condition that produces AM04 from the debtor's own BANK, on its
+	// funds check. (There is a second route to the same code, from the central bank
+	// and about a bank rather than a customer; see lendToTheDebtor.)
 	fundTheDebtor bool
 	// revokeMandate revokes the mandate after creating it. The mandate still
 	// EXISTS, so the collection is refused for being unauthorised rather than
@@ -262,18 +260,16 @@ func (usdCT) Asset() ledger.AssetCode { return "USD" }
 // acmt.007 per asset, because the schema carries one currency per request.
 var euroAndDollar = []ledger.AssetCode{"EUR", "USD"}
 
-// bank is one member's own view and cb is the settlement agent's. See the nets
-// field for why the harness needs all three.
 // bank is one member's own network, keyed by its ADDRESS — a bank's
-// ParticipantID is its BIC since Task 18 (see payment.AsBank), and every caller
-// here holds an address.
+// ParticipantID is its BIC (see payment.AsBank), and every caller here holds an
+// address. cb is the settlement agent's. See the nets field for why the harness
+// needs all three.
 //
-// It panics on a failure to open, which Task 18c made possible: a bank's network
-// is minted over that bank's own DATABASE now, and opening one is I/O. Every
-// caller here is one expression inside an assertion and every address they pass
-// is a bank this harness founded, so a failure is a broken fixture rather than an
-// outcome worth reporting through the test's own error path. payment's testSystem
-// takes the same line for the same reason.
+// It panics on a failure to open: a bank's network is minted over that bank's
+// own DATABASE, and opening one is I/O. Every caller here is one expression
+// inside an assertion and every address they pass is a bank this harness
+// founded, so a failure is a broken fixture rather than an outcome worth
+// reporting through the test's own error path.
 func (h *meshHarness) bank(bic iso20022.BIC) *payment.Network {
 	net, err := h.nets.Bank(context.Background(), payment.ParticipantID(bic))
 	if err != nil {
@@ -284,8 +280,8 @@ func (h *meshHarness) bank(bic iso20022.BIC) *payment.Network {
 func (h *meshHarness) cb() *payment.Network { return h.nets.CentralBank() }
 
 // cbBook is the central bank's book of accounts. Network.CentralBank returns an
-// error since Task 18b — every other institution's network has no such book —
-// and here it cannot fire, so the assertion is what says so.
+// error — every other institution's network has no such book — and here it
+// cannot fire, so the assertion is what says so.
 func (h *meshHarness) cbBook(t *testing.T) *ledger.Book {
 	t.Helper()
 	book, err := h.cb().CentralBank()
@@ -370,12 +366,11 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	}
 	h.debtorAcct = h.openCustomer(t, h.debtor, "Alice", "EUR", limit, debtorIBAN)
 	h.creditorAcct = h.openCustomer(t, h.creditor, "Bruno", "EUR", 0, creditorIBAN)
-	// Funding is TWO acts since Task 18a, and the fixture has to run both.
-	//
-	// A deposit gives the customer a balance and leaves the bank holding vault
-	// cash; it no longer raises the bank's reserve, because a bank cannot write in
-	// the central bank's book. So every fixture that wants a settleable payment
-	// also lodges, which is a real camt.050/camt.025 round trip through the mesh.
+	// Funding is TWO acts and the fixture has to run both. A deposit gives the
+	// customer a balance and leaves the bank holding vault cash; it does not raise
+	// the bank's reserve, because a bank cannot write in the central bank's book.
+	// So every fixture that wants a settleable payment also lodges, which is a real
+	// camt.050/camt.025 round trip through the mesh.
 	//
 	// Both are behind the SAME option, and that is deliberate rather than lazy.
 	// fundTheDebtor has always meant "this bank can pay", and it still means
@@ -425,13 +420,12 @@ func newHarness(t *testing.T, opts harnessOptions) *meshHarness {
 	// The fixture's own conversation is forgotten, so that a test counting
 	// messages counts its own.
 	//
-	// Building the fixture now puts messages on the wire — four per bank, since
-	// admission is a conversation — where it used to write three rows and send
-	// nothing. Tests that count from zero are counting what they provoked, and
-	// they were right to: the fixture is a NETWORK, not something under test. It
-	// is the same forgetting h.rec.reset() does for books, and the tests that
-	// assert on the admission conversation take their own mark and admit their own
-	// bank (see mesh/admission_test.go).
+	// Building the fixture puts messages on the wire — four per bank, since
+	// admission is a conversation. Tests that count from zero are counting what
+	// they provoked, which is right: the fixture is a NETWORK, not something under
+	// test. It is the same forgetting h.rec.reset() does for books, and the tests
+	// that assert on the admission conversation take their own mark and admit their
+	// own bank (see mesh/admission_test.go).
 	h.forgetMessages()
 
 	if opts.openCycles {
@@ -470,9 +464,8 @@ func (h *meshHarness) admit(t *testing.T, name string, bic iso20022.BIC, assets 
 // became of an admission: Admit answers with the bank as its own operator left
 // it, and everything after that happened at two other actors.
 //
-// Out of the BANK's own database, and it used to be out of the clearing house's.
-// That worked while there was one store; the csm shape has no banks table, and a
-// bank's own row is the one thing about it no other institution keeps.
+// Out of the BANK's own database: the csm shape has no banks table, and a bank's
+// own row is the one thing about it no other institution keeps.
 func (h *meshHarness) getBank(t *testing.T, id payment.ParticipantID) *payment.Bank {
 	t.Helper()
 	p, err := h.bank(iso20022.BIC(id)).GetBank(context.Background(), id)
@@ -505,9 +498,8 @@ func (h *meshHarness) centralBankTransactionCount(t *testing.T) int {
 // settlement agent with its own database would post from, read by BIC because
 // that is the only identifier it has.
 //
-// Through the CENTRAL BANK's own store, and it used to be through the clearing
-// house's — which held the row while there was one store and whose schema has no
-// settlement_members table at all.
+// Through the CENTRAL BANK's own store: no other institution's schema has a
+// settlement_members table.
 //
 // It goes through the store rather than through a Network method because it
 // predates one: payment.Network.GetSettlementMember exists now, added for GET
@@ -661,11 +653,11 @@ func (h *meshHarness) creditTransferRequestTo(t *testing.T, iban string) payment
 		Creditor:    h.creditorRef(iban),
 		Amount:      harnessAmount,
 		Description: "invoice 42",
-		// Push: the creditor is the counterparty, so the request must name it —
-		// the NAME and the BIC. Since Task 18a nothing derives the second: the row
-		// it was derived from is the counterparty's own, and a bank holds only its
-		// own. TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG
-		// one on purpose, which is the only place in this package that should.
+		// Push: the creditor is the counterparty, so the request must name it — the
+		// NAME and the BIC. Nothing derives the second: the row it would be derived
+		// from is the counterparty's own.
+		// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames sets a WRONG one on
+		// purpose, which is the only place in this package that should.
 		CreditorDetails: payment.PartyDetails{Agent: h.creditorBIC, Name: h.creditorAcct.Name},
 		// And the payer's own bank, which this fixture has to name and a customer's
 		// instruction does not. Mesh.Submit picks the SUBMITTING actor out of the
@@ -813,12 +805,11 @@ func (h *meshHarness) drainErr(t *testing.T) error {
 
 // closeCycle reaches the cut-off on every window this fixture has open.
 //
-// Through the MESH and not through the network, which is what changed at Task
-// 12: closing a cycle is the clearing house's act, and it now ends in a pacs.009
-// to the central bank rather than in a return value. Driving h.net directly
-// would close the cycle on a bare context — attributed to no actor, instructing
-// nobody — and every settlement assertion in this package would measure an
-// operator poking the store.
+// Through the MESH and not through the network: closing a cycle is the clearing
+// house's act and it ends in a pacs.009 to the central bank rather than in a
+// return value. Driving h.net directly would close the cycle on a bare context —
+// attributed to no actor, instructing nobody — and every settlement assertion in
+// this package would measure an operator poking the store.
 //
 // EVERY open cycle, including the ones with nothing in them. A credit-transfer
 // test leaves the direct-debit window untouched, so this closes an empty cycle
@@ -826,11 +817,10 @@ func (h *meshHarness) drainErr(t *testing.T) error {
 // and it is walked constantly rather than reasoned about. See
 // csm.instructSettlement.
 //
-// It returns nothing. A cut-off in this system is now the START of a
-// conversation, and the ClearingCycle it used to hand back described the cycle
-// before the central bank had said anything about it — which is precisely the
-// value a test must not assert settlement from. Read the cycle back after a
-// drain instead.
+// It returns nothing. A cut-off is the START of a conversation, so a
+// ClearingCycle handed back here would describe the cycle before the central
+// bank had said anything about it — which is precisely the value a test must not
+// assert settlement from. Read the cycle back after a drain instead.
 func (h *meshHarness) closeCycle(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -856,14 +846,13 @@ func (h *meshHarness) closeCycle(t *testing.T) {
 // settledPayment is a credit transfer carried the whole way: submitted,
 // accepted, cleared at the cut-off and discharged by the central bank.
 //
-// It is what a RETURN needs and what nothing before Task 13 needed, because a
-// return is the one flow whose precondition is finality — the returning bank's
-// own guard and payment.PostReturnLegTx both refuse anything that is not
-// Settled. Built by driving the mesh rather than
-// by writing a Settled payment into the store, so that what is returned is a
-// payment this system really carried: the payer's money is in the payee's
-// account and the reserves have moved, which is exactly what the return has to
-// undo.
+// It is what a RETURN needs, because a return is the one flow whose
+// precondition is finality — the returning bank's own guard and
+// payment.PostReturnLegTx both refuse anything that is not Settled. Built by
+// driving the mesh rather than by writing a Settled payment into the store, so
+// that what is returned is a payment this system really carried: the payer's
+// money is in the payee's account and the reserves have moved, which is exactly
+// what the return has to undo.
 //
 // It asserts the status itself rather than leaving that to its callers. A
 // fixture that quietly handed back an unsettled payment would make every test
@@ -1039,12 +1028,11 @@ func (h *meshHarness) returnSentTo(t *testing.T, to iso20022.BIC) *iso20022.Pacs
 // learn what became of it: Submit answers with the payment as its own bank left
 // it, and everything after that happened at another actor.
 //
-// Whose copy is a question since Task 18d, and it did not used to be. Three
-// institutions hold three rows for one payment and no institution can read
-// another's, so "the payment" is not a thing a test can ask for. This one asks
-// the clearing house because that is the institution whose copy runs the whole
-// state machine — Accepted and Cleared are ITS facts, and a test about where a
-// payment has got to in the network wants them.
+// Whose copy is a question. Three institutions hold three rows for one payment
+// and no institution can read another's, so "the payment" is not a thing a test
+// can ask for. This one asks the clearing house because that is the institution
+// whose copy runs the whole state machine — Accepted and Cleared are ITS facts,
+// and a test about where a payment has got to in the network wants them.
 //
 // A test about what a BANK did needs bankPayment instead, and the shapes are
 // what make the difference sharp: the clearing house's row has no leg columns at
@@ -1080,14 +1068,12 @@ func (h *meshHarness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.Pay
 	return p
 }
 
-// cycles is every clearing cycle this network holds, in the order it lists
-// them. It is how a test reads what a cut-off left behind, which since Task 18d
-// is the STATUS and not an id: a settled cycle is CycleSettled and a refused one
-// is still CycleClosed. It used to carry a SettlementID, and it cannot — the
-// settlement's id is allocated inside the settlement agent's own unit of work in
-// its own database, and the pacs.002 that comes back quotes the CYCLE, because
-// the cycle is what the clearing house asked about. See ClearingCycle, where the
-// field used to be.
+// cycles is every clearing cycle this network holds, in the order it lists them.
+// It is how a test reads what a cut-off left behind, which is the STATUS and not
+// an id: a settled cycle is CycleSettled and a refused one is still CycleClosed.
+// It cannot carry a SettlementID — that id is allocated inside the settlement
+// agent's own unit of work in its own database, and the pacs.002 that comes back
+// quotes the CYCLE, because the cycle is what the clearing house asked about.
 func (h *meshHarness) cycles(t *testing.T) []payment.ClearingCycle {
 	t.Helper()
 	cycles, err := h.net.ListCycles(context.Background())
