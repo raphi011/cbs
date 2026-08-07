@@ -1074,8 +1074,8 @@ func TestSDD_HappyPath(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
-			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 		assertEqual(t, "value date T+2", pay.ValueDate, fixedTime.Add(48*time.Hour))
 	})
@@ -1117,8 +1117,8 @@ func TestSDD_MandateValidation(t *testing.T) {
 			_, err = initiate(ctx, sys, InitiatePaymentRequest{
 				Scheme: SchemeSEPADD, Amount: tc.amount, MandateID: tc.mandateID,
 				Debtor: debtor, Creditor: creditor,
-				DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-			})
+				DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+				CreditorDetails: PartyDetails{Agent: b.BIC}})
 			assertError(t, err, tc.want)
 			// Tidy up the open cycle for the next sub-test.
 			cyc, err := sys.OpenCycleID(ctx, SchemeSEPADD)
@@ -1141,10 +1141,10 @@ func TestSDD_Return(t *testing.T) {
 	runCycle(t, sys, SchemeSEPADD, func() {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
-			Debtor:        debtor,
-			Creditor:      creditor,
-			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			Debtor:          debtor,
+			Creditor:        creditor,
+			DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 	})
 	assertEqual(t, "alice after collection", customerBalance(t, a, alice), 75000)
@@ -2620,13 +2620,13 @@ func TestSDDPaymentRejectsAccountNotInSchemeAsset(t *testing.T) {
 	assertNoError(t, err)
 
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
-		Scheme:        SchemeSEPADD,
-		Amount:        1000,
-		MandateID:     m.ID,
-		Debtor:        debtor,
-		Creditor:      creditor,
-		DebtorDetails: PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
-	})
+		Scheme:          SchemeSEPADD,
+		Amount:          1000,
+		MandateID:       m.ID,
+		Debtor:          debtor,
+		Creditor:        creditor,
+		DebtorDetails:   PartyDetails{Agent: alpha.BIC, Name: debtorAcct.Name},
+		CreditorDetails: PartyDetails{Agent: beta.BIC}})
 	assertError(t, err, ErrAssetMismatch)
 }
 
@@ -3451,8 +3451,8 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 			Debtor: debtor, Creditor: creditor, Description: "Electricity bill",
-			DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Alice"},
-		})
+			DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Alice"},
+			CreditorDetails: PartyDetails{Agent: b.BIC}})
 		assertNoError(t, err)
 	})
 
@@ -3495,8 +3495,8 @@ func TestMandateStillRefusesADifferentParty(t *testing.T) {
 	_, err = initiate(ctx, sys, InitiatePaymentRequest{
 		Scheme: SchemeSEPADD, Amount: 25000, MandateID: m.ID,
 		Debtor: PartyRef{Account: carla.ID}, Creditor: creditor,
-		DebtorDetails: PartyDetails{Agent: a.BIC, Name: "Carla"},
-	})
+		DebtorDetails:   PartyDetails{Agent: a.BIC, Name: "Carla"},
+		CreditorDetails: PartyDetails{Agent: b.BIC}})
 	if !errors.Is(err, ErrMandateMismatch) {
 		t.Fatalf("substituted debtor = %v, want ErrMandateMismatch", err)
 	}
@@ -5026,10 +5026,10 @@ func settledCollection(t *testing.T, sys *testSystem, debtorBank *Bank, debtorAc
 	runCycle(t, sys, SchemeSEPADD, func() {
 		pay, err = initiate(ctx, sys, InitiatePaymentRequest{
 			Scheme: SchemeSEPADD, Amount: amount, MandateID: m.ID,
-			Debtor:        debtor,
-			Creditor:      creditor,
-			DebtorDetails: PartyDetails{Agent: debtorBank.BIC, Name: "the payer"},
-		})
+			Debtor:          debtor,
+			Creditor:        creditor,
+			DebtorDetails:   PartyDetails{Agent: debtorBank.BIC, Name: "the payer"},
+			CreditorDetails: PartyDetails{Agent: creditorBank.BIC}})
 		assertNoError(t, err)
 	})
 	assertEqual(t, "the biller after the collection", customerBalance(t, creditorBank, creditorAcct), amount)
@@ -5396,14 +5396,22 @@ func receiverOf(n *testSystem, p Payment) iso20022.BIC {
 // own register, so a request submitted through the clearing house's network —
 // which is what the initiate helper used to do — resolves nothing.
 //
-// A request that does not NAME its submitting side falls back to the fixture's
-// own bank, which is what most of these requests are: a caller only has to name
-// the COUNTERPARTY's agent, because SubmitPaymentTx fills its own side in from
-// the network it runs on. The fallback is the fixture supplying what that fill
-// would have. Naming a wrong one would be caught — SubmitPaymentTx writes its
-// own identity over whatever the request claimed for its own side — so the only
-// thing at risk here is opening a database for the empty address, which is a
-// panic three frames down in the store rather than an answer.
+// # A request that names nobody is a fixture bug, and it used to be silent
+//
+// This fell back to testBIC, on the argument that a caller only has to name the
+// COUNTERPARTY's agent because SubmitPaymentTx fills its own side in from the
+// network it runs on. That argument is about the DOMAIN and it still holds. What
+// it does not cover is the fixture's own problem: which of several databases to
+// open. testBIC was a serviceable answer while every fixture bank had it and
+// wrong the moment two banks had two addresses — a pull naming no collector was
+// submitted at the PAYER's bank, which holds no mandate, and four SDD fixtures
+// failed "mandate not found" about a mandate that exists.
+//
+// So it fails instead, by name. It cannot take a *testing.T — every caller is
+// one expression inside a request literal — and a panic here would take the
+// whole test binary down with it, hiding every test declared after it. Returning
+// the sentinel means the store refuses to open a database for it, which is one
+// test's error with this string in it.
 func submitterOfReq(n *testSystem, req InitiatePaymentRequest) iso20022.BIC {
 	scheme, ok := n.Scheme(req.Scheme)
 	side := req.DebtorDetails.Agent
@@ -5411,7 +5419,7 @@ func submitterOfReq(n *testSystem, req InitiatePaymentRequest) iso20022.BIC {
 		side = req.CreditorDetails.Agent
 	}
 	if side == "" {
-		return testBIC
+		return "THIS REQUEST NAMES NO SUBMITTING AGENT"
 	}
 	return side
 }
