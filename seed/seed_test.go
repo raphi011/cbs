@@ -71,6 +71,9 @@ func testMesh(t *testing.T, nets *payment.Networks) *mesh.Mesh {
 type testNets struct {
 	*payment.Network
 	nets *payment.Networks
+	// stores is the set the networks are minted over, for the one question no
+	// institution can answer: which banks exist. See listParticipants.
+	stores payment.Stores
 }
 
 // cb is the settlement agent's view, which is the only one that can be asked
@@ -101,11 +104,12 @@ func testNetwork(t *testing.T) testNets {
 func testNetworkAndClock(t *testing.T) (testNets, *Dataset) {
 	t.Helper()
 	d := New()
-	nets := payment.NewNetworks(testenv.NewSet(t, d.Now), d.Now)
+	stores := testenv.NewSet(t, d.Now)
+	nets := payment.NewNetworks(stores, d.Now)
 	if err := d.Populate(context.Background(), nets, testMesh(t, nets)); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
-	return testNets{Network: nets.ClearingHouse(), nets: nets}, d
+	return testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}, d
 }
 
 func TestNetworkShape(t *testing.T) {
@@ -136,7 +140,9 @@ func TestNetworkShape(t *testing.T) {
 	if got := len(cycles); got != 5 {
 		t.Fatalf("cycles = %d, want 5", got)
 	}
-	settlements, err := net.ListSettlements(ctx)
+	// The SETTLEMENT AGENT's rows: a settlement is what that institution did in
+	// its own book, and the clearing house's shape has no table for one.
+	settlements, err := net.cb().ListSettlements(ctx)
 	if err != nil {
 		t.Fatalf("list settlements: %v", err)
 	}
@@ -208,15 +214,24 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 	if rejected.ID == "" {
 		t.Fatal("no rejected payment in the seed data")
 	}
-	if rejected.DebtorLegTx == "" {
+	// The leg is on the PAYER'S BANK's copy and on no other. The clearing house's
+	// row — which is what ListPayments above returns — has no leg columns at all,
+	// so reading DebtorLegTx off it reported a fixture that no longer covers a
+	// reversal when the reversal was there all along.
+	payerBIC := payment.ParticipantID(rejected.DebtorDetails.Agent)
+	atPayer, err := net.bank(payerBIC).GetPayment(ctx, rejected.ID)
+	if err != nil {
+		t.Fatalf("the payer's bank's copy: %v", err)
+	}
+	if atPayer.DebtorLegTx == "" {
 		t.Fatal("the rejected collection has no debtor leg; the fixture no longer covers a reversal")
 	}
 
-	bank, err := net.GetBank(ctx, payment.ParticipantID(rejected.DebtorDetails.Agent))
+	bank, err := net.bank(payerBIC).GetBank(ctx, payerBIC)
 	if err != nil {
 		t.Fatalf("get participant: %v", err)
 	}
-	leg, err := bank.Ledger.GetTransaction(ctx, rejected.DebtorLegTx)
+	leg, err := bank.Ledger.GetTransaction(ctx, atPayer.DebtorLegTx)
 	if err != nil {
 		t.Fatalf("get the debtor leg: %v", err)
 	}
@@ -225,36 +240,60 @@ func TestRejectedCollectionWasReversedInThePayersBank(t *testing.T) {
 	}
 }
 
-// TestSeedRejectIsOneUnitOfWork pins the shape of the seed's composite, not
-// just its result: both halves run on ONE transaction, so a reversal that fails
-// takes the clearing house's transition down with it. Run as two units of work
-// the seed would build a dataset containing a Rejected payment whose payer
-// never got their money back — the half-happened state RejectAtCSMTx names, and
-// one the seed has never produced.
+// TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails pins the shape of
+// the seed's composite, not just its result.
+//
+// # It was TestSeedRejectIsOneUnitOfWork, and that unit of work is gone
+//
+// It claimed both halves ran on ONE transaction, so a reversal that failed took
+// the clearing house's transition down with it and the seed could never build a
+// dataset containing a Rejected payment whose payer never got their money back.
+// That transaction spanned the clearing house and a bank, and Task 18c is
+// exactly its removal: a unit of work is ONE DATABASE's. b.reject is three of
+// them now — the decision, and each bank recording it on its own copy.
+//
+// So the half-happened state RejectAtCSMTx names is reachable here, as it always
+// was in the mesh, and the guarantee that replaces it is the one a single
+// institution can still make: RejectAtBankTx transitions THIS bank's copy and
+// reverses THIS bank's leg together, so a bank that cannot give the money back
+// does not record the rejection either. That is the inconsistency that would
+// cost real money; the clearing house's decision standing while a bank has not
+// acted is a message waiting to be redelivered.
 //
 // The forced failure is a leg that has already been reversed, which is what a
 // retried rejection produces. b.reject reports it the way the whole builder
 // does, by panicking with a seedErr, so the call goes through recoverBuild.
-func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
+func TestSeedRejectLeavesThePayersBankUntouchedWhenItsHalfFails(t *testing.T) {
 	ctx := context.Background()
 	net := testNetwork(t)
 
 	// Any Accepted payment: it has a posted debtor leg and the CSM's half
-	// takes it, exactly as the one the seed itself rejects.
+	// takes it, exactly as the one the seed itself rejects. Accepted is the
+	// CLEARING HOUSE's status, and the leg is the payer's bank's fact, so the
+	// two come off two copies.
 	payments, err := net.ListPayments(ctx)
 	if err != nil {
 		t.Fatalf("list payments: %v", err)
 	}
 	var target payment.Payment
+	var payer *payment.Network
 	for _, p := range payments {
-		if p.Status == payment.Accepted && p.DebtorLegTx != "" {
-			target = p
+		if p.Status != payment.Accepted {
+			continue
+		}
+		at := net.bank(payment.ParticipantID(p.DebtorDetails.Agent))
+		mine, err := at.GetPayment(ctx, p.ID)
+		if err != nil {
+			t.Fatalf("the payer's bank's copy of %s: %v", p.ID, err)
+		}
+		if mine.DebtorLegTx != "" {
+			target, payer = mine, at
 		}
 	}
 	if target.ID == "" {
 		t.Fatal("no accepted payment with a posted leg in the seed data")
 	}
-	if err := net.bank(payment.ParticipantID(target.DebtorDetails.Agent)).ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
+	if err := payer.ReverseDebtorLeg(ctx, target, "reversed already"); err != nil {
 		t.Fatalf("reverse the leg out from under the composite: %v", err)
 	}
 
@@ -264,15 +303,27 @@ func TestSeedRejectIsOneUnitOfWork(t *testing.T) {
 		t.Fatalf("reject = %v, want ErrTransactionAlreadyReversed", err)
 	}
 
-	after, err := net.GetPayment(ctx, target.ID)
+	// The payer's bank recorded nothing.
+	after, err := payer.GetPayment(ctx, target.ID)
 	if err != nil {
 		t.Fatalf("get payment: %v", err)
 	}
-	if after.Status != payment.Accepted {
-		t.Errorf("status after the failed rejection = %v, want Accepted", after.Status)
+	if after.Status == payment.Rejected {
+		t.Error("the payer's bank recorded a rejection whose reversal it could not post")
 	}
 	if after.RejectReason != "" {
-		t.Errorf("reject reason after the failed rejection = %q, want empty", after.RejectReason)
+		t.Errorf("reject reason at the payer's bank = %q, want empty", after.RejectReason)
+	}
+
+	// And the clearing house's decision stands, which is the half-happened
+	// outcome named above. It is stated so that a future unit of work quietly
+	// spanning both institutions would fail this test.
+	atCSM, err := net.GetPayment(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("the clearing house's copy: %v", err)
+	}
+	if atCSM.Status != payment.Rejected {
+		t.Errorf("status at the clearing house = %v, want Rejected", atCSM.Status)
 	}
 }
 
@@ -549,13 +600,29 @@ func TestClockWentLive(t *testing.T) {
 
 // listParticipants and listPayments keep the ctx/error plumbing out of the
 // assertions above.
+//
+// listParticipants goes through the STORES rather than through an institution,
+// and that is the shape of the question rather than a workaround. It used to be
+// the clearing house's ListBanks; that institution holds no banks table since
+// Task 18d, and the roster it does hold names addresses and says nothing about a
+// bank that was founded and never admitted. "Which banks exist" is the
+// composition root's question and no institution has it. See payment's allBanks
+// and auditReaders, which had the same problem and the same answer.
 func listParticipants(t *testing.T, ctx context.Context, net testNets) []*payment.Bank {
 	t.Helper()
-	parts, err := net.ListBanks(ctx)
+	bics, err := net.stores.Banks(ctx)
 	if err != nil {
 		t.Fatalf("list participants: %v", err)
 	}
-	return parts
+	out := make([]*payment.Bank, 0, len(bics))
+	for _, bic := range bics {
+		b, err := net.bank(payment.ParticipantID(bic)).GetBank(ctx, payment.ParticipantID(bic))
+		if err != nil {
+			t.Fatalf("reading %s's own row: %v", bic, err)
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 func listPayments(t *testing.T, ctx context.Context, net testNets) []payment.Payment {
@@ -575,7 +642,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	d := New()
 	stores := testenv.NewSet(t, d.Now)
 	nets := payment.NewNetworks(stores, d.Now)
-	net := testNets{Network: nets.ClearingHouse(), nets: nets}
+	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
 	msh := testMesh(t, nets)
 
 	if err := d.Populate(ctx, nets, msh); err != nil {
@@ -601,7 +668,7 @@ func TestPopulateIsIdempotent(t *testing.T) {
 	// would be timestamped 2025-09-15.
 	second := New()
 	secondNets := payment.NewNetworks(stores, second.Now)
-	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets}
+	secondNet := testNets{Network: secondNets.ClearingHouse(), nets: secondNets, stores: stores}
 	if err := second.Populate(ctx, secondNets, msh); err != nil {
 		t.Fatalf("Populate from a second process: %v", err)
 	}
@@ -702,7 +769,7 @@ func TestPopulateAfterResetRebuildsTheSameDataset(t *testing.T) {
 	d := New()
 	stores := testenv.NewSet(t, d.Now)
 	nets := payment.NewNetworks(stores, d.Now)
-	net := testNets{Network: nets.ClearingHouse(), nets: nets}
+	net := testNets{Network: nets.ClearingHouse(), nets: nets, stores: stores}
 	msh := testMesh(t, nets)
 
 	if err := d.Populate(ctx, nets, msh); err != nil {
