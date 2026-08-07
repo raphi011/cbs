@@ -675,19 +675,15 @@ var structCarriedBooks = map[string]structCarriedBook{
 // A ROW-WRITE reaches touched() through ID ALLOCATION and AUDIT, never through a
 // posting.
 //
-// The Put* methods for the payment layer's own rows — PutPayment, PutCycle,
-// PutSettlement, PutMandate, PutBank — take no book and record nothing
-// themselves. But no such row is written on its own: the domain allocates its id
-// first, with NextID(ctx, s.book(), …), and writes an audit event under BookID:
-// s.book(). Both of those ARE recorded — NextID positionally, AppendAudit through
-// its struct — so a handler that only writes rows records touched = [its own
-// institution's book].
+// The Put* methods for the payment layer's own rows take no book and record
+// nothing themselves. But no such row is written on its own: the domain
+// allocates its id first, with NextID(ctx, s.book(), …), and writes an audit
+// event under BookID: s.book(). Both of those ARE recorded, so a handler that
+// only writes rows records touched = [its own institution's book].
 //
 // Measured, not assumed: OpenCycle writes one ClearingCycle, posts nothing, and
 // records exactly [clearing-house]. TestWritingANetworkRowRecordsTheNetworkBook
-// is the pin. The allocation sites are payment/system.go's NextID(…, s.book(), …)
-// for "bank", "mnd", "cyc", "set" and "pay", and payment/audit.go, which takes an
-// "evt" id under the same book and then appends the event under it.
+// is the pin.
 //
 // # Each want-list names ONE institution, and the sets do not overlap
 //
@@ -695,34 +691,21 @@ var structCarriedBooks = map[string]structCarriedBook{
 // owner, each owner has a database, and payment.Network.book is the answer to
 // every "which book?".
 //
-// A previous version of this note argued at length that a BANK's set could not be
-// [its own book] — "not satisfiable and never was", because a payment's id and
-// its initiated event were network-scoped. It was right about the code it sat on
-// and the reason it gave is exactly what changed: those two are drawn in the
-// submitting bank's own book now, because that bank's database is where the
-// payment row is going. It is recorded rather than replaced, because a want-list
-// that shrank for the right reason is indistinguishable from one somebody relaxed
-// to make a test pass.
-//
 // # Nothing in this repository EVER posts under an institution's row-book
 //
 // ClearingHouseBook is not a chart of accounts and there is none to be had — the
-// csm schema has no ledger tables at all (payment.ClearingHouseBook says so).
-// Clearing posts nothing. Settlement does, in three places: the netting
-// transaction in the CENTRAL BANK's book, the mirror leg in each member's own
-// book, and each creditor leg in the creditor's book — the second and third made
-// by the member itself, on the statement it was sent. Do not go looking for a
-// posting in the clearing house's book: there is none to find.
+// csm schema has no ledger tables at all. Clearing posts nothing. Settlement
+// does, in three places: the netting transaction in the CENTRAL BANK's book, the
+// mirror leg in each member's own book, and each creditor leg in the creditor's
+// book — the second and third made by the member itself, on the statement it was
+// sent.
 //
 // # This is a property of today's domain layer, not a structural invariant
 //
-// What makes a row-write visible is that the domain happens to allocate an id and
-// append an audit event. Nothing enforces that. A handler that wrote its rows
-// without an audit event would record NOTHING and its assertion would fail with
-// an empty set — which reads exactly like an actor that did no work. Whoever hits
-// that needs both stories: the recorder is not blind to row-writes, but it sees
-// them only through the id and the audit event, so a write must keep its audit
-// event or the recorder cannot see it at all.
+// What makes a row-write visible is that the domain happens to allocate an id
+// and append an audit event, and nothing enforces that. A handler that wrote its
+// rows without an audit event would record NOTHING and its assertion would fail
+// with an empty set — which reads exactly like an actor that did no work.
 
 // ---------------------------------------------------------------------------
 // What each actor reaches
@@ -744,46 +727,33 @@ func assertBooksTouched(t *testing.T, who string, got, want []ledger.BookID) {
 // TestWhichBooksEachBankActuallyReaches measures which books a credit transfer
 // reaches, per actor.
 //
-// Under a shared store, nothing stops a handler reading another entity's books;
-// this is what notices. When each entity gets its own store, these assertions
-// become the definition of the split rather than a check on it.
-//
 // The name is deliberately a question rather than a claim. An assertion whose
 // name claims more than it measures is worse than no name, because the name is
 // the string a failure prints and a reader greps for.
 //
-// # The submitting bank, and the second entry that is finally gone
+// # The submitting bank
 //
-// The submitting bank's set is its own book alone. Both the payment's id and its
-// initiated event are drawn under s.book(), which for a submitting bank is that
-// bank's own: the payment row is going into that bank's database, so the counter
-// and the log that number and record it are that bank's too.
+// Its own book alone. Both the payment's id and its initiated event are drawn
+// under s.book(), which for a submitting bank is that bank's own: the payment
+// row is going into that bank's database, so the counter and the log that number
+// and record it are that bank's too.
 //
-// # The creditor's book is NOT in it
-//
-// A pacs.008 names the payee, so building one would otherwise mean reading the
-// payee's deposit account out of the PAYEE'S BANK'S register for the name on it
-// — the submitting bank reading a book that is not its own, on the happy path,
-// every time. A real payer's bank knows the payee's name because the payer typed
-// it in, so InitiatePaymentRequest carries the two counterparty NAMES and
-// CreditTransferMessage takes them from the payment. partiesOf reads nothing at
-// all, and CreditTransferMessage/DirectDebitMessage take neither a context nor a
-// Tx. The counterparty's BIC is asserted on the instruction too — see
-// TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
+// The CREDITOR's book is NOT in it. A pacs.008 names the payee, so building one
+// would otherwise mean reading the payee's deposit account out of the PAYEE'S
+// BANK'S register for the name on it — the submitting bank reading a book that
+// is not its own, on the happy path, every time. A real payer's bank knows the
+// payee's name because the payer typed it in, so the two counterparty NAMES are
+// on the instruction and partiesOf reads nothing at all. The counterparty's BIC
+// is asserted too — see TestAWrongCounterpartyAgentIsRefusedByTheBankItNames.
 //
 // # The receiving bank reaches its own book and no other
 //
 // Resolving an address in every member's register would make a receiving bank
 // read every bank's book to answer a question about its own customer. The
-// register searched is the one belonging to this actor's own payment.Network,
-// and there is no argument to pass a different one
-// (payment.ResolveIdentifierTx).
-//
-// Its set is its own book and nothing else. This bank's half writes a payment
-// row, draws its id and appends payment.initiated for it — the same three writes
-// the submitting bank makes, in this bank's own database. The identity is
-// constructor state (payment.Identity), so the register a handler can reach is
-// fixed before any message arrives.
+// register searched belongs to this actor's own payment.Network, and there is no
+// argument to pass a different one. Its set is its own book and nothing else:
+// this bank's half writes a payment row, draws its id and appends
+// payment.initiated for it, all in its own database.
 //
 // That does not make this assertion redundant, and the distinction is the one
 // ops.go draws between the two mechanisms. An identity narrows which BANK a
@@ -818,58 +788,43 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 // direction, and its result is the surprise: the sets are IDENTICAL to the
 // push's, bank for bank, and every reason behind them is mirrored.
 //
-// Measured before it was written down, and worth setting out member by member
-// because "the same" is the sort of claim that is easy to state and easy to get
-// wrong.
-//
 // # The SUBMITTING bank, which here is the payee's
 //
 // [creditorBook] — the same one the payer's bank reaches when it submits a
 // credit transfer, arrived at from the other side. Everything submission does
-// lands in it:
+// lands in it: the payment's id and its payment.initiated event, drawn under
+// s.book(); the mandate it loads to build the message, which is one of its own
+// rows; and SubmitPaymentTx's creditor half, which for a pull is this bank's own
+// customer.
 //
-//   - the payment's id and its payment.initiated event, drawn and appended under
-//     s.book(), which for this bank is its own. The mandate it loads to build the
-//     message is one of its own rows too, and contributes nothing further.
-//   - SubmitPaymentTx's creditor half, which for a pull is this bank's own
-//     customer: the payee's account, its asset, its address, and whether it can
-//     take a credit at all.
-//
-// The DEBTOR's book is not in it. Building the pacs.003 names the payer, and
-// reading the payer's deposit account out of the PAYER'S BANK'S register for the
-// name would be the mirror of the push-side crossing. Both counterparty names
-// are on the payment at submission, so DirectDebitMessage has no store call to
-// make it with.
+// The DEBTOR's book is not in it, for the mirror of the push-side reason: both
+// counterparty names are on the payment at submission, so DirectDebitMessage has
+// no store call to read one with.
 //
 // # The RECEIVING bank, which here is the payer's, and which POSTS
 //
-// Its own book, and neither the network's nor the central bank's — the same as
-// the push's receiver, and this one is the more informative half. Its resolution
-// is the same resolution: DirectDebitRequest resolves the DEBTOR — this bank's
-// own customer, the only party a pacs.003 routed here gives it standing over —
-// by address, in this bank's own register. See payment.DirectDebitRequest for
-// what a wrongly addressed collection meets instead.
+// Its own book and no other, and this is the more informative half. Its
+// resolution is the same resolution: DirectDebitRequest resolves the DEBTOR —
+// this bank's own customer, the only party a pacs.003 routed here gives it
+// standing over — by address, in this bank's own register.
 //
 // What is new is that this half MOVES MONEY and the set is still ONE book. The
 // debtor leg is posted here, and every id and audit event that posting needs is
 // taken under the payer's bank's own book — as are the payment row, its id and
-// its payment.initiated, which this half writes as well (payment.AcceptInboundTx).
-// That is the note above the tests made falsifiable from the other side: the
-// recorder sees a row-write through the id it allocates and the audit event it
-// appends, so a handler that both posts AND writes rows is the one that shows the
-// two arriving in the same place. They arrive in the same place because the same
-// institution owns both.
+// its payment.initiated. That is the note above the tests made falsifiable from
+// the other side: a handler that both posts AND writes rows is the one that
+// shows the two arriving in the same place, and they arrive there because the
+// same institution owns both.
+//
 // # ONE measurement, after the drain, and it distinguishes both wrong flows
 //
-// It is a single set per actor over the whole chain, taken after Drain, which is
-// the only barrier this package has and a real one: nothing is in flight when it
-// returns.
+// A single set per actor over the whole chain, taken after Drain, which is the
+// only barrier this package has and a real one.
 //
-// The obvious worry about a single set is that it is a UNION over both roles, so
-// a bank that played both might produce a union that collides with a legitimate
-// one. Measured, neither of the two ways the pull arm can be got wrong survives —
-// but they are caught by DIFFERENT assertions, for different reasons, and the
-// difference matters more than the result:
+// The obvious worry is that a single set is a UNION over both roles, so a bank
+// that played both might produce a union colliding with a legitimate one.
+// Neither of the two ways the pull arm can be got wrong survives, and they are
+// caught by DIFFERENT assertions:
 //
 //   - Route the submission to the payer's bank and it submits and then answers
 //     itself. Both banks' sets give it away: the payer's gains the writes only
@@ -879,38 +834,22 @@ func TestWhichBooksEachBankActuallyReaches(t *testing.T) {
 //     What catches it is the other bank — the payer's never runs, and its set is
 //     empty.
 //
-// So there is no single mechanism behind the two. One is caught by a set that no
-// single role produces, the other only by a bank that did nothing at all, and a
-// third way of getting this wrong is not covered merely because these two are.
+// So there is no single mechanism behind the two, and a third way of getting
+// this wrong is not covered merely because these two are. Each was watched
+// failing against the file as it stands.
 //
-// Each was watched failing against the file as it stands: the first at both of
-// the assertions below, the second at the payer's alone. Round 1 watched the same
-// two mutations against an earlier shape of this test and of this file.
+// # A two-phase version is neither needed nor safe
 //
-// # The two-phase version that was tried, and why it is not here
+// One combined measurement is enough, as above. A split would also be unsafe:
+// Mesh.Submit sends to the clearing house BEFORE it returns, so the moment
+// submitDirectDebit hands back the payer's bank may already be running its half
+// — concurrently with the reset and with any assertion beside it. Drain means
+// "nothing is in flight", and a phase boundary needs "nothing has started".
 //
-// One combined measurement over the submission AND the drain is enough to tell
-// the two banks apart: it has been watched failing under both mutations above.
-//
-// The split was also unsafe as written. Mesh.Submit sends to the clearing house
-// BEFORE it returns, so the moment submitDirectDebit hands back, the clearing
-// house may already be relaying and the payer's bank may already be running its
-// half — concurrently with the reset and with any assertion beside it. The mesh
-// offers no barrier for that: Drain means "nothing is in flight", and what a
-// phase boundary needs is "nothing has started".
-//
-// A test COULD build one, and it is worth naming rather than claiming
-// impossibility. Mesh.dispatch calls m.tap before it calls the handler, and the
-// harness installs the tap per test, so a tap that blocked the clearing house on
-// the first pacs.003 would hold the chain at exactly that boundary. It was not
-// worth doing, for the reason in the next paragraph — the only thing it would
-// gate is an assertion this system is entitled to violate — and it would buy
-// nothing against the first mutation either, since there the submitting half runs
-// synchronously inside Submit and the payer's own set below already catches it.
-//
-// And the invariant the split wanted is not one this system has. "The payer's
-// bank had touched nothing at the instant Submit returned" is a claim about
-// TIME in a concurrent mesh, and it is not true in general — the payer's bank is
+// A tap on Mesh.dispatch COULD build one, and it would buy nothing: the only
+// thing it would gate is an assertion this system is entitled to violate. "The
+// payer's bank had touched nothing at the instant Submit returned" is a claim
+// about TIME in a concurrent mesh and is not true in general — that bank is
 // entitled to have answered already. The claim that IS true is about
 // ATTRIBUTION, which is what the union above measures.
 func TestWhichBooksEachBankReachesInAPull(t *testing.T) {
@@ -1276,9 +1215,6 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 
 // TestWhichBooksAReturnReaches is the last flow's measurement.
 //
-// Measured, then written down. Every sentence below is about the run this test
-// makes and no wider.
-//
 // # The central bank reaches ONE book
 //
 // payment.SettleReturnTx makes one posting, reversing the movement between the
@@ -1288,59 +1224,44 @@ func TestEachBankBooksItsOwnSettlementAndNoOtherBooks(t *testing.T) {
 //
 // [CentralBankBook], and nothing else — no second entry for the row it writes,
 // because it writes none. A row reaches this recorder through the id its write
-// ALLOCATED and the audit event that write APPENDED, never through a read (see
-// the note above the tests), and SettleReturnTx writes no row and appends no
-// event. It reads the roster by BIC, posts once, and reads two balances back.
+// ALLOCATED and the audit event that write APPENDED, never through a read, and
+// SettleReturnTx writes no row and appends no event: it reads the roster by BIC,
+// posts once, and reads two balances back. Its durable trace is the idempotency
+// key on that posting, which is what makes a redelivery
+// ErrReturnAlreadySettled.
 //
 // TestWhichBooksTheCentralBankReachesWhenItSettles measures the same one book
-// for the cut-off, and the difference the sentence above was drawing is now
-// invisible in the sets: a cut-off writes a Settlement row and a return has none
-// to write, but both of them draw under this institution's own book, so a set
-// cannot tell them apart any more. The distinction is still real and still
-// worth knowing. The return's own durable trace is the idempotency key on the posting
-// above, which is what makes a redelivery ErrReturnAlreadySettled — see
-// payment.SettleReturnTx, which records that it needs no row.
+// for the cut-off. A cut-off writes a Settlement row and a return has none to
+// write, but both draw under this institution's own book, so a set cannot tell
+// them apart.
 //
-// # The clearing house reaches its OWN book, and that entry is NEW
+// # The clearing house reaches its OWN book
 //
-// The clearing house runs TWO handlers over this window and sends THREE messages
-// — it carries the pacs.004 to the settlement agent, addresses the answer back
-// to the bank that asked, and relays the pacs.004 on to the other bank — and
-// reads almost nothing: the first hop reads no store at all (a return's first
-// destination follows from the message DEFINITION), the third reads none either
-// (the other bank is whichever of OrgnlTxRef's two agents the message did not
-// come from, which is on the message), and the middle one reads the payment and
-// its scheme.
+// It runs TWO handlers over this window and sends THREE messages — it carries
+// the pacs.004 to the settlement agent, addresses the answer back to the bank
+// that asked, and relays the pacs.004 on to the other bank — and reads almost
+// nothing: the first hop reads no store at all, the third reads none either, and
+// the middle one reads the payment and its scheme.
 //
-// What changed is not a read. The clearing house keeps its own copy of every
-// payment it carries now, so being told a return went through is a WRITE it has
-// to make: payment.CompleteReturnTx marks that copy Returned and appends the
-// event. Before, the payee's bank wrote Returned onto the row all three
-// institutions shared and this actor's ledger of the fact was somebody else's
-// row. So the entry appearing here is this institution starting to keep its own
-// record of an outcome it is party to, and not a crossing opening up — the book
-// is ClearingHouseBook, which holds no accounts at all (payment.ClearingHouseBook).
+// The entry is a WRITE rather than a read. The clearing house keeps its own copy
+// of every payment it carries, so being told a return went through is something
+// it has to record: payment.CompleteReturnTx marks that copy Returned and
+// appends the event. The book is ClearingHouseBook, which holds no accounts at
+// all.
 //
-// What this set does NOT say is that the clearing house learned nothing before:
-// it read the payment, and it is the only actor in this package that remembers
-// anything between messages (csm.held). The claim is about BOOKS.
+// What this set does NOT say is that the clearing house learned nothing else: it
+// read the payment, and it is the only actor in this package that remembers
+// anything between messages (csm.held). The claim is about BOOKS. An actor that
+// DID reach into a bank's ledger is not invisible here — a clearing-house half
+// that listed the returning bank's ledgers comes out holding that BANK's book
+// and fails the second assertion below.
 //
-// An actor that DID reach into a bank's ledger over this window is not
-// invisible to these assertions, and that is measured rather than assumed: a
-// clearing-house half that listed the returning bank's ledgers before
-// forwarding the answer comes out holding that BANK's book too and fails the
-// second assertion below.
-//
-// The book is not NAMED here. A book id is a fact about the seed's arithmetic
+// The book is not NAMED here: a book id is a fact about the seed's arithmetic
 // and not about what this test measures, which is WHOSE book was reached.
 //
-// The two banks have moved to TestEachBankBooksItsOwnReturnAndNoOtherBooks,
-// which is where the assertion that they touch nothing turned into an assertion
-// that each touches its own.
-//
-// It measures over the RETURN only, resetting after the settlement it starts
-// from has drained, so no book reached while the payment was being carried can
-// satisfy or spoil it.
+// The two banks are in TestEachBankBooksItsOwnReturnAndNoOtherBooks. This
+// measures over the RETURN only, resetting after the settlement it starts from
+// has drained.
 func TestWhichBooksAReturnReaches(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.settledPayment(t)
@@ -1415,17 +1336,12 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 		h.booksTouchedBy(h.debtorBIC), []ledger.BookID{h.debtorBook})
 }
 
-// TestWhichBooksAdmissionReaches is the counterpart the sub-project's Tasks
-// table asks for, and the one measurement in this file whose subject is not a
-// payment.
+// TestWhichBooksAdmissionReaches is the one measurement in this file whose
+// subject is not a payment.
 //
 // Three institutions reach three sets, and the point is not the total: it is
 // that no actor is in more than one bank's book, and that the two institutions
 // that would otherwise be reached INTO reach their own.
-//
-// # The measured want-lists
-//
-// Three institutions, one book each:
 //
 //	the joining bank    [its own book]
 //	the central bank    [CentralBankBook]
@@ -1433,42 +1349,35 @@ func TestEachBankBooksItsOwnReturnAndNoOtherBooks(t *testing.T) {
 //
 // Each set names one institution and nothing beside it. The id and the audit
 // event an act draws come from the store that act is about to write, which is
-// its own institution's (payment.Network.book).
+// its own institution's (payment.Network.book). The mechanism the note above the
+// tests describes is unchanged and still the only way a row-write is visible
+// here: an act that stopped appending its audit event would vanish from this
+// measurement entirely.
 //
-// The mechanism the note above the tests describes is UNCHANGED and still the
-// only way a row-write is visible here: through the id it allocated and the audit
-// event it appended, never through the row itself. What changed is which book
-// those two name. An act that stopped appending its audit event would still
-// vanish from this measurement, which is the failure that note exists to warn
-// about.
-//
-// The central bank's list is [CentralBankBook] and not that alone by accident:
+// The central bank's list is [CentralBankBook] and not that by accident:
 // OpenSettlementAccountTx draws an id before the read its idempotency is decided
 // from (payment.admissionSequenceTx) and appends settlement_account.opened
 // afterwards. Neither half is optional — drop the event and the settlement
 // account exists in no immutable record; drop the id and the act loses the
-// ordering that made its idempotency its own rather than the store's. Both are
-// drawn in the settlement agent's own book.
+// ordering that made its idempotency its own rather than the store's.
 //
 // # What each set says
 //
 // The JOINING BANK reaches its own book: founding builds a chart of accounts,
-// four internal accounts per asset and a product, and the bank's id and two audit
-// events are drawn there too. That is Mesh.Admit's synchronous half plus the
-// handler that records the acknowledgement, and the two are the same actor.
+// four internal accounts per asset and a product, and the bank's id and two
+// audit events are drawn there too. That is Mesh.Admit's synchronous half plus
+// the handler that records the acknowledgement, and the two are the same actor.
 //
 // The CENTRAL BANK reaches CentralBankBook and never a bank's. It opens a
 // Liability in its own book and writes its own member row; the settlement
 // reference it produces reaches the bank as a MESSAGE.
 //
-// The CLEARING HOUSE reaches ClearingHouseBook alone. It writes one roster row
-// and posts nothing, which is what it does on every other flow in this package.
+// The CLEARING HOUSE reaches ClearingHouseBook alone: one roster row, no
+// posting.
 //
-// # And no institution reaches another bank's book
-//
-// Asserted separately, because that is the invariant the sub-project is for and
-// the set equalities above do not state it in a form that survives a third bank
-// in the fixture.
+// That no institution reaches another bank's book is asserted separately,
+// because the set equalities above do not state it in a form that survives a
+// third bank in the fixture.
 func TestWhichBooksAdmissionReaches(t *testing.T) {
 	h := newMeshHarness(t)
 

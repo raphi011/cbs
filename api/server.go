@@ -163,39 +163,35 @@ func (s *Server) as(net *payment.Network) *Server {
 	}
 }
 
-// Reset discards all persisted state and rebuilds the sample dataset. It must
-// go through the store: swapping an in-memory object graph would leave every
-// row in the database intact and still report success.
+// Reset discards all persisted state and rebuilds the sample dataset. It must go
+// through the store: swapping an in-memory object graph would leave every row in
+// the database intact and still report success.
 //
 // Resets serialize. They are the one operation in this system that is NOT a
-// single unit of work and cannot be made into one: the clear is its own unit of
-// work, and the rebuild is dozens more,
-// because the seed builder drives the ordinary public API. Two overlapping
-// resets therefore interleave — the second clears over the first's half-built
-// scenario and the first finishes writing on top of the second's — leaving
-// several copies of some entities and none of others. Eight concurrent resets
-// produced twelve participants where there should have been four.
+// single unit of work and cannot be made into one — the clear is its own unit of
+// work and the rebuild is dozens more, because the seed builder drives the
+// ordinary public API. Two overlapping resets interleave: the second clears over
+// the first's half-built scenario and the first finishes writing on top of the
+// second's, leaving several copies of some entities and none of others. Eight
+// concurrent resets produced twelve participants where there should have been
+// four.
 //
-// A mutex is the honest fix for that shape: the operation is rare, bounded, and
+// A mutex is the honest fix for that shape: the operation is rare, bounded and
 // idempotent, so a second caller waiting for the first and then redoing the work
-// is exactly the right answer. Note this makes resets exclusive within ONE
-// process; two servers sharing a database could still race, which is a property
-// of a teaching tool that does not pretend to be an HA deployment.
+// is the right answer. It makes resets exclusive within ONE process; two servers
+// sharing a database could still race, which is a property of a teaching tool.
 //
 // # It drains the mesh first, and the order is the point
 //
 // A reset that truncated with messages still in flight would leave actor
-// goroutines writing into a store the reset had already emptied — a pacs.002
-// landing on a payment row that no longer exists, a settlement posted into a
-// chart of accounts that has been deleted — and then the reseed would race those
-// same handlers for the tables it is rebuilding. The result is not an error, it
-// is a scenario with extra rows in it.
+// goroutines writing into a store the reset had already emptied, and then the
+// reseed would race those same handlers for the tables it is rebuilding. The
+// result is not an error, it is a scenario with extra rows in it.
 //
 // Draining is the ONLY way an in-flight conversation finishes: mesh.Stop cuts
-// them (see its doc), and there is nothing here to stop anyway — the mesh
-// outlives the reset, exactly as the store does. Drain blocks until nothing is
-// in flight and needs no deadline of its own, because handleReset already gives
-// the whole operation one.
+// them, and there is nothing here to stop anyway — the mesh outlives the reset,
+// exactly as the store does. Drain needs no deadline of its own, because
+// handleReset already gives the whole operation one.
 //
 // # The dead letters are REPORTED, and the reset does not happen
 //
@@ -204,17 +200,15 @@ func (s *Server) as(net *payment.Network) *Server {
 // swallowed here is a failure whose evidence is deleted in the next statement.
 // It is logged and returned, and the truncate does not run.
 //
-// Which makes the failure loud and still leaves the operator a way out, because
-// the mesh TAKES its dead letters rather than accumulating them: the refused
-// reset has already cleared them off the mesh, so calling it again drains a
-// quiet mesh and goes through. One 5xx that names what went wrong, then a reset
-// that works — rather than a reset that quietly succeeded over a payment that
-// had failed halfway.
+// That leaves the operator a way out, because the mesh TAKES its dead letters
+// rather than accumulating them: the refused reset has already cleared them off,
+// so calling it again drains a quiet mesh and goes through. One 5xx that names
+// what went wrong, then a reset that works.
 //
 // It is also what makes the ordering testable. With the drain moved after the
 // truncate, handlers write into an emptied store, fail, and are collected by
 // that same drain — so a Reset that swallowed them would report success over
-// exactly the damage this ordering exists to prevent, and no test could see it.
+// exactly the damage this ordering exists to prevent.
 // TestResetDrainsBeforeTruncating fails on the swap because of this.
 //
 // # The mesh is rebuilt too, and forgetting comes before the truncate
@@ -228,29 +222,6 @@ func (s *Server) as(net *payment.Network) *Server {
 // been deleted.
 //
 // ForgetBanks runs BEFORE the truncate, which leaves a window in which the mesh
-// routes to no member bank at all. That is the right window to leave: a
-// submission during it is refused for a reason that is true — there is no bank
-// actor, because the network is being replaced — where the alternative is a
-// message delivered to an actor whose bank is being deleted underneath it.
-//
-// Neither institution is forgotten. The clearing house and the central bank have
-// no participant row, so a reset does not touch them; they are the configuration
-// rather than the data.
-//
-// # The reseed ends that window itself, and JoinRoster is gone from here
-//
-// It does NOT call mesh.JoinRoster afterwards. Admission is a conversation:
-// populate is handed this mesh and admits through its door, so a reseeded bank
-// gets its actor in the same call that founds it. JoinRoster would then FAIL the
-// reset — it registers the whole roster and expects to find no member bank
-// already registered, so it would refuse all-or-none on the first address over
-// work that had entirely succeeded.
-//
-// What that asks of populate is one thing, and it is worth stating because
-// nothing here can check it: a reseed must make its banks REACHABLE, which means
-// admitting them through the mesh it is given rather than writing their rows.
-// One that founds them some other way leaves banks that answer every read and
-// carry no payment, and no error anywhere says so.
 func (s *Server) Reset(ctx context.Context) error {
 	s.resetMu.Lock()
 	defer s.resetMu.Unlock()

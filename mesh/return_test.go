@@ -41,48 +41,33 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 }
 
 // TestTheMessagesAReturnPutsOnTheWire names the conversation, the way
-// TestTheMessagesACutOffPutsOnTheWire names the cut-off and
-// TestTheCreditTransferChainIsFourMessages the push. It is what PINS the
+// TestTheMessagesACutOffPutsOnTheWire names the cut-off. It is what PINS the
 // routing decisions this flow makes; the status assertions elsewhere in this
 // file cannot see who sent what to whom.
 //
-// Seven messages, of which four are the chain a reader might expect. The name is
-// a count of what goes on the wire, because a name that claims more than it
-// measures is worse than none — it is the string a failure prints and a reader
-// greps for.
-//
-// # Seven messages, and each one is somebody having to be told
+// Seven messages, of which four are the chain a reader might expect:
 //
 //	payee's bank  --pacs.004-->  clearing house  --pacs.004-->  central bank
 //	                             both banks      <--camt.053--  central bank
 //	payee's bank  <--pacs.002--  clearing house  <--pacs.002--  central bank
-//	payer's bank  <--pacs.004--  clearing house
+//	payer's bank  <--pacs.004-->  clearing house
 //
-// The PAYEE's bank starts it, because a return is sent by the bank that
-// RECEIVED the original instruction — the SEPA rule book's own division, and
-// the opposite end from the one that submitted. See returnerOf, and
-// TestAReturnedCollectionIsSentByThePayersBank for the other direction.
+// The PAYEE's bank starts it, because a return is sent by the bank that RECEIVED
+// the original instruction — the SEPA rule book's own division, and the opposite
+// end from the one that submitted. See returnerOf.
 //
-// It goes to the CENTRAL BANK, because a return moves reserves. That is the
-// whole argument for this flow existing at the settlement agent rather than at
-// the clearing house, and payment/doc.go records the consequence: returns settle
-// immediately here rather than being netted in a later R-cycle.
-//
-// It goes THROUGH the clearing house rather than bank-to-central-bank directly.
-// A member bank in this mesh addresses the clearing house and nothing else, and
-// the routing table lives in one actor — which is why RC01 is a thing only that
-// actor can say. That claim is this test's and not the book assertions': point
-// the returning bank straight at the central bank and the return still happens,
-// and every book assertion stays green, because an actor that is skipped touches
-// no book either.
+// It goes to the CENTRAL BANK, because a return moves reserves — which is why
+// this flow lives at the settlement agent — and THROUGH the clearing house
+// rather than bank-to-central-bank directly, because a member bank in this mesh
+// addresses the clearing house and nothing else. That claim is this test's and
+// not the book assertions': point the returning bank straight at the central
+// bank and every book assertion stays green, because an actor that is skipped
+// touches no book either.
 //
 // The two CAMT.053s are the reserve movement stated to the two banks whose
-// accounts moved, exactly as at a cut-off — a return is a cut-off of one payment
-// as far as reserves are concerned. Each books its own mirror leg from its own.
-//
-// The PAYER's bank is in TWO of the seven. It is sent the pacs.004 because it
-// holds the leg the returning bank does not — the refund into its own customer's
-// account — and it is sent that message LAST, out of the handler of the
+// accounts moved, exactly as at a cut-off. The PAYER's bank is in TWO of the
+// seven: it is sent the pacs.004 because it holds the leg the returning bank
+// does not, and it is sent that message LAST, out of the handler of the
 // settlement agent's ACSC, because the clearing house holds it until the return
 // is final. See csm.relayReturn.
 //
@@ -91,53 +76,39 @@ func TestAReturnIsExecutedByTheCentralBank(t *testing.T) {
 // The tap fires in Mesh.dispatch, on the RECEIVING actor's goroutine, so what
 // this test observes is handling order and not send order. Messages to different
 // actors race, and a positional assertion over all seven would be flaky rather
-// than strict. Three relations survive that:
-//
-//   - the returning bank's pacs.004 is handled FIRST, because every other
-//     message here is sent from the handler of one before it;
-//   - the central bank's pacs.002 to the clearing house is handled BEFORE both
-//     messages the clearing house sends, because both are sent from its handler;
-//   - the PAYER's BANK's camt.053 is handled before the pacs.004 addressed to
-//     that same bank. This one is not a chain argument and it is the
-//     load-bearing one.
+// than strict. Three relations survive: the returning bank's pacs.004 is handled
+// FIRST, the central bank's pacs.002 is handled before both messages the
+// clearing house sends — both chain arguments — and the PAYER's BANK's camt.053
+// is handled before the pacs.004 addressed to that same bank, which is not a
+// chain argument and is the load-bearing one.
 //
 // # Why that pair CAN be asserted when the set cannot be ordered
 //
-// Not merely "both go to one actor" — two messages racing into one inbox from
-// two goroutines would arrive in either order. What forces this pair is a
-// happens-before chain:
+// Not merely "both go to one actor": two messages racing into one inbox from two
+// goroutines would arrive in either order. What forces this pair is a
+// happens-before chain — Mesh.send pushes onto the target's queue SYNCHRONOUSLY
+// in the sender's own goroutine; centralBank.receiveReturn calls advise before
+// answer, so both camt.053s are pushed before the pacs.002 is; the relayed
+// pacs.004 does not exist until the clearing house HANDLES that pacs.002; and
+// Mesh.run is one goroutine popping each queue FIFO.
 //
-//  1. Mesh.send pushes onto the target's queue SYNCHRONOUSLY, in the sender's
-//     own goroutine (mesh.sendRaw).
-//  2. centralBank.receiveReturn calls advise before answer, so both camt.053s
-//     are pushed into the banks' queues before the pacs.002 is pushed into the
-//     clearing house's.
-//  3. The relayed pacs.004 does not exist until the clearing house HANDLES that
-//     pacs.002, which cannot happen before step 2 pushed it.
-//  4. So the camt.053 is already in the payer's bank's queue before the relay is
-//     created, and Mesh.run is one goroutine popping that queue FIFO.
-//
-// A reader who tries to falsify this by simply swapping advise and answer will
-// find the test still passes, and should not conclude the assertion is weak.
-// Swapping makes the pair a RACE rather than an inversion — the central bank
-// pushes the camt.053 while the clearing house is being scheduled to produce the
-// relay — and the central bank wins that race almost always. Inverting it takes
-// a delay between the answer and the advice, and with one the assertion fails
-// every run. That is the same trap TestTheMessagesACutOffPutsOnTheWire records,
-// and it was verified here the same way.
+// A reader who tries to falsify this by swapping advise and answer will find the
+// test still passes, and should not conclude the assertion is weak: swapping
+// makes the pair a RACE rather than an inversion, and the central bank wins that
+// race almost always. Inverting it takes a delay between the answer and the
+// advice, and with one the assertion fails every run.
 //
 // What it pins is why centralBank.advise sends the statements before it answers.
 // The payer's bank receives the reserves back, so its camt.053 CREDITS the
-// clearing suspense that its refund then draws on; the relayed pacs.004 is what
-// makes it draw. Reverse the two and that bank pays its customer out of a
+// clearing suspense that its refund then draws on, and the relayed pacs.004 is
+// what makes it draw. Reverse the two and that bank pays its customer out of a
 // suspense the return has not yet credited — which commits, because suspense is
-// a Liability and the ledger does not guard those, and which for that interval
-// has the bank's own books saying it lent its customer the money.
+// a Liability the ledger does not guard, and which for that interval has the
+// bank's own books saying it lent its customer the money.
 //
-// The PAYEE's bank receives a pair too — its own camt.053 and the ACSC — and the
-// same chain orders it. It is not asserted because nothing depends on it: that
-// bank posted its clawback before any of this and has nothing to post from
-// either message. What remains genuinely undetermined is the INTERLEAVING across
+// The PAYEE's bank receives a pair too and the same chain orders it. It is not
+// asserted because nothing depends on it: that bank posted its clawback before
+// any of this. What remains genuinely undetermined is the INTERLEAVING across
 // actors.
 func TestTheMessagesAReturnPutsOnTheWire(t *testing.T) {
 	h := newMeshHarness(t)

@@ -576,95 +576,62 @@ func TestARefusedSettlementLeavesTheCycleClosedAndThePaymentsCleared(t *testing.
 // TestTheMessagesACutOffPutsOnTheWire names the conversation, the way
 // TestTheCreditTransferChainIsFourMessages names the push.
 //
-// It was TestTheSettlementChainIsTwoMessages, and the name outran the code the
-// moment this task gave the ACSC a second recipient: six hops, of which only two
-// are the chain the name described. Renamed for the reason every other rename in
-// this package had — the name is the string a failure prints and a reader greps
-// for, and one that claims more than it measures is worse than none.
-//
-// Two messages between the institutions — the instruction and its answer — and
-// then two fan-outs from them, which are two different things addressed to two
-// different sets of banks:
+// Six hops, of which two are the chain a reader might expect: the instruction
+// and its answer, and then two fan-outs addressed to two different sets of
+// banks.
 //
 //   - one camt.053 per MEMBER whose position moved, from the CENTRAL BANK. It is
 //     a statement of that member's own reserve account, and it is what the member
-//     books its mirror leg from (bank.receiveStatement). Both banks get one here,
-//     because both had a non-zero net position.
+//     books its mirror leg from (bank.receiveStatement).
 //   - one pacs.002 per PAYMENT per BANK THAT HAS SOMETHING TO DO ABOUT IT, from
-//     the CLEARING HOUSE. That is the bank that submitted, which is waiting for
-//     the answer to its instruction, and the CREDITOR's bank, which has a leg to
-//     post: settlement moved the reserves, and the payee is paid when its own
-//     bank releases the money out of its own suspense. On this push those are two
-//     institutions and there are two messages for the one payment; on a pull they
-//     are one and there is one. That fan-out could not be the central bank's: it
-//     is answering about a cycle, and it holds no method that could turn one into
-//     payments.
+//     the CLEARING HOUSE: the bank that submitted, waiting for the answer to its
+//     instruction, and the CREDITOR's bank, which has a leg to post. On this push
+//     those are two institutions and there are two messages for the one payment;
+//     on a pull they are one and there is one. That fan-out could not be the
+//     central bank's — it is answering about a cycle and holds no method that
+//     could turn one into payments.
 //
 // # It is a SET, plus the three orderings that are actually forced
 //
 // The three messages of the chain are each sent by the handler of the one
-// before, so their whole order is forced. The statements are not in that chain:
-// they go to other actors' inboxes, and those goroutines run concurrently with
-// the clearing house's. The tap fires in Mesh.dispatch, on the RECEIVING actor's
-// goroutine, so what this test observes is handling order and not send order,
-// and a positional assertion over all six would be flaky rather than strict.
+// before, so their order is forced. The statements are not in that chain: they
+// go to other actors' inboxes, and those goroutines run concurrently. The tap
+// fires in Mesh.dispatch, on the RECEIVING actor's goroutine, so what this test
+// observes is handling order and not send order, and a positional assertion over
+// all six would be flaky rather than strict.
 //
-// Three relations survive that, and all three are asserted because "it is a set"
-// would give away more than the concurrency takes:
-//
-//   - the INSTRUCTION is handled first, because every other message here is sent
-//     from the handler that receives it;
-//   - the central bank's pacs.002 to the clearing house is handled BEFORE the
-//     clearing house's pacs.002 to the submitting bank, because the second is
-//     sent from the first's handler. Same argument, one hop further along.
-//   - the PAYEE's BANK's camt.053 is handled before the ACSC addressed to that
-//     same bank. This one is not a chain argument and it is the load-bearing
-//     one; see below.
+// Three relations survive: the INSTRUCTION is handled first; the central bank's
+// pacs.002 is handled before the clearing house's — both chain arguments — and
+// the PAYEE's BANK's camt.053 is handled before the ACSC addressed to that same
+// bank, which is not a chain argument and is the load-bearing one.
 //
 // # Why that pair CAN be asserted when the set cannot be ordered
 //
-// Not merely "both go to one actor". That is necessary and not sufficient — two
-// messages racing into one inbox from two goroutines would arrive in either
-// order. What forces this pair is a happens-before chain, and it is worth
-// spelling out because the obvious way to try to break it does not:
+// Not merely "both go to one actor": two messages racing into one inbox from two
+// goroutines would arrive in either order. What forces this pair is a
+// happens-before chain — Mesh.send pushes onto the target's queue SYNCHRONOUSLY
+// in the sender's own goroutine; centralBank.receiveSettlement calls advise
+// before answer, so the camt.053 is pushed before the pacs.002 is; the ACSC does
+// not exist until the clearing house HANDLES that pacs.002; and Mesh.run is one
+// goroutine popping that queue FIFO with Mesh.dispatch firing the tap
+// immediately before the handler. Deterministic, then, not lucky.
 //
-//  1. Mesh.send pushes onto the target's queue SYNCHRONOUSLY, in the sender's
-//     own goroutine (mesh.sendRaw).
-//  2. centralBank.receiveSettlement calls advise before answer, so the camt.053
-//     is pushed into the payee's bank's queue before the pacs.002 is pushed into
-//     the clearing house's.
-//  3. The ACSC does not exist until the clearing house HANDLES that pacs.002,
-//     which cannot happen before step 2 pushed it.
-//  4. So the camt.053 is already in the payee's bank's queue before the ACSC is
-//     created, and Mesh.run is one goroutine popping that queue FIFO with
-//     Mesh.dispatch firing the tap immediately before the handler.
+// A reader who tries to falsify this by swapping advise and answer will find the
+// test still passes, and should not conclude the assertion is weak: swapping
+// makes the pair a RACE rather than an inversion, and the central bank wins that
+// race almost always. Inverting it takes a delay between the two.
 //
-// Deterministic, then, not lucky — and h.seen's relative index for two messages
-// to the same actor is exactly that actor's handling order.
+// What it pins is why centralBank.advise sends the statements before it answers.
+// The payee's bank is a net RECEIVER here, so its camt.053 CREDITS the clearing
+// suspense that the creditor leg then draws on, and the ACSC is what makes it
+// draw. Reverse the two and that bank pays its customer out of a suspense the
+// cut-off has not yet credited — which commits, because suspense is a Liability
+// the ledger does not guard, and which for that interval has the bank's own
+// books saying it lent its customer the money.
 //
-// A reader who tries to falsify this by simply swapping advise and answer will
-// find the test still passes, and should not conclude the assertion is weak.
-// Swapping makes the pair a RACE rather than an inversion — the central bank
-// pushes the camt.053 while the clearing house is being scheduled to produce the
-// ACSC — and the central bank wins that race almost always. Inverting it takes a
-// delay between the answer and the advice, and with one the assertion fails
-// every run.
-//
-// What it pins is the reason centralBank.advise sends the statements before it
-// answers the clearing house. The payee's bank is a net RECEIVER here, so its
-// camt.053 CREDITS the clearing suspense that the creditor leg then draws on;
-// the ACSC is what makes it draw. Reverse the two and that bank pays its
-// customer out of a suspense the cut-off has not yet credited — which commits,
-// because suspense is a Liability and the ledger does not guard those, and which
-// for that interval has the bank's own books saying it lent its customer the
-// money.
-//
-// The PAYER's bank receives a pair too — a camt.053 and, because it submitted,
-// the same ACSC — and the same chain orders it. It is not asserted because
-// nothing depends on it: that bank has no leg to post from the ACSC, so the
-// order buys it nothing. What remains genuinely undetermined is the
-// INTERLEAVING across actors: where either of the payer's bank's two messages
-// falls relative to either of the payee's bank's.
+// The PAYER's bank receives a pair too and the same chain orders it. It is not
+// asserted because it has no leg to post from the ACSC. What remains genuinely
+// undetermined is the INTERLEAVING across actors.
 func TestTheMessagesACutOffPutsOnTheWire(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
