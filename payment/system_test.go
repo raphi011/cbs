@@ -524,19 +524,47 @@ func TestALodgementQuotingNoAccountIsRefused(t *testing.T) {
 // reserve mirror unmoved and every payee unpaid, which is not a settled cut-off
 // at all. See bookTheAdvices and payTheCreditors, and seed's builder.settle,
 // which is the same composite made for the same reason.
+// # A cut-off with nothing to settle is not settled, and that is not a failure
+//
+// Every payment in a cycle can be ON-US — one bank at both ends — in which case
+// that bank's net position is zero and the cycle names no legs at all. There is
+// then no instruction for the clearing house to build: SettlementMessage refuses
+// an empty batch by name, and the settlement agent refuses one with
+// ErrInvalidSettlement. So this skips the agent entirely and goes straight to
+// paying the creditors, which is the whole of what such a cut-off has to do —
+// the money never left the bank, so no reserves move and no member is advised.
+//
+// It returns the zero Settlement in that case. The one fixture that reaches it
+// (TestAPullRefundIsHonouredWhenOneBankIsBothParties) does not read the return
+// value, and a caller that did would be asking for a settlement that does not
+// exist.
 func runCycle(t *testing.T, sys *testSystem, scheme SchemeID, submit func()) Settlement {
 	t.Helper()
 	ctx := context.Background()
 	cyc, err := sys.OpenCycle(ctx, scheme)
 	assertNoError(t, err)
 	submit()
-	_, err = sys.CloseCycle(ctx, cyc.ID)
+	closed, err := sys.CloseCycle(ctx, cyc.ID)
 	assertNoError(t, err)
-	st, statements, err := sys.settleCycle(ctx, cyc.ID)
-	assertNoError(t, err)
-	bookTheAdvices(t, sys, statements)
+
+	var st Settlement
+	if len(SettlementLegsOf(closed, sys.assetOf(closed.Scheme), testCentralBankBIC)) > 0 {
+		var statements []SettlementStatement
+		st, statements, err = sys.settleCycle(ctx, cyc.ID)
+		assertNoError(t, err)
+		bookTheAdvices(t, sys, statements)
+	}
 	payTheCreditors(t, sys, cyc.ID)
 	return st
+}
+
+// assetOf is the asset a scheme clears in, which is what a settlement leg is
+// denominated in. See settleCycle.
+func (s *testSystem) assetOf(id SchemeID) ledger.AssetCode {
+	if scheme, ok := s.Scheme(id); ok {
+		return scheme.Asset()
+	}
+	return ""
 }
 
 // returnWholePayment is every institution's half of an R-transaction, played in
@@ -2582,7 +2610,9 @@ func TestPaymentRejectsCreditorAccountNotInSchemeAsset(t *testing.T) {
 
 	alpha, err := storetest.Admit(ctx, sys.nets, "Alpha", testBIC, euroOnly)
 	assertNoError(t, err)
-	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC, euroOnly)
+	// Distinct addresses, because they are distinct institutions: this fixture's
+	// whole subject is the check the PAYEE's bank makes on its own register.
+	beta, err := storetest.Admit(ctx, sys.nets, "Beta", testBIC2, euroOnly)
 	assertNoError(t, err)
 
 	// The payer's leg has to be flawless for this test to be about the payee's.
@@ -2764,7 +2794,7 @@ func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 // counterparty is since Task 14. Its BANK is recorded, as an address — see
 // Mandate.DebtorAgent.
 //
-// # What this test lost at Task 18, and what has to give it back
+// # What this test lost at Task 18 and got back at Task 18d
 //
 // It used to assert two more things: that the debtor's bank READING the mandate
 // was refused with ErrNotThisBanksMandate, and that its listing held none. Both
@@ -2774,13 +2804,21 @@ func TestAMismatchedMandateIsRefusedAtItsFirstCollection(t *testing.T) {
 // column would hold one value for ever (see the mandates statement in the bank
 // schema).
 //
-// What is supposed to make those two true is the STORE: another bank's mandate
-// is not a row this database holds, so the read is a not-found and the listing is
-// empty by construction. The wiring that gives each entity a database has not
-// landed, so both are asserted here as the transitional truth rather than as the
-// intended one — a shared store answers about rows it should not see. See
-// Network.ListMandates, which names the same gap, and restore these two
-// assertions as isolation claims when the split lands.
+// The note here said the STORE was supposed to make them true again, and that
+// the wiring giving each entity a database had not landed. It has. Another
+// bank's mandate is not a row this database holds, so the read is a not-found
+// and the listing is empty BY CONSTRUCTION rather than by a comparison — which
+// is what the whole task is for, and is a stronger guarantee than the column
+// ever was: there is no value to get wrong.
+//
+// # And the debtor bank's REFUSAL to record one is no longer provokable here
+//
+// It was `a.CreateMandate` with the creditor's account id, refused because that
+// account is not in the recording bank's register. Account ids are each bank's
+// own counter now, so bank B's fifth account and bank A's fifth account are one
+// string — and bank A resolved it happily, to its own customer, and recorded a
+// perfectly valid mandate over two of its own accounts. The refusal is real and
+// is measured on a ref that names nothing anywhere.
 func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	ctx := context.Background()
 	sys := testNetwork(t)
@@ -2789,11 +2827,12 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 	debtor := PartyRef{Account: alice}
 	creditor := PartyRef{Account: bob}
 
-	// The DEBTOR's bank cannot record it — not because it is told whose mandate
-	// this is, but because the creditor account named is not one of its own, and
-	// a mandate's creditor is checked against the recording bank's own register.
-	// That is the same refusal from the only table that can still answer it.
-	_, err := sys.bank(a.BIC).CreateMandate(ctx, a.BIC, debtor, creditor, 0)
+	// A mandate's creditor is checked against the RECORDING bank's own register,
+	// and a ref no register holds is refused. It cannot be bank B's account id:
+	// that string names one of bank A's own customers too, because each bank's
+	// accounts are numbered from its own counter. See the note above.
+	_, err := sys.bank(a.BIC).CreateMandate(ctx, a.BIC, debtor,
+		PartyRef{Account: "dep_no_such_account"}, 0)
 	assertError(t, err, ErrAccountNotInParticipant)
 	// The clearing house cannot either, and that refusal is unchanged: it is not
 	// a member bank, so this is not its act at all.
@@ -2813,14 +2852,19 @@ func TestAMandateBelongsToItsCreditorsBankAndToNoOther(t *testing.T) {
 		t.Errorf("the clearing house revoked a mandate: %v", err)
 	}
 
-	// The creditor's bank sees its own. The debtor's bank sees it too, today,
-	// and that is the transitional gap named above rather than a rule.
+	// The creditor's bank sees its own, and the debtor's bank sees nothing —
+	// which is the isolation claim the note above said to restore, made out of
+	// the store rather than out of a comparison.
 	mine, err := sys.bank(b.BIC).ListMandates(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "the creditor bank's mandates", len(mine), 1)
 	theirs, err := sys.bank(a.BIC).ListMandates(ctx)
 	assertNoError(t, err)
-	assertEqual(t, "the debtor bank's mandates, until each bank has a store", len(theirs), 1)
+	assertEqual(t, "the debtor bank's mandates", len(theirs), 0)
+	// And it cannot read the one it is a party to by name either.
+	if _, err := sys.bank(a.BIC).GetMandate(ctx, m.ID); !errors.Is(err, ErrMandateNotFound) {
+		t.Errorf("the debtor's bank read the creditor's mandate: %v", err)
+	}
 }
 
 // What the ledger does and does not catch about a euro-to-bitcoin payment.
@@ -2874,8 +2918,10 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 	assertEqual(t, "bank A suspense after initiation", bookBalance(t, a.Ledger, accountsOf(t, a).Suspense), 30000)
 
 	// Point the creditor end at the bitcoin account, the state ErrAssetMismatch
-	// exists to prevent.
-	assertNoError(t, sys.Store().Update(ctx, func(ctx context.Context, tx Tx) error {
+	// exists to prevent. On the PAYEE'S BANK's copy, because that is the row its
+	// own PostCreditorLegTx reads — poking the clearing house's changed a row
+	// nothing in this flow looks at.
+	assertNoError(t, sys.bank(b.BIC).Store().Update(ctx, func(ctx context.Context, tx Tx) error {
 		stored, err := tx.GetPayment(ctx, pay.ID)
 		if err != nil {
 			return err
@@ -2899,12 +2945,12 @@ func TestCrossAssetPaymentSurvivesInitiationAndFailsAtThePayeesBank(t *testing.T
 
 	// The one payment fails, not the batch: the cycle settled, and this payment
 	// is still Cleared with nobody credited in either asset.
-	settlements, err := sys.ListSettlements(ctx)
+	settlements, err := sys.cb().ListSettlements(ctx)
 	assertNoError(t, err)
 	assertEqual(t, "settlements recorded", len(settlements), 1)
-	after, err := sys.GetPayment(ctx, pay.ID)
-	assertNoError(t, err)
-	assertEqual(t, "payment status", after.Status, Cleared)
+	// The clearing house's copy, which is where Cleared is a status at all: it
+	// is that institution's record of having taken the payment into the cut-off.
+	assertEqual(t, "payment status", mustGetPaymentAt(t, ctx, sys.Network, pay.ID).Status, Cleared)
 	assertEqual(t, "bob's euro account was not credited", customerBalance(t, b, bob), 0)
 	assertEqual(t, "bob's bitcoin account was not credited", customerBalance(t, b, bobBTC.ID), 0)
 }
@@ -3518,7 +3564,13 @@ func TestMandateSurvivesAReissuedDebtorIdentifier(t *testing.T) {
 
 	// The collection went through, and it records the NEW address — the mandate
 	// authorises the account, and each payment records how it was reached.
-	assertEqual(t, "reissued debtor address on the payment", pay.Debtor.Identifier, reissued)
+	//
+	// On the PAYER'S BANK's copy: this is a pull, so that bank is the RECEIVING
+	// one and the back-fill is its own act on its own register. The collector's
+	// copy and the clearing house's carry what the pacs.003 quoted, which here
+	// is nothing. See TestInitiateBackFillsTheAddressOnBothLegs.
+	assertEqual(t, "reissued debtor address on the payment",
+		mustGetPaymentAt(t, ctx, sys.bank(a.BIC), pay.ID).Debtor.Identifier, reissued)
 	assertEqual(t, "alice", customerBalance(t, a, alice), 75000)
 	assertEqual(t, "biller", customerBalance(t, b, biller), 25000)
 }
@@ -5071,9 +5123,22 @@ func TestAPullRefundIsHonouredEvenWhenTheBillerCannotFundIt(t *testing.T) {
 	// receivable: a debit posted into it would strand exactly as a credit does.
 	assertEqual(t, "the biller's closed account", customerBalance(t, b, biller), 0)
 
-	// One leg of two, so the payment has not reached Returned: the payer's bank
-	// has not been paid yet.
-	assertEqual(t, "the payment's status after the first leg", got.Status, Settled)
+	// THIS BANK's copy reaches Returned on this leg, and that is position in the
+	// conversation rather than a count of legs. On a pull the returner is the
+	// PAYER's bank; the creditor's bank is second by construction, because it is
+	// sent the pacs.004 only after the settlement agent has answered ACSC. So a
+	// bank posting the clawback is a bank being told the return is over, whatever
+	// order a fixture calls the two acts in. See PostReturnLegTx.
+	//
+	// It used to be read off the row — the leg that found the other side's
+	// transaction id already written was the one arriving last — and each bank
+	// holds its own row now, so both would see one leg and neither would ever be
+	// second.
+	assertEqual(t, "the payment's status at the clawing-back bank", got.Status, Returned)
+	// And the payer's bank has not been told anything: its own copy is still
+	// Settled, which is what "one leg of two" meant when there was one row.
+	assertEqual(t, "the payment's status at the payer's bank",
+		mustGetPaymentAt(t, ctx, sys.bank(a.BIC), pay.ID).Status, Settled)
 	if got.ReturnClawbackTx == "" {
 		t.Fatal("the clawback posted and left no transaction id on the payment; " +
 			"the other leg has no way to know it is the second")

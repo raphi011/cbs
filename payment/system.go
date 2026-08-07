@@ -3905,12 +3905,38 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	}
 
 	// Has this bank answered already? The row is the witness; see the note above.
+	//
+	// # Except when this bank SUBMITTED it, which is the on-us payment
+	//
+	// The row is the witness because it did not exist before this half ran. That
+	// is true of every payment with two banks in it and false of one whose payer
+	// and payee are the same institution: there the row was written by this
+	// bank's own SubmitPaymentTx, so an unqualified "the row is here" reads a
+	// submission as an answer and the receiving half never runs. On a pull that
+	// silently skips the debtor leg — the payer is never debited — and the
+	// collection then settles, pays the payee and can be returned, out of money
+	// nobody took.
+	//
+	// Mesh.Submit refuses an on-us payment, so nothing in the running system
+	// reaches this; the domain is where it has to be right all the same, which
+	// is the argument TestAPullRefundIsHonouredWhenOneBankIsBothParties makes
+	// about the other half of the same flow.
+	//
+	// What answers it is the same fact the receiving half writes: on a PULL the
+	// debtor leg, which only this half posts. On a push the receiving half posts
+	// nothing at all, so a second delivery to the submitting bank has genuinely
+	// nothing to do and returning is right. That is the OLD witness, kept for
+	// exactly the one case the row cannot cover rather than in place of it.
+	push := scheme.Direction() == Push
 	switch existing, err := tx.GetPayment(ctx, id); {
 	case err == nil:
 		if existing.Status != Initiated {
 			return ErrInvalidStateTransition
 		}
-		return nil
+		if push || existing.DebtorDetails.Agent != existing.CreditorDetails.Agent ||
+			existing.DebtorLegTx != "" {
+			return nil
+		}
 	case !errors.Is(err, ErrPaymentNotFound):
 		return err
 	}
@@ -3918,7 +3944,7 @@ func (s *Network) AcceptInboundTx(ctx context.Context, tx Tx, id PaymentID, req 
 	now := s.now()
 	p := newPayment(id, req, scheme, now)
 	sc := SchemeContext{Network: s, Tx: tx, Now: now}
-	if scheme.Direction() == Push {
+	if push {
 		// The account and participant returned below are the RECEIVING bank's
 		// own — the creditor's, for a push — and are deliberately discarded:
 		// unlike SubmitPaymentTx, this half must not use them to overwrite
@@ -5124,7 +5150,28 @@ func (s *Network) PostReturnLegTx(ctx context.Context, tx Tx, id PaymentID, reas
 	//
 	// The returner's own copy reaches Returned when it is told the return
 	// settled, which is the message it is waiting for anyway. See CompleteReturn.
-	if ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent) != self {
+	//
+	// # Unless there is no conversation, because one bank is both parties
+	//
+	// Position works because two banks act in an order the transport imposes.
+	// A payment whose payer and payee are the same institution has no transport
+	// between them: that bank IS the returner and IS the other side, so the test
+	// above says "first" about both of its legs and the payment never closes.
+	// Nothing is coming to tell it either — SettleReturn moves reserves between
+	// two members and there are none to move, exactly as an on-us cut-off nets
+	// to zero and is never instructed.
+	//
+	// So for that one arrangement the bank answers the question directly, which
+	// it is uniquely able to do: it holds BOTH legs, so "the return is over" is
+	// a fact about its own book rather than about a message. Both are read out
+	// of the payment as it now stands — the leg this call just posted is already
+	// written onto p — and both must be non-empty.
+	onUs := p.DebtorDetails.Agent == p.CreditorDetails.Agent
+	done := ReturnerOf(scheme, p.DebtorDetails.Agent, p.CreditorDetails.Agent) != self
+	if onUs {
+		done = p.ReturnClawbackTx != "" && p.ReturnRefundTx != ""
+	}
+	if done {
 		if err := s.transition(&p, Returned); err != nil {
 			return Payment{}, err
 		}
