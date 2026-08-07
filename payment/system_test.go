@@ -3548,9 +3548,10 @@ func networkWithASubmittedPayment(t *testing.T) (*testSystem, Payment) {
 func closeCreditorAccount(t *testing.T, n *testSystem, p Payment) {
 	t.Helper()
 	ctx := context.Background()
-	bank, err := n.GetBank(ctx, ParticipantID(p.CreditorDetails.Agent))
-	assertNoError(t, err)
-	assertNoError(t, bank.Deposit.Close(ctx, p.Creditor.Account))
+	// The payee's own bank, read out of its own database. A customer account is
+	// that bank's and nobody else's, and so is the row that names its book.
+	assertNoError(t, mustGetBank(t, ctx, n, ParticipantID(p.CreditorDetails.Agent)).
+		Deposit.Close(ctx, p.Creditor.Account))
 }
 
 // Initiated becomes an observable state for the first time. Today
