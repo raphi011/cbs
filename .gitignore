@@ -7,24 +7,9 @@
 # Compiled backend binary (make build / make run)
 /bin/
 
-# The book editions (book/how-money-moves.{epub,pdf}) are intentionally checked
-# in so they can be linked and downloaded directly. Rebuild with book/build.sh.
+# `go build` with no -o drops a 17 MB binary here under the module's name.
+/server
 
 # The ISO 20022 message schemas the golden-file check validates against.
-#
-# iso20022/testdata/README.md says this directory "is not committed: the schemas
-# are redistributed under ISO's terms and are not this repository's to vendor",
-# and until now nothing enforced it. A developer who downloads them and runs
-# `git add -A` — which is what every plan in docs/superpowers/plans tells them to
-# do — vendors them by accident, and the rule is broken by the workflow the
-# repository itself prescribes.
+# Redistributed under ISO's terms; not this repository's to vendor.
 iso20022/testdata/xsd/
-
-# The compiled server binary. `go build` with no -o drops it here under the
-# module's name, and `git add -A` — which is what every plan in
-# docs/superpowers/plans tells a developer to do — then commits 17 MB of it.
-# That is exactly what happened in Task 17.2, and it rode along in every commit
-# after it until the history was rewritten to take it out. Same failure mode as
-# iso20022/testdata/xsd above: a rule nothing enforced, broken by the workflow
-# this repository prescribes.
-/server

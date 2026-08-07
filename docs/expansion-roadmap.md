@@ -161,7 +161,6 @@ Two things the implementation sharpened, both worth carrying forward:
 ### 2. Lending — `done`
 
 Spec: [`superpowers/specs/2026-07-27-lending-design.md`](superpowers/specs/2026-07-27-lending-design.md)
-Plan: [`superpowers/plans/2026-07-27-lending.md`](superpowers/plans/2026-07-27-lending.md)
 
 Loan accounts on the Asset side, disbursement, amortization schedules, interest
 accrual, repayment allocation (interest before principal), delinquency and
@@ -294,7 +293,6 @@ about how the loan happened to be booked.
 ### 5. Account addressing — `done`
 
 Spec: [`superpowers/specs/2026-07-31-account-addressing-design.md`](superpowers/specs/2026-07-31-account-addressing-design.md)
-Plan: [`superpowers/plans/2026-07-31-account-addressing.md`](superpowers/plans/2026-07-31-account-addressing.md)
 
 A deposit account gains a set of external identifiers — `(scheme, value)`, with `IBAN` the one scheme shipped —
 distinct from its internal `AccountID`; `payment.Scheme` declares which
@@ -348,7 +346,6 @@ admission means rather than a limitation.
 ### 6b. Role-scoped web UI — `done`
 
 Spec: [`superpowers/specs/2026-07-31-role-scoped-web-ui-design.md`](superpowers/specs/2026-07-31-role-scoped-web-ui-design.md)
-Plan: [`docs/superpowers/plans/2026-07-31-role-scoped-web-ui-6b.md`](superpowers/plans/2026-07-31-role-scoped-web-ui-6b.md)
 
 Replaces the single unified dashboard with identities you switch between.
 Depends on 5 for the customer's send form and on 6a for everything else: after
@@ -400,7 +397,6 @@ rather than `done`.
 
 Specs: [`7a`](superpowers/specs/2026-07-31-iso20022-messages-design.md) ·
 [`7b`](superpowers/specs/2026-08-01-iso20022-mesh-design.md)
-Plans: [`7b`](superpowers/plans/2026-08-01-iso20022-mesh.md)
 
 Retired the largest remaining payments fiction — *"No ISO 20022 message
 parsing"*, in the README's *Deliberate Simplifications* — by making the message
@@ -480,11 +476,6 @@ withdraws it**.
 ### 8. Per-entity stores — `done`
 
 Spec: [`superpowers/specs/2026-08-02-db-per-entity-design.md`](superpowers/specs/2026-08-02-db-per-entity-design.md)
-Plans: [`14`](superpowers/plans/2026-08-02-task-14-message-carries-the-parties.md) ·
-[`15`](superpowers/plans/2026-08-02-task-15-settlement-becomes-a-conversation.md) ·
-[`16`](superpowers/plans/2026-08-03-task-16-return-becomes-a-conversation.md) ·
-[`17`](superpowers/plans/2026-08-05-task-17-admission-becomes-a-conversation.md) ·
-[`18`](superpowers/plans/2026-08-06-task-18-split-the-stores.md)
 
 Five tasks, numbered 14–18 because they continue 7b's numbering, with sub-project
 9 (§9 below) landing between Task 17 and Task 18 because the split wanted one
@@ -617,8 +608,6 @@ asynchronously into the others, the design is wrong rather than under-powered.
 ### 9. One store, and it is SQLite — `done`
 
 Spec: [`superpowers/specs/2026-08-03-sqlite-only-store-design.md`](superpowers/specs/2026-08-03-sqlite-only-store-design.md)
-Plans: [`17.0`](superpowers/plans/2026-08-06-task-17.0-the-races-become-a-suite.md) ·
-[`17.1`](superpowers/plans/2026-08-06-task-17.1-store-sqlite.md)
 
 **Not on the original list**, and it interrupts sub-project 8 rather than
 following it. `store/pg` and `store/mem` are both deleted; `store/sqlite`, on the
