@@ -583,7 +583,7 @@ func (b *bank) answer(to iso20022.BIC, orig payment.OriginalMessage, ref iso2002
 // is where the payee is finally paid. The reserves have moved at the central
 // bank; the creditor's bank now releases the money out of its own clearing
 // suspense into its own customer's account, which is a posting only that bank
-// can make in only that bank's book. See payment.PostCreditorLegTx.
+// can make in only that bank's book. See payment.SettleAtBankTx.
 //
 // Both banks are told, and only one of them has that leg. On a push the
 // clearing house sends the same ACSC to the payer's bank, which is waiting for
@@ -741,9 +741,11 @@ func (b *bank) receiveStatus(ctx context.Context, doc *iso20022.Pacs002) error {
 // # It reads the message the same way the settlement agent does
 //
 // payment.ReadReturn, which is also what centralBank.receiveReturn calls. This
-// bank HAS the payment row today and could read the reason off it instead, but
-// the row is the shared store showing through and the message is what will be
-// left when it is gone.
+// bank holds a payment row of its OWN and could read the reason off that
+// instead; the message is what it reads, because the message is what a bank in a
+// real network has. The row this argument used to point at — one shared row both
+// banks read — is gone, so what was a discipline is now also the only option for
+// anything the other bank decided.
 //
 // The loop is over what the reader returns, and that is written for what the
 // reader can PRODUCE rather than for what this flow sends. ReadReturn holds a

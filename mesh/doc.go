@@ -6,11 +6,17 @@
 // in this package is TOLD that a payment was accepted except by receiving a
 // pacs.002 saying so. Everything else here follows from taking that seriously.
 //
-// The qualification is load-bearing and is made again where it bites (see "One
-// store, likewise" below): the actors share one store, bankOps carries
-// GetPayment, and bank.receiveStatus deliberately reads the payment row and
-// trusts it over the message it just received. A bank here CAN look the answer
-// up. What it cannot do is be told by anything other than a message.
+// The qualification this paragraph used to carry has expired, and what replaced
+// it is worth more than the qualification was. It said the actors share one
+// store, that bankOps carries GetPayment, and that a bank here CAN look the
+// answer up — what it could not do was be TOLD by anything other than a message.
+// Task 18 removed the first half: every institution has a database of its own,
+// so there is no row a bank could read to learn what a counterparty decided, and
+// a handler reaching for one is refused by name rather than answered. A bank
+// still reads its own copy — bank.receiveStatus does, and trusts it over the
+// message it just received — but that copy is a record of what this bank was
+// told, which is the point rather than the loophole. See "Five databases,
+// likewise" below.
 //
 // # Actors
 //
@@ -162,7 +168,7 @@
 // Those two fan-outs are what a member's half of a cut-off is made of, and
 // between them nothing of it is left in the settlement agent's unit of work: the
 // camt.053 carries the MIRROR leg and the per-payment ACSC carries the CREDITOR
-// leg (bank.receiveStatus, payment.PostCreditorLegTx).
+// leg (bank.receiveStatus, payment.SettleAtBankTx).
 //
 // The camt.053 is what makes the MIRROR LEG the member's own act. A bank's
 // clearing suspense holds money that has left a customer and not yet settled
@@ -585,10 +591,12 @@
 // resolve against the routing table, but a timeout does not.
 //
 // Nor is the network a boundary in any other sense. The actors share one
-// process, one store and one clock; there is no serialisation cost, no
-// authentication, no signature, and no cut-off enforced by anything but the
-// clearing cycle's own state. What the mesh models is the SHAPE of interbank
-// messaging — who may know what, and when — not its infrastructure.
+// process and one clock; there is no serialisation cost, no authentication, no
+// signature, and no cut-off enforced by anything but the clearing cycle's own
+// state. What the mesh models is the SHAPE of interbank messaging — who may know
+// what, and when — not its infrastructure. They no longer share a STORE, and
+// that sentence used to be in this list; see below for what it was worth and
+// what it left behind.
 //
 // The clock is literally one: every header this package stamps is dated from
 // payment.Network.Now, the same source the payments themselves are booked from
@@ -599,21 +607,40 @@
 // is a comparison across two, which is why real cut-offs are stated in a named
 // time zone and enforced with a tolerance. None of that is modelled here.
 //
-// One store, likewise, is not one bank's. The actors are told apart by
-// ledger.BookID and nothing enforces that a handler stays in its own book, so
-// the boundary is asserted rather than given: ops.go narrows what each actor may
-// CALL, and the recorder in books_test.go watches which books each one actually
-// reaches. The measurements are in TestWhichBooksEachBankActuallyReaches, and
-// one of them is a genuine crossing that this arrangement is what found.
+// # Five databases, likewise, and four mechanisms rather than two
 //
-// A third mechanism has since joined those two and it narrows neither method nor
-// book. Task 18b gave payment.Network an identity, so each actor here is built
-// over the network of the institution it IS (see Mesh.nets), and an act that
-// used to take "which bank is doing this" as an argument reads it from there.
-// What that removes is a bank acting as another bank — which neither of the
-// other two could see, because a handler naming somebody else's id called a
-// method it legitimately held and reached a book it was entitled to reach. What
-// it does not remove is either of their jobs, and the recorder's least of all:
-// an identity says which institution acts, and says nothing about which book a
-// posting names.
+// This section used to open "One store, likewise, is not one bank's", and it is
+// the paragraph Task 18 changed most. The store is N+2 databases now — one per
+// member bank, the clearing house's, the settlement agent's — and the boundary
+// that was asserted is in part simply GIVEN. What the four mechanisms narrow,
+// each differently:
+//
+//   - ops.go narrows by METHOD. A bank handler that calls SettleCycleTx does not
+//     compile, because bankOps does not name it.
+//   - payment.Network's IDENTITY narrows by INSTITUTION. Each actor is built over
+//     the network of the institution it IS (see Mesh.nets), so an act that used
+//     to take "which bank is doing this" as an argument reads it from there and a
+//     bank cannot act as another bank through a handle it legitimately holds.
+//     Task 18b.
+//   - the STORE narrows by DATABASE. A store handed a book it does not answer for
+//     refuses with sqlite.ErrNotThisStoresBook, and a method reaching for a table
+//     its institution's schema does not create is refused with
+//     sqlite.ErrNotInThisShape. Task 18c and 18d. This is the one that turned an
+//     assertion into a fact: the crossing the recorder was invented for — one
+//     bank reading another's ledger through a method it holds — has no database
+//     left in which it could succeed.
+//   - the RECORDER in books_test.go watches which books each unit of work
+//     actually reached, which is the question none of the other three answers.
+//     "Did this bank's act touch exactly its own book" is still worth asking
+//     inside one institution's own database, and TestWhichBooksEachBankActuallyReaches
+//     is where the answers are.
+//
+// A fifth is not a boundary at all and belongs beside them anyway. Every
+// mechanism above is about what one institution may REACH; payment/recon is
+// about whether the institutions that reached nothing of each other's still
+// agree — a bank's reserve against the central bank's liability to it, a cycle
+// against the settlement that discharged it. That question only became askable
+// when the answer stopped being guaranteed by everything sharing one database,
+// which is to say the split created it. mesh/recon_test.go is where it is
+// calibrated.
 package mesh

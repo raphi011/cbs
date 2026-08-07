@@ -361,12 +361,12 @@ type Payment struct {
 	CreditorLegTx ledger.TransactionID
 
 	// CreditorLegAccount is the account in the CREDITOR BANK's book that the
-	// creditor leg actually credited, set by PostCreditorLegTx and empty until
+	// creditor leg actually credited, set by SettleAtBankTx and empty until
 	// that leg is posted.
 	//
 	// Usually it is the payee's own GL account. It is the bank's
 	// unclaimed-balances account when the payee's account would not take the
-	// credit — see PostCreditorLegTx, which diverts rather than stranding.
+	// credit — see SettleAtBankTx, which diverts rather than stranding.
 	//
 	// # Why it is STORED and not derived
 	//

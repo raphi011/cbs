@@ -7,6 +7,13 @@
 // cycles and settlements all live in a Store (store/sqlite) behind the
 // payment.Store and payment.Tx interfaces declared here.
 //
+// There is no such thing as THE store. Since Task 18 there is one database per
+// institution — N member banks, the clearing house, the settlement agent — and
+// Stores is the set of them. A Network is one institution's handle on one of
+// them, so which rows an act can even see is decided by which institution is
+// performing it, and a method reaching for a table its institution's schema does
+// not create is refused by name. See Identity, Networks and Stores.
+//
 // # The model
 //
 // Several participant banks each keep their own book of accounts (a
@@ -14,11 +21,12 @@
 // their customer accounts. A separate central-bank book holds a reserve account
 // per asset for every bank the scheme has ADMITTED — the central bank opens each
 // one itself, when it answers that bank's application, so a founded bank has
-// none. The books all live in one Store and are told apart by
-// their ledger.BookID, so chart-of-accounts numbers and ID counters stay per
-// bank while a single transaction can still span several of them. Banks only
-// meet at the central bank — which is exactly what makes the distinction
-// between clearing and settlement real:
+// none. Each book is in its OWN database, so chart-of-accounts numbers, ID
+// counters and idempotency keys are per bank because they are per database, and
+// no transaction can span two of them: a unit of work is one institution's, and
+// two institutions acting on one event are two units of work with a message
+// between them. Banks only meet at the central bank — which is exactly what
+// makes the distinction between clearing and settlement real:
 //
 //   - Clearing is the exchange and netting of payment instructions. No central
 //     bank money moves; banks just agree on who owes whom.
@@ -47,11 +55,11 @@
 //     could not run, because it could not see that side. For a pull it is the
 //     half that moves money, because the payer's bank is the only actor that
 //     can look at the account being collected from.
-//   - AcceptAtCSMTx is the CLEARING HOUSE's half, and only it makes a payment
-//     Accepted: it takes a payment both banks have now looked at into the open
-//     cycle for its scheme. ErrCycleNotOpen is its refusal — TM01 on the wire —
-//     because the cut-off is the clearing house's and no bank refuses its own
-//     customer on account of it.
+//   - AcceptAtCSMTx is the CLEARING HOUSE's half, and only it makes the
+//     CLEARING HOUSE's copy Accepted: it takes a payment both banks have now
+//     looked at into the open cycle for its scheme. ErrCycleNotOpen is its
+//     refusal — TM01 on the wire — because the cut-off is the clearing house's
+//     and no bank refuses its own customer on account of it.
 //
 // A rejection splits the same way, into RejectAtCSMTx and ReverseDebtorLegTx,
 // and is the first operation here that can HALF-HAPPEN: between the two the
@@ -60,6 +68,35 @@
 // exactly one reason — the DEBTOR's bank posts the debtor leg — and the
 // direction only decides whether that bank is the one submitting or the one
 // answering.
+//
+// # Three acts a bank does with what it is TOLD
+//
+// One payment is three rows in three databases since Task 18d, so a bank's own
+// copy no longer advances because somebody else wrote on it. Every step of its
+// life at a member bank is that bank's own act, and there are exactly three:
+//
+//   - AcceptAtBankTx records that the clearing house took the payment into a
+//     cycle. It posts NOTHING, which is what makes it look unnecessary — no
+//     money moves when a payment is accepted. What it does is REMEMBER, because
+//     a bank's copy that jumped from instructed to settled could not answer the
+//     question a customer asks in between and would leave this bank's own audit
+//     log with a hole in the middle of its own payment's life.
+//   - RejectAtBankTx records the rejection and reverses the debtor leg, and the
+//     two commit together: a bank that cannot give the money back does not
+//     record the rejection either.
+//   - SettleAtBankTx records that the payment settled, and — only if this bank
+//     holds the payee — releases the money out of its clearing suspense into
+//     that customer's account. The status is the unconditional half and the
+//     posting is the conditional one, which is the reverse of how it read when
+//     this function was PostCreditorLegTx and being the payee's bank was a
+//     precondition.
+//
+// Which bank reaches which status when is not uniform and is not a defect. The
+// ACCP goes to the bank waiting for the answer to its instruction and to no
+// other, so the bank that ANSWERED the instruction is never told and its copy
+// stays Initiated until settlement — which is why Initiated -> Settled is a
+// legal edge at a bank and not at the clearing house. Neither bank is wrong;
+// they were told different things because they asked different things.
 //
 // A RETURN is the same shape a third time, and it is the one where the split
 // decides who may say no:
@@ -215,20 +252,22 @@
 //     ErrAssetMismatch rather than converted. Amounts are ledger.Amount,
 //     integer minor units.
 //
-//   - One database transaction stands in for a settlement window. Every book —
-//     each participant's and the central bank's — lives in the same Store, told
-//     apart by its ledger.BookID, and payment.Tx embeds deposit.Tx embeds
-//     ledger.Tx, so a single transaction can reach all three layers. SettleCycle
-//     moves the netted reserves inside one Store.Update, so a net payer that
-//     cannot cover its position aborts the whole batch. That is the essence of a
-//     real RTGS settlement window: the settlement agent holds the participants'
-//     reserve accounts, checks that every payer can cover, and posts all of it
-//     or none.
+//   - One database transaction stands in for a settlement window, and it is ONE
+//     institution's. payment.Tx embeds deposit.Tx embeds ledger.Tx, so a single
+//     transaction reaches all three layers of the database it is open on —
+//     which is the settlement agent's own, and no other. SettleCycle moves the
+//     netted reserves inside one Store.Update, so a net payer that cannot cover
+//     its position aborts the whole batch. That is the essence of a real RTGS
+//     settlement window: the settlement agent holds the participants' reserve
+//     accounts, checks that every payer can cover, and posts all of it or none.
+//     This entry used to add that every book lived in the same Store, told apart
+//     by ledger.BookID, and that is what Task 18 removed — the window could not
+//     have spanned the members afterwards even if the design had wanted it to.
 //     What that window no longer spans is the MEMBERS. Both legs in a member's
 //     own book used to be in this unit of work: the mirror leg is the member's
 //     own posting now, made from the statement SettleCycle hands back (see
 //     PostSettlementAdviceTx), and the creditor leg is the payee's bank's, made
-//     from the clearing house's per-payment advice (see PostCreditorLegTx). The
+//     from the clearing house's per-payment advice (see SettleAtBankTx). The
 //     interval between the central bank's commit and a member's is the
 //     unreconciled position, and it is modelled rather than hidden — see
 //     SettleCycle.

@@ -108,7 +108,7 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 	// in 60 building the central bank a second chart of accounts.
 	//
 	// This case is what made the argument checkable rather than a claim in a
-	// comment, and store/sqlite/schema/0001_init.sql's note on the absent UNIQUE
+	// comment, and store/sqlite/schema/bank/0001_init.sql's note on the absent UNIQUE
 	// constraint points at it.
 	//
 	// What it is worth per store, each measured with admissionSequenceTx
@@ -190,7 +190,8 @@ func RunSystemRaces(t *testing.T, newStores func(*testing.T) payment.Stores) {
 	// declines to enforce that with a UNIQUE index — it would answer a
 	// constraint violation where the domain answers its sentinel, and it would be
 	// the second unique index in a schema whose duplicate-key mapping cannot
-	// survive one (see index 6 in store/sqlite/schema/0001_init.sql). That leaves
+	// survive one (see transactions_idempotency_key_idx in store/sqlite/schema/bank/0001_init.sql,
+	// which argues that it is the only one and why). That leaves
 	// the application check, and under READ COMMITTED two submissions both read
 	// "not there" and both wrote. Eight concurrent submissions of one reference
 	// were accepted EIGHT times on store/pg and once on store/mem, and the payer

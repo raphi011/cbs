@@ -121,7 +121,7 @@ type BankAccounts struct {
 	// held as a liability to whoever eventually claims it, and the bank has a
 	// process for finding them. This system had nowhere for it to go, which is
 	// why the gap at the return and at the cut-off was a ruling rather than a
-	// line of code. Both are closed now: PostCreditorLegTx diverts a credit the
+	// line of code. Both are closed now: SettleAtBankTx diverts a credit the
 	// payee cannot take, and PostReturnLegTx diverts a refund the payer cannot
 	// take.
 	Unclaimed ledger.AccountID
@@ -200,13 +200,15 @@ type BankAccounts struct {
 // between clearing (exchanging instructions) and settlement (moving
 // central-bank reserves) concrete.
 //
-// Today every book still lives in ONE store, told apart by BookID, which is
-// what still lets a single unit of work span several banks — and chart-of-
-// accounts numbers, ID counters and idempotency keys are per book, so each bank
-// already numbers its accounts independently. Task 18 is what removes the
-// spanning: each entity gets its own store, and a BookID that is not this
-// bank's stops being a lookup and becomes a refusal. Until then nothing but the
-// recorder in mesh/books_test.go notices a handler that reaches across.
+// Every book is in its OWN DATABASE, so no unit of work can span two banks and a
+// BookID that is not this bank's is a refusal rather than a lookup
+// (sqlite.ErrNotThisStoresBook). This paragraph used to describe the arrangement
+// that preceded it — one store, books told apart by BookID, the spanning still
+// possible and nothing but the recorder in mesh/books_test.go able to notice a
+// handler reaching across — and Task 18c and 18d are what replaced it. What did
+// not change is that chart-of-accounts numbers, ID counters and idempotency keys
+// are per book: they were per book because a book was a scope, and they are per
+// book now because a book is a database.
 //
 // The internal accounts each bank needs:
 //

@@ -159,7 +159,7 @@ describe("validateConceptContent", () => {
 });
 
 // The four documentation layers (README.md, this registry, the quiz, and
-// store/sqlite/schema/0001_init.sql) are kept in step by hand, so a claim that
+// store/sqlite/schema/{bank,csm,centralbank}/0001_init.sql) are kept in step by hand, so a claim that
 // drifts is caught by a reader or by nothing. This one had drifted: the prose
 // said the balance is "signed by normal balance" and the SQL beneath it
 // hardcoded `direction = debit`, which negates every liability balance —

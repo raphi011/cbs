@@ -22,7 +22,7 @@
 // Two of the older arguments are worth reading with that in mind rather than
 // deleting. Where a case says a constraint would make one store refuse what
 // another accepts, the divergence is history and the decision is re-justified in
-// store/sqlite/schema/0001_init.sql, on accounts.asset. And where a case records
+// store/sqlite/schema/bank/0001_init.sql, on accounts.asset. And where a case records
 // what store/mem could not show, it is recording why the case exists: store/mem
 // serialized every unit of work on one mutex, so the concurrency cases were
 // blind there, and that is the shape of blindness the ephemeral store still has
@@ -496,7 +496,7 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// posting to it — and putting it in the schema as well enforces it twice,
 		// in two places that answer differently: the constraint fires first, and
 		// it fires as a foreign-key violation where the domain would have said
-		// ErrLedgerNotFound. See subledgers in store/sqlite/schema/0001_init.sql.
+		// ErrLedgerNotFound. See subledgers in store/sqlite/schema/bank/0001_init.sql.
 		//
 		// It is written from the failure it prevents: store/pg shipped a
 		// composite FK on subledgers(book_id, ledger_id), which turned the first
@@ -1868,8 +1868,8 @@ func RunLedger(t *testing.T, newStore func(*testing.T, ledger.BookID) ledger.Sto
 		// The read is on a NON-key attribute (the account's name) because that
 		// is the shape of the rule: a store cannot enforce it with a primary
 		// key, and a unique index would answer a constraint violation where the
-		// domain answers its sentinel. See index 6 in
-		// store/sqlite/schema/0001_init.sql.
+		// domain answers its sentinel. See
+		// transactions_idempotency_key_idx in store/sqlite/schema/bank/0001_init.sql.
 		const claimants = 8
 		const wanted = "the-one-and-only"
 

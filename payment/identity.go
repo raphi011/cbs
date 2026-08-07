@@ -84,7 +84,7 @@ func AsBank(pid ParticipantID) Identity { return Identity{role: roleBank, pid: p
 
 // AsClearingHouse is the CSM's identity: it clears, it nets, it routes, and it
 // holds no book of accounts at all. See csmOps in the mesh, which is the list of
-// what it may reach, and TestTheCSMTouchesOnlyTheNetworkBook, which is the
+// what it may reach, and TestTheCSMTouchesOnlyItsOwnBook, which is the
 // measurement that it reaches nothing else.
 func AsClearingHouse() Identity { return Identity{role: roleClearingHouse} }
 

@@ -119,7 +119,7 @@ func SnapshotDateKey(date time.Time) string { return date.Format("2006-01-02") }
 //     REPLACES the stored set; both readers bring it back. Identifiers are not
 //     separately writable, which is the condition under which the schema is
 //     allowed a real FOREIGN KEY on them — see the exemption stated on
-//     subledgers in store/sqlite/schema/0001_init.sql.
+//     subledgers in store/sqlite/schema/bank/0001_init.sql.
 //   - ListDepositAccountsByIdentifier matches with Identifier.Matches — the
 //     scheme exactly, and the value under that scheme's comparison rule, which
 //     for an IBAN means with display separators stripped from BOTH sides. A

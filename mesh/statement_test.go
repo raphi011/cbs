@@ -139,7 +139,7 @@ func TestARedeliveredStatementBooksTheMirrorLegOnce(t *testing.T) {
 }
 
 // TestARedeliveredSettlementStatusPaysThePayeeOnce is the witness on
-// PostCreditorLegTx's Settled guard.
+// SettleAtBankTx's Settled guard.
 //
 // Same shape as the statement above and a different message: the clearing house's
 // per-payment ACSC, replayed. csm.tellSettled's dedup rationale leans on this

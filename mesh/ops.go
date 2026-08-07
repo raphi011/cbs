@@ -380,8 +380,8 @@ type bankOps interface {
 //
 // That does not make the ban the compiler's. These interfaces narrow by method
 // and never by book, so a clearing house that acquired a posting method would
-// be stopped by nothing here; TestTheCSMTouchesOnlyTheNetworkBook is what
-// enforces it, and TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles
+// be stopped by nothing here; TestTheCSMTouchesOnlyItsOwnBook is what
+// enforces it, and TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles
 // extends it over the cut-off and the settlement conversation Task 12 added.
 //
 // Task 13 added NOTHING here, and that is worth a sentence because it is the

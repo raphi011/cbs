@@ -8,9 +8,9 @@ import (
 )
 
 // SettlementMember is the CENTRAL BANK's own record of a bank it holds a
-// settlement account for. It moves into the central bank's store at Task 18,
-// and it exists as a row of its own before then because that is the only way
-// the settlement agent stops borrowing the clearing house's records.
+// settlement account for. It lives in the central bank's database and in no
+// other, which is what stopped the settlement agent borrowing the clearing
+// house's records.
 //
 // It is what the settlement agent used to do without. Every reserve movement in
 // this system resolved its account through the BANK's row —
@@ -80,7 +80,8 @@ type SettlementMember struct {
 }
 
 // RosterEntry is the CLEARING HOUSE's record of one member: where to send a
-// message addressed to it. It moves into the clearing house's store at Task 18.
+// message addressed to it. It lives in the clearing house's database and in no
+// other.
 //
 // It is routing and nothing else. There is no account identifier of any kind on
 // it — no subledger, no product, no book — because a clearing house that held

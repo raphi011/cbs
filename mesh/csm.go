@@ -74,8 +74,8 @@ import (
 // it named — and Task 17 replaced it with GetRosterEntry, which hands back an
 // address. What has not changed is that these interfaces narrow by method and
 // never by book, so the ban stays the recorder's:
-// TestTheCSMTouchesOnlyTheNetworkBook is what holds this actor to it, and
-// TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends that over the
+// TestTheCSMTouchesOnlyItsOwnBook is what holds this actor to it, and
+// TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles extends that over the
 // cut-off and the settlement conversation.
 type csm struct {
 	m   *Mesh

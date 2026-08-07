@@ -81,7 +81,7 @@ type Account struct {
 	// They are part of the account aggregate rather than a sibling entity, and
 	// that is load-bearing in the schema: PutDepositAccount writes both sides
 	// itself, which is the one condition under which a real FOREIGN KEY is
-	// allowed (see store/sqlite/schema/0001_init.sql, on subledgers).
+	// allowed (see store/sqlite/schema/bank/0001_init.sql, on subledgers).
 	Identifiers []Identifier
 
 	// Accrued is interest earned and not yet charged, at sub-minor-unit

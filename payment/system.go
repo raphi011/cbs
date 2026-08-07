@@ -851,7 +851,8 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // both find no Central Bank ledger both create one, and the members underneath
 // them disagree about which subledger holds reserves — 60 runs in 60. The
 // schema is where the absent constraint is argued (the ledgers table in
-// store/sqlite/schema/0001_init.sql), and it used to close this by pointing at
+// store/sqlite/schema/centralbank/0001_init.sql, which is the institution
+// whose chart of accounts this race is about), and it used to close this by pointing at
 // the first statement of the deleted AddParticipantTx, which drew an id before
 // anything else ran. Nothing composes the four acts in one transaction
 // any more — they are four commits with messages between them — so this call is
@@ -878,14 +879,15 @@ func joiningAssets(assets []ledger.AssetCode) []ledger.AssetCode {
 // repository can see it go.
 //
 // It stays for two reasons. It costs one row write per act and holds the
-// property without depending on the retry budget; and Task 18 has to decide
-// where the counter it draws from lives, because ledger.NetworkBook — which
-// this function allocates from — disappears with the split. If each entity's
-// counter moves into that entity's own store, the ordering survives unchanged:
-// each act's allocation and the row it decides from are still one database
-// apart from nothing. If they land in two, neither the ordering NOR the retry
-// spans them, because two databases is two transactions. Removing this now
-// would decide that question by default.
+// property without depending on the retry budget; and the question Task 18 had
+// to decide has been decided in the way that keeps it working. THE COUNTER
+// FOLLOWS THE ROW: this function allocates from the settlement agent's own
+// id_sequences and reads that agent's own ledgers table, one database apart from
+// nothing, so the ordering survives the split unchanged. Had the allocation
+// landed anywhere else the ordering would have been worth nothing — two
+// databases is two transactions, and no retry can make one of them see the
+// other. See ledgers in store/sqlite/schema/centralbank/0001_init.sql, which
+// carries the ruling.
 //
 // # Why an id allocation is the lock
 //
@@ -2522,7 +2524,7 @@ func (s *Network) CloseCycleTx(ctx context.Context, tx Tx, id CycleID) (Clearing
 //     STATEMENTS that tell each member what to post. See PostSettlementAdviceTx.
 //   - the CREDITOR leg — a payee's funds released out of that payee's bank's
 //     suspense — left in Task 15b.3, on the clearing house's per-payment advice.
-//     See PostCreditorLegTx.
+//     See SettleAtBankTx.
 //
 // So this reads a cycle, its own SettlementMember rows and its own book, and no
 // payment and no bank row at all, which is the whole of what a settlement agent
@@ -3801,7 +3803,7 @@ func (s *Network) AcceptInbound(ctx context.Context, id PaymentID, req InitiateP
 // the account exists, is in the scheme's asset, is addressable, and can be
 // credited at all. Nothing is posted: the payee is paid AFTER the cut-off has
 // settled, out of the creditor bank's suspense, by that bank's own
-// PostCreditorLegTx on the clearing house's per-payment advice. This comment
+// SettleAtBankTx on the clearing house's per-payment advice. This comment
 // used to say "at settlement", which was true while the settlement agent posted
 // every member's legs inside its own unit of work.
 //
@@ -4972,7 +4974,7 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // length that a refund into a payer's closed account stranded for ever, and that
 // refusing would only trade one stranding for another. It could not be fixed
 // while a return was one unit of work over three institutions. It is fixed here
-// the same way PostCreditorLegTx fixed the settlement-side twin: divert to this
+// the same way SettleAtBankTx fixed the settlement-side twin: divert to this
 // bank's unclaimed balances.
 //
 // The diversion happens on deposit.ErrAccountClosed and on NOTHING else, and
@@ -4988,28 +4990,32 @@ func (s *Network) PostReturnLeg(ctx context.Context, id PaymentID, reason string
 // # The SECOND leg is what sets Returned
 //
 // One row takes one transition, and the transition is about the last customer
-// leg, which is PostCreditorLegTx's shape reused. The second leg is recognised
-// by finding the OTHER side's transaction id already on the payment; each leg
-// writes its own as it posts. Neither id can be the marker on its own, because
-// which leg goes first flips with the direction.
+// leg, which is SettleAtBankTx's shape reused.
 //
-// This works because one payment is one row that both banks read. Under Task
-// 18's store split it is two rows in two stores and neither bank can see the
-// other's, so the second leg will have to be recognised from the message a bank
-// receives against the status its own row is already at. That is a real limit
-// of this task and not an oversight; see Payment.ReturnClawbackTx.
+// WHICH leg is last used to be read off the row: the leg that found the OTHER
+// side's transaction id already written was the one arriving last, because one
+// payment was one row that both banks read. Task 18d ended that — each bank
+// holds its own copy and writes its own field on it, so both would see one leg
+// posted and neither would ever be second — and Payment.ReturnClawbackTx said
+// this function would inherit the problem. It did. What replaced the row is
+// POSITION IN THE CONVERSATION, which is a fact each bank has on its own and
+// which the long note beside the transition below sets out in full.
 //
 // A bank that is BOTH sides — a payment from one bank to itself — holds both
-// legs and would post them one call at a time, clawback first, because the guard
-// is written as "my leg, not standing" rather than as a choice between two
-// parties. No such payment reaches this function any more: Mesh.Submit refuses
-// one, because two customers of one bank paying each other is a book transfer
-// and not a clearing payment. The ordering is kept rather than turned into a
-// refusal here, for the reason ReadReturn's id guard and SettleReturnTx's are
-// both kept — a guard at the boundary is one caller's, and this is the domain.
+// legs and posts them one call at a time, clawback first, because the guard is
+// written as "my leg, not standing" rather than as a choice between two parties.
+// Mesh.Submit refuses such a payment at the door, so nothing in this system
+// BUILDS one; the ordering is kept rather than turned into a refusal here, for
+// the reason ReadReturn's id guard and SettleReturnTx's are both kept — a guard
+// at the boundary is one caller's, and this is the domain. That distinction
+// stopped being academic at Task 18d, because position in the conversation needs
+// a conversation and this arrangement has none. See the note at the transition,
+// and TestAPullRefundIsHonouredWhenOneBankIsBothParties, whose own doc argues
+// that a rule holding only because no caller builds the counter-example is a
+// rule nobody is keeping.
 //
 // The same guard makes a redelivered first leg a no-op, which is what
-// PostCreditorLegTx does with a redelivered advice and for the same reason: the
+// SettleAtBankTx does with a redelivered advice and for the same reason: the
 // ledger's idempotency key would refuse the second posting anyway, and
 // reporting a failure to a handler that did nothing wrong is worse than
 // answering with the payment.
@@ -5210,7 +5216,7 @@ func (s *Network) clawbackTx(ctx context.Context, tx Tx, creditor *Bank, accts B
 	p Payment, reason string, mayRefuse bool, replacing ledger.TransactionID,
 ) (ledger.Transaction, error) {
 	// Where the money actually is, READ OFF THE PAYMENT rather than resolved
-	// again. Only PostCreditorLegTx can know which account it credited, and only
+	// again. Only SettleAtBankTx can know which account it credited, and only
 	// at the moment it posted — see Payment.CreditorLegAccount. A Settled
 	// payment always carries it, and there is deliberately no fallback to the
 	// payee's GL account: that is exactly the wrong guess in the case the field

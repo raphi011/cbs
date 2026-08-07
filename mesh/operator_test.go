@@ -50,7 +50,7 @@ const joinerIBAN = "SE4550000000058398257466"
 // recording store answers exactly and without a clock. A clearing house that
 // refunded the payer itself would have had to post in the payer's bank's book,
 // and its set would say so. This is the rejection-shaped case of
-// TestTheCSMTouchesOnlyTheNetworkBook.
+// TestTheCSMTouchesOnlyItsOwnBook.
 func TestAnOperatorRejectionRefundsThePayerOnlyOnceTheMessageArrives(t *testing.T) {
 	h := newMeshHarness(t)
 	p := h.submitCreditTransfer(t)

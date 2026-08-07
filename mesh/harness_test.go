@@ -1081,8 +1081,13 @@ func (h *meshHarness) bankPayment(t *testing.T, bic iso20022.BIC, id payment.Pay
 }
 
 // cycles is every clearing cycle this network holds, in the order it lists
-// them. It is how a test reads what a cut-off left behind — a settled cycle
-// carries a SettlementID and a refused one does not.
+// them. It is how a test reads what a cut-off left behind, which since Task 18d
+// is the STATUS and not an id: a settled cycle is CycleSettled and a refused one
+// is still CycleClosed. It used to carry a SettlementID, and it cannot — the
+// settlement's id is allocated inside the settlement agent's own unit of work in
+// its own database, and the pacs.002 that comes back quotes the CYCLE, because
+// the cycle is what the clearing house asked about. See ClearingCycle, where the
+// field used to be.
 func (h *meshHarness) cycles(t *testing.T) []payment.ClearingCycle {
 	t.Helper()
 	cycles, err := h.net.ListCycles(context.Background())

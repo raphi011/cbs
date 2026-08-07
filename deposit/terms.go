@@ -69,7 +69,7 @@ type OverdraftTerms struct {
 	// is a real interest-free product and a different, deliberate statement.
 	// Validate refuses the states in between, and the schema says the same thing
 	// inside the CREATE TABLE that holds the three nullable columns
-	// (overdraft_terms.rate in store/sqlite/schema/0001_init.sql), because the
+	// (overdraft_terms.rate in store/sqlite/schema/bank/0001_init.sql), because the
 	// difference between "NULL means free" and "NULL means ask the product" is
 	// invisible in a schema dump.
 	Pricing *product.OverdraftPricing

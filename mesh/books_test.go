@@ -638,7 +638,7 @@ type structCarriedBook struct {
 //     that row — the name of the book this bank owns — not the book being
 //     written to. Recording it would make a clearing-house handler that admits a
 //     member look like it had reached into that member's ledger, and Task 10's
-//     TestTheCSMTouchesOnlyTheNetworkBook would fail on a handler doing exactly
+//     TestTheCSMTouchesOnlyItsOwnBook would fail on a handler doing exactly
 //     what it should.
 //
 // Those two are indistinguishable from the AST. So the parser's job is to make
@@ -1205,21 +1205,27 @@ func TestAWrongCounterpartyAgentIsRefusedByTheBankItNames(t *testing.T) {
 	})
 }
 
-// TestTheCSMTouchesOnlyTheNetworkBook is the assertion the note above was
-// written for, and it holds: the clearing house's half writes the payment and
-// the cycle and posts nothing.
+// TestTheCSMTouchesOnlyItsOwnBook is the assertion the note above was written
+// for, and it holds: the clearing house's half writes the payment and the cycle
+// and posts nothing.
 //
-// It reaches NetworkBook and NOTHING else — not through a posting, because
-// nothing in this repository ever posts under NetworkBook, but through the id
-// AcceptAtCSMTx's audit event needs and the event itself. A CSM half that
-// skipped that event would record nothing at all and fail this with an empty
-// set, which is a different bug wearing the same failure.
+// It reaches ClearingHouseBook and NOTHING else — not through a posting, because
+// this institution keeps no book of accounts and nothing in this repository ever
+// posts under that label, but through the id AcceptAtCSMTx's audit event needs
+// and the event itself. A CSM half that skipped that event would record nothing
+// at all and fail this with an empty set, which is a different bug wearing the
+// same failure.
+//
+// It was TestTheCSMTouchesOnlyTheNetworkBook, and the rename is the book: there
+// is no ledger.NetworkBook and no network for anything to belong to. What each
+// of those rows belongs to is the ONE institution whose database it is in, which
+// for a cycle is this one.
 //
 // Relaying costs it nothing: the pacs.008 hop reads the creditor's agent out of
 // the message and routes on it, with no store read at all. A clearing house that
 // looked a payment up to decide where to send it would be one that could not
 // route a message about a payment it does not hold.
-func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
+func TestTheCSMTouchesOnlyItsOwnBook(t *testing.T) {
 	h := newMeshHarness(t)
 	h.rec.reset()
 	h.submitCreditTransfer(t)
@@ -1229,14 +1235,16 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 		[]ledger.BookID{payment.ClearingHouseBook})
 }
 
-// TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles extends the assertion
-// above over the two things Task 12 gave this actor: reaching a cut-off, and
-// the settlement conversation that follows it.
+// TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles extends the assertion above
+// over the two things Task 12 gave this actor: reaching a cut-off, and the
+// settlement conversation that follows it.
 //
 // Same set, and that is the finding. The clearing house now nets a batch, builds
 // a pacs.009, reads two members to name them in it, and fans the answer out
-// to the bank that submitted each payment — and none of that leaves NetworkBook,
-// because none of it posts and every row it reads belongs to no single bank.
+// to the bank that submitted each payment — and none of that leaves this
+// institution's own book, because none of it posts and every row it reads is
+// this institution's own. Reading two members no longer means reading two banks'
+// rows: what it reads is its own roster.
 //
 // The member lookup is the one that could have gone the other way, and until
 // Task 17 it did more than it needed to: GetParticipant returned a value with
@@ -1249,7 +1257,7 @@ func TestTheCSMTouchesOnlyTheNetworkBook(t *testing.T) {
 //
 // That is the whole reason the recorder exists beside the interfaces in ops.go.
 // csmOps could not have expressed this: the method is on it, and must be.
-func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
+func TestTheCSMStillTouchesOnlyItsOwnBookWhenItSettles(t *testing.T) {
 	h := newMeshHarness(t)
 	h.submitCreditTransfer(t)
 	h.drain(t)
@@ -1309,7 +1317,7 @@ func TestTheCSMStillTouchesOnlyTheNetworkBookWhenItSettles(t *testing.T) {
 // Task 15b.3 took the CREDITOR leg the same way. The clearing house's ACSC
 // fan-out now reaches the creditor's bank as well as the submitter, and that
 // bank releases its own customer's funds out of its own suspense
-// (payment.PostCreditorLegTx, bank.receiveStatus). So no member's book is in
+// (payment.SettleAtBankTx, bank.receiveStatus). So no member's book is in
 // this set at all: SettleCycleTx reads the cycle, the roster and its own book,
 // and no payment.
 //

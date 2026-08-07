@@ -131,9 +131,11 @@ type Tx interface {
 	// The three rows admission writes, one per institution that acts in it.
 	//
 	// They are three rows and not one because each has exactly one writer and
-	// each will live in a different store at Task 18: the bank's own record of
-	// itself, the settlement agent's record of the account it opened, the
-	// clearing house's record of where to send a message. What made that split
+	// each lives in a different DATABASE: the bank's own record of itself, the
+	// settlement agent's record of the account it opened, the clearing house's
+	// record of where to send a message. Two of the three methods in each block
+	// below therefore answer sqlite.ErrNotInThisShape on any given store, which is
+	// the split being a fact rather than a convention. What made that split
 	// necessary is that the settlement agent used to have no record of its own
 	// members at all — it read the account it was to post to off the clearing
 	// house's row, which is a read no isolated institution could make.
